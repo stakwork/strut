@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { GraphBackend } from "./backend.js";
 import { graphView, parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
-import { conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordSaid, treeConcepts, type ClaimGraph, type Said } from "./concept-claims.js";
+import { claimChecks, conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordCheck, recordSaid, treeConcepts, writeCheck, type ClaimGraph, type Said } from "./concept-claims.js";
 import type { ConversationTurn } from "../conversations.js";
 import { createRegistry } from "../steps/registry.js";
 import { validateWorkflowYaml } from "../validate.js";
@@ -28,6 +28,8 @@ import neighboursStep from "../steps/lib/dream/neighbours.js";
 import dueStep from "../steps/lib/dream/due.js";
 import applyStep from "../steps/lib/dream/apply.js";
 import doneStep from "../steps/lib/dream/done.js";
+import checksStep from "../steps/lib/dream/checks.js";
+import checkedStep from "../steps/lib/dream/checked.js";
 
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<unknown> };
 const ctxOf = (services: Record<string, unknown>) => ({ runId: "dream-run-1", path: "dream/dream", workflow: "dream", scope: {}, input: undefined, emit: async () => {}, services });
@@ -217,6 +219,43 @@ for (const tb of testBackends()) {
       assert.deepEqual((await groupClaims(g, { parent: group.claim, claims: [ann, kate], at })).grouped.sort(), [ann, kate].sort(), "added to an existing group by its id");
     });
 
+    it("a check tests its claim once; its results are evidence from the check and no count of what was said; dream/checks picks the due and the stale, capped", async () => {
+      const services = { graph: b };
+      const a = (await recordSaid(g, said(1, { text: "Messages the assistant sends start with [agent]", about: writing, lasting: true }))).claim;
+      const c = (await recordSaid(g, said(2, { text: "Summaries are three lines or fewer", about: writing, lasting: true }))).claim;
+      const ka = (await writeCheck(g, { claim: a, prompt: "Send a message to the hive tribe saying hello", created_by: "janitor" }))!;
+      assert.equal(await writeCheck(g, { claim: a, prompt: "Another request" }), null, "one check a claim");
+      const kc = (await writeCheck(g, { claim: c, prompt: "Summarise the notes from Monday's meeting" }))!;
+      const [check] = await claimChecks(g, [a]);
+      assert.deepEqual([check!.id, check!.step_type, check!.config, check!.freshness_days, check!.made > 0], [ka, "subflow", { workflow: "dream-check", input: { prompt: "Send a message to the hive tribe saying hello", claim: "Messages the assistant sends start with [agent]" } }, 7, true]);
+      const [row] = await b.query("MATCH (k {id: $id}) RETURN k.created_by AS by, k.publisher AS publisher, k.policy AS policy", { id: ka });
+      assert.deepEqual([row!["by"], row!["publisher"], row!["policy"]], ["janitor", "janitor", "on_change"]);
+
+      // Never run: no result. With no limit none is picked; with one, the due first and the rest wait.
+      assert.deepEqual((await listClaims(g, undefined, "Personal")).find((x) => x.id === a)!.check, { id: ka, prompt: "Send a message to the hive tribe saying hello", history: [] });
+      assert.equal((await run(checksStep, { due: [{ claim: a }, { claim: c }] }, services)).count, 0);
+      const picked = await run(checksStep, { due: [{ claim: a }], changes: [{ claim: c }], limit: 1 }, services);
+      assert.deepEqual([picked.items.map((x: any) => [x.claim, x.check, x.input.prompt]), picked.waiting], [[[a, ka, "Send a message to the hive tribe saying hello"]], 1]);
+      assert.equal((await run(checksStep, { limit: 5 }, services)).count, 0, "neither due nor stale: none");
+
+      // Results: against, then for. A check with no verdict writes nothing.
+      const items = [{ claim: a, check: ka, prompt: "p" }, { claim: c, check: kc, prompt: "q" }];
+      const done = await run(checkedStep, { items, results: [{ supports: false, content: "sent: hello", cost: 0.5 }, { skipped: "no such workflow" }], skipped: [{ claim: "x", prompt: "r", skipped: "not ours" }] }, services);
+      assert.deepEqual(done, { checks: [{ claim: "x", prompt: "r", skipped: "not ours" }, { claim: a, prompt: "p", supports: false, content: "sent: hello" }, { claim: c, prompt: "q", skipped: "no such workflow" }], pass: 0, total: 1, cost: 0.5 });
+      assert.deepEqual((await run(checkedStep, { items, results: [] }, services)).checks.map((x: any) => x.skipped), ["the check did not run", "the check did not run"]);
+      await recordCheck(g, { claim: a, check: ka, prompt: "p", supports: true, content: "sent: [agent] hello", dream: "later", at: Date.now() + 5000 });
+      const mine = (await listClaims(g, undefined, "Personal")).find((x) => x.id === a)!;
+      assert.deepEqual([mine.corrected, mine.kept, mine.open, mine.evidence.length], [1, 0, 1, 1], "a result is not somebody speaking");
+      assert.deepEqual([mine.check!.supports, mine.check!.content, mine.check!.history.map((h) => [h.supports, h.content, h.dream])], [true, "sent: [agent] hello", [[true, "sent: [agent] hello", "later"], [false, "sent: hello", "dream-run-1"]]]);
+      assert.deepEqual((await listClaims(g, undefined, "Personal")).find((x) => x.id === c)!.check!.history, []);
+      const made = await b.query("MATCH (c {id: $id})-[eb:EVIDENCED_BY]->(e)-[:PRODUCED_BY]->(k) RETURN eb.strength AS s, k.id AS k", { id: a });
+      assert.deepEqual(made.map((r) => [Number(r["s"]), r["k"]]).sort(), [[-1, ka], [1, ka]]);
+      assert.equal((await run(dueStep, {}, services)).items.find((d: any) => d.claim === a).said.length, 1, "nor is it shown to the fix as something said");
+      // Stale: a result as old as the check's freshness is run again without being due.
+      await recordCheck(g, { claim: c, check: kc, prompt: "q", supports: true, content: "three lines", dream: "old", at: Date.now() - 8 * 86_400_000 });
+      assert.deepEqual((await run(checksStep, { limit: 5 }, services)).items.map((x: any) => x.claim), [c]);
+    });
+
     it("dream/turns stops before reading when the run cannot see the tree: no root concept, or a run an app launched", async () => {
       const services = { conversations: { all: async () => [], get: async () => null }, dataDir: join(tmpdir(), "strut-dream-none"), graph: b };
       assert.equal((await run(turnsStep, {}, services)).count, 0, "the tree is there: nothing new to read");
@@ -310,7 +349,7 @@ describe("the shipped dream workflow", () => {
     assert.deepEqual(flow.steps.map((s) => `${s.id}:${s.type}`), [
       "turns:dream/turns", "hasTurns:if", "find:agent", "cands:dream/candidates", "hasMoments:if", "match:agent", "record:dream/record",
       "hasFacts:if", "facts:agent", "near:dream/neighbours", "hasNear:if", "group:agent", "grouped:foreach", "due:dream/due", "hasDue:if", "fix:agent",
-      "apply:dream/apply", "done:dream/done", "after:dream/claims", "tree:dream/tree", "memfacts:dream/facts", "result:pack",
+      "apply:dream/apply", "checks:dream/checks", "hasChecks:if", "check:foreach", "checked:dream/checked", "done:dream/done", "after:dream/claims", "tree:dream/tree", "memfacts:dream/facts", "result:pack",
     ]);
     const step = (id: string) => flow.steps.find((s) => s.id === id)!;
     const cfg = (id: string) => step(id).config as Record<string, any>;
@@ -322,7 +361,7 @@ describe("the shipped dream workflow", () => {
     // Only the facts stage holds tools: memory's, and no delete or merge. Review gates its one write.
     assert.deepEqual(cfg("facts")["agentTools"], ["graph/resolve", "graph/graph-search", "graph/graph-get", "graph/assert"]);
     assert.equal(cfg("facts")["approve"], "{{ input.review ? params.writes : params.none }}");
-    assert.deepEqual((flow as unknown as { params: Record<string, string[]> }).params, { writes: ["graph/assert"], none: [] });
+    assert.deepEqual((flow as unknown as { params: Record<string, string[]> }).params, { writes: ["graph/assert"], none: [], maxChecks: 0 });
     // A model never reads the whole transcript twice, the claims or the tree: each prompt is its stage's text alone.
     assert.match(cfg("find")["prompt"], /\{\{ turns\.text \}\}/);
     assert.doesNotMatch(cfg("match")["prompt"], /turns\.text/);
@@ -331,10 +370,27 @@ describe("the shipped dream workflow", () => {
     assert.match(cfg("fix")["prompt"], /\{\{ due\.text \}\}/);
     assert.match(cfg("find")["prompt"], /always, never, from now on, or remember|said always/i);
     // Marked read only at the end; a tree and review are its input.
-    assert.deepEqual(step("done").depends, ["apply", "hasFacts", "facts"]);
+    assert.deepEqual(step("done").depends, ["checked", "hasFacts", "facts"]);
+    // Checks: the finding stage writes each correction's request; they run after the fixes, and none by default.
+    assert.ok(cfg("find")["schema"].properties.moments.items.required.includes("prompt"));
+    assert.doesNotMatch(JSON.stringify(cfg("find")["schema"].properties.moments.items.properties.prompt) + cfg("find")["prompt"].split("For a `correction` also give")[1].split("Leave out:")[0], /\bfact/i);
+    assert.deepEqual([step("checks").depends, cfg("checks")["limit"], cfg("check")["body"].config.workflow, step("check").when], ["apply", "{{ params.maxChecks }}", "dream-check", true]);
     assert.equal(cfg("apply")["review"], "{{ input.review }}");
     assert.equal(cfg("turns")["tree"], "{{ input.root }}");
     assert.ok(isSystemWorkflow("dream"));
     assert.deepEqual(JSON.parse(await readFile(join(SYSTEM_DIR, "dream", "automation.json"), "utf-8")).trigger, { every: "day", at: ["04:00"] });
+  });
+
+  it("ships the check workflow beside it: the assistant asked through a workflow named by a param, then a judge with no tool", async () => {
+    const text = await readFile(join(SYSTEM_DIR, "dream-check", "workflow.yaml"), "utf-8");
+    const v = validateWorkflowYaml(text, { registry: await createRegistry([]) });
+    assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
+    const flow = flowFromYaml("dream-check", "v1", text);
+    assert.deepEqual(flow.steps.map((s) => `${s.id}:${s.type}`), ["reply:subflow", "replied:if", "judge:agent", "result:pack"]);
+    const cfg = (id: string) => flow.steps.find((s) => s.id === id)!.config as Record<string, any>;
+    assert.deepEqual([cfg("reply")["workflow"], cfg("reply")["input"], (flow as unknown as { params: unknown }).params], ["{{ params.workflow }}", { prompt: "{{ input.prompt }}" }, { workflow: "orchestrator" }]);
+    assert.deepEqual([cfg("judge")["toolFilter"], cfg("judge")["agentTools"], cfg("judge")["schema"].required], [["none"], undefined, ["supports", "content"]]);
+    assert.doesNotMatch(cfg("judge")["prompt"] + cfg("judge")["system"], /\bfact/i);
+    assert.ok(isSystemWorkflow("dream-check"));
   });
 });

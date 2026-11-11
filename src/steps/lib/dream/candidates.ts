@@ -20,7 +20,7 @@ export default defineStep({
   type: "dream/candidates",
   effect: "read",
   description:
-    "For each moment a dream found ({ session, turn, excerpt, statement, kind, lasting }), the few claims and Concepts of a tree it could belong to: " +
+    "For each moment a dream found ({ session, turn, excerpt, statement, kind, lasting, prompt? }), the few claims and Concepts of a tree it could belong to: " +
     "{ count, items: [{ i, session, turn, at, excerpt, statement, kind, lasting, opened, claims: [{ id, title, text, concept, corrected, group? }], concepts: [{ ref_id, name, description?, lines, opened? }] }], " +
     "facts, facts_count, text, facts_text }. A moment of kind `fact` goes to `facts`: a fact is memory's, not a Concept's. A moment whose turn is not among `turns` is dropped. " +
     "`text` is the items as the sorting prompt reads them. Candidates are picked by shared words and by the Concepts the turn's run opened; nothing here is a decision.",
@@ -45,6 +45,8 @@ export default defineStep({
       const base = {
         session: turn.session, turn: turn.turn, at: turn.at, run: turn.run, ...(turn.said_by ? { said_by: turn.said_by } : {}),
         excerpt: m.excerpt, statement: m.statement.trim(), kind: m.kind, lasting: m.lasting === true,
+        // A request that would put the assistant there again, standing on its own: what a check of the claim asks.
+        ...(typeof m.prompt === "string" && m.prompt.trim() ? { prompt: m.prompt.trim() } : {}),
       };
       if (m.kind === "fact") {
         facts.push(base);

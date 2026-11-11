@@ -5,6 +5,8 @@
  *   Claim —ABOUT→ Concept                      the Concept that holds it, or should
  *   Claim —EVIDENCED_BY {strength, context}→ Evidence
  *   Claim —PARENT_OF→ Claim                    a group: claims of one kind
+ *   Check —TESTS→ Claim                        a request that puts the claim to the test
+ *   Evidence —PRODUCED_BY→ Check               what one run of it found
  *
  * The truth layer's own nouns (`claims.ts`), written through the node and
  * edge writers, so the same on a Ladybug file and on Neo4j. The claim is one
@@ -25,11 +27,15 @@
  * of (claim, source, place, for or against), so the same words read again
  * write nothing. A parent claim holds no evidence: its counts are its
  * children's, added up on read. Nothing is counted in the graph.
+ *
+ * A check's result is evidence too (`context.kind` "check", strength ±1), but
+ * it is not a person speaking: it is kept off every count and off the list
+ * of what was said, and read back as the claim's `check`.
  */
 import { createHash } from "node:crypto";
 import type { GraphBackend } from "./backend.js";
-import { CLAIM_EDGES, CLAIM_TYPE, EVIDENCE_TYPE } from "./claims.js";
-import { boundedName } from "./claims-writer.js";
+import { CHECK_TYPE, CLAIM_EDGES, CLAIM_TYPE, DEFAULT_FRESHNESS_DAYS, EVIDENCE_TYPE, newEpistemicId } from "./claims.js";
+import { boundedName, checkNode } from "./claims-writer.js";
 import { CONCEPT_TYPE } from "./seed-types.js";
 
 const hash = (s: string) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 32);
@@ -270,6 +276,18 @@ export interface ConceptClaim {
   fixes: Array<{ at: string; concept: string; line: string; dream?: string }>;
   /** Corrections after its newest fix (all of them when it has none), its children's included. Counted here. */
   open: number;
+  /** Its check and what each run of it found, the newest first. A result is not something said: it is on no count. */
+  check?: ClaimCheck;
+}
+
+/** A claim's check as a reader sees it: the request, the newest result (absent until it has run), and every result. */
+export interface ClaimCheck {
+  id: string;
+  prompt: string;
+  supports?: boolean;
+  content?: string;
+  at?: string;
+  history: Array<{ supports: boolean; content: string; at: string; dream?: string }>;
 }
 
 const num = (v: unknown): number => (typeof v === "bigint" ? Number(v) : Number((v as { toNumber?: () => number } | null)?.toNumber?.() ?? v ?? 0));
@@ -324,6 +342,8 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
      RETURN c.id AS id, e.content AS excerpt, e.observed_at AS at, eb.strength AS strength, eb.context AS context`,
     { ids },
   );
+  /** What each claim's checks found, by claim: read with the evidence, kept apart from it. */
+  const results = new Map<string, Array<{ check: string; supports: boolean; content: string; at: string; dream?: string }>>();
   for (const r of said) {
     const claim = out.get(String(r["id"]));
     if (!claim) continue;
@@ -334,6 +354,13 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
       context = {};
     }
     const when = new Date(typeof context["ms"] === "number" ? context["ms"] : num(r["at"]) * 1000).toISOString();
+    if (context["kind"] === "check") {
+      results.set(claim.id, [
+        ...(results.get(claim.id) ?? []),
+        { check: String(context["check"] ?? ""), supports: num(r["strength"]) > 0, content: String(r["excerpt"] ?? ""), at: when, ...(typeof context["dream"] === "string" ? { dream: context["dream"] } : {}) },
+      ]);
+      continue;
+    }
     if (context["kind"] === "fix") {
       claim.fixes.push({
         at: when, concept: String(context["concept"] ?? context["page"] ?? ""), line: String(r["excerpt"] ?? ""),
@@ -352,6 +379,14 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
       denies: num(r["strength"]) < 0, ...(outcome ? { outcome } : {}), at: when, ...str("dream"),
       ...(context["lasting"] === true ? { lasting: true } : {}),
     } as SaidRow);
+  }
+  for (const k of await claimChecks(g, ids)) {
+    const claim = out.get(k.claim);
+    // One check a claim: the first written stands.
+    if (!claim || claim.check || !k.prompt) continue;
+    const history = (results.get(claim.id) ?? []).filter((x) => x.check === k.id).sort((a, b) => b.at.localeCompare(a.at)).map(({ check: _, ...x }) => x);
+    const last = history[0];
+    claim.check = { id: k.id, prompt: k.prompt, ...(last ? { supports: last.supports, content: last.content, at: last.at } : {}), history };
   }
   const groups = await g.query(
     `MATCH ${d.node("x", CLAIM_TYPE)}-[po:${q(PARENT_OF)}]->${d.node("c", CLAIM_TYPE)} WHERE c.id IN $ids AND x.id IN $ids AND ${d.edgeLive("po")} RETURN x.id AS parent, c.id AS child`,
@@ -404,6 +439,111 @@ export async function recordFix(g: ClaimGraph, f: { claim: string; concept: stri
   if (node.outcome !== "created") return false;
   const context = JSON.stringify({ kind: "fix", concept: f.concept, ...(f.dream ? { dream: f.dream } : {}), ms: f.at });
   await g.edges.write({ edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: ref, target_ref_id: node.ref_id, properties: { strength: 0, context }, ...edgeBase(f) });
+  return true;
+}
+
+/** The workflow a claim's check runs (`src/workflows/system/dream-check`). */
+export const CHECK_WORKFLOW = "dream-check";
+
+export interface CheckOfClaim {
+  claim: string;
+  id: string;
+  ref_id: string;
+  step_type?: string;
+  /** The check's `step_config`, read: for the dream's own, `{ workflow, input: { prompt, claim } }`. */
+  config: Record<string, unknown>;
+  /** The request it makes, when its config holds one. */
+  prompt?: string;
+  /** When it was written (epoch ms). */
+  made: number;
+  freshness_days: number;
+}
+
+/** The active checks that test these claims, the oldest first. */
+export async function claimChecks(g: ClaimGraph, claims: readonly string[]): Promise<CheckOfClaim[]> {
+  if (!claims.length) return [];
+  const d = g.dialect;
+  const rows = await g.query(
+    `MATCH ${d.node("k", CHECK_TYPE)}-[t:${q(CLAIM_EDGES.TESTS)}]->${d.node("c", CLAIM_TYPE)}
+     WHERE c.id IN $ids AND ${d.edgeLive("t")} AND ${d.live("k")} AND k.retired_at IS NULL
+     RETURN c.id AS claim, k.id AS id, k.ref_id AS ref_id, k.step_type AS step_type, k.step_config AS config, k.created_at AS made, k.freshness_days AS fresh`,
+    { ids: [...claims] },
+  );
+  return rows
+    .map((r) => {
+      let config: Record<string, unknown> = {};
+      try {
+        const v: unknown = JSON.parse(String(r["config"] ?? "{}"));
+        if (v && typeof v === "object" && !Array.isArray(v)) config = v as Record<string, unknown>;
+      } catch {
+        config = {};
+      }
+      const prompt = (config["input"] as { prompt?: unknown } | undefined)?.prompt;
+      return {
+        claim: String(r["claim"]), id: String(r["id"]), ref_id: String(r["ref_id"]), ...(typeof r["step_type"] === "string" ? { step_type: r["step_type"] } : {}), config,
+        ...(typeof prompt === "string" && prompt.trim() ? { prompt: prompt.trim() } : {}), made: num(r["made"]), freshness_days: num(r["fresh"]) || DEFAULT_FRESHNESS_DAYS,
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** A check on a claim, written once: a request that stands on its own and puts the assistant where the claim applies.
+ *  It runs the check workflow, which asks the assistant without letting it act and judges what it would have done.
+ *  Null when the claim already has an active check. */
+export async function writeCheck(g: ClaimGraph, k: { claim: string; prompt: string; namespace?: string; created_by?: string }): Promise<string | null> {
+  const prompt = k.prompt.trim();
+  if (!prompt) throw new Error("a check needs its `prompt`: the request that puts the claim to the test");
+  const d = g.dialect;
+  const rows = await g.query(`MATCH ${d.node("c", CLAIM_TYPE, nsProps(k.namespace, { id: "$id" }))} WHERE ${d.live("c")} RETURN c.ref_id AS r, c.claim_text AS text LIMIT 1`, { ...nsParams(k.namespace), id: k.claim });
+  const ref = rows[0]?.["r"];
+  if (typeof ref !== "string") throw new Error(`no claim "${k.claim}"`);
+  if ((await claimChecks(g, [k.claim])).length) return null;
+  const id = newEpistemicId();
+  const node = await g.nodes.write(
+    {
+      ...checkNode(id, {
+        name: boundedName(prompt), description: "Asks the assistant this, without letting it act, and judges whether what it would have done follows the claim.",
+        step_type: "subflow", step_config: JSON.stringify({ workflow: CHECK_WORKFLOW, input: { prompt, claim: String(rows[0]!["text"] ?? "") } }),
+        // A paid run: when the claim changes, or its newest result is this old (plans/claims.md §4.1).
+        run_when: "run", policy: "on_change", freshness_days: DEFAULT_FRESHNESS_DAYS, ...(k.created_by ? { publisher: k.created_by } : {}),
+      }),
+      ...(k.created_by ? { created_by: k.created_by } : {}),
+    },
+    "create",
+    k.namespace ? { namespace: k.namespace } : {},
+  );
+  await g.edges.write({ edge: CLAIM_EDGES.TESTS, source_ref_id: node.ref_id, target_ref_id: ref, ...edgeBase(k) });
+  return id;
+}
+
+/** What one run of a claim's check found: evidence for the claim (+1) or against it (−1), `PRODUCED_BY` the check.
+ *  Kept apart from what people said (the edge's `context.kind` is "check"), so it is on no count. Once a dream. */
+export async function recordCheck(
+  g: ClaimGraph,
+  r: { claim: string; check: string; prompt: string; supports: boolean; content: string; dream?: string; at: number; namespace?: string; created_by?: string },
+): Promise<boolean> {
+  const ref = await claimRef(g, r.namespace, r.claim);
+  if (!ref) throw new Error(`no claim "${r.claim}"`);
+  const check = (await claimChecks(g, [r.claim])).find((k) => k.id === r.check);
+  if (!check) throw new Error(`no check "${r.check}" on claim "${r.claim}"`);
+  const content = r.content.trim() || (r.supports ? "followed" : "not followed");
+  const node = await g.nodes.write(
+    {
+      type: EVIDENCE_TYPE,
+      // A model judged it: asserted, never observed.
+      data: { id: hash(`${r.claim}|check|${r.check}|${r.dream ?? r.at}`), name: boundedName(content), content, evidence_mode: "asserted", evidence_status: "collected", observed_at: seconds(r.at) },
+      ...(r.created_by ? { created_by: r.created_by } : {}),
+    },
+    "create",
+    r.namespace ? { namespace: r.namespace } : {},
+  );
+  if (node.outcome !== "created") return false;
+  const context = JSON.stringify({ kind: "check", check: r.check, prompt: r.prompt, ...(r.dream ? { dream: r.dream } : {}), ms: r.at });
+  await g.edges.writeMany([
+    { edge: CLAIM_EDGES.PRODUCED_BY, source_ref_id: node.ref_id, target_ref_id: check.ref_id, ...edgeBase(r) },
+    // Last: this is the edge that makes it count.
+    { edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: ref, target_ref_id: node.ref_id, properties: { strength: r.supports ? 1 : -1, context }, ...edgeBase(r) },
+  ]);
   return true;
 }
 

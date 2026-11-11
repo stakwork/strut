@@ -80,7 +80,7 @@ export function boundedName(text: string): string {
 
 /** A Check's node. When it was written is the node's core `created_at`,
  *  the writer's. */
-function checkNode(id: string, data: CheckData) {
+export function checkNode(id: string, data: CheckData) {
   const out: Record<string, unknown> = { id };
   for (const [k, v] of Object.entries(data)) if (v !== undefined && v !== null && v !== "") out[k] = v;
   return { type: CHECK_TYPE, data: out };

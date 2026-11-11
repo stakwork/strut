@@ -51,6 +51,8 @@ export interface Claim {
   fixes?: Array<{ at: string; concept: string; line: string; dream?: string }>;
   /** Corrections since its newest fix. */
   open?: number;
+  /** Its check: the request, the newest result (absent until it has run), and every result, newest first. */
+  check?: { id: string; prompt: string; supports?: boolean; content?: string; at?: string; history: Array<{ supports: boolean; content: string; at: string; dream?: string }> };
 }
 
 /** A Concept edit a dream made for a claim (`dream/apply`). */
@@ -99,6 +101,10 @@ export interface DreamOutput {
   /** The groups made or added to: the group's claim and the claims put under it. */
   groups?: Array<{ claim: string; created?: boolean; grouped?: string[] }>;
   unfixed?: Array<{ claim: string; why: string }>;
+  /** The checks this dream ran, or could not (`skipped` says why), and how many of those that ran held. */
+  checks?: Array<{ claim: string; prompt: string; supports?: boolean; content?: string; skipped?: string }>;
+  check_pass?: number;
+  check_total?: number;
   /** How many claims were due a fix. */
   due?: number;
   /** The facts memory holds after the dream (the newest, capped), and how many there are in all. */

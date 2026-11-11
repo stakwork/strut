@@ -73,9 +73,9 @@ the tree from filling with one line per remark: the Concept gets one general
 line for the group.
 
 Nothing is counted in the graph: `corrected` and `kept` are read off the
-evidence. There is no separate check either. New evidence is the check: a
-correction on a claim after its Concept was changed is a fix that did not
-hold.
+evidence. New evidence is the first check: a correction on a claim after
+its Concept was changed is a fix that did not hold. A claim may also carry
+a `Check` that asks the assistant again ("Checks", below).
 
 The context also names the source, the place in it (`session`, `turn`,
 `run`), who said it, and the dream's own run. That run, with the claim's
@@ -101,16 +101,19 @@ answer, so it cannot skip a step or write.
 | Stage | Who | Reads | Makes |
 | --- | --- | --- | --- |
 | `turns` | code | the turns after the tree's marks, capped (60) | the batch |
-| FIND | model | the batch | moments: the turn, the words, one sentence that should hold, its kind, whether it was said to last |
+| FIND | model | the batch | moments: the turn, the words, one sentence that should hold, its kind, whether it was said to last, and for a correction a request that stands on its own |
 | `candidates` | code | the claims and the tree | for each moment, the few claims and Concepts nearest it, and the Concepts its turn opened |
 | MATCH | model | each moment with its candidates | which claim (or a new one, on which Concept), and the outcome |
-| `record` | code | the sorting | the evidence, checked against the tree |
+| `record` | code | the sorting | the evidence, checked against the tree; a correction's claim gets its check, once |
 | FACTS | model, memory's tools | the moments that are facts | a wrong fact refuted or ended |
 | `neighbours` | code | the claims | for each claim touched, the few it might be one kind with |
 | GROUP | model | those | groups |
 | `due` | code | the counts | the claims due a fix: a correction since the last fix, AND said to last or corrected twice (a group together) |
 | FIX | model | each due claim, what was said, its one Concept | one edit: a line added or replaced, or a new Concept |
 | `apply` | code | the edits | the Concept written (or a proposal), and the fix noted on the claim |
+| `checks` | code | the claims due or changed, and the checks gone stale | the checks to run, capped (`params.maxChecks`, 0: none) |
+| CHECK | the `dream-check` workflow, once per check | the request and the claim | `{ supports, content }`, or why it could not tell |
+| `checked` | code | the results | evidence on the claim, from the check; a check with no verdict writes nothing |
 | `done` | code | | the marks moved |
 | `claims`, `tree`, `facts` | code | the claims, the tree, memory's facts (the newest 200) | what the run's output shows a reader: the causes, the Concepts and the facts as the dream left them |
 
@@ -125,6 +128,39 @@ A fix is noted on its claim (an Evidence of its own kind, never counted as
 something said): when, which Concept, the line. That is the claim's fix time,
 so "came back after its fix" is read off the graph.
 
+## Checks
+
+A check is the truth layer's third noun (`claims.md`): `Check —TESTS→
+Claim`, something that can be run to see whether the claim holds. The
+dream's is a request: "send a message to the hive tribe saying hello" for
+the claim "messages the assistant sends start with [agent]".
+
+- **Written** by `record`, when a correction lands on a claim that has no
+  active check and FIND gave the moment a request that stands on its own
+  (the turn itself leaned on its conversation). One a claim; a moment with
+  no usable request leaves none. `step_type: subflow`, `step_config:
+  { workflow: "dream-check", input: { prompt, claim } }`.
+- **Run** after `apply`: the checks of the claims that are due or that this
+  dream changed (a group's are its children's), then those whose newest
+  result is 7 days old, up to `params.maxChecks`. Each is a run of the
+  `dream-check` system workflow inside the dream's own run: it asks the
+  assistant the request as a one-shot (`params.workflow`, default
+  `orchestrator`), and a model with no tool judges the answer against the
+  claim.
+- **Kept** as Evidence on the claim, +1 or −1, `PRODUCED_BY` the check,
+  with `kind: "check"`, the dream, the request and the time in its context.
+  A check that cannot run (its workflow is missing, a step failed, the
+  request did not put the claim to the test) writes nothing and is reported
+  as skipped: it is never a pass or a fail.
+- **Not a person speaking.** A check's evidence is on none of `corrected`,
+  `kept` and `open`, is not shown as something said, and makes no claim
+  due. Each claim lists it apart, as `check`: the request, the newest
+  result, and the history. The run's output has `checks`, `check_pass` and
+  `check_total` for that dream.
+- **It never acts** is the intent, and is not true yet: the assistant's run
+  is a real one. So `params.maxChecks` is 0 as shipped: a dream writes
+  checks and runs none until how a check runs is decided.
+
 The marks are bookkeeping, so a file per tree
 (`<dataDir>/dream/<tree>.json`) and never the graph. Each tree has its own:
 two trees may be fed by the same conversations. They move only at the end:
@@ -133,8 +169,8 @@ turn, so nothing is written twice.
 
 The run's output is what each stage did: the moments found and how each
 was sorted, the Concept edits (lines lost and gained, for which claim), what
-was passed over and why, the tree's claims and Concepts as they stand, and
-the cost.
+was passed over and why, the checks run and what each found, the tree's
+claims and Concepts as they stand, and the cost.
 
 ## The app
 

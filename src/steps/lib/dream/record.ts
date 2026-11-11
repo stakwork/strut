@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import { OUTCOMES } from "../../../graph/concept-claims.js";
+import { OUTCOMES, isCorrection } from "../../../graph/concept-claims.js";
 import { claimGraph, writerOf } from "./_graph.js";
 
 /**
@@ -14,7 +14,8 @@ export default defineStep({
   description:
     "Write a dream's sorting: for each decision { i, claim? | text + concept, title?, outcome, denies?, why? } the moment `i` (of dream/candidates' items) becomes evidence " +
     "on the existing claim `claim`, or on a new claim `text` about the Concept `concept` (a ref_id of the tree; the root when left out). " +
-    "Returns { recorded, touched: [claim ids], records: [{ i, claim, created, recorded, outcome }], skipped: [{ i, why }] }. " +
+    "Returns { recorded, touched: [claim ids], records: [{ i, claim, created, recorded, outcome, check? }], skipped: [{ i, why }] }. " +
+    "A correction whose moment carries a `prompt` (a request that stands on its own) gives its claim a check, when the claim has none: `check` is its id. " +
     "A claim or Concept that is not this tree's is skipped, never guessed. The same moment recorded twice writes nothing.",
   input: z.object({
     root: z.string().optional().default("Personal"),
@@ -26,7 +27,7 @@ export default defineStep({
   async run(cfg, ctx: StepContext) {
     const { g, namespace, readable } = await claimGraph(ctx);
     if (!readable) throw new Error(`dream/record: this run may not read "${namespace}"`);
-    const { listClaims, treeConcepts, recordSaid } = await import("../../../graph/concept-claims.js");
+    const { listClaims, treeConcepts, recordSaid, writeCheck } = await import("../../../graph/concept-claims.js");
     const known = new Set((await listClaims(g, namespace, cfg.root)).map((c) => c.id));
     const concepts = await treeConcepts(g, namespace, cfg.root);
     const rootRef = concepts[0]?.ref_id;
@@ -66,7 +67,11 @@ export default defineStep({
         });
         known.add(w.claim);
         if (!touched.includes(w.claim)) touched.push(w.claim);
-        records.push({ i: it.i, claim: w.claim, created: w.created, recorded: w.recorded, outcome: d.outcome });
+        // A correction is what a check is written from: the request that led to it, asked again. One check a claim.
+        const check = isCorrection(d.outcome) && typeof it.prompt === "string" && it.prompt.trim()
+          ? await writeCheck(g, { claim: w.claim, prompt: it.prompt, namespace, ...(by ? { created_by: by } : {}) })
+          : null;
+        records.push({ i: it.i, claim: w.claim, created: w.created, recorded: w.recorded, outcome: d.outcome, ...(check ? { check } : {}) });
       } catch (e) {
         skipped.push({ i: it.i, why: e instanceof Error ? e.message : String(e) });
       }

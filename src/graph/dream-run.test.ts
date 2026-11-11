@@ -7,7 +7,10 @@
  * one line on a new Concept and notes the fix. A dream with nothing new calls
  * no model. The same correction again lands on the same claim, is due again
  * (corrected since its fix), and the line is replaced, not added to. With
- * `review` the edit is a proposal and nothing is written.
+ * `review` the edit is a proposal and nothing is written. A correction that
+ * comes with a request of its own leaves its claim a check; with
+ * `maxChecks` the dream runs it through `dream-check` against a stand-in
+ * for the assistant, and what it finds is evidence from the check.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -64,7 +67,9 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
   let calls: string[] = [];
   let prompts: Record<string, string> = {};
   /** The turn the stand-in FIND reports a correction in, and whether the person said it is to last. */
-  let found: { turn: number; excerpt: string; lasting: boolean } | null = null;
+  let found: { turn: number; excerpt: string; lasting: boolean; prompt?: string } | null = null;
+  /** What the stand-in judge of a check answers. */
+  let verdict = false;
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
@@ -86,7 +91,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
         };
         res.writeHead(200, { "content-type": "text/event-stream" });
         if (system.includes("pick out the moments")) {
-          return answer("find", { moments: found ? [{ session: "c-1", turn: found.turn, excerpt: found.excerpt, statement: CLAIM, kind: "correction", lasting: found.lasting }] : [] });
+          return answer("find", { moments: found ? [{ session: "c-1", turn: found.turn, excerpt: found.excerpt, statement: CLAIM, kind: "correction", lasting: found.lasting, prompt: found.prompt ?? "" }] : [] });
         }
         if (system.includes("You sort things a person said")) {
           const claim = new RegExp(`- ([0-9a-f]{32}) \\\\"${CLAIM}`).exec(prompt)?.[1];
@@ -99,6 +104,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
           return answer("fix", { edits: [concept ? { claim, action: "replace", concept, old_line: LINE_1, new_line: LINE_2, first: true, why: "it came back" } : { claim, action: "add_concept", concept_name: "Writing", new_line: LINE_1, why: "no Concept had it" }] });
         }
         if (system.includes("which claims about how an assistant should act")) return answer("group", { groups: [] });
+        if (system.includes("You judge whether an assistant did what a rule says")) return answer("judge", verdict ? { supports: true, content: "three lines" } : { supports: false, content: "eight lines" });
         res.end(toolUse(`toolu_${++n}`, "final_answer", { text: "Hello.", artifacts: [] }));
       });
     });
@@ -218,6 +224,74 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.equal(await docsOf("Writing"), LINE_2, "replaced, not added to");
     const again = back["output"]["claims"][0];
     assert.deepEqual([again.corrected, again.open, again.fixes.length], [2, 0, 2]);
+  });
+
+  it("a correction leaves its claim one check; run, it asks a sealed stand-in through dream-check and its verdict is evidence from the check, on no count; a check that fails writes nothing", async () => {
+    // The assistant's stand-in: the same input and output, sealed as the orchestrator is, and no model.
+    const ws = new WorkspaceManager(dir);
+    await ws.publishWorkflow("stand-in", "v1", "name: stand-in\nsealed: true\ninput:\n  prompt: { type: string }\nsteps:\n  - id: result\n    type: pack\n    config:\n      text: \"Here is a summary of {{ input.prompt }}, in eight lines.\"\n      cost: 0\n");
+    const PROMPT = "Summarise the notes from Monday's planning meeting";
+    const checking = (workflow: string) => ({ params: { maxChecks: 5 }, paramOverrides: { "dream-check": { workflow } } });
+    const run = async (extra: Record<string, unknown> = {}) => {
+      calls = [];
+      const r = await runOf("dream", { input: {}, ...extra });
+      assert.equal(r["status"], "success", JSON.stringify(r).slice(0, 1500));
+      return r;
+    };
+    const checkNodes = () => b.query("MATCH (k:Node {node_type: 'Check'})-[:TESTS]->(c:Node {node_type: 'Claim'}) RETURN k.id AS id, c.id AS claim, k.created_at AS at, k.created_by AS by, k.publisher AS publisher, k.step_type AS type, k.step_config AS config");
+    const results = () => b.query("MATCH (c:Node {node_type: 'Claim'})-[eb:EVIDENCED_BY]->(e:Node)-[:PRODUCED_BY]->(k:Node {node_type: 'Check'}) RETURN eb.strength AS s, eb.context AS context, e.content AS content, k.id AS k");
+
+    await say("summarise my notes from Monday");
+    await say("too long, always keep summaries to three lines");
+    found = { turn: 1, excerpt: "too long, always keep summaries to three lines", lasting: true, prompt: PROMPT };
+    // As shipped: the check is written, and none runs.
+    const first = await run();
+    assert.deepEqual(calls, ["find", "match", "fix"], "no check runs by default");
+    assert.match(prompts["find"]!, /also give `prompt`/);
+    const [node] = await checkNodes();
+    const out = first["output"] as Record<string, any>;
+    const claim = out["claims"][0];
+    assert.deepEqual([node!["claim"], node!["by"], node!["publisher"], node!["type"], JSON.parse(String(node!["config"]))], [claim.id, SYSTEM_WRITER, SYSTEM_WRITER, "subflow", { workflow: "dream-check", input: { prompt: PROMPT, claim: CLAIM } }]);
+    assert.ok(Number(node!["at"]) > 0, "a Check is stamped with when it was written");
+    assert.deepEqual([out["records"][0].check, out["checks"], out["check_pass"], out["check_total"], claim.check], [node!["id"], [], 0, 0, { id: node!["id"], prompt: PROMPT, history: [] }]);
+
+    // Corrected again, and checked: a check that fails (no such workflow) is skipped, and nothing is written.
+    await say("again, too long");
+    found = { turn: 2, excerpt: "again, too long", lasting: false, prompt: "Summarise something else" };
+    const broken = await run(checking("no-such-workflow"));
+    assert.deepEqual(calls, ["find", "match", "fix"], "nothing to judge");
+    assert.equal((await checkNodes()).length, 1, "a second dream makes no second check");
+    const [skipped] = broken["output"]["checks"];
+    assert.deepEqual([skipped.claim, skipped.prompt, skipped.supports, typeof skipped.skipped, broken["output"]["check_total"]], [claim.id, PROMPT, undefined, "string", 0]);
+    assert.match(skipped.skipped, /no-such-workflow/);
+    assert.deepEqual([await results(), broken["output"]["claims"][0].check.history], [[], []]);
+
+    // Against: −1 from the check. The claim's counts are what people said, as before.
+    await say("still too long");
+    found = { turn: 3, excerpt: "still too long", lasting: false };
+    verdict = false;
+    const failed = await run(checking("stand-in"));
+    assert.deepEqual(calls, ["find", "match", "fix", "judge"]);
+    assert.match(prompts["judge"]!, /THE RULE: Summaries are three lines or fewer/);
+    assert.match(prompts["judge"]!, /in eight lines/, "the judge reads what the sealed stand-in answered");
+    const o = failed["output"] as Record<string, any>;
+    assert.deepEqual([o["checks"], o["check_pass"], o["check_total"]], [[{ claim: claim.id, prompt: PROMPT, supports: false, content: "eight lines" }], 0, 1]);
+    const [ev] = await results();
+    const context = JSON.parse(String(ev!["context"]));
+    assert.deepEqual([Number(ev!["s"]), ev!["content"], ev!["k"], context.kind, context.dream, context.prompt, typeof context.ms], [-1, "eight lines", node!["id"], "check", failed["runId"], PROMPT, "number"]);
+    const c1 = o["claims"][0];
+    assert.deepEqual([c1.corrected, c1.kept, c1.evidence.length, c1.evidence.every((e: any) => e.session === "c-1")], [3, 0, 3, true], "the check's result is on no count and not among what was said");
+    assert.deepEqual([c1.check.supports, c1.check.content, c1.check.history.map((h: any) => [h.supports, h.dream])], [false, "eight lines", [[false, failed["runId"]]]]);
+
+    // For: +1, the newest on top.
+    await say("too long again");
+    found = { turn: 4, excerpt: "too long again", lasting: false };
+    verdict = true;
+    const held = await run(checking("stand-in"));
+    const c2 = held["output"]["claims"][0];
+    assert.deepEqual([held["output"]["check_pass"], held["output"]["check_total"], c2.corrected, c2.check.supports, c2.check.history.map((h: any) => h.supports)], [1, 1, 4, true, [true, false]]);
+    assert.deepEqual((await results()).map((r) => Number(r["s"])).sort(), [-1, 1]);
+    assert.equal((await checkNodes()).length, 1);
   });
 
   it("one remark alone is recorded and changes no concept; a tree with no root Concept is not dreamt on", async () => {
