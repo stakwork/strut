@@ -228,6 +228,10 @@ seller's junk is never shown nor paid:
    purchase `USER_REJECTED`. For a payment already made, it does nothing. The
    host sends the cancel when it stopped waiting: the person chose the QR
    code, the page went away, or the invoice ended.
+8. Recommended, for a stranger's page (specs/API.md §17.9): refuse any
+   navigation of a subframe away from `about:srcdoc` or `about:blank`. strut's
+   UI holds the stranger's frame to a CSP that sends nothing anywhere, but a
+   frame may still navigate itself, which only the web view can stop.
 
 **What strut's UI does with the answer** (`readCreditReply`; the
 `credit_replies` vectors, §7):
