@@ -49,7 +49,7 @@
 > - A moved commit whose digest did not move deploys nothing (a change to
 >   `.github/`, say).
 >
-> **Work item 3 BUILT (stakwork/strut#PRNUM, open at writing):**
+> **Work item 3 BUILT (stakwork/strut#622, open at writing):**
 > - `src/packages/repos.ts` and the routes `/packages/repos[/:publisher/:name
 >   [/diff|commit|pull|retire]]` (specs/API.md §16, "Working on a
 >   repository");
@@ -707,7 +707,7 @@ players before it needs git, visitors (4) moves up to second.
    `git/checkout`'s bare cache,
    `#path`, the commit recorded in `upstream`, `STRUT_SERVE` and
    `STRUT_PACKAGES` taking `git+`, the poll and `POST /serve/sync`.
-3. **The round trip.** *BUILT, stakwork/strut#PRNUM.* Open repo, Create
+3. **The round trip.** *BUILT, stakwork/strut#622.* Open repo, Create
    repo, Commit, Pull, the `repo` door, `package/commit` as a proposal, the
    Packages tab's rows for a repo.
 4. **Signed-in visitors.** The challenge, `POST /visitors/session`, role
