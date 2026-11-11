@@ -3845,10 +3845,10 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 | Route | |
 | --- | --- |
 | `GET /earnings/wallet[?check=1]` | which wallet is set and what it can do, never a credential; `check=1` also reads its balance |
-| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check` |
+| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check`. `409 wallet_from_env:` when the environment names the wallet |
 
 ```json
-{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
   "from": "api", "setAt": "2026-11-10T18:50:08.000Z",
   "check": { "ok": true, "msat": 1250000 } }
 ```
@@ -3858,15 +3858,17 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 a pay credential is on file, so Withdraw can pay (§19). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
-`api`. `note` says when the environment names a wallet, which replaces this
-one at the next boot. `check` is `{ ok: true, msat }` or `{ ok: false,
+`api`. `env: true` (with a `note` saying so) when the environment names
+the wallet: the deployment owns it and writes it again at every boot, so
+`PUT` answers `409` and the Earnings tab shows it with no Change or Remove.
+`check` is `{ ok: true, msat }` or `{ ok: false,
 error }`, the wallet's balance read within 5 s; a failed check never
 refuses the save.
 
 `PUT` bodies:
 
 ```json
-{ "provider": "sphinx", "url": "http://treasury:3000", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>" }
 { "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
 { "provider": null }
 ```
@@ -3930,7 +3932,7 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
   "pending": [{ "paymentHash": "<hex>", "msat": 20000000, "maxFeeMsat": 100000, "purpose": "withdrawal", "payer": "sphinx:http://treasury:3000",
     "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
-  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
     "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
     "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
 }

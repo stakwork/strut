@@ -369,10 +369,16 @@ function WalletForm(props: { onSaved: () => void }) {
               {info.check && (info.check.ok ? <span class="auto-hint">answers: {fmtSats(info.check.msat)}</span> : <span class="auto-hint earnings-blocked">{info.check.error}</span>)}
             </>
           )}
-          {info.note && <div class="auto-hint">{info.note}</div>}
+          {info.note && !info.env && <div class="auto-hint">{info.note}</div>}
         </div>
       )}
-      {!editing && (
+      {info?.env && (
+        <div class="auto-hint">
+          Set by this server's deployment (<code>LIGHTNING_*</code> in its environment), which writes it again at every boot: change it there.
+          {!info.pay && " Withdraw needs a pay credential there too."}
+        </div>
+      )}
+      {!editing && !info?.env && (
         <div class="earnings-wallet-actions">
           <button class="btn btn-sm" onClick={() => setEditing(true)}>{info?.provider ? "Change" : "Set a wallet"}</button>
           {info?.provider && !info.pay && <button class="btn btn-sm" onClick={() => setEditing(true)}>Add a pay credential</button>}
@@ -394,7 +400,7 @@ function WalletForm(props: { onSaved: () => void }) {
           </label>
           {provider === "sphinx" ? (
             <>
-              {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury:8090", false)}
+              {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury.sphinx:8095", false)}
               {field("token", "Receive token", sameProvider ? "keep as it is" : "the daemon's receive token")}
               {field("payToken", "Pay token", info?.pay && sameProvider ? "keep as it is" : "the daemon's pay token — Withdraw needs it")}
             </>

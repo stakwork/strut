@@ -3187,6 +3187,8 @@ export interface WalletInfo {
   relays?: string[];
   from?: "env" | "api";
   setAt?: string;
+  /** The environment names the wallet: the deployment owns it, and `PUT` is refused. */
+  env?: boolean;
   note?: string;
   check?: { ok: true; msat: number } | { ok: false; error: string };
 }
