@@ -3,8 +3,31 @@
 > **Status (2026-11-10): proposed; its open questions RULED the same day**
 > ("Rulings", at the end, folded into the sections they touch). From one
 > design conversation with the owner. Rows in "Decided" marked **owner**
-> are the owner's words; every other row is *proposed*. Nothing here is
-> built. Written against strut `main` @8f231964.
+> are the owner's words; every other row is *proposed*. Written against
+> strut `main` @8f231964.
+>
+> **Work item 1 BUILT (stakwork/strut#617, open at writing):**
+> - `serve.yaml` (`src/packages/serve.ts`);
+> - `STRUT_SERVE` over a name, `pk:` and `file:`, installed through the
+>   distro's door and followed on the subscriptions' poll and ping;
+> - `/` as the app (`pickPage`, title, favicon, `og:`), `/?shell=1`;
+> - `GET /serve`, and `PUT /public-view` refused on a served box;
+> - `deploy/app/`;
+> - `serve` on a package build, so a strut can publish a servable release
+>   (API only: the Packages tab has no field for it yet).
+>
+> Choices beyond the text, from the PR:
+> - `serve.yaml` is required when serving.
+> - Its `app` must be an app of the package.
+> - The public view it writes is the whole record.
+> - A deploy that fails after the install leaves the package's items
+>   updated but the app and the public view as they were.
+> - Changing `STRUT_SERVE` to another package leaves the earlier one
+>   installed.
+> - `og:image` is served at `GET /serve/image`.
+> - The favicon is a `data:` URL in the page.
+>
+> `STRUT_SERVE_POLL_MINUTES` and `POST /serve/sync` stay with item 2.
 >
 > Companion to:
 > - `marketplace.md`: the package format (§1), the `git+` source and the
@@ -592,7 +615,8 @@ brings on its own domain. The app does not change.
 In order (ruled 2). Each one is useful alone. If the first real game needs
 players before it needs git, visitors (4) moves up to second.
 
-1. **Serve mode over the refs that exist.** `serve.yaml` (format, check,
+1. **Serve mode over the refs that exist.** *BUILT, stakwork/strut#617.*
+   `serve.yaml` (format, check,
    apply), `STRUT_SERVE` over `pk:` and `file:`, the distro's door,
    following a `pk:` ref as a subscription, `/` as the app (the meta,
    `pickPage`, title, favicon, `og:`), `/?shell=1`, `GET /serve`,
