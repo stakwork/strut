@@ -55,6 +55,7 @@ import { decodeIdentifier, L402Error, macaroonFromBase64, readCaveats } from "./
 import { microsToUsd, usdToMicros } from "./payments/ledger.js";
 import { satsForUsd, type ExchangeRate } from "./payments/rate.js";
 import type { WithdrawAnswer } from "./payments/withdrawals.js";
+import type { RunControl } from "./run-control.js";
 
 /** The file, under the data directory, beside `payments.json`. */
 export const ENTITLEMENTS_FILE = "entitlements.json";
@@ -72,8 +73,22 @@ export const REMOTE_CALL_TIMEOUT_MS = 90_000;
 /** A seller's sats for the dollars asked may be this much over this
  *  server's own rate, no more (the two read different sources). */
 export const QUOTE_TOLERANCE = 0.1;
-/** Reads of a remote run that fail in a row before the step gives up. */
-export const RUN_READ_FAILURES_MAX = 6;
+/** A failed read of a remote run is tried again after a wait that doubles,
+ *  up to this: a seller restarting (a nightly update, a proxy's 502) is
+ *  waited out, never given up on — the run is the seller's, and charged. */
+export const RUN_READ_BACKOFF_MAX_MS = 30_000;
+/** A run the seller reports `stale` (cut off there, not resumed) this many
+ *  reads in a row (~5 min) is reported as it stands. */
+export const STALE_READS_MAX = 12;
+/** Tries of one launch (the same `key`, so the seller returns the run it
+ *  already started): a 429 at its in-flight limit, a drain's 503, a lost 202. */
+export const LAUNCH_ATTEMPTS = 5;
+/** A `Retry-After` longer than this (a daily cap spent until midnight) is
+ *  not waited for: the step says so. */
+export const LAUNCH_RETRY_AFTER_MAX_S = 120;
+/** A purchase sent whose invoice ended this long ago and that the seller
+ *  never answered for is ended when the payer says it never left or failed. */
+export const PURCHASE_STUCK_AFTER_MS = 60 * 60_000;
 /** A remote run's token is kept this long at most: a step that never let
  *  go of one (it failed while the run went on) cannot resume it later
  *  than boot's auto-resume would (7 days). */
@@ -95,7 +110,10 @@ export type RemoteErrorCode =
   | "bad_challenge"
   | "quote_too_high"
   | "payment_failed"
-  | "not_selling";
+  | "not_selling"
+  | "failed_charged"
+  | "may_have_run"
+  | "spend_refused";
 
 /** What the seller asked, on a 402. */
 export interface SellerPrice {
@@ -121,14 +139,21 @@ export class RemoteError extends Error {
 /** A seller's base URL from what a person or a model wrote: https, no
  *  credentials, no query, no trailing `/` or `/public`. Its origin is
  *  lower-cased and its default port dropped, so one seller is one record. */
-export function sellerOf(raw: string): string {
+export function sellerOf(raw: string, o: { allowHttp?: boolean } = {}): string {
   let u: URL;
   try {
     u = new URL(String(raw).trim());
   } catch {
     throw new RemoteError("bad_url", `${JSON.stringify(String(raw).slice(0, 200))} is not a URL: name the seller's strut server, https://…`);
   }
-  if (u.protocol !== "https:") throw new RemoteError("bad_url", `${u.origin} is not https: the credit this strut server holds at a seller is a bearer credential, sent over https only`);
+  const ok = u.protocol === "https:" || (o.allowHttp && u.protocol === "http:");
+  if (!ok) {
+    throw new RemoteError(
+      "bad_url",
+      `${u.origin} is not https: the credit this strut server holds at a seller is a bearer credential, sent over https only` +
+        (u.protocol === "http:" ? " (STRUT_REMOTE_LOCAL=1 allows http and local addresses, for a dev box or a LAN)" : ""),
+    );
+  }
   if (u.username || u.password) throw new RemoteError("bad_url", "a seller's URL carries no credentials");
   let path = u.pathname.replace(/\/+$/, "");
   if (path.endsWith("/public")) path = path.slice(0, -"/public".length);
@@ -277,20 +302,26 @@ export interface BuyCreditResult {
 }
 
 export interface RemoteCapability {
+  /** The seller's base URL as this strut keys it (`sellerOf`, with
+   *  `STRUT_REMOTE_LOCAL`'s http allowed when set). */
+  seller(url: string): string;
   /** What the seller sells (`GET /public`'s `runnable`) and what is held there. */
   list(url: string): Promise<RemoteListing>;
   /** The credit held at the seller and its balance there. */
   credit(url: string): Promise<RemoteCredit>;
-  /** Launch a workflow the seller sells, presenting the credit held. */
-  launch(url: string, workflow: string, o: { input?: unknown; key: string }): Promise<RemoteRunHandle>;
+  /** Launch a workflow the seller sells, presenting the credit held. A 429,
+   *  a 5xx or no answer is tried again under the same `key`. `control`: the
+   *  calling run's, refused when its tree is a stranger's or a peer's. */
+  launch(url: string, workflow: string, o: { input?: unknown; key: string; control?: RunControl; signal?: AbortSignal }): Promise<RemoteRunHandle>;
   /** Wait for a launched run to end: its view. */
   wait(h: Pick<RemoteRunHandle, "seller" | "workflow" | "runId">, o?: { signal?: AbortSignal }): Promise<RemoteRunView>;
   /** Cancel a launched run (best effort). */
   cancel(h: Pick<RemoteRunHandle, "seller" | "workflow" | "runId">): Promise<void>;
   /** Let go of a launched run's token. */
   release(h: Pick<RemoteRunHandle, "seller" | "workflow" | "runId">): Promise<void>;
-  /** Call a tool the seller sells, presenting the credit held. */
-  call(url: string, type: string, config: unknown): Promise<{ seller: string; type: string; output: unknown; credit?: RemoteRunHandle["credit"] & { charged_usd?: number } }>;
+  /** Call a tool the seller sells, presenting the credit held. Never tried
+   *  again: the seller's door takes no key. */
+  call(url: string, type: string, config: unknown, o?: { control?: RunControl }): Promise<{ seller: string; type: string; output: unknown; credit?: RemoteRunHandle["credit"] & { charged_usd?: number } }>;
   /** This server's wallet can pay (never the payer itself). */
   canPay(): Promise<boolean>;
   /** The door `remote/buy-credit` runs: only for an accepted proposal. */
@@ -312,7 +343,21 @@ export interface RemoteDeps {
   proposal: (id: string) => Promise<Proposal | null>;
   /** This server's rate, to hold a seller's quote to. */
   rate?: () => Promise<ExchangeRate>;
+  /** `STRUT_REMOTE_LOCAL=1`: an http seller allowed (the http's guard lets
+   *  loopback and private addresses by). */
+  allowLocal?: boolean;
+  /** Why the run `control` belongs to may not spend credit bought here (a
+   *  stranger's public run, a run a peer launched with no person's
+   *  credential, or a run either started), else undefined. */
+  spendRefusal?: (control: RunControl | undefined) => string | undefined;
+  /** Where a payment sent for a purchase stands at the payer: `settled`,
+   *  `pending`, or `gone` (failed, or it never left) — what ends a purchase
+   *  the seller never answers for. */
+  sendState?: (paymentHash: string) => Promise<"settled" | "pending" | "gone">;
   now?: () => number;
+  /** The first retry's wait, doubled each time (tests: less). A seller's
+   *  `Retry-After` is honoured as it says. */
+  retryBaseMs?: number;
 }
 
 export interface RemoteService {
@@ -321,6 +366,9 @@ export interface RemoteService {
   check(): Promise<Array<{ seller: string; state: "stored" | "pending" | "ended" | "skipped" | "unread"; error?: string }>>;
   /** What is held and being bought, per seller (an admin's read): no token. */
   held(): Promise<Array<{ seller: string; credit?: Omit<HeldCredit, "macaroon" | "preimage">; purchase?: Omit<Purchase, "macaroon" | "invoice">; runs: number }>>;
+  /** An admin drops the purchase still out at a seller (`DELETE
+   *  /remote/purchases?seller=`): for one the seller will never answer for. */
+  dropPurchase(url: string): Promise<{ seller: string; dropped?: Omit<Purchase, "macaroon" | "invoice"> }>;
   start(ms?: number): void;
   /** Stop the minute's claims, once a claim and the writes in flight are
    *  done (`close()` awaits it: a token being stored reaches the file). */
@@ -329,6 +377,24 @@ export interface RemoteService {
 
 export function createRemote(deps: RemoteDeps): RemoteService {
   const now = deps.now ?? Date.now;
+  const sellerFor = (url: string) => sellerOf(url, { allowHttp: !!deps.allowLocal });
+  const unit = deps.retryBaseMs ?? 1000;
+  /** Wait `ms`, or less once `signal` aborts. Referenced: a step waits on it. */
+  const sleep = (ms: number, signal?: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  const refuseSpend = (control: RunControl | undefined) => {
+    const why = deps.spendRefusal?.(control);
+    if (why) throw new RemoteError("spend_refused", why);
+  };
   const writes = new Map<string, Promise<unknown>>();
   const buying = new Map<string, Promise<unknown>>();
   let timer: NodeJS.Timeout | undefined;
@@ -435,6 +501,18 @@ export function createRemote(deps: RemoteDeps): RemoteService {
       return new RemoteError("token_refused", `${seller} refused the credit this strut server holds there (${said || "invalid_token"}): it buys new credit with remote/buy-credit`, { status: 401 });
     }
     if (r.status === 404) return new RemoteError("not_found", `${seller} does not sell ${what} (404${said ? `: ${said}` : ""}): read what it sells with remote/list`, { status: 404 });
+    // A tool the seller ran that failed, overran or answered too much: it
+    // was CHARGED its cost (§17.7). Not "try again": the same call fails the
+    // same way, and pays again.
+    const code = (r.body as { code?: unknown } | undefined)?.code;
+    if ((r.status === 500 || r.status === 504) && (code === "step_failed" || code === "result_too_big" || code === "timeout")) {
+      const charged = (r.body as { credit?: { charged_usd?: unknown } }).credit?.charged_usd;
+      return new RemoteError(
+        "failed_charged",
+        `${seller} ran ${what} and it failed (${said || code}); it was charged its cost${typeof charged === "number" ? ` (${usdText(charged)})` : ""} — the same call fails the same way and pays again, so change it before calling again`,
+        { status: r.status },
+      );
+    }
     const after = retryAfter(r);
     if (r.status === 429 || r.status >= 500) {
       return new RemoteError("remote_unavailable", `${seller} answered ${r.status} for ${what}${said ? `: ${said}` : ""}${after !== undefined ? ` (try again in ${after} s)` : ""}`, { status: r.status, ...(after !== undefined ? { retryAfter: after } : {}) });
@@ -580,8 +658,10 @@ export function createRemote(deps: RemoteDeps): RemoteService {
   };
 
   const capability: RemoteCapability = {
+    seller: (url) => sellerFor(url),
+
     async list(url) {
-      const seller = sellerOf(url);
+      const seller = sellerFor(url);
       const r = await ask(seller, "GET", "/public");
       if (r.status !== 200 || !r.body || typeof r.body !== "object") {
         if (r.status === 404 || r.status === 200) throw new RemoteError("not_found", `${seller} serves no public view (GET /public answered ${r.status}): it is not a strut server that sells runs`);
@@ -604,18 +684,50 @@ export function createRemote(deps: RemoteDeps): RemoteService {
     },
 
     async credit(url) {
-      const seller = sellerOf(url);
+      const seller = sellerFor(url);
       return balance(seller, await read(seller));
     },
 
     async launch(url, workflow, o) {
-      const seller = sellerOf(url);
-      const held = (await read(seller)).credit;
-      const r = await ask(seller, "POST", `/public/workflows/${enc(workflow)}/run`, {
-        body: { ...(o.input !== undefined ? { input: o.input } : {}), key: o.key },
-        ...(held ? { authorization: credential(held) } : {}),
-      });
-      if (r.status !== 202) throw refusal(seller, `a run of ${workflow}`, r, held);
+      const seller = sellerFor(url);
+      refuseSpend(o.control);
+      const what = `a run of ${workflow}`;
+      let held = (await read(seller)).credit;
+      let swapped = false;
+      let r: HttpResponse | undefined;
+      // The same key every try: the seller returns the run it started while
+      // that run is in flight, so a retry after a lost 202 is the same run.
+      for (let attempt = 1; ; attempt++) {
+        let lost: RemoteError | undefined;
+        try {
+          r = await ask(seller, "POST", `/public/workflows/${enc(workflow)}/run`, {
+            body: { ...(o.input !== undefined ? { input: o.input } : {}), key: o.key },
+            ...(held ? { authorization: credential(held) } : {}),
+          });
+        } catch (err) {
+          lost = err as RemoteError;
+        }
+        if (r && r.status === 202) break;
+        // A token stored between the read and the request (a purchase that
+        // settled) carried this one: the seller says `replaced`. Once.
+        if (r?.status === 402 && (r.body as { reason?: unknown })?.reason === "replaced" && !swapped) {
+          const now2 = (await read(seller)).credit;
+          if (now2 && now2.tokenId !== held?.tokenId) {
+            held = now2;
+            swapped = true;
+            r = undefined;
+            continue;
+          }
+        }
+        const after = r ? retryAfter(r) : undefined;
+        const transient = !r || r.status === 429 || r.status >= 500;
+        if (!transient || attempt >= LAUNCH_ATTEMPTS || (after !== undefined && after > LAUNCH_RETRY_AFTER_MAX_S) || o.signal?.aborted) {
+          if (!r) throw lost ?? new RemoteError("remote_unavailable", `${seller} could not be reached`);
+          throw refusal(seller, what, r, held);
+        }
+        await sleep(after !== undefined ? after * 1000 : unit * 2 ** attempt, o.signal);
+        r = undefined;
+      }
       const b = r.body as { runId?: unknown; token?: unknown; existing?: unknown; credit?: RemoteRunHandle["credit"] };
       if (typeof b?.runId !== "string" || typeof b.token !== "string") throw new RemoteError("remote_refused", `${seller} answered 202 without a run id and its token`);
       const handle: RemoteRunHandle = { seller, workflow, runId: b.runId, ...(b.existing === true ? { existing: true } : {}), ...(b.credit && typeof b.credit === "object" ? { credit: b.credit } : {}) };
@@ -625,38 +737,44 @@ export function createRemote(deps: RemoteDeps): RemoteService {
     },
 
     async wait(h, o = {}) {
-      const seller = sellerOf(h.seller);
+      const seller = sellerFor(h.seller);
       const token = (await read(seller)).runs?.[runKey(h)]?.token;
       if (!token) throw new RemoteError("run_unknown", `this strut server holds no token for run ${h.runId} of ${h.workflow} at ${seller}: it cannot read it`);
       let failures = 0;
       let terminalSeen = 0;
+      let staleSeen = 0;
+      // The run is the seller's and is charged whether or not this strut
+      // reads it: a seller that does not answer (restarting, a proxy's 502,
+      // its in-flight limit) is waited out for as long as this run waits.
+      // Only the seller saying it does not know the run (404) or the token
+      // (401, 403) ends the wait; the run's cancel aborts it.
       for (;;) {
         if (o.signal?.aborted) throw new RemoteError("remote_refused", "the wait was stopped");
-        let r: HttpResponse;
+        let r: HttpResponse | undefined;
         try {
           r = await ask(seller, "GET", `/public/workflows/${enc(h.workflow)}/runs/${enc(h.runId)}?wait=${RUN_READ_WAIT_S}`, { authorization: `Bearer ${token}` });
-        } catch (err) {
-          if (++failures >= RUN_READ_FAILURES_MAX) throw err;
-          await new Promise((res) => setTimeout(res, Math.min(30_000, 1000 * 2 ** failures)));
-          continue;
+        } catch {
+          r = undefined;
         }
-        if (r.status === 404) throw new RemoteError("run_unknown", `${seller} does not know run ${h.runId} of ${h.workflow} (404)`);
-        if (r.status !== 200) {
-          if (r.status >= 500 || r.status === 429) {
-            if (++failures >= RUN_READ_FAILURES_MAX) throw refusal(seller, `run ${h.runId} of ${h.workflow}`, r, undefined);
-            await new Promise((res) => setTimeout(res, Math.min(30_000, 1000 * 2 ** failures)));
-            continue;
-          }
-          throw refusal(seller, `run ${h.runId} of ${h.workflow}`, r, undefined);
+        if (r && (r.status === 404 || r.status === 401 || r.status === 403)) {
+          throw new RemoteError("run_unknown", `${seller} does not know run ${h.runId} of ${h.workflow} (${r.status}${errorText(r) ? `: ${errorText(r)}` : ""})`, { status: r.status });
+        }
+        if (!r || r.status !== 200) {
+          failures++;
+          const after = r ? retryAfter(r) : undefined;
+          await sleep(Math.min(RUN_READ_BACKOFF_MAX_MS, after !== undefined ? after * 1000 : unit * 2 ** Math.min(failures, 5)), o.signal);
+          continue;
         }
         failures = 0;
         const v = r.body as Record<string, unknown>;
         const status = typeof v["status"] === "string" ? (v["status"] as string) : "running";
         const terminal = status === "success" || status === "error" || status === "cancelled";
+        staleSeen = status === "stale" ? staleSeen + 1 : 0;
         // Done once it was charged (§17.4: `charged` appears when the run
         // ended and the ledger recorded it); a seller that never says so
-        // is taken at its status after a few reads.
-        if (typeof v["charged"] === "number" || (terminal && ++terminalSeen >= 3)) {
+        // is taken at its status after a few reads, and a run cut off
+        // there that nothing resumes after ~5 minutes.
+        if (typeof v["charged"] === "number" || (terminal && ++terminalSeen >= 3) || staleSeen >= STALE_READS_MAX) {
           const err = v["error"] as { message?: unknown } | undefined;
           return {
             status,
@@ -667,19 +785,19 @@ export function createRemote(deps: RemoteDeps): RemoteService {
             ...(v["totals"] !== undefined ? { totals: v["totals"] } : {}),
           };
         }
-        if (terminal) await new Promise((res) => setTimeout(res, 500));
+        if (terminal) await sleep(500, o.signal);
       }
     },
 
     async cancel(h) {
-      const seller = sellerOf(h.seller);
+      const seller = sellerFor(h.seller);
       const token = (await read(seller)).runs?.[runKey(h)]?.token;
       if (!token) return;
       await ask(seller, "POST", `/public/workflows/${enc(h.workflow)}/runs/${enc(h.runId)}/cancel`, { authorization: `Bearer ${token}` }).catch(() => undefined);
     },
 
     async release(h) {
-      const seller = sellerOf(h.seller);
+      const seller = sellerFor(h.seller);
       await update(seller, (rec) => {
         if (!rec.runs?.[runKey(h)]) return rec;
         const { [runKey(h)]: _gone, ...runs } = rec.runs;
@@ -687,14 +805,35 @@ export function createRemote(deps: RemoteDeps): RemoteService {
       });
     },
 
-    async call(url, type, config) {
-      const seller = sellerOf(url);
-      const held = (await read(seller)).credit;
-      const r = await ask(seller, "POST", `/public/steps/${typePath(type)}/run`, {
-        body: { config: config ?? {} },
-        ...(held ? { authorization: credential(held) } : {}),
-        timeout: REMOTE_CALL_TIMEOUT_MS,
-      });
+    async call(url, type, config, o = {}) {
+      const seller = sellerFor(url);
+      refuseSpend(o.control);
+      let held = (await read(seller)).credit;
+      const send = async () => {
+        try {
+          return await ask(seller, "POST", `/public/steps/${typePath(type)}/run`, {
+            body: { config: config ?? {} },
+            ...(held ? { authorization: credential(held) } : {}),
+            timeout: REMOTE_CALL_TIMEOUT_MS,
+          });
+        } catch (err) {
+          // The POST may have reached the seller: no key there, so never sent again.
+          throw new RemoteError(
+            "may_have_run",
+            `${seller} did not answer the call of ${type} (${err instanceof Error ? err.message : String(err)}): it may have run and been charged — read the credit left with remote/list before calling again`,
+          );
+        }
+      };
+      let r = await send();
+      // A token stored between the read and the request carried this one
+      // (`replaced`): the call did not run, so it goes once more with the new.
+      if (r.status === 402 && (r.body as { reason?: unknown })?.reason === "replaced") {
+        const now2 = (await read(seller)).credit;
+        if (now2 && now2.tokenId !== held?.tokenId) {
+          held = now2;
+          r = await send();
+        }
+      }
       if (r.status !== 200) throw refusal(seller, `a call of ${type}`, r, held);
       const b = (r.body ?? {}) as { output?: unknown; credit?: Record<string, unknown> };
       return { seller, type, output: b.output, ...(b.credit && typeof b.credit === "object" ? { credit: b.credit } : {}) };
@@ -703,14 +842,14 @@ export function createRemote(deps: RemoteDeps): RemoteService {
     canPay: () => deps.canPay(),
 
     async buyCredit(url, usd, o) {
-      const seller = sellerOf(url);
+      const seller = sellerFor(url);
       // The door: an ACCEPTED proposal of this very step, for this seller
       // and this amount, the person's edits included.
       const rec = typeof o?.proposal === "string" ? await deps.proposal(o.proposal) : null;
       const asked = rec ? ({ ...(rec.input as object), ...((rec.decision?.input as object | undefined) ?? {}) } as { url?: unknown; usd?: unknown }) : {};
       let askedSeller: string | undefined;
       try {
-        askedSeller = typeof asked.url === "string" ? sellerOf(asked.url) : undefined;
+        askedSeller = typeof asked.url === "string" ? sellerFor(asked.url) : undefined;
       } catch {
         askedSeller = undefined;
       }
@@ -728,15 +867,35 @@ export function createRemote(deps: RemoteDeps): RemoteService {
     },
   };
 
+  /** A purchase sent whose invoice ended `PURCHASE_STUCK_AFTER_MS` ago and
+   *  that the seller never confirmed (its claim refused, unreachable, still
+   *  `pending`): ended when the payer says the payment failed or never left
+   *  — a seller that rotated its L402 root, stopped selling or moved never
+   *  holds this strut's purchases back for good. A payment the payer says
+   *  settled is kept: the seller has the sats, and an admin decides. */
+  const endIfStuck = async (seller: string, p: Purchase): Promise<boolean> => {
+    if (!p.sent || !deps.sendState || p.invoiceExpiresAt * 1000 + PURCHASE_STUCK_AFTER_MS > now()) return false;
+    const state = await deps.sendState(p.paymentHash).catch(() => "pending" as const);
+    if (state !== "gone") return false;
+    await dropPurchase(seller, p, "the seller never confirmed it, and the payer says it failed or never left");
+    return true;
+  };
+
   const buy = async (seller: string, usd: number, proposal: string, actor: string | undefined): Promise<BuyCreditResult> => {
     let rec = await read(seller);
     let p = rec.purchase;
     if (p && p.proposal !== proposal) {
       // Another purchase is out: ask the seller where it stands first. One
       // never handed to the payer never went, and is over.
-      const state = p.sent ? await claim(seller, p).catch(() => "pending" as const) : (await dropPurchase(seller, p, "it was never paid, and another purchase was accepted"), "ended" as const);
-      if (state === "pending") {
-        throw new RemoteError("purchase_in_flight", `a purchase of ${usdText(p.usd)} from ${seller} (proposal ${p.proposal}) is still being paid: once it settles or its invoice ends, this one can go — accept it again then`);
+      let state: "stored" | "pending" | "ended" | "unknown" = p.sent
+        ? await claim(seller, p).catch(() => "unknown" as const)
+        : (await dropPurchase(seller, p, "it was never paid, and another purchase was accepted"), "ended" as const);
+      if ((state === "pending" || state === "unknown") && (await endIfStuck(seller, p))) state = "ended";
+      if (state === "pending" || state === "unknown") {
+        throw new RemoteError(
+          "purchase_in_flight",
+          `a purchase of ${usdText(p.usd)} from ${seller} (proposal ${p.proposal}) is still being paid: once it settles or its invoice ends, this one can go — accept it again then (an admin drops one the seller will never answer for: DELETE /remote/purchases?seller=)`,
+        );
       }
       rec = await read(seller);
       p = undefined;
@@ -749,13 +908,13 @@ export function createRemote(deps: RemoteDeps): RemoteService {
       const state = await claim(seller, p).catch(() => "unknown" as const);
       if (state === "stored") return { seller, usd: p.usd, sats: p.sats, paymentHash: p.paymentHash, state: "stored", credit: await balance(seller, await read(seller)) };
       if (state !== "ended" && p.invoiceExpiresAt * 1000 <= now()) {
-        if (p.sent) {
+        if (p.sent && !(await endIfStuck(seller, p))) {
           throw new RemoteError(
             "remote_unavailable",
             `the invoice of this purchase from ${seller} has expired, and the seller has not said whether it was paid: the purchase is kept and claimed every minute — nothing is paid again`,
           );
         }
-        await dropPurchase(seller, p, "its invoice expired before it was paid");
+        if (!p.sent) await dropPurchase(seller, p, "its invoice expired before it was paid");
       }
       if (state === "ended" || p.invoiceExpiresAt * 1000 <= now()) {
         rec = await read(seller);
@@ -775,6 +934,10 @@ export function createRemote(deps: RemoteDeps): RemoteService {
       await update(seller, (r2) => ({ ...r2, purchase: fresh }));
     }
     const purchase = p;
+    // A purchase handed to the payer before (this proposal accepted again)
+    // may have gone: no withdraw error ever drops it — the seller's
+    // `expired`, or the payer saying it never left, ends it.
+    const firstSend = !purchase.sent;
     await update(seller, (r2) => (r2.purchase?.paymentHash === purchase.paymentHash ? { ...r2, purchase: { ...r2.purchase, sent: true } } : r2));
     let paid: WithdrawAnswer;
     try {
@@ -782,7 +945,7 @@ export function createRemote(deps: RemoteDeps): RemoteService {
     } catch (err) {
       const code = (err as { code?: string }).code ?? "";
       // Refused before anything went: the purchase is over.
-      if (["not_an_invoice", "no_amount", "amount_mismatch", "expired", "bad_fee", "no_pay_credential", "wallet_refused", "bad_request"].includes(code)) {
+      if (firstSend && ["not_an_invoice", "no_amount", "amount_mismatch", "expired", "bad_fee", "no_pay_credential", "wallet_refused", "bad_request"].includes(code)) {
         await dropPurchase(seller, purchase, err instanceof Error ? err.message : String(err));
       } else {
         await update(seller, (r2) => (r2.purchase?.paymentHash === purchase.paymentHash ? { ...r2, purchase: { ...r2.purchase, lastError: err instanceof Error ? err.message : String(err), checkedAt: now() } } : r2));
@@ -832,9 +995,14 @@ export function createRemote(deps: RemoteDeps): RemoteService {
             continue;
           }
           try {
-            out.push({ seller, state: await claim(seller, p) });
+            const state = await claim(seller, p);
+            out.push({ seller, state: state === "pending" && (await endIfStuck(seller, p)) ? "ended" : state });
           } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
+            if (await endIfStuck(seller, p).catch(() => false)) {
+              out.push({ seller, state: "ended", error });
+              continue;
+            }
             await update(seller, (r2) => (r2.purchase?.paymentHash === p.paymentHash ? { ...r2, purchase: { ...r2.purchase, lastError: error, checkedAt: now() } } : r2)).catch(() => undefined);
             out.push({ seller, state: "unread", error });
           }
@@ -845,6 +1013,22 @@ export function createRemote(deps: RemoteDeps): RemoteService {
         checking = null;
       });
       return run;
+    },
+
+    async dropPurchase(url) {
+      const seller = sellerFor(url);
+      if (buying.has(seller)) throw new RemoteError("purchase_in_flight", `a purchase from ${seller} is being paid right now: wait for it`);
+      let dropped: Purchase | undefined;
+      await update(seller, (rec) => {
+        if (!rec.purchase) return rec;
+        dropped = rec.purchase;
+        const { purchase: _p, ...rest } = rec;
+        return rest;
+      });
+      if (!dropped) return { seller };
+      console.log(`[remote] an admin dropped the purchase of ${usdText(dropped.usd)} from ${seller} (payment ${dropped.paymentHash.slice(0, 12)}…)`);
+      const { macaroon: _m, invoice: _i, ...shown } = dropped as Purchase;
+      return { seller, dropped: shown };
     },
 
     async held() {

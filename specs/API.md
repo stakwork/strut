@@ -3685,7 +3685,12 @@ credential): `https://cve.example`, or a strut under a path,
 the host lower-cased. Every request to it goes through a guarded http: no
 loopback, private, link-local or reserved address, nor a name resolving to
 one; redirects followed by hand, and a redirect to another origin carries
-no `Authorization`.
+no `Authorization`. **`STRUT_REMOTE_LOCAL=1`** (`createStrut({ remote: {
+local: true } })`) is for a dev box or a LAN — two struts on one machine, a
+home box on `192.168.x`: an `http:` seller is allowed, and loopback and
+private addresses pass; a link-local one (the cloud's metadata at
+`169.254.169.254`) never does. Off by default: the credit is a bearer
+credential.
 
 **The credit** held at a seller is ONE L402 token (§17.5), kept in
 `entitlements.json` beside `payments.json`, encrypted, under names no step
@@ -3697,7 +3702,7 @@ and never sees it.
 | Step | | |
 | --- | --- | --- |
 | `remote/list { url }` | read | `{ seller, runnable, credit }`: the seller's `GET /public` `runnable` list (§17.2), and what is held there — `{ held, remaining_usd?, remaining_sats?, held_usd?, expires?, expired?, replaced?, error?, buying? }`, read with `GET /public/credit` |
-| `remote/run-workflow { url, workflow, input?, key? }` | spends | `POST <seller>/public/workflows/:name/run`, then the launcher's view (`?wait=25`) until the run is charged: `{ seller, workflow, runId, status, output?, error?, charged_usd?, credit?, durationMs, existing? }` |
+| `remote/run-workflow { url, workflow, input?, key? }` | spends | `POST <seller>/public/workflows/:name/run`, then the launcher's view (`?wait=25`) until the run is charged: `{ seller, workflow, runId, status, output?, error?, charged_usd?, credit?, durationMs, existing? }` — `status` `success`, `error`, `cancelled`, or `stale` when the seller reports the run cut off and nothing resumes it for ~5 minutes |
 | `remote/call { url, type, config? }` | spends | `POST <seller>/public/steps/:type/run { config }`: `{ seller, type, output, credit? }` |
 | `remote/buy-credit { url, usd }` | buys | a PROPOSAL an admin accepts (below) |
 
@@ -3709,17 +3714,41 @@ and never sees it.
   (the 402's price; `short`, `expired` and `replaced` said as such). A
   token the seller refuses is `token_refused:`; a 404 `not_found:`; a 429
   or 5xx `remote_unavailable:` with `try again in N s`; other 4xx
-  `remote_refused:` with the seller's words.
+  `remote_refused:` with the seller's words. A `replaced` token, when the
+  token held changed since it was read (a purchase settled meanwhile), is
+  sent once more with the new one.
+- **What the seller charged is the step's cost.** Its output is marked with
+  it (`withUsage`: no model call, the dollars charged), so the calling run's
+  `totals.cost`, a public run's markup and its daily cap count it.
+- **Never spent by a stranger or another strut** (decision 16's "no ask"
+  is for this strut's own agents): in a run whose tree is a stranger's
+  public run, a run another strut launched on the peer key without a
+  person's credential, or a run started from either (a job, by
+  `startedBy`), `remote/run-workflow` and `remote/call` fail with
+  `spend_refused:` and reach nothing. A run a PERSON's credential launched
+  (`peer:person`) is this strut's own person and spends.
 - **A launch is never two runs.** It carries a `key` — by default the
   step's own (its run and path), the same on every retry — and the seller
-  returns the run that key started while it is in flight (§17.4). The
-  handle is journaled at `<path>#launch` (no run token in it), so a resume
-  of the calling run waits on the run it launched, ended or not. The run
-  token is kept by this strut (in the seller's record) while the step waits,
-  at most 7 days, never in a run log. Cancelling the calling run cancels
-  the remote one.
-- **A tool call has no key** at the seller's door: one retried after a
-  time-out may run, and be charged, twice.
+  returns the run that key started while it is in flight (§17.4). A launch
+  the seller turns away for a moment — a 429 at its in-flight limit, a
+  drain's 503, any 5xx, no answer (a lost 202) — is tried again under that
+  key, up to 5 times, honouring `Retry-After` (one over 2 minutes, a day's
+  cap spent until midnight, is not waited for). The handle is journaled at
+  `<path>#launch` (no run token in it), so a resume of the calling run waits
+  on the run it launched, ended or not. The run token is kept by this
+  strut (in the seller's record) while the step waits, at most 7 days,
+  never in a run log. Cancelling the calling run cancels the remote one.
+- **A remote run is waited out.** It is the seller's and charged whether
+  or not it is read, so a seller that does not answer (restarting, a
+  proxy's 502, a 429) is read again after a wait that doubles to 30 s, for
+  as long as the calling run waits; only the seller not knowing the run or
+  its token (404, 401, 403: `run_unknown:`) ends the wait, and the run's
+  cancel stops it.
+- **A tool call is never sent twice**: the seller's door takes no key. A
+  call that FAILED there — `step_failed`, `result_too_big`, `timeout`,
+  which the seller charged its cost — is `failed_charged:`, never "try
+  again"; one whose answer was lost is `may_have_run:` (it may have run and
+  been charged: read the credit left with `remote/list`).
 - They are spending steps: never a page's call (`step_run`), never a public
   tool, never an AI-published app's grant, and a closure that reaches them
   `spends`. The job and builder seeds grant all four; the orchestrator
@@ -3739,6 +3768,10 @@ On accept:
 
 1. **One purchase per seller at a time.** Another still being paid answers
    `purchase_in_flight:`; accept again once it settles or its invoice ends.
+   One the seller never answers for (it rotated its L402 root, stopped
+   selling, moved) ends an hour past its invoice when the payer says the
+   payment failed or never left; one the payer says SETTLED is kept (the
+   seller has the sats): an admin drops it with `DELETE /remote/purchases`.
 2. `POST <seller>/public/credit { usd }`, presenting the token held, so the
    new one inherits what is left (§17.5, `carries`).
 3. **The challenge is checked before anything is paid** (`bad_challenge:`,
@@ -3763,7 +3796,9 @@ every minute (and at boot) until the seller answers `settled` (stored) or
 Accepting the same proposal again (after a `failed` apply) reuses the
 purchase's invoice: a purchase is never paid twice. One sent whose invoice
 expired while the seller does not answer is kept, never dropped:
-`remote_unavailable: … the purchase is kept and claimed every minute`.
+`remote_unavailable: … the purchase is kept and claimed every minute` —
+until the payer says it never left (above). A withdraw error on a purchase
+already handed to the payer never drops it.
 
 ### `GET /remote/credit`
 
@@ -3775,3 +3810,13 @@ token held (`tokenId`, `paymentHash`, `boughtAt`, `usd`, `sats`,
 `lastError?`), and how many remote runs it waits on — never a macaroon, a
 preimage or an invoice. `?balance=1` adds each seller's `balance`, read
 from it (`remote/list`'s `credit`).
+
+### `DELETE /remote/purchases?seller=<url>`
+
+Full scope only. Drops the purchase still being paid at that seller —
+for one the seller will never answer for — so the next `remote/buy-credit`
+there can go: `{ seller, dropped? }` (`dropped` as `GET /remote/credit`
+shows a purchase; none when there was nothing). `409
+purchase_in_flight` while one is being paid at that moment; `400` for a
+URL that is not a seller's. Nothing is paid or refunded: whether its
+payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).

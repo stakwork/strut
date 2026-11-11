@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { coerceJsonArg, defineStep, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { RemoteError, sellerOf, type RemoteRunHandle } from "../../../remote.js";
-import { launchKeyOf, remoteOf, SPENDS_HELD_CREDIT } from "./_shared.js";
+import { RemoteError, type RemoteRunHandle } from "../../../remote.js";
+import { launchKeyOf, remoteOf, SPENDS_HELD_CREDIT, withCharge } from "./_shared.js";
 
 /**
  * Run a WORKFLOW another strut server sells (plans/paid-runs.md §3, §10 —
@@ -16,6 +16,14 @@ import { launchKeyOf, remoteOf, SPENDS_HELD_CREDIT } from "./_shared.js";
  * resume of this run waits on the run it launched, even one that ended
  * while this strut was down, instead of launching a second. Cancelling
  * this run cancels the remote one.
+ *
+ * A seller that does not answer is waited out (a restart, a proxy's 502):
+ * the run is the seller's and charged whether or not it is read, so the
+ * step never gives up on it — the run's cancel is the bound. A launch the
+ * seller turns away for a moment (its in-flight limit, a drain, a lost
+ * 202) is tried again under the same key. What the run was charged is
+ * this step's cost (`withCharge`). Refused in a stranger's run or a peer's
+ * (decision 16: no ask is for this strut's own agents).
  */
 
 interface LaunchRecord {
@@ -64,15 +72,40 @@ export default defineStep({
   }),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const remote = remoteOf(ctx, "remote/run-workflow");
-    const seller = sellerOf(cfg.url);
+    const seller = remote.seller(cfg.url);
     const key = cfg.key ?? launchKeyOf(ctx);
     const launchKey = ctx.path ? `${ctx.path}#launch` : undefined;
     const prior = launchKey ? launchRecord(ctx.journal?.[launchKey]) : undefined;
     const journaled = prior && prior.seller === seller && prior.workflow === cfg.workflow ? prior : undefined;
 
+    // Cancel: cooperative, the remote run one unit — tell the seller, stop
+    // waiting (or trying to launch), then let checkpoint() raise the
+    // canonical CancelledError.
+    const ac = new AbortController();
+    const control = ctx.control;
+    let handle: RemoteRunHandle | undefined;
+    let settled = false;
+    const watch = control
+      ? setInterval(() => {
+          if (control.state === "cancelling" && !ac.signal.aborted) {
+            if (handle) void remote.cancel(handle);
+            ac.abort();
+          }
+        }, 200)
+      : undefined;
+    // This run ending for another reason takes the remote run with it.
+    ctx.onRunEnd?.(async () => {
+      if (!settled && handle) await remote.cancel(handle);
+    });
+
     const launch = async (): Promise<{ handle: RemoteRunHandle; launchedAt: number }> => {
       const launchedAt = Date.now();
-      const handle = await remote.launch(seller, cfg.workflow, { ...(cfg.input !== undefined ? { input: cfg.input } : {}), key });
+      const handle = await remote.launch(seller, cfg.workflow, {
+        ...(cfg.input !== undefined ? { input: cfg.input } : {}),
+        key,
+        ...(control ? { control } : {}),
+        signal: ac.signal,
+      });
       // The handle, journaled before the wait (strut/run-workflow's slot):
       // a resume reads this run instead of launching another.
       if (launchKey && ctx.emit) {
@@ -82,27 +115,10 @@ export default defineStep({
       return { handle, launchedAt };
     };
 
-    let { handle, launchedAt } = journaled ? { handle: { seller, workflow: cfg.workflow, runId: journaled.runId } as RemoteRunHandle, launchedAt: journaled.launchedAt } : await launch();
-
-    // Cancel: cooperative, the remote run one unit — tell the seller, stop
-    // waiting, then let checkpoint() raise the canonical CancelledError.
-    const ac = new AbortController();
-    const control = ctx.control;
-    let settled = false;
-    const watch = control
-      ? setInterval(() => {
-          if (control.state === "cancelling" && !ac.signal.aborted) {
-            void remote.cancel(handle);
-            ac.abort();
-          }
-        }, 200)
-      : undefined;
-    // This run ending for another reason takes the remote run with it.
-    ctx.onRunEnd?.(async () => {
-      if (!settled) await remote.cancel(handle);
-    });
-
+    let launchedAt = journaled?.launchedAt ?? Date.now();
     try {
+      if (journaled) handle = { seller, workflow: cfg.workflow, runId: journaled.runId };
+      else ({ handle, launchedAt } = await launch());
       let view;
       try {
         view = await remote.wait(handle, { signal: ac.signal });
@@ -115,7 +131,7 @@ export default defineStep({
       }
       settled = true;
       await remote.release(handle);
-      return {
+      return withCharge({
         seller,
         workflow: cfg.workflow,
         runId: handle.runId,
@@ -126,16 +142,16 @@ export default defineStep({
         ...(handle.credit ? { credit: handle.credit } : {}),
         durationMs: view.durationMs ?? Date.now() - launchedAt,
         ...(handle.existing ? { existing: true } : {}),
-      };
+      }, view.charged);
     } catch (err) {
       if (ac.signal.aborted && control) {
         settled = true; // the cancel was delivered above
-        await remote.release(handle);
+        if (handle) await remote.release(handle);
         await control.checkpoint();
       }
       // A run the seller does not know is over for this step; any other
       // failure keeps the token, so a retry or a resume reads the run.
-      if (err instanceof RemoteError && err.code === "run_unknown") await remote.release(handle);
+      if (handle && err instanceof RemoteError && err.code === "run_unknown") await remote.release(handle);
       throw err;
     } finally {
       if (watch) clearInterval(watch);

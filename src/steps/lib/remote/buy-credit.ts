@@ -69,7 +69,7 @@ export default defineStep({
   async describe(cfg, ctx: StepContext<StrutCapabilities>) {
     let seller: string;
     try {
-      seller = sellerOf(cfg.url);
+      seller = ctx.services?.remote ? ctx.services.remote.seller(cfg.url) : sellerOf(cfg.url);
     } catch (err) {
       return { title: `Buy ${usdText(cfg.usd)} of credit`, summary: err instanceof Error ? err.message : String(err) };
     }

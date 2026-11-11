@@ -31,11 +31,14 @@ import { buildRegistryTools } from "./steps/core/agent.js";
 import { ENTITLEMENTS_FILE, createRemote, sellerOf, type RemoteListing } from "./remote.js";
 import { mintToken, macaroonToBase64 } from "./l402.js";
 import type { Proposal } from "./proposals.js";
+type WithdrawAnswerLike = { state: "pending" | "settled" | "failed"; paymentHash: string; msat: number; feeMsat: number; maxFeeMsat: number };
 import { hiddenFromSteps } from "./env.js";
+import { personToken } from "./auth.js";
 import { grantRefusal } from "./apps/tools.js";
 import type { AppManifest } from "./apps/manifest.js";
 
 const KEY = "remote-api-key";
+const PEER = "remote-peer-key";
 const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
 const RATE = 100_000; // dollars per bitcoin: $1 is 1000 sats
 const fixedRate = async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" });
@@ -61,9 +64,10 @@ const lookup = defineStep({
   type: "cve/lookup",
   description: "Look a package up in the CVE feed",
   effect: "read",
-  input: z.object({ package: z.string(), cost: z.number().optional() }),
+  input: z.object({ package: z.string(), cost: z.number().optional(), fail: z.boolean().optional() }),
   output: z.any(),
   async run(cfg) {
+    if (cfg.fail) throw new Error(`no such package ${cfg.package}`);
     return withUsage({ package: cfg.package, cves: ["CVE-2026-0002"] }, cfg.cost ? { modelCalls: 1, usage: {}, cost: cfg.cost } : undefined);
   },
 });
@@ -141,8 +145,9 @@ const quiet = {
 
 const saved: Record<string, string | undefined> = {};
 before(() => {
-  for (const k of ["STRUT_API_KEY", "STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
+  for (const k of ["STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
   process.env["STRUT_API_KEY"] = KEY;
+  process.env["STRUT_PEER_KEY"] = PEER;
   process.env["STRUT_SECRET_KEY"] = "remote-secret";
   process.env["STRUT_PACKAGE_INDEXES"] = "[]";
 });
@@ -248,6 +253,10 @@ describe("a strut that buys — remote/* against another strut's public door", (
     assert.ok(listing.runnable.some((i) => i.kind === "step" && i.name === "cve/lookup" && i.reserve === 0.6));
     assert.deepEqual(listing.credit, { seller: SELLER, held: false });
     assert.equal(sellerOf("https://Seller.Example:443/lab/public"), "https://seller.example/lab");
+    // The admin's drop of a stuck purchase: the key's, never a peer's.
+    const drop = (authorization: string) => buyer.app.request(`/remote/purchases?seller=${encodeURIComponent(SELLER)}`, { method: "DELETE", headers: { authorization } });
+    assert.deepEqual(await (await drop(`Bearer ${KEY}`)).json(), { seller: SELLER });
+    assert.equal((await drop(`Bearer ${PEER}`)).status, 403);
     await assert.rejects(step("remote/list").run({ url: "http://seller.example" }, ctx()), /bad_url: http:\/\/seller\.example is not https/);
     // The guard: never a private, loopback or metadata address.
     const guarded = guardedHttp();
@@ -410,6 +419,74 @@ describe("a strut that buys — remote/* against another strut's public door", (
     assert.equal((await held())[0]!.purchase, undefined);
   });
 
+  it("what the seller charged is the buyer's run's cost; a peer's run (no person) and a stranger's public run never spend; a person's credential does", async () => {
+    assert.equal((await decide(await ask(10), "accept")).body.status, "applied");
+    const WATCH = `name: cve-watch\npeer: true\ninput:\n  pkg: { type: string, default: lodash }\nsteps:\n  - id: scan\n    type: remote/run-workflow\n    config:\n      url: ${SELLER}\n      workflow: cve/scan\n      input:\n        cost: 0.25\n  - id: look\n    type: remote/call\n    config:\n      url: ${SELLER}\n      type: cve/lookup\n      config:\n        package: "{{ input.pkg }}"\n        cost: 0.2\n`;
+    await buyer.workspace.createWorkflow("cve-watch", WATCH);
+    await buyer.workspace.setWorkflowOwner("cve-watch", "ann");
+    const run = await buyer.run("cve-watch", {});
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    const summary = (await buyer.store.getRunSummary("cve-watch", run.runId))!;
+    assert.equal(Math.round(summary.totals!.cost * 100) / 100, 1.3, "$1 for the run + $0.30 for the call, the seller's charges");
+    const before = launches;
+    const left = ((await step("remote/list").run({ url: SELLER }, ctx())) as RemoteListing).credit.remaining_usd;
+    /** A launch over HTTP, read until it ends. */
+    const launchAs = async (authorization: string) => {
+      const res = await buyer.app.request("/workflows/cve-watch/run", { method: "POST", headers: { authorization, "content-type": "application/json" }, body: JSON.stringify({ input: {} }) });
+      assert.equal(res.status, 202, await res.clone().text());
+      const { runId } = (await res.json()) as { runId: string };
+      for (let i = 0; i < 200; i++) {
+        const s2 = await buyer.store.getRunSummary("cve-watch", runId);
+        if (s2) return s2;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("the run never ended");
+    };
+    // Another strut on the peer key: refused before anything reaches the seller.
+    const peerRun = await launchAs(`Bearer ${PEER}`);
+    assert.equal(peerRun.status, "error");
+    assert.match(JSON.stringify(peerRun.error), /spend_refused: a stranger's public run, a run another strut launched without a person's credential/);
+    assert.equal(launches, before, "nothing launched at the seller");
+    // A stranger's public run of it: refused the same way.
+    const put = await buyer.app.request("/public-view", { method: "PUT", headers: auth, body: JSON.stringify({ runnable: [{ kind: "workflow", name: "cve-watch", dailyCapUsd: 5 }] }) });
+    assert.equal(put.status, 200, await put.clone().text());
+    const pub = await buyer.app.request("/public/workflows/cve-watch/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+    assert.equal(pub.status, 202, await pub.clone().text());
+    const { runId: pubId, token } = (await pub.json()) as { runId: string; token: string };
+    const seen = (await (await buyer.app.request(`/public/workflows/cve-watch/runs/${pubId}?t=${encodeURIComponent(token)}&wait=10`)).json()) as { status: string };
+    assert.equal(seen.status, "error");
+    assert.match(JSON.stringify((await buyer.store.getRunSummary("cve-watch", pubId))!.error), /spend_refused/);
+    assert.equal(launches, before);
+    assert.equal(((await step("remote/list").run({ url: SELLER }, ctx())) as RemoteListing).credit.remaining_usd, left, "no credit spent");
+    // A PERSON's credential is this strut's own person: it spends.
+    const personRun = await launchAs(`Bearer ${personToken("ann")!.token}`);
+    assert.equal(personRun.status, "success", JSON.stringify(personRun.error));
+    assert.equal(launches, before + 1);
+  });
+
+  it("a tool that fails at the seller is charged there, and says so — never 'try again'", async () => {
+    assert.equal((await decide(await ask(5), "accept")).body.status, "applied");
+    await assert.rejects(step("remote/call").run({ url: SELLER, type: "cve/lookup", config: { package: "nope", fail: true } }, ctx()), (err: Error) => {
+      assert.match(err.message, /^failed_charged: https:\/\/seller\.example ran a call of cve\/lookup and it failed \(step_failed: no such package nope\); it was charged its cost/);
+      assert.doesNotMatch(err.message, /try again/);
+      return true;
+    });
+  });
+
+  it("STRUT_REMOTE_LOCAL: a seller on this machine over http is reached for real; a link-local address never is", async () => {
+    const port = await seller.listen(0, "127.0.0.1");
+    const local = await createStrut({ workspace: new WorkspaceManager(join(dir, "local")), store: new MemoryRunStore(), ...quiet, remote: { local: true } });
+    try {
+      const reg = local.getRegistry();
+      const listing = (await reg["remote/list"]!.run({ url: `http://127.0.0.1:${port}` }, { ...ctx(), services: local.services, registry: reg })) as RemoteListing;
+      assert.equal(listing.seller, `http://127.0.0.1:${port}`);
+      assert.ok(listing.runnable.some((i) => i.name === "cve/scan"));
+      await assert.rejects(reg["remote/list"]!.run({ url: "http://169.254.169.254" }, { ...ctx(), services: local.services, registry: reg }), /link-local/);
+    } finally {
+      await local.close();
+    }
+  });
+
   it("a resumed run reads the remote run it launched instead of launching another; a retry sends the same key", async () => {
     const id = await ask(5);
     assert.equal((await decide(id, "accept")).body.status, "applied");
@@ -537,6 +614,131 @@ describe("remote: a seller's challenge is checked before anything is paid", () =
     assert.equal((await r.capability.buyCredit(SELLER, 5, { proposal: "p1" })).state, "paying");
     assert.equal(paid.length, 2);
     assert.notEqual(paid[1], paid[0]);
+  });
+
+  /** A scripted seller: each request answered by `route`, or thrown. */
+  const scripted = (route: (method: string, path: string, req: { authorization?: string; body?: string }) => { status: number; body?: unknown; headers?: Record<string, string> } | "throw") =>
+    httpCapability((async (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+      const u = new URL(url);
+      const a = route(init?.method ?? "GET", u.pathname + u.search, { ...(init?.headers?.["authorization"] ? { authorization: init.headers["authorization"] } : {}), ...(init?.body ? { body: init.body } : {}) });
+      if (a === "throw") throw new Error("socket hang up");
+      return { status: a.status, ok: a.status < 300, headers: new Headers({ "content-type": "application/json", ...(a.headers ?? {}) }), text: async () => JSON.stringify(a.body ?? {}) };
+    }) as never);
+  const bare = (http: HttpCapability, extra: Partial<Parameters<typeof createRemote>[0]> = {}) =>
+    createRemote({ store: new MemorySecretStore(), http, withdraw: async () => ({ state: "pending", paymentHash: "", msat: 0, feeMsat: 0, maxFeeMsat: 0 }), canPay: async () => true, proposal: async () => null, retryBaseMs: 1, ...extra });
+
+  it("a launch turned away for a moment is tried again under the same key; a lost 202 comes back as the same run; a day's cap is not waited for", async () => {
+    const keys: string[] = [];
+    let n = 0;
+    const r = bare(
+      scripted((method, path, req) => {
+        if (method !== "POST") return { status: 404 };
+        keys.push((JSON.parse(req.body!) as { key: string }).key);
+        n++;
+        if (n === 1) return { status: 429, body: { error: "too many public runs in flight" }, headers: { "retry-after": "0" } };
+        if (n === 2) return { status: 503, body: { error: "draining" }, headers: { "retry-after": "0" } };
+        if (n === 3) return "throw"; // the seller launched, the 202 was lost
+        return { status: 202, body: { runId: "r1", token: "t1", existing: true } };
+      }),
+    );
+    const h = await r.capability.launch(SELLER, "cve/scan", { key: "k-9" });
+    assert.deepEqual([h.runId, h.existing, n], ["r1", true, 4]);
+    assert.deepEqual([...new Set(keys)], ["k-9"], "one key every try");
+    let tries = 0;
+    const capped = bare(scripted(() => (tries++, { status: 429, body: { error: "the day's cap is spent" }, headers: { "retry-after": "3600" } })));
+    await assert.rejects(capped.capability.launch(SELLER, "cve/scan", { key: "k" }), /remote_unavailable: .*the day's cap is spent \(try again in 3600 s\)/);
+    assert.equal(tries, 1, "an hour is not waited for");
+  });
+
+  it("a remote run is waited on through a seller that does not answer; only the seller not knowing it ends the wait", async () => {
+    let reads = 0;
+    const r = bare(
+      scripted((method, path) => {
+        if (method === "POST") return { status: 202, body: { runId: "r1", token: "t1" } };
+        reads++;
+        if (reads <= 9) return reads % 3 === 0 ? "throw" : { status: reads % 2 ? 502 : 429 };
+        return { status: 200, body: { status: "success", output: { ok: 1 }, charged: 0.5 } };
+      }),
+    );
+    const h = await r.capability.launch(SELLER, "cve/scan", { key: "k" });
+    const v = await r.capability.wait(h);
+    assert.deepEqual([v.status, v.charged, reads], ["success", 0.5, 10], "nine failed reads in a row, then the end");
+    const gone = bare(scripted((method) => (method === "POST" ? { status: 202, body: { runId: "r2", token: "t2" } } : { status: 404, body: { error: "no such run" } })));
+    await assert.rejects(gone.capability.wait(await gone.capability.launch(SELLER, "cve/scan", { key: "k" })), /run_unknown: .* \(404: no such run\)/);
+  });
+
+  it("a token replaced between the read and the request: the launch goes once more with the one now held", async () => {
+    const store = new MemorySecretStore();
+    const key = `ENTITLEMENT_${createHash("sha256").update(SELLER).digest("hex")}`;
+    const held = (id: string) => ({ macaroon: `mac-${id}`, preimage: "00".repeat(32), tokenId: id.repeat(64).slice(0, 64), paymentHash: "ab".repeat(32), boughtAt: "", usd: 1, sats: 1000, expires: "" });
+    await store.set(key, JSON.stringify({ seller: SELLER, credit: held("a") }));
+    const seen: string[] = [];
+    const r = bare(
+      scripted((method, _path, req) => {
+        seen.push(req.authorization ?? "");
+        if (seen.length === 1) {
+          // The keeper stores the purchase that settled: B, which carried A.
+          void store.set(key, JSON.stringify({ seller: SELLER, credit: held("b") }));
+          return { status: 402, body: { error: "payment_required", usd: 1, sats: 1000, reason: "replaced" } };
+        }
+        return { status: 202, body: { runId: "r1", token: "t1" } };
+      }),
+      { store },
+    );
+    await r.capability.launch(SELLER, "cve/scan", { key: "k" });
+    assert.deepEqual(seen.map((a) => a.split(":")[0]), ["L402 mac-a", "L402 mac-b"]);
+  });
+
+  it("a call whose answer was lost may have run: never sent again, and said so", async () => {
+    let calls = 0;
+    const r = bare(scripted(() => (calls++, "throw")));
+    await assert.rejects(r.capability.call(SELLER, "cve/lookup", {}), /may_have_run: .*it may have run and been charged — read the credit left with remote\/list/);
+    assert.equal(calls, 1);
+  });
+
+  it("a purchase the seller never answers for ends when the payer says it never left, an admin may drop one, and a sent one is never dropped on a withdraw error", async () => {
+    let clock = Date.now();
+    const c = challenge({ at: clock });
+    let claimStatus = 401;
+    let withdrawAnswer: () => Promise<WithdrawAnswerLike> = async () => ({ state: "pending", paymentHash: c.paymentHash, msat: 5_000_000, feeMsat: 0, maxFeeMsat: 0 });
+    let sendState: "pending" | "settled" | "gone" = "pending";
+    const r = createRemote({
+      store: new MemorySecretStore(),
+      http: scripted((method, path) => (path === "/public/credit" ? { status: 402, body: c.body } : path === "/public/credit/claim" ? { status: claimStatus, body: { error: "invalid_token" } } : { status: 404 })),
+      withdraw: () => withdrawAnswer() as never,
+      canPay: async () => true,
+      proposal: async (id) => ({ id, step: "remote/buy-credit", status: "accepted", input: { url: SELLER, usd: 5 } }) as unknown as Proposal,
+      rate: fixedRate,
+      now: () => clock,
+      sendState: async () => sendState,
+    });
+    assert.equal((await r.capability.buyCredit(SELLER, 5, { proposal: "p1" })).state, "paying");
+    // Accepted again; the payer's re-read refuses it — it went, so it stays.
+    withdrawAnswer = async () => {
+      throw Object.assign(new Error("wallet_refused: expired"), { code: "wallet_refused" });
+    };
+    await assert.rejects(r.capability.buyCredit(SELLER, 5, { proposal: "p1" }), /payment_failed/);
+    assert.ok((await r.held())[0]!.purchase, "kept: it was sent before");
+    // The seller refuses every claim (it rotated its root). Within the margin past the invoice: kept.
+    clock += 11 * 60_000;
+    assert.deepEqual((await r.check()).map((x) => x.state), ["unread"]);
+    await assert.rejects(r.capability.buyCredit(SELLER, 5, { proposal: "p2" }), /purchase_in_flight: .*DELETE \/remote\/purchases\?seller=/);
+    // Past it, and the payer says it settled: kept (the seller has the sats; an admin decides).
+    clock += 60 * 60_000;
+    sendState = "settled";
+    assert.deepEqual((await r.check()).map((x) => x.state), ["unread"]);
+    // The payer says it never left: ended, and the next purchase goes.
+    sendState = "gone";
+    assert.deepEqual((await r.check()).map((x) => x.state), ["ended"]);
+    assert.equal((await r.held()).length, 0);
+    // An admin's drop, for one the seller will never answer for.
+    clock = Date.now();
+    withdrawAnswer = async () => ({ state: "pending", paymentHash: c.paymentHash, msat: 5_000_000, feeMsat: 0, maxFeeMsat: 0 });
+    assert.equal((await r.capability.buyCredit(SELLER, 5, { proposal: "p1" })).state, "paying");
+    const dropped = await r.dropPurchase(SELLER);
+    assert.equal(dropped.dropped!.paymentHash, c.paymentHash);
+    assert.equal((dropped.dropped as Record<string, unknown>)["macaroon"], undefined);
+    assert.equal((await r.held()).length, 0);
   });
 
   it("remote/call presents the credit held and keeps a type's slashes in the path; a 402 says the price and pays nothing", async () => {

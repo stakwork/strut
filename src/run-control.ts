@@ -240,6 +240,15 @@ const controllerOf = new WeakMap<RunControl, RunController>();
  *  What lets a child run share its parent's job directory (`holdJob`,
  *  src/jobs.ts). False with no control, or a stand-in that is not a
  *  controller's view. */
+/** The run `control` belongs to and every run above it, nearest first:
+ *  what a check about the run TREE walks (src/remote.ts: a stranger's run,
+ *  or one a peer launched, never spends credit this strut bought). */
+export function runLineage(control: RunControl | undefined): RunController[] {
+  const out: RunController[] = [];
+  for (let c = control && controllerOf.get(control); c; c = c.parent) out.push(c);
+  return out;
+}
+
 export function isAncestorRun(control: RunControl | undefined, runId: string): boolean {
   for (let c = control && controllerOf.get(control); c; c = c.parent) {
     if (c.runId === runId) return true;

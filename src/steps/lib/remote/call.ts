@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { coerceJsonArg, defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { remoteOf, SPENDS_HELD_CREDIT } from "./_shared.js";
+import { remoteOf, SPENDS_HELD_CREDIT, withCharge } from "./_shared.js";
 
 /**
  * Call a TOOL another strut server sells (plans/paid-runs.md §6, §10):
  * `POST <seller>/public/steps/:type/run { config }`, the credit held there
  * presented. One call, answered when it returns. The seller's door takes
- * no key, so a call retried after a timeout may run, and be charged, twice.
+ * no key, so it is never sent again: a call that failed THERE (and was
+ * charged) is `failed_charged:`, one whose answer was lost `may_have_run:`
+ * — neither says "try again". What the seller charged is this step's cost
+ * (`withCharge`). Refused in a stranger's run or a peer's (decision 16).
  */
 export default defineStep({
   type: "remote/call",
@@ -23,6 +26,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    return remoteOf(ctx, "remote/call").call(cfg.url, cfg.type, cfg.config ?? {});
+    const out = await remoteOf(ctx, "remote/call").call(cfg.url, cfg.type, cfg.config ?? {}, { ...(ctx.control ? { control: ctx.control } : {}) });
+    return withCharge(out, out.credit?.charged_usd);
   },
 });

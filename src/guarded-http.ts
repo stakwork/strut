@@ -40,14 +40,45 @@ export function withoutCredentials(headers: HeadersInit | Record<string, string>
   return Object.fromEntries(entries.filter(([k]) => !CREDENTIAL_HEADERS.has(k.toLowerCase())));
 }
 
+/** A link-local address — the cloud's metadata service at 169.254.169.254,
+ *  IPv6's fe80::/10 — never fetched, even on a LAN (`allowLocal`). */
+function linkLocal(address: string): boolean {
+  const a = address.toLowerCase().replace(/^\[|\]$/g, "");
+  if (/^169\.254\./.test(a) || /^::ffff:169\.254\./.test(a)) return true;
+  return /^fe[89ab][0-9a-f]:/.test(a);
+}
+
+/** `allowLocal`'s check: http(s), no credentials in the URL, and never a
+ *  link-local address or a name resolving to one — loopback and private
+ *  addresses pass (two struts on one machine, a home box on the LAN). */
+async function localCheck(raw: string, lookup?: HostLookup): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Not a valid absolute URL: ${raw}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`Only http(s) URLs can be fetched, got ${url.protocol}`);
+  if (url.username || url.password) throw new Error("URLs with embedded credentials are not fetched");
+  const host = url.hostname.replace(/\.$/, "").toLowerCase();
+  if (host === "metadata.google.internal" || linkLocal(host)) throw new Error(`Refusing to fetch a link-local address (${host})`);
+  if (!/^[0-9.]+$/.test(host) && !host.startsWith("[")) {
+    const addresses = lookup ? await lookup(host) : (await import("node:dns/promises").then((d) => d.lookup(host, { all: true }))).map((r) => r.address);
+    if (addresses.some(linkLocal)) throw new Error(`Refusing to fetch ${host}: it resolves to a link-local address`);
+  }
+  return url;
+}
+
 /** The guarded capability. `timeoutMs` is the most any one request may take
- *  (a caller's own `timeout` is held under it). */
-export function guardedHttp(o: { fetch?: typeof globalThis.fetch; lookup?: HostLookup; timeoutMs?: number } = {}): HttpCapability {
+ *  (a caller's own `timeout` is held under it). `allowLocal` (a dev box, a
+ *  LAN — `STRUT_REMOTE_LOCAL=1`) lets loopback and private addresses by,
+ *  never a link-local one. */
+export function guardedHttp(o: { fetch?: typeof globalThis.fetch; lookup?: HostLookup; timeoutMs?: number; allowLocal?: boolean } = {}): HttpCapability {
   const fetchImpl = o.fetch ?? globalThis.fetch;
   const limit = o.timeoutMs ?? GUARDED_HTTP_TIMEOUT_MS;
   const guarded: FetchLike = async (raw, init = {}) => {
     const { validateFetchUrl } = await import("./aieo/fetch.js");
-    const check = (u: string) => validateFetchUrl(u, o.lookup ? { lookup: o.lookup } : {});
+    const check = (u: string) => (o.allowLocal ? localCheck(u, o.lookup) : validateFetchUrl(u, o.lookup ? { lookup: o.lookup } : {}));
     let url = await check(raw);
     let req = { ...init };
     for (let hop = 0; ; hop++) {
