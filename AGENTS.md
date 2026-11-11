@@ -1522,7 +1522,20 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   excepted; a kept step run still reaches the graph only with evidence.
   The verify pass does not project it again: `runRef` joins the projection
   in flight (`projectRunOnce` is single-flighted per run), else takes the
-  settled node the graph holds. **So is every builder chat, when one of
+  settled node the graph holds. A `StrutRun` carries, beside its status
+  and times, who launched it and from where (`origin`, `automation_id`,
+  `actor`, `principal`, `parent_run_id`, `app` + `app_version`), what its
+  model calls spent (`cost_usd`, `model_calls`, `input_tokens`,
+  `output_tokens`, from `RunSummary.totals`, else summed from the log) and,
+  when it failed, `failed_step` (the run overview's rule). Then the
+  workflow's RUN COUNTS are
+  recounted onto its `StrutWorkflow` (`refreshWorkflowUsage`, one at a time
+  per workflow): `usage_count`, `usage_count_30d`, `success_count`,
+  `error_count`, `last_run_at`, `last_run_status`, over the live `StrutRun`s
+  that `EXECUTED` one of its live versions — never incremented, so a
+  re-projection changes nothing and `graph/project` backfills them; the 30-day
+  count is as of the workflow's last projected run; a workflow delete clears
+  them. **So is every builder chat, when one of
   its turns ends** (`projectChatOnce`, from `launchChatTurn`'s `finally`,
   and again when a detached run it launched settles; one at a time per
   chat, a call during a projection queuing one more): its `StrutChat`, a

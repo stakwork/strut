@@ -135,6 +135,11 @@ export const USAGE_ATTRIBUTES: Record<string, AttrType> = {
   usage_count_30d: "?int",
 };
 
+/** What the projector writes on a `StrutWorkflow` from its runs
+ *  (`refreshWorkflowUsage`); the workspace store clears them when the
+ *  workflow is deleted. */
+export const WORKFLOW_USAGE_FIELDS = ["usage_count", "usage_count_30d", "success_count", "error_count", "last_run_at", "last_run_status"] as const;
+
 /** Properties jarvis stamps on every node, never declared as attributes and
  *  never accepted from a caller (`GENERIC_NODE_PROPERTIES` + the write-time
  *  system props). */
@@ -266,7 +271,18 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       max_run_cost_usd: "?float",
       /** Disabled workflows refuse every run. */
       disabled: "?boolean",
+      /** The run counts, which the projector writes after each run's
+       *  projection (`refreshWorkflowUsage`), counted over the `StrutRun`s
+       *  that EXECUTED one of this workflow's versions: `usage_count` every
+       *  run, `usage_count_30d` those started in the 30 days before the count
+       *  — as of the workflow's last projected run, so it does not fall by
+       *  itself — and `success_count` / `error_count` by `run_status`. */
       ...USAGE_ATTRIBUTES,
+      success_count: "?int",
+      error_count: "?int",
+      /** When the newest of those runs started, and how it ended. */
+      last_run_at: "?datetime",
+      last_run_status: "?string",
     },
   },
   {
@@ -428,6 +444,34 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
        *  plans/jobs.md §1) — "everything in job X" is one match
        *  (plans/job-index.md §6). */
       job: "?string",
+      /** Who launched it when not a person or an API call (`RunOrigin`:
+       *  schedule, app, peer, public, verify), and the automation that
+       *  fired a scheduled run. */
+      origin: "?string",
+      automation_id: "?string",
+      /** Who launched the run and who was billed for it (`run.start`). */
+      actor: "?string",
+      principal: "?string",
+      /** The run that launched this one (`run.start.parentRunId`): absent
+       *  on a root run. */
+      parent_run_id: "?string",
+      /** The app the run was launched for, and its version (`run.start.app`). */
+      app: "?string",
+      app_version: "?string",
+      /** What its model calls spent (`RunSummary.totals`, or summed from the
+       *  log of a run with no summary). A run that waited on another
+       *  (`meta/run-workflow`) includes that run's spend, so a run and its
+       *  child summed count the child twice. Input tokens are every token
+       *  the model read, cached ones included. Absent when nothing called a
+       *  model. */
+      cost_usd: "?float",
+      model_calls: "?int",
+      input_tokens: "?int",
+      output_tokens: "?int",
+      /** On a run that ended in an error: the path of the deepest step
+       *  whose error ended it (the run overview's rule — a tool call an
+       *  agent went on past is not it). */
+      failed_step: "?string",
     },
   },
   {
