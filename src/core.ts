@@ -551,6 +551,11 @@ export interface RunEvent {
    *  workflow's (a public run's, plans/paid-runs.md §7) — handed to every
    *  step as `ctx.maxCostUsd` and on to `llmAuth`. Read back by a resume. */
   maxCostUsd?: number;
+  /** On a PRICED public run's `run.start` (plans/paid-runs.md §3 step 5,
+   *  §6): the id of the credit token that paid for it — its sessions open
+   *  under `public/<token id>/`. Read back by a resume. Never shown to a
+   *  visitor (`PRIVATE_RUN_FIELDS`). */
+  credit?: string;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its

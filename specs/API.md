@@ -20,8 +20,9 @@ a run's or a job's files take a scoped read token instead, `?t=`, minted by
 their listing, so the key never sits in a URL a served page could read
 (`/artifacts/:runId` below). Unset (dev mode) everything is open. The only
 things served without the key are the web UI's own files, `GET /health`
-(§8), and `GET /public/*` with `POST /public/mcp` (§17): what a person put
-in the public view, and nothing when nothing is. The examples below leave the header out for brevity; add
+(§8), and `GET /public/*` with the POSTs §17 names (a visitor's page, a
+launch and its cancel, buying and claiming credit): what a person put in
+the public view, and nothing when nothing is. The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
@@ -1341,7 +1342,7 @@ components as an app other apps import (`import { RunTimeline } from
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
-| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`, `title?`, `wallet?`, `permissions?` — what the version's frame is granted beyond every app's, `motion` / `camera` / `geolocation` from `app.yaml`'s `permissions:`, which a host adds to the frame's `allow` before the document loads), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
@@ -2792,8 +2793,8 @@ Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps — and
 what anyone may RUN, free or priced in dollars (`runnable`,
-`plans/paid-runs.md` §2; a free item launches through §17.4, a priced one
-is refused until priced runs are built).
+`plans/paid-runs.md` §2; an item launches through §17.4, a priced one
+paid from a credit token, §17.5).
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
 someone puts it there. The UI's door is the topbar's **Publish** dialog, its
@@ -2951,7 +2952,7 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
-| `GET /public/apps` | `[{ name, version, title, description?, icon? }]` — each at the version the public view serves |
+| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says) |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
 
@@ -3011,15 +3012,17 @@ people who keep the server.
 ### 17.4 A public run — `POST /public/workflows/:name/run` (anyone)
 
 What anyone may START (`plans/paid-runs.md` §3, §6, §7; `src/public-runs.ts`):
-a workflow in the record's `runnable` (§17.1). A launch carries no
-credential — one sent is ignored — and answers with a RUN TOKEN, the
-launcher's receipt for that one run. Open by name in the gate, like
-`POST /public/mcp`, whatever its mode; CORS as §17.2 (a preflight allows
-`authorization`).
+a workflow in the record's `runnable` (§17.1). A free launch carries no
+credential — a key or a session sent is ignored; a PRICED one carries a
+CREDIT TOKEN, `Authorization: L402 <macaroon>:<preimage>` (§17.5) — and
+answers with a RUN TOKEN, the launcher's receipt for that one run. Open by
+name in the gate, like `POST /public/mcp`, whatever its mode; CORS as §17.2
+(a preflight allows `authorization`; `WWW-Authenticate` and `Retry-After`
+are exposed to a browser's script).
 
 | Route | |
 | --- | --- |
-| `POST /public/workflows/:name/run` | `{ input?, key? }` → `202 { runId, token }` (`existing: true` when `key` named a run still in flight) |
+| `POST /public/workflows/:name/run` | `{ input?, key? }` → `202 { runId, token, credit? }` (`existing: true` when `key` named a run of this caller's: one in flight, or — with a credit token — any run that token and key launched); priced with no token, or one short: `402` (§17.5) |
 | `GET /public/workflows/:name/runs/:runId` | with the run token (`?t=` or `Authorization: Bearer`): the launcher's view; `?wait=<s>` holds while the run is in flight, at most 55 s |
 | `POST /public/workflows/:name/runs/:runId/cancel` | with the run token: cancels that run and the runs it started; `202 { ok, runId, state }`, `409` when it already ended |
 
@@ -3042,19 +3045,33 @@ costs anything:
    from the ledger) plus the cap of each of its runs in flight, reaching it
    refuses the launch (`Retry-After` until midnight UTC when the day is
    spent, else 60). The check and counting the new run are one step, so
-   launches at once never pass the cap together. A `key` this address sent
-   for a run still in flight returns that run, before any cap.
-6. **The price**: a free item goes on. A priced one is
-   `501 { error: "priced_runs_not_built: …", code: "priced_runs_not_built" }`
-   for now; this is where the credit token and its `402` go.
+   launches at once never pass the cap together. A `key` this caller sent
+   for a run still in flight returns that run, before any cap: the caller
+   is the credit token on a paid launch, else the address.
+6. **The price** (§17.5): a free item goes on. A priced one reads the
+   credit token BEFORE the caps — what it may be used for is known without
+   the wallet: a token that does not verify is `401 invalid_token`, one a
+   holder limited to other items `403 token_not_for_this`, one whose holder
+   capped a run below this item's reserve `403 token_over_max_charge`.
+   After the caps: no token, a token past its end, one replaced by a newer
+   (`reason: "replaced"`), or one whose free credit is under the item's
+   RESERVE (base + markup × `capUsd`) is a `402` challenge — for the
+   SHORTFALL, carrying the token's credit to the new one, when the token
+   presented was not narrowed; for the whole reserve otherwise. A token's
+   first use asks the wallet (`503` when it cannot); a good token has the
+   reserve set aside under the run's id. The same token and `key` as an
+   earlier launch return that run and set nothing more aside. The `202`
+   carries `credit: { held_usd, remaining_usd, remaining_sats, expires }`.
 7. **The run**, detached.
 
 The run is the workflow AS PUBLISHED — the active version, no `params`, no
 settings — with `origin: "public"` on `run.start` and its summary, no actor,
 and no job (a `job/dir` step gets the run's own directory). Its principal is
 the host's `createStrut({ publicRuns: { principal } })`, else the
-workflow's owner. Every agent session it opens is `public/<runId>/<id>`,
-whatever id its input names. It is verified like any other run. Its CAP is
+workflow's owner. Every agent session it opens is `public/<runId>/<id>` —
+a paid run's `public/<token id>/<id>` — whatever id its input names; a paid
+run's `run.start` names its token as `credit` (never shown to a visitor).
+It is verified like any other run. Its CAP is
 the smallest of the item's `capUsd`, the workflow's own (`maxRunCostUsd`,
 else `STRUT_RUN_MAX_COST_USD`, else $100) and what is left of the daily cap:
 recorded on `run.start` as `maxCostUsd`, and carried by the Mothership's
@@ -3062,9 +3079,14 @@ run link, so the gateway stops the run there (without a gateway nothing
 stops it mid-flight; the daily cap bounds the day). When it ends — success,
 error, cancelled, or finished by a durable resume after a restart — the
 ledger records it: a free run is charged nothing and its cost counts in the
-day. What is not yet charged is kept in `<dataDir>/payments/public-runs.json`
-and charged at the next boot (a run cut off that nothing resumed, at what
-its log spent, as an error); the ledger records a run once.
+day; a paid run is charged its token by the rule — base + markup × cost, at
+the price of its launch; a run that FAILED its cost, no markup and no base,
+and never more than its reserve — never more than the token holds, and the
+rest of its reserve is free again. What is not yet charged is kept in
+`<dataDir>/payments/public-runs.json` and charged at the next boot (a run
+cut off that nothing resumed, at what its log spent, as an error), and so
+is a hold the ledger keeps for a run that file lost (at the item's price
+now); the ledger records a run once.
 
 **The run token** is an HMAC over `public-run:<workflow>/<runId>` under the
 API key (else `STRUT_SECRET_KEY`, else a key the process makes, which a
@@ -3085,8 +3107,9 @@ reads as a run that is not there (`404`).
 }
 ```
 
-`charged` (dollars) appears once the run ended and was charged: `0` for a
-free run, whose cost (`totals.cost`) the seller carried. `artifacts` are the
+`charged` (dollars) appears once the run ended and was charged, as the
+ledger recorded it: `0` for a free run, whose cost (`totals.cost`) the
+seller carried. `artifacts` are the
 declared ones, a file here at its `/public` link (add `?t=<token>`). What
 else the launcher reads is the item's `results`: with `output` (the
 default) the view above, without step counts or an error's stack, and the
@@ -3094,6 +3117,89 @@ declared files alone (`…/files` lists them; any other file, the events and
 the transcripts are `404`); with `run`, the summary, events, transcripts and
 every file as §17.2 serves a public run's. A workflow whose runs are public
 (§17.1) shows them whole to anyone, token or not.
+
+### 17.5 Credit — the L402 token a priced run spends (anyone)
+
+A priced item is paid from a CREDIT TOKEN (`plans/paid-runs.md` §4, §5;
+`src/l402.ts`, `src/public-credit.ts`): a bearer L402 credential bought over
+Lightning, holding credit in dollars, charged by each run it pays for.
+Nothing identifies its holder.
+
+| Route | |
+| --- | --- |
+| `GET /public/credit` | with `Authorization: L402 <macaroon>:<preimage>` (or `LSAT`): the token's balance, below. A token never used is used here (the wallet asked once) |
+| `POST /public/credit` | `{ usd }` (0.01 to 1000) or `{ sats }`: a `402` challenge for that much credit — more than one run's reserve. A token presented that was not narrowed carries its free credit to the new one. `404` on a server that prices nothing |
+| `POST /public/credit/claim` | `{ macaroon }`, or `Authorization: L402 <macaroon>`: `{ state: "pending" }`, `{ state: "expired" }`, or `{ state: "settled", preimage, credential: "<macaroon>:<preimage>", msat }` — for a payer whose wallet never hands over the preimage (a phone paying a QR). 120 a minute an address |
+
+The two POSTs are open by name in the gate, like a launch. On a server that
+never priced anything (no `L402_ROOT`), `GET /public/credit` and `claim`
+are `404`.
+
+**The challenge** (`402`; a launch's, or `POST /public/credit`'s):
+
+```
+HTTP/1.1 402 Payment Required
+WWW-Authenticate: L402 macaroon="<base64>", invoice="<bolt11>"
+
+{ "error": "payment_required", "usd": 7.5, "sats": 7500,
+  "rate": { "usdPerBtc": 100000, "at": "…", "source": "mempool.space" },
+  "invoice": "lnbc…", "macaroon": "<base64>",
+  "description": "acme/voxel/character: credit for one run",
+  "expires": "…", "remaining_usd": 0, "reason": "short", "carries": true }
+```
+
+`usd` is what is missing, turned into `sats` at the rate now (rounded up;
+§18's rate, `503 rate_unavailable` with none fresh enough). The invoice
+lasts ten minutes. The macaroon LOCKS the quote: what was paid buys `usd`
+of credit whatever the rate is when it is first used. `reason` (`short`,
+`expired`, `replaced`) says why a presented token did not do; `carries`,
+that the new token inherits its free credit at its first use (and anything
+its runs in flight free later). Nothing is stored for a challenge; minting
+invoices has its own allowance, 20 a minute an address (`429
+too_many_invoices`). With no wallet, or one that cannot be reached, the
+answer is `503 wallet_unavailable`, never `402`.
+
+**Paying:** pay the invoice with any Lightning wallet, then retry with
+`Authorization: L402 <macaroon>:<preimage hex>`. The first time strut sees
+a token it asks the wallet whether its invoice settled (`503
+payment_pending` while it has not) and credits it in proportion to what
+settled. A token lasts a year (`expires`); past it, a launch is a `402`
+(`reason: "expired"`) and what was left is the seller's.
+
+**The macaroon** is libmacaroons v2 binary, base64 — any macaroon library
+reads it and appends a caveat. Its identifier is L402's (version 0, the
+payment hash, a token id). Strut writes five first-party caveats:
+`services=strut:0`, `strut_sats`, `strut_credit` (micro-dollars),
+`strut_valid_until` (unix seconds), `strut_carry` (a token id, or `none`).
+A HOLDER may append, before handing a token to someone else:
+
+| Caveat | Means |
+| --- | --- |
+| `strut_capabilities=workflow:<name>,step:<type>,…` | only these items (`403 token_not_for_this`) |
+| `strut_max_charge=<micro-dollars>` | no run whose reserve is above it (`403 token_over_max_charge`) |
+| `strut_valid_until=<unix>` | an earlier end for this copy |
+| `services=…` | must still name `strut:0` |
+
+Every caveat must hold, so a repeat only narrows. Any other caveat — one
+strut does not know, a third-party caveat, or strut's own written again —
+refuses the token (`401 invalid_token`). A narrowed token is never carried
+from: its top-up starts a balance of its own.
+
+**The balance** (`GET /public/credit`):
+
+```json
+{
+  "token": "<64 hex>", "paid_usd": 10, "spent_usd": 2.5, "held_usd": 4.5,
+  "remaining_usd": 3, "remaining_sats": 3000, "rate": 100000, "bought_sats": 10000,
+  "created": "…", "expires": "…", "expired": false, "replaced": false,
+  "entries": [{ "seq": 7, "at": "…", "kind": "charge", "usd": 2.5, "subject": "workflow:two", "runId": "…", "cost_usd": 2, "outcome": "success" }, …]
+}
+```
+
+`paid_usd` is its payment and what it inherited; `spent_usd` its charges
+and what it handed on or lost to its end; `remaining_*` is 0 once it is
+replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
+`charge`, `carry` (− out, + in), `expiry`.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

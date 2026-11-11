@@ -29,8 +29,19 @@
  *   one cut off that nothing resumed, at what its log says it cost. A run
  *   that never wrote `run.start` is dropped: nothing ran.
  *
- * Item 5 (priced runs) slots in here: the hold on a credit token after the
- * caps, its token and price on the entry, and the charge against it.
+ * - **A priced run** (item 5, §5): after the caps, `admission.hold` puts
+ *   the credit token and the price of that moment on the run's entry, on
+ *   file, and THEN sets the reserve aside in the ledger, under the run id
+ *   the caps minted — so a hold always names a run on file or one the boot
+ *   finds in the ledger. A hold refused, or a launch that fails after it,
+ *   lets the admission go and frees the hold (a charge of nothing). The
+ *   run's end charges the token by the rule (`chargeFor`, the ledger's):
+ *   base + markup × cost, a failed run its cost and no more than the
+ *   reserve, never more than the token holds.
+ * - **Holds outlive a restart.** `reconcile(live, { holds: true })` also
+ *   reads the ledger's open holds: one whose run is not on file (its file
+ *   was lost) and not live is charged from its run's log, at the item's
+ *   price now; one whose run never started is freed.
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -38,7 +49,7 @@ import type { RunEvent } from "./core.js";
 import type { RunStore } from "./store.js";
 import { generateRunId } from "./store.js";
 import { summaryFromLog } from "./runner.js";
-import { FREE, microsToUsd, usdToMicros, type LedgerStore, type Micros, type RunOutcome } from "./payments/ledger.js";
+import { FREE, LedgerError, microsToUsd, usdToMicros, type HoldResult, type LedgerStore, type Micros, type Price, type RunOutcome } from "./payments/ledger.js";
 import { runnableSubject } from "./public-runnable.js";
 import type { PublicRunnable } from "./public-surface.js";
 
@@ -68,6 +79,11 @@ export interface PublicRunEntry {
   cap?: Micros;
   /** Epoch ms it was admitted. */
   at: number;
+  /** A priced run's credit token (its id), and the price and reserve at its
+   *  launch: what its end charges, whatever the record says by then. */
+  token?: string;
+  price?: Price;
+  reserve?: Micros;
 }
 
 export type Admission =
@@ -77,8 +93,15 @@ export type Admission =
       /** The run's own cap in dollars (`RunOptions.maxCostUsd`); absent
        *  when nothing caps it here (no item cap, no workflow cap passed). */
       capUsd?: number;
-      /** A refusal after the caps (the price: item 5's 402) lets it go. */
+      /** A refusal after the caps (the price's 402) lets it go; after a
+       *  hold, frees it too. */
       release(): void;
+      /** A priced run (§5): the token and the price on the entry, on file,
+       *  then the reserve set aside under this run's id. A refusal lets the
+       *  admission go; so does a hold that names another run (the same
+       *  token and `key` as an earlier launch: `existing`, its run). Throws
+       *  when the ledger or the file cannot be written, the admission let go. */
+      hold(o: { token: string; price: Price; reserve: Micros; key?: string }): Promise<HoldResult>;
     }
   /** The same caller's `key` names a run still in flight. */
   | { ok: "existing"; runId: string }
@@ -90,6 +113,10 @@ export interface PublicRunsOptions {
   /** The file the runs not yet charged are kept in; none = memory (a memory
    *  run store, whose runs do not outlive the process either). */
   file?: string;
+  /** An item's price now, by its subject: what a priced run whose entry was
+   *  lost is charged at. Without it, or for an item gone, nothing but the
+   *  rule's cost part of a failed run. */
+  price?: (subject: string) => Promise<Price | undefined>;
   maxInFlight?: number;
   now?: () => number;
 }
@@ -99,18 +126,26 @@ export interface PublicRuns {
    *  An admitted run is counted, minted an id and on file before this
    *  answers. `scope` is who the `key` belongs to (the visitor's address). */
   admit(item: PublicRunnable, o: { workflowCapUsd?: number; key?: string; scope?: string }): Promise<Admission>;
-  /** A public run in flight again: a durable resume of one. */
-  track(workflow: string, runId: string, capUsd?: number): Promise<void>;
+  /** A public run in flight again: a durable resume of one, with the credit
+   *  token its `run.start` names. */
+  track(workflow: string, runId: string, capUsd?: number, token?: string): Promise<void>;
   /** The run ended: charge it, then let it go. Never throws. */
   ended(workflow: string, runId: string): Promise<void>;
   /** Admitted and not yet charged. */
   pending(workflow: string, runId: string): boolean;
+  /** What the run was charged, once it was: micro-dollars. */
+  charged(workflow: string, runId: string): Promise<Micros | undefined>;
   /** How many public runs this server counts in flight. */
   inFlight(): number;
   /** Boot: every run on file counts as in flight until `reconcile`. */
   load(): Promise<void>;
-  /** Boot, after auto-resume: charge every run on file that is not live. */
-  reconcile(live: (workflow: string, runId: string) => boolean): Promise<Array<{ workflow: string; runId: string; action: "charged" | "dropped" | "failed" | "live" }>>;
+  /** Boot, after auto-resume: charge every run on file that is not live —
+   *  and, with `holds`, every open hold in the ledger whose run is neither
+   *  on file nor live. */
+  reconcile(
+    live: (workflow: string, runId: string) => boolean,
+    o?: { holds?: boolean },
+  ): Promise<Array<{ workflow: string; runId: string; action: "charged" | "dropped" | "failed" | "live" }>>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -211,12 +246,15 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
       if (keyed) keys.set(keyed, runId);
       onFile.set(k, entry);
       let released = false;
+      let held: string | undefined;
       const release = () => {
         if (released) return;
         released = true;
         forget(k);
         onFile.delete(k);
         void save().catch(() => undefined);
+        // A hold whose run will not launch is freed: a charge of nothing.
+        if (held) void freeHold(held, runId, subject);
       };
       try {
         await save();
@@ -225,10 +263,28 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
         release();
         return { ok: false, status: 503, error: "this server cannot record a public run just now — try again shortly", retryAfter: 30 };
       }
-      return { ok: true, runId, ...(cap !== undefined ? { capUsd: microsToUsd(cap) } : {}), release };
+      const hold = async (h: { token: string; price: Price; reserve: Micros; key?: string }): Promise<HoldResult> => {
+        if (released) throw new Error(`public run ${item.name}/${runId} was let go before its hold`);
+        // On file first, so a hold always names a run the boot can find.
+        entry.token = h.token;
+        entry.price = h.price;
+        entry.reserve = h.reserve;
+        let res: HoldResult;
+        try {
+          await save();
+          res = await (await o.ledger()).hold({ token: h.token, reserve: h.reserve, subject, runId, ...(h.key !== undefined ? { key: h.key } : {}), at: now() });
+        } catch (err) {
+          release();
+          throw err;
+        }
+        if (res.ok && res.runId === runId && !res.existing) held = h.token;
+        else release();
+        return res;
+      };
+      return { ok: true, runId, ...(cap !== undefined ? { capUsd: microsToUsd(cap) } : {}), release, hold };
     });
 
-  const track: PublicRuns["track"] = async (workflow, runId, capUsd) => {
+  const track: PublicRuns["track"] = async (workflow, runId, capUsd, token) => {
     const k = keyOf(workflow, runId);
     const known = flights.get(k) ?? onFile.get(k);
     const entry: PublicRunEntry = known ?? {
@@ -237,6 +293,7 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
       subject: runnableSubject({ kind: "workflow", name: workflow }),
       ...(capUsd !== undefined ? { cap: usdToMicros(capUsd) } : {}),
       at: now(),
+      ...(token ? { token } : {}),
     };
     flights.set(k, entry);
     if (!onFile.has(k)) {
@@ -258,25 +315,47 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
     return { outcome, cost: summaryFromLog(workflow, runId, events, outcome).totals?.cost ?? 0 };
   };
 
-  /** Charge the run and let it go: `charged`, `dropped` (it never ran),
-   *  or `failed` — left counted and on file, for the next boot. */
-  const settle = async (workflow: string, runId: string): Promise<"charged" | "dropped" | "failed"> => {
+  /** Free a hold whose run never ran or never launched: a charge of
+   *  nothing (`error` at no cost — the rule's `min(cost, reserve)`), which
+   *  `daily` counts as a failed call. Never throws. */
+  async function freeHold(token: string, runId: string, subject: string): Promise<void> {
+    try {
+      await (await o.ledger()).charge({ token, runId, subject, cost: 0, outcome: "error", price: FREE, at: now() });
+    } catch (err) {
+      if (err instanceof LedgerError && err.code === "no_hold") return;
+      console.error(`[public-runs] freeing the hold of ${subject} run ${runId} failed (the boot reconcile frees it):`, err);
+    }
+  }
+
+  /** Charge the run and let it go: `charged`, `dropped` (it never ran; a
+   *  hold set aside for it is freed), or `failed` — left counted and on
+   *  file, for the next boot. `held` is a hold the ledger knows of a run
+   *  that is not on file. */
+  const settle = async (workflow: string, runId: string, held?: { token: string; subject: string }): Promise<"charged" | "dropped" | "failed"> => {
     const k = keyOf(workflow, runId);
     const entry = flights.get(k) ?? onFile.get(k);
+    const subject = entry?.subject ?? held?.subject ?? runnableSubject({ kind: "workflow", name: workflow });
     let action: "charged" | "dropped";
     try {
+      // A run known here has its token on its entry (none: a free run). One
+      // whose entry was lost names it on its `run.start`.
+      const token = entry ? entry.token : (held?.token ?? (await o.store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start")?.credit);
       const got = await outcomeOf(workflow, runId);
       action = got ? "charged" : "dropped";
       if (got) {
         const cost = Number.isFinite(got.cost) && got.cost > 0 ? usdToMicros(got.cost) : 0;
-        await (await o.ledger()).charge({
-          runId,
-          subject: entry?.subject ?? runnableSubject({ kind: "workflow", name: workflow }),
-          cost,
-          outcome: got.outcome,
-          price: FREE,
-        });
-      }
+        // A priced run's price is the one at its launch; an entry lost, the
+        // item's now.
+        const price = token ? (entry?.price ?? (await o.price?.(subject)) ?? FREE) : FREE;
+        try {
+          await (await o.ledger()).charge({ runId, subject, cost, outcome: got.outcome, price, ...(token ? { token } : {}), at: now() });
+        } catch (err) {
+          // The launch wrote the token on file and the hold never followed
+          // (a crash between them): nothing was set aside, nothing to charge.
+          if (!(err instanceof LedgerError && err.code === "no_hold")) throw err;
+          console.warn(`[public-runs] ${workflow}/${runId}: no hold on its token to charge`);
+        }
+      } else if (token) await freeHold(token, runId, subject);
     } catch (err) {
       console.error(`[public-runs] charging ${workflow}/${runId} failed:`, err);
       return "failed";
@@ -309,11 +388,22 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
     }
   };
 
-  const reconcile: PublicRuns["reconcile"] = async (live) => {
+  const reconcile: PublicRuns["reconcile"] = async (live, r = {}) => {
     const out: Array<{ workflow: string; runId: string; action: "charged" | "dropped" | "failed" | "live" }> = [];
     for (const e of [...onFile.values()]) {
       const action = live(e.workflow, e.runId) ? "live" : await settle(e.workflow, e.runId);
       out.push({ workflow: e.workflow, runId: e.runId, action });
+    }
+    if (!r.holds) return out;
+    // The ledger's open holds of runs this file does not hold: charged from
+    // their logs (§5, "Holds outlive a restart"). A workflow's only: a
+    // priced tool's call holds while it runs, and is item 6's to reconcile.
+    for (const h of await (await o.ledger()).openHolds()) {
+      if (!h.subject.startsWith("workflow:")) continue;
+      const workflow = h.subject.slice("workflow:".length);
+      if (flights.has(keyOf(workflow, h.runId)) || onFile.has(keyOf(workflow, h.runId))) continue;
+      const action = live(workflow, h.runId) ? "live" : await settle(workflow, h.runId, { token: h.token, subject: h.subject });
+      out.push({ workflow, runId: h.runId, action });
     }
     return out;
   };
@@ -323,6 +413,7 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
     track,
     ended,
     pending: (workflow, runId) => onFile.has(keyOf(workflow, runId)),
+    charged: async (workflow, runId) => (await (await o.ledger()).chargeOf(runId, runnableSubject({ kind: "workflow", name: workflow })))?.usd,
     inFlight: () => flights.size,
     load,
     reconcile,

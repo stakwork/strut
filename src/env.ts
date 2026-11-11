@@ -103,8 +103,11 @@ export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_"];
 
 /** Exact names hidden the same way. `STRUT_SECRET_KEY` decrypts every
  *  encrypted file under the data dir, `payments.json` among them: a step
- *  that read it could read the wallet's pay credential off the disk. */
-export const HIDDEN_FROM_STEPS_NAMES: readonly string[] = ["STRUT_SECRET_KEY"];
+ *  that read it could read the wallet's pay credential off the disk.
+ *  `L402_ROOT` signs every credit token (plans/paid-runs.md §4.2): it lives
+ *  in `payments.json`, and a value of that name set anywhere else is never
+ *  a step's either. */
+export const HIDDEN_FROM_STEPS_NAMES: readonly string[] = ["STRUT_SECRET_KEY", "L402_ROOT"];
 
 /** Whether the secrets capability must answer nothing for `name`. Case does
  *  not matter: Windows' `process.env` reads any case. */

@@ -5,10 +5,12 @@
  * `secrets.json`: a step reads every deployment secret by name, and a
  * credential that can pay must be readable by nothing on the services bag.
  *
- * Today it holds the WALLET: which provider, its receive credential, and its
- * pay credential when there is one (kept here for the payer, item 7; never
- * handed to `ctx.services.lightning`). Item 5 adds `L402_ROOT` the same
- * way: one name, one accessor on `PaymentsSettings`.
+ * It holds the WALLET: which provider, its receive credential, and its pay
+ * credential when there is one (kept here for the payer, item 7; never
+ * handed to `ctx.services.lightning`). And `L402_ROOT` (§4.2): the 32 bytes
+ * every credit token's root key is derived from, minted when the first
+ * priced item is saved. It must be backed up with the ledger: without it no
+ * outstanding token verifies.
  *
  * Set two ways: from the environment at boot (`walletFromEnv`, the
  * `LIGHTNING_*` names, which the env scrub takes out of `process.env` and
@@ -16,6 +18,7 @@
  * `PUT /earnings/wallet` (`checkWalletUpdate`).
  */
 
+import { randomBytes } from "node:crypto";
 import type { SecretStore } from "../secret-store.js";
 import { daemonUrl } from "./sphinx-daemon.js";
 import { parseNwcUrl } from "./nwc-url.js";
@@ -27,6 +30,8 @@ export const PAYMENTS_FILE = "payments.json";
 export const PAYMENTS_KEYS = {
   /** The wallet's settings, as JSON (`WalletSettings`). */
   wallet: "WALLET",
+  /** The credit tokens' root (plans/paid-runs.md §4.2): 32 random bytes, hex. */
+  l402Root: "L402_ROOT",
 } as const;
 
 /** The environment names a wallet is set from at boot. Every one is hidden
@@ -109,6 +114,39 @@ export class PaymentsSettings {
   async setWallet(settings: WalletSettings | null): Promise<void> {
     if (settings === null) await this.#store.delete(PAYMENTS_KEYS.wallet);
     else await this.#store.set(PAYMENTS_KEYS.wallet, JSON.stringify(settings));
+  }
+
+  /** Once read: it is never replaced, and every paid request asks for it. */
+  #root: Buffer | null = null;
+  /** `L402_ROOT`, or null before the first priced item was saved. A value
+   *  on file that is not 32 bytes of hex is no root, and says so. */
+  async l402Root(): Promise<Buffer | null> {
+    if (this.#root) return this.#root;
+    const raw = await this.#store.get(PAYMENTS_KEYS.l402Root);
+    if (!raw) return null;
+    if (!/^[0-9a-f]{64}$/.test(raw)) {
+      console.warn(`[payments] ${PAYMENTS_KEYS.l402Root} in ${PAYMENTS_FILE} is not 32 bytes of hex: no credit token verifies`);
+      return null;
+    }
+    this.#root = Buffer.from(raw, "hex");
+    return this.#root;
+  }
+
+  #minting: Promise<Buffer> | null = null;
+  /** `L402_ROOT`, minted (32 random bytes) when there is none. Never
+   *  replaced: a new root would void every token outstanding. */
+  ensureL402Root(): Promise<Buffer> {
+    this.#minting ??= (async () => {
+      const known = await this.l402Root();
+      if (known) return known;
+      if (await this.#store.get(PAYMENTS_KEYS.l402Root)) throw new Error(`${PAYMENTS_KEYS.l402Root} in ${PAYMENTS_FILE} is not 32 bytes of hex: fix or remove it by hand (removing it voids every credit token outstanding)`);
+      const root = randomBytes(32);
+      await this.#store.set(PAYMENTS_KEYS.l402Root, root.toString("hex"));
+      return root;
+    })().finally(() => {
+      this.#minting = null;
+    });
+    return this.#minting;
   }
 }
 

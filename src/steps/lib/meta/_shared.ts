@@ -1,4 +1,27 @@
+import { z } from "zod";
 import type { AuthoringCapability } from "../../../authoring.js";
+import { isAncestorRun, type RunControl } from "../../../run-control.js";
+
+/** `edits` on meta/edit-workflow and meta/edit-step — the chat's own
+ *  (src/ai/tools.ts): exact-string replacements over the active version. */
+export const editsSchema = z
+  .array(
+    z.object({
+      old: z.string().min(1).describe("Text to replace — must match the current source exactly once (whitespace and indentation included)."),
+      new: z.string().describe("Replacement text (empty to delete)."),
+    }),
+  )
+  .min(1)
+  .describe("Exact-string replacements applied in order to the ACTIVE version's source — for a small change to a big file, instead of resending it whole.");
+
+/** Cancelling or pausing the run this step is in (or one that launched it)
+ *  would stop the caller itself: a paused turn waits for a resume no one
+ *  will send. */
+export function ownRunRefusal(control: RunControl | undefined, runId: string, action: "cancel" | "pause"): string | null {
+  return isAncestorRun(control, runId)
+    ? `run ${runId} is this run, or one that launched it — it cannot ${action} itself. End your turn instead.`
+    : null;
+}
 
 /**
  * The `meta/*` steps are thin plumbing over the authoring capability

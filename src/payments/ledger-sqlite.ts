@@ -169,6 +169,7 @@ export class SqliteLedgerStore implements LedgerStore {
       holdByRun: p("select * from entries where run_id = ? and kind = 'hold' and token = ?"),
       chargeByRun: p("select * from entries where run_id = ? and kind = 'charge' and token = ?"),
       freeChargeByRun: p("select * from entries where run_id = ? and kind = 'charge' and token is null and subject = ?"),
+      chargeOf: p("select * from entries where run_id = ? and kind = 'charge' and subject = ? order by seq limit 1"),
       tokenEntries: p("select * from entries where token = ? and seq < ? order by seq desc limit ?"),
       openHolds: p(
         // CROSS JOIN keeps the tokens first: only those holding now, never a
@@ -359,6 +360,11 @@ export class SqliteLedgerStore implements LedgerStore {
 
   async openHolds(): Promise<OpenHold[]> {
     return (this.live().s.openHolds.all() as Row[]).map(holdOf);
+  }
+
+  async chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined> {
+    const row = this.live().s.chargeOf.get(runId, subject) as Row | undefined;
+    return row ? entryOf(row) : undefined;
   }
 
   async earnings(q: EarningsQuery): Promise<EarningsRow[]> {

@@ -154,14 +154,22 @@ describe("fact trust on a ladybug file", { skip: lb.skip }, () => {
   });
 
   it("refuting a fact the graph does not hold makes no fact, only the word against it", async () => {
-    const r = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: porto, text: "Tom lives in Porto", create_schema_if_missing: true, cardinality: "one", refuted: true }, b);
+    // Pinned a day apart, so Sam's word is always the newer one (evidence keeps whole seconds).
+    const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
+    const fact = { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: porto, text: "Tom lives in Porto" };
+    const r = await run(assertStep, { ...fact, create_schema_if_missing: true, cardinality: "one", refuted: true, observed_at: daysAgo(2) }, b);
     assert.equal(r.action, "refuted");
     const edges = await b.query(`MATCH (:Node {ref_id: $t})-[r:LIVES_IN]->(:Node) RETURN count(r) AS c`, { t: tom });
     assert.equal(Number(edges[0]!["c"]), 0);
-    // Sam then says it: it comes back refuted, not stated.
-    await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: porto, text: "Tom lives in Porto", said_by: sam }, b);
+    // Sam says it after: it comes back refuted, not stated.
+    await run(assertStep, { ...fact, said_by: sam, observed_at: daysAgo(1) }, b);
     const f = (await run(graphSearch, { q: "Tom lives in Porto", facts: true }, b)).facts[0];
+    assert.deepEqual(f.evidence.items.map((x: { sayer: { kind: string }; strength: number }) => [x.sayer.kind, x.strength]), [["other", 1], ["owner", -1]], "Sam's word is the newer");
     assert.deepEqual([f.status, f.stance], ["refuted", "ask"], "the user's word against it stands until they back it");
+    // The user backing it is what undoes it.
+    await run(assertStep, { ...fact, source: "msg-tom" }, b);
+    const back = (await run(graphSearch, { q: "Tom lives in Porto", facts: true }, b)).facts[0];
+    assert.deepEqual([back.status, back.stance], ["supported", "state"]);
   });
 
   it("deleting a fact clears its evidence: saved again, it starts from nothing", async () => {
