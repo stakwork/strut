@@ -4,11 +4,14 @@
 // { input, cacheRead, cacheWrite, output } token count, shared by the LLM
 // steps (the core `agent` step, plus the lab's eval/reflect + gitsee steps).
 //
-// PRICING IS NOT HERE (an unpriced model costs 0, see aieo's modelPriceSource). aieo owns the price table and the per-provider output
-// cap (`getTokenPricing` / `computeSessionCost` in its provider.ts,
-// `maxOutputTokensFor` in its resolve.ts); `usageForCost` below is the shape
-// adapter into `computeSessionCost`. aieo stays lazy-loaded (it pulls every
-// provider SDK), so this module imports only a TYPE from it.
+// PRICING IS NOT HERE, and strut holds no price at all: every model's price
+// comes from the Mothership (the LLM gateway; aieo's `gatewayModelPrice`,
+// resolved once per step), and a model it does not price costs 0 and is
+// flagged unpriced (`costUnpriced`). aieo's `computeSessionCost` turns tokens ×
+// the Mothership's rates into dollars; `maxOutputTokensFor` in its resolve.ts
+// is the per-provider output cap; `usageForCost` below is the shape adapter
+// into `computeSessionCost`. aieo stays lazy-loaded (it pulls every provider
+// SDK), so this module imports only a TYPE from it.
 
 import type { TokenUsageForCost } from "./aieo/index.js";
 
@@ -198,8 +201,7 @@ export function reportedCost(usage: unknown, providerMetadata?: unknown): number
   return undefined;
 }
 
-/** The shape aieo's `computeSessionCost(provider, usage, modelId?)` prices —
- *  `computeSessionCost(provider, usageForCost(u))` is the whole cost calc. */
+/** The shape aieo's `computeSessionCost(provider, usage, modelId, actual, price)` prices. */
 export function usageForCost(u: TokenUsage): TokenUsageForCost {
   return {
     input: u.inputTokens,

@@ -41,7 +41,6 @@ const {
   getModelDetails,
   getProviderOptions,
   computeSessionCost,
-  getModelPrice,
   mapleReasoningEffort,
 } = await import("./provider.js");
 const { generateText, streamText } = await import("ai");
@@ -420,11 +419,12 @@ await test("getProviderOptions(maple): fast is the least thinking the model allo
   eq(getProviderOptions("maple", undefined, "maple/kimi-k3"), { openai: {} }, "the model's default");
 });
 
-await test("computeSessionCost(maple): Maple's own rates, a cached prompt token as input", () => {
-  const usage = { input: 600_000, cache_read: 400_000, cache_write: 0, output: 1_000_000 };
-  eq(computeSessionCost("maple", usage, "gemma4-31b").toFixed(4), "2.8000", "gemma4-31b: 1M in at 0.80, 1M out at 2.00");
-  eq(computeSessionCost("maple", usage, "gpt-oss-120b").toFixed(4), "1.5000", "gpt-oss-120b");
-  eq(computeSessionCost("maple", usage, "unlisted").toFixed(4), "33.0000", "unlisted: the dearest listed rate");
+const mp = (input_per_mtok: number, output_per_mtok: number) => ({ pricing: { inputTokenPrice: input_per_mtok, outputTokenPrice: output_per_mtok } });
+
+await test("computeSessionCost(maple): the Mothership's price for the model, else unpriced (no ceiling)", () => {
+  const usage = { input: 1_000_000, cache_read: 0, cache_write: 0, output: 1_000_000 };
+  eq(computeSessionCost("maple", usage, "gemma4-31b", undefined, mp(0.8, 2)).toFixed(4), "2.8000", "gemma4-31b: 1M in at 0.80, 1M out at 2.00");
+  eq(computeSessionCost("maple", usage, "unlisted"), 0, "unlisted: unpriced");
 });
 
 await test("maple on the wire: MAPLE_BASE_URL via getSecret, /chat/completions, the effort the model takes", async () => {
@@ -518,11 +518,10 @@ await test("getProviderOptions(numes): fast is none, thinking is high, else the 
   eq(getProviderOptions("numes", undefined, "numes/z-ai/glm-5.3"), { openai: {} }, "the model's default");
 });
 
-await test("computeSessionCost(numes): the free models cost nothing, an unlisted one the dearest rate", () => {
+await test("computeSessionCost(numes): a $0 Mothership row is free, an unlisted model unpriced", () => {
   const usage = { input: 600_000, cache_read: 400_000, cache_write: 0, output: 1_000_000 };
-  eq(computeSessionCost("numes", usage, "z-ai/glm-5.3"), 0, "glm-5.3");
-  eq(computeSessionCost("numes", usage, "nvidia/nemotron-3-ultra-550b-a55b"), 0, "nemotron ultra");
-  eq(computeSessionCost("numes", usage, "someone/something-new").toFixed(2), "73.64", "unlisted: 1M in at 12.28, 1M out at 61.36");
+  eq(computeSessionCost("numes", usage, "z-ai/glm-5.3", undefined, mp(0, 0)), 0, "glm-5.3");
+  eq(computeSessionCost("numes", usage, "someone/something-new"), 0, "unlisted: unpriced, no ceiling");
 });
 
 await test("numes on the wire: NUMES_BASE_URL via getSecret, /api/v1/chat/completions, the effort as asked", async () => {
@@ -594,13 +593,11 @@ await test("getProviderOptions(tokenfactory): fast is none, thinking is high, el
   eq(getProviderOptions("tokenfactory", undefined, "tokenfactory/glm-5.3"), { openai: {} }, "the model's default");
 });
 
-await test("computeSessionCost(tokenfactory): each model at what the gateway billed, an unlisted one the dearest rate", () => {
+await test("computeSessionCost(tokenfactory): the Mothership's price (a $0 row is free), an unlisted model unpriced", () => {
   const usage = { input: 1_000_000, cache_read: 0, cache_write: 0, output: 1_000_000 };
-  eq(computeSessionCost("tokenfactory", usage, "glm-5.3"), 0, "glm-5.3 is free");
-  eq(computeSessionCost("tokenfactory", usage, "glm-5.3-flash").toFixed(2), "0.65", "glm-5.3-flash: 0.15 + 0.50");
-  eq(computeSessionCost("tokenfactory", usage, "nemotron-3-ultra").toFixed(2), "3.00", "nemotron-3-ultra: 0.60 + 2.40");
-  eq(computeSessionCost("tokenfactory", usage, "something-new").toFixed(2), "3.00", "unlisted: nemotron-3-ultra's rate");
-  eq(getModelPrice("tokenfactory", "something-new"), undefined, "no price of its own for the picker");
+  eq(computeSessionCost("tokenfactory", usage, "glm-5.3", undefined, mp(0, 0)), 0, "glm-5.3 is free");
+  eq(computeSessionCost("tokenfactory", usage, "glm-5.3-flash", undefined, mp(0.15, 0.5)).toFixed(2), "0.65", "glm-5.3-flash: 0.15 + 0.50");
+  eq(computeSessionCost("tokenfactory", usage, "something-new"), 0, "unlisted: unpriced");
 });
 
 await test("tokenfactory on the wire: TOKENFACTORY_BASE_URL via getSecret, /v1/chat/completions, the effort as asked", async () => {

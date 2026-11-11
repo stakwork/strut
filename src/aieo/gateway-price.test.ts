@@ -1,6 +1,6 @@
-// Prices come from the gateway and nowhere else: the client, its cache, the id
-// normaliser, and what computeSessionCost does with the answer. The gateway is
-// an injected fetch (and, for the HTTP-level cases, a local server).
+// Prices come from the Mothership and nowhere else: the client, its cache, the id
+// normaliser, and what computeSessionCost does with the answer. The Mothership is
+// an injected fetch standing in for the Mothership.
 import { beforeEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -37,7 +37,7 @@ const row = (o: Record<string, unknown> = {}) => ({
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
-/** A gateway: `rows` by model id; anything else is a 404 `unpriced`. */
+/** The Mothership: `rows` by model id; anything else is a 404 `unpriced`. */
 function gateway(rows: Record<string, unknown>) {
   const asked: string[] = [];
   const f = (async (url: string) => {
@@ -65,12 +65,12 @@ describe("id normalisation", () => {
   });
 });
 
-describe("the gateway's price", () => {
+describe("the Mothership's price", () => {
   it("is the effective rates: tokens × rates, with cache read, 5m and 1h writes", async () => {
     const g = gateway({ "claude-sonnet-5": {} });
     const price = await gatewayModelPrice("anthropic", "claude-sonnet-5", ROOT, { fetch: g.f });
     assert.ok(price);
-    assert.equal(modelPriceSource("anthropic", "claude-sonnet-5", price), "gateway");
+    assert.equal(modelPriceSource("anthropic", "claude-sonnet-5", price), "mothership");
     near(computeSessionCost("anthropic", usage, "claude-sonnet-5", undefined, price), 2 + 0.2 + 2.5 + 10);
     near(computeSessionCost("anthropic", { ...usage, cache_write_1h: M }, "claude-sonnet-5", undefined, price), 2 + 0.2 + 4 + 10);
     near(computeSessionCost("anthropic", { input: 0, cache_read: 0, cache_write: M, cache_write_1h: 0.4 * M, output: 0 }, "claude-sonnet-5", undefined, price), 0.6 * 2.5 + 0.4 * 4);
@@ -160,61 +160,76 @@ describe("the gateway's price", () => {
     assert.deepEqual(g2.asked, ["claude-haiku-4-5-20251001", "claude-haiku-4-5"]);
   });
 
-  it("asks Google's models as bifrost names the provider", async () => {
-    let seen = "";
-    const f = (async (url: string) => ((seen = new URL(url).searchParams.get("provider")!), json(200, row()))) as unknown as typeof fetch;
-    await gatewayModelPrice("google", "gemini-3.8-flash", ROOT, { fetch: f });
-    assert.equal(seen, "gemini");
+  it("sends Google as gemini and maple / numes / tokenfactory / the rest as they are", async () => {
+    const seen: string[] = [];
+    const f = (async (url: string) => (seen.push(new URL(url).searchParams.get("provider")!), json(200, row()))) as unknown as typeof fetch;
+    for (const p of ["google", "numes", "tokenfactory", "maple", "anthropic"]) await gatewayModelPrice(p, "m", ROOT, { fetch: f });
+    assert.deepEqual(seen, ["gemini", "numes", "tokenfactory", "maple", "anthropic"]);
   });
 });
 
 describe("what a cost is", () => {
-  it("an unpriced model of a direct provider is 0, warned once", () => {
+  it("an unpriced model is 0, warned once, for every provider", () => {
     const warn = mock.method(console, "warn", () => {});
     try {
       assert.equal(modelPriceSource("anthropic", "claude-nope-1", undefined), "unpriced");
       assert.equal(computeSessionCost("anthropic", usage, "claude-nope-1"), 0);
       assert.equal(computeSessionCost("anthropic", usage, "claude-nope-1"), 0);
       assert.equal(computeSessionCost("openai", usage, "gpt-nope-1"), 0);
-      assert.equal(warn.mock.callCount(), 2);
-      assert.match(String(warn.mock.calls[0]!.arguments[0]), /no gateway price for anthropic\/claude-nope-1.*unpriced/);
+      for (const p of ["maple", "numes", "tokenfactory"]) assert.equal(computeSessionCost(p, usage, "unlisted-1"), 0, `${p}: no ceiling`);
+      assert.equal(warn.mock.callCount(), 5);
+      assert.match(String(warn.mock.calls[0]!.arguments[0]), /no Mothership price for anthropic\/claude-nope-1.*unpriced/);
     } finally {
       warn.mock.restore();
     }
   });
 
-  it("no gateway at all: one console.error per process", () => {
+  it("no model named: unpriced with a warning, no flat rate", () => {
+    const warn = mock.method(console, "warn", () => {});
+    try {
+      assert.equal(computeSessionCost("anthropic", usage), 0);
+      assert.equal(modelPriceSource("anthropic"), "unpriced");
+      assert.match(String(warn.mock.calls[0]!.arguments[0]), /no model named/);
+    } finally {
+      warn.mock.restore();
+    }
+  });
+
+  it("no Mothership at all: one console.error per process", () => {
     const err = mock.method(console, "error", () => {});
     try {
       warnNoGateway();
       warnNoGateway();
       assert.equal(err.mock.callCount(), 1);
-      assert.match(String(err.mock.calls[0]!.arguments[0]), /no gateway is configured.*unpriced/);
+      assert.match(String(err.mock.calls[0]!.arguments[0]), /no Mothership is configured.*unpriced/);
     } finally {
       err.mock.restore();
     }
   });
 
-  it("no model named: the flat rate; the reported cost wins", () => {
-    near(computeSessionCost("anthropic", usage), 3 + 0.3 + 3.75 + 15);
-    assert.equal(modelPriceSource("anthropic"), "provider-default");
-    assert.equal(computeSessionCost("anthropic", usage, "claude-x", 0.25), 0.25);
+  it("the provider's reported cost wins over the Mothership's price", async () => {
+    const price = await gatewayModelPrice("anthropic", "m", ROOT, { fetch: gateway({ m: {} }).f });
+    assert.equal(computeSessionCost("anthropic", usage, "m", 0.25, price), 0.25);
+    assert.equal(computeSessionCost("numes", usage, "z-ai/glm-5.3", 0), 0, "a reported 0 is a cost, not unpriced");
   });
 
-  it("Token Factory's free models stay free, an unlisted one at the ceiling, with no gateway price", () => {
-    assert.equal(computeSessionCost("tokenfactory", usage, "glm-5.3"), 0);
-    assert.equal(computeSessionCost("tokenfactory", usage, "kimi-k3.1-pro"), 0);
-    assert.equal(modelPriceSource("tokenfactory", "glm-5.3"), "table");
-    near(computeSessionCost("tokenfactory", usage, "not-listed"), 0.6 * 3 + 2.4);
-    assert.equal(modelPriceSource("tokenfactory", "not-listed"), "provider-default");
-    // The gateway's answer for an unlisted one beats the ceiling; the table beats the gateway.
-    const price = { pricing: { inputTokenPrice: 1, outputTokenPrice: 1 } };
-    near(computeSessionCost("tokenfactory", usage, "not-listed", undefined, price), 4);
-    assert.equal(computeSessionCost("tokenfactory", usage, "glm-5.3", undefined, price), 0);
+  it("Token Factory / Numes / Maple models are priced from the Mothership's answer, free ones from a $0 row", async () => {
+    const g = gateway({
+      "glm-5.3": { input_per_mtok: 0, output_per_mtok: 0, cache_read_per_mtok: 0, cache_write_per_mtok: 0, cache_write_1h_per_mtok: 0 },
+      "kimi-k3.1-pro": { input_per_mtok: 0, output_per_mtok: 0 },
+      "glm-5.3-flash": { input_per_mtok: 0.15, output_per_mtok: 0.5 },
+    });
+    for (const [id, want] of [["glm-5.3", 0], ["kimi-k3.1-pro", 0], ["glm-5.3-flash", 0.15 + 0.5]] as const) {
+      const price = await gatewayModelPrice("tokenfactory", id, ROOT, { fetch: g.f });
+      assert.ok(price, id);
+      assert.equal(modelPriceSource("tokenfactory", id, price), "mothership", `${id}: a $0 row is priced, not unpriced`);
+      near(computeSessionCost("tokenfactory", { input: M, cache_read: 0, cache_write: 0, output: M }, id, undefined, price), want);
+    }
+    assert.equal(await gatewayModelPrice("tokenfactory", "not-listed", ROOT, { fetch: g.f }), undefined);
   });
 });
 
-describe("limits from the gateway's answer", () => {
+describe("limits from the Mothership's answer", () => {
   it("the window and the output cap read the cached entry; else as before", async () => {
     const before = getContextLimit("claude-limits-1", "anthropic");
     const capBefore = maxOutputTokensFor("anthropic", "claude-limits-1");

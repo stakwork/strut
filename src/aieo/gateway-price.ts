@@ -1,14 +1,12 @@
-// Model prices from the LLM GATEWAY — the single source (strut holds no price
-// list of its own, and does not fetch bifrost's datasheet).
-//
-// The gateway (stakgraph `gateway/`, the Mothership strut routes calls
-// through) answers, anonymously and read-only, on its root:
+// Model prices from the MOTHERSHIP (the LLM gateway, stakgraph `gateway/`) —
+// the single source: strut holds no price of its own and does not fetch
+// bifrost's datasheet. The Mothership answers, anonymously and read-only, on its root:
 //   GET <root>/_plugin/pricing/model?provider=&model=  → 200 the EFFECTIVE
 //        rates in USD per million tokens (fallbacks already applied: tokens ×
 //        rates, no rules here), or 404 { error: "unpriced" }
 //   GET <root>/_plugin/pricing/status                   → what it has loaded
 // It resolves a model exactly as it bills it. There is no long-prompt tier
-// here: the gateway has none, and none is invented.
+// here: the Mothership has none, and none is invented.
 //
 // `computeSessionCost` is synchronous, so a step resolves its model's price
 // ONCE, before its model loop (`gatewayModelPrice`), and passes it in.
@@ -17,7 +15,7 @@ import type { TokenPricing } from "./provider.js";
 
 export interface GatewayPrice {
   pricing: TokenPricing;
-  /** Which key the gateway matched, and the table that held it. */
+  /** Which key the Mothership matched, and the table that held it. */
   key?: string;
   source?: string;
   maxInputTokens?: number;
@@ -36,8 +34,9 @@ const DEFAULT_TTL_MS = 5 * 60_000;
 const RETRY_MS = 30_000;
 const TIMEOUT_MS = 5_000;
 
-// bifrost's names for aieo's providers, which is how the gateway keys its rows.
-const GATEWAY_PROVIDER: Record<string, string> = { google: "gemini", numes: "openrouter" };
+// bifrost's name for Google. Maple, Numes and Token Factory go as they are:
+// they are the Mothership's own custom provider names (rows `numes/z-ai/glm-5.3`).
+const GATEWAY_PROVIDER: Record<string, string> = { google: "gemini" };
 
 /** An id as a price sheet tends to spell it: no leading "<provider>/", dots
  *  between version digits as dashes ("claude-opus-5.5" → "claude-opus-5-5"),
@@ -57,14 +56,14 @@ export function modelIdCandidates(provider: string, modelId: string): string[] {
 }
 
 interface Entry {
-  value: GatewayPrice | null; // null: the gateway says unpriced
+  value: GatewayPrice | null; // null: the Mothership says unpriced
   at: number;
   ttl: number;
 }
 
 const cache = new Map<string, Entry>();
 const inflight = new Map<string, Promise<GatewayPrice | undefined>>();
-/** The newest good price per provider/model, whatever the gateway: what the
+/** The newest good price per provider/model, whatever the Mothership: what the
  *  synchronous limit lookups (getContextLimit, maxOutputTokensFor) read. */
 const latest = new Map<string, GatewayPrice>();
 let warnedNoGateway = false;
@@ -80,19 +79,19 @@ export function resetGatewayPriceCache(): void {
   warnedNoGateway = false;
 }
 
-/** The last price the gateway gave for a model (any gateway, even a stale
+/** The last price the Mothership gave for a model (any Mothership, even a stale
  *  one), without a request: undefined when none was fetched or it was unpriced. */
 export function cachedGatewayPrice(provider: string, modelId: string): GatewayPrice | undefined {
   return latest.get(`${provider}\0${modelId}`);
 }
 
-/** Say, once per process, that no gateway is configured, so costs of models
+/** Say, once per process, that no Mothership is configured, so costs of models
  *  priced by it are reported as unpriced. */
 export function warnNoGateway(): void {
   if (warnedNoGateway) return;
   warnedNoGateway = true;
   console.error(
-    "[aieo] no gateway is configured (no llmAuth grant with a baseUrl, and STRUT_GATEWAY_URL is unset): model prices come only from the gateway, so costs of direct-provider calls are reported as 0 (unpriced)",
+    "[aieo] no Mothership is configured (no llmAuth grant with a baseUrl, and STRUT_MOTHERSHIP_URL / STRUT_GATEWAY_URL are unset): model prices come only from the Mothership, so every cost is reported as 0 (unpriced)",
   );
 }
 
@@ -134,12 +133,12 @@ async function ask(root: string, provider: string, model: string, get: typeof fe
   if (res.status === 404) return { value: null, ttl: maxAgeMs(res) };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const price = toPrice((await res.json()) as Record<string, unknown>);
-  if (!price) throw new Error("the gateway's price has no input/output rates");
+  if (!price) throw new Error("the Mothership's price has no input/output rates");
   return { value: price, ttl: maxAgeMs(res) };
 }
 
-/** A model's EFFECTIVE price from the gateway at `gatewayRoot`, cached per
- *  (root, provider, model) for the gateway's max-age (5 min by default).
+/** A model's EFFECTIVE price from the Mothership at `gatewayRoot`, cached per
+ *  (root, provider, model) for the Mothership's max-age (5 min by default).
  *  Asks for the id as given, then once per normalised form after a 404.
  *  Unpriced (404) is cached too. A network error keeps the last good entry
  *  (stale-while-error); with none, undefined, asked again in 30 s. Never throws. */
@@ -170,11 +169,11 @@ export async function gatewayModelPrice(
     } catch (err) {
       const message = (err as Error)?.message ?? String(err);
       if (hit?.value) {
-        console.warn(`[aieo] gateway price for ${provider}/${modelId} not refreshed (${message}); keeping the last good one`);
+        console.warn(`[aieo] Mothership price for ${provider}/${modelId} not refreshed (${message}); keeping the last good one`);
         cache.set(key, { value: hit.value, at: now(), ttl: RETRY_MS });
         return hit.value;
       }
-      console.warn(`[aieo] gateway price for ${provider}/${modelId} unavailable (${message})`);
+      console.warn(`[aieo] Mothership price for ${provider}/${modelId} unavailable (${message})`);
       cache.set(key, { value: null, at: now(), ttl: RETRY_MS });
       return undefined;
     } finally {
@@ -187,7 +186,7 @@ export async function gatewayModelPrice(
 
 const statusCache = new Map<string, { at: number; value: { status?: unknown; error?: string } }>();
 
-/** What the gateway's /_plugin/pricing/status says (cached 1 min), or the error. Never throws. */
+/** What the Mothership's /_plugin/pricing/status says (cached 1 min), or the error. Never throws. */
 export async function gatewayPricingStatus(gatewayRoot: string, opts: GatewayPriceOptions = {}): Promise<{ status?: unknown; error?: string }> {
   const root = rootOf(gatewayRoot);
   const now = opts.now ?? Date.now;

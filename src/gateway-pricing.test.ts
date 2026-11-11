@@ -1,6 +1,6 @@
-// strut's side of gateway pricing (src/llm.ts): where the root comes from, the
+// strut's side of Mothership pricing (src/llm.ts): where the root comes from, the
 // price resolved once per model, and what /llm/models says about it. The
-// gateway is a local HTTP server speaking /_plugin/pricing/*.
+// Mothership is a local HTTP server speaking /_plugin/pricing/*.
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -30,40 +30,46 @@ describe("gateway pricing in strut", () => {
     root = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   });
   after(async () => {
+    delete process.env["STRUT_MOTHERSHIP_URL"];
     if (saved === undefined) delete process.env["STRUT_GATEWAY_URL"];
     else process.env["STRUT_GATEWAY_URL"] = saved;
     resetGatewayPriceCache();
     await new Promise<void>((r) => server.close(() => r()));
   });
 
-  it("the root: the grant's baseUrl, else STRUT_GATEWAY_URL, else none", () => {
+  it("the root: the grant's baseUrl, else STRUT_MOTHERSHIP_URL, else STRUT_GATEWAY_URL, else none", () => {
     delete process.env["STRUT_GATEWAY_URL"];
+    delete process.env["STRUT_MOTHERSHIP_URL"];
     assert.equal(gatewayRootFor(), undefined);
     assert.equal(gatewayRootFor("https://gw.example/v1/"), "https://gw.example/v1");
     process.env["STRUT_GATEWAY_URL"] = "https://env.example/";
     assert.equal(gatewayRootFor(), "https://env.example");
     assert.equal(gatewayRootFor("https://grant.example"), "https://grant.example");
+    process.env["STRUT_MOTHERSHIP_URL"] = "https://ms.example/";
+    assert.equal(gatewayRootFor(), "https://ms.example", "the newer name wins");
+    delete process.env["STRUT_MOTHERSHIP_URL"];
   });
 
-  it("resolveModelPrice: the gateway's price; tables first (no request); unpriced", async () => {
+  it("resolveModelPrice: the Mothership's price for every provider; unpriced; none configured", async () => {
     resetGatewayPriceCache();
     hits.length = 0;
     const price = await resolveModelPrice("anthropic", "claude-sonnet-5-5", root);
     assert.equal(price?.pricing.inputTokenPrice, 2);
     assert.equal(price?.pricing.cacheWrite1hPrice, 4);
-    assert.equal(await resolveModelPrice("tokenfactory", "glm-5.3", root), undefined);
-    assert.equal(hits.filter((h) => h.includes("glm-5.3")).length, 0, "a table-priced model never asks");
+    assert.equal(await resolveModelPrice("tokenfactory", "glm-5.3", root), undefined, "404: unpriced, even a model aieo lists");
+    assert.ok(hits.some((h) => h.includes("provider=tokenfactory&model=glm-5.3")), "asked with the provider as it is");
     assert.equal(await resolveModelPrice("anthropic", "claude-nope-1", root), undefined);
   });
 
   it("/llm/models says where prices come from and shows the cached ones", async () => {
     resetGatewayPriceCache();
     delete process.env["STRUT_GATEWAY_URL"];
+    delete process.env["STRUT_MOTHERSHIP_URL"];
     const none = await listModelOptions();
-    assert.deepEqual(none.pricing, { source: "gateway", gateway: null });
+    assert.deepEqual(none.pricing, { source: "mothership", gateway: null });
     assert.equal(none.models.find((m) => m.name === "anthropic/claude-sonnet-5-5")?.pricing, undefined);
     await resolveModelPrice("anthropic", "claude-sonnet-5-5", root);
-    process.env["STRUT_GATEWAY_URL"] = root;
+    process.env["STRUT_MOTHERSHIP_URL"] = root;
     hits.length = 0;
     const cat = await listModelOptions();
     assert.equal(cat.pricing.gateway, root);
@@ -73,7 +79,7 @@ describe("gateway pricing in strut", () => {
   });
 
   it("an unreachable gateway: the list still comes, with the error", async () => {
-    process.env["STRUT_GATEWAY_URL"] = "http://127.0.0.1:9";
+    process.env["STRUT_MOTHERSHIP_URL"] = "http://127.0.0.1:9";
     const cat = await listModelOptions();
     assert.ok(cat.models.length > 0);
     assert.ok(cat.pricing.error);

@@ -30,28 +30,29 @@ export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
 }
 
 /** @deprecated strut no longer fetches a price sheet: model prices come from
- *  the LLM gateway (aieo `gatewayModelPrice`). Kept as a no-op so a host that
+ *  the Mothership (aieo `gatewayModelPrice`). Kept as a no-op so a host that
  *  still calls it keeps booting. */
 export async function startModelCatalog(_dataDir?: string): Promise<void> {}
 
-/** The gateway root prices are asked of: the call's own grant `baseUrl` (the
- *  gateway the call goes through), else `STRUT_GATEWAY_URL` for a host that
- *  calls providers directly. */
+/** The Mothership root prices are asked of: the call's own grant `baseUrl`
+ *  (the Mothership the call goes through), else `STRUT_MOTHERSHIP_URL` (or
+ *  its older name `STRUT_GATEWAY_URL`) for a host that calls providers
+ *  directly. */
 export function gatewayRootFor(grantBaseUrl?: string): string | undefined {
-  const root = (grantBaseUrl?.trim() || bootEnv()["STRUT_GATEWAY_URL"]?.trim() || "").replace(/\/+$/, "");
+  const env = bootEnv();
+  const root = (grantBaseUrl?.trim() || env["STRUT_MOTHERSHIP_URL"]?.trim() || env["STRUT_GATEWAY_URL"]?.trim() || "").replace(/\/+$/, "");
   return root || undefined;
 }
 
-/** The gateway's price for a model, once, for a step to hand to
- *  `computeSessionCost`. Undefined when aieo's own tables price the model
- *  (Maple, Numes, Token Factory), when none is configured (said once on
- *  stderr: direct-provider costs are then unpriced), or when the gateway
- *  does not price it. Never throws. */
+/** The Mothership's price for a model, once, for a step to hand to
+ *  `computeSessionCost`. Every model is priced there (strut has no price of
+ *  its own): undefined when none is configured (said once on stderr) or when
+ *  the Mothership does not price the model. Never throws. */
 export async function resolveModelPrice(provider: string, modelId: string, gatewayRoot?: string): Promise<import("./aieo/index.js").GatewayPrice | undefined> {
   const aieo = await loadAieo();
-  if (!modelId || aieo.getModelPrice(provider as Provider, modelId)) return undefined;
+  if (!modelId) return undefined;
   if (!gatewayRoot) {
-    if (["anthropic", "openai", "google", "xai", "openrouter"].includes(provider)) aieo.warnNoGateway();
+    aieo.warnNoGateway();
     return undefined;
   }
   return aieo.gatewayModelPrice(provider, modelId, gatewayRoot);
@@ -147,10 +148,10 @@ export interface ResolvedModel {
    *  returned a `baseUrl`). `createWebTools` reads it: a routed call never
    *  uses Anthropic's server-executed web tools (see `routed` there). */
   routed: boolean;
-  /** The gateway root this model's price was asked of (see `gatewayRootFor`). */
+  /** The Mothership root this model's price was asked of (see `gatewayRootFor`). */
   gatewayRoot?: string;
-  /** The gateway's price for the model, resolved once here: hand it to
-   *  `computeSessionCost`. Absent: unpriced (or priced by aieo's own tables). */
+  /** The Mothership's price for the model, resolved once here: hand it to
+   *  `computeSessionCost`. Absent: unpriced. */
   price?: import("./aieo/index.js").GatewayPrice;
 }
 
@@ -204,7 +205,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
   model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
-  // The price, and the limits that ride with it, once per step: the gateway
+  // The price, and the limits that ride with it, once per step: the Mothership
   // answers for the model as it bills it (cached 5 min per model).
   const gatewayRoot = gatewayRootFor(grant?.baseUrl);
   const price = await resolveModelPrice(r.provider, r.modelId, gatewayRoot);
@@ -612,8 +613,7 @@ export interface ModelOption {
   /** The context window, tokens. Absent when aieo does not know the provider. */
   contextLimit?: number;
   /** USD per million tokens, where strut knows the model's own rate:
-   *  Maple's, Numes' and Token Factory's (aieo's tables), and a model the
-   *  gateway priced (its cached answer: listing never asks per model). Absent
+   *  the Mothership's cached answer for the model (listing never asks per model). Absent
    *  otherwise: the model is unpriced. */
   pricing?: TokenPricing;
 }
@@ -628,11 +628,11 @@ export interface ModelCatalog {
   listed: boolean;
   /** provider → the env var / secret NAME that holds its key. */
   keyNames: Record<string, string>;
-  /** Where prices come from: the LLM gateway, the one source. `gateway` is its
-   *  root, null when none is configured (direct-provider models are then
-   *  unpriced); `status` is its /_plugin/pricing/status when it answered,
-   *  else `error` says why not. */
-  pricing: { source: "gateway"; gateway: string | null; status?: unknown; error?: string };
+  /** Where prices come from: the Mothership, the one source. `gateway` is its
+   *  root, null when none is configured (every model is then unpriced);
+   *  `status` is its /_plugin/pricing/status when it answered, else `error`
+   *  says why not. */
+  pricing: { source: "mothership"; gateway: string | null; status?: unknown; error?: string };
 }
 
 /** Every model aieo knows — its aliases, and every Maple, Numes and Token Factory model
@@ -660,7 +660,7 @@ export async function listModelOptions(
       keyed[p] = !!fromSecrets?.trim() || aieo.hasApiKeyForProvider(p);
     }
   }
-  const tables: Partial<Record<Provider, Record<string, { pricing: TokenPricing }>>> = {
+  const tables: Partial<Record<Provider, Record<string, unknown>>> = {
     maple: aieo.MAPLE_MODELS,
     numes: aieo.NUMES_MODELS,
     tokenfactory: aieo.TOKENFACTORY_MODELS,
@@ -669,9 +669,8 @@ export async function listModelOptions(
   const add = (provider: Provider, modelId: string, alias?: string) => {
     const name = `${provider}/${modelId}`;
     if (models.has(name)) return;
-    // The model's own price: Maple's, Numes' or Token Factory's table, else
-    // the gateway's cached answer. Never a provider's flat rate, which is not a price.
-    const pricing = aieo.getModelPrice(provider, modelId) ?? aieo.cachedGatewayPrice(provider, modelId)?.pricing;
+    // The Mothership's cached answer for the model: strut has no price of its own.
+    const pricing = aieo.cachedGatewayPrice(provider, modelId)?.pricing;
     models.set(name, {
       provider,
       ...(alias ? { alias } : {}),
@@ -717,6 +716,6 @@ export async function listModelOptions(
     models: [...models.values()],
     listed: !!allowed,
     keyNames: { ...aieo.API_KEY_ENV },
-    pricing: { source: "gateway", gateway, ...(got.status !== undefined ? { status: got.status } : {}), ...(got.error ? { error: got.error } : {}) },
+    pricing: { source: "mothership", gateway, ...(got.status !== undefined ? { status: got.status } : {}), ...(got.error ? { error: got.error } : {}) },
   };
 }

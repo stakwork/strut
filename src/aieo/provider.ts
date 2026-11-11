@@ -255,7 +255,6 @@ export interface MapleModel {
    *  400), so the cap stays under 10% of it — a prompt can reach strut's
    *  compaction mark (90%) and still be answered. */
   maxOutput: number;
-  pricing: TokenPricing;
   /** The `reasoning_effort` values the model takes; any other is a 400.
    *  Absent: anything is taken (gemma4-31b: `none` or no field is no
    *  thinking, any other value turns it on; llama3-3-70b ignores it). */
@@ -267,43 +266,37 @@ export interface MapleModel {
  * OpenAI-compatible proxy (`ghcr.io/mapleprivacylabs/maple-proxy`), which
  * the deployment runs itself. Chat Completions only, no Responses API.
  * Context and efforts from the proxy's `GET /v1/models` and its 400s
- * (2026-11-03); prices are Maple's per 1M tokens, input / output. Maple
- * publishes no cached-input price, so a cached prompt token (gpt-oss reports
- * them) is billed as input.
+ * (2026-11-03). No prices here: every model's price lives in the Mothership
+ * (the LLM gateway's operator `model_pricing`, rows `maple/<model>`).
  */
 export const MAPLE_MODELS: Record<string, MapleModel> = {
-  "gemma4-31b": { context: 262_144, maxOutput: 24_576, pricing: { inputTokenPrice: 0.8, outputTokenPrice: 2.0 } },
+  "gemma4-31b": { context: 262_144, maxOutput: 24_576 },
   "gpt-oss-120b": {
     context: 131_072,
     maxOutput: 12_288,
-    pricing: { inputTokenPrice: 0.3, outputTokenPrice: 1.2 },
     efforts: ["low", "medium", "high"],
   },
   "glm-5-3-flash": {
     context: 1_048_576,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.8, outputTokenPrice: 2.5 },
     efforts: ["low", "high", "max"],
   },
   "glm-5-3": {
     context: 262_144,
     maxOutput: 24_576,
-    pricing: { inputTokenPrice: 3.6, outputTokenPrice: 11.5 },
     efforts: ["low", "high", "max"],
   },
   "kimi-k3": {
     context: 262_144,
     maxOutput: 24_576,
-    pricing: { inputTokenPrice: 8.0, outputTokenPrice: 25.0 },
     efforts: ["none", "low", "high", "max"],
   },
   "deepseek-v4-1-flash": {
     context: 1_048_576,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.65, outputTokenPrice: 1.45 },
     efforts: ["none", "low", "high", "xhigh", "max"],
   },
-  "llama3-3-70b": { context: 131_072, maxOutput: 12_288, pricing: { inputTokenPrice: 3.5, outputTokenPrice: 5.5 } },
+  "llama3-3-70b": { context: 131_072, maxOutput: 12_288 },
 };
 
 /**
@@ -516,31 +509,27 @@ export interface NumesModel {
    *  with 65,536 is a 502, with 1,000 an answer) — so a prompt can reach
    *  strut's compaction mark (90%) and still be answered. */
   maxOutput: number;
-  pricing: TokenPricing;
 }
-
-const FREE: TokenPricing = { inputTokenPrice: 0, outputTokenPrice: 0 };
 
 /**
  * Numes (numes.ai): a marketplace of inference providers behind one
  * OpenAI-compatible API, `https://api.numes.ai/api/v1` (Chat Completions;
  * its own `reasoning_effort` mapping, so any value is taken). Model ids are
  * OpenRouter-style slugs, the same on every provider that serves the model.
- * Listed: the models Numes serves FREE, from `GET /api/v1/models` on
- * 2026-11-04 (each answered, called a tool and reported `cost: 0`). A model
- * that stops being free is still priced 0 here until the list changes. Every
- * other Numes model is priced by the gateway when it prices it, else at
- * TOKEN_PRICING.numes.
+ * Listed: the models Numes serves, from `GET /api/v1/models` on 2026-11-04
+ * (windows, output limits). No prices here: the Mothership's operator
+ * `model_pricing` holds them (rows `numes/<slug>`, the free models as $0
+ * rows); a model it does not list is unpriced.
  */
 export const NUMES_MODELS: Record<string, NumesModel> = {
-  "z-ai/glm-5.3": { context: 262_144, maxOutput: 24_576, pricing: FREE },
-  "z-ai/glm-5.3-flash": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "nvidia/nemotron-3-super-120b-a12b": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "nvidia/nemotron-3-ultra-550b-a55b": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/glm-5.3-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/glm-5.3-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/deepseek-v4.1-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "uniboshi/kimi-k3-abliterated-v1": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
+  "z-ai/glm-5.3": { context: 262_144, maxOutput: 24_576 },
+  "z-ai/glm-5.3-flash": { context: 1_048_576, maxOutput: 64_000 },
+  "nvidia/nemotron-3-super-120b-a12b": { context: 1_048_576, maxOutput: 64_000 },
+  "nvidia/nemotron-3-ultra-550b-a55b": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/glm-5.3-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/glm-5.3-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/deepseek-v4.1-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "uniboshi/kimi-k3-abliterated-v1": { context: 1_048_576, maxOutput: 64_000 },
 };
 
 export interface TokenFactoryModel {
@@ -551,7 +540,6 @@ export interface TokenFactoryModel {
   /** Per-call output cap: under a tenth of the window, as for Numes (the
    *  vLLM backends refuse prompt + `max_tokens` past the window). */
   maxOutput: number;
-  pricing: TokenPricing;
 }
 
 /**
@@ -561,36 +549,31 @@ export interface TokenFactoryModel {
  * is taken (a model's own short list is not enforced), so none is rewritten.
  * The gateway reports each call's cost (a streamed call's usage `cost`, a
  * header otherwise), which withReportedCost puts on the call's usage, and a
- * host bills that; these prices answer a call that reports none (a free
- * model's stream) and the model picker.
- * Listed: `GET /v1/models` on 2026-11-09 (windows, output limits); each
- * model called a tool, and its price is what the gateway billed for that
- * call (its `x-litellm-response-cost-input` / `-output` per token): nine
- * cost nothing. A model whose price changes keeps this one until the list
- * does. An unlisted model is priced at TOKEN_PRICING.tokenfactory.
+ * host bills that. Listed: `GET /v1/models` on 2026-11-09 (windows, output
+ * limits). No prices here: the Mothership's operator `model_pricing` holds
+ * them (rows `tokenfactory/<model>`, the free ones as explicit $0 rows); a
+ * model it does not list is unpriced.
  */
 export const TOKENFACTORY_MODELS: Record<string, TokenFactoryModel> = {
-  "glm-5.3": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "glm-5.3-flash": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.15, outputTokenPrice: 0.5 } },
-  "kimi-k3.1-pro": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "minimax-m3.1-flash": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "glm-5.3": { context: 917_504, maxOutput: 64_000 },
+  "glm-5.3-flash": { context: 917_504, maxOutput: 64_000 },
+  "kimi-k3.1-pro": { context: 917_504, maxOutput: 64_000 },
+  "minimax-m3.1-flash": { context: 917_504, maxOutput: 64_000 },
   "deepseek-v4.1-flash-1017": {
     context: 917_504,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.205, outputTokenPrice: 1.163 },
   },
-  "nemotron-3-ultra": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.6, outputTokenPrice: 2.4 } },
-  "nemotron-3-super": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "nemotron-3-ultra": { context: 917_504, maxOutput: 64_000 },
+  "nemotron-3-super": { context: 917_504, maxOutput: 64_000 },
   "nemotron-3.5-lightning": {
     context: 917_504,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.06, outputTokenPrice: 0.18 },
   },
-  "qwen3.8-27b": { context: 196_608, maxOutput: 24_576, pricing: FREE },
-  "glm-5.3-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "glm-5.3-flash-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "deepseek-v4.1-flash-1017-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "kimi-k3-abliterated": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "qwen3.8-27b": { context: 196_608, maxOutput: 24_576 },
+  "glm-5.3-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "glm-5.3-flash-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "deepseek-v4.1-flash-1017-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "kimi-k3-abliterated": { context: 917_504, maxOutput: 64_000 },
 };
 
 export function getLightModelForProvider(provider: Provider): string {
@@ -617,32 +600,23 @@ export interface TokenUsageForCost {
   output: number;
 }
 
-/** Providers whose models are priced by the gateway only: a model it does not
- *  price is UNPRICED (0), never another model's rate. */
-const DIRECT_PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "openai", "google", "xai", "openrouter"]);
 const warnedUnpriced = new Set<string>();
 
-/** Where a model's price comes from:
- *  - "table": the Maple / Numes / Token Factory tables in this file;
- *  - "gateway": the price the gateway gave (`price`);
- *  - "provider-default": the provider's flat rate (no model named, or a
- *    gateway provider's deliberate ceiling for a model nothing lists);
- *  - "unpriced": a direct provider's model the gateway does not price (or no
- *    gateway): its cost is reported as 0. */
-export function modelPriceSource(provider: Provider | string, modelId?: string, price?: GatewayPrice): "table" | "gateway" | "provider-default" | "unpriced" {
-  if (!modelId) return "provider-default";
-  if (getModelPrice(provider as Provider, modelId)) return "table";
-  if (price) return "gateway";
-  return DIRECT_PROVIDERS.has(provider) ? "unpriced" : "provider-default";
+/** Where a model's price comes from: "mothership" when the Mothership (the LLM
+ *  gateway) gave `price`, else "unpriced": no price list lives in strut, so
+ *  a model the Mothership does not price (or no Mothership) is reported as
+ *  0. */
+export function modelPriceSource(_provider: Provider | string, modelId?: string, price?: GatewayPrice): "mothership" | "unpriced" {
+  return modelId && price ? "mothership" : "unpriced";
 }
 
-/** A provider aieo does not know (one only a gateway has) has no rate here:
- *  0, and the gateway bills it. Order: the provider's own figure (`actualCost`);
- *  Maple's, Numes' or Token Factory's table; the gateway's `price` for the
- *  model (resolved by the caller, `gatewayModelPrice`); then, for those three
- *  providers, their TOKEN_PRICING ceiling, and for a direct provider UNPRICED:
- *  0 with one warning (see modelPriceSource). The provider's flat rate is for
- *  a call that names no model. */
+/** Dollars for one call's tokens. Order: the provider's own figure
+ *  (`actualCost`: Numes, Token Factory, OpenRouter report one); the
+ *  Mothership's `price` for the model (resolved by the caller,
+ *  `gatewayModelPrice`: effective rates, nothing computed here beyond tokens ×
+ *  rates); otherwise UNPRICED: 0, with one warning per provider/model. That
+ *  holds for every provider and for a call that names no model: strut has no
+ *  price list, flat rate or ceiling of its own. */
 export function computeSessionCost(
   provider: Provider | string,
   usage: TokenUsageForCost,
@@ -651,27 +625,21 @@ export function computeSessionCost(
   price?: GatewayPrice,
 ): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  let pricing = modelId ? (getModelPrice(provider as Provider, modelId) ?? price?.pricing) : undefined;
-  if (!pricing && modelId && DIRECT_PROVIDERS.has(provider)) {
-    const key = `${provider}/${modelId}`;
+  const pricing = modelId ? price?.pricing : undefined;
+  if (!pricing) {
+    const key = `${provider}/${modelId ?? "(no model named)"}`;
     if (!warnedUnpriced.has(key)) {
       warnedUnpriced.add(key);
-      console.warn(`[aieo] no gateway price for ${key}: cost reported as 0 (unpriced)`);
+      console.warn(`[aieo] no Mothership price for ${key}: cost reported as 0 (unpriced)`);
     }
     return 0;
   }
-  // No model named: the provider's flat rate. Maple / Numes / Token Factory
-  // with a model nothing prices: their TOKEN_PRICING is a deliberate "dearest
-  // listed rate" ceiling, so a cost is never under-reported. A provider aieo
-  // does not know has neither.
-  pricing ??= TOKEN_PRICING[provider as Provider];
-  if (!pricing) return 0;
   const cacheWrite = Math.max(0, usage.cache_write);
   const write1h = Math.min(Math.max(0, usage.cache_write_1h ?? 0), cacheWrite);
   const write5mPrice = pricing.cacheWritePrice ?? pricing.inputTokenPrice;
-  // The gateway's rate is already effective; a table without a 1h rate prices
-  // 1h writes at its 5m rate. No multiplier is invented here, and no
-  // long-prompt tier: the gateway has none.
+  // The Mothership's rate is already effective; a missing 1h rate prices 1h
+  // writes at the 5m rate. No multiplier is invented here, and no long-prompt
+  // tier: the Mothership has none.
   const write1hPrice = pricing.cacheWrite1hPrice ?? write5mPrice;
   return (
     (usage.input / 1_000_000) * pricing.inputTokenPrice +
@@ -1442,7 +1410,7 @@ const FALLBACK_CONTEXT_LIMIT = 128_000;
 
 /**
  * Get the context window size (max input tokens) for a given model: Maple's,
- * Numes' or Token Factory's table, else the gateway's last answer for it, else this file's.
+ * Numes' or Token Factory's table, else the Mothership's last answer for it, else this file's.
  */
 export function getContextLimit(modelId: string, provider: Provider): number {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.maple;
@@ -1456,81 +1424,14 @@ export function getContextLimit(modelId: string, provider: Provider): number {
   );
 }
 
-// A provider's flat rate: used ONLY when no model is named. For a direct
-// provider it is not a fallback for an unknown model (that is unpriced, see
-// computeSessionCost); the maple / numes / tokenfactory entries are the
-// deliberate "dearest listed rate" ceiling for a model nothing lists.
-const TOKEN_PRICING: Record<Provider, TokenPricing> = {
-  anthropic: {
-    inputTokenPrice: 3.0,
-    outputTokenPrice: 15.0,
-    cacheReadPrice: 0.3,
-    cacheWritePrice: 3.75,
-  },
-  google: {
-    inputTokenPrice: 1.25,
-    outputTokenPrice: 5.0,
-  },
-  openai: {
-    inputTokenPrice: 2.5,
-    outputTokenPrice: 10.0,
-  },
-  openrouter: {
-    inputTokenPrice: 0.6,
-    outputTokenPrice: 3.0,
-  },
-  // grok-4 rates. cacheReadPrice matters: computeSessionCost bills cache
-  // reads at full input price when it's absent, and Grok discounts cached
-  // prompt tokens 4x. (Grok has no cache-write charge — writes are billed
-  // as ordinary input, so no cacheWritePrice here.)
-  xai: {
-    inputTokenPrice: 3.0,
-    outputTokenPrice: 15.0,
-    cacheReadPrice: 0.75,
-  },
-  // An unlisted Maple model (MAPLE_MODELS has the listed ones): the dearest
-  // listed rate (kimi-k3), so a cost is never under-reported.
-  maple: {
-    inputTokenPrice: 8.0,
-    outputTokenPrice: 25.0,
-  },
-  // A Numes model neither listed free (NUMES_MODELS) nor priced by OpenRouter's
-  // rates: the dearest in Numes' catalogue (openai/gpt-6-astra, 2026-11-04),
-  // so a cost is never under-reported.
-  numes: {
-    inputTokenPrice: 12.28,
-    outputTokenPrice: 61.36,
-  },
-  // An unlisted Token Factory model: the dearest listed rate
-  // (nemotron-3-ultra), so a cost is never under-reported.
-  tokenfactory: {
-    inputTokenPrice: 0.6,
-    outputTokenPrice: 2.4,
-  },
-};
-
-export function getTokenPricing(provider: Provider): TokenPricing {
-  return TOKEN_PRICING[provider];
-}
-
-// ── Model prices: the gateway's ─────────────────────────────────────────────
+// ── Model prices: the Mothership's ─────────────────────────────────────────
 //
-// There is no price list here beyond Maple's, Numes' and Token Factory's own
-// tables above. Every other model's price (and its limits) comes from the LLM
-// gateway (gateway-price.ts), resolved once per step and handed to
-// `computeSessionCost`; the limits from its last answer are read by
-// `getContextLimit` / `maxOutputTokensFor` without a request.
+// There is no price anywhere in this file. Every model's price (and its
+// limits) comes from the Mothership (gateway-price.ts), resolved once per step
+// and handed to `computeSessionCost`; the limits from its last answer are read
+// by `getContextLimit` / `maxOutputTokensFor` without a request.
 
-/** A model's own price from this file's tables: Maple's, Numes' or Token
- *  Factory's. Undefined for every other model (the gateway prices those). */
-export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
-  if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
-  if (provider === "numes") return NUMES_MODELS[modelId]?.pricing;
-  if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.pricing;
-  return undefined;
-}
-
-/** @deprecated Prices come from the gateway (gateway-price.ts); no-op, kept so an older caller keeps working. */
+/** @deprecated Prices come from the Mothership (gateway-price.ts); no-op, kept so an older caller keeps working. */
 export async function loadModelPricing(): Promise<void> {}
 
 export type ThinkingSpeed = "thinking" | "fast";
