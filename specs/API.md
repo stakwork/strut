@@ -2842,7 +2842,7 @@ anyone without its definition or its runs being shown. One pricing rule,
 | `kind`, `name` | `workflow` and its name, or `step` and its type |
 | `base` | dollars a run or call; 0 when absent |
 | `markup` | times what the run cost; 0 when absent (1 charges exactly the cost) |
-| `capUsd` | the most one run may spend, above 0; required with a markup |
+| `capUsd` | the most one run may spend, above 0; required with a markup. Left out on an item with a daily cap, a run may spend a tenth of the daily cap, so ten run at once |
 | `dailyCapUsd` | the spend the owner carries per UTC day, above 0 |
 | `results` | a workflow's: what its launcher reads, `output` (the default) or the whole `run` |
 
@@ -3035,10 +3035,12 @@ costs anything:
    `input:` block, is `409`.
 5. **The caps**, `429` with `Retry-After`: the server's limit on public runs
    in flight (`STRUT_PUBLIC_RUNS_MAX`, 10 by default; `Retry-After: 30`),
-   then the item's `dailyCapUsd` — today's cost of its public runs (UTC,
-   from the ledger) plus the cap of each of its runs in flight, reaching it
-   refuses the launch (`Retry-After` until midnight UTC when the day is
-   spent, else 60). The check and counting the new run are one step, so
+   then the item's `dailyCapUsd`: today's cost of its public runs (UTC,
+   from the ledger) plus the cap of each of its runs in flight. A launch is
+   admitted while what is left of the day holds a run's full cap, never a
+   sliver of one the gateway would stop partway; past that, the last of the
+   day goes to one run at a time, with what is left as its cap. Otherwise a
+   `429` (`Retry-After` until midnight UTC when the day is spent, else 60). The check and counting the new run are one step, so
    launches at once never pass the cap together. A `key` this caller sent
    for a run still in flight returns that run, before any cap: the caller
    is the credit token on a paid launch, else the address.
@@ -3066,8 +3068,11 @@ workflow's owner. Every agent session it opens is `public/<runId>/<id>` —
 a paid run's `public/<token id>/<id>` — whatever id its input names; a paid
 run's `run.start` names its token as `credit` (never shown to a visitor).
 It is verified like any other run. Its CAP is
-the smallest of the item's `capUsd`, the workflow's own (`maxRunCostUsd`,
-else `STRUT_RUN_MAX_COST_USD`, else $100) and what is left of the daily cap:
+the smaller of the item's `capUsd` (none set and a daily cap: a tenth of
+the daily cap, so ten runs fit in the day's cap at once — a run in flight
+counts against it at its cap) and the workflow's own (`maxRunCostUsd`, else
+`STRUT_RUN_MAX_COST_USD`, else $100) — or, for the day's last run, what is
+left of the daily cap (step 5):
 recorded on `run.start` as `maxCostUsd`, and carried by the Mothership's
 run link, so the gateway stops the run there (without a gateway nothing
 stops it mid-flight; the daily cap bounds the day). When it ends — success,
