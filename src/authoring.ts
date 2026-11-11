@@ -623,7 +623,7 @@ export interface DetachedRun {
 
 /** What `meta/run-workflow` says about a run it handed back running. */
 export const DETACHED_HINT =
-  "The run is still going, as a run of its own. End your turn now: tell the person it is running and what it does. When it ends, strut starts your next turn with its outcome — do not wait for it or poll meta/get-run in a loop. The job is free meanwhile: the person may ask for a change, and meta/cancel-run stops the run.";
+  "The run is still going, as a run of its own. End your turn now: say in your reply that it is running and what it does, and nothing about how or when you will hear its outcome. Its outcome comes to you as your next turn's message when it ends; do not wait for it, check on it or verify it now. Meanwhile the person may ask for a change: meta/cancel-run stops the run.";
 
 export interface AuthoringDeps extends StepPublishDeps {
   store: RunStore;
