@@ -2038,7 +2038,8 @@ export async function createStrut<TServices = unknown>(
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   /** What a member's session may call: the page of one app, its calls, its
    *  channels, and a file it hands the side panel. `GET /brand` is the
-   *  style the app is shown in; `GET` and `DELETE /mcp` answer 405 (the
+   *  style the app is shown in; `GET /rate` what a stranger's invoice is
+   *  priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
    *  page's MCP client asks for a stream once). */
   const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
@@ -2046,6 +2047,7 @@ export async function createStrut<TServices = unknown>(
     ["GET", /^\/apps\/[^/]+\/versions$/],
     ["GET", /^\/apps\/[^/]+\/[^/]+\/files(?:\/.+)?$/],
     ["GET", /^\/brand$/],
+    ["GET", /^\/rate$/],
     ["POST", /^\/mcp$/],
     ["GET", /^\/mcp$/],
     ["DELETE", /^\/mcp$/],
@@ -5496,6 +5498,20 @@ export async function createStrut<TServices = unknown>(
     setWallet: (creds) => payments.setWallet(creds),
     lightning: () => payments.lightning(),
     envWallet: payments.envWallet,
+  });
+
+  // ── The rate this strut trusts (src/payments/rate.ts) ───────────────────
+  // What strut's UI prices a STRANGER's invoice at (specs/API.md §17.9): the
+  // sats an invoice asks are the price, and dollars beside them come from
+  // here, never from the seller's own quote. Any credential, a member's
+  // session included (it hosts apps alone); read a minute at a time.
+  app.get("/rate", async (c) => {
+    try {
+      const r = await payments.rate.read();
+      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
+    }
   });
 
   // ── Earnings and Withdraw (plans/paid-runs.md §8; src/payments/earnings*.ts) ──

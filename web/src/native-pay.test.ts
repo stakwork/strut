@@ -1,0 +1,266 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
+import { creditPurchaseProblems, type CreditPurchase, type NativeWalletMessage } from "@strut/kit/wallet";
+import { macaroonToBase64, mintToken } from "../../src/l402.js";
+import { encodeBolt11 } from "../../src/payments/bolt11.js";
+import { checkChallenge, type CheckedChallenge } from "./challenge";
+import { WALLET_WAIT_MAX_MS, createHostWalletProbe, creditPurchaseOf, fallbackNote, walletAsk, walletWaitMs, type HostWallet, type WalletAnswer, type WalletAsk } from "./native-pay";
+import { callPaying, createClaimKeeper, newPurse, type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome } from "./visitor-pay";
+
+// A visitor's credit paid with one tap in a native host (./native-pay,
+// specs/WALLET.md §1.2): what the native host is asked, what its answers
+// come to, and the QR code as what is left whenever it did not pay — no
+// bridge, a decline, a preimage that proves nothing, no answer in time.
+
+const NOW = Date.UTC(2026, 10, 10, 12, 0, 0);
+const APP = { name: "acme/voxel/studio", version: "v3", title: "Voxel Studio" };
+const SELLER = "https://acme.example";
+
+function challenge(o: { carries?: boolean } = {}) {
+  const preimage = randomBytes(32).toString("hex");
+  const paymentHash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+  const invoice = encodeBolt11({ msat: 7_500_000, paymentHash, description: "credit", timestamp: Math.floor(NOW / 1000), expirySecs: 600 });
+  const { macaroon } = mintToken(randomBytes(32), { paymentHash, quote: { sats: 7500, credit: 7_500_000, validUntil: Math.floor(NOW / 1000) + 3600 } });
+  const p: PaymentRequired = {
+    macaroon: macaroonToBase64(macaroon), invoice, usd: 7.5, sats: 7500,
+    rate: { usdPerBtc: 100_000, at: new Date(NOW).toISOString(), source: "test" },
+    description: "acme/voxel/character: credit for one run", expires: new Date(NOW + 600_000).toISOString(),
+    ...(o.carries ? { carries: true, reason: "short", remaining_usd: 0.25 } : {}),
+  };
+  const r = checkChallenge(p, NOW);
+  assert.ok(r.ok);
+  return { p, preimage, paymentHash, checked: (r as { checked: CheckedChallenge }).checked };
+}
+
+/** Peel's handler, scripted. */
+class Native {
+  sent: NativeWalletMessage[] = [];
+  constructor(public answer: (m: NativeWalletMessage) => unknown) {}
+  async postMessage(m: NativeWalletMessage) {
+    this.sent.push(structuredClone(m));
+    return this.answer(m);
+  }
+  ops() {
+    return this.sent.map((m) => m.op);
+  }
+}
+const CAN = { result: { version: 1, ops: ["buy_credit", "buy_credit_status", "buy_credit_cancel"], wallet: "Peel" } };
+const settledPayment = (hash: string, preimage: string) => ({
+  result: { transaction_id: "tx-1", state: "settled", payment_hash: hash, amount: 7_500_000, preimage, created_at: 1, settled_at: 2 },
+});
+/** Peel that answers `buy_credit` with `reply`. */
+const peel = (reply: (purchase: CreditPurchase) => unknown) =>
+  new Native((m) => (m.op === "host_capability" ? CAN : m.op === "buy_credit" ? reply(m.purchase) : { result: {} }));
+
+describe("what the native host is asked", () => {
+  it("a purchase the contract accepts: the checked invoice, the server's quote, what it is for", () => {
+    const c = challenge({ carries: true });
+    const purchase = creditPurchaseOf(c.p, c.checked, { seller: SELLER, app: APP, workflow: "acme/voxel/character" });
+    assert.deepEqual(creditPurchaseProblems(purchase), []);
+    assert.deepEqual(purchase, {
+      invoice: c.p.invoice, payment_hash: c.paymentHash, amount: 7_500_000, sats: 7500, usd: 7.5,
+      rate: { usd_per_btc: 100_000, at: new Date(NOW).toISOString(), source: "test" },
+      description: "acme/voxel/character: credit for one run", expires_at: Math.floor(NOW / 1000) + 600,
+      seller: SELLER, app: APP, workflow: "acme/voxel/character",
+      credit: { carries: true, reason: "short", remaining_usd: 0.25 },
+    });
+    // Never the macaroon, never a credential: the native host pays an invoice.
+    assert.ok(!JSON.stringify(purchase).includes(c.p.macaroon));
+  });
+
+  it("waits until the invoice ends, at most ten minutes", () => {
+    assert.equal(walletWaitMs(NOW / 1000 + 120, NOW), 120_000);
+    assert.equal(walletWaitMs(NOW / 1000 + 3600, NOW), WALLET_WAIT_MAX_MS);
+    assert.equal(walletWaitMs(NOW / 1000 - 1, NOW), 0);
+  });
+});
+
+/** The native host as this page found it (`createHostWalletProbe`). */
+const found = (native: Native, ops: HostWallet["cap"]["ops"] = ["buy_credit", "buy_credit_status", "buy_credit_cancel"]): HostWallet => ({ native, cap: { version: 1, ops, wallet: "Peel" } });
+const askOf = (c: ReturnType<typeof challenge>, wallet: HostWallet | undefined) =>
+  walletAsk({ wallet, p: c.p, checked: c.checked, seller: SELLER, app: APP, workflow: "acme/voxel/character", now: () => NOW });
+const never = () => new AbortController().signal;
+
+describe("finding the native host's wallet, once per page", () => {
+  it("asks once — again only for another handler — and only a host that buys credit counts", async () => {
+    let asked = 0;
+    const probe = createHostWalletProbe(async () => (asked++, { version: 1, ops: ["buy_credit"], wallet: "Peel" }));
+    const handler = { postMessage: async () => ({}) };
+    const win = { webkit: { messageHandlers: { strutWallet: handler } } };
+    const a = await probe(win);
+    assert.deepEqual(a?.cap, { version: 1, ops: ["buy_credit"], wallet: "Peel" });
+    await probe(win);
+    assert.equal(asked, 1, "cached for the page");
+    await probe({ webkit: { messageHandlers: { strutWallet: { postMessage: async () => ({}) } } } });
+    assert.equal(asked, 2, "another handler is asked again");
+    assert.equal(await probe({}), undefined, "no native host");
+    const cannot = createHostWalletProbe(async () => ({ version: 1, ops: ["buy_credit_status"] }));
+    assert.equal(await cannot(win), undefined, "one that does not buy credit");
+    const silent = createHostWalletProbe(async () => undefined);
+    assert.equal(await silent(win), undefined, "an older one");
+  });
+});
+
+describe("paying through the native wallet", () => {
+  it("no bridge, or one that does not buy credit: nothing to ask, the QR code from the start", () => {
+    const c = challenge();
+    assert.equal(askOf(c, undefined), undefined);
+    assert.equal(askOf(c, found(peel(() => ({})), ["buy_credit_status"])), undefined);
+    assert.equal(walletAsk({ wallet: found(peel(() => ({}))), p: c.p, checked: c.checked, seller: SELLER, app: undefined, workflow: "w" }), undefined);
+  });
+
+  it("one tap: the preimage proves the payment, and the credential is the macaroon and it", async () => {
+    const c = challenge();
+    const native = peel((p) => settledPayment(p.payment_hash, c.preimage));
+    const ask = askOf(c, found(native))!;
+    assert.equal(ask.name, "Peel");
+    assert.deepEqual(await ask.pay(never()), { outcome: "paid", credential: `${c.p.macaroon}:${c.preimage}` });
+    assert.deepEqual(native.ops(), ["buy_credit"], "the capability was asked before: nothing more");
+    assert.equal(askOf(c, { native, cap: { version: 1, ops: ["buy_credit"] } })!.name, "your wallet");
+  });
+
+  it("nothing sent — a decline, a refusal, a failure: the QR code, saying why, and Pay with the wallet again", async () => {
+    const c = challenge();
+    const answer = async (reply: unknown) => (await askOf(c, found(peel(() => reply)))!.pay(never())) as Extract<WalletAnswer, { outcome: "fallback" }>;
+    const declined = await answer({ error: { code: -32000, message: "Declined", data: { code: "USER_REJECTED" } } });
+    assert.deepEqual(declined, { outcome: "fallback", reason: "Declined", code: "USER_REJECTED", declined: true });
+    assert.equal(fallbackNote(declined, "Peel"), "You declined in Peel. Pay this invoice from another wallet, or ask Peel again.");
+    const restricted = await answer({ error: { code: -32000, message: "no tap", data: { code: "RESTRICTED" } } });
+    assert.match(fallbackNote(restricted, "Peel"), /Press Pay with Peel to confirm there/);
+    const failed = await answer({ result: { transaction_id: "t", state: "failed", payment_hash: c.paymentHash, amount: 1, created_at: 1, failure_reason: "no route" } });
+    assert.equal(failed.code, "PAYMENT_FAILED");
+    assert.match(fallbackNote(failed, "Peel"), /^Peel could not pay it \(no route\): nothing was paid/);
+  });
+
+  it("once the person tapped — pending, or settled with a preimage that proves nothing — never the QR again", async () => {
+    const c = challenge();
+    assert.deepEqual(await askOf(c, found(peel((p) => ({ result: { transaction_id: "t", state: "pending", payment_hash: p.payment_hash, amount: 7_500_000, created_at: 1 } }))))!.pay(never()), { outcome: "pending" });
+    assert.deepEqual(await askOf(c, found(peel((p) => settledPayment(p.payment_hash, "07".repeat(32)))))!.pay(never()), { outcome: "pending" });
+  });
+
+  it("where a pending payment stands: proven, failed (the QR comes back), still going", async () => {
+    const c = challenge();
+    let state: unknown = { result: { transaction_id: "t", state: "pending", payment_hash: c.paymentHash, amount: 7_500_000, created_at: 1 } };
+    const native = new Native((m) => (m.op === "buy_credit_status" ? state : m.op === "buy_credit" ? state : CAN));
+    const ask = askOf(c, found(native))!;
+    assert.deepEqual(await ask.status!(), { outcome: "pending" });
+    state = { result: { transaction_id: "t", state: "failed", payment_hash: c.paymentHash, amount: 7_500_000, created_at: 1, failure_reason: "no route" } };
+    assert.equal((await ask.status!()).outcome, "fallback");
+    state = settledPayment(c.paymentHash, c.preimage);
+    assert.deepEqual(await ask.status!(), { outcome: "paid", credential: `${c.p.macaroon}:${c.preimage}` });
+    assert.equal(askOf(c, found(native, ["buy_credit"]))!.status, undefined, "a host that does not answer it: the claim alone");
+  });
+
+  it("no answer before the invoice ends, or the person chose the invoice: the native host takes its sheet down, and a payment it sent after all still counts", async () => {
+    const c = challenge();
+    const native = peel(() => new Promise(() => {}));
+    const short = walletAsk({ wallet: found(native), p: c.p, checked: c.checked, seller: SELLER, app: APP, workflow: "w", now: () => c.checked.expiresAt * 1000 - 20 })!;
+    assert.equal((await short.pay(never())).outcome, "fallback");
+    assert.deepEqual(native.ops(), ["buy_credit", "buy_credit_cancel"]);
+    let answer!: (v: unknown) => void;
+    const slow = peel(() => new Promise((r) => (answer = r)));
+    const stop = new AbortController();
+    const late: WalletAnswer[] = [];
+    const waiting = askOf(c, found(slow))!.pay(stop.signal, (a) => late.push(a));
+    stop.abort();
+    assert.equal((await waiting).outcome, "fallback");
+    answer({ result: { transaction_id: "t", state: "pending", payment_hash: c.paymentHash, amount: 7_500_000, created_at: 1 } });
+    for (let i = 0; i < 20 && !late.length; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.deepEqual(late, [{ outcome: "pending" }], "the sheet hides the invoice it had shown");
+  });
+});
+
+describe("a priced launch, paid in a native host (the relay's loop)", () => {
+  const launch: CallParams = { name: "step_run", arguments: { type: "run/launch", config: { workflow: "acme/voxel/character", input: {} }, app: "app:x@v1.t" } };
+  const ok = (o: unknown): CallResult => ({ structuredContent: o, content: [{ type: "text", text: JSON.stringify(o) }] });
+
+  /** A server whose priced launch needs `credential`; the claim answers
+   *  settled once `paid` is true. */
+  function server(c: ReturnType<typeof challenge>) {
+    const credential = `${c.p.macaroon}:${c.preimage}`;
+    const state = { paid: false, sent: [] as Array<string | undefined> };
+    return {
+      state,
+      credential,
+      call: (purse: { credential?: string }) => async (): Promise<CallResult> => {
+        state.sent.push(purse.credential);
+        return purse.credential === credential ? ok({ runId: "r1" }) : ok({ payment_required: c.p });
+      },
+      claim: async () => (state.paid ? { state: "settled" as const, credential } : { state: "pending" as const }),
+    };
+  }
+  /** The sheet, as PaymentSheet decides: the wallet first, then whichever
+   *  comes first of its answer and the claim; `shown` counts the QR codes. */
+  const sheet = (ask: WalletAsk | undefined, settled: Promise<ClaimEnd>, seen: { qr: number }): Promise<PayOutcome> =>
+    new Promise((resolve) => {
+      void settled.then((e) => resolve(e.state === "settled" ? e.credential : "again"));
+      if (!ask) {
+        seen.qr++;
+        return;
+      }
+      void ask.pay(new AbortController().signal).then((a) => {
+        if (a.outcome === "paid") resolve(a.credential);
+        else if (a.outcome === "fallback") seen.qr++;
+      });
+    });
+
+  for (const [name, reply, qr] of [
+    ["paid with one tap: sent again at once with the credential, no QR", "paid", 0],
+    ["declined: the QR code, paid from a phone, claimed", "declined", 1],
+    ["a preimage that proves nothing: no QR (the person tapped), the payment claimed", "bad", 0],
+  ] as const) {
+    it(name, async () => {
+      const c = challenge();
+      const s = server(c);
+      const purse = newPurse("visit-aaaaaaaaaaaaaaaaaaaaaaaa");
+      const keeper = createClaimKeeper({ purse, claim: s.claim, save: () => {}, intervalMs: 1, sleep: () => new Promise((r) => setTimeout(r, 2)), now: () => NOW });
+      // Peel pays the invoice (it settles on the server's side too), or declines.
+      const native = peel((p) => {
+        if (reply === "declined") return { error: { code: -32000, message: "Declined", data: { code: "USER_REJECTED" } } };
+        s.state.paid = true;
+        return settledPayment(p.payment_hash, reply === "paid" ? c.preimage : "09".repeat(32));
+      });
+      const seen = { qr: 0 };
+      const result = await callPaying(launch, {
+        call: s.call(purse),
+        purse,
+        pay: async (q) => {
+          const check = checkChallenge(q, NOW);
+          if (!check.ok) return { error: check.error };
+          const settled = keeper.watch({ macaroon: q.macaroon, expires: new Date(check.checked.expiresAt * 1000).toISOString() });
+          const ask = walletAsk({ wallet: found(native), p: q, checked: check.checked, seller: SELLER, app: APP, workflow: "acme/voxel/character", now: () => NOW });
+          // Declined: the person pays the QR code from a phone instead.
+          if (reply === "declined") setTimeout(() => (s.state.paid = true), 5);
+          return sheet(ask, settled, seen);
+        },
+      });
+      assert.deepEqual(result.structuredContent, { runId: "r1" });
+      assert.equal(purse.credential, s.credential);
+      assert.deepEqual(s.state.sent, [undefined, s.credential], "asked once, then sent again with the credential");
+      assert.equal(seen.qr, qr);
+    });
+  }
+
+  it("a challenge that does not check out: the page's call fails, nothing is shown or paid", async () => {
+    const c = challenge();
+    const junk: PaymentRequired = { ...c.p, sats: 1 };
+    const native = peel(() => assert.fail("never asked"));
+    let shown = false;
+    const result = await callPaying(launch, {
+      call: async () => ok({ payment_required: junk }),
+      purse: newPurse("visit-aaaaaaaaaaaaaaaaaaaaaaaa"),
+      pay: async (q) => {
+        const check = checkChallenge(q, NOW);
+        if (!check.ok) return { error: check.error };
+        shown = true;
+        void askOf(c, found(native));
+        return null;
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content![0]!.text!, /does not check out: the invoice asks 7500 sats, not the 1/);
+    assert.equal(shown, false);
+    assert.deepEqual(native.sent, []);
+  });
+});

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ERROR_CODES, NOTIFICATION_TYPES, PAY_METHODS, REQUESTABLE_METHODS, WALLET_METHODS, WalletError,
-  checkParams, connectionRequestProblems, isWalletErrorCode, isWalletMethod, msatToSats, notificationProblems,
-  parseSphinxAddress, resultProblems, satsToMsat, sphinxRouteHint, verifyPreimage, walletErrorBody,
-  walletErrorCodeOf, walletMethodOf, walletRequestMethod, type WalletMethod,
+  checkParams, connectionRequestProblems, creditPurchaseProblems, hostWalletCapabilityOf, isSellerUrl, isWalletErrorCode,
+  isWalletMethod, msatToSats, notificationProblems, parseSphinxAddress, readCreditReply, resultProblems, satsToMsat,
+  sphinxRouteHint, verifyPreimage, walletErrorBody, walletErrorCodeOf, walletMethodOf, walletRequestMethod, type WalletMethod,
 } from "./protocol.js";
 
 type Vectors = {
@@ -15,6 +15,9 @@ type Vectors = {
   notifications: Array<{ name: string; notification: unknown; valid: boolean }>;
   connection_requests: Array<{ name: string; request: unknown; valid: boolean }>;
   preimages: Array<{ preimage: string; payment_hash: string; valid: boolean }>;
+  host_capabilities: Array<{ name: string; capability: unknown; expect: unknown }>;
+  credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
+  credit_replies: Array<{ name: string; payment_hash: string; reply: unknown; outcome: "paid" | "pending" | "fallback"; preimage?: string; code?: string }>;
   scenarios: Array<{
     name: string;
     request?: unknown;
@@ -75,6 +78,37 @@ describe("wallet vectors: preimages", () => {
   for (const v of vectors.preimages) {
     it(`${v.preimage.slice(0, 8)}… → ${v.payment_hash.slice(0, 8)}… is ${v.valid ? "" : "not "}proof`, async () => {
       assert.equal(await verifyPreimage(v.preimage, v.payment_hash), v.valid);
+    });
+  }
+});
+
+describe("wallet vectors: a native host's capability for the host's own ops (§1.2)", () => {
+  for (const v of vectors.host_capabilities) {
+    it(v.name, () => {
+      assert.deepEqual(hostWalletCapabilityOf(v.capability) ?? null, v.expect);
+    });
+  }
+});
+
+describe("wallet vectors: credit purchases (the host's own, §1.2)", () => {
+  for (const v of vectors.credit_purchases) {
+    it(v.name, () => {
+      const problems = creditPurchaseProblems(v.purchase);
+      assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
+    });
+  }
+});
+
+describe("wallet vectors: credit replies (what the host does with buy_credit's answer)", () => {
+  for (const v of vectors.credit_replies) {
+    it(v.name, async () => {
+      const r = await readCreditReply(v.reply, v.payment_hash);
+      assert.equal(r.outcome, v.outcome);
+      if (r.outcome === "paid") assert.equal(r.preimage, v.preimage);
+      if (r.outcome === "fallback") {
+        assert.equal(r.code, v.code);
+        assert.ok(r.message.length > 0);
+      }
     });
   }
 });
@@ -181,4 +215,14 @@ describe("wallet contract", () => {
     const r = checkParams("make_invoice", { amount: 1000, metadata: { comment: "x".repeat(5000) } });
     assert.equal(r.ok, false);
   });
+
+  it("knows a seller's URL: https, or http on this machine, and nothing that carries a secret", () => {
+    for (const ok of ["https://acme.example", "https://acme.example/lab", "http://localhost:3001", "http://127.0.0.1:8080", "http://[::1]:3000", "http://peel.localhost"]) {
+      assert.ok(isSellerUrl(ok), ok);
+    }
+    for (const bad of ["http://acme.example", "http://192.168.1.2:3000", "https://u:p@acme.example", "https://acme.example/?k=1", "https://acme.example/#x", "ftp://acme.example", "acme.example", 42]) {
+      assert.ok(!isSellerUrl(bad), String(bad));
+    }
+  });
+
 });

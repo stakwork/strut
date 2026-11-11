@@ -396,7 +396,7 @@ describe("the agent tools hold no call past a client's patience, and cut nothing
       credit: async () => ({ status: 404, body: { error: "no credit" } }),
       claim: async () => ({ status: 404, body: { error: "no credit" } }),
       runnable: async () => [],
-      listing: async () => ({ workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] }),
+      listing: async () => ({ host: { remote: 1 }, workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] }),
       overBudget: () => false,
     };
   };

@@ -26,17 +26,29 @@ import { AppWithPanel } from "./AppWithPanel";
 // What the store frames from a publisher's server, and what a person with
 // no account opens.
 //
+// `&public=1&from=<base>`: a visitor's page of ANOTHER strut server
+// (../remote-app, specs/API.md §17.9) — read from that server, its calls
+// relayed there, a priced launch paid HERE (Peel's wallet with one tap,
+// else a QR code), with this page as the trusted host: the stranger's
+// server runs nothing here but its sandboxed frame. Always alone (`solo` is
+// implied). A `from` this host does not open says so, and never falls back
+// to an app of the same name here.
+//
 // `&theme=light` (or `dark`): the theme the app is handed, for a host whose
 // own page is light; strut's UI is dark, the default. The page around it
 // matches while the app loads; what strut draws in the side panel's bar and
 // its file viewer stays strut's own.
 
-export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; theme?: "light" | "dark" }) {
-  const listed = useListedApp(props.visitor ? null : props.app);
+export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; from?: string; theme?: "light" | "dark" }) {
+  const from = props.from;
+  const visitor = !!props.visitor || !!from;
+  const listed = useListedApp(visitor ? null : props.app);
   // undefined: the public view has not answered; null: the app is not in it.
   const [visitorApp, setVisitorApp] = useState<api.PublicAppInfo | null | undefined>(undefined);
-  const shown = props.visitor
-    ? visitorApp ? { name: visitorApp.name, version: visitorApp.version } : null
+  /** Why another server's app could not be read (it did not answer). */
+  const [readError, setReadError] = useState<string | null>(null);
+  const shown = visitor
+    ? visitorApp ? { name: visitorApp.name, version: visitorApp.version, title: visitorApp.title, ...(from ? { from } : {}) } : null
     : listed.app;
   const [input, setInput] = useState(props.input ?? null);
   /** A link to this same app (the kit's `appLink`): its input, in place,
@@ -55,17 +67,26 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   };
   const toolInput = appToolInput(input);
   useEffect(() => {
-    if (!props.visitor) return;
+    if (!visitor) return;
     let on = true;
-    api.getPublicApp(props.app).catch(() => null).then((info) => {
-      if (on) setVisitorApp(info);
-    });
+    setReadError(null);
+    (from ? api.getRemotePublicApp(from, props.app) : api.getPublicApp(props.app).catch(() => null)).then(
+      (info) => {
+        if (on) setVisitorApp(info);
+      },
+      (err) => {
+        if (!on) return;
+        setReadError(err instanceof Error ? err.message : String(err));
+        setVisitorApp(null);
+      },
+    );
     return () => {
       on = false;
     };
-  }, [props.app, props.visitor]);
+  }, [props.app, visitor, from]);
   // Nothing to wait for: the page says why there is no app.
-  const missing = props.visitor ? visitorApp === null : listed.entry === null;
+  const missing = visitor ? visitorApp === null : listed.entry === null;
+  const server = from ? hostOf(from) : "this server";
   useEffect(() => {
     if (missing) reportReady();
   }, [missing]);
@@ -76,15 +97,23 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
             app={shown}
             onNavigate={onNavigate}
             {...(toolInput ? { toolInput } : {})}
-            {...(props.visitor ? { visitor: true } : {})}
+            {...(visitor ? { visitor: true } : {})}
             {...(props.theme ? { theme: props.theme } : {})}
             onReady={reportReady}
           />
         : <div class="empty">
-            {props.visitor
-              ? visitorApp === null ? `"${props.app}" is not in this server's public view` : "Loading the app…"
+            {visitor
+              ? visitorApp === null ? readError ?? `"${props.app}" is not in ${server}'s public view` : "Loading the app…"
               : listed.entry === null ? `No app "${props.app}"` : "Loading apps…"}
           </div>}
     </div>
   );
 }
+
+const hostOf = (base: string) => {
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+};

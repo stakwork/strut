@@ -201,13 +201,28 @@ export function creditSettled(purse: VisitorPurse, entry: PendingClaim, credenti
 }
 
 /** What the payer decided: the credential (paid), `again` (send the call
- *  again: the invoice expired, or credit arrived meanwhile), or null (the
- *  visitor cancelled). */
-export type PayOutcome = string | "again" | null;
+ *  again: the invoice expired, or credit arrived meanwhile), null (the
+ *  visitor cancelled), or `{ error }` — the host would not pay this one (a
+ *  challenge that does not check out, ./challenge), which the page gets as
+ *  its call's error. */
+export type PayOutcome = string | "again" | null | { error: string };
 
-/** How many answers one call may act on before it gives up: a spare tried,
- *  a top-up that is short again, an expired invoice asked for again. */
+/** The answer a page gets when its host refused to pay: a plain error. */
+export function refusedResult(error: string): CallResult {
+  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] };
+}
+
+/** How many answers one call may act on before it gives up: spares tried,
+ *  an expired invoice asked for again, a refused credential dropped. A call
+ *  PAYS at most once, whatever the server answers after. */
 export const PAY_ROUNDS = 6;
+
+/** The server asked for another payment after this call paid one: nothing
+ *  more is paid, and what was paid stays as credit. */
+export function paidAgainResult(workflow: string): CallResult {
+  const error = `payment_required: the server asked to be paid again after this payment, so nothing more was paid — your payment is kept as credit on this server: run ${workflow || "it"} again to spend it`;
+  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] };
+}
 
 /** A failed launch after the visitor paid in this call (the server's runs
  *  in flight filled while they paid, the drain, the day's cap): the error,
@@ -265,6 +280,9 @@ export async function callPaying(
     }
     const p = paymentRequiredIn(result);
     if (!p) return settle(result);
+    // Paid once in this call: a server that asks again is never paid again
+    // here (a hostile one could ask after every payment).
+    if (paid) return paidAgainResult(launch.workflow);
     const spare = purse.spare.find((c) => !tried.has(c));
     if (spare) {
       purse.spare = purse.spare.filter((c) => c !== spare);
@@ -278,6 +296,7 @@ export async function callPaying(
     }
     const outcome = await deps.pay(p, launch.workflow);
     if (outcome === null) return cancelledResult(launch.workflow);
+    if (typeof outcome === "object") return refusedResult(outcome.error);
     if (outcome !== "again") {
       // This call asked for it: it is the one to send now.
       purse.spare = purse.spare.filter((c) => c !== outcome);
@@ -450,6 +469,38 @@ export function creditLine(p: Pick<PaymentRequired, "reason" | "remaining_usd">)
   }
   if (p.reason === "short") return "Your credit here is spent; this buys more, and what a run does not use stays yours for later runs here.";
   return "What the run does not use stays as credit for later runs here, in this tab, even after a reload.";
+}
+
+/** A rate this host trusts — its own strut's (`GET /rate`), never the
+ *  seller's quote: what a stranger's invoice is priced at in dollars. */
+export interface TrustedRate {
+  usdPerBtc: number;
+  source: string;
+}
+
+/** What the sheet says a payment costs: the SATS the invoice asks are the
+ *  price (./challenge held them equal to the invoice); dollars only at a
+ *  rate this host trusts; the server's own dollar figure only as the CREDIT
+ *  it says the payment buys — and a warning when that credit is worth less
+ *  than nine tenths of what is paid, at the trusted rate. */
+export interface PriceView {
+  sats: string;
+  usd?: string;
+  credit: string;
+  warning?: string;
+}
+
+export function priceView(p: Pick<PaymentRequired, "sats" | "usd">, rate: TrustedRate | null | undefined, seller?: string): PriceView {
+  const worth = rate && rate.usdPerBtc > 0 ? (p.sats / 1e8) * rate.usdPerBtc : undefined;
+  const credit = `Buys ${formatUsd(p.usd)} of credit${seller ? ` on ${seller}` : ""}, by the server's own figure.`;
+  return {
+    sats: formatSats(p.sats),
+    ...(worth !== undefined ? { usd: `≈ ${formatUsd(worth)} at ${rate!.source}` } : {}),
+    credit,
+    ...(worth !== undefined && worth > 0 && p.usd < worth * 0.9
+      ? { warning: `The server credits ${formatUsd(p.usd)} for a payment worth ${formatUsd(worth)} at ${rate!.source}'s rate.` }
+      : {}),
+  };
 }
 
 /** Sats with thousands separated. */

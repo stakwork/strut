@@ -205,7 +205,16 @@ export interface PublicDoors {
 }
 
 /** `GET /public`: what the public view shows, and what anyone may run. */
+/** What this server's public view lets another strut UI do with it
+ *  (specs/API.md §17.9): `remote` — its public apps may be hosted by any
+ *  strut UI, `?app=<name>&public=1&from=<this server>`, its `POST
+ *  /public/mcp` answering such a page across origins. A version, raised when
+ *  what such a host may rely on changes; absent on a strut from before it. */
+export const PUBLIC_HOST = { remote: 1 } as const;
+
 export interface PublicListing {
+  /** What another strut UI may do with this server's public view. */
+  host: typeof PUBLIC_HOST;
   workflows: Array<{ name: string; activeVersion: string; versions: string[]; description?: string; category?: string; runs: boolean }>;
   steps: Array<{ type: string; source: string; description?: string; effect?: string }>;
   concepts: Array<{ name: string; description?: string; pages: number }>;
@@ -316,7 +325,9 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         "access-control-allow-methods": "GET, HEAD, POST",
         // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
         // `x-strut-visit`: a visitor's page's host names the visit (§10).
-        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, x-strut-visit",
+        // `mcp-method` / `mcp-name`: what an MCP client may send beside a
+        // request whose envelope names a newer protocol version.
+        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, x-strut-visit",
         "access-control-max-age": "600",
       });
     }
@@ -330,6 +341,16 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     // A browser's L402 client reads the challenge's header.
     c.header("access-control-expose-headers", "www-authenticate, retry-after");
     await next();
+    // A handler that answers with a Response of its own — `POST /public/mcp`,
+    // the MCP door's — never carries what `c.header` set: without this a
+    // visitor's page hosted by ANOTHER strut UI (specs/API.md §17.9) passes
+    // the preflight and then cannot read the answer.
+    if (!c.res.headers.get("access-control-allow-origin")) {
+      const res = new Response(c.res.body, c.res);
+      res.headers.set("access-control-allow-origin", "*");
+      res.headers.set("access-control-expose-headers", "www-authenticate, retry-after");
+      c.res = res;
+    }
   };
   // One registration: Hono's `/public/*` matches `/public` too.
   app.use("/public/*", publicMiddleware);
@@ -422,6 +443,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const tree = s.concepts.length ? await surface.conceptTree() : undefined;
     const roots = tree ? tree.concepts.filter((x) => !x.parent) : [];
     return {
+      host: PUBLIC_HOST,
       workflows: await listedWorkflows(),
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),
