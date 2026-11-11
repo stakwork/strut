@@ -347,6 +347,56 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
   return [...out.values()].sort((a, b) => b.corrected - a.corrected || (b.last ?? b.since).localeCompare(a.last ?? a.since));
 }
 
+export interface TreePage {
+  ref_id: string;
+  name: string;
+  description?: string;
+  /** The page's text, cut at `TREE_DOCS_MAX`. */
+  docs?: string;
+  /** The page it hangs under; absent on the root. */
+  parent?: string;
+  /** 0 for the root. */
+  depth: number;
+}
+
+/** The most of a page's text a snapshot keeps. */
+export const TREE_DOCS_MAX = 6000;
+
+/** A tree as it stands: `root` (a Concept's name) and every Concept under it, each once under its first parent,
+ *  parents before children and siblings by name. Empty when there is no such root. What a dream's run keeps
+ *  before and after it works, so what it changed can be read off the two. */
+export async function treePages(g: ClaimGraph, namespace: string | undefined, root: string): Promise<TreePage[]> {
+  const d = g.dialect;
+  const tree = await treeOf(g, namespace, root);
+  if (!tree) return [];
+  const rows = await g.query(`MATCH ${d.node("p", CONCEPT_TYPE)} WHERE p.ref_id IN $ids AND ${d.live("p")} RETURN p.ref_id AS ref_id, p.name AS name, p.description AS description, p.docs AS docs`, { ids: [...tree] });
+  const edges = await g.query(
+    `MATCH ${d.node("a", CONCEPT_TYPE)}-[po:${q(PARENT_OF)}]->${d.node("b", CONCEPT_TYPE)} WHERE a.ref_id IN $ids AND b.ref_id IN $ids AND ${d.edgeLive("po")} RETURN a.ref_id AS a, b.ref_id AS b`,
+    { ids: [...tree] },
+  );
+  const by = new Map(rows.map((r) => [String(r["ref_id"]), r]));
+  const kids = new Map<string, string[]>();
+  for (const e of edges) kids.set(String(e["a"]), [...(kids.get(String(e["a"])) ?? []), String(e["b"])]);
+  const nameOf = (ref: string) => String(by.get(ref)?.["name"] ?? "");
+  const top = rows.filter((r) => String(r["name"]) === root).map((r) => String(r["ref_id"]));
+  const out: TreePage[] = [];
+  const seen = new Set<string>();
+  const walk = (ref: string, depth: number, parent?: string) => {
+    if (seen.has(ref) || !by.has(ref)) return;
+    seen.add(ref);
+    const r = by.get(ref)!;
+    const text = (k: string) => (typeof r[k] === "string" && (r[k] as string).trim() ? (r[k] as string) : undefined);
+    const docs = text("docs");
+    out.push({
+      ref_id: ref, name: nameOf(ref), ...(text("description") ? { description: text("description")! } : {}),
+      ...(docs ? { docs: docs.length > TREE_DOCS_MAX ? `${docs.slice(0, TREE_DOCS_MAX)}…` : docs } : {}), ...(parent ? { parent } : {}), depth,
+    });
+    for (const k of [...new Set(kids.get(ref) ?? [])].sort((x, y) => nameOf(x).localeCompare(nameOf(y)))) walk(k, depth + 1, ref);
+  };
+  for (const t of top) walk(t, 0);
+  return out;
+}
+
 /** The Concepts a run opened (the projector's `StrutRun -ACCESSED-> Concept`), by name; null when the run is not
  *  on the graph, so "opened none" and "not known" are told apart. */
 export async function conceptsOpenedBy(g: ClaimGraph, runId: string): Promise<string[] | null> {

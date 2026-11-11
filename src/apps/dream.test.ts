@@ -12,7 +12,7 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { costText, nest, sectionsOf, type Claim } from "./dream/src/lib/report.js";
+import { costText, foundBy, nest, pageChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreePage } from "./dream/src/lib/report.js";
 
 /**
  * `strut/dream` (plans/dream.md): what the dream did, as a first-party app
@@ -40,6 +40,36 @@ describe("strut/dream: the report", () => {
     const c = (id: string, extra: Partial<Claim> = {}): Claim => ({ id, title: id, text: id, about: "p", concept: "Writing", corrected: 0, kept: 0, evidence: [], ...extra });
     const listed = nest([c("group", { children: ["a", "b"] }), c("a", { parent: "group" }), c("solo"), c("b", { parent: "group" }), c("orphan", { parent: "gone" })]);
     assert.deepEqual(listed.map((x) => [x.claim.id, x.children.map((k) => k.id)]), [["group", ["a", "b"]], ["solo", []], ["orphan", []]]);
+  });
+
+  const page = (ref_id: string, name: string, extra: Partial<TreePage> = {}): TreePage => ({ ref_id, name, depth: 1, parent: "root", ...extra });
+  const said = (extra: Partial<SaidRow> = {}): SaidRow => ({ source: "conversation", session: "s", turn: 1, excerpt: "too long", denies: false, outcome: "missing", at: "2026-11-10T10:00:00.000Z", ...extra });
+  const claim = (id: string, extra: Partial<Claim> = {}): Claim => ({ id, title: id, text: id, about: "w", concept: "Writing", corrected: 0, kept: 0, evidence: [], ...extra });
+
+  it("reads what a dream changed off the tree before and after: lines lost and gained, a page added, moved or removed; an untouched page is not listed", () => {
+    const root = { ref_id: "root", name: "Personal", depth: 0 };
+    const before = [root, page("w", "Writing", { docs: "Be brief.\nNo emoji." }), page("m", "Meetings", { docs: "Mornings." }), page("old", "Old"), page("same", "Same", { docs: "x" })];
+    const after = [root, page("w", "Writing", { docs: "Summaries are three lines or fewer.\nNo emoji." }), page("m", "Meetings", { docs: "Mornings.", parent: "w" }), page("same", "Same", { docs: "x" }), page("new", "Email", { docs: "No greeting.", parent: "w" })];
+    assert.deepEqual(pageChanges(before, after), [
+      { ref_id: "w", name: "Writing", kind: "changed", removed: ["Be brief."], added: ["Summaries are three lines or fewer."] },
+      { ref_id: "m", name: "Meetings", kind: "moved", removed: [], added: [], from: "Personal", to: "Writing" },
+      { ref_id: "new", name: "Email", kind: "added", removed: [], added: ["No greeting."], to: "Writing" },
+      { ref_id: "old", name: "Old", kind: "removed", removed: [], added: [], from: "Personal" },
+    ]);
+    assert.deepEqual(pageChanges(undefined, after), [], "a dream that read nothing kept no snapshot before");
+  });
+
+  it("says where a claim stands, and sums a run: what it found, the pages it changed, the claims that came back", () => {
+    const now = Date.parse("2026-11-15T10:00:00.000Z");
+    const fresh = claim("a", { corrected: 1, evidence: [said({ dream: "run-2" })] });
+    const back = claim("b", { corrected: 2, evidence: [said({ dream: "run-2", outcome: "not_followed", at: "2026-11-14T10:00:00.000Z" }), said({ dream: "run-1" })] });
+    const kept = claim("c", { corrected: 1, kept: 1, evidence: [said({ dream: "run-2", outcome: "followed", at: "2026-11-14T10:00:00.000Z" }), said({ dream: "run-1" })] });
+    const quiet = claim("d", { corrected: 1, evidence: [said({ dream: "run-1" })] });
+    assert.deepEqual([fresh, back, kept, quiet].map((c) => standingOf(c, "run-2", now).label), ["New", "Came back", "Kept", "Quiet 5 days"]);
+    assert.deepEqual(foundBy([fresh, back, kept, quiet], "run-2").map((f) => f.claim.id), ["b", "c", "a"], "newest first, this run's alone");
+    const root = { ref_id: "root", name: "Personal", depth: 0 };
+    const out = { turns: 12, claims: [fresh, back, kept, quiet], before: [root, page("w", "Writing")], tree: [root, page("w", "Writing", { docs: "Be brief." })] };
+    assert.deepEqual(summaryOf(out, "run-2"), { turns: 12, found: 2, pages: 1, back: 1 }, "a confirmation is not a correction");
   });
 
   it("says what a run cost, and when it cost nothing", () => {

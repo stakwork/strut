@@ -173,6 +173,8 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     const [e] = out["claims"][0].evidence;
     assert.deepEqual([e.source, e.session, e.turn, e.excerpt, e.why, e.outcome, e.denies], ["conversation", "c-1", 1, "too long, keep summaries to three lines", "the reply ran long", "missing", false]);
     assert.equal(e.dream, run["runId"], "the evidence names the dream that found it");
+    assert.deepEqual(out["tree"].map((p: any) => [p.depth, p.name])[0], [0, "Personal"]);
+    assert.deepEqual(out["before"], out["tree"], "it changed no page: the tree before and after are the same");
     const [claim] = await b.query("MATCH (c:Node {node_type: 'Claim'}) RETURN c.created_by AS by, c.namespace AS ns");
     assert.deepEqual([claim!["by"], claim!["ns"]], [SYSTEM_WRITER, "private"]);
     assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks, { "c-1": 1 });
@@ -184,6 +186,8 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.equal(again["output"]["text"], "No new turns since the last dream.");
     assert.equal(again["output"]["turns"], 0);
     assert.equal(again["output"]["claims"].length, 1, "the claim is still reported");
+    assert.equal(again["output"]["before"], undefined, "nothing read: no snapshot before");
+    assert.equal(again["output"]["tree"][0].name, "Personal", "the tree as it stands is still reported");
     // A tree with no root page is not dreamt on: it stops before a turn is read or a model called.
     results = [];
     const none = await runOf("dream", { input: { root: "Elsewhere" } });
@@ -203,6 +207,9 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     const applied = await runOf("dream");
     assert.equal(applied["status"], "success", JSON.stringify(applied));
     assert.equal((await rootPage())["description"], "changed by the dream");
+    const o = applied["output"] as Record<string, any>;
+    assert.notEqual(o["before"][0].description, "changed by the dream");
+    assert.equal(o["tree"][0].description, "changed by the dream", "the run keeps the tree before and after: what it changed");
 
     await b.query("MATCH (p:Node {node_type: 'Concept', name: 'Personal'}) SET p.description = 'as it was'");
     await say("and never use emoji");

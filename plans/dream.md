@@ -110,7 +110,9 @@ settings, so a second tree is a second automation:
    same turns again; evidence is found by its turn, so nothing is written
    twice.
 5. The run's output: the report, the tree's claims as they stand, the
-   turns read, the cost.
+   tree before the agent worked and after (`dream/tree`), the turns read,
+   the cost. What the dream changed is the difference between the two
+   trees: no page needs the history, or a read of the graph, to show it.
 
 The marks are bookkeeping, so a file per tree
 (`<dataDir>/dream/<tree>.json`) and never the graph. Each tree has its own:
@@ -123,12 +125,17 @@ starts no run. A run a page launches reads what an app may (on Peel,
 `shared` alone) and could not see a private tree, so the dream runs from
 its automation, as one of strut's own jobs, and `dream/turns` refuses a run
 that cannot read its tree before anything is read or sent to a model. The
-page lists the dream's runs, and for the picked run: what it changed, the claims
-(groups with theirs under them) with what was said for each and what the
-assistant did there, and every step the agent took. It is granted the
-`dream` workflow's runs and no step, so it shows what the run itself could
-read. On Peel an app's page reads the `shared` namespace only; the claims
-are in `private`, and reach the page in the run's output.
+page lists the dream's runs, and for the picked run, from the outcome back:
+four numbers (turns read, corrections found, pages changed, claims that came
+back); what changed, a page at a time, as the lines it lost and gained with
+the words that caused them and what the assistant did there; the causes
+(claims, groups with theirs under them, the most corrected first, each
+marked new, came back, kept or quiet); the tree as it stands, each page
+marked with what the dream did to it and how many claims it holds; and every
+step the agent took. It is granted the `dream` workflow's runs and no step,
+so it shows what the run itself could read. On Peel an app's page reads the
+`shared` namespace only; the claims and the tree are in `private`, and
+reach the page in the run's output.
 
 ## Not in v1
 

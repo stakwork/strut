@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { GraphBackend } from "./backend.js";
 import { graphView, parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
-import { conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordSaid, type ClaimGraph, type Said } from "./concept-claims.js";
+import { conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordSaid, treePages, type ClaimGraph, type Said } from "./concept-claims.js";
 import type { ConversationTurn } from "../conversations.js";
 import { createRegistry } from "../steps/registry.js";
 import { validateWorkflowYaml } from "../validate.js";
@@ -108,6 +108,19 @@ for (const tb of testBackends()) {
       await assert.rejects(recordSaid(g, said(5, { text: "x", about: "not-a-node" })), /is not a Concept/);
       await assert.rejects(recordSaid(g, said(5, { claim: "nope" })), /no claim "nope"/);
       await assert.rejects(recordSaid(g, said(5, { text: "no page named" })), /needs `text`.*and `about`/);
+    });
+
+    it("reads a tree as it stands: the root first, each page under its parent, siblings by name, with its text", async () => {
+      const [style] = (await b.nodes.writeMany([{ type: "Concept", data: { name: "Email", description: "How emails are written", docs: "No greeting.\nSign off as Tom." } }])).map((r) => r.ref_id);
+      await b.edges.writeMany([{ edge: "PARENT_OF", source_ref_id: writing, target_ref_id: style! }]);
+      assert.deepEqual((await treePages(g, undefined, "Personal")).map((p) => [p.depth, p.name, p.parent, p.docs]), [
+        [0, "Personal", undefined, undefined],
+        [1, "Writing", personal, undefined],
+        [2, "Email", writing, "No greeting.\nSign off as Tom."],
+      ]);
+      assert.equal((await treePages(g, undefined, "Personal"))[2]!.description, "How emails are written");
+      assert.deepEqual((await treePages(g, undefined, "Work")).map((p) => p.name), ["Work", "Reports"]);
+      assert.deepEqual(await treePages(g, undefined, "No such tree"), []);
     });
 
     it("says which pages a run opened, and tells none from not known", async () => {
@@ -225,8 +238,8 @@ describe("the shipped dream workflow", () => {
     const v = validateWorkflowYaml(text, { registry: await createRegistry([]) });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
     const flow = flowFromYaml("dream", "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["dream/turns", "if", "agent", "dream/done", "pack", "dream/claims", "pack"]);
-    const cfg = flow.steps[2]!.config as Record<string, unknown>;
+    assert.deepEqual(flow.steps.map((s) => s.type), ["dream/turns", "if", "dream/tree", "agent", "dream/done", "pack", "dream/claims", "dream/tree", "pack"]);
+    const cfg = flow.steps[3]!.config as Record<string, unknown>;
     assert.deepEqual(cfg["toolFilter"], ["none"]);
     assert.equal(cfg["model"], undefined);
     // It can record and group claims, read, and change facts and pages. It cannot delete or merge.
@@ -239,7 +252,8 @@ describe("the shipped dream workflow", () => {
     assert.deepEqual([...params["writes"]!].sort(), tools.filter((x) => x.startsWith("graph/") && !/get|neighbors|search|find|resolve/.test(x)).sort());
     assert.deepEqual(params["none"], []);
     assert.match(String(cfg["prompt"]), /name "\{\{ input\.root \}\}"/);
-    assert.equal(flow.steps[3]!.depends, "dream");
+    assert.equal(flow.steps[4]!.depends, "dream");
+    assert.equal(flow.steps[3]!.depends, "before", "the tree is read before the agent changes it");
     assert.ok(isSystemWorkflow("dream"));
     assert.deepEqual(JSON.parse(await readFile(join(SYSTEM_DIR, "dream", "automation.json"), "utf-8")).trigger, { every: "day", at: ["04:00"] });
   });

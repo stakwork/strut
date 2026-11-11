@@ -16,6 +16,19 @@ export interface SaidRow {
   /** What the assistant did there. */
   outcome?: Outcome;
   at: string;
+  /** The dream run that found it. */
+  dream?: string;
+}
+
+/** A page of the tree, as `dream/tree` lists it. */
+export interface TreePage {
+  ref_id: string;
+  name: string;
+  description?: string;
+  docs?: string;
+  /** The ref_id of the page it hangs under; absent on the root. */
+  parent?: string;
+  depth: number;
 }
 
 /** A claim about a Concept page, as `dream/claims` lists it. */
@@ -39,6 +52,9 @@ export interface DreamOutput {
   /** The tree the dream tended: its root Concept's name. */
   root?: string;
   claims?: Claim[];
+  /** The tree after the dream, and before it worked (absent when it read nothing). */
+  tree?: TreePage[];
+  before?: TreePage[];
   turns?: number;
   more?: boolean;
   cost?: number;
@@ -95,4 +111,82 @@ export function whenText(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+const isCorrection = (o: Outcome | undefined): boolean => !!o && o !== "followed";
+const linesOf = (docs: string | undefined): string[] => (docs ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** What a dream did to one page: read off the tree before and after it. */
+export interface PageChange {
+  ref_id: string;
+  name: string;
+  kind: "added" | "changed" | "moved" | "removed";
+  /** The lines its text lost and gained, each as written. */
+  removed: string[];
+  added: string[];
+  /** A moved page's old and new parent, by name. */
+  from?: string;
+  to?: string;
+}
+
+/** The pages a dream added, changed, moved or removed, in the tree's order (a removed one last). A page whose
+ *  text and place are as they were is not listed. */
+export function pageChanges(before: readonly TreePage[] | undefined, after: readonly TreePage[] | undefined): PageChange[] {
+  if (!before || !after) return [];
+  const was = new Map(before.map((p) => [p.ref_id, p]));
+  const is = new Map(after.map((p) => [p.ref_id, p]));
+  const nameIn = (pages: Map<string, TreePage>, ref: string | undefined) => (ref ? (pages.get(ref)?.name ?? "") : "");
+  const out: PageChange[] = [];
+  for (const p of after) {
+    const old = was.get(p.ref_id);
+    if (!old) {
+      out.push({ ref_id: p.ref_id, name: p.name, kind: "added", removed: [], added: linesOf(p.docs), to: nameIn(is, p.parent) });
+      continue;
+    }
+    const a = linesOf(old.docs);
+    const b = linesOf(p.docs);
+    const removed = a.filter((l) => !b.includes(l));
+    const added = b.filter((l) => !a.includes(l));
+    const moved = (old.parent ?? "") !== (p.parent ?? "");
+    if (!removed.length && !added.length && !moved) continue;
+    out.push({
+      ref_id: p.ref_id, name: p.name, kind: removed.length || added.length ? "changed" : "moved", removed, added,
+      ...(moved ? { from: nameIn(was, old.parent), to: nameIn(is, p.parent) } : {}),
+    });
+  }
+  for (const p of before) if (!is.has(p.ref_id)) out.push({ ref_id: p.ref_id, name: p.name, kind: "removed", removed: linesOf(p.docs), added: [], from: nameIn(was, p.parent) });
+  return out;
+}
+
+/** What this run found: each thing said that it recorded, with its claim, newest first. */
+export function foundBy(claims: readonly Claim[] | undefined, runId: string): Array<{ claim: Claim; said: SaidRow }> {
+  return (claims ?? [])
+    .flatMap((claim) => claim.evidence.filter((e) => e.dream === runId).map((said) => ({ claim, said })))
+    .sort((a, b) => b.said.at.localeCompare(a.said.at));
+}
+
+export type ClaimTone = "back" | "kept" | "quiet" | "new";
+
+/** Where a claim stands, read off what was said for it: corrected again after an earlier correction (`back`),
+ *  last confirmed or followed (`kept`), first seen in this run (`new`), or nothing since (`quiet`, with how long
+ *  against `now`). A group's is its own counts alone: its children say the rest. */
+export function standingOf(claim: Claim, runId: string | undefined, now: number): { tone: ClaimTone; label: string } {
+  const last = claim.evidence[0];
+  if (last && isCorrection(last.outcome) && runId && last.dream === runId) {
+    return claim.corrected > 1 ? { tone: "back", label: "Came back" } : { tone: "new", label: "New" };
+  }
+  if (last?.outcome === "followed") return { tone: "kept", label: "Kept" };
+  const days = last ? Math.max(0, Math.floor((now - Date.parse(last.at)) / 86_400_000)) : 0;
+  return { tone: "quiet", label: days > 0 ? `Quiet ${days} day${days === 1 ? "" : "s"}` : "Quiet" };
+}
+
+/** The run in four numbers: turns read, corrections it found, pages it changed, claims that came back. */
+export function summaryOf(out: DreamOutput, runId: string): { turns: number; found: number; pages: number; back: number } {
+  const found = foundBy(out.claims, runId).filter((f) => isCorrection(f.said.outcome));
+  return {
+    turns: typeof out.turns === "number" ? out.turns : 0,
+    found: found.length,
+    pages: pageChanges(out.before, out.tree).length,
+    back: new Set(found.filter((f) => f.claim.corrected > 1).map((f) => f.claim.id)).size,
+  };
 }
