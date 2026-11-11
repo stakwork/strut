@@ -3295,6 +3295,7 @@ export async function createStrut<TServices = unknown>(
       title: view.manifest.title,
       ...(view.manifest.description ? { description: view.manifest.description } : {}),
       ...(view.manifest.icon ? { icon: view.manifest.icon } : {}),
+      ...(view.manifest.permissions?.length ? { permissions: view.manifest.permissions } : {}),
     };
   };
   /** What the `runnable` checks ask of the server (src/public-runnable.ts). */

@@ -88,6 +88,13 @@ export interface BuildInfo {
    *  specs/WALLET.md §5.1), for the host that shows the connect sheet: read
    *  with the version's file token, here and through a peer's read-through. */
   wallet?: AppManifest["wallet"];
+  /** The browser features the version's frame is granted beyond every
+   *  app's (`app.yaml`'s `permissions:`, manifest.ts `DECLARED_PERMISSIONS`:
+   *  motion, camera, geolocation): a host reads them, with the version's
+   *  file token, here and through a peer's read-through, and adds them to
+   *  the frame's `allow` before the document loads
+   *  (web/src/frame-permissions.ts). Absent: every app's alone. */
+  permissions?: NonNullable<AppManifest["permissions"]>;
 }
 
 export type BuildResult =
@@ -624,6 +631,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     warnings,
     title: manifest.title,
     ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
+    ...(manifest.permissions?.length ? { permissions: manifest.permissions } : {}),
   };
   await mkdir(join(root, "dist"), { recursive: true });
   await writeFile(join(root, DOCUMENT_FILE), html, "utf8");

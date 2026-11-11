@@ -109,6 +109,7 @@ grants:
 data:
   graph:
     types: {}                  # node types it declares and may WRITE (below: Graph types)
+permissions: []                # motion, camera, geolocation: beyond every app's (below)
 ```
 
 The grants are the app's whole reach, checked by the strut server on every call in
@@ -120,6 +121,30 @@ step or workflow (but see "The assistant" below). Granting a workflow
 that does not exist is a build
 error; a graph WRITE is refused on a type the manifest does not declare,
 so an app can never rewrite a Concept.
+
+Every app may use what a game needs: `element.requestFullscreen()` (and
+`screen.orientation.lock()` on a phone, which needs fullscreen),
+`element.requestPointerLock()` for mouse-look, the gamepad
+(`navigator.getGamepads()`), and `navigator.wakeLock.request("screen")` to
+keep the screen on — as well as the microphone and writing to the clipboard.
+Fullscreen and pointer lock need a click or a tap first, like on any page:
+call them from its handler.
+
+`permissions` names what the page may use beyond that. The host grants only
+the names listed, on that version's frame; without the name the browser
+refuses the call (the promise rejects, or the event never fires):
+
+| name | lets the page |
+|---|---|
+| `motion` | `devicemotion` / `deviceorientation` — tilt controls (no compass heading). Motion can be read to guess what a person types, so ask only when the app is steered by tilting. On iPhone, call `DeviceMotionEvent.requestPermission()` from a tap first |
+| `camera` | `getUserMedia({ video })` — the browser still asks the person |
+| `geolocation` | `navigator.geolocation` — the browser still asks the person |
+
+`fullscreen`, `pointer-lock`, `gamepad`, `wake-lock`, `microphone` and
+`clipboard-write` are accepted too, so a manifest that lists them still
+builds, and change nothing: every app has them. Any other name is a build
+error naming these. There is no `vibrate`: browsers block `navigator.vibrate`
+in a frame like an app's, and no permission turns it on — show it instead.
 
 ## The kit: what an app imports
 
