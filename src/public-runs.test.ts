@@ -21,7 +21,7 @@ import { FakeWallet } from "./payments/fake-wallet.js";
 import { lightningCapability } from "./payments/lightning.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { usdToMicros } from "./payments/ledger.js";
-import { createPublicRuns, publicRunsPath, secondsToUtcMidnight } from "./public-runs.js";
+import { createPublicRuns, dailyRoom, publicRunsPath, secondsToUtcMidnight } from "./public-runs.js";
 import { stepAuth } from "./llm.js";
 import { createMothership } from "./mothership.js";
 import { MemorySecretStore } from "./secret-store.js";
@@ -500,6 +500,22 @@ describe("public runs: the charge, once, across a restart", () => {
       else process.env["STRUT_API_KEY"] = saved;
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("dailyRoom: a full cap while the day holds one, never a sliver; the last of the day to one run alone", () => {
+    const $ = usdToMicros;
+    const base = { daily: $(5), full: $(1) };
+    assert.deepEqual(dailyRoom({ ...base, today: 0, held: $(3), inFlight: 3 }), { ok: true, cap: $(1) });
+    // $4.70 spent or held, runs in flight: $0.30 is left — a sliver the
+    // gateway would stop partway, so wait for a run to end.
+    assert.deepEqual(dailyRoom({ ...base, today: $(0.7), held: $(4), inFlight: 4 }), { ok: false, spent: false });
+    // Nothing in flight and $0.30 left: the last run of the day, with that.
+    assert.deepEqual(dailyRoom({ ...base, today: $(4.7), held: 0, inFlight: 0 }), { ok: true, cap: $(0.3) });
+    assert.deepEqual(dailyRoom({ ...base, today: $(5), held: 0, inFlight: 0 }), { ok: false, spent: true });
+    // A per-run cap over the daily cap: one run at a time, all day.
+    const big = { daily: $(5), full: $(8) };
+    assert.deepEqual(dailyRoom({ ...big, today: $(1), held: 0, inFlight: 0 }), { ok: true, cap: $(4) });
+    assert.deepEqual(dailyRoom({ ...big, today: $(1), held: $(4), inFlight: 1 }), { ok: false, spent: false });
   });
 
   it("secondsToUtcMidnight", () => {

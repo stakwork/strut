@@ -161,6 +161,30 @@ export function secondsToUtcMidnight(now: number): number {
 const usd = (micros: Micros) => `$${microsToUsd(micros).toFixed(2)}`;
 const isTerminal = (e: RunEvent) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled";
 
+/**
+ * Whether the daily cap has room for one more run, and the run's cap if so
+ * (§7). `full` is the cap the run would have with the day out of the
+ * picture: the item's per-run cap and the workflow's, the smaller. Runs in
+ * flight count at their caps (`held`).
+ *
+ * - While what is left of the day holds a FULL cap, a run gets one — never a
+ *   sliver that the gateway would stop partway, the buyer paying for a run
+ *   that could not finish.
+ * - Past that, the last of the day goes to one run at a time, its cap what
+ *   is left: with nothing of the item in flight and something left, a run is
+ *   admitted with that.
+ * - Otherwise a 429: `spent` when the day's cost alone reached the cap.
+ */
+export function dailyRoom(o: { daily: Micros; today: Micros; held: Micros; inFlight: number; full: Micros }):
+  | { ok: true; cap: Micros }
+  | { ok: false; spent: boolean } {
+  const left = o.daily - o.today - o.held;
+  if (o.today >= o.daily) return { ok: false, spent: true };
+  if (left >= o.full) return { ok: true, cap: o.full };
+  if (o.inFlight === 0 && left > 0) return { ok: true, cap: left };
+  return { ok: false, spent: false };
+}
+
 export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
   const now = o.now ?? Date.now;
   const max = o.maxInFlight ?? PUBLIC_RUNS_MAX_IN_FLIGHT;
@@ -229,19 +253,24 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
         // cap has one (`perRunCapUsd`); an entry on file without one, at the
         // whole cap.
         let held = 0;
-        for (const f of flights.values()) if (f.subject === subject) held += f.cap ?? daily;
-        if (today + held >= daily) {
-          const spent = today >= daily;
+        let inFlight = 0;
+        for (const f of flights.values()) {
+          if (f.subject !== subject) continue;
+          held += f.cap ?? daily;
+          inFlight++;
+        }
+        const room = dailyRoom({ daily, today, held, inFlight, full: caps.length ? Math.min(...caps) : daily });
+        if (!room.ok) {
           return {
             ok: false,
             status: 429,
-            error: spent
+            error: room.spent
               ? `${item.kind} "${item.name}" has spent its daily cap (${usd(daily)}) — try again tomorrow (UTC)`
               : `${item.kind} "${item.name}" has its daily cap (${usd(daily)}) set aside for runs in flight — try again when one ends`,
-            retryAfter: spent ? secondsToUtcMidnight(now()) : 60,
+            retryAfter: room.spent ? secondsToUtcMidnight(now()) : 60,
           };
         }
-        caps.push(daily - today - held);
+        caps.push(room.cap);
       }
       const cap = caps.length ? Math.max(1, Math.min(...caps)) : undefined;
       const runId = generateRunId();
