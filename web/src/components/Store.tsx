@@ -241,11 +241,10 @@ function Loading() {
   return <div class="store-skel" role="status" aria-label="Loading"><span /><span /><span /></div>;
 }
 
-function SectionHead(props: { title: string; count?: number; hint?: string; children?: ComponentChildren }) {
+function SectionHead(props: { title: string; count?: number; children?: ComponentChildren }) {
   return (
     <div class="store-section-head">
       <h2>{props.title}{props.count !== undefined && <span class="store-count">{props.count}</span>}</h2>
-      {props.hint && <span class="store-section-hint">{props.hint}</span>}
       {props.children}
     </div>
   );
@@ -374,7 +373,6 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
         <section class="store-hero">
           <div class="store-eyebrow"><span class="store-pulse" /> Signed package index</div>
           <h1>Apps, workflows and knowledge <span class="store-grad">for your strut server</span></h1>
-          <p>Every package here is signed by its publisher. Install one into your own strut server, and it is checked there against the publisher's key.</p>
           <div class="store-stats">
             <Stat n={hits ? apps.length : undefined} label={apps.length === 1 ? "App" : "Apps"} />
             <Stat n={hits?.length} label={hits?.length === 1 ? "Package" : "Packages"} />
@@ -394,7 +392,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
 
       {liveApps.length > 0 && (
         <section>
-          <SectionHead title="Live apps" hint="Running on their publishers' servers, read-only: open one and look around" />
+          <SectionHead title="Live apps" />
           <div class="store-grid">
             {liveApps.map((a) => (
               <button class="store-card" key={`${a.publisher}/${a.name}`} onClick={() => props.go({ view: "live", publisher: a.publisher, kind: "app", name: a.name })}>
@@ -415,7 +413,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
 
       {liveFlows.length > 0 && (
         <section>
-          <SectionHead title="Live workflows and steps" hint="Read from their servers as they are now" />
+          <SectionHead title="Live workflows and steps" />
           <div class="store-lines">
             {liveFlows.map((i) => (
               <button class="store-line" key={`${i.publisher}/${i.kind}/${i.name}`} onClick={() => props.go({ view: "live", publisher: i.publisher, kind: i.kind as LiveKind, name: i.name })}>
@@ -442,7 +440,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
 
       {hits && apps.length > 0 && (
         <section>
-          <SectionHead title="Apps" count={apps.length} hint="Install the package, open the app" />
+          <SectionHead title="Apps" count={apps.length} />
           <div class="store-grid">
             {apps.map(({ pkg, version, app }) => (
               <button class="store-card" key={`${pkg}/${app.name}`} onClick={() => props.go({ view: "package", pkg })}>
@@ -481,7 +479,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
                   {h.description && <span class="store-line-desc">{h.description}</span>}
                   <span class="store-line-meta">
                     {h.detail
-                      ? [count(h.detail.apps.length, "app"), count(h.detail.workflows, "workflow"), count(h.detail.steps, "step"), count(h.detail.concepts, "concept")].map((t) => <span key={t}>{t}</span>)
+                      ? [count(h.detail.apps.length, "app"), count(h.detail.workflows, "workflow"), count(h.detail.steps, "tool"), count(h.detail.concepts, "concept")].map((t) => <span key={t}>{t}</span>)
                       : <span>archive not read yet</span>}
                     {h.detail?.secrets.length ? <span title={h.detail.secrets.join(", ")}>needs {count(h.detail.secrets.length, "secret")}</span> : null}
                   </span>
@@ -502,7 +500,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
 
       {!props.q && roots.length > 0 && (
         <section>
-          <SectionHead title="Knowledge" hint="The Concept pages the packages carry, as a tree">
+          <SectionHead title="Knowledge">
             <button class="auto-link store-section-link" onClick={() => props.go({ view: "concept", concept: "" })}>Browse the tree <ArrowRightIcon size={12} /></button>
           </SectionHead>
           <div class="store-grid">
@@ -522,7 +520,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
 
       {!props.q && publishers.length > 0 && (
         <section>
-          <SectionHead title="Publishers" count={publishers.length} hint="Each signs its own packages with its key" />
+          <SectionHead title="Publishers" count={publishers.length} />
           <div class="store-lines">
             {publishers.map(([prefix, row]) => (
               <div class="store-line is-static" key={prefix}>
@@ -607,7 +605,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
         <div class="store-stats">
           <Stat n={d.apps.length} label={d.apps.length === 1 ? "App" : "Apps"} onClick={d.apps.length ? jump("store-apps") : undefined} />
           <Stat n={d.workflows.length} label={d.workflows.length === 1 ? "Workflow" : "Workflows"} onClick={d.workflows.length ? jump("store-workflows") : undefined} />
-          <Stat n={steps} label={steps === 1 ? "Step" : "Steps"} onClick={d.steps.length ? jump("store-steps") : undefined} />
+          <Stat n={steps} label={steps === 1 ? "Tool" : "Tools"} onClick={d.steps.length ? jump("store-steps") : undefined} />
           <Stat n={d.concepts.length} label={d.concepts.length === 1 ? "Concept" : "Concepts"} onClick={d.concepts.length ? jump("store-concepts") : undefined} />
         </div>
       )}
@@ -640,7 +638,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
           )}
           {d && d.workflows.length > 0 && (
             <section id="store-workflows">
-              <SectionHead title="Workflows" count={d.workflows.length} hint="Open one for its inputs and the steps it runs" />
+              <SectionHead title="Workflows" count={d.workflows.length} />
               <div class="store-lines">
                 {d.workflows.map((w) => (
                   <details class="store-acc" key={w.name}>
@@ -687,7 +685,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
           )}
           {d && d.steps.length > 0 && (
             <section id="store-steps">
-              <SectionHead title="Steps" count={steps} hint="TypeScript that runs inside the installing strut's process" />
+              <SectionHead title="Tools" count={steps} />
               <div class="store-lines">
                 {d.steps.map((s) => (
                   <div class="store-line is-static" key={s.name}>
@@ -711,12 +709,11 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                   </div>
                 ))}
               </div>
-              <div class="auto-hint">The lint is a reading of each step's source, not a sandbox.</div>
             </section>
           )}
           {d && d.concepts.length > 0 && (
             <section id="store-concepts">
-              <SectionHead title="Concepts" count={d.concepts.length} hint="The knowledge it installs, as a tree: open a branch, or filter" />
+              <SectionHead title="Concepts" count={d.concepts.length} />
               <ConceptTree concepts={d.concepts} go={props.go} />
             </section>
           )}

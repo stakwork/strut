@@ -5137,7 +5137,6 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 }
 .store-dim { color: var(--text-dim); }
 .store-section-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
-.store-section-hint { font-size: 13px; color: var(--text-dim); }
 .store .store-section-link { margin-left: auto; }
 .store-results-head { display: flex; align-items: baseline; gap: var(--sp-4); flex-wrap: wrap; }
 .store-results-head h1 { display: inline-flex; align-items: center; gap: 12px; }
@@ -5177,7 +5176,6 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 }
 .store-hero h1 { font-size: clamp(34px, 5.2vw, 60px); line-height: 1.04; letter-spacing: -0.035em; }
 .store-grad { display: block; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: 0.08em; }
-.store-hero p { margin: 0; max-width: 620px; font-size: 16.5px; line-height: 1.6; color: var(--text-muted); }
 /* A strip of numbers: the index's, a package's. */
 .store-stats {
   display: grid;
