@@ -16,6 +16,7 @@ import { PaymentSheet } from "./PaymentSheet";
 import { callPaying, formatSats, formatUsd, type ClaimEnd, type PayOutcome, type PaymentRequired } from "../visitor-pay";
 import { bodyOf, errorOf, httpCallResult, inputOf, newLaunchKey, priceBadge, priceNotes, priceWords, runEnded, runFields, runFileUrl, type LaunchedRun, type LiveRunnableItem } from "../store-run";
 import { payWith, storePurse } from "../store-purse";
+import { remoteAppHref } from "../remote-app";
 
 // ── The store front (plans/marketplace.md §7) ───────────────────────────────
 //
@@ -139,7 +140,7 @@ export function Store() {
         {card !== null && view.view === "browse" && <Browse q={view.q} card={card} go={go} />}
         {card !== null && view.view === "package" && <PackagePage pkg={view.pkg} target={target} link={link} go={go} onNeedStrut={setStrut} />}
         {card !== null && view.view === "concept" && <ConceptView name={view.concept} target={target} link={link} go={go} onNeedStrut={setStrut} />}
-        {card !== null && view.view === "live" && <LivePage publisher={view.publisher} kind={view.kind} name={view.name} card={card} go={go} />}
+        {card !== null && view.view === "live" && <LivePage publisher={view.publisher} kind={view.kind} name={view.name} card={card} go={go} target={target} onNeedStrut={setStrut} />}
       </main>
 
       <footer class="store-foot">
@@ -896,7 +897,7 @@ function ConceptPage(props: { name: string; target: string | null; link: (pkg: s
 /** One item of a publisher's public view, read from its server now: an app
  *  framed as a visitor sees it, a workflow's inputs, steps and recent runs,
  *  a step's fields and source. */
-function LivePage(props: { publisher: string; kind: LiveKind; name: string; card: api.IndexCard | undefined; go: (v: StoreView) => void }) {
+function LivePage(props: { publisher: string; kind: LiveKind; name: string; card: api.IndexCard | undefined; go: (v: StoreView) => void; target: string | null; onNeedStrut: (url: string | null) => void }) {
   const base = liveBase(props.card, props.publisher);
   const crumbs = (
     <nav class="store-crumbs">
@@ -919,7 +920,7 @@ function LivePage(props: { publisher: string; kind: LiveKind; name: string; card
   return (
     <article class="store-live">
       {crumbs}
-      {props.kind === "app" && <LiveApp base={base} name={props.name} publisher={props.publisher} />}
+      {props.kind === "app" && <LiveApp base={base} name={props.name} publisher={props.publisher} target={props.target} onNeedStrut={props.onNeedStrut} />}
       {props.kind === "workflow" && <LiveWorkflow base={base} name={props.name} publisher={props.publisher} />}
       {props.kind === "step" && <LiveStep base={base} name={props.name} publisher={props.publisher} />}
     </article>
@@ -935,9 +936,13 @@ function useLive<T>(base: string, path: string): { data?: T; error?: string } {
   return state;
 }
 
-function LiveApp(props: { base: string; name: string; publisher: string }) {
+function LiveApp(props: { base: string; name: string; publisher: string; target: string | null; onNeedStrut: (url: string | null) => void }) {
   const info = useLive<{ name: string; version: string; title: string; description?: string; permissions?: string[] }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
   const page = liveAppUrl(props.base, props.name);
+  // Whether the publisher's server can be hosted by another strut UI: an
+  // older one says nothing, and the button would only fail there.
+  const listing = useLive<{ host?: { remote?: unknown } }>(props.base, "/public");
+  const hostable = typeof listing.data?.host?.remote === "number" && listing.data.host.remote >= 1;
   // The publisher's page frames the app, and a frame gets only what every
   // frame above it was granted: what every app's frame has for a game, and
   // what the version declared, go on this one too (../frame-permissions).
@@ -958,7 +963,10 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
             {props.publisher} · live {info.data?.version ?? ""} · read-only: you can look around, not start a run
           </div>
         </div>
-        <a class="btn" href={page} target="_blank" rel="noopener">Open full page</a>
+        <div class="store-live-open">
+          {hostable && <OpenInYourStrut base={props.base} name={props.name} target={props.target} onNeedStrut={props.onNeedStrut} />}
+          <a class="btn" href={page} target="_blank" rel="noopener">Open full page</a>
+        </div>
       </div>
       {info.error && <div class="auto-error">{info.error}</div>}
       {(info.data || info.error) && (
@@ -971,6 +979,42 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
         />
       )}
     </>
+  );
+}
+
+/** "Open in your strut": the app with the visitor's OWN strut UI as its host
+ *  (../remote-app, specs/API.md §17.9) — what pays for a priced run there
+ *  is that strut's page, not the publisher's copy of it (Peel's wallet, in
+ *  Peel). A link, with no credential; without a strut named yet, the
+ *  address is asked once and kept as the Install button keeps it. */
+function OpenInYourStrut(props: { base: string; name: string; target: string | null; onNeedStrut: (url: string | null) => void }) {
+  const [asking, setAsking] = useState(false);
+  const [draft, setDraft] = useState("");
+  const href = (strut: string) => remoteAppHref(strut, { from: props.base, name: props.name });
+  if (props.target && !asking) {
+    return (
+      <a class="btn btn-primary" href={href(props.target)} target="_blank" rel="noopener" title={`Opens this app in ${props.target}, which hosts it and pays for its runs from your own wallet`}>
+        Open in your strut
+      </a>
+    );
+  }
+  if (!asking) return <button class="btn btn-primary" onClick={() => setAsking(true)}>Open in your strut</button>;
+  return (
+    <form
+      class="store-strut-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const url = normalizeStrutUrl(draft);
+        if (!url) return;
+        props.onNeedStrut(url);
+        setAsking(false);
+        window.open(href(url), "_blank", "noopener");
+      }}
+    >
+      <input type="text" value={draft} placeholder="Where is your strut server? http://localhost:3000" onInput={(e) => setDraft((e.target as HTMLInputElement).value)} aria-label="Your strut server's address" autoFocus />
+      <button class="btn btn-sm btn-primary" type="submit" disabled={!normalizeStrutUrl(draft)}>Open</button>
+      <button class="btn btn-sm" type="button" onClick={() => setAsking(false)}>Cancel</button>
+    </form>
   );
 }
 
@@ -1250,7 +1294,7 @@ function RunPanel(props: { base: string; item: LiveRunnableItem }) {
           {runs.map((r) => <RunView key={r.runId} base={base} run={r} onEnded={readCredit} />)}
         </div>
       )}
-      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
+      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} seller={props.base.replace(/^https?:\/\//, "")} />}
     </section>
   );
 }

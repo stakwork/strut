@@ -1755,6 +1755,7 @@ describe("the API key gate", () => {
       "GET /apps/x/x/files",
       "GET /apps/x/x/files/x",
       "GET /brand",
+      "GET /rate",
       "POST /mcp",
       "GET /mcp", // 405: the page's MCP client asks for a stream once
       "DELETE /mcp",
@@ -1765,7 +1766,7 @@ describe("the API key gate", () => {
       "GET /jobs/x/files/x",
     ];
     for (const r of allowed) assert.ok(routes.includes(r), r);
-    assert.equal(routes.filter((r) => allowed.includes(r)).length, 14);
+    assert.equal(routes.filter((r) => allowed.includes(r)).length, 15);
     assert.ok(routes.length > 100, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /host/mounted"));
     for (const route of routes) {

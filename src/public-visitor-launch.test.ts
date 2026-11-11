@@ -327,5 +327,18 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     const res = await strut.app.request("/public/mcp", { method: "OPTIONS" });
     assert.equal(res.status, 204);
     assert.match(res.headers.get("access-control-allow-headers") ?? "", /x-strut-visit/);
+    assert.match(res.headers.get("access-control-allow-headers") ?? "", /mcp-protocol-version/);
+  });
+
+  it("and its ANSWER carries CORS too, so a page hosted by another strut UI reads it (specs/API.md §17.9)", async () => {
+    const res = await strut.app.request("/public/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", origin: "http://elsewhere.example", [VISIT_HEADER]: VISIT },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type: "run/launch", config: { workflow: "priced", input: { text: "cors" } }, app: identity } } }),
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(res.headers.get("access-control-allow-origin"), "*");
+    assert.match(res.headers.get("access-control-expose-headers") ?? "", /www-authenticate/);
+    await res.text();
   });
 });
