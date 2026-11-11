@@ -179,15 +179,16 @@ describe("free public runs", () => {
     assert.equal(summary.origin, "public");
     assert.equal(summary.actor, undefined);
     assert.equal(summary.principal, "owner-1");
-    // $3 spent of $5: the next run's cap is what is left ($2), and when that
-    // is spent too, the launch is a 429 until tomorrow (UTC).
+    // $3 spent of $5: with no per-run cap, the next run's cap is a tenth of
+    // the daily cap ($0.50, under the $2 left), and once the day is spent
+    // the launch is a 429 until tomorrow (UTC).
     const ledger = await strut.ledger();
     assert.equal((await ledger.today("workflow:spend")).cost, usdToMicros(3));
     assert.equal((await ledger.today("workflow:spend")).calls, 2);
     const third = await launched("spend", { input: { cost: 2 } });
     await ended("spend", third.runId, third.token);
     const start = (await strut.store.getRunEvents("spend", third.runId)).find((e) => e.type === "run.start")!;
-    assert.equal(start.maxCostUsd, 2, "the run's cap is what is left of the daily cap");
+    assert.equal(start.maxCostUsd, 0.5, "with no per-run cap, a tenth of the daily cap");
     const refused = await launch("spend", { input: { cost: 1 } });
     assert.equal(refused.status, 429);
     assert.match(((await refused.json()) as { error: string }).error, /spent its daily cap \(\$5\.00\)/);
@@ -224,6 +225,25 @@ describe("free public runs", () => {
     for (const r of runs) await ended("spend", r.runId, r.token);
     assert.equal((await (await strut.ledger()).today("workflow:spend")).cost, usdToMicros(3));
     assert.equal((await launch("spend", { input: {} })).status, 429, "and the day is spent");
+  });
+
+  it("with a daily cap and no per-run cap, ten run at once — each may spend a tenth of the day's cap", async () => {
+    const { strut, launch, launched, ended } = await boot({ runnable: [{ kind: "workflow", name: "spend", dailyCapUsd: 5 }], maxInFlight: 20 });
+    const answers = await Promise.all(Array.from({ length: 12 }, () => launch("spend", { input: { cost: 0.25, ms: 200 } })));
+    const ok = answers.filter((r) => r.status === 202);
+    assert.equal(ok.length, 10, "ten fit, not one");
+    const refused = answers.filter((r) => r.status === 429);
+    assert.equal(refused.length, 2);
+    assert.match(((await refused[0]!.json()) as { error: string }).error, /set aside for runs in flight/);
+    const runs = (await Promise.all(ok.map((r) => r.json()))) as Array<{ runId: string; token: string }>;
+    for (const r of runs) {
+      await ended("spend", r.runId, r.token);
+      const start = (await strut.store.getRunEvents("spend", r.runId)).find((e) => e.type === "run.start")!;
+      assert.equal(start.maxCostUsd, 0.5, "each run's cap is a tenth of the daily cap");
+    }
+    // $2.50 spent, nothing in flight: the next launch runs.
+    const next = await launched("spend", { input: {} });
+    await ended("spend", next.runId, next.token);
   });
 
   it("a workflow whose name carries a slash launches and reads back by its encoded name", async () => {
