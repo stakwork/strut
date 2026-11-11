@@ -168,7 +168,7 @@ describe("strut/dream — seeded at boot beside strut/views", () => {
     assert.ok(app, "seeded");
     assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale], ["v1", "strut", "seed", false]);
     assert.equal(app.hash, await treeHash(DREAM_DIR));
-    assert.equal(app.manifest.title, "Dream");
+    assert.equal(app.manifest.title, "Dreaming");
     assert.deepEqual(app.manifest.grants.workflows, ["dream"]);
     assert.deepEqual(app.manifest.grants.steps, []);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
