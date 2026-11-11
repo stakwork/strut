@@ -6,12 +6,15 @@
  * (every call `wallet_unavailable`) to test a 503.
  *
  * Its invoices are not BOLT11: `lnfake1<msat>n<payment hash>`, which no
- * wallet pays. Its preimages are real: sha256(preimage) is the payment
- * hash, so an L402 check runs against it unchanged.
+ * wallet pays — unless `bolt11: true`, which makes them readable BOLT11
+ * (`encodeBolt11`, zero-signed), for a test where another strut's payer
+ * pays them (plans/paid-runs.md §10, a strut that buys). Its preimages are
+ * real: sha256(preimage) is the payment hash, so an L402 check runs
+ * against it unchanged.
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { decodeBolt11 } from "./bolt11.js";
+import { decodeBolt11, encodeBolt11 } from "./bolt11.js";
 import { LightningError, checkPaymentHash, type Invoice, type InvoiceLookup, type LightningProvider, type ReceivedPayment } from "./lightning.js";
 import { lspFeeFloorMsat, type PayRequest, type PayResult, type Payer } from "./payer.js";
 
@@ -37,6 +40,8 @@ export interface FakeWalletOptions {
   startMsat?: number;
   /** An invoice's lifetime when the caller names none: an hour, as the daemon. */
   defaultExpirySecs?: number;
+  /** Make BOLT11 invoices a payer can read (zero-signed): for a buyer's test. */
+  bolt11?: boolean;
 }
 
 const FAKE_PREFIX = "lnfake1";
@@ -44,6 +49,7 @@ const FAKE_PREFIX = "lnfake1";
 export class FakeWallet implements LightningProvider {
   readonly #now: () => number;
   readonly #defaultExpiry: number;
+  readonly #bolt11: boolean;
   readonly #invoices = new Map<string, FakeInvoice>();
   #startMsat: number;
   #down: string | null = null;
@@ -54,6 +60,7 @@ export class FakeWallet implements LightningProvider {
     this.#now = opts.now ?? Date.now;
     this.#startMsat = opts.startMsat ?? 0;
     this.#defaultExpiry = opts.defaultExpirySecs ?? 3600;
+    this.#bolt11 = !!opts.bolt11;
   }
 
   // ── the capability ─────────────────────────────────────────────────────
@@ -64,14 +71,17 @@ export class FakeWallet implements LightningProvider {
     const preimage = randomBytes(32).toString("hex");
     const payment_hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
     const now = this.#now();
+    const expirySecs = o.expirySecs ?? this.#defaultExpiry;
     const inv: FakeInvoice = {
-      invoice: `${FAKE_PREFIX}${o.msat}n${payment_hash}`,
+      invoice: this.#bolt11
+        ? encodeBolt11({ msat: o.msat, paymentHash: payment_hash, ...(o.description !== undefined ? { description: o.description } : {}), timestamp: Math.floor(now / 1000), expirySecs })
+        : `${FAKE_PREFIX}${o.msat}n${payment_hash}`,
       payment_hash,
       preimage,
       msat: o.msat,
       ...(o.description !== undefined ? { description: o.description } : {}),
       createdAt: now,
-      expiresAt: now + (o.expirySecs ?? this.#defaultExpiry) * 1000,
+      expiresAt: now + expirySecs * 1000,
     };
     this.#invoices.set(payment_hash, inv);
     return { invoice: inv.invoice, payment_hash, expires: new Date(inv.expiresAt).toISOString() };
@@ -154,7 +164,7 @@ export class FakeWallet implements LightningProvider {
   }
 
   #find(ref: string): FakeInvoice {
-    const hash = ref.startsWith(FAKE_PREFIX) ? ref.slice(ref.lastIndexOf("n") + 1) : ref.toLowerCase();
+    const hash = ref.startsWith(FAKE_PREFIX) ? ref.slice(ref.lastIndexOf("n") + 1) : ref.startsWith("ln") ? decodeBolt11(ref).paymentHash : ref.toLowerCase();
     const inv = this.#invoices.get(hash);
     if (!inv) throw new Error(`fake wallet: no invoice ${ref.slice(0, 80)}`);
     return inv;

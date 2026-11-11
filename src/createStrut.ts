@@ -37,7 +37,7 @@ import { RunController } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
-import type { ArtifactsCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
+import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
 import { PAYMENTS_FILE } from "./payments/settings.js";
 import { createPayments, type Payments } from "./payments/wallet.js";
 import type { LightningCapability } from "./payments/lightning.js";
@@ -46,6 +46,8 @@ import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import { createWithdrawals, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
+import { guardedHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
@@ -347,6 +349,10 @@ export interface StrutOptions<TServices = unknown> {
    *  `payer`: the host's own payer (src/payments/payer.ts), in place of one
    *  built from the wallet's pay credential — what Withdraw pays through. */
   payments?: { rate?: RateSource; payer?: Payer };
+  /** A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): `http`, the
+   *  capability the `remote/*` steps reach a seller through, in place of
+   *  the guarded one (src/guarded-http.ts) — a test's in-process seller. */
+  remote?: { http?: HttpCapability };
   /** Public runs (plans/paid-runs.md §6): `principal`, the ONE principal
    *  every public run is billed to — a Mothership delegation of its own (say
    *  `public-runs`), so strangers' runs draw on a budget apart from any
@@ -798,6 +804,12 @@ export interface Strut<TServices = unknown> {
    *  `ctx.services.lightning` is), and the exchange rate (`rate.read()`,
    *  what a quote is priced at). */
   payments: Payments;
+
+  /** A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
+   *  held at other struts (`held()`, never a token), the purchases still
+   *  being paid (`check()` claims them; it runs every minute on its own),
+   *  and the capability the `remote/*` steps get as `ctx.services.remote`. */
+  remote: RemoteService;
 
   /** The paid-runs LEDGER (plans/paid-runs.md §5, src/payments/ledger.ts):
    *  opened on first call — `<dataDir>/payments/ledger.db`, or memory where
@@ -1372,6 +1384,22 @@ export async function createStrut<TServices = unknown>(
     ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
   });
+  // A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
+  // this strut holds at other struts' public doors, in an encrypted file of
+  // its own (`entitlements.json`) no step reads; `ctx.services.remote`
+  // presents it for the remote/* steps, and pays — through the withdrawals
+  // service, as a purchase — only for an ACCEPTED remote/buy-credit
+  // proposal (the record on disk is the proof, as for package/install).
+  // A stranger's URL goes through the guarded http.
+  const remote = createRemote({
+    store: secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, ENTITLEMENTS_FILE) : new MemorySecretStore(),
+    http: opts.remote?.http ?? guardedHttp({ timeoutMs: REMOTE_CALL_TIMEOUT_MS }),
+    withdraw: (o) => withdrawals.withdraw(o),
+    canPay: () => payments.canPay(),
+    proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+    rate: () => payments.rate.read(),
+  });
+  if (!(services as Record<string, unknown>)["remote"]) (services as Record<string, unknown>)["remote"] = Object.freeze(remote.capability);
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -5095,6 +5123,17 @@ export async function createStrut<TServices = unknown>(
     withdrawals,
   });
 
+  // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
+  // What this strut bought where, and what is still being paid: an admin's
+  // read (full scope), never a token. `?balance=1` asks each seller.
+  app.get("/remote/credit", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: the credit this strut server holds is an admin's: the deployment key or an admin's session" }, 403);
+    const sellers = await remote.held();
+    if (c.req.query("balance") !== "1") return c.json({ sellers });
+    const balances = await Promise.all(sellers.map((s) => remote.capability.credit(s.seller).catch((err: unknown) => ({ seller: s.seller, held: !!s.credit, error: err instanceof Error ? err.message : String(err) }))));
+    return c.json({ sellers: sellers.map((s, i) => ({ ...s, balance: balances[i] })) });
+  });
+
   // ── MCP servers (src/mcp-registry.ts) ────────────────────────────────────
   //
   // Registered once, their values by secret NAME; an agent reaches one's
@@ -8650,6 +8689,7 @@ export async function createStrut<TServices = unknown>(
     ledgerSweepTimer = undefined;
     publicTools.close();
     withdrawals.stop();
+    remote.stop();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
@@ -8781,6 +8821,9 @@ export async function createStrut<TServices = unknown>(
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
+  // Credit bought from another strut whose payment had not settled (on
+  // file from a past process too) is claimed every minute until it does.
+  remote.start();
   // On file at boot: `load()` counted them in flight. A ledger: its holds.
   const reconcilePublic = !(store instanceof MemoryRunStore) && (publicRuns.inFlight() > 0 || ledgerOnDisk);
   if (autoResumeRuns || autoResumeChats || reconcilePublic) {
@@ -8821,6 +8864,7 @@ export async function createStrut<TServices = unknown>(
     index,
     indexes,
     payments,
+    remote,
     ledger,
     claims,
     verifier,
