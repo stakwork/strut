@@ -464,6 +464,28 @@ for (const impl of impls) {
       ]);
     });
 
+    it("a deposit: sats an admin paid in, one per payment hash, by day; never credit, earnings or an entry", async () => {
+      const d = await store.deposit({ msat: 21_000_000, paymentHash: "in-1", actor: "evan", at: T0 });
+      assert.deepEqual(d, { at: T0, msat: 21_000_000, paymentHash: "in-1", actor: "evan" });
+      assert.deepEqual(await store.deposit({ msat: 99, paymentHash: "in-1", at: T0 + DAY }), d, "the same hash answers the first");
+      const second = await store.deposit({ msat: 1_000, paymentHash: "in-2", at: T0 + DAY });
+      assert.deepEqual(second, { at: T0 + DAY, msat: 1_000, paymentHash: "in-2" });
+      assert.deepEqual(await store.depositOf("in-1"), d);
+      assert.equal(await store.depositOf("in-3"), undefined);
+      assert.deepEqual(await store.deposited(), [
+        { day: dayOf(T0), count: 1, msat: 21_000_000 },
+        { day: dayOf(T0 + DAY), count: 1, msat: 1_000 },
+      ]);
+      assert.deepEqual(await store.deposited({ from: dayOf(T0 + DAY) }), [{ day: dayOf(T0 + DAY), count: 1, msat: 1_000 }]);
+      assert.deepEqual(await store.deposited({ to: dayOf(T0) }), [{ day: dayOf(T0), count: 1, msat: 21_000_000 }]);
+      assert.deepEqual(await store.received(), []);
+      assert.deepEqual(await store.list(), []);
+      assert.deepEqual((await store.earnings({ by: "total" }))[0], { key: "total", calls: 0, failed: 0, earned: 0, cost: 0 });
+      assert.deepEqual(await store.outstanding(), { tokens: 0, usd: 0, held: 0 });
+      await assert.rejects(store.deposit({ msat: 0, paymentHash: "in-4" }), RangeError);
+      await assert.rejects(store.deposit({ msat: 5, paymentHash: "" }), RangeError);
+    });
+
     it("earnings over a list of subjects: a package published here, its items by their bare names", async () => {
       await buy(store, 100, { id: "a", at: T0 });
       const price = { base: $(1), markup: 0 };
@@ -639,6 +661,18 @@ describe("the ledger file", () => {
       assert.throws(() => db.exec("update entries set usd = 0"), /append-only/);
     } finally {
       db.close();
+    }
+  });
+
+  it("a deposit is kept in the file across a close and a reopen", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.deposit({ msat: 5_000, paymentHash: "in-1", actor: "evan", at: T0 });
+    await one.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.deepEqual(await two.depositOf("in-1"), { at: T0, msat: 5_000, paymentHash: "in-1", actor: "evan" });
+    } finally {
+      await two.close();
     }
   });
 

@@ -3845,10 +3845,10 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 | Route | |
 | --- | --- |
 | `GET /earnings/wallet[?check=1]` | which wallet is set and what it can do, never a credential; `check=1` also reads its balance |
-| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check` |
+| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check`. `409 wallet_from_env:` when the environment names the wallet |
 
 ```json
-{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
   "from": "api", "setAt": "2026-11-10T18:50:08.000Z",
   "check": { "ok": true, "msat": 1250000 } }
 ```
@@ -3858,15 +3858,17 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 a pay credential is on file, so Withdraw can pay (§19). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
-`api`. `note` says when the environment names a wallet, which replaces this
-one at the next boot. `check` is `{ ok: true, msat }` or `{ ok: false,
+`api`. `env: true` (with a `note` saying so) when the environment names
+the wallet: the deployment owns it and writes it again at every boot, so
+`PUT` answers `409` and the Earnings tab shows it with no Change or Remove.
+`check` is `{ ok: true, msat }` or `{ ok: false,
 error }`, the wallet's balance read within 5 s; a failed check never
 refuses the save.
 
 `PUT` bodies:
 
 ```json
-{ "provider": "sphinx", "url": "http://treasury:3000", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>" }
 { "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
 { "provider": null }
 ```
@@ -3883,11 +3885,11 @@ goes in the deployment's secrets, and the secrets capability answers
 nothing for any `LIGHTNING_*` name, wherever it is held — nor for
 `STRUT_SECRET_KEY`, which decrypts `payments.json`.
 
-## 19. Earnings and Withdraw — what the server made, and sats out (`plans/paid-runs.md` §8)
+## 19. Earnings, Add sats and Withdraw — what the server made, and sats in and out (`plans/paid-runs.md` §8)
 
 What anyone's runs and calls were charged here, what they cost, and the
 wallet the sats land in (`src/payments/earnings.ts`,
-`earnings-routes.ts`, `withdrawals.ts`). Earned, cost and margin are
+`earnings-routes.ts`, `withdrawals.ts`, `deposits.ts`). Earned, cost and margin are
 DOLLARS (decision 27); the wallet holds sats, in msat. Every number is read
 from the ledger's rollups (`daily`, and the payment and withdrawal entries
 through their partial indexes), never by scanning entries. A server that
@@ -3898,11 +3900,13 @@ A member's session, a peer and a person token are refused (`403`).
 
 | Route | |
 | --- | --- |
-| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, withdrawn, purchases and the sends still out |
+| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, deposited, withdrawn, purchases and the sends still out |
 | `GET /earnings/entries?kind=&runId=&token=&before=&limit=` | the ledger's entries, newest first |
 | `POST /earnings/withdraw` | pay a BOLT11 invoice out of the wallet |
 | `POST /earnings/withdrawals/:paymentHash/read` | read a send still out, now |
 | `POST /earnings/withdrawals/:paymentHash/resolve` | record one as paid, or drop it, by hand |
+| `POST /earnings/deposit` | an invoice INTO the wallet, for an admin to pay from their own (Add sats) |
+| `POST /earnings/deposits/:paymentHash/read` | read a deposit invoice now; recorded in the books once it settled |
 
 ### `GET /earnings`
 
@@ -3928,9 +3932,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
   "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
   "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
+  "deposited": { "count": 1, "msat": 50000000, "days": [{ "day": "2026-11-11", "count": 1, "msat": 50000000 }] },
   "pending": [{ "paymentHash": "<hex>", "msat": 20000000, "maxFeeMsat": 100000, "purpose": "withdrawal", "payer": "sphinx:http://treasury:3000",
     "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
-  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
     "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
     "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
 }
@@ -3943,8 +3948,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   Public view record.
 - `outstanding` is now, not ranged: credit paid for and not yet charged,
   still owed as service; `held` is set aside for runs in flight.
-- `received`, `withdrawn` and `purchases` are ranged; under a `prefix` or
-  `package` they are empty (they are the wallet's, not a package's).
+- `received`, `deposited`, `withdrawn` and `purchases` are ranged; under a
+  `prefix` or `package` they are empty (they are the wallet's, not a
+  package's). `deposited` is sats an admin added by hand (Add sats, below):
+  never credit, never earnings.
   `withdrawn` is a person's withdrawals; `purchases` is credit this strut
   bought from other struts (item 9, `remote/buy-credit`), the same payer's
   other sends.
@@ -3959,8 +3966,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   `reading`: a read is in flight. `lastError`: what the last read said.
 - `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
   payer), the balance at the rate of the moment (or `error`), and the
-  books' check: `expectedMsat` is everything received less every send and
-  its fee and less what is still out (`pendingMsat`), all time;
+  books' check: `expectedMsat` is everything received and deposited, less
+  every send and its fee and less what is still out (`pendingMsat`), all
+  time (with `wallet=1`, deposit invoices that settled since they were last
+  read are recorded first);
   `differenceMsat` is balance − expected (more: money that came some other
   way, or a paid invoice whose credit was never used; less: money that left
   some other way).
@@ -4056,6 +4065,39 @@ went through a wallet no longer set. `paid` records it as one `withdrawal`
 entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
 0) and answers `{ action, entry }`; `drop` forgets it and records nothing.
 `409 reading` while a read of it is in flight; `404 not_pending`.
+
+### `POST /earnings/deposit` and `…/deposits/:paymentHash/read` — Add sats
+
+Sats INTO this server's wallet, paid by an admin from their own: what the
+server buys credit at other struts with (§20) before it has sold anything.
+The invoice is made by the wallet's receive side, for an hour, and kept on
+file (`<dataDir>/payments/deposits.json`) until it settles or expires; it
+is read every minute, and when `GET /earnings?wallet=1` is read, so one
+paid after the page closed, or across a restart, still lands in the books.
+Once settled it is one row in the ledger's `deposits` table, by payment
+hash, with what SETTLED and who asked: never credit on a token, never
+earnings, not a ledger entry; only the books' check counts it.
+
+```json
+{ "sats": 50000 }
+```
+`sats` alone, a whole number from 1 to 10,000,000 (`400 bad_amount`).
+Answers:
+```json
+{ "state": "pending", "paymentHash": "<hex>", "msat": 50000000, "expires": "2026-11-11T19:40:00.000Z", "invoice": "lnbc500u1…" }
+```
+`409 no_wallet` with no wallet set; `503 wallet_unavailable` when the
+wallet cannot be reached, `502 wallet_refused` when it refused.
+
+`…/deposits/:paymentHash/read` (no body) reads it now and answers the
+same shape: `pending` (with the invoice; `error` when the wallet could
+not be asked just now), `settled` (with `deposit: { at, msat,
+paymentHash, actor? }`, `at` ISO 8601, and no invoice), or `expired`
+(forgotten, nothing recorded). A deposit already in the books answers
+`settled` without asking the wallet. `404 not_found` for one never asked
+for here, one that expired, or one the wallet no longer knows (another
+wallet was set since: forgotten). An invoice the wallet cannot be asked
+about stays `pending`, and is forgotten a day past its expiry.
 
 ### `earnings/read` — the same read as a step
 

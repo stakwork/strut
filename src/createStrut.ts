@@ -46,6 +46,7 @@ import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
@@ -1438,6 +1439,15 @@ export async function createStrut<TServices = unknown>(
     ledger,
     ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+  });
+  // Add sats (§8, §9; src/payments/deposits.ts): an invoice INTO the wallet,
+  // made by its receive side, for an admin to pay from their own, so this
+  // strut has sats to buy credit with before it sold anything. Kept on file
+  // beside the ledger until it settles (one row in `deposits`) or expires.
+  const deposits = createDeposits({
+    lightning: () => payments.lightning(),
+    ledger,
+    ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, DEPOSITS_FILE) }),
   });
   // A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
   // this strut holds at other struts' public doors, in an encrypted file of
@@ -5550,6 +5560,7 @@ export async function createStrut<TServices = unknown>(
     walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
     lightning: () => payments.lightning(),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    settleDeposits: () => deposits.check(),
     // A package published HERE: its items carry their bare local names
     // (plans/packages-ux.md), so its subjects come from its newest release —
     // each item by its name inside the package, and by the prefixed name
@@ -5580,6 +5591,7 @@ export async function createStrut<TServices = unknown>(
     earnings: earningsDeps,
     ledger: ledgerIfAny,
     withdrawals,
+    deposits,
   });
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
@@ -9182,6 +9194,7 @@ export async function createStrut<TServices = unknown>(
     ledgerSweepTimer = undefined;
     publicTools.close();
     withdrawals.stop();
+    deposits.stop();
     await remote.stop();
     await bootScan;
     await packages.booted;
@@ -9318,6 +9331,9 @@ export async function createStrut<TServices = unknown>(
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
+  // Deposit invoices asked for (on file from a past process too) are read
+  // every minute until they settle or expire.
+  deposits.start();
   // Credit bought from another strut whose payment had not settled (on
   // file from a past process too) is claimed every minute until it does.
   remote.start();

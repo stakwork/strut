@@ -21,6 +21,9 @@ import {
   type ChargeInput,
   type ChargeResult,
   type DayRange,
+  type Deposit,
+  type DepositedRow,
+  type DepositInput,
   type EarningsQuery,
   type EarningsRow,
   type EntryKind,
@@ -58,6 +61,7 @@ export class MemoryLedgerStore implements LedgerStore {
   private readonly holdByKey = new Map<string, LedgerEntry>();
   private readonly holdByRun = new Map<string, LedgerEntry>();
   private readonly chargeByRun = new Map<string, LedgerEntry>();
+  private readonly deposits = new Map<string, Deposit>();
   private readonly days = new Map<string, DailyRow>();
 
   // ── writes ────────────────────────────────────────────────────────────
@@ -202,6 +206,37 @@ export class MemoryLedgerStore implements LedgerStore {
   async withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined> {
     const e = this.log.find((x) => x.kind === "withdrawal" && x.ref === paymentHash);
     return e ? { ...e } : undefined;
+  }
+
+  async deposit(input: DepositInput): Promise<Deposit> {
+    const at = input.at ?? Date.now();
+    positiveInt("msat", input.msat);
+    need("paymentHash", input.paymentHash);
+    int("at", at);
+    const known = this.deposits.get(input.paymentHash);
+    if (known) return { ...known };
+    const d: Deposit = { at, msat: input.msat, paymentHash: input.paymentHash, ...(input.actor !== undefined ? { actor: input.actor } : {}) };
+    this.deposits.set(input.paymentHash, d);
+    return { ...d };
+  }
+
+  async depositOf(paymentHash: string): Promise<Deposit | undefined> {
+    const d = this.deposits.get(paymentHash);
+    return d ? { ...d } : undefined;
+  }
+
+  async deposited(range?: DayRange): Promise<DepositedRow[]> {
+    const [from, to] = msRange(range);
+    const out = new Map<string, DepositedRow>();
+    for (const d of this.deposits.values()) {
+      if (d.at < from || d.at >= to) continue;
+      const day = dayOf(d.at);
+      const r = out.get(day) ?? { day, count: 0, msat: 0 };
+      r.count++;
+      r.msat += d.msat;
+      out.set(day, r);
+    }
+    return [...out.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
   }
 
   async list(o: EntryListQuery = {}): Promise<LedgerEntry[]> {
