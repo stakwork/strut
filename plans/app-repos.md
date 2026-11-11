@@ -594,14 +594,25 @@ they could be built.
 6. **A Sphinx wallet at one origin, unlocked by a passkey**
    (`sphinx-passkey`). One wallet across every app domain and the person's
    phone, with no install. §5.4.
-7. **Peel by QR** (`peel`). The sheet shows a QR code; Peel scans it and
-   signs with the person's Sphinx key. The same pairing can open an NWC
-   connection to Peel's wallet (`app-payments.md` §5.4).
+7. **Peel, through its wallet connection** (`peel`). **Next**, ruled
+   2026-11-10 and designed in `app-payments.md` §4.4 (R6), not here.
+   - **The connection.** Peel already keeps a connection per app, with
+     consent and a budget; signing in becomes one more thing it grants, on
+     the same sheet: "you" (the root Sphinx key) or "a new identity for
+     this app".
+   - **The guard.** Peel signs only strut's challenge, for the domain it
+     loaded.
+   - **No QR inside Peel.** A QR code is only for a page in another browser
+     with Peel on the phone, which is later, with Peel as an NWC wallet
+     service (`app-payments.md` §5.4).
 8. **A passkey alone** (`passkey`). WebAuthn with this domain as the RP ID
    and no wallet behind it: identity that survives clearing the browser and
    syncs to the person's phone.
 
 ### 5.4 A Sphinx wallet at one origin, unlocked by a passkey
+
+*Later (owner, 2026-11-10): "We already have a wallet! It's called Peel!"
+Signing in and paying through Peel's connection come first (§5.3, 7).*
 
 The idea: **instant, cross-origin Sphinx, with the keys following the
 person to their phone.**
@@ -686,10 +697,11 @@ person to their phone.**
    - **Sphinx in wasm on this origin** (§5.3, 5).
    - **The passkey Sphinx wallet** (§5.4).
    - **Peel over NWC** (`app-payments.md` §5.4).
-3. **A key can be both.** A provider that holds a key (Sphinx in either
-   form, Peel, an extension with `window.nostr`) also offers sign-in. One
-   tap gives the visitor an identity and a wallet, and their actor is
-   their payment key.
+3. **A key can be both.** A provider that holds a key (Peel first, then
+   Sphinx in either browser form, or an extension with `window.nostr`)
+   also offers sign-in. One sheet gives the visitor an identity and a
+   wallet, and their actor is their payment key. For Peel, both ride one
+   connection (`app-payments.md` §4.4).
 
 **Write once, works in both places.** A game written once pays with the
 person's Sphinx sats inside Peel, and with whatever wallet the visitor
@@ -735,8 +747,14 @@ players before it needs git, visitors (4) moves up to second.
    anonymous key and a host's ticket, then LNURL-auth and Nostr.
 5. **Browser wallets.** Bitcoin Connect (`app-payments.md` §5.2), then
    Sphinx in wasm on the origin, each also a sign-in where it holds a key.
+   *Later.*
 6. **The passkey Sphinx wallet at `wallet.sphinx.chat`.** A plan of its
-   own, mostly in `sphinx`; strut's part is the provider.
+   own, mostly in `sphinx`; strut's part is the provider. *Later.*
+
+**Next (2026-11-10): signing in through Peel.** Items 5 and 6 wait. The
+person's wallet is Peel, and a Sphinx identity is for strut apps in
+general, not for repos. So the next sign-in is planned where Peel's
+connection is: `app-payments.md` §4.4 and its work item 9.
 
 ## Validation
 
