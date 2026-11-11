@@ -24,9 +24,10 @@
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { RunEvent, RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
+import type { PublicLaunchOutcome } from "./public-routes.js";
 import type { EdgeEnvelope, GraphReader, NodeEnvelope, SearchParams, SearchResult } from "./graph/search.js";
 import { composeNodeKey } from "./graph/node-writer.js";
 
@@ -243,7 +244,7 @@ export async function writeSurface(dataDir: string, s: PublicSurface): Promise<v
  *  (actors are deferred, plans/public-surface.md decision 18), the job and
  *  conversation it ran in (their ids name people), and where its callbacks
  *  and MCP servers are. */
-const PRIVATE_RUN_FIELDS = ["actor", "principal", "job", "startedBy", "peerPerson", "callback", "mcp", "credit"] as const;
+const PRIVATE_RUN_FIELDS = ["actor", "principal", "job", "startedBy", "peerPerson", "callback", "mcp", "credit", "visitor"] as const;
 
 /** A run event for a visitor: the private fields gone, an agent session
  *  replaced by `transcript`, a link under `/public` (the transcript route
@@ -677,10 +678,22 @@ export const VISITOR_RUN_READS: ReadonlySet<string> = new Set([
   "run/provenance",
 ]);
 
+/** Is this workflow one anyone may RUN (`runnable`, plans/paid-runs.md §2)? */
+export function runnableWorkflow(surface: PublicSurface, name: string): PublicRunnable | undefined {
+  return surface.runnable.find((r) => r.kind === "workflow" && r.name === name);
+}
+
 /** Why a visitor's call is refused, or null: checked after the app's own
  *  grants (`grantRefusal`), so this only ever narrows. `live` is the app's
  *  version the public view serves. Every reason is a sentence a page can
- *  show. */
+ *  show.
+ *
+ *  A visitor's page LAUNCHES a workflow the app grants that a person made
+ *  runnable (plans/paid-runs.md §10): through the same launcher as `POST
+ *  /public/workflows/:name/run` (`visitorRuns`), its host paying when it is
+ *  priced. It reads the runs of a workflow whose runs are public, and of a
+ *  runnable one the runs its own visit launched (`visitorRuns` keeps it to
+ *  those). Nothing else starts or stops a run. */
 export function visitorRefusal(
   surface: PublicSurface,
   live: string | undefined,
@@ -691,13 +704,19 @@ export function visitorRefusal(
   const entry = surface.apps.find((a) => a.name === app.name);
   if (!entry) return `"${app.name}" is not in this strut server's public view`;
   if (!live || live !== app.version) return `${app.name}@${app.version} is not the version in the public view${live ? ` (${live})` : ""}`;
-  if (type === "run/launch" || type === "run/cancel") return "starting or stopping a run is not available in the public view";
+  const wf = typeof config["workflow"] === "string" ? config["workflow"] : "";
+  if (type === "run/cancel") return "stopping a run is not available in the public view";
+  if (type === "run/launch") {
+    if (!runnableWorkflow(surface, wf)) return `workflow "${wf}" is not open to visitors to run on this strut server — a visitor's page starts only what a person made runnable in the public view`;
+    return null;
+  }
   if (VISITOR_RUN_READS.has(type)) {
-    const wf = typeof config["workflow"] === "string" ? config["workflow"] : "";
     const w = surface.workflows.find((x) => x.name === wf);
-    if (!w) return `workflow "${wf}" is not in the public view`;
-    if (type !== "run/workflow" && !w.runs) return `the runs of "${wf}" are not in the public view`;
+    const runnable = !!runnableWorkflow(surface, wf);
+    if (!w && !runnable) return `workflow "${wf}" is not in the public view`;
     if (type === "run/transcript" && config["full"]) return "a whole thread (`full`) is not in the public view: one transcript at a time";
+    // Not public, but runnable: the visit's own runs (`visitorRuns`).
+    if (type !== "run/workflow" && !w?.runs && !runnable) return `the runs of "${wf}" are not in the public view`;
     return null;
   }
   if (VISITOR_GRAPH_READS.has(type)) return null;
@@ -728,6 +747,90 @@ export function visitorRunRecord<T>(workflow: string, runId: string, rec: T): T 
   return out as T;
 }
 
+/** A relative path a run's output names as one of its files, or undefined:
+ *  `./` dropped, nothing absolute, no `..`, no URL. */
+export function relativeFile(v: unknown): string | undefined {
+  if (typeof v !== "string" || !v || /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith("/")) return undefined;
+  const p = v.replace(/^(?:\.\/)+/, "");
+  return p && !p.split("/").includes("..") ? p : undefined;
+}
+
+/** The files a run's output declares (`artifacts[].path`, and `render`
+ *  when it is a file): what a launcher shown the output alone may read. */
+export function declaredPaths(output: unknown): Set<string> {
+  const out = new Set<string>();
+  const list = (output as { artifacts?: unknown } | null | undefined)?.artifacts;
+  if (!Array.isArray(list)) return out;
+  for (const e of list) {
+    if (!e || typeof e !== "object") continue;
+    for (const k of ["path", "render"] as const) {
+      const p = relativeFile((e as Record<string, unknown>)[k]);
+      if (p) out.add(p);
+    }
+  }
+  return out;
+}
+
+/** What the launcher of an item that shows its output alone reads of the
+ *  summary: never its step counts, nor where an error was raised. */
+export function outputOnlySummary(s: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of ["runId", "workflow", "status", "startedAt", "finishedAt", "durationMs", "input", "output", "origin", "totals"]) {
+    if (s[k] !== undefined) out[k] = s[k];
+  }
+  const err = s["error"] as { message?: unknown } | undefined;
+  if (err && typeof err === "object") out["error"] = { message: String(err.message ?? "") };
+  return out;
+}
+
+/** A visit's secret, as its host names it on `POST /public/mcp`
+ *  (`x-strut-visit`, plans/paid-runs.md §10): 22 to 128 characters of
+ *  base64url, minted at random by the host for each page it shows. */
+export const VISIT_HEADER = "x-strut-visit";
+const VISIT = /^[A-Za-z0-9_-]{22,128}$/;
+
+/** What strut keeps of a visit: a hash of its secret, on the runs it
+ *  launches (`run.start.visitor`) — a log or a run record never holds the
+ *  secret itself, and the hash opens nothing. Undefined for no visit, or
+ *  one that is not a visit's secret. */
+export function visitorOfVisit(visit: string | undefined): string | undefined {
+  return visit && VISIT.test(visit) ? createHash("sha256").update(`strut-visit:${visit}`).digest("hex").slice(0, 32) : undefined;
+}
+
+/** Why a visitor's LAUNCH is refused for want of a visit, else undefined: a
+ *  run launched with none could never be read back, so it is refused
+ *  before anything is admitted, held or charged — naming the header. */
+export function visitProblem(visit: string | undefined): string | undefined {
+  if (visit === undefined || visit === "") {
+    return `visit_required: a visitor's launch needs its host to name the visit — the ${VISIT_HEADER} header on the /public/mcp request, 22 to 128 characters of base64url minted at random for the page — or its run could never be read back; this host sent none`;
+  }
+  if (!VISIT.test(visit)) return `visit_required: ${VISIT_HEADER} is not 22 to 128 characters of base64url`;
+  return undefined;
+}
+
+/** A launch's answer as a visitor's page reads it (plans/paid-runs.md §10):
+ *  the run (`{ runId, existing?, credit? }`) — never its run token, which
+ *  would be a bearer credential in the frame; for a priced workflow no
+ *  credit covers, `{ payment_required }` — §10's MCP shape, which the
+ *  host pays and retries, never the page; anything else, a thrown error
+ *  with the route's sentence. */
+export function visitorLaunchResult(out: PublicLaunchOutcome): Record<string, unknown> {
+  if (out.status === 202) {
+    const { token: _token, ...rest } = out.body;
+    return rest;
+  }
+  if (out.status === 402) {
+    const b = out.body;
+    const pick: Record<string, unknown> = {};
+    for (const k of ["macaroon", "invoice", "usd", "sats", "rate", "description", "expires", "remaining_usd", "reason", "carries"]) if (b[k] !== undefined) pick[k] = b[k];
+    return { payment_required: pick };
+  }
+  const message = typeof out.body["error"] === "string" ? out.body["error"] : `the launch was refused (${out.status})`;
+  const code = typeof out.body["code"] === "string" ? out.body["code"] : undefined;
+  const retry = out.headers?.["retry-after"];
+  throw new Error(`${code && !message.startsWith(`${code}:`) ? `${code}: ` : ""}${message}${retry ? ` (try again in ${retry} s)` : ""}`);
+}
+
 type RunsReads = {
   list(q: { workflow: string } & Record<string, unknown>, by?: unknown): Promise<Array<Record<string, unknown>>>;
   get(q: { workflow: string; runId: string; wait?: number }, by?: unknown): Promise<Record<string, unknown> | null>;
@@ -738,28 +841,139 @@ type RunsReads = {
   provenance?(q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown): Promise<unknown>;
 };
 
-/** The runs capability as a visitor's page reads it: reads only, every
- *  record without who launched it, a job run's files closed. */
-export function visitorRuns(inner: RunsReads): Record<string, unknown> {
+/** What a visitor's runs need of the server beyond the reads. */
+export interface VisitorRunsOptions {
+  /** The public view now. */
+  surface: () => Promise<PublicSurface>;
+  /** The visit's hash (`visitorOfVisit`), when its host named one: the
+   *  runs it launched are the runs it reads of a runnable workflow. */
+  visitor?: string;
+  /** Why this request may launch nothing (`visitProblem`): no visit, or
+   *  not one. Checked before the launcher is called. */
+  visitRefusal?: string;
+  /** A public launch through the one launcher (`PublicDoors.launch`,
+   *  src/public-routes.ts): the address's budget, the drain, the body, the
+   *  caps, the price. Absent: nothing launches. */
+  launch?: (workflow: string, body: Record<string, unknown>) => Promise<PublicLaunchOutcome>;
+}
+
+/** The runs capability as a visitor's page reads it: every record without
+ *  who launched it, a job run's files closed. A workflow whose runs are
+ *  public reads as before. A RUNNABLE one (plans/paid-runs.md §10) launches
+ *  through the public launcher, and reads only the runs this visit
+ *  launched — of those, as far as the item's `results` lets its launcher
+ *  (`output`: the summary and the declared files; `run`: everything), the
+ *  rule `POST /public/workflows/:name/run`'s run token follows — and its
+ *  definition only as `GET /public` lists it (name, description, input).
+ *  Cancel stays closed. */
+export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<string, unknown> {
   const closed = (what: string) => () => Promise.reject(new Error(`${what} is not available in the public view`));
+  /** How a visitor reads this workflow's runs: `all` (public), `own` (a
+   *  runnable one's: the visit's, as far as `results` goes), else none. */
+  const access = async (workflow: string): Promise<{ runs: "all" } | { runs: "own"; results: "output" | "run" } | { runs: "none" }> => {
+    if (!o) return { runs: "all" };
+    const surface = await o.surface();
+    if (surface.workflows.find((w) => w.name === workflow)?.runs) return { runs: "all" };
+    const item = runnableWorkflow(surface, workflow);
+    return item ? { runs: "own", results: item.results === "run" ? "run" : "output" } : { runs: "none" };
+  };
+  const notPublic = (workflow: string) => new Error(`the runs of "${workflow}" are not in the public view`);
+  /** A run this visit launched: its record, whatever its status. */
+  const ownRecord = async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
+    if (!o?.visitor) return null;
+    const r = await inner.get(q, by);
+    return r && r["origin"] === "public" && r["visitor"] === o.visitor ? r : null;
+  };
+  const onlyOutput = (workflow: string) =>
+    new Error(`"${workflow}" shows its launcher the run's output alone: its events, transcripts and provenance are not in the public view`);
   return {
-    list: async (q: { workflow: string } & Record<string, unknown>, by?: unknown) =>
-      (await inner.list(q, by)).map((r) => visitorRunRecord(q.workflow, String(r["runId"] ?? ""), r)),
-    get: async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
-      const r = await inner.get(q, by);
-      return r ? visitorRunRecord(q.workflow, q.runId, r) : r;
+    list: async (q: { workflow: string } & Record<string, unknown>, by?: unknown) => {
+      const a = await access(q.workflow);
+      if (a.runs === "none") throw notPublic(q.workflow);
+      if (a.runs === "own" && !o?.visitor) return [];
+      const rows = await inner.list(a.runs === "own" ? { ...q, visitor: o!.visitor } : q, by);
+      return rows.map((r) => {
+        const rec = visitorRunRecord(q.workflow, String(r["runId"] ?? ""), r);
+        return a.runs === "own" && a.results === "output" ? outputOnlySummary(rec as Record<string, unknown>) : rec;
+      });
     },
-    events: async (q: { workflow: string; runId: string; skip?: number }, by?: unknown) =>
-      (await inner.events(q, by)).map((e) => visitorRunRecord(q.workflow, q.runId, e)),
-    transcript: (q: { workflow: string; runId: string; path: string; full?: boolean }, by?: unknown) => inner.transcript({ ...q, full: false }, by),
+    get: async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
+      const a = await access(q.workflow);
+      if (a.runs === "none") throw notPublic(q.workflow);
+      const r = a.runs === "all" ? await inner.get(q, by) : await ownRecord(q, by);
+      if (!r) return r;
+      const rec = visitorRunRecord(q.workflow, q.runId, r);
+      if (a.runs === "all" || a.results === "run") return rec;
+      const out = outputOnlySummary(rec as Record<string, unknown>);
+      if (rec["artifacts"] !== undefined) out["artifacts"] = rec["artifacts"];
+      if (rec["partial"] !== undefined) out["partial"] = rec["partial"];
+      return out;
+    },
+    events: async (q: { workflow: string; runId: string; skip?: number }, by?: unknown) => {
+      const a = await access(q.workflow);
+      if (a.runs === "none") throw notPublic(q.workflow);
+      if (a.runs === "own") {
+        if (a.results === "output") throw onlyOutput(q.workflow);
+        if (!(await ownRecord(q, by))) return [];
+      }
+      return (await inner.events(q, by)).map((e) => visitorRunRecord(q.workflow, q.runId, e));
+    },
+    transcript: async (q: { workflow: string; runId: string; path: string; full?: boolean }, by?: unknown) => {
+      const a = await access(q.workflow);
+      if (a.runs === "none") throw notPublic(q.workflow);
+      if (a.runs === "own") {
+        if (a.results === "output") throw onlyOutput(q.workflow);
+        if (!(await ownRecord(q, by))) throw new Error(`no run "${q.runId}" of "${q.workflow}"`);
+      }
+      return inner.transcript({ ...q, full: false }, by);
+    },
     files: async (q: { workflow: string; runId: string; path: string }, by?: unknown) => {
-      const r = await inner.get({ workflow: q.workflow, runId: q.runId }, by);
+      const a = await access(q.workflow);
+      if (a.runs === "none") throw notPublic(q.workflow);
+      const r = a.runs === "all" ? await inner.get({ workflow: q.workflow, runId: q.runId }, by) : await ownRecord(q, by);
+      if (a.runs === "own" && !r) return null;
       if (r && r["job"]) throw new Error("a job's files are not in the public view");
+      if (a.runs === "own" && a.results === "output") {
+        const path = relativeFile(q.path);
+        if (!path || !declaredPaths(r!["output"]).has(path)) throw new Error(`"${q.workflow}" shows its launcher the run's output alone: only the files its output declares`);
+      }
       return inner.files(q, by);
     },
-    workflow: (q: { workflow: string }, by?: unknown) => inner.workflow(q, by),
-    ...(inner.provenance ? { provenance: (q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown) => inner.provenance!(q, by) } : {}),
-    launch: closed("starting a run"),
+    workflow: async (q: { workflow: string }, by?: unknown) => {
+      // The definition when it is public; a runnable one's as `GET /public`
+      // lists it — what a launch form draws — and nothing more.
+      const surface = o ? await o.surface() : undefined;
+      if (!surface || surface.workflows.some((w) => w.name === q.workflow)) return inner.workflow(q, by);
+      const info = (await inner.workflow(q, by)) as Record<string, unknown>;
+      return {
+        name: q.workflow,
+        ...(typeof info["description"] === "string" ? { description: info["description"] } : {}),
+        ...(info["input"] !== undefined ? { input: info["input"] } : {}),
+      };
+    },
+    ...(inner.provenance
+      ? {
+          provenance: async (q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown) => {
+            const a = await access(q.workflow);
+            if (a.runs === "none") throw notPublic(q.workflow);
+            if (a.runs === "own") {
+              if (a.results === "output") throw onlyOutput(q.workflow);
+              if (!(await ownRecord(q, by))) return null;
+            }
+            return inner.provenance!(q, by);
+          },
+        }
+      : {}),
+    launch: o?.launch
+      ? async (q: Record<string, unknown> & { workflow: string }) => {
+          // The body as the public route takes it: `input` and `key`, and
+          // anything else the page sent, which the launcher refuses by name.
+          if (o.visitRefusal) throw new Error(o.visitRefusal);
+          const { workflow, ...rest } = q;
+          const body = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+          return visitorLaunchResult(await o.launch!(workflow, body));
+        }
+      : closed("starting a run"),
     cancel: closed("stopping a run"),
   };
 }

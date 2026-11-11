@@ -523,7 +523,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     assert.ok(!JSON.stringify(events.result).includes("tom-1"), "no actor in a visitor's events");
     assert.deepEqual((await call({ type: "demo/read", config: {}, app: identity })).result, { app: { name: "bench", version: "v1" }, actor: null });
 
-    assert.match((await call({ type: "run/launch", config: { workflow: "score-wf" }, app: identity })).error!, /starting or stopping a run is not available/);
+    assert.match((await call({ type: "run/launch", config: { workflow: "score-wf" }, app: identity })).error!, /not open to visitors to run/);
     assert.match((await call({ type: "run/list", config: { workflow: "other-wf" }, app: identity })).error!, /workflow "other-wf" is not in the public view/);
     assert.match((await call({ type: "app/state", config: {}, app: identity })).error!, /nothing is kept for a visitor/);
     assert.match((await call({ type: "demo/shell", config: {}, app: identity })).error!, /no shell here/, "a ticked read runs with reads alone");

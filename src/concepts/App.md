@@ -339,7 +339,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
-| `useHost()` → `{ theme, public, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view (see "The public view") |
+| `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -372,17 +372,32 @@ a click and never on a render:
 ## The public view
 
 A person may put an app in the server's PUBLIC VIEW (the Public view
-dialog): anyone can then open it with no account, read-only, and the store
-can frame it. There `useHost().public` is true, and the server refuses
-whatever the page tries beyond reading: starting or cancelling a run,
-saving state (`useAppState` lasts the visit), uploads, writes. So when
-`public` is true, keep the page as it is and DISABLE the controls that
-would only fail — a Run button, a launch form's fields, a cancel, an
-upload, an edit — with one line beside them saying runs are started by the
-people who keep this server. Never hide them: a visitor should see what
-the app does. strut/views' `LaunchForm` already does this. Everything else
-works as it does for anyone: the runs, the graph, the reads the person
-allowed, a tab or filter kept for the visit. Do it in every app, in the
+dialog): anyone can then open it with no account, and the store can frame
+it. There `useHost().public` is true, and the server refuses whatever the
+page tries beyond reading — cancelling a run, saving state (`useAppState`
+lasts the visit), uploads, writes — and beyond starting what a person made
+RUNNABLE: `useHost().runnable` lists the workflows the app grants that a
+visitor may start. A free one starts at once; a priced one is paid by the
+visitor to the HOST, which shows the invoice over the page and only then
+returns the launch — the page sees a launch that took a moment longer and
+never handles money. So when `public` is true, keep the page as it is and
+DISABLE the controls that would only fail — a Run button or launch form
+for a workflow NOT in `runnable`, a cancel, an upload, an edit — with one
+line beside them saying runs are started by the people who keep this
+server. Never hide them: a visitor should see what the app does.
+strut/views' `LaunchForm` already does this, and stays enabled for a
+runnable workflow.
+
+A visitor reads the runs of a runnable workflow that IT started (the host
+names the visit), and only as far as `useHost().results[workflow]` says:
+`"output"` (the default) — `useRun` (status, input, output) and
+`run/files` of the files the output declares; `useRunEvents`,
+`useWorkProducts`, a run timeline or graph and transcripts are refused —
+or `"run"`, everything. So on a public page, show a visitor's own run
+through `useRun` and its declared files unless `results` is `"run"`.
+Everything else works as it does for anyone: the runs of a workflow whose
+runs are public, the graph, the reads the person allowed, a tab or filter
+kept for the visit. Do it in every app, in the
 view or not yet: a person adds an app later, and it should already be
 right. An app in the public view is held at a release, so a publish is
 a draft until a person moves it: say so when you hand one over.

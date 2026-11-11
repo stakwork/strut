@@ -71,6 +71,9 @@ export function readRunStart(
   /** A priced public run's credit token id (§6) — a resume keeps it: the
    *  same sessions' namespace, the same token charged at the end. */
   credit?: string;
+  /** A public run a visitor's app page launched (§10): the visit's hash —
+   *  a resume keeps it, so the visit still reads its run. */
+  visitor?: string;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -90,6 +93,7 @@ export function readRunStart(
     attachments: start.attachments,
     ...(typeof start.maxCostUsd === "number" ? { maxCostUsd: start.maxCostUsd } : {}),
     ...(typeof start.credit === "string" ? { credit: start.credit } : {}),
+    ...(typeof start.visitor === "string" ? { visitor: start.visitor } : {}),
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),
     ...(start.conversation ? { conversation: start.conversation } : {}),

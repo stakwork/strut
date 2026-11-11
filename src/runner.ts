@@ -184,6 +184,9 @@ export interface RunOptions<TServices = unknown> {
   /** A priced public run's credit token id (plans/paid-runs.md §6):
    *  recorded on `run.start`; its sessions open under `public/<token id>/`. */
   credit?: string;
+  /** A public run a visitor's app page launched: the visit's hash
+   *  (plans/paid-runs.md §10), on `run.start` and the summary. */
+  visitor?: string;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -387,6 +390,7 @@ export function summaryFromLog(
     ...(start?.job ? { job: start.job } : {}),
     ...(start?.origin ? { origin: start.origin } : {}),
     ...(start?.app ? { app: start.app } : {}),
+    ...(start?.visitor ? { visitor: start.visitor } : {}),
     ...(workflowHash ? { workflowHash } : {}),
     stepCounts: countSteps(events),
     ...(totals.modelCalls || totals.cost ? { totals } : {}),
@@ -441,6 +445,7 @@ async function executeRun<TServices = unknown>(
     ...(opts?.job ? { job: opts.job } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(opts?.app ? { app: opts.app } : {}),
+    ...(opts?.origin === "public" && opts.visitor ? { visitor: opts.visitor } : {}),
     ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
@@ -564,6 +569,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
       ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
       ...(opts?.credit ? { credit: opts.credit } : {}),
+      ...(opts?.origin === "public" && opts.visitor ? { visitor: opts.visitor } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),

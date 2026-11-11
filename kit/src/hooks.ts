@@ -6,7 +6,7 @@ import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import { isPublicView, type AppIdentity, type StrutClient } from "./client.js";
+import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
@@ -448,10 +448,15 @@ export function useLaunch(workflow: string, opts: UseLaunchOptions = {}): UseLau
   const m = useMutation({
     mutationFn: async (v: { input?: unknown; params?: Record<string, unknown>; key?: string; files?: readonly File[] }) => {
       const attachments = v.files?.length ? await Promise.all(v.files.map(fileData)) : undefined;
-      return client.run<LaunchResult>(
+      const result = await client.run<LaunchResult>(
         RUN_STEPS.launch,
         compact({ workflow, input: v.input, params: v.params, key: v.key, job, title: job ? title : undefined, attachments }),
       );
+      // A priced public run its host could not pay (plans/paid-runs.md §10):
+      // a host that pays retries the call and the page never sees this.
+      const pay = paymentRequiredOf(result);
+      if (pay) throw new StrutError(`payment_required: a run of ${workflow} costs $${pay.usd}, and this page's host does not pay for runs`, RUN_STEPS.launch, result);
+      return result;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: runKeys.lists(workflow) }),
   });
@@ -1098,9 +1103,19 @@ export interface UseHost {
   requestDisplayMode: (mode: DisplayMode) => Promise<DisplayMode>;
   /** The page is a VISITOR's, served in a strut server's public view
    *  (plans/public-surface.md §5): it may read what that view opens and
-   *  nothing else — launching, cancelling and saving state are refused, so
-   *  hide those controls. */
+   *  start only the workflows in `runnable` — cancelling and saving state
+   *  are refused, so disable those controls. */
   public: boolean;
+  /** In the public view, the granted workflows a visitor may START
+   *  (plans/paid-runs.md §10): ones a person made runnable, free or priced
+   *  — a priced one's host pays before the launch returns. Empty outside the
+   *  public view, where a page starts what its viewer may. */
+  runnable: readonly string[];
+  /** For each of `runnable`, what the visitor reads of the runs it
+   *  launched: `output` — `useRun` and the files the output declares;
+   *  `useRunEvents`, `useWorkProducts` and a run timeline are refused — or
+   *  `run`, everything. */
+  results: Readonly<Record<string, PublicResults>>;
 }
 
 /** The host behind the page: theme, display mode, locale, and the two
@@ -1120,6 +1135,10 @@ export function useHost(): UseHost {
       openLink: (url: string) => host.openLink(url),
       requestDisplayMode: (mode: DisplayMode) => host.requestDisplayMode(mode),
       public: isPublicView(),
+      ...(() => {
+        const items = publicRunnableItems();
+        return { runnable: items.map((i) => i.name), results: Object.fromEntries(items.map((i) => [i.name, i.results])) };
+      })(),
     }),
     [host, s],
   );

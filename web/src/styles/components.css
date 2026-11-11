@@ -4557,6 +4557,80 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-host.light .app-host-overlay { background: #ffffff; }
 .app-host.light .app-host-overlay:not(.is-error) { color: #71717a; }
 
+/* A visitor's priced launch (components/PaymentSheet.tsx, plans/paid-runs.md
+   §10): the HOST's sheet over the frame, never inside it. */
+.pay-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: rgba(5, 8, 12, 0.62);
+  backdrop-filter: blur(2px);
+}
+.pay-sheet {
+  width: min(360px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+.pay-sheet-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); }
+.pay-sheet-title { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.pay-sheet-price { display: flex; flex-direction: column; align-items: flex-end; flex: none; }
+.pay-sheet-usd { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pay-sheet-sats { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pay-sheet-what { margin: 0; color: var(--text-muted); line-height: 1.45; }
+.pay-sheet-qr {
+  align-self: center;
+  width: min(232px, 100%);
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: #fff;
+}
+.pay-sheet-qr svg { display: block; width: 100%; height: 100%; }
+.pay-sheet-invoice { display: flex; gap: var(--sp-2); align-items: center; min-width: 0; }
+.pay-sheet-invoice code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  user-select: all;
+}
+.pay-sheet-status { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-muted); }
+.pay-sheet-status.is-expired { color: var(--warning); }
+.pay-sheet-spinner {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pay-sheet-spin 0.9s linear infinite;
+}
+@keyframes pay-sheet-spin { to { transform: rotate(360deg); } }
+.pay-sheet-rate { color: var(--text-dim); font-size: 11px; }
+.pay-sheet-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+
 /* An app a job delivered (the builder's, by name): its page in the job
    timeline, under a bar with Reload (components/JobAppPanel.tsx); large,
    in the artifact viewer. */
