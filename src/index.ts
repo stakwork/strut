@@ -553,7 +553,7 @@ export {
   type ClaimListing,
   type ClaimsResult,
 } from "./claims-authoring.js";
-export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
+export { subjectSchema, personSubjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
 export { claimsRoutes, type ClaimsRoutesDeps } from "./claims-routes.js";
 // Automations — run a workflow on a schedule (plans/automations.md).
 export {

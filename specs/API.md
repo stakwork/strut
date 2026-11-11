@@ -552,8 +552,13 @@ against it.
 `GET /claims?kind=concept&name=Planning` lists them; `GET
 /workflows/:name/evidence` carries a run's, with `subject: { kind:
 "concept", name, version }` and `run.path: "concept:<name>"`. `when:
-publish` is refused, and the `meta/*` claim steps refuse a Concept: a
-person states these.
+publish` is refused.
+
+Stating one is a person's act, through the routes in this section. The AI
+writes nothing on a claim about a Concept: the builder's claim tools and
+the `meta/*` claim steps do not take the kind, and an `ai` author is
+refused on every write (the claim, its checks, attaching and detaching).
+Its runs are still checked against these claims.
 
 ## 6. Control a run
 

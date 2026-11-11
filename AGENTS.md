@@ -60,7 +60,7 @@ strut/
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation; `changedSteps` / `invalidateSteps` — a resume onto another version re-runs what changed (§5.4); `executedWorkflowHash` — the version a run executes now (the newest durable `run.resumed`'s, else `run.start`'s)
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change; on a JOB subject `manual`, `sample` refused), the additive `claims` publish arg, publisher scoping (fixed point 1; a job is nobody's template, so any author may claim about it, and on a job an `ai` author may add a check to a PERSON's claim — plans/job-claims.md §1, ruled), the sealed check over the check closure (fixed point 2; sealed.ts), `ensureJobNode` before a claim about a job is written
-│   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
+│   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps; `personSubjectSchema`, the `/claims` routes' subject: the model-facing kinds plus `concept`, which no model is offered
 │   ├── sealed.ts          # what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`eval/*`, `meta/*`) + STRUT_SEALED, a step def's `sealed: true` (the graders — their namespace also holds the producer's door), a workflow's top-level `sealed: true` (content: Flow.sealed, rides in the version hash). isSealedStep / sealedInClosure (a grant the closure cannot read before the run counts as reaching one) — read by authoring.ts (run / run-history / verify / run-step refused by name, a publish refused by closure), claims-authoring.ts and verify.ts (an ai-stamped check's closure, fixed point 2)
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
 │   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
@@ -2360,8 +2360,14 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   `Job`, checked with `input.concepts`), and rewriting the child's
   description moves that parent's version. Checks take a template's
   defaults (`always` for code, `on_change` for a paid or external one);
-  `when: publish` is refused; the meta surface (a scoped author) writes no
-  claims about Concepts — a person, or the builder chat, does. Not built:
+  `when: publish` is refused. Stating one is a PERSON's act: an author
+  stamped `ai` — the builder chat and the meta surface alike — adds,
+  attaches, edits and retires nothing on a claim about a Concept, claim or
+  check (`requirePersonOn`, claims-authoring.ts), and no model is offered
+  the kind: the builder's tools and their `meta/*` twins take
+  `subjectSchema` (step, workflow, job), the `/claims` routes
+  `personSubjectSchema`. The AI is still checked against these claims and
+  reads the verdicts in its ledger. Not built:
   Concepts in other namespaces, claims travelling with a package's pages,
   running a check against a tree that is not live, any UI.
 

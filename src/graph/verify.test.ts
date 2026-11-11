@@ -24,7 +24,7 @@ import verifyJobStep from "../steps/lib/meta/verify-job.js";
 import { MemoryRunStore } from "../store.js";
 import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
-import { CLAIMS_OFF } from "../claims-schemas.js";
+import { CLAIMS_OFF, personSubjectSchema, subjectSchema } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import { jobRoot, setJobCallback, type JobsCapability } from "../jobs.js";
@@ -1087,7 +1087,7 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
     });
 
-    it("authoring: a Concept by its name through every door; never published, never the meta surface's; a person's word is evidence about the page the run read", async () => {
+    it("authoring: a person states a claim about a Concept, by its name; never at publish, and nothing on one is the AI's to write; a person's word is evidence about the page the run read", async () => {
       const made = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout, { description: "Read the plan: is the rollout staged?" }]);
       // Defaults are a template's: a code check fires on every run, an external one paces its question.
       const listed = await claims.listClaims(PLANNING);
@@ -1098,8 +1098,29 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       assert.match((missing as { error: string }).error, /concept "Nope" is not in the graph/);
       const atPublish = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [{ ...hasRollout, when: "publish" }] }, human);
       assert.match((atPublish as { error: string }).error, /a Concept is never published/);
-      const meta = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [hasRollout] }, { publisher: "ai", scoped: true });
-      assert.match((meta as { error: string }).error, /the meta surface writes no claims about Concepts/);
+      // The AI writes nothing on one, by either door: the builder chat (unscoped) or the meta surface (scoped)…
+      const PERSONS = /a claim about a Concept is a person's to write/;
+      for (const actor of [ai, { publisher: "ai", scoped: true }]) {
+        const refused = [
+          await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [hasRollout] }, actor),
+          await claims.addClaim({ subjects: [{ kind: "workflow", name: "planner" }, PLANNING], text: "x", checks: [hasRollout] }, actor),
+          await claims.addCheck(made.id, hasRollout, actor),
+          await claims.editClaim(made.id, "a plan has two rollout sections", actor),
+          await claims.retireClaim(made.id, actor),
+          await claims.attachClaim(made.id, { kind: "workflow", name: "planner" }, actor),
+          await claims.detachClaim(made.id, PLANNING, actor),
+          await claims.editCheck(made.checks[0]!, { name: "renamed" }, actor),
+          await claims.retireCheck(made.checks[0]!, actor),
+        ];
+        for (const r of refused) assert.match((r as { error: string }).error, PERSONS);
+      }
+      // …and no model is offered the kind: the tools' subject is a step, a workflow or a job; the person's routes add the Concept.
+      assert.equal(subjectSchema.safeParse(PLANNING).success, false);
+      assert.equal(personSubjectSchema.safeParse(PLANNING).success, true);
+      // A person edits their own: nothing above changed it.
+      assert.deepEqual((await conceptStatus(PLANNING)).map((c) => c[0]), ["a plan has a rollout section"]);
+      const renamed = await claims.editCheck(made.checks[0]!, { name: "has a rollout" }, human);
+      assert.ok("ok" in renamed, (renamed as { error?: string }).error);
       const unknown = await claims.listClaims({ kind: "concept", name: "Nope" });
       assert.match((unknown as { error: string }).error, /concept "Nope" is not in the graph/);
 

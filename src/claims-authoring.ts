@@ -30,14 +30,18 @@
  *     stamped (`Check.publisher`), may ADD a check only to a claim it
  *     stamped, and may attach claims only to subjects it published. An
  *     always-passing check hung on a seeded contract line would otherwise
- *     read as `supported` whenever the real check was skipped. A Concept is
- *     published by nobody, so the meta surface attaches nothing to one: a
- *     claim about a Concept is a person's (or the builder chat's). ONE
+ *     read as `supported` whenever the real check was skipped. ONE
  *     exception, ruled (plans/job-claims.md §1): on a JOB subject it may
  *     add a check to a person's claim — the person's acceptance criterion
  *     is what the agent's instrument should test, there is no seeded line
  *     to silence, and the person's own external check stays beside it as a
  *     separate stream; edit / retire / detach stay scoped;
+ *   - a claim about a CONCEPT is a PERSON's: it says what the work of every
+ *     run that opened the page must look like, which is for the people who
+ *     keep the page to state, not for the AI to add on its way through a
+ *     build. An author stamped `ai` — the builder chat and the meta surface
+ *     alike — adds, attaches, edits and retires nothing on one, claim or
+ *     check; it is still checked against them, and reads the verdicts;
  *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
  *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
  *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
@@ -425,8 +429,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
    *  deliver, so a job subject is always its author's to claim about. */
   async function ownsSubject(subject: SubjectRef, actor: ClaimActor): Promise<boolean> {
     if (subject.kind === "job") return true;
-    // A Concept is the workspace's own page: nobody published it, so it is
-    // never the meta surface's to claim about.
+    // Nobody published a Concept (and an `ai` author is refused before this).
     if (subject.kind === "concept") return false;
     if (subject.kind === "step") return (await deps.workspace.listSteps({ publisher: actor.publisher })).some((s) => s.type === subject.type);
     return (await deps.workspace.getWorkflowMetadata(subject.name))?.publisher === actor.publisher;
@@ -436,14 +439,23 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     if (!actor.scoped) return;
     for (const s of subjects) {
       if (!(await ownsSubject(s, actor))) {
-        throw new ClaimsError(
-          "REFUSED",
-          s.kind === "concept"
-            ? `concept "${subjectName(s)}": the meta surface writes no claims about Concepts — a person states what a Concept's readers must do`
-            : `${s.kind} "${subjectName(s)}" was not published by "${actor.publisher}" — the meta surface only ${verb} subjects it authored`,
-        );
+        throw new ClaimsError("REFUSED", `${s.kind} "${subjectName(s)}" was not published by "${actor.publisher}" — the meta surface only ${verb} subjects it authored`);
       }
     }
+  }
+
+  /** A claim about a Concept is a person's to write: the AI, by any door,
+   *  writes nothing on one. `subjects` = what the write touches. */
+  function requirePersonOn(subjects: readonly SubjectRef[], actor: ClaimActor): void {
+    const concept = actor.publisher === AI_STAMP ? subjects.find((s) => s.kind === "concept") : undefined;
+    if (concept) {
+      throw new ClaimsError("REFUSED", `concept "${subjectName(concept)}": a claim about a Concept is a person's to write, and so are its checks — the AI is checked against it, and changes nothing on it`);
+    }
+  }
+  /** The same, for a write on an existing claim (read only for an `ai` author). */
+  async function requirePersonOnClaims(claimIds: readonly string[], actor: ClaimActor): Promise<void> {
+    if (actor.publisher !== AI_STAMP) return;
+    for (const id of claimIds) requirePersonOn(await subjectsOfClaim(id), actor);
   }
 
   async function requireOwnClaim(id: string, actor: ClaimActor, verb: string): Promise<void> {
@@ -547,6 +559,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }, actor: ClaimActor): Promise<ClaimsResult<{ id: string; checks: string[] }>> {
       try {
         const subjects = (input.subjects ?? []).map(toSubjectRef);
+        requirePersonOn(subjects, actor);
         await requireOwnedSubjects(subjects, actor, "adds claims to");
         const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor, undefined, onOf(subjects));
         await ensureSubjectNodes(subjects);
@@ -558,6 +571,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async editClaim(id: string, text: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
+        await requirePersonOnClaims([id], actor);
         await requireOwnClaim(id, actor, "edits");
         return { ok: true, ...(await writer.editClaim(id, text, actor.publisher)) };
       } catch (e) {
@@ -567,6 +581,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireClaim(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
+        await requirePersonOnClaims([id], actor);
         await requireOwnClaim(id, actor, "retires");
         return { ok: true, ...(await writer.retireClaim(id)) };
       } catch (e) {
@@ -577,6 +592,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async attachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; attached: boolean }>> {
       try {
         const ref = toSubjectRef(subject);
+        requirePersonOn([ref], actor);
+        await requirePersonOnClaims([id], actor);
         await requireOwnedSubjects([ref], actor, "attaches claims to");
         await ensureSubjectNodes([ref]);
         return { ok: true, ...(await writer.attachClaim(id, ref)) };
@@ -587,6 +604,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async detachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; detached: boolean }>> {
       try {
+        await requirePersonOnClaims([id], actor);
         await requireOwnClaim(id, actor, "detaches");
         return { ok: true, ...(await writer.detachClaim(id, toSubjectRef(subject))) };
       } catch (e) {
@@ -596,7 +614,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        const on = onOf(await subjectsOfClaim(claimId));
+        const subjects = await subjectsOfClaim(claimId);
+        requirePersonOn(subjects, actor);
+        const on = onOf(subjects);
         // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
         // job the agent may hang its instrument on the person's claim.
         if (!on.job) await requireOwnClaim(claimId, actor, "adds checks to");
@@ -610,6 +630,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
      *  re-validated as a whole and written as a SUCCESSOR. */
     async editCheck(id: string, patch: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
+        await requirePersonOnClaims((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         const old = await requireOwnCheck(id, actor, "edits");
         if (!old) throw new ClaimsError("NOT_FOUND", `check "${id}" not found`);
         const current = listingOf(old);
@@ -640,6 +661,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireCheck(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
+        await requirePersonOnClaims((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         await requireOwnCheck(id, actor, "retires");
         return { ok: true, ...(await writer.retireCheck(id)) };
       } catch (e) {
