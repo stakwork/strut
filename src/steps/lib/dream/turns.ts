@@ -22,23 +22,23 @@ export interface DreamTurn {
   reply: string;
   /** Who said it, when the turn names them. */
   said_by?: string;
-  /** The Concept pages the turn's run opened, by name; absent when the graph does not say. */
+  /** The Concepts the turn's run opened, by name; absent when the graph does not say. */
   opened?: string[];
 }
 
 /**
  * The turns of the person's conversations with their assistant that no dream
  * has read yet, oldest first (plans/dream.md). Deterministic: the model is
- * handed the transcript, it does not page for it.
+ * handed the transcript, it does not go looking for it.
  */
 export default defineStep({
   type: "dream/turns",
   effect: "read",
   description:
     "The turns of the person's conversations with the assistant that no dream has read yet, oldest first: { count, turns: [{ session, turn, at, status, run, said, reply }], " +
-    "cursor, more, text }. Each turn also has `said_by` when it names its speaker and `opened`, the Concept pages its run opened (absent when the graph does not say). `text` is the same turns as a transcript. `cursor` is what dream/done takes once they are dealt with; `more` says turns were left for the next run. " +
+    "cursor, more, text }. Each turn also has `said_by` when it names its speaker and `opened`, the Concepts its run opened (absent when the graph does not say). `text` is the same turns as a transcript. `cursor` is what dream/done takes once they are dealt with; `more` says turns were left for the next run. " +
     "A turn the person stopped has status `cancelled`. A wake (strut's own turn after a job) is skipped. The first dream reads the last `days` only. " +
-    "It refuses, before reading anything, when this run cannot read the tree it is for: a run an app's page launched reads what an app may, and the tree's root must exist.",
+    "It refuses, before reading anything, when this run cannot read the tree it is for: a run an app launched reads what an app may, and the tree's root must exist.",
   input: z.object({
     tree: z.string().optional().default("Personal").describe("The tree this dream tends (its root Concept's name): each tree keeps its own marks."),
     limit: z.number().int().positive().max(200).optional().default(60).describe("Most turns to return (default 60)."),
@@ -54,11 +54,11 @@ export default defineStep({
       if (!readable) {
         throw new Error(
           `dream/turns: this run may not read "${namespace}", where the tree "${cfg.tree}" is kept` +
-            (ctx.app ? ": it was launched from an app's page, which reads only what an app may. Run the dream from its automation" : ""),
+            (ctx.app ? ": it was launched from an app, which reads only what an app may. Run the dream from its automation" : ""),
         );
       }
       const { conceptNamed } = await import("../../../graph/concept-claims.js");
-      if (!(await conceptNamed(g, namespace, cfg.tree))) throw new Error(`dream/turns: there is no Concept "${cfg.tree}" to tend: the dream's \`root\` names the tree's root page`);
+      if (!(await conceptNamed(g, namespace, cfg.tree))) throw new Error(`dream/turns: there is no Concept "${cfg.tree}" to tend: the dream's \`root\` names the tree's root Concept`);
     }
     const state = await readState(dataDirOf(ctx, "dream/turns"), cfg.tree);
     const floor = state ? 0 : Date.now() - cfg.days * 86_400_000;
@@ -98,7 +98,7 @@ export default defineStep({
     const cursor: Record<string, number> = {};
     if (more) for (const t of turns) cursor[t.session] = Math.max(cursor[t.session] ?? -1, t.turn);
     else Object.assign(cursor, seen);
-    // Which pages each turn's run opened (the projector's ACCESSED edges): what tells "not opened" from "not followed".
+    // Which Concepts each turn's run opened (the projector's ACCESSED edges): what tells "not opened" from "not followed".
     try {
       const { g, readable } = await claimGraph(ctx);
       if (readable) {
@@ -115,7 +115,7 @@ export default defineStep({
       .map(
         (t) =>
           `[session ${t.session} · turn ${t.turn} · ${t.at} · ${t.status}${t.said_by ? ` · said by ${t.said_by}` : ""}]\n` +
-          (t.opened ? `OPENED: ${t.opened.join(", ") || "no page"}\n` : "") +
+          (t.opened ? `OPENED: ${t.opened.join(", ") || "no Concept"}\n` : "") +
           `PERSON: ${t.said}\nASSISTANT: ${t.reply || "(no reply)"}`,
       )
       .join("\n\n");

@@ -4,6 +4,8 @@ import { claimGraph } from "./_graph.js";
 
 /** How alike two claims must be, by shared words, to be offered as the same kind. Low: a model decides. */
 const NEAR_AT = 0.15;
+/** The most claims this dream did not touch that are looked at again for a group. */
+const OTHERS_MAX = 12;
 
 /**
  * For each claim a dream touched that is in no group, the few other claims it might be the same kind as
@@ -16,6 +18,7 @@ export default defineStep({
   description:
     "For each of `claims` (ids) that is in no group, the few other claims of the tree it might be the same kind as: " +
     "{ count, items: [{ claim: { id, text, concept }, near: [{ id, text, concept, group? }] }], text }. A neighbour already under a group is offered as that group. " +
+    "The open claims in no group that are not among `claims` are looked at too (up to 12), so an older claim finds a neighbour that came later. " +
     "Picked by shared words; nothing here is a decision. A claim with no neighbour is left out.",
   input: z.object({
     root: z.string().optional().default("Personal"),
@@ -32,7 +35,10 @@ export default defineStep({
     const words = (c: { title: string; text: string }) => wordsOf(`${c.title} ${c.text}`);
     const items: any[] = [];
     const paired = new Set<string>();
-    for (const id of cfg.claims) {
+    // The claims this dream touched, then the open ones in no group it did not (the most corrected first, capped):
+    // a claim recorded before it had a neighbour is offered again once it has one.
+    const others = all.filter((c) => !c.parent && !c.children && c.open > 0 && !cfg.claims.includes(c.id)).slice(0, OTHERS_MAX).map((c) => c.id);
+    for (const id of [...cfg.claims, ...others]) {
       const c = by.get(id);
       if (!c || c.parent || c.children) continue;
       const mine = words(c);

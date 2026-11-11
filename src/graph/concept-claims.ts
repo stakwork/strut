@@ -1,8 +1,8 @@
 /**
- * Claims about a Concept (plans/dream.md): what a tree of Concept pages
+ * Claims about a Concept (plans/dream.md): what a tree of Concepts
  * should say, each with the things people said that bear on it.
  *
- *   Claim —ABOUT→ Concept                      the page that holds it, or should
+ *   Claim —ABOUT→ Concept                      the Concept that holds it, or should
  *   Claim —EVIDENCED_BY {strength, context}→ Evidence
  *   Claim —PARENT_OF→ Claim                    a group: claims of one kind
  *
@@ -14,8 +14,8 @@
  *   - `strength`, as a fact's evidence has it: +1 the sayer says the claim
  *     is right, −1 that it is wrong. Trust reads it as it reads a fact's;
  *   - `outcome` (in the edge's `context`): what the assistant did there —
- *     no page had it, a page had it and was not opened, it was opened and
- *     not followed, a page said the opposite, or it was followed.
+ *     no Concept had it, a Concept had it and was not opened, it was opened and
+ *     not followed, a Concept said the opposite, or it was followed.
  *
  * "Too long, keep summaries to three lines" says the claim is RIGHT (+1) and
  * that the assistant got it wrong (an outcome): one is not the other.
@@ -140,7 +140,7 @@ export async function recordSaid(g: ClaimGraph, s: Said): Promise<SaidWrite> {
     if (!ref) throw new Error(`no claim "${id}": pass \`text\` and \`about\` to make one`);
   } else {
     if (!s.text?.trim() || !s.about) throw new Error("a new claim needs `text` (one sentence that should hold) and `about` (the Concept it belongs on)");
-    if (!(await conceptRef(g, s.about))) throw new Error(`"${s.about}" is not a Concept: \`about\` is the ref_id of the page the claim belongs on`);
+    if (!(await conceptRef(g, s.about))) throw new Error(`"${s.about}" is not a Concept: \`about\` is the ref_id of the Concept the claim belongs on`);
     const parent = s.parent ? await claimRef(g, s.namespace, s.parent) : null;
     if (s.parent && !parent) throw new Error(`no claim "${s.parent}" to group it under`);
     id = conceptClaimId(s.about, s.text);
@@ -187,7 +187,7 @@ export async function groupClaims(
   if (!input.parent && !input.text?.trim()) throw new Error("a group needs `text` (the sentence its claims have in common) or `parent` (an existing group's id)");
   if (!input.claims.length) throw new Error("a group needs the claims it holds");
   const d = g.dialect;
-  // The page a new group belongs on: the one named, else its first claim's.
+  // The Concept a new group belongs on: the one named, else its first claim's.
   let about = input.about;
   if (!about && !input.parent) {
     const rows = await g.query(
@@ -266,8 +266,8 @@ export interface ConceptClaim {
   evidence: SaidRow[];
   /** Somebody said it is to last. */
   lasting?: boolean;
-  /** The fixes made for it, newest first: when, on which page, and the line written. */
-  fixes: Array<{ at: string; page: string; line: string; dream?: string }>;
+  /** The fixes made for it, newest first: when, on which concept, and the line written. */
+  fixes: Array<{ at: string; concept: string; line: string; dream?: string }>;
   /** Corrections after its newest fix (all of them when it has none), its children's included. Counted here. */
   open: number;
 }
@@ -336,7 +336,7 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
     const when = new Date(typeof context["ms"] === "number" ? context["ms"] : num(r["at"]) * 1000).toISOString();
     if (context["kind"] === "fix") {
       claim.fixes.push({
-        at: when, page: String(context["page"] ?? ""), line: String(r["excerpt"] ?? ""),
+        at: when, concept: String(context["concept"] ?? context["page"] ?? ""), line: String(r["excerpt"] ?? ""),
         ...(typeof context["dream"] === "string" ? { dream: context["dream"] } : {}),
       });
       continue;
@@ -386,12 +386,12 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
   return [...out.values()].sort((a, b) => b.corrected - a.corrected || (b.last ?? b.since).localeCompare(a.last ?? a.since));
 }
 
-/** A fix made for a claim: the line written on a page, by which dream. Kept on the claim as a record of its own
+/** A fix made for a claim: the line written on a concept, by which dream. Kept on the claim as a record of its own
  *  (the edge's `context.kind` is "fix", its strength 0), so it is never counted as something said. */
-export async function recordFix(g: ClaimGraph, f: { claim: string; page: string; line: string; dream?: string; at: number; namespace?: string; created_by?: string }): Promise<boolean> {
+export async function recordFix(g: ClaimGraph, f: { claim: string; concept: string; line: string; dream?: string; at: number; namespace?: string; created_by?: string }): Promise<boolean> {
   const ref = await claimRef(g, f.namespace, f.claim);
   if (!ref) throw new Error(`no claim "${f.claim}"`);
-  const id = hash(`${f.claim}|fix|${f.page}|${f.dream ?? f.at}`);
+  const id = hash(`${f.claim}|fix|${f.concept}|${f.dream ?? f.at}`);
   const node = await g.nodes.write(
     {
       type: EVIDENCE_TYPE,
@@ -402,7 +402,7 @@ export async function recordFix(g: ClaimGraph, f: { claim: string; page: string;
     f.namespace ? { namespace: f.namespace } : {},
   );
   if (node.outcome !== "created") return false;
-  const context = JSON.stringify({ kind: "fix", page: f.page, ...(f.dream ? { dream: f.dream } : {}), ms: f.at });
+  const context = JSON.stringify({ kind: "fix", concept: f.concept, ...(f.dream ? { dream: f.dream } : {}), ms: f.at });
   await g.edges.write({ edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: ref, target_ref_id: node.ref_id, properties: { strength: 0, context }, ...edgeBase(f) });
   return true;
 }
@@ -431,25 +431,25 @@ export function nearest<T>(text: string, items: readonly T[], textOf: (x: T) => 
     .map((r) => r.x);
 }
 
-export interface TreePage {
+export interface TreeConcept {
   ref_id: string;
   name: string;
   description?: string;
-  /** The page's text, cut at `TREE_DOCS_MAX`. */
+  /** The Concept's text, cut at `TREE_DOCS_MAX`. */
   docs?: string;
-  /** The page it hangs under; absent on the root. */
+  /** The Concept it hangs under; absent on the root. */
   parent?: string;
   /** 0 for the root. */
   depth: number;
 }
 
-/** The most of a page's text a snapshot keeps. */
+/** The most of a Concept's text a snapshot keeps. */
 export const TREE_DOCS_MAX = 6000;
 
 /** A tree as it stands: `root` (a Concept's name) and every Concept under it, each once under its first parent,
  *  parents before children and siblings by name. Empty when there is no such root. What a dream's run keeps
  *  before and after it works, so what it changed can be read off the two. */
-export async function treePages(g: ClaimGraph, namespace: string | undefined, root: string): Promise<TreePage[]> {
+export async function treeConcepts(g: ClaimGraph, namespace: string | undefined, root: string): Promise<TreeConcept[]> {
   const d = g.dialect;
   const tree = await treeOf(g, namespace, root);
   if (!tree) return [];
@@ -463,7 +463,7 @@ export async function treePages(g: ClaimGraph, namespace: string | undefined, ro
   for (const e of edges) kids.set(String(e["a"]), [...(kids.get(String(e["a"])) ?? []), String(e["b"])]);
   const nameOf = (ref: string) => String(by.get(ref)?.["name"] ?? "");
   const top = rows.filter((r) => String(r["name"]) === root).map((r) => String(r["ref_id"]));
-  const out: TreePage[] = [];
+  const out: TreeConcept[] = [];
   const seen = new Set<string>();
   const walk = (ref: string, depth: number, parent?: string) => {
     if (seen.has(ref) || !by.has(ref)) return;

@@ -4,7 +4,7 @@
  * that answers each stage as that stage's own agent. A person corrects the
  * assistant and says "always"; the shipped `dream` workflow finds the
  * moment, sorts it onto a new claim, sees it is due (said to last), writes
- * one line on a new page and notes the fix. A dream with nothing new calls
+ * one line on a new Concept and notes the fix. A dream with nothing new calls
  * no model. The same correction again lands on the same claim, is due again
  * (corrected since its fix), and the line is replaced, not added to. With
  * `review` the edit is a proposal and nothing is written.
@@ -89,12 +89,12 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
         if (system.includes("You sort things a person said")) {
           const claim = new RegExp(`- ([0-9a-f]{32}) \\\\"${CLAIM}`).exec(prompt)?.[1];
           const root = /- ([0-9a-f-]{36}) \\"Personal\\"/.exec(prompt)?.[1];
-          return answer("match", { decisions: [claim ? { i: 0, claim, outcome: "not_followed", why: "an eight-line summary" } : { i: 0, text: CLAIM, title: "Summaries too long", page: root, outcome: "missing", why: "the reply ran long" }] });
+          return answer("match", { decisions: [claim ? { i: 0, claim, outcome: "not_followed", why: "an eight-line summary" } : { i: 0, text: CLAIM, title: "Summaries too long", concept: root, outcome: "missing", why: "the reply ran long" }] });
         }
-        if (system.includes("You write the one line a page needs")) {
+        if (system.includes("You write the one line a Concept needs")) {
           const claim = /CLAIM ([0-9a-f]{32}) /.exec(prompt)?.[1];
-          const page = /its page ([0-9a-f-]{36}) \\"Writing\\"/.exec(prompt)?.[1];
-          return answer("fix", { edits: [page ? { claim, action: "replace", page, old_line: LINE_1, new_line: LINE_2, first: true, why: "it came back" } : { claim, action: "add_page", page_name: "Writing", new_line: LINE_1, why: "no page had it" }] });
+          const concept = /its Concept ([0-9a-f-]{36}) \\"Writing\\"/.exec(prompt)?.[1];
+          return answer("fix", { edits: [concept ? { claim, action: "replace", concept, old_line: LINE_1, new_line: LINE_2, first: true, why: "it came back" } : { claim, action: "add_concept", concept_name: "Writing", new_line: LINE_1, why: "no Concept had it" }] });
         }
         if (system.includes("which claims about how an assistant should act")) return answer("group", { groups: [] });
         res.end(toolUse(`toolu_${++n}`, "final_answer", { text: "Hello.", artifacts: [] }));
@@ -159,7 +159,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
   };
   const docsOf = async (name: string) => (await b.query("MATCH (p:Node {node_type: 'Concept', name: $name}) RETURN p.docs AS docs", { name }))[0]?.["docs"];
 
-  it("finds a correction said to last, sorts it onto a new claim, fixes it with one line on a new page; nothing new calls no model; corrected again, the line is replaced", async () => {
+  it("finds a correction said to last, sorts it onto a new claim, fixes it with one line on a new concept; nothing new calls no model; corrected again, the line is replaced", async () => {
     assert.equal((await say("summarise my notes from Monday"))["status"], "success");
     assert.equal((await say("too long, always keep summaries to three lines"))["status"], "success");
     found = { turn: 1, excerpt: "too long, always keep summaries to three lines", lasting: true };
@@ -173,7 +173,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     const out = first["output"] as Record<string, any>;
     assert.deepEqual([out["root"], out["turns"], out["moments"], out["due"]], ["Personal", 2, 1, 1]);
     assert.deepEqual(out["records"].map((r: any) => [r.i, r.created, r.recorded, r.outcome]), [[0, true, true, "missing"]]);
-    assert.deepEqual(out["changes"].map((c: any) => [c.title, c.page.name, c.kind, c.removed, c.added]), [["Summaries too long", "Writing", "added", [], [LINE_1]]]);
+    assert.deepEqual(out["changes"].map((c: any) => [c.title, c.concept.name, c.kind, c.removed, c.added]), [["Summaries too long", "Writing", "added", [], [LINE_1]]]);
     assert.equal(await docsOf("Writing"), LINE_1);
     const [claim] = out["claims"];
     assert.deepEqual([claim.text, claim.concept, claim.corrected, claim.lasting, claim.open], [CLAIM, "Personal", 1, true, 0], "fixed: nothing open");
@@ -197,13 +197,13 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.match(prompts["match"]!, /\(on Personal, corrected 1×\)/, "the existing claim is among the moment's candidates");
     assert.match(prompts["fix"]!, /already written for it, and it came back/);
     assert.deepEqual(back["output"]["records"].map((r: any) => [r.created, r.outcome]), [[false, "not_followed"]]);
-    assert.deepEqual(back["output"]["changes"].map((c: any) => [c.page.name, c.kind, c.removed, c.added]), [["Writing", "changed", [LINE_1], [LINE_2]]]);
+    assert.deepEqual(back["output"]["changes"].map((c: any) => [c.concept.name, c.kind, c.removed, c.added]), [["Writing", "changed", [LINE_1], [LINE_2]]]);
     assert.equal(await docsOf("Writing"), LINE_2, "replaced, not added to");
     const again = back["output"]["claims"][0];
     assert.deepEqual([again.corrected, again.open, again.fixes.length], [2, 0, 2]);
   });
 
-  it("one remark alone is recorded and changes no page; a tree with no root page is not dreamt on", async () => {
+  it("one remark alone is recorded and changes no concept; a tree with no root Concept is not dreamt on", async () => {
     await say("summarise my notes from Monday");
     await say("too long");
     found = { turn: 1, excerpt: "too long", lasting: false };
@@ -224,13 +224,13 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.deepEqual([other["output"]["turns"], other["output"]["root"], other["output"]["claims"]], [2, "Elsewhere", []]);
   });
 
-  it("with review a fix is a proposal: the page is not written and the claim stays open", async () => {
+  it("with review a fix is a proposal: the Concept is not written and the claim stays open", async () => {
     await say("summarise my notes from Monday");
     await say("too long, always keep summaries to three lines");
     found = { turn: 1, excerpt: "too long, always keep summaries to three lines", lasting: true };
     const run = await dream({ review: true });
     const [change] = run["output"]["changes"];
-    assert.deepEqual([change.page.name, change.kind, change.added, typeof change.proposed], ["Writing", "added", [LINE_1], "string"]);
+    assert.deepEqual([change.concept.name, change.kind, change.added, typeof change.proposed], ["Writing", "added", [LINE_1], "string"]);
     assert.equal(await docsOf("Writing"), undefined, "not written");
     assert.deepEqual([run["output"]["claims"][0].open, run["output"]["claims"][0].fixes], [1, []]);
     const { proposals } = (await (await strut!.app.request("/proposals")).json()) as { proposals: Array<{ id: string; step: string; status: string }> };

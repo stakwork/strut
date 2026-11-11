@@ -1,13 +1,13 @@
 // strut/dream (plans/dream.md): what the dream did. On the left its runs,
-// newest first. The page starts none: a dream runs from its automation, as
-// one of strut's own jobs, since a run a page launches reads only what an
+// newest first. The app starts none: a dream runs from its automation, as
+// one of strut's own jobs, since a run an app launches reads only what an
 // app may and could not see a private tree. On the right the picked run,
 // read from the outcome back to how it got there: what it changed (the tree
 // before against the tree after, with the words that caused each change),
 // the causes (claims, grouped, most corrected first, each with where it
 // stands), the tree as it stands, then every step the agent took. Everything is read from the run
-// (`grants.workflows: [dream]`), so the page shows what the dream's own run
-// could read and nothing more. Narrow, the list and the run take the page in
+// (`grants.workflows: [dream]`), so the app shows what the dream's own run
+// could read and nothing more. Narrow, the list and the run take the Concept in
 // turn.
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -16,7 +16,7 @@ import { DocumentView, RunList, RunStatus, Transcript } from "strut/views";
 import { cn } from "@/lib/utils";
 import {
   OUTCOME_TEXT, changesOf, costText, foundBy, nest, sectionsOf, standingOf, summaryOf, whenText,
-  type Claim, type ClaimTone, type DreamOutput, type PageChange, type SaidRow, type TreePage,
+  type Claim, type ClaimTone, type DreamOutput, type ConceptChange, type SaidRow, type TreeConcept,
 } from "./lib/report";
 
 const WORKFLOW = "dream";
@@ -44,11 +44,11 @@ const Stat = ({ label, value }: { label: string; value: number }) => (
 /** Where what was said was said, and what the assistant did there. */
 const saidWhere = (e: SaidRow) => `${e.said_by ? `${e.said_by} · ` : ""}${e.session} · turn ${e.turn} · ${e.outcome ? OUTCOME_TEXT[e.outcome] : "not sorted"}`;
 
-/** A page the dream changed: the lines it lost and gained, and the words that caused it. */
-function ChangeRow({ change, causes }: { change: PageChange; causes: Array<{ claim: Claim; said: SaidRow }> }) {
+/** A Concept the dream changed: the lines it lost and gained, and the words that caused it. */
+function ChangeRow({ change, causes }: { change: ConceptChange; causes: Array<{ claim: Claim; said: SaidRow }> }) {
   const what =
-    change.kind === "added" ? `page added${change.to ? ` under ${change.to}` : ""}`
-    : change.kind === "removed" ? "page removed"
+    change.kind === "added" ? `added to memory${change.to ? ` under ${change.to}` : ""}`
+    : change.kind === "removed" ? "removed from memory"
     : change.kind === "moved" ? `moved from ${change.from || "the top"} to ${change.to || "the top"}`
     : `${change.added.length && change.removed.length ? "line changed" : change.added.length ? "line added" : change.removed.length ? "line removed" : "description changed"}${change.from !== undefined ? `, moved to ${change.to || "the top"}` : ""}`;
   return (
@@ -139,14 +139,14 @@ function ClaimGroup({ claim, children, runId, now }: { claim: Claim; children: C
   );
 }
 
-/** The tree as it stands after the dream, each page marked with what the dream did to it and how many claims it holds. */
-function TreeView({ pages, changes, claims }: { pages: TreePage[]; changes: PageChange[]; claims: Claim[] }) {
+/** The tree as it stands after the dream, each Concept marked with what the dream did to it and how many claims it holds. */
+function TreeView({ concepts, changes, claims }: { concepts: TreeConcept[]; changes: ConceptChange[]; claims: Claim[] }) {
   const changed = new Map(changes.map((c) => [c.ref_id, c.kind]));
   const held = new Map<string, number>();
   for (const c of claims) held.set(c.about, (held.get(c.about) ?? 0) + 1);
   return (
     <ul className="flex flex-col rounded-md border py-1.5 text-sm" data-testid="tree">
-      {pages.map((p) => (
+      {concepts.map((p) => (
         <li key={p.ref_id} className="flex flex-wrap items-baseline gap-x-2 px-3 py-1" style={{ paddingLeft: `${0.75 + p.depth * 1.25}rem` }}>
           <span className={cn(p.depth === 0 && "font-medium")}>{p.name}</span>
           {changed.has(p.ref_id) && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs">{changed.get(p.ref_id)} in this dream</span>}
@@ -162,7 +162,7 @@ function TreeView({ pages, changes, claims }: { pages: TreePage[]; changes: Page
   );
 }
 
-/** The parts of the report the page does not draw from the run's data: facts changed, and what was left alone. */
+/** The parts of the report the app does not draw from the run's data: facts changed, and what was left alone. */
 function Notes({ text, only }: { text: string; only: string[] }) {
   const sections = (sectionsOf(text) ?? []).filter((s) => only.includes(s.title) && s.lines.length);
   if (!sections.length) return null;
@@ -192,8 +192,8 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
   const changes = changesOf(out);
   const found = foundBy(all, runId);
   // The words behind a change: what was said for its claim (or, a group's, its claims), newest first. An older
-  // run names no claim: what this run found on that page.
-  const said = (c: PageChange) => {
+  // run names no claim: what this run found on that concept.
+  const said = (c: ConceptChange) => {
     const claim = all.find((x) => x.id === c.claim);
     if (!claim) return found.filter((f) => f.claim.about === c.ref_id);
     const ids = new Set([claim.id, ...(claim.children ?? [])]);
@@ -225,13 +225,13 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="summary">
             <Stat label="Turns read" value={sum.turns} />
             <Stat label="Corrections found" value={sum.found} />
-            <Stat label="Pages changed" value={sum.pages} />
+            <Stat label="Memory changes" value={sum.concepts} />
             <Stat label="Came back" value={sum.back} />
           </div>
         )}
         {done && !r?.error && (
           <section className="flex flex-col gap-2">
-            <h2 className="text-sm font-semibold">What changed</h2>
+            <h2 className="text-sm font-semibold">What changed in memory</h2>
             {changes.length ? (
               <ul className="flex flex-col divide-y rounded-md border">
                 {changes.map((c) => (
@@ -240,7 +240,7 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
               </ul>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {sum.turns ? (typeof out.due === "number" && !out.due ? "No page changed: no claim was due a fix. One remark alone changes nothing." : "No page changed.") : text || "Nothing new to read."}
+                {sum.turns ? (typeof out.due === "number" && !out.due ? "Nothing in memory changed: no claim was due a fix. One remark alone changes nothing." : "Nothing in memory changed.") : text || "Nothing new to read."}
               </p>
             )}
           </section>
@@ -268,8 +268,8 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
         )}
         {done && tree.length > 0 && (
           <section className="flex flex-col gap-2">
-            <h2 className="text-sm font-semibold">The tree after this dream</h2>
-            <TreeView pages={tree} changes={changes} claims={all} />
+            <h2 className="text-sm font-semibold">Memory after this dream</h2>
+            <TreeView concepts={tree} changes={changes} claims={all} />
           </section>
         )}
         {done && text && <Notes text={text} only={["Left alone"]} />}
@@ -307,7 +307,7 @@ export default function App() {
   const [picked, setPicked] = useState<string | null>(null);
   const [showList, setShowList] = useState(true);
   const list: RunSummary[] | undefined = runs.data;
-  // Wide, the newest run is open from the start; narrow, the list is the page until one is picked.
+  // Wide, the newest run is open from the start; narrow, the list is the Concept until one is picked.
   const runId = picked ?? (narrow ? null : (list?.[0]?.runId ?? null));
   const open = (id: string) => {
     setPicked(id);

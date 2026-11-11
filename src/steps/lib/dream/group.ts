@@ -10,7 +10,7 @@ export default defineStep({
     "Put claims of one kind under a PARENT claim (plans/dream.md): \"Add nothing unrequested\" and \"One example is not a template\" under \"Build only what was asked\". " +
     "`text` is the sentence they have in common (or `parent`, an existing group's id, to add to one), and `about` the ref_id of the Concept a new group belongs on (default: its first claim's). The parent is made the first time and holds no evidence: " +
     "its counts in dream/claims are its children's. One level only: a claim is in one group, and a group is not grouped. " +
-    "Group when two or more claims say the same thing about different cases, so the page gets one general line and not a line for each. It changes no page.",
+    "Group when two or more claims say the same thing about different cases, so the Concept gets one general line and not a line for each. It changes no concept.",
   input: z.object({
     text: z.string().optional().describe("A new group: one sentence its claims have in common."),
     parent: z.string().optional().describe("An existing group's id to put the claims under, in place of `text`."),

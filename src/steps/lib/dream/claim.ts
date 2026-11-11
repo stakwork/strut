@@ -8,20 +8,20 @@ export default defineStep({
   type: "dream/claim",
   effect: "write",
   description:
-    "Record what somebody said that bears on a CLAIM about a Concept page (plans/dream.md): one sentence the page should say, with their words as evidence. " +
+    "Record what somebody said that bears on a CLAIM about a Concept (plans/dream.md): one sentence the Concept should say, with their words as evidence. " +
     "A claim is a sentence that should hold, said so it can be checked later (\"Summaries are three lines or fewer\", \"Build only what was asked\"). " +
     "Read dream/claims first. When a claim already covers what was said, pass its id as `claim`: the words are added to it, and a correction after a fix is the sign the fix did not hold. " +
-    "Only when none does, make one with `text` and `about` (the ref_id of the Concept it belongs on: the page that says it, or should; the tree's root when no page fits yet), " +
+    "Only when none does, make one with `text` and `about` (the ref_id of the Concept it belongs on: the Concept that says it, or should; the tree's root when no Concept fits yet), " +
     "and `parent` when it is one of a kind an existing group names. " +
-    "`outcome` is what the assistant did there: `missing` no page said it; `not_opened` a page said it and the assistant did not open that page; " +
-    "`not_followed` it opened the page and still got it wrong; `contradicted` a page said the opposite; `followed` it did as the claim says, or the person confirmed it. " +
+    "`outcome` is what the assistant did there: `missing` no Concept said it; `not_opened` a Concept said it and the assistant did not open that concept; " +
+    "`not_followed` it opened the Concept and still got it wrong; `contradicted` a Concept said the opposite; `followed` it did as the claim says, or the person confirmed it. " +
     "`denies: true` only when the person says the claim itself is wrong (\"no, I never wanted that\"); a correction of the assistant is NOT a denial. " +
-    "The same words recorded twice write nothing. It changes no page and no fact: only the claim and its evidence.",
+    "The same words recorded twice write nothing. It changes no Concept and no fact: only the claim and its evidence.",
   input: z.object({
     claim: z.string().optional().describe("An existing claim's id (from dream/claims). Leave out to make a new one from `text` and `about`."),
     text: z.string().optional().describe("A new claim: one sentence that should hold."),
     title: z.string().optional().describe("A short name for a new claim (a few words). Default: the sentence."),
-    about: z.string().optional().describe("A new claim's Concept: the ref_id of the page it belongs on."),
+    about: z.string().optional().describe("A new claim's Concept: the ref_id of the Concept it belongs on."),
     parent: z.string().optional().describe("A new claim's group: the id of the parent claim it is one kind of."),
     source: z.string().optional().default("conversation").describe("The kind of source it was said in (default conversation)."),
     session: z.string().describe("The conversation it was said in."),

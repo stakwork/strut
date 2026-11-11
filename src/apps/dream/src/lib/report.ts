@@ -1,5 +1,5 @@
 // What a run of the `dream` workflow returns (its `result` pack), and how the
-// page reads it. Pure: no React, so the tests read it too.
+// app reads it. Pure: no React, so the tests read it too.
 
 export type Outcome = "missing" | "not_opened" | "not_followed" | "contradicted" | "followed";
 
@@ -20,23 +20,23 @@ export interface SaidRow {
   dream?: string;
 }
 
-/** A page of the tree, as `dream/tree` lists it. */
-export interface TreePage {
+/** A Concept of the tree, as `dream/tree` lists it. */
+export interface TreeConcept {
   ref_id: string;
   name: string;
   description?: string;
   docs?: string;
-  /** The ref_id of the page it hangs under; absent on the root. */
+  /** The ref_id of the Concept it hangs under; absent on the root. */
   parent?: string;
   depth: number;
 }
 
-/** A claim about a Concept page, as `dream/claims` lists it. */
+/** A claim about a Concept, as `dream/claims` lists it. */
 export interface Claim {
   id: string;
   title: string;
   text: string;
-  /** The page it belongs on. */
+  /** The Concept it belongs on. */
   about: string;
   concept: string;
   parent?: string;
@@ -48,16 +48,16 @@ export interface Claim {
   /** They said it is to last. */
   lasting?: boolean;
   /** The fixes made for it, newest first. */
-  fixes?: Array<{ at: string; page: string; line: string; dream?: string }>;
+  fixes?: Array<{ at: string; concept: string; line: string; dream?: string }>;
   /** Corrections since its newest fix. */
   open?: number;
 }
 
-/** A page edit a dream made for a claim (`dream/apply`). */
+/** A Concept edit a dream made for a claim (`dream/apply`). */
 export interface AppliedChange {
   claim: string;
   title: string;
-  page: { ref_id?: string; name: string };
+  concept: { ref_id?: string; name: string };
   kind: "changed" | "added";
   removed: string[];
   added: string[];
@@ -72,9 +72,9 @@ export interface DreamOutput {
   root?: string;
   claims?: Claim[];
   /** The tree after the dream. `before` is an older run's: the tree before it worked. */
-  tree?: TreePage[];
-  before?: TreePage[];
-  /** What each stage did: the moments found, how each was sorted, the page edits made, and what was passed over. */
+  tree?: TreeConcept[];
+  before?: TreeConcept[];
+  /** What each stage did: the moments found, how each was sorted, the Concept edits made, and what was passed over. */
   moments?: number;
   records?: Array<{ i: number; claim: string; created: boolean; recorded: boolean; outcome: Outcome }>;
   unsorted?: Array<{ i?: number; why: string }>;
@@ -89,16 +89,16 @@ export interface DreamOutput {
   cost?: number;
 }
 
-/** What the assistant did, in the page's words. */
+/** What the assistant did, in the app's words. */
 export const OUTCOME_TEXT: Record<Outcome, string> = {
-  missing: "no page had it",
-  not_opened: "the page was not opened",
-  not_followed: "the page was opened, not followed",
-  contradicted: "a page said the opposite",
+  missing: "not in memory",
+  not_opened: "in memory, not opened",
+  not_followed: "opened, not followed",
+  contradicted: "memory said the opposite",
   followed: "followed",
 };
 
-/** The claims as the page lists them: each group with its claims under it, then the claims in no group, in the order given. */
+/** The claims as the app lists them: each group with its claims under it, then the claims in no group, in the order given. */
 export function nest(claims: readonly Claim[]): Array<{ claim: Claim; children: Claim[] }> {
   const by = new Map(claims.map((c) => [c.id, c]));
   return claims
@@ -107,7 +107,7 @@ export function nest(claims: readonly Claim[]): Array<{ claim: Claim; children: 
 }
 
 /** The report's sections, in the order the workflow's prompt asks for them. */
-const TITLES: Record<string, string> = { CLAIMS: "Claims", FACTS: "Facts changed", PAGES: "Pages changed", "LEFT ALONE": "Left alone" };
+const TITLES: Record<string, string> = { CLAIMS: "Claims", FACTS: "Facts changed", PAGES: "Memory changed", "LEFT ALONE": "Left alone" };
 const HEAD = /^\**(CLAIMS|FACTS|PAGES|LEFT ALONE)\**:\**\s*(.*)$/;
 const none = (l: string) => /^\(?none\.?\)?$/i.test(l);
 
@@ -145,15 +145,15 @@ export function whenText(iso: string): string {
 const isCorrection = (o: Outcome | undefined): boolean => !!o && o !== "followed";
 const linesOf = (docs: string | undefined): string[] => (docs ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
 
-/** What a dream did to one page: read off the tree before and after it. */
-export interface PageChange {
+/** What a dream did to one concept: read off the tree before and after it. */
+export interface ConceptChange {
   ref_id: string;
   name: string;
   kind: "added" | "changed" | "moved" | "removed";
   /** The lines its text lost and gained, each as written. */
   removed: string[];
   added: string[];
-  /** A moved page's old and new parent, by name. */
+  /** A moved Concept's old and new parent, by name. */
   from?: string;
   to?: string;
   /** Its one-line description, when that changed: as it was and as it is. */
@@ -164,23 +164,26 @@ export interface PageChange {
   proposed?: string;
 }
 
-/** The page edits of a run: a staged dream lists them itself; an older run's are read off its two trees. */
-export function changesOf(out: DreamOutput): PageChange[] {
-  if (!Array.isArray(out.changes)) return pageChanges(out.before, out.tree);
+/** The Concept edits of a run: a staged dream lists them itself; an older run's are read off its two trees. */
+/** Where an applied change landed. A staged run made before the Concept was called that names it `page`. */
+const placeOf = (c: AppliedChange): { ref_id?: string; name: string } => c.concept ?? (c as unknown as { page?: { ref_id?: string; name: string } }).page ?? { name: "" };
+
+export function changesOf(out: DreamOutput): ConceptChange[] {
+  if (!Array.isArray(out.changes)) return conceptChanges(out.before, out.tree);
   return out.changes.map((c) => ({
-    ref_id: c.page.ref_id ?? `new:${c.page.name}`, name: c.page.name, kind: c.kind, removed: c.removed ?? [], added: c.added ?? [],
+    ref_id: placeOf(c).ref_id ?? `new:${placeOf(c).name}`, name: placeOf(c).name, kind: c.kind, removed: c.removed ?? [], added: c.added ?? [],
     claim: c.claim, ...(c.why ? { why: c.why } : {}), ...(c.proposed ? { proposed: c.proposed } : {}),
   }));
 }
 
-/** The pages a dream added, changed, moved or removed, in the tree's order (a removed one last). A page whose
+/** The Concepts a dream added, changed, moved or removed, in the tree's order (a removed one last). A Concept whose
  *  text and place are as they were is not listed. */
-export function pageChanges(before: readonly TreePage[] | undefined, after: readonly TreePage[] | undefined): PageChange[] {
+export function conceptChanges(before: readonly TreeConcept[] | undefined, after: readonly TreeConcept[] | undefined): ConceptChange[] {
   if (!before || !after) return [];
   const was = new Map(before.map((p) => [p.ref_id, p]));
   const is = new Map(after.map((p) => [p.ref_id, p]));
-  const nameIn = (pages: Map<string, TreePage>, ref: string | undefined) => (ref ? (pages.get(ref)?.name ?? "") : "");
-  const out: PageChange[] = [];
+  const nameIn = (concepts: Map<string, TreeConcept>, ref: string | undefined) => (ref ? (concepts.get(ref)?.name ?? "") : "");
+  const out: ConceptChange[] = [];
   for (const p of after) {
     const old = was.get(p.ref_id);
     if (!old) {
@@ -237,15 +240,15 @@ export function standingOf(claim: Claim, runId: string | undefined, now: number)
   return { tone: "quiet", label: days > 0 ? `Quiet ${days} day${days === 1 ? "" : "s"}` : "Quiet" };
 }
 
-/** The run in four numbers: turns read, corrections it found, pages it changed, claims that came back. */
-export function summaryOf(out: DreamOutput, runId: string): { turns: number; found: number; pages: number; back: number } {
+/** The run in four numbers: turns read, corrections it found, Concepts it changed, claims that came back. */
+export function summaryOf(out: DreamOutput, runId: string): { turns: number; found: number; concepts: number; back: number } {
   const found = foundBy(out.claims, runId).filter((f) => isCorrection(f.said.outcome));
   // Came back: corrected in this run after a fix already made for it (a staged dream's), else corrected before.
   const back = found.filter((f) => (f.claim.fixes ? f.claim.fixes.some((x) => x.at < f.said.at) : f.claim.corrected > 1));
   return {
     turns: typeof out.turns === "number" ? out.turns : 0,
     found: found.length,
-    pages: changesOf(out).length,
+    concepts: changesOf(out).length,
     back: new Set(back.map((f) => f.claim.id)).size,
   };
 }

@@ -12,11 +12,11 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { changesOf, costText, foundBy, nest, pageChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreePage } from "./dream/src/lib/report.js";
+import { changesOf, costText, foundBy, nest, conceptChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreeConcept } from "./dream/src/lib/report.js";
 
 /**
  * `strut/dream` (plans/dream.md): what the dream did, as a first-party app
- * strut ships — how its page reads a run's report, and its seed beside
+ * strut ships — how the app reads a run's report, and its seed beside
  * strut/views.
  */
 
@@ -26,12 +26,12 @@ describe("strut/dream: the report", () => {
     assert.deepEqual(sectionsOf(text), [
       { title: "Claims", lines: ["Keep summaries to three lines — session c-1 turn 1, new", "No greeting in emails to Sam — turn 4"] },
       { title: "Facts changed", lines: [] },
-      { title: "Pages changed", lines: ['Writing: added "three lines"'] },
+      { title: "Memory changed", lines: ['Writing: added "three lines"'] },
       { title: "Left alone", lines: [] },
     ]);
   });
 
-  it("a report not shaped that way is not split: the page draws it as written", () => {
+  it("a report not shaped that way is not split: the app draws it as written", () => {
     assert.equal(sectionsOf("No new turns since the last dream."), null);
     assert.equal(sectionsOf(""), null);
   });
@@ -42,27 +42,27 @@ describe("strut/dream: the report", () => {
     assert.deepEqual(listed.map((x) => [x.claim.id, x.children.map((k) => k.id)]), [["group", ["a", "b"]], ["solo", []], ["orphan", []]]);
   });
 
-  const page = (ref_id: string, name: string, extra: Partial<TreePage> = {}): TreePage => ({ ref_id, name, depth: 1, parent: "root", ...extra });
+  const concept = (ref_id: string, name: string, extra: Partial<TreeConcept> = {}): TreeConcept => ({ ref_id, name, depth: 1, parent: "root", ...extra });
   const said = (extra: Partial<SaidRow> = {}): SaidRow => ({ source: "conversation", session: "s", turn: 1, excerpt: "too long", denies: false, outcome: "missing", at: "2026-11-10T10:00:00.000Z", ...extra });
   const claim = (id: string, extra: Partial<Claim> = {}): Claim => ({ id, title: id, text: id, about: "w", concept: "Writing", corrected: 0, kept: 0, evidence: [], ...extra });
 
-  it("reads what a dream changed off the tree before and after: lines lost and gained, a page added, moved or removed; an untouched page is not listed", () => {
+  it("reads what a dream changed off the tree before and after: lines lost and gained, a Concept added, moved or removed; an untouched Concept is not listed", () => {
     const root = { ref_id: "root", name: "Personal", depth: 0 };
-    const before = [root, page("w", "Writing", { docs: "Be brief.\nNo emoji." }), page("m", "Meetings", { docs: "Mornings." }), page("old", "Old"), page("same", "Same", { docs: "x" })];
-    const after = [root, page("w", "Writing", { docs: "Summaries are three lines or fewer.\nNo emoji." }), page("m", "Meetings", { docs: "Mornings.", parent: "w" }), page("same", "Same", { docs: "x" }), page("new", "Email", { docs: "No greeting.", parent: "w" })];
-    assert.deepEqual(pageChanges(before, after), [
+    const before = [root, concept("w", "Writing", { docs: "Be brief.\nNo emoji." }), concept("m", "Meetings", { docs: "Mornings." }), concept("old", "Old"), concept("same", "Same", { docs: "x" })];
+    const after = [root, concept("w", "Writing", { docs: "Summaries are three lines or fewer.\nNo emoji." }), concept("m", "Meetings", { docs: "Mornings.", parent: "w" }), concept("same", "Same", { docs: "x" }), concept("new", "Email", { docs: "No greeting.", parent: "w" })];
+    assert.deepEqual(conceptChanges(before, after), [
       { ref_id: "w", name: "Writing", kind: "changed", removed: ["Be brief."], added: ["Summaries are three lines or fewer."] },
       { ref_id: "m", name: "Meetings", kind: "moved", removed: [], added: [], from: "Personal", to: "Writing" },
       { ref_id: "new", name: "Email", kind: "added", removed: [], added: ["No greeting."], to: "Writing" },
       { ref_id: "old", name: "Old", kind: "removed", removed: [], added: [], from: "Personal" },
     ]);
-    assert.deepEqual(pageChanges(undefined, after), [], "a dream that read nothing kept no snapshot before");
-    assert.deepEqual(pageChanges([root, page("w", "Writing", { description: "How to write", docs: "x" })], [root, page("w", "Writing", { description: "How to write to me", docs: "x" })]), [
+    assert.deepEqual(conceptChanges(undefined, after), [], "a dream that read nothing kept no snapshot before");
+    assert.deepEqual(conceptChanges([root, concept("w", "Writing", { description: "How to write", docs: "x" })], [root, concept("w", "Writing", { description: "How to write to me", docs: "x" })]), [
       { ref_id: "w", name: "Writing", kind: "changed", removed: [], added: [], description: { was: "How to write", is: "How to write to me" } },
     ], "a description alone is a change");
   });
 
-  it("says where a claim stands, and sums a run: what it found, the pages it changed, the claims that came back", () => {
+  it("says where a claim stands, and sums a run: what it found, the Concepts it changed, the claims that came back", () => {
     const now = Date.parse("2026-11-15T10:00:00.000Z");
     const fresh = claim("a", { corrected: 1, evidence: [said({ dream: "run-2" })] });
     const back = claim("b", { corrected: 2, evidence: [said({ dream: "run-2", outcome: "not_followed", at: "2026-11-14T10:00:00.000Z" }), said({ dream: "run-1" })] });
@@ -71,15 +71,15 @@ describe("strut/dream: the report", () => {
     assert.deepEqual([fresh, back, kept, quiet].map((c) => standingOf(c, "run-2", now).label), ["New", "Came back", "Kept", "Quiet 5 days"]);
     assert.deepEqual(foundBy([fresh, back, kept, quiet], "run-2").map((f) => f.claim.id), ["b", "c", "a"], "newest first, this run's alone");
     const root = { ref_id: "root", name: "Personal", depth: 0 };
-    const out = { turns: 12, claims: [fresh, back, kept, quiet], before: [root, page("w", "Writing")], tree: [root, page("w", "Writing", { docs: "Be brief." })] };
-    assert.deepEqual(summaryOf(out, "run-2"), { turns: 12, found: 2, pages: 1, back: 1 }, "a confirmation is not a correction");
+    const out = { turns: 12, claims: [fresh, back, kept, quiet], before: [root, concept("w", "Writing")], tree: [root, concept("w", "Writing", { docs: "Be brief." })] };
+    assert.deepEqual(summaryOf(out, "run-2"), { turns: 12, found: 2, concepts: 1, back: 1 }, "a confirmation is not a correction");
   });
 
-  it("a staged dream lists its own page edits, and a claim with its fixes on it says where it stands exactly", () => {
+  it("a staged dream lists its own Concept edits, and a claim with its fixes on it says where it stands exactly", () => {
     const now = Date.parse("2026-11-15T10:00:00.000Z");
-    const out = { changes: [{ claim: "a", title: "Summaries too long", page: { ref_id: "w", name: "Writing" }, kind: "changed" as const, removed: ["old"], added: ["new"], why: "it came back" }, { claim: "b", title: "x", page: { name: "Email" }, kind: "added" as const, removed: [], added: ["No greeting."], proposed: "p1" }] };
+    const out = { changes: [{ claim: "a", title: "Summaries too long", concept: { ref_id: "w", name: "Writing" }, kind: "changed" as const, removed: ["old"], added: ["new"], why: "it came back" }, { claim: "b", title: "x", concept: { name: "Email" }, kind: "added" as const, removed: [], added: ["No greeting."], proposed: "p1" }] };
     assert.deepEqual(changesOf(out).map((c) => [c.ref_id, c.name, c.kind, c.claim, c.proposed]), [["w", "Writing", "changed", "a", undefined], ["new:Email", "Email", "added", "b", "p1"]]);
-    const fix = { at: "2026-11-12T10:00:00.000Z", page: "w", line: "new" };
+    const fix = { at: "2026-11-12T10:00:00.000Z", concept: "w", line: "new" };
     assert.deepEqual([
       claim("back", { corrected: 2, open: 1, fixes: [fix], evidence: [said({ at: "2026-11-14T10:00:00.000Z" })] }),
       claim("fixed", { corrected: 2, open: 0, fixes: [fix], evidence: [said()] }),
@@ -88,7 +88,7 @@ describe("strut/dream: the report", () => {
       claim("once", { corrected: 1, open: 1, fixes: [], evidence: [said()] }),
     ].map((c) => standingOf(c, "run", now).label), ["Came back after fix", "Fixed, quiet 3 days", "Due a fix", "Due a fix", "Seen once"]);
     const came = claim("back", { corrected: 2, open: 1, fixes: [fix], evidence: [said({ dream: "run", at: "2026-11-14T10:00:00.000Z" }), said({ dream: "old" })] });
-    assert.deepEqual(summaryOf({ turns: 3, claims: [came], changes: out.changes }, "run"), { turns: 3, found: 1, pages: 2, back: 1 }, "came back: corrected after a fix already made");
+    assert.deepEqual(summaryOf({ turns: 3, claims: [came], changes: out.changes }, "run"), { turns: 3, found: 1, concepts: 2, back: 1 }, "came back: corrected after a fix already made");
   });
 
   it("says what a run cost, and when it cost nothing", () => {
@@ -127,7 +127,7 @@ describe("strut/dream — seeded at boot beside strut/views", () => {
     assert.deepEqual(info.warnings, []);
     const html = await readFile(join(app.dir, "dist", "index.html"), "utf8");
     assert.match(html, /Runs from its automation/);
-    assert.doesNotMatch(html, /Run now/, "the page starts no run");
+    assert.doesNotMatch(html, /Run now/, "the app starts no run");
     assert.match(html, /Every step it took/);
     assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
 
