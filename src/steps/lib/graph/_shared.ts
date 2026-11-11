@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
-import { graphFor, type Narrowing } from "../../../graph/scope.js";
+import { boundsOf, graphFor, readsNamespace, type Narrowing } from "../../../graph/scope.js";
 import { StepFailure, stepFailed } from "../../../public-call.js";
 
 export type { GraphBackend };
@@ -156,6 +156,13 @@ export async function graphCtx(ctx?: StepContext<StrutCapabilities>, ask: Narrow
     { embeddings: !["off", "0", "false"].includes(emb) },
   );
   return graphFor(opened, ctx, ask);
+}
+
+/** May this caller's reader list read `namespace`? A step that reads through a transaction (which no
+ *  list scopes) asks first, so it shows nothing its caller's typed reads would not. */
+export function mayRead(b: GraphBackend, namespace: string): boolean {
+  const bounds = boundsOf(b);
+  return !bounds || readsNamespace(bounds.list, namespace, b.namespace);
 }
 
 export interface EdgeWriteArgs {

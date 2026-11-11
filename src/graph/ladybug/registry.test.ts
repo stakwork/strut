@@ -119,7 +119,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
 
   it("the seed's stamp is pinned: a new stamp re-seeds every file's Schema rows at its next open", () => {
     // Change this only with a change to the seed's content you mean to ship.
-    assert.equal(ontologySeed().id, "ladybug_ontology_seed:e18d83de40b0f0d6");
+    assert.equal(ontologySeed().id, "ladybug_ontology_seed:ec314f349bd6a752");
   });
 
   it("holds the types and edge rules both engines seed (seed-types.ts), in place", () => {

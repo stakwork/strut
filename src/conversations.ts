@@ -38,7 +38,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ArtifactRef } from "./artifact-refs.js";
 import type { Scope } from "./auth.js";
@@ -377,6 +377,10 @@ export interface ConversationsCapability {
   update(q: ConversationUpdate, by: ConversationViewer): Promise<ConversationListItem>;
   /** A new session with the source's messages, so the agent remembers. */
   fork(q: { session: string; id?: string }, by: ConversationViewer): Promise<ConversationListItem>;
+  /** EVERY conversation on file, whoever's list it is in, newest first: for
+   *  strut's own work over them (the dream, plans/dream.md), never a
+   *  person's list. A person's `list` is their own index. */
+  all(): Promise<ConversationEntry[]>;
 }
 
 export interface Conversations extends ConversationsCapability {
@@ -794,6 +798,16 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     record: conversationRecords(deps.dataDir).record,
+
+    async all() {
+      await ensureBuilt();
+      const names = await readdir(join(deps.dataDir, "conversations", "sessions")).catch(() => [] as string[]);
+      const records = await Promise.all(names.filter((n) => n.endsWith(".json")).map((n) => readRecord(decodeURIComponent(n.slice(0, -".json".length)))));
+      return records
+        .filter((r): r is ConversationRecord => !!r)
+        .map(factsOf)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    },
 
     async list(q, by) {
       await ensureBuilt();

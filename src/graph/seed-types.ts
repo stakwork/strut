@@ -1,7 +1,7 @@
 /**
  * The types strut's own code writes beside its Strut bookkeeping, seeded on
  * BOTH engines (plans/ontology.md): the truth layer — `Claim`, `Check`,
- * `Evidence` (plans/claims.md) — and `Concept`, the pages the builder, the
+ * `Evidence` (plans/claims.md) — and `Concept`, the Concepts the builder, the
  * job agent and the orchestrator read (`context/concept`), with the edge
  * rules between them and the Strut types.
  *
@@ -93,7 +93,7 @@ export const SEED_TYPES: readonly NodeSchema[] = [
     file: "?string",
     pr_numbers: "?string",
     commit_shas: "?string",
-    // The source stamp a seeded page carries (src/concept-seed.ts): whose
+    // The source stamp a seeded Concept carries (src/concept-seed.ts): whose
     // file it came from, and which version of it.
     unique_source_id: "?string",
     // Its other names, for `resolve` (`resolve.ts`): `aliases` is the
@@ -128,6 +128,10 @@ export const SEED_EDGES: readonly SeedEdgeDef[] = [
   // A job's claim hangs off the job; its evidence is about the TURN — the
   // run (plans/job-claims.md §1–§2).
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutJob" },
+  // A claim about a Concept, and claims of one kind under a parent
+  // claim (plans/dream.md, `concept-claims.ts`).
+  { edge: "ABOUT", source: CLAIM_TYPE, target: CONCEPT_TYPE },
+  { edge: "PARENT_OF", source: CLAIM_TYPE, target: CLAIM_TYPE },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },
@@ -144,6 +148,6 @@ export const SEED_EDGES: readonly SeedEdgeDef[] = [
   { edge: "CHILD_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
   // The tree as jarvis keeps it and every reader walks it — a parent points
   // at its children (graph/graph-get `children: "PARENT_OF"`, the seeded
-  // pages).
+  // concepts).
   { edge: "PARENT_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
 ];
