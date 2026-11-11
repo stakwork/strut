@@ -82,6 +82,7 @@ import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
 import { allTypeFiles, exportTypes } from "./graph-types.js";
 import { suggest, type SuggestDeps, type Suggested } from "./suggest.js";
+import { parseServeFile, planServe, SERVE_FILE } from "./serve.js";
 import { conceptPrefix, listInstalledPackages } from "./installed.js";
 
 export interface BuildDeps {
@@ -133,6 +134,11 @@ export interface BuildRequest {
    *  cache holds, pinned whether or not the closure reaches it. An item the
    *  closure reaches under one must be in that package as it is here. */
   requires?: { packages?: Array<{ package: string; digest: string }> };
+  /** `serve.yaml`'s fields (src/packages/serve.ts): the package as a served
+   *  box shows it — its app, by the name the package gives it, and what a
+   *  visitor may read and run. Written as the package's top-level file and
+   *  checked against what the build carries. */
+  serve?: Record<string, unknown>;
 }
 
 export interface BuildResult {
@@ -221,6 +227,14 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     // A package that cannot travel is refused here, dry run included, never
     // kept for an archive route that could not serve it.
     const read = await readPackage(scratch);
+    // A `serve.yaml` names what the package carries (its app, its workflows).
+    if (req.serve !== undefined) {
+      try {
+        planServe(parseServeFile(String(files.get(SERVE_FILE))), read);
+      } catch (err) {
+        throw refused([err instanceof Error ? err.message.replace(/^serve_invalid: /, "") : String(err)]);
+      }
+    }
     const unarchivable = await archiveProblem(scratch, read.files);
     if (unarchivable) throw new Error(`package_unarchivable: ${pkg} cannot be sent to another strut server: ${unarchivable}`);
     if (opts.dryRun) {
@@ -712,6 +726,15 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
     ...(Object.keys(requires).length ? { requires } : {}),
   };
   files.set(MANIFEST_FILE, dumpYaml(manifest));
+  if (req.serve !== undefined) {
+    const text = dumpYaml(req.serve);
+    try {
+      parseServeFile(text);
+    } catch (err) {
+      throw refused([err instanceof Error ? err.message.replace(/^serve_invalid: /, "") : String(err)]);
+    }
+    files.set(SERVE_FILE, text);
+  }
   // What the package leaves to the installing strut beyond strut's own: said, never refused.
   const leftToInstaller = [...left.values()].sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
   for (const l of leftToInstaller) {

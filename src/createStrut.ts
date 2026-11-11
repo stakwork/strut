@@ -133,6 +133,7 @@ import {
 import { listInstalledPackages } from "./packages/installed.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
+import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -329,6 +330,13 @@ export interface StrutOptions<TServices = unknown> {
    *  at any digest, is left alone. A bad entry fails the boot; a failed
    *  install is a warning, tried again next boot. */
   packages?: BootPackage[];
+  /** SERVE MODE (src/packages/serve.ts; plans/app-repos.md §4): the
+   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL` (this
+   *  wins; `false`: none) — `{ ref, url? }`, a ref the install takes. At
+   *  boot it is installed through the distro's door, its `serve.yaml` is
+   *  the public view (`PUT /public-view` is refused), and `/` is its app
+   *  alone; it is followed as a subscription is. A bad ref fails the boot. */
+  serve?: ServeRef | false;
   /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
    *  what `strut/list-peers` reports as `self` so an agent knows which repos
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
@@ -794,6 +802,11 @@ export interface Strut<TServices = unknown> {
    *  is over. `sync` reads one now and applies what is new. */
   subscriptions: Subscriptions;
 
+  /** Serve mode (src/packages/serve.ts) — null unless a ref is served
+   *  (`StrutOptions.serve`, STRUT_SERVE). `sync` reads the ref and deploys
+   *  it when it moved; `status` is `GET /serve`. */
+  serve: ServeService | null;
+
   /** The history (src/history.ts) — null when it is off: no graph, no
    *  `git`, `history: false` or STRUT_HISTORY=0. */
   history: History | null;
@@ -942,6 +955,8 @@ export async function createStrut<TServices = unknown>(
   // first, so a bad value fails the boot before anything opens; installed
   // once the boot is done.
   const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
+  // The package this box SERVES (src/packages/serve.ts), checked as early.
+  const serveRef = serveRefOf(opts.serve, bootEnv());
   if (opts.escapeGuard !== false) installEscapeGuard();
   const baseWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
@@ -1665,8 +1680,9 @@ export async function createStrut<TServices = unknown>(
   }
   // `strut/jamie` (src/apps/jamie-seed.ts): the person's assistant as a
   // first-party app. After strut/views, whose components it imports. The
-  // app it was before it was Jamie goes.
-  if (opts.jamie !== false) {
+  // app it was before it was Jamie goes. Neither it nor strut/knowledge on a
+  // served box: it has no members to use them (plans/app-repos.md §4.1).
+  if (opts.jamie !== false && !serveRef) {
     try {
       const r = await seedJamieApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
       if (r?.changed) console.log(`[jamie] seeded app: strut/jamie @ ${r.version}`);
@@ -1676,7 +1692,7 @@ export async function createStrut<TServices = unknown>(
   }
   // `strut/knowledge` (src/apps/knowledge-seed.ts): the Concept tree as a
   // first-party app. After strut/views, whose components it imports.
-  if (opts.knowledge !== false) {
+  if (opts.knowledge !== false && !serveRef) {
     try {
       const r = await seedKnowledgeApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
       if (r?.changed) console.log(`[knowledge] seeded app: strut/knowledge @ ${r.version}`);
@@ -2017,7 +2033,7 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
       : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path));
     if (open) return next();
     if (memberOnly(c)) {
@@ -3486,6 +3502,11 @@ export async function createStrut<TServices = unknown>(
     return c.json({ surface: s, missing: await publicViewMissing(s) });
   });
   app.put("/public-view", async (c) => {
+    // A served box's public view is its package's (plans/app-repos.md §2.1):
+    // written from `serve.yaml` at every deploy, never by hand.
+    if (serveRef) {
+      return c.json({ error: `serve_owned: this strut server serves ${serveRef.ref}, whose ${SERVE_FILE} writes the public view at every deploy — change ${SERVE_FILE} in the package and deploy it` }, 409);
+    }
     const body: unknown = await c.req.json().catch(() => undefined);
     const problem = surfaceProblem(body);
     if (problem) return c.json({ error: problem }, 400);
@@ -4128,6 +4149,8 @@ export async function createStrut<TServices = unknown>(
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
       return "requires is { packages: [{ package, digest }] }: packages built on this strut server, by the digest their build returned";
     }
+    const serveFields = body["serve"];
+    if (serveFields !== undefined && (!serveFields || typeof serveFields !== "object" || Array.isArray(serveFields))) return "serve is serve.yaml's fields: { app, title?, description?, image?, reads?, runnable?, concepts? }";
     return body as unknown as BuildRequest;
   };
   const builtBody = (built: Awaited<ReturnType<typeof buildPackage>>) => ({
@@ -4398,6 +4421,50 @@ export async function createStrut<TServices = unknown>(
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
   });
+
+  // ── Serve mode (src/packages/serve.ts; plans/app-repos.md §4) ──────────
+  // The package this box serves: installed through the distro's door, its
+  // `serve.yaml` the public view, `/` its app alone (the UI's catch-all,
+  // below). Followed as a subscription is: the subscriptions' poll and the
+  // publisher's ping read the ref again.
+  const served: ServeService | null =
+    serveRef && !registryWasInjected
+      ? await createServe({
+          serve: serveRef,
+          dataDir,
+          cache: packageStore,
+          resolveName: (name) => indexes.resolveName(name),
+          install: (ref, o) => packages.install(ref, { ...o, door: "distro" }),
+          apps,
+          workspace,
+          surfaceProblems: async (s) => {
+            const problems = await runnableProblems(s, runnableDeps);
+            // The first priced item mints the credit tokens' root (§4.2), as a person's save does.
+            if (!problems.length && s.runnable.some(isPriced)) await payments.settings.ensureL402Root();
+            return problems;
+          },
+          setSurface: async (s) => void (await publicSurface.set(s)),
+          icon: (name) => lucideIconSvg(opts.kit ?? {}, name),
+        })
+      : null;
+  if (serveRef && registryWasInjected) console.warn(`[serve] not serving ${serveRef.ref}: installing is disabled when the registry is provided at construction time`);
+  // Who is serving, and how the last deploy went: the operator's, full scope.
+  app.get("/serve", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: a served box's state is its operator's" }, 403);
+    if (!served) return c.json({ error: "this strut server serves no package (STRUT_SERVE)" }, 404);
+    return c.json(served.status());
+  });
+  // The image `serve.yaml` names, for a link's preview (og:image): open to
+  // anyone, as `/` is.
+  app.get(SERVE_IMAGE_PATH, async (c) => {
+    const file = served?.imageFile();
+    if (!file) return c.json({ error: "no image is served here" }, 404);
+    try {
+      return c.body(new Uint8Array(await readFile(file)), 200, { ...artifactHeaders(file), "cache-control": "public, max-age=300" });
+    } catch {
+      return c.json({ error: "no image is served here" }, 404);
+    }
+  });
   // ── The indexes this strut FOLLOWS (§7, step 7's client half) ──────────
   // `{ id, key, urls }`: the operator's (full scope; a peer reads). Search
   // reads each index strut's derived `/index/packages` and every peer's
@@ -4451,6 +4518,8 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
     if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
     void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    // A served ref is followed the same way (src/packages/serve.ts).
+    if (served?.follows(body.key)) void served.sync();
     // The index follows the same ping: a listed publisher's public catalog moved.
     if (index) void index.crawl(body.key ? { key: body.key } : {}).catch(() => undefined);
     return c.json({ ok: true }, 202);
@@ -4665,6 +4734,7 @@ export async function createStrut<TServices = unknown>(
   if (pollMinutes !== false) {
     const tick = () => {
       void subscriptions.syncAll();
+      void served?.sync();
       if (index) void index.crawl().catch(() => undefined);
     };
     subscriptionTimers.push(setTimeout(tick, 3_000));
@@ -8586,7 +8656,7 @@ export async function createStrut<TServices = unknown>(
     // arrives with no credential (`?store=1`, web/src/components/Store.tsx:
     // the page over the three open reads above). The operator's shell is
     // one `?key=` or a signed-in session away, as before.
-    if (index) {
+    if (index && !serveRef) {
       app.get("/", async (c, next) => {
         // A page meant alone (`?solo=1`: a visitor's public app, a file) is
         // served as asked: the store frames this server's own public apps.
@@ -8613,6 +8683,10 @@ export async function createStrut<TServices = unknown>(
       }
       try {
         const html = await readFile(join(webDist, "index.html"), "utf-8");
+        // On a served box every page is the app's (plans/app-repos.md §4.2):
+        // its meta, title, icon and link preview — `pickPage` reads the meta
+        // and draws the app alone. `?shell=1` with the key is strut's own UI.
+        if (serveRef && !(c.req.query("shell") === "1" && carriesApiKey(c))) return c.html(servedHtml(html, served?.page() ?? null, publicUrlOf(c)));
         return c.html(html);
       } catch {
         return c.text("UI not built. Run: cd web && npm run build", 404);
@@ -8737,10 +8811,13 @@ export async function createStrut<TServices = unknown>(
    *  writing into its data dir (`boot.json`) after `close()`. */
   let bootTimer: ReturnType<typeof setTimeout> | undefined;
   let bootScan: Promise<unknown> | undefined;
+  /** The served ref's first deploy (src/packages/serve.ts). */
+  let serveBooted: Promise<unknown> = Promise.resolve();
   /** The ledger's daily sweep (plans/paid-runs.md §5, "Expiry"). */
   let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
 
   async function close(): Promise<void> {
+    await serveBooted;
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
@@ -8840,6 +8917,10 @@ export async function createStrut<TServices = unknown>(
         install: (ref, o) => packages.install(ref, o),
       });
   }
+  // The first deploy of the served ref (src/packages/serve.ts), in the
+  // background for the same reasons: a catalog that does not answer leaves
+  // the previous deploy serving. `close()` waits for it.
+  if (served) serveBooted = served.sync();
 
   // The public runs a dead process left uncharged (src/public-runs.ts):
   // after auto-resume relaunched what it will, the rest are charged from
@@ -8918,6 +8999,7 @@ export async function createStrut<TServices = unknown>(
     automations,
     packages,
     subscriptions,
+    serve: served,
     history,
     index,
     indexes,

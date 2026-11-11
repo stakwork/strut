@@ -2314,7 +2314,8 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
   "types": ["LegalParty", "Agreement"], // graph types, each with its parents and the edges among them
   "requires": {                        // packages BUILT on this strut that this one needs
     "packages": [{ "package": "acme/util", "digest": "sha256:…" }]  // the digest their build returned
-  }
+  },
+  "serve": { "app": "issues", "title": "Linear issues" }  // serve.yaml's fields (§21), written as the package's serve.yaml
 }
 // → 201
 {
@@ -2825,7 +2826,9 @@ workflow's runs public whole: their input, outputs, agents' transcripts
 and files. An app's `reads` are the granted steps its page may call beyond
 runs and the graph (§17.3). A peer's request is a `403`, a malformed body
 a `400`. What the record names that this server does not hold is reported,
-never refused. An app ADDED by this save that follows latest is HELD at the
+never refused. On a served box (§21) the record is the package's
+`serve.yaml`'s, written at every deploy, and `PUT` is a `409 { error:
+"serve_owned: …" }` naming the file. An app ADDED by this save that follows latest is HELD at the
 version it shows (`held: [{ app, version, release } | { app, error }]`, as
 pinning holds, §14.5): a later publish is a draft until a person moves the
 release.
@@ -3820,3 +3823,95 @@ shows a purchase; none when there was nothing). `409
 purchase_in_flight` while one is being paid at that moment; `400` for a
 URL that is not a seller's. Nothing is paid or refunded: whether its
 payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).
+
+## 21. Serve mode — one package's app at a domain (`plans/app-repos.md` §4)
+
+A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url?
+} })`) is the box one package's app is served from (`src/packages/serve.ts`;
+`deploy/app/` runs one). The ref is one the install takes: a bare
+`publisher/name` through the followed indexes, `pk:<key>/<publisher>/<name>`
+with `STRUT_SERVE_URL` (the publisher's `…/packages/catalog?public=1`), or
+`file:/path`; `git+` fails the boot, not served yet. At boot, in the
+background, the box DEPLOYS the ref:
+
+1. the ref into the package cache;
+2. the package's `serve.yaml` read and checked (below) — a bad one stops
+   the deploy here, nothing written;
+3. the package installed through the distro's door (§16: no ask, an item
+   the package wrote fast-forwarded);
+4. `serve.yaml` checked as `PUT /public-view` checks a `runnable` list
+   (§17.1), the app HELD at the version just installed (§14.5), and the
+   public view record written whole from it.
+
+A deploy that cannot resolve, install or apply leaves the previous one
+serving, and `GET /serve` says why. The ref is then FOLLOWED as a
+subscription is (§16): read again at `STRUT_DISTRO_POLL_MINUTES` and on the
+publisher's ping (`POST /packages/subscriptions/sync { key }` naming a `pk:`
+ref's key, or a name's once resolved), and deployed when its digest moved.
+`strut/jamie` and `strut/knowledge` are not seeded on a served box.
+
+**`serve.yaml`**, a top-level file of the package (in the digest; a strut
+build writes it from `BuildRequest.serve`, §16):
+
+```yaml
+app: game                       # apps/game: what / shows (required)
+title: Moon Lander              # <title>, og:title (default: the app's title)
+description: Land softly.       # og:description (default: the app's)
+image: apps/game/public/og.png  # og:image: an image file in the package (.png, .jpg, .gif, .webp, .svg)
+reads: [score-board]            # the app's public reads (§17.3): step types
+runnable:                       # §17.1's runnable items
+  - { kind: workflow, name: ghost, base: 0.002, markup: 1.3, capUsd: 0.05, dailyCapUsd: 5 }
+concepts: [Moon Lander]         # Concept roots in the public view
+```
+
+Names are the package's own, resolved package-first (`ghost` is
+`acme/moonlander/ghost` when the package holds it, else the name as
+written) and written whole into the record; `app` must be one of the
+package's apps. Any other field is refused (`signIn`, `visitorKey` and
+`limits` are a later item's), so a newer strut's file fails the deploy
+whole. The record it writes:
+`{ apps: [{ name: <app>, reads }], runnable, concepts }`, every other list
+empty.
+
+**`/` is the app.** Every page the UI serves on a served box — `GET /`,
+`/index.html` — carries `<meta name="strut-serve" content="<app>">` (empty
+before the first deploy: the page says nothing is served yet), the title,
+the app's manifest icon as an SVG favicon, and `og:title`, `og:description`,
+`og:url`, `og:image` (absolute against `STRUT_PUBLIC_URL`, else the
+request's origin). The UI reads the meta and draws the app alone as a
+visitor's page (§17.3; `web/src/page.ts`) whatever the query, `?input=`
+and `?theme=` as for any app alone. `/?shell=1` with the key (a session,
+`?key=`, the key kept in the browser) is strut's own UI; a visitor never
+sees it. Every other route keeps its credential; `/public/*` is open as on
+any strut with a public view.
+
+| Route | |
+| --- | --- |
+| `GET /serve` | the deploy state (below). FULL SCOPE: a peer or a person token is `403`; `404` when nothing is served |
+| `GET /serve/image` | the `image` `serve.yaml` names, from the serving package, under `CSP: sandbox`. Open to anyone; `404` without one |
+| `PUT /public-view` | `409 { error: "serve_owned: … serve.yaml writes the public view at every deploy …" }` |
+
+```jsonc
+// GET /serve (ServeStatus)
+{
+  "ref": "pk:fesbp7why3…/acme/moonlander",
+  "url": "https://publisher.example.com/packages/catalog?public=1",
+  "serving": {                          // absent before the first deploy
+    "package": "acme/moonlander", "version": "1.2.0", "digest": "sha256:…",
+    "ref": "pk:…",                      // what it was deployed from
+    "app": "acme/moonlander/game", "appVersion": "v3",   // the version visitors open
+    "at": "2026-11-10T18:00:00.000Z",   // the last deploy
+    "page": { "app": "acme/moonlander/game", "title": "Moon Lander", "description": "…", "image": true, "icon": "<svg…>" },
+    "image": "apps/game/public/og.png"
+  },
+  "fetchedAt": "2026-11-10T18:10:00.000Z",   // the last time the ref was read
+  "error": "serve_invalid: serve.yaml: app: \"nope\" is not an app of acme/moonlander (it holds game — apps/<name>/)",
+  "errorAt": "2026-11-10T18:10:00.000Z",
+  "errorDigest": "sha256:…",           // the digest that deploy was of, when it read the ref
+  "deploying": false
+}
+```
+
+The state is kept in `<dataDir>/serve.json`, so a restart whose ref no
+longer resolves still serves what it served. `error` is cleared by the next
+deploy that serves, or a read that finds the ref back at what is serving.
