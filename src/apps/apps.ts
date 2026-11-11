@@ -134,6 +134,9 @@ export interface AppPublishOptions {
   /** `false`: record the version without making it active (a package update
    *  landing beside a fork, plans/marketplace.md §4). */
   activate?: boolean;
+  /** Known content: stamp the version that holds it with `source`, `actor`
+   *  and `upstream` (`PublishOptions.stamp`: a repo's apply). */
+  stamp?: boolean;
 }
 
 export type AppPublishResult =
@@ -559,6 +562,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         ...(opts.upstream !== undefined ? { upstream: opts.upstream } : {}),
         ...(opts.reactivateKnown !== undefined ? { reactivateKnown: opts.reactivateKnown } : {}),
         ...(opts.activate !== undefined ? { activate: opts.activate } : {}),
+        ...(opts.stamp ? { stamp: true } : {}),
       });
       const { path } = await workspace.materializeAppVersion(name, r.version);
       // The directory as built, `dist/` included — the same bytes on a

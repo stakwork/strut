@@ -109,6 +109,7 @@ import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, v
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
+import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
@@ -123,6 +124,7 @@ import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
 import {
   installPackage,
   installPackages,
+  repoOwned,
   uninstallPackage,
   type InstallOptions,
   type InstallResult,
@@ -793,7 +795,7 @@ export interface Strut<TServices = unknown> {
      *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
      *  bare name looked up in the indexes this strut follows — the first
      *  that lists its publisher, or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "adoptPages" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -803,6 +805,10 @@ export interface Strut<TServices = unknown> {
      *  that ended in the last hour (src/packages/progress.ts) — what
      *  `GET /packages/installs` serves. */
     installs: Pick<InstallTracker, "get" | "list">;
+    /** The repos this strut works on as git checkouts (plans/app-repos.md
+     *  §3; src/packages/repos.ts): Open, Create, Commit, Pull — what
+     *  `/packages/repos` is over. Call them one at a time per package. */
+    repos: Repos;
   };
 
   /** Package subscriptions (plans/marketplace.md §12.1): this strut
@@ -4048,6 +4054,7 @@ export async function createStrut<TServices = unknown>(
   const packages: Strut["packages"] = {
     booted: Promise.resolve([]),
     installs,
+    repos: undefined as unknown as Repos, // set below, once the repos exist
     install: (ref, opts = {}) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
       return startInstall(ref, opts).done;
@@ -4056,6 +4063,8 @@ export async function createStrut<TServices = unknown>(
       oneAtATime(() =>
         recorded(
           async () => {
+            // An open repo's package goes with its repo: close it first.
+            if (await packages.repos.isOpen(pkg)) throw repoOwned(pkg);
             const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
             await rebuildRegistry();
             return out;
@@ -4088,7 +4097,7 @@ export async function createStrut<TServices = unknown>(
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
+    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned", "package_repo_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
       : ["package_index_unreachable", "package_repo_unreachable", "package_repo_denied"].includes(code)
         ? 502
@@ -4187,6 +4196,208 @@ export async function createStrut<TServices = unknown>(
       return packageError(c, err);
     }
   });
+
+  // ── Repos (plans/app-repos.md §3; src/packages/repos.ts) ────────────────
+  // A package this strut works ON as a git checkout: Open repo installs a
+  // branch through the `repo` door and keeps a working copy; Commit writes
+  // the workspace's edits into it and pushes (a branch and a PR, or the
+  // branch it follows); Pull commits the edits locally, lets git merge, and
+  // applies the result. Git merges; strut writes files and applies trees. A
+  // person's act like install — behind the key, one write at a time — or an
+  // accepted `package/commit` proposal (the door below).
+  const repoInstall = (ref: string, o: { digest: string; commit: string; actor?: string; adoptPages?: boolean }) =>
+    installs.start({ ref, door: "repo", ...(o.actor ? { actor: o.actor } : {}) }, (progress) =>
+      recorded(
+        () =>
+          installPackage(packageDeps, ref, {
+            digest: o.digest,
+            commit: o.commit,
+            door: "repo",
+            busy: busyWorkflow,
+            forget: forgetWorkflow,
+            progress,
+            ...(o.actor ? { actor: o.actor } : {}),
+            ...(o.adoptPages ? { adoptPages: true } : {}),
+          }),
+        (res) => ({ cause: res ? `repo ${res.package}@${o.commit.slice(0, 12)}` : `repo ${ref}`, ...(o.actor ? { actor: o.actor } : {}) }),
+      ),
+    ).done;
+  const repos = createRepos({
+    dataDir,
+    cache: packageStore,
+    files: packageDeps,
+    ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
+    ...((services as unknown as StrutCapabilities).http ? { http: (services as unknown as StrutCapabilities).http } : {}),
+    ...(secretsCap ? { secrets: secretsCap } : {}),
+    install: repoInstall,
+    build: async (req) => {
+      const built = await buildPackage(buildDeps, req);
+      const cached = await packageStore.get(built.digest);
+      if (!cached) throw new Error(`package_cache_corrupt: the build of ${built.package} is not in the cache`);
+      return cached;
+    },
+    retire: async (item) => {
+      if (item.kind === "workflow") {
+        if (busyWorkflow(item.name)) throw new Error(`package_busy: ${item.name} has a run in flight — cancel it first`);
+        await forgetWorkflow(item.name);
+        await workspace.deleteWorkflow(item.name);
+      } else if (item.kind === "step") {
+        await workspace.deleteStep(item.name);
+        await rebuildRegistry();
+      } else if (item.kind === "app") await apps.delete(item.name);
+      else throw new Error(`a ${item.kind} is not retired here`);
+    },
+  });
+  packages.repos = repos;
+  // An OPEN repo's prefix takes new names (src/workspace.ts `OpenPackages`):
+  // the author adds a workflow, step or app to the package from any door,
+  // and the next Commit writes it. Every other installed package keeps the
+  // name rule.
+  baseWorkspace.setOpenPackages?.((prefix) => repos.isOpen(prefix));
+  /** A repo refusal's code → its status, else as a package refusal. */
+  const repoError = (c: Context, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+    const status = ({ package_repo_not_open: 404, package_repo_open: 409, package_repo_merging: 409, package_repo_not_empty: 409, push_rejected: 409, no_push_permission: 403, package_repo_unreachable: 502 } as Record<string, 403 | 404 | 409 | 502>)[code];
+    return status ? c.json({ error: message }, status) : packageError(c, err);
+  };
+  const repoOf = (c: Context) => `${c.req.param("publisher")}/${c.req.param("name")}`;
+  const str = (v: unknown) => v === undefined || typeof v === "string";
+  app.get("/packages/repos", async (c) => c.json({ repos: await repos.list() }));
+  app.post("/packages/repos", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Opening a repo is disabled when the registry is provided at construction time" }, 409);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof body["url"] !== "string" || !body["url"] || !str(body["ref"]) || !str(body["path"]) || !str(body["tokenSecret"])) {
+      return c.json({ error: "url is the repository (https://github.com/acme/moonlander); ref (a branch), path (the folder holding strut.yaml) and tokenSecret (the NAME of the secret its token is in) are strings" }, 400);
+    }
+    const actor = await resolveActor(c);
+    try {
+      const opened = await oneAtATime(() =>
+        repos.open({
+          url: body["url"] as string,
+          ...(body["ref"] ? { ref: body["ref"] as string } : {}),
+          ...(body["path"] ? { path: body["path"] as string } : {}),
+          ...(body["tokenSecret"] ? { tokenSecret: body["tokenSecret"] as string } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(opened, 201);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/create", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Creating a repo is disabled when the registry is provided at construction time" }, 409);
+    const { url, branch, path, tokenSecret, ...rest } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof url !== "string" || !url || !str(branch) || !str(path) || !str(tokenSecret)) {
+      return c.json({ error: "url is the EMPTY repository to push to; branch (default main), path (a folder to put the package in) and tokenSecret are strings" }, 400);
+    }
+    const req = buildRequestOf(rest);
+    if (typeof req === "string") return c.json({ error: req }, 400);
+    const actor = await resolveActor(c);
+    try {
+      const created = await oneAtATime(() =>
+        repos.create({
+          ...req,
+          url,
+          ...(branch ? { branch: branch as string } : {}),
+          ...(path ? { path: path as string } : {}),
+          ...(tokenSecret ? { tokenSecret: tokenSecret as string } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(created, 201);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.get("/packages/repos/:publisher/:name", async (c) => {
+    const repo = await repos.get(repoOf(c));
+    return repo ? c.json(repo) : c.json({ error: `${repoOf(c)} is not opened here as a repo` }, 404);
+  });
+  app.get("/packages/repos/:publisher/:name/diff", async (c) => {
+    try {
+      return c.json(await oneAtATime(() => repos.diff(repoOf(c))));
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/commit", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof body["message"] !== "string" || !(body["message"] as string).trim() || !str(body["branch"]) || (body["pr"] !== undefined && typeof body["pr"] !== "boolean")) {
+      return c.json({ error: "message is the commit message; branch (where to push — the followed branch pushes straight to it) is a string, pr a boolean" }, 400);
+    }
+    const actor = await resolveActor(c);
+    try {
+      const done = await oneAtATime(() =>
+        repos.commit(repoOf(c), {
+          message: body["message"] as string,
+          ...(body["branch"] ? { branch: body["branch"] as string } : {}),
+          ...(body["pr"] !== undefined ? { pr: body["pr"] as boolean } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(done, done.committed ? 201 : 200);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/pull", async (c) => {
+    const actor = await resolveActor(c);
+    try {
+      const pulled = await oneAtATime(() => repos.pull(repoOf(c), actor ? { actor } : {}));
+      if (pulled.conflict) {
+        return c.json(
+          {
+            error: `package_repo_conflict: git could not merge ${pulled.conflict.join(", ")} — resolve the conflict in the working copy and Pull again; nothing was installed`,
+            ...pulled,
+          },
+          409,
+        );
+      }
+      return c.json(pulled);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/retire", async (c) => {
+    const body = await c.req.json<{ items?: unknown }>().catch(() => ({}) as { items?: unknown });
+    const items = body.items;
+    if (!Array.isArray(items) || !items.every((i) => i && typeof i === "object" && typeof (i as RepoItem).name === "string" && ["workflow", "step", "app"].includes((i as RepoItem).kind))) {
+      return c.json({ error: "items is a list of { kind: workflow | step | app, name }: the bare originals Create repo named" }, 400);
+    }
+    try {
+      return c.json(await oneAtATime(() => repos.retire(repoOf(c), items as RepoItem[])));
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.delete("/packages/repos/:publisher/:name", async (c) => {
+    const closed = await oneAtATime(() => repos.close(repoOf(c)));
+    return closed ? c.json({ ok: true }) : c.json({ error: `${repoOf(c)} is not opened here as a repo` }, 404);
+  });
+  // `package/commit`'s door (src/steps/lib/package/commit.ts): a commit and
+  // push only as the apply of an ACCEPTED proposal of that step for this
+  // very package, message, branch and pull request — the record on disk is
+  // the proof, as for package/install.
+  packagesBag["repo"] ??= async (pkg: string) => {
+    const r = await repos.get(pkg);
+    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.added, ...r.forked, ...r.deleted] } : undefined;
+  };
+  packagesBag["commit"] ??= async (pkg: string, o: { proposal: string; message: string; branch?: string; pr?: boolean; actor?: string }) => {
+    const rec = typeof o?.proposal === "string" ? await readProposal(proposalsDir, o.proposal) : null;
+    const asked = (rec?.input ?? {}) as { package?: unknown; message?: unknown; branch?: unknown; pr?: unknown };
+    if (!rec || rec.step !== "package/commit" || rec.status !== "accepted" || asked.package !== pkg || asked.message !== o.message || asked.branch !== o.branch || asked.pr !== o.pr) {
+      throw new Error(
+        `package_commit_needs_person: committing ${pkg} runs only as the apply of a proposal a person accepted for it` +
+          (rec ? ` (proposal ${rec.id} is ${rec.status}, for ${rec.step}${asked.package ? ` ${String(asked.package)}` : ""})` : ""),
+      );
+    }
+    if (registryWasInjected) throw new Error("package_unsupported: committing is disabled when the registry is provided at construction time");
+    return oneAtATime(() =>
+      repos.commit(pkg, { message: o.message, ...(o.branch ? { branch: o.branch } : {}), ...(o.pr !== undefined ? { pr: o.pr } : {}), ...(o.actor ? { actor: o.actor } : {}) }),
+    );
+  };
 
   // ── The publisher (plans/marketplace.md §13, §12.1) ─────────────────────
   // This strut's Ed25519 key, in a file of its own beside peers.json, and

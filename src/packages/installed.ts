@@ -65,10 +65,11 @@ export interface InstalledPackage {
 }
 
 /** The doors that write a package's versions: a person's install (`POST
- *  /packages/install`), or the operator's distro, which applies a release
- *  with no ask and is the one door that updates (§12, §12.1). */
-export type PackageDoor = Extract<VersionSource, "install" | "distro">;
-const PACKAGE_DOORS: readonly VersionSource[] = ["install", "distro"];
+ *  /packages/install`), the operator's distro, which applies a release
+ *  with no ask and updates (§12, §12.1), or a repo this strut works on as a
+ *  git checkout, whose commits it applies (app-repos.md §3; ./repos.ts). */
+export type PackageDoor = Extract<VersionSource, "install" | "distro" | "repo">;
+const PACKAGE_DOORS: readonly VersionSource[] = ["install", "distro", "repo"];
 
 export interface InstalledDeps {
   workspace: WorkspaceStore;
@@ -118,7 +119,8 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     const at = versions[installed]!.createdAt ?? "";
     if (!p.digest || at > (releasedAt.get(upstream.package) ?? "")) {
       releasedAt.set(upstream.package, at);
-      const door = versions[installed]!.source === "distro" ? "distro" : "install";
+      const source = versions[installed]!.source;
+      const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
       Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, door });
       if (!upstream.commit) delete p.commit;
     }

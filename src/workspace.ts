@@ -222,9 +222,10 @@ export interface WorkflowVersionInfo {
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
  *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
  *  `install` a person's package install (marketplace.md §3), `distro` a
- *  package the operator's distro applied, with no ask (§12).
+ *  package the operator's distro applied, with no ask (§12), `repo` a
+ *  package this strut works on as a git checkout (app-repos.md §3).
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro" | "repo";
 
 /** Where an installed version came from (marketplace.md §3): which package
  *  at which version, its tree digest, the source it was fetched from, and the
@@ -256,6 +257,24 @@ export interface PublishOptions {
   actor?: string;
   /** This version's upstream; `null` clears what would be carried forward. */
   upstream?: Upstream | null;
+  /** KNOWN content: record this publish's `source`, `actor` and `upstream`
+   *  on the version that holds it, in place of what it recorded — how a
+   *  repo's apply makes a version the package's (app-repos.md §3.3: a fork
+   *  committed to the repo is no longer one). New content records them as
+   *  any publish does. */
+  stamp?: boolean;
+}
+
+/** What a `stamp` publish writes on the known version (`PublishOptions.stamp`),
+ *  or nothing when it is not one or would change nothing. */
+export function stampFor(
+  recorded: { source?: unknown; actor?: unknown; upstream?: unknown },
+  opts?: PublishOptions,
+): Pick<WorkflowVersionInfo, "source" | "actor" | "upstream"> | undefined {
+  if (!opts?.stamp) return undefined;
+  const next = { ...(opts.source ? { source: opts.source } : {}), ...(opts.actor ? { actor: opts.actor } : {}), ...(opts.upstream ? { upstream: opts.upstream } : {}) };
+  const same = (Object.keys(next) as Array<keyof typeof next>).every((k) => JSON.stringify(recorded[k]) === JSON.stringify(next[k]));
+  return same ? undefined : next;
 }
 
 /** The upstream a new version records: the publish's own, none when it
@@ -535,24 +554,35 @@ export interface StepListEntry {
 /** The package prefix a name sits under (src/package-lookup.ts). */
 export { packagePrefixOf };
 
+/** Which installed packages are OPEN — worked on here as a git repo
+ *  (app-repos.md §3; src/packages/repos.ts): a new name under one's prefix
+ *  is the author adding to the repo, written into it by the next Commit.
+ *  Set on a store by createStrut (`WorkspaceStore.setOpenPackages`). */
+export type OpenPackages = (prefix: string) => Promise<boolean>;
+
 /** A publish of a NEW name under an INSTALLED package's prefix is refused
  *  (marketplace.md §3, the name rule after install): only that package's
  *  install — a publish carrying its `upstream` — adds a name there. Editing
  *  one of its items is a fork; adding a sibling into someone else's
- *  namespace is not. `installedUnder` says whether the store holds an item
- *  of that package under it. */
+ *  namespace is not — unless the package is OPEN, a repo this strut works
+ *  on (`openUnder`), whose author adds items here and commits them.
+ *  `installedUnder` says whether the store holds an item of that package
+ *  under it. */
 export async function refuseUnderInstalledPackage(
   kind: "workflow" | "step" | "app",
   name: string,
   opts: PublishOptions | undefined,
   installedUnder: (prefix: string) => Promise<boolean>,
+  openUnder?: OpenPackages,
 ): Promise<void> {
   const prefix = packagePrefixOf(name);
   if (!prefix || opts?.upstream?.package === prefix) return;
   if (!(await installedUnder(prefix))) return;
+  if (await openUnder?.(prefix).catch(() => false)) return;
   throw new Error(
     `package_conflict: ${name} is under ${prefix}, an installed package — its prefix holds the package's own items. ` +
-      `Name the ${kind} outside ${prefix}/, or edit one of the package's items (an edit is a fork).`,
+      `Name the ${kind} outside ${prefix}/, or edit one of the package's items (an edit is a fork). ` +
+      `To add one to the package, open its git repository here (Packages → Repos): a package opened as a repo takes new names under ${prefix}/, and its next Commit writes them.`,
   );
 }
 
@@ -717,12 +747,22 @@ export interface WorkspaceStore extends SubflowResolver {
    *  return the directory root — what `buildRegistry(customDir)` loads. A
    *  file-backed store already has it; other backends write to scratch. */
   materializeCustomSteps(): Promise<string>;
+  /** Which installed packages are opened as git repos here: a new name
+   *  under one's prefix is allowed (`refuseUnderInstalledPackage`). Set by
+   *  createStrut; a store that never gets one keeps the rule for every
+   *  installed package. */
+  setOpenPackages?(check: OpenPackages): void;
 }
 
 // ── Filesystem implementation ──────────────────────────────────────────────
 
 export class FileWorkspaceStore implements WorkspaceStore {
   private root: string;
+  private openPackages?: OpenPackages;
+
+  setOpenPackages(check: OpenPackages): void {
+    this.openPackages = check;
+  }
 
   constructor(root?: string) {
     this.root = root ?? bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
@@ -882,7 +922,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   ): Promise<void> {
     const dir = this.workflowDir(name);
     const prior = await this.readWorkflowMetadata(name);
-    if (!prior) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!prior) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${version}.yaml`), yamlStr, "utf-8");
 
@@ -1080,7 +1120,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       );
       if (match) {
         const [vid, info] = match;
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) await this.patchWorkflowMetadata(name, (m) => Object.assign(m.versions[vid]!, door));
         if (meta.active === vid || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: vid, changed: false };
@@ -1171,7 +1211,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
     const meta = (await this.readStepMetadata(customDir)) ?? { steps: {} };
     const existing = meta.steps[name];
-    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
 
     // Content already known → no-op (if active) or re-activate that version
     // (unless the caller opted out of re-activation).
@@ -1194,7 +1234,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           existing.publisher = publisher;
           dirty = true;
         }
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) {
           Object.assign(info, door);
           dirty = true;
@@ -1315,7 +1355,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
-    if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     if (meta) {
       const match = Object.entries(meta.versions).find(([, v]) => v.hash === hash);
       if (match) {
@@ -1333,6 +1373,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
         const owner = opts?.owner ?? opts?.actor;
         if (!meta.owner && owner) {
           meta.owner = owner;
+          dirty = true;
+        }
+        const stamp = stampFor(meta.versions[vid]!, opts);
+        if (stamp) {
+          Object.assign(meta.versions[vid]!, stamp);
           dirty = true;
         }
         if (dirty) await this.writeAppMetadata(name, meta);

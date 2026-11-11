@@ -265,6 +265,9 @@ params:
     # on the person's yes — the call is a proposal, the card says what it
     # brings, reaches and needs.
     - package/install
+    # A package opened here as a git repo (plans/app-repos.md §3.3):
+    # committed and pushed only on an admin's yes — the call is a proposal.
+    - package/commit
     # Another strut server's public door (plans/paid-runs.md §10): what it
     # sells and what is held there, and credit bought on an admin's yes
     # (remote/buy-credit is a proposal, below). A run there is a job's or a
@@ -275,12 +278,14 @@ params:
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: app/grant (an
   # app's pages talking to this assistant, src/apps/grants.ts),
-  # package/install (someone's code into this strut) and remote/buy-credit
+  # package/install (someone's code into this strut), package/commit (this
+  # workspace pushed to a repo) and remote/buy-credit
   # (this server's sats to another strut), which run only on a yes. A host
   # appends its gated writes (`createStrut({ orchestrator: { approve } })`).
   approve:
     - app/grant
     - package/install
+    - package/commit
     - remote/buy-credit
   # The WAKE (src/wake.ts, plans/jamie-app.md §1): when a job this
   # conversation started ends, strut runs one more turn on its session with

@@ -2274,6 +2274,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | DELETE | `/packages/indexes/:id` | Stop following → `{ ok, id }`; 404 when there is none |
 | GET    | `/packages/search?q=&limit=&peers=0` | `PackageSearch`: `{ packages: [IndexHit & { index }], peers: [{ peer, package, version?, digest?, source? }], errors: [{ index? \| peer?, error }] }` — each followed index strut's `GET /index/packages` (unsigned: install a hit by its NAME, which goes through the index's signed card) and, unless `peers=0`, every peer's `GET /packages` matched against `q`. A peer asking gets the indexes alone. `limit` 50 (≤ 500) |
 | —      | `package/install` (step) | The agent's INSTALL door (`src/steps/lib/package/install.ts`, over `ctx.services.packages.install`; the READS — `package/search`, `package/get`, `package/concepts` — are the steps table below). `package/install { package, index?, digest?, url? }` — a name through the followed indexes, or a `pk:` ref with its `url` — runs ONLY as a proposal a person accepted (plans/marketplace.md §8, ruled 2026-10-29) — and only an ADMIN accepts it (`approver: "admin"`, §12): a member's or a person token's accept is `403 admin_required:`, and a turn whose person is known not to be an admin proposes nothing. The seeds that grant it (`orchestrator`, `builder`, `job`) list it in `approve:`, so the agent's call records a proposal and returns `{ proposal, status: "pending" }`; its card's `summary` is the step's `describe` at proposal time — the index's reading of the package: publisher and key, which index lists it, digest, license, what it brings, what it can spend or act on, the secrets it needs — or that no followed index lists it; `POST /proposals/:id/decide { action: "accept" }` then installs as `POST /packages/install` would, with the decider as actor, and the result reaches the session on its next turn. The door behind the step (`services.packages.install`) checks the ACCEPTED record on disk for that very ref, so no step reaches it any other way; a direct call, a DAG step or `meta/run-step` is refused |
+| —      | `package/commit` (step) | The agent's COMMIT door for a package opened here as a git repository (`src/steps/lib/package/commit.ts`, over `ctx.services.packages.commit`): `{ package, message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted, like `package/install` — the card says where it pushes and which items changed here; the accept commits and pushes as `POST /packages/repos/:publisher/:name/commit` would ("Working on a repository" below). The same seeds grant it and list it in `approve:` |
 | POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing |
 | GET    | `/index` | **Index role only** (`STRUT_INDEX=1`, `createStrut({ index })`; `src/packages/index.ts`). `IndexInfo`: `{ key, createdAt, urls, publishers: { "<prefix>": { key, urls, description?, url? } }, crawled: [{ prefix, key, accepted?: { seq, digest, at, url }, checkedAt?, error?, packages? }] }` — the rows as the card has them and each listed publisher's catalog as last read. Any credential; 404 before the first row |
 | PUT    | `/index/:prefix` | `{ key, urls, description?, url? }` → `IndexInfo`: list a publisher — its PUBLIC key and where its public catalog is served (`urls`, tried in order) — the index key minted first when there is none, the card re-sealed, that publisher read now. Full scope. 400 `index_row_invalid`; 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
@@ -2772,6 +2773,98 @@ host of its choosing. Refusals:
 | `package_repo_denied` | 502 | the host asked for credentials (a private or missing repository, no token), or refused the token |
 | `package_repo_unreachable` | 502 | the fetch failed otherwise |
 | `package_digest_mismatch` | 400 | a pinned `digest` the commit's tree is not (the commit named) |
+
+**Working on a repository — the round trip** (`plans/app-repos.md` §3;
+`src/packages/repos.ts`). A strut can work ON a git repository that is a
+package, the way an editor works on a checkout: the installed items are
+the ones being edited, so an export never makes a second copy of them.
+Git merges; strut writes files and applies trees. Every route is a
+person's act, behind the key at full scope, one at a time with the other
+package writes; an agent ASKS for a commit with `package/commit`, a
+proposal only an admin accepts (below).
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, tokenSecret?, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `tokenSecret` the NAME of the secret its token is read from (never a value), `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
+| POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path?, tokenSecret? }` → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
+| POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path?, tokenSecret? }` → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
+| GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
+| GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into the working copy and staged → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
+| POST   | `/packages/repos/:publisher/:name/commit` | **Commit**: `{ message, branch?, pr? }` → 201 `CommitResult` `{ package, committed: true, commit, branch, pushed, pr?, prSkipped?, diff, stamped, install }`, or 200 `{ committed: false, … }` when nothing changed here and nothing waits to be pushed. Below. 409 `package_repo_merging` while a pull's merge waits, `push_rejected` when the remote refused the push (a straight push to a branch that moved: Pull, then Commit again); 403 `no_push_permission` |
+| POST   | `/packages/repos/:publisher/:name/pull` | **Pull** → 200 `{ package, commit, local?, install }`, or 409 `{ error: "package_repo_conflict: …", package, commit, local?, conflict: [files] }` with nothing installed. Below |
+| POST   | `/packages/repos/:publisher/:name/retire` | `{ items: [{ kind: workflow \| step \| app, name }] }` → `{ retired, failed }`: Create repo's bare originals deleted, on the person's word — only those Create named (any other is `failed`); a workflow with a run in flight is `failed` |
+| DELETE | `/packages/repos/:publisher/:name` | Close the repo → `{ ok: true }`: the record and the working copy go (anything committed there and not pushed goes with it); the installed items stay, uninstalled with `DELETE /packages/:publisher/:name` |
+
+- **What the workspace changed** — `added`, `forked` and `deleted` — is
+  read off the version records: an item under the package's prefix that
+  the commit does not hold is added; an item whose active version the
+  `repo` door did not write at the commit on file is edited (a fork, an
+  older version made active), and so is a Concept the installed fold calls
+  edited; an item the commit holds that is gone here is deleted. A Concept
+  page under the package's pages that it does not hold is added at the
+  Commit (it shows in the diff, not in `added`, as finding it walks the
+  tree).
+- **An open repo takes new names.** The workspace refuses a new workflow,
+  step or app under an INSTALLED package's prefix (`package_conflict`,
+  marketplace.md §3) — but not under a package opened here as a repo: its
+  author adds items from any door (the builder's tools, `POST /workflows`,
+  `POST /steps`, `POST /apps`), named under the package
+  (`acme/moonlander/ghost`: inside a package a bare name means its own item
+  first, so a bare new name is outside it), and the next Commit writes
+  them. A package installed any other way keeps the rule, and the refusal
+  says how to open its repo. Closing the repo puts the rule back: an item
+  added and not committed stays, a local item that runs and can be edited
+  but takes no new name beside it, and is written by the first Commit
+  after the repo is opened again.
+- **Commit** writes the edited items' files — `packageFiles(…, { under })`
+  (`src/packages/build.ts`): each workflow's and step's active version as
+  published, a step's live claims, an app's active sources whole, a page
+  under its key (its old file gone when that was another) — and removes the
+  deleted items' files; `strut.yaml`, `serve.yaml`, `graph/`, a README and
+  anything else stay as the repository has them. Then `git add` in the
+  package's folder, a commit with the person's identity (on GitHub, the
+  token's account, as `git/push`; elsewhere the actor's name at
+  `strut@strut.invalid`), and a push with the token: to a new branch
+  (`branch`, default `strut/<name>-<commit>`) with a pull request into the
+  followed branch when the repository is on GitHub and `pr` is not false
+  (`prSkipped` says why there is none), or STRAIGHT to the followed branch
+  when `branch` names it — never forced. Last, the commit is applied
+  through the `repo` door: each item's active version is STAMPED with the
+  commit in place (`stamped`; no new version), so nothing is a fork. A push
+  that fails leaves the commit in the working copy; the next Commit pushes
+  it.
+- **Pull** commits the edits in the working copy first (`local`), as
+  Commit writes them, with no push — nothing is lost, git has both sides —
+  then fetches and runs `git merge` of the remote's branch. A CONFLICT
+  stops there: the working copy holds git's markers, the answer names the
+  files, nothing is installed, and Commit waits. Resolve the files in the
+  working copy (`workdir`), `git add` them (or commit the merge), and Pull
+  again: the merge is concluded and applied. Edits made in the workspace
+  while a merge waits are not carried: the merged tree is what installs.
+  Otherwise the merged tree is applied through the `repo` door: every item
+  is made what the commit holds (a fork too — its edit is in the commit),
+  a version whose content is the commit's already is stamped, what the
+  commit no longer holds is retired, and a workflow, step, app or Concept
+  page the author added here is taken as the package's when the commit
+  holds it.
+- **One name, one door.** While a package is open as a repo, no other door
+  writes or removes it: a person's install of the same name, the distro's
+  (a subscription, a served box) and `DELETE /packages/:publisher/:name`
+  are 409 `package_repo_owned`. Close the repo, then uninstall it, to
+  install that name from elsewhere. Bare items made here (`score` beside
+  `acme/moon/score`) are not the package's and stay as they are; a package
+  of the same name published from this strut is a catalog's and is not
+  read.
+- **The token** is read from the secret `tokenSecret` names (default
+  `GITHUB_TOKEN`), the person's own first where actor secrets are kept, and
+  reaches git only through its environment (`src/steps/lib/git/_shared.ts`);
+  it is masked out of every error and never on file.
+- **`package/commit`** (`src/steps/lib/package/commit.ts`): `{ package,
+  message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted
+  (`approver: "admin"`; a direct call is refused), its card saying where it
+  pushes and what changed. The door behind it checks the accepted record
+  on disk for that very package, message, branch and `pr`. The `job`,
+  `builder` and `orchestrator` seeds grant it and list it in `approve:`.
 
 **One publisher, two keys** (`plans/marketplace.md` §13). A card's `seq`
 rule is per key, so one key cannot seal a catalog a fleet reads and

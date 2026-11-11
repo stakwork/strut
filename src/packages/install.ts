@@ -26,7 +26,14 @@
  * it, the fork staying active; an item the release no longer ships is
  * RETIRED when untouched and kept when forked; an edited Concept is left as
  * it is. A package the distro wrote is the distro's: a person's door
- * refuses to write or remove it.
+ * refuses to write or remove it. A REPO's door (`repo`, ./repos.ts,
+ * app-repos.md §3) applies a commit of a git checkout this strut works on:
+ * the commit is the truth, since the workspace's edits were committed into
+ * it first — every item is made what the commit holds (a fork too, its edit
+ * in the commit), a version whose content is the commit's already is
+ * STAMPED with it in place (no new version: it is no longer a fork), what
+ * the commit no longer holds is retired, and a page made here under a
+ * page's name is taken as the package's.
  *
  * GRAPH TYPES (`graph/`, ./graph-types.ts) are checked with everything
  * else and registered before the first other write, parents first, so a
@@ -60,7 +67,7 @@ import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
 import { stepFileType, stepLoadError } from "../steps/registry.js";
 import { contentHash, treeHash } from "../version.js";
-import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream } from "../workspace.js";
+import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream, type VersionSource } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import { gitOrigin } from "./git-source.js";
@@ -111,8 +118,9 @@ export interface PackageDeps extends InstalledDeps {
  *  left as it is; `updated` fast-forwarded to the release; `diverged` the
  *  release's version recorded beside a fork, which stays active; `retired`
  *  dropped by the release and removed; `kept` dropped by the release and
- *  kept, with the reason. */
-export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept";
+ *  kept, with the reason; `stamped` its active version recorded as the
+ *  repo's commit (the repo's door: a fork committed is no longer one). */
+export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept" | "stamped";
 
 export interface PackageInstallReport {
   package: string;
@@ -147,6 +155,12 @@ export interface InstallOptions {
   /** Who writes it (`install` unless said): the distro's door applies a
    *  release with no ask and updates (§12). Code only: no route takes it. */
   door?: PackageDoor;
+  /** The repo door only: a Concept page made here (no stamp) under one of
+   *  the package's page names is taken as the package's — Create repo's
+   *  open, where it is the page the package was built from. A repo already
+   *  opened here takes them anyway (its author added them); a first Open
+   *  refuses them, as a person's door does. */
+  adoptPages?: boolean;
   /** A workflow with a run in flight: one the release drops refuses the update. */
   busy?(workflow: string): boolean;
   /** Drops a retired workflow's schedules. */
@@ -180,6 +194,9 @@ interface Member {
 }
 
 const conflict = (msg: string) => new Error(`package_conflict: ${msg}`);
+/** A package opened here as a git repo, which another door may not write. */
+export const repoOwned = (pkg: string) =>
+  new Error(`package_repo_owned: ${pkg} is opened here as a git repo, which changes it through its commits alone — Pull brings in the repo's changes; to install it from elsewhere, close the repo (Packages → Repos) and uninstall it first`);
 const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
 
 /** Install the package at `ref` (pinned to `digest` when given), and first
@@ -228,7 +245,10 @@ type ItemPlan =
   /** The package wrote the active version: the release's becomes active. */
   | { action: "update"; previous: string }
   /** A fork: the release's version is recorded beside it, not made active. */
-  | { action: "diverge" };
+  | { action: "diverge" }
+  /** The repo's door: the commit's content is active already, recorded
+   *  otherwise (a fork, an older commit) — stamped with the commit in place. */
+  | { action: "stamp" };
 
 /** A workflow, step or app the install writes: a new one (taken back by
  *  deleting it), or an update (by re-pointing it at `previous`). */
@@ -248,8 +268,8 @@ async function installSet(
 ): Promise<InstallResult> {
   const tell = (p: InstallProgress) => opts.progress?.(p);
   tell({ phase: "checking", package: members.at(-1)!.info.manifest.package });
-  const checked = await checkSet(deps, members, registry, before, scratch, opts.door);
-  const retiring = retirements(checked, members);
+  const checked = await checkSet(deps, members, registry, before, scratch, opts.door, !!opts.adoptPages);
+  const retiring = retirements(checked, members, opts.door);
   const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
   if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
 
@@ -268,15 +288,26 @@ async function installSet(
   const conceptsWritten = new Map<string, Array<{ name: string; file: string }>>(); // package → the pages it wrote
   const { warnings } = checked;
   /** What a publish of an item records, and how it is written. */
-  const options = (m: Member, plan: ItemPlan) => ({ ...publish, upstream: upstreamOf(m), ...(plan.action === "diverge" ? { activate: false } : {}) });
+  const options = (m: Member, plan: ItemPlan) => ({
+    ...publish,
+    upstream: upstreamOf(m),
+    ...(plan.action === "diverge" ? { activate: false } : {}),
+    // The repo's door records the commit on a version it makes active, a
+    // known one included (an older commit's content, made active again).
+    ...(opts.door === "repo" ? { stamp: true } : {}),
+  });
   /** Report an item, and remember a write the install would take back. */
   const done = (m: Member, kind: Wrote["kind"], name: string, plan: ItemPlan, version?: string) => {
     if (plan.action === "new") wrote.push({ kind, name });
     if (plan.action === "update") wrote.push({ kind, name, previous: plan.previous });
-    const status: InstallItemStatus = plan.action === "new" ? "installed" : plan.action === "update" ? "updated" : plan.action === "diverge" ? "diverged" : plan.action;
+    const status: InstallItemStatus =
+      plan.action === "new" ? "installed" : plan.action === "update" ? "updated" : plan.action === "diverge" ? "diverged" : plan.action === "stamp" ? "stamped" : plan.action;
     reports.get(m.info.manifest.package)!.push({ kind, name, status, ...(version && plan.action !== "present" && plan.action !== "modified" ? { version } : {}) });
   };
-  const writes = (plan: ItemPlan) => plan.action !== "present" && plan.action !== "modified";
+  const writes = (plan: ItemPlan) => plan.action !== "present" && plan.action !== "modified" && plan.action !== "stamp";
+  /** The versions stamped in place, once everything else is in: a stamp is
+   *  not taken back, so it waits for the writes that could fail. */
+  const stamps: Array<{ m: Member; item: PackageItem }> = [];
 
   // Graph types before anything that writes them. Add-only, so nothing to take back.
   if (checked.types.types.length) {
@@ -301,8 +332,9 @@ async function installSet(
       for (const item of m.info.items.filter((i) => i.kind === "step")) {
         stepDone(m);
         const plan = checked.plan.get(item.name)!;
+        if (plan.action === "stamp") stamps.push({ m, item });
         if (!writes(plan)) {
-          done(m, "step", item.name, plan);
+          if (plan.action !== "stamp") done(m, "step", item.name, plan);
           continue;
         }
         const code = await readFile(join(m.info.dir, item.path), "utf-8");
@@ -326,8 +358,9 @@ async function installSet(
       for (const item of m.info.items.filter((i) => i.kind === "workflow")) {
         workflowDone(m);
         const plan = checked.plan.get(item.name)!;
+        if (plan.action === "stamp") stamps.push({ m, item });
         if (!writes(plan)) {
-          done(m, "workflow", item.name, plan);
+          if (plan.action !== "stamp") done(m, "workflow", item.name, plan);
           continue;
         }
         const text = await readFile(join(m.info.dir, item.path), "utf-8");
@@ -353,7 +386,8 @@ async function installSet(
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "app")) {
         const plan = checked.plan.get(item.name)!;
-        if (!writes(plan)) done(m, "app", item.name, plan);
+        if (plan.action === "stamp") stamps.push({ m, item });
+        else if (!writes(plan)) done(m, "app", item.name, plan);
       }
     }
     for (const [i, app] of checked.apps.entries()) {
@@ -369,11 +403,12 @@ async function installSet(
         if (!m.info.items.some((i) => i.kind === "concept")) continue;
         const pkg = m.info.manifest.package;
         const here = before.get(pkg);
-        const update = opts.door === "distro" && !!here;
+        const update = (opts.door === "distro" || opts.door === "repo") && !!here;
         // An update leaves a page edited here out of the set: the seeder
         // writes a page whose file changed over any edit. So is a page whose
-        // edit cannot be told (its old file is not in the cache).
-        const edited = new Set(update ? here!.items.filter((i) => i.kind === "concept" && i.modified !== false).map((i) => i.name) : []);
+        // edit cannot be told (its old file is not in the cache). Not a
+        // repo's: its commit holds the edits, so the file wins.
+        const edited = new Set(update && opts.door === "distro" ? here!.items.filter((i) => i.kind === "concept" && i.modified !== false).map((i) => i.name) : []);
         const shipped = m.info.items.filter((i) => i.kind === "concept");
         let dir = join(m.info.dir, "concepts");
         if (shipped.some((i) => edited.has(i.name))) {
@@ -384,7 +419,7 @@ async function installSet(
         for (const i of shipped) if (edited.has(i.name)) reports.get(pkg)!.push({ kind: "concept", name: i.name, status: "modified" });
         const outcomes = shipped.every((i) => edited.has(i.name))
           ? []
-          : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true }], {
+          : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true, ...(opts.door === "repo" && (opts.adoptPages || here?.door === "repo") ? { adopt: true } : {}) }], {
               progress: (p) => tell({ phase: p.phase === "pages" ? "concepts" : "concept-tree", package: pkg, done: p.done, total: p.total }),
             });
         const written: Array<{ name: string; file: string }> = [];
@@ -403,6 +438,19 @@ async function installSet(
   } catch (err) {
     await takeBack(deps, wrote, conceptsWritten);
     throw err;
+  }
+
+  // The repo's door: the versions whose content is the commit's, stamped
+  // with it in place (`PublishOptions.stamp`) — the package wrote them now.
+  for (const { m, item } of stamps) {
+    const opt = options(m, { action: "stamp" });
+    if (item.kind === "step") await deps.workspace.publishStep(item.name, await readFile(join(m.info.dir, item.path), "utf-8"), undefined, undefined, opt);
+    else if (item.kind === "workflow") await deps.workspace.publishWorkflowByContent(item.name, await readFile(join(m.info.dir, item.path), "utf-8"), undefined, undefined, undefined, opt);
+    else if (item.kind === "app") {
+      const rec = await deps.workspace.getApp(item.name);
+      if (rec) await deps.workspace.publishApp(item.name, rec.hash, rec.manifest, opt);
+    }
+    done(m, item.kind as Wrote["kind"], item.name, { action: "stamp" });
   }
 
   // What the release no longer ships, once the release is in: retired when
@@ -556,7 +604,7 @@ async function resolveSet(
       }
       const here = installed.get(req.package);
       if (here?.digest === req.digest) continue;
-      if (here && door === "install") {
+      if (here && door !== "distro") {
         throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut server has it at ${here.digest ?? "another digest"} — updating a package from a person's door is not built yet`);
       }
       await visit(req.source, req.digest, member.base, { package: req.package, by: pkg });
@@ -596,6 +644,7 @@ async function checkSet(
   installed: Map<string, InstalledPackage>,
   scratch: string,
   door: PackageDoor,
+  adoptPages = false,
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
   const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [], types: { types: [], byPackage: new Map() } };
   const sealed = deps.sealed ?? sealedStepPatterns();
@@ -616,6 +665,9 @@ async function checkSet(
       throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut server hosts no apps`);
     }
     const here = installed.get(pkg);
+    // A package opened here as a git repo changes through its commits alone
+    // (./repos.ts): no other door writes it.
+    if (here?.door === "repo" && door !== "repo") throw repoOwned(pkg);
     if (here && door === "install") {
       if (here.door === "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
       if (here.digest && here.digest !== m.info.digest) {
@@ -623,22 +675,35 @@ async function checkSet(
       }
       if (!here.digest) await sameConcepts(deps, m, here);
     }
+    if (here && door === "repo" && here.door !== "repo") {
+      throw conflict(`${pkg} is installed here already (${here.door === "distro" ? "by the distro" : `from ${here.source?.ref ?? "a package"}`}) — uninstall it first (DELETE /packages/${pkg}), then open its repo`);
+    }
     const mine = new Map((here?.items ?? []).map((i) => [i.name, i]));
-    if (here && door === "distro") {
+    if (here && (door === "distro" || door === "repo")) {
       const ships = new Set(m.info.items.map((i) => `${i.kind}:${i.name}`));
       const gone = here.items.filter((i) => !ships.has(`${i.kind}:${i.name}`));
       if (gone.length) out.dropped.set(pkg, gone);
     }
 
-    // The prefix holds this package's items alone.
+    // The prefix holds this package's items alone — but for a repo already
+    // opened here (its commit applied, or the repo opened again after a
+    // close), whose author added items under it (an open repo takes new
+    // names): the commit makes them the package's, and one it does not hold
+    // stays local. A first Open refuses them, as a person's door does.
     const under = (name: string) => name.startsWith(`${pkg}/`);
-    for (const name of [...workspaceWorkflows].filter(under)) if (!mine.has(name)) problems.push(`the workflow ${name} is a local one under ${pkg}/`);
-    for (const name of workspaceSteps.filter(under)) if (!mine.has(name)) problems.push(`the step ${name} is a local one under ${pkg}/`);
-    for (const name of workspaceApps.filter(under)) if (!mine.has(name)) problems.push(`the app ${name} is a local one under ${pkg}/`);
+    const takesLocal = door === "repo" && here?.door === "repo";
+    const local = new Map<string, InstalledItem>();
+    for (const [kind, names] of [["workflow", [...workspaceWorkflows]], ["step", workspaceSteps], ["app", workspaceApps]] as const) {
+      for (const name of names.filter(under)) {
+        if (mine.has(name)) continue;
+        if (takesLocal) local.set(name, { kind, name, modified: true });
+        else problems.push(`the ${kind} ${name} is a local one under ${pkg}/`);
+      }
+    }
 
     for (const item of m.info.items) {
       if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
-        const at = mine.get(item.name);
+        const at = mine.get(item.name) ?? local.get(item.name);
         out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);
@@ -784,7 +849,11 @@ async function checkSet(
       for (const { pkg, page } of pages) {
         const existing = found.get(page.name);
         const stamp = typeof existing?.unique_source_id === "string" ? existing.unique_source_id : undefined;
-        if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg))) {
+        // A repo's door takes a page made here (no stamp) as the package's —
+        // for a repo already opened here (its author added it) or Create
+        // repo's (it is the page the package was built from), never a first Open.
+        const adopts = door === "repo" && (adoptPages || installed.get(pkg)?.door === "repo");
+        if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg)) && !(adopts && !stamp)) {
           problems.push(`the Concept ${page.name} is in the graph already, ${stamp ? `stamped ${stamp.replace(/@.*$/, "")}` : "made here"}`);
         }
         for (const name of page.parents.filter((p) => !concepts.has(p))) {
@@ -834,22 +903,38 @@ async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: Ins
   if (!active) return { action: "new" };
   const path = join(m.info.dir, item.path);
   const hash = item.kind === "app" ? await treeHash(path) : contentHash(await readFile(path, "utf-8"));
+  if (door === "repo") {
+    // The commit is the truth: its content made active, a fork's too.
+    if (active.hash !== hash) return { action: "update", previous: active.label };
+    const stamped = active.source === "repo" && active.upstream?.digest === m.info.digest && active.upstream?.commit === m.commit;
+    return stamped ? { action: "present" } : { action: "stamp" };
+  }
   if (active.hash === hash) return { action: "present" };
   return at.modified ? { action: "diverge" } : { action: "update", previous: active.label };
 }
 
 /** An item's active version: its label and content hash. */
-async function activeVersion(deps: PackageDeps, kind: Wrote["kind"], name: string): Promise<{ label: string; hash?: string } | undefined> {
+async function activeVersion(
+  deps: PackageDeps,
+  kind: Wrote["kind"],
+  name: string,
+): Promise<{ label: string; hash?: string; source?: VersionSource; upstream?: Upstream } | undefined> {
+  const of = (label: string, v: { hash?: string; source?: VersionSource; upstream?: Upstream } | undefined) => ({
+    label,
+    ...(v?.hash ? { hash: v.hash } : {}),
+    ...(v?.source ? { source: v.source } : {}),
+    ...(v?.upstream ? { upstream: v.upstream } : {}),
+  });
   if (kind === "workflow") {
     const meta = await deps.workspace.getWorkflowMetadata(name);
-    return meta ? { label: meta.active, hash: meta.versions[meta.active]?.hash } : undefined;
+    return meta ? of(meta.active, meta.versions[meta.active]) : undefined;
   }
   if (kind === "step") {
     const meta = await deps.workspace.getStepMetadata(name);
-    return meta ? { label: meta.active, hash: meta.versions[meta.active]?.hash } : undefined;
+    return meta ? of(meta.active, meta.versions[meta.active]) : undefined;
   }
   const rec = await deps.workspace.getApp(name);
-  return rec ? { label: rec.active, hash: rec.versions[rec.active]?.hash } : undefined;
+  return rec ? of(rec.active, rec.versions[rec.active]) : undefined;
 }
 
 /** Load each step the install makes active, as discovery would, from a
@@ -894,9 +979,14 @@ interface Retirement {
 /** What each release drops (§4): an untouched item goes; a fork, an edited
  *  Concept and a page whose edit cannot be told stay, and so does a helper
  *  while a step of the package stays forked (it may import the helper). */
-function retirements(checked: Checked, members: Member[]): Retirement[] {
+function retirements(checked: Checked, members: Member[], door: PackageDoor): Retirement[] {
   const out: Retirement[] = [];
   for (const [pkg, items] of checked.dropped) {
+    // A repo's commit holds the workspace's edits: what it dropped, git dropped.
+    if (door === "repo") {
+      for (const item of items) out.push({ pkg, item, go: true });
+      continue;
+    }
     const shipped = members.find((m) => m.info.manifest.package === pkg)?.info.items ?? [];
     const forkedStep =
       items.some((i) => i.kind === "step" && !i.helper && i.modified) ||
