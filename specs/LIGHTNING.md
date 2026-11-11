@@ -6,17 +6,21 @@ it does not hold the keys to: the Sphinx daemon (the TREASURY, a second
 wallet. Strut makes invoices there, looks them up, lists what came in and
 reads the balance — `ctx.services.lightning`, `src/payments/lightning.ts`.
 Nothing it holds for that can pay: a PAY credential is stored apart
-(`payments.json`) for the payer, which is a later item.
+(`payments.json`) for the PAYER (`src/payments/payer.ts`, below), the one
+thing in strut that sends sats out, which is never on the services bag.
 
 This file is the contract each provider is built against:
 
 - **The Sphinx daemon** (`src/payments/sphinx-daemon.ts`): four routes,
-  most of which the daemon does not have yet. They are written here so the
-  daemon side (the sphinx repo, `wasm/daemon/src/http.ts`) is built to
-  match. `src/payments/sphinx-daemon.test.ts` drives a stand-in that
-  answers exactly this.
+  and `POST /pay` for the payer, built in the sphinx repo
+  (`wasm/daemon/src/http.ts`, stakwork/sphinx#428).
+  `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
+  that answer exactly this.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
+- **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
+  stakwork/sphinx#428 built it, and NIP-47's `pay_invoice`. Called by two
+  doors only: `POST /earnings/withdraw` and an accepted `remote/buy-credit`.
 
 ## The capability
 
@@ -59,7 +63,7 @@ daemon's usual `{ "error": "<sentence>", "code": "<code>" }` with a 4xx or
 ### The receive token
 
 A token beside the admin token (§9 item 5) that opens these four routes and
-nothing else. The PAY token opens them and `POST /pay` (item 7, below).
+nothing else. The PAY token opens them and `POST /pay` (below).
 Strut never holds the admin token: it cannot post, join or leave as the
 account. A wrong or missing token is `401`; a token that may not call a
 route is `403`. Strut reads both as `wallet_unauthorized`.
@@ -148,13 +152,48 @@ Answers `200`:
 { "msat": 1250000 }
 ```
 
-### Also needed, not called by strut's receive side
+### A short payment
 
-- **A short payment.** §9 item 4: the core refuses a payment that carries
-  less than its invoice. Strut credits what SETTLED either way.
-- **`POST /pay`** (the PAY token; item 7's payer, not built yet):
-  `{ "invoice": "lnbc…", "max_fee_msat": 5000 }` →
-  `{ "payment_hash": "…", "state": "pending" | "settled" | "failed", "fee_msat": 12, "preimage": "…" }`.
+§9 item 4: the core refuses a payment that carries less than its invoice
+(stakwork/sphinx#428), so a settled `msat` is never below what the invoice
+asked. Strut credits what SETTLED either way.
+
+### `POST /pay` — pay an invoice (the payer)
+
+With the PAY token (`LIGHTNING_DAEMON_PAY_TOKEN`); the receive token is
+`403 { code: "forbidden" }`. As stakwork/sphinx#428 built it:
+
+```json
+{ "invoice": "lnbc…", "max_fee_msat": 50000 }
+```
+
+answers `200`:
+
+```json
+{ "payment_hash": "<hex>", "state": "settled", "fee_msat": 1200, "preimage": "<hex>" }
+```
+
+- **It waits up to 60 s** for the LSP, then answers `"state": "pending"`.
+  The payer's call allows 75 s (`DAEMON_PAY_TIMEOUT_MS`).
+- **Idempotent per payment hash.** POSTing the same invoice again reads
+  where it stands: a pending one waits again, a settled one answers as
+  before, and only a FAILED one is paid again. There is no `GET` for a
+  payment, so this is how the payer reads a pending one (`status`).
+- **`failed` carries `error`**, the LSP's words (`"not enough balance"`).
+  `fee_msat` is 0 unless settled; `preimage` only when it hashes to the
+  payment hash (the payer checks again and drops one that does not).
+- **The fee cap.** The LSP pays with CLN `pay`'s defaults — a routing fee
+  of at most 0.5% of the amount, or 5 sats when that is more — and takes no
+  cap of the daemon's. A `max_fee_msat` below that limit is refused before
+  anything is sent, `400 { code: "max_fee_too_low" }` naming the limit; at
+  or above it, the fee never exceeds `max_fee_msat`. A 10 000-sat
+  withdrawal needs at least 50 000 msat. Strut's default cap is that limit
+  (`lspFeeFloorMsat`, `src/payments/fee.ts`), which is also the most the
+  LSP charges.
+- **Refusals before sending**, all `400`: `bad_request` (not an invoice, or
+  one with no amount), `own_invoice` (the account's own), `expired`,
+  `max_fee_too_low`. The payer throws them as `wallet_refused` with the
+  daemon's code as `walletCode`, and Withdraw answers them as they came.
 
 ## NWC (NIP-47)
 
@@ -165,6 +204,17 @@ credential. Give a connection that does NOT allow `pay_invoice`: strut
 needs `make_invoice`, `lookup_invoice`, `list_transactions` and
 `get_balance` (a pay connection, `LIGHTNING_NWC_PAY_URL`, is kept apart for
 the payer).
+
+**The payer's connection** (`LIGHTNING_NWC_PAY_URL`) is called with
+`pay_invoice { invoice }` — NIP-47 takes no fee cap, so the wallet's own
+limit applies and the fee (`fees_paid`) is reported after — and
+`lookup_invoice { payment_hash }` to read a payment that did not answer
+(on the receive connection when the pay one does not allow it). A settled
+payment is proven by a `preimage` that hashes to the invoice's payment
+hash; `PAYMENT_FAILED` is `failed` with the wallet's words; any other error
+(`INSUFFICIENT_BALANCE`, `QUOTA_EXCEEDED`) is a refusal before sending. A
+request on the relay with no answer in 60 s is `pending`, read again with
+`lookup_invoice`; a payment the wallet has no record of never went out.
 
 One call opens a socket to the first relay that answers, reads the
 wallet's info event (kind 13194, the methods it allows and its `encryption`

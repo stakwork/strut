@@ -9,7 +9,9 @@ import { createHash, randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ERROR_CODES, WALLET_METHODS } from "../../kit/src/wallet/protocol.js";
+import { decodeBolt11, encodeBolt11 } from "./bolt11.js";
 import { FakeWallet } from "./fake-wallet.js";
+import { NwcPayer } from "./payer.js";
 import { LightningError } from "./lightning.js";
 import {
   NWC_ERROR_MAP,
@@ -146,6 +148,10 @@ class WalletService {
   fake = new FakeWallet();
   requests: Array<{ method: string; params: Record<string, unknown>; encryption: string; author: string }> = [];
   silent = false;
+  /** The pay side: how the next pay_invoice ends, and what it paid. */
+  payOutcomes: Array<"settled" | "failed" | "no_answer" | "INSUFFICIENT_BALANCE"> = [];
+  preimages = new Map<string, string>();
+  outgoing = new Map<string, { state: "pending" | "settled" | "failed"; fees_paid: number }>();
 
   constructor(private relay: Relay) {}
 
@@ -165,10 +171,31 @@ class WalletService {
     this.requests.push({ method, params, encryption: nip44 ? "nip44_v2" : "nip04", author: e.pubkey });
     if (this.silent) return;
     let body: unknown;
-    try {
-      body = { result_type: method, result: await this.answer(method, params) };
-    } catch (err) {
-      body = { result_type: method, error: { code: err instanceof LightningError && err.code === "invoice_unknown" ? "NOT_FOUND" : "INTERNAL", message: (err as Error).message } };
+    if (method === "pay_invoice") {
+      const hash = decodeBolt11(params["invoice"] as string).paymentHash;
+      const outcome = this.payOutcomes.shift() ?? "settled";
+      if (outcome === "no_answer") {
+        this.outgoing.set(hash, { state: "pending", fees_paid: 0 });
+        return;
+      }
+      if (outcome === "INSUFFICIENT_BALANCE") body = { result_type: method, error: { code: "INSUFFICIENT_BALANCE", message: "not enough sats" } };
+      else if (outcome === "failed") {
+        this.outgoing.set(hash, { state: "failed", fees_paid: 0 });
+        body = { result_type: method, error: { code: "PAYMENT_FAILED", message: "no route" } };
+      } else {
+        this.outgoing.set(hash, { state: "settled", fees_paid: 2000 });
+        body = { result_type: method, result: { preimage: this.preimages.get(hash), fees_paid: 2000 } };
+      }
+    } else if (method === "lookup_invoice" && this.outgoing.has(params["payment_hash"] as string)) {
+      const hash = params["payment_hash"] as string;
+      const o = this.outgoing.get(hash)!;
+      body = { result_type: method, result: { type: "outgoing", state: o.state, payment_hash: hash, amount: 1, fees_paid: o.fees_paid, created_at: 1, ...(o.state === "settled" ? { preimage: this.preimages.get(hash), settled_at: 2 } : {}) } };
+    } else {
+      try {
+        body = { result_type: method, result: await this.answer(method, params) };
+      } catch (err) {
+        body = { result_type: method, error: { code: err instanceof LightningError && err.code === "invoice_unknown" ? "NOT_FOUND" : "INTERNAL", message: (err as Error).message } };
+      }
     }
     const plain = JSON.stringify(body);
     const content = nip44 ? nip44Encrypt(nip44ConversationKey(this.secret, e.pubkey), plain) : nip04Encrypt(this.secret, e.pubkey, plain);
@@ -269,3 +296,66 @@ for (const nip44 of [true, false]) {
     });
   });
 }
+
+describe("NwcPayer: pay_invoice over the pay connection", () => {
+  const relay = new Relay();
+  let wallet: WalletService;
+  let payUrl: string;
+  let receiveUrl: string;
+  before(() => relay.start());
+  after(() => relay.stop());
+  beforeEach(async () => {
+    relay.stored = [];
+    relay.forge = null;
+    wallet = new WalletService(relay);
+    await wallet.start({ nip44: true, methods: [...RECEIVE, "pay_invoice"] });
+    const at = (secret: string) => `nostr+walletconnect://${wallet.pubkey}?relay=${encodeURIComponent(relay.url)}&secret=${secret}`;
+    payUrl = at(randomBytes(32).toString("hex"));
+    receiveUrl = at(randomBytes(32).toString("hex"));
+  });
+  const invoice = (msat = 21_000) => {
+    const preimage = randomBytes(32).toString("hex");
+    const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+    wallet.preimages.set(hash, preimage);
+    return { hash, preimage, invoice: encodeBolt11({ msat, paymentHash: hash, expirySecs: 600 }) };
+  };
+
+  it("settled: the preimage proves it and the fee is what the wallet says; nothing caps it", async () => {
+    const p = new NwcPayer({ payUrl, url: receiveUrl, timeoutMs: 5000 });
+    assert.equal(p.capsFee, false);
+    const inv = invoice();
+    assert.deepEqual(await p.pay({ invoice: inv.invoice, maxFeeMsat: 5000 }), { paymentHash: inv.hash, state: "settled", feeMsat: 2000, preimage: inv.preimage });
+    const req = wallet.requests.find((r) => r.method === "pay_invoice")!;
+    assert.deepEqual(req.params, { invoice: inv.invoice }, "NIP-47's pay_invoice takes no fee cap");
+    assert.equal(req.author, await publicKeyOf(new URL(payUrl.replace("nostr+walletconnect", "http")).searchParams.get("secret")!), "signed by the pay connection");
+  });
+
+  it("PAYMENT_FAILED is failed with the wallet's words; INSUFFICIENT_BALANCE is a refusal before sending", async () => {
+    const p = new NwcPayer({ payUrl, timeoutMs: 5000 });
+    wallet.payOutcomes.push("failed", "INSUFFICIENT_BALANCE");
+    const failed = invoice();
+    const out = await p.pay({ invoice: failed.invoice, maxFeeMsat: 5000 });
+    assert.equal(out.state, "failed");
+    assert.match(out.error!, /PAYMENT_FAILED: no route/);
+    await assert.rejects(p.pay({ invoice: invoice().invoice, maxFeeMsat: 5000 }), (e: unknown) => code("wallet_refused")(e) && (e as LightningError).walletCode === "INSUFFICIENT_BALANCE");
+  });
+
+  it("published with no answer is pending; status reads it with lookup_invoice, then settled", async () => {
+    const p = new NwcPayer({ payUrl, url: receiveUrl, timeoutMs: 1500 });
+    wallet.payOutcomes.push("no_answer");
+    const inv = invoice();
+    assert.deepEqual(await p.pay({ invoice: inv.invoice, maxFeeMsat: 5000 }), { paymentHash: inv.hash, state: "pending", feeMsat: 0 });
+    assert.equal((await p.status({ invoice: inv.invoice, paymentHash: inv.hash, maxFeeMsat: 5000 })).state, "pending");
+    wallet.outgoing.set(inv.hash, { state: "settled", fees_paid: 1500 });
+    assert.deepEqual(await p.status({ invoice: inv.invoice, paymentHash: inv.hash, maxFeeMsat: 5000 }), { paymentHash: inv.hash, state: "settled", feeMsat: 1500, preimage: inv.preimage });
+    assert.equal(wallet.requests.filter((r) => r.method === "pay_invoice").length, 1, "status never pays");
+    // A payment the wallet has no record of never went out.
+    const unknown = invoice();
+    assert.equal((await p.status({ invoice: unknown.invoice, paymentHash: unknown.hash, maxFeeMsat: 5000 })).state, "failed");
+  });
+
+  it("a relay that is not there is wallet_unavailable before anything went out", async () => {
+    const gone = new NwcPayer({ payUrl: payUrl.replace(encodeURIComponent(relay.url), encodeURIComponent("ws://127.0.0.1:1")), timeoutMs: 1500 });
+    await assert.rejects(gone.pay({ invoice: invoice().invoice, maxFeeMsat: 5000 }), code("wallet_unavailable"));
+  });
+});

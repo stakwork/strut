@@ -8,6 +8,7 @@ import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import { ParamsPanel } from "./ParamsPanel";
 import { AutomationsPanel } from "./AutomationsPanel";
 import { VersionsPanel } from "./VersionsPanel";
+import { EarningsLine, useEarnings } from "./EarningsLine";
 import type { InputBinding } from "../run-inputs";
 
 // ── Workflow Flyout ─────────────────────────────────────────────────────────
@@ -86,6 +87,10 @@ export function WorkflowFlyout(props: {
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const scheduled = props.automations.filter((a) => a.enabled).length;
+  // What anyone's runs of it earned here (plans/paid-runs.md §8): shown when
+  // it is runnable now or earned before. Full scope: otherwise nothing.
+  const earnings = useEarnings({ by: "item" }, props.workflow);
+  const earned = earnings?.rows.find((r) => r.key === `workflow:${props.workflow}`);
   const ok = props.runs.filter((r) => r.status === "success").length;
   const failed = props.runs.filter((r) => r.status === "error").length;
 
@@ -146,6 +151,13 @@ export function WorkflowFlyout(props: {
           ))}
         </div>
       )}
+      {earned && (
+        <div class="flyout-earnings" title="Anyone may run this workflow (Publish → Public view)">
+          <span class="flyout-apps-label">{earned.price ? "Sold" : "Was sold"}</span>
+          <EarningsLine row={earned} {...(earned.price ? { price: earned.price } : {})} />
+        </div>
+      )}
+
       {props.tab === "params" && (
         <ParamsPanel params={props.params} onChange={props.onParamsChange} onValidChange={props.onParamsValidChange}
           dirty={props.dirty} onPublish={props.onPublish} />

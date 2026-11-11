@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import * as api from "../api";
+import { EarningsLine, useEarnings } from "./EarningsLine";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
@@ -657,12 +658,33 @@ function PackagePage(props: {
           </details>
         </div>
       )}
+      <PackageEarnings pkg={props.pkg} />
       <div class="flyout-section">
         <div class="flyout-section-title">Releases</div>
         {!entry && <div class="auto-hint">Not published yet.</div>}
         {props.catalog && entry && <CatalogPackage name={props.pkg} catalog={props.catalog} publicChannels={props.publicChannels} onChanged={props.onChanged} />}
       </div>
     </>
+  );
+}
+
+/** What the package's workflows and tools earned on THIS server (plans/
+ *  paid-runs.md §8): every item under its prefix, summed, then each. A copy
+ *  installed elsewhere earns for that server. Nothing until one is sold. */
+function PackageEarnings(props: { pkg: string }) {
+  const view = useEarnings({ by: "item", prefix: props.pkg });
+  if (!view || view.rows.length === 0) return null;
+  return (
+    <div class="flyout-section">
+      <div class="flyout-section-title">Earnings here</div>
+      <EarningsLine label="All its items" row={view.totals} />
+      {view.rows.map((r) => (
+        <div key={r.key} class="package-earnings-row">
+          <span class="package-name">{r.key.slice(r.key.indexOf(":") + 1)}</span>
+          <EarningsLine row={r} {...(r.price ? { price: r.price } : {})} />
+        </div>
+      ))}
+    </div>
   );
 }
 

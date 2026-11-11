@@ -2946,3 +2946,96 @@ export interface LiveConceptPage {
   root: string;
   children: Array<{ name: string; description?: string }>;
 }
+
+// ── Earnings and Withdraw (plans/paid-runs.md §8) ──────────────────────────
+// Full scope only: the key or an admin's session. Dollars for earned, cost
+// and margin; msat for what the wallet holds and pays.
+
+export type EarningsBy = "item" | "day" | "package" | "total";
+export interface EarningsRow {
+  /** `workflow:<name>`, `step:<type>`, `expired`, a day, a package, or `total`. */
+  key: string;
+  calls: number;
+  failed: number;
+  earned: number;
+  cost: number;
+  margin: number;
+  price?: { base: number; markup: number; capUsd?: number; dailyCapUsd?: number };
+}
+export interface WalletInfo {
+  provider: "sphinx" | "nwc" | null;
+  receive: boolean;
+  pay: boolean;
+  url?: string;
+  relays?: string[];
+  from?: "env" | "api";
+  setAt?: string;
+  note?: string;
+  check?: { ok: true; msat: number } | { ok: false; error: string };
+}
+export interface PendingWithdrawal {
+  paymentHash: string;
+  msat: number;
+  maxFeeMsat: number;
+  at: number;
+  expiresAt: number;
+  answered: boolean;
+  actor?: string;
+}
+export interface EarningsView {
+  from?: string;
+  to?: string;
+  by: EarningsBy;
+  prefix?: string;
+  totals: Omit<EarningsRow, "key" | "price">;
+  rows: EarningsRow[];
+  outstanding: { tokens: number; usd: number; held: number };
+  received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
+  withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
+  pending: PendingWithdrawal[];
+  wallet?: WalletInfo & {
+    balance?: { msat: number; sats: number; usd?: number };
+    rate?: number;
+    error?: string;
+    expectedMsat: number;
+    differenceMsat?: number;
+  };
+}
+export interface LedgerEntryView {
+  seq: number;
+  at: number;
+  kind: "payment" | "hold" | "charge" | "carry" | "expiry" | "withdrawal";
+  token?: string;
+  usd?: number;
+  msat?: number;
+  subject?: string;
+  runId?: string;
+  ref?: string;
+  cost?: number;
+  outcome?: "success" | "error" | "cancelled";
+  feeMsat?: number;
+  actor?: string;
+}
+export const getEarnings = (q: { from?: string; to?: string; by?: EarningsBy; prefix?: string; wallet?: boolean } = {}) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== false) p.set(k, v === true ? "1" : String(v));
+  const qs = p.toString();
+  return fetchJSON<EarningsView>(`/earnings${qs ? `?${qs}` : ""}`);
+};
+export const getEarningsEntries = (q: { kind?: LedgerEntryView["kind"]; runId?: string; before?: number; limit?: number } = {}) => {
+  const p = new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]));
+  return fetchJSON<{ entries: LedgerEntryView[] }>(`/earnings/entries?${p}`);
+};
+export const getWallet = (check = false) => fetchJSON<WalletInfo>(`/earnings/wallet${check ? "?check=1" : ""}`);
+export const putWallet = (body: Record<string, unknown>) => fetchJSON<WalletInfo>("/earnings/wallet", { method: "PUT", body: JSON.stringify(body) });
+
+/** What `POST /earnings/withdraw` answered: the payment, or the refusal. */
+export type WithdrawResult =
+  | { ok: true; state: "settled" | "pending" | "failed"; paymentHash: string; msat: number; feeMsat: number; maxFeeMsat: number; error?: string; existing?: true }
+  | { ok: false; status: number; error: string; code?: string; walletCode?: string };
+export async function withdraw(body: { invoice: string; msat: number; maxFeeMsat?: number }): Promise<WithdrawResult> {
+  const res = await apiFetch("/earnings/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const out = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (res.ok) return { ok: true, ...(out as Omit<Extract<WithdrawResult, { ok: true }>, "ok">) };
+  return { ok: false, status: res.status, error: String(out["error"] ?? `${res.status} ${res.statusText}`), ...(out["code"] ? { code: String(out["code"]) } : {}), ...(out["walletCode"] ? { walletCode: String(out["walletCode"]) } : {}) };
+}

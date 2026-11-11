@@ -1418,6 +1418,7 @@ describe("the API key gate", () => {
     assert.ok(gated.includes("PUT /public-view") && gated.includes("GET /public-view"), "the record itself is behind the key");
     assert.ok(gated.includes("GET /public-view/runnable"), "what a runnable item costs here is behind the key");
     assert.ok(gated.includes("GET /earnings/wallet") && gated.includes("PUT /earnings/wallet"), "the wallet is behind the key");
+    for (const r of ["GET /earnings", "GET /earnings/entries", "POST /earnings/withdraw"]) assert.ok(gated.includes(r), `${r} is behind the key`);
     for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];
       assert.equal((await strut.app.request(path, { method })).status, 401, route);
@@ -1458,7 +1459,8 @@ describe("the API key gate", () => {
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
-    const fullOnlyReads = ["GET /earnings/wallet"];
+    // Earnings too (§8): the books are an admin's, like the wallet.
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch and its cancel (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel))$/;

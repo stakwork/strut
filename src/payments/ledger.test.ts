@@ -445,6 +445,28 @@ for (const impl of impls) {
       assert.deepEqual(await store.received({ to: dayOf(T0) }), received.slice(0, 1));
     });
 
+    it("one withdrawal per payment hash: the same hash again writes nothing and answers the first", async () => {
+      const first = await store.withdrawal({ msat: 5_000_000, feeMsat: 12_000, paymentHash: "out-1", actor: "evan", at: T0 });
+      const again = await store.withdrawal({ msat: 5_000_000, feeMsat: 99_000, paymentHash: "out-1", actor: "someone", at: T0 + DAY });
+      assert.deepEqual(again, first);
+      assert.deepEqual(await store.withdrawalOf("out-1"), first);
+      assert.equal(await store.withdrawalOf("out-2"), undefined);
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0), count: 1, msat: 5_000_000, feeMsat: 12_000 }]);
+    });
+
+    it("list: entries newest first, of one kind or one run, paged", async () => {
+      await buy(store, 100, { id: "a", at: T0 });
+      for (let i = 0; i < 4; i++) await store.hold({ token: "a", reserve: $(1), subject: W, runId: `r${i}`, at: T0 + i });
+      await store.charge({ token: "a", runId: "r1", subject: W, cost: $(0.5), outcome: "success", price: { base: 0, markup: 1 }, at: T0 + 10 });
+      await store.withdrawal({ msat: 1000, paymentHash: "out-1", at: T0 + 20 });
+      const all = await store.list();
+      assert.deepEqual(all.map((e) => e.kind), ["withdrawal", "charge", "hold", "hold", "hold", "hold", "payment"]);
+      assert.deepEqual((await store.list({ kind: "hold", limit: 2 })).map((e) => e.runId), ["r3", "r2"]);
+      assert.deepEqual((await store.list({ kind: "hold", before: all[3]!.seq })).map((e) => e.runId), ["r1", "r0"]);
+      assert.deepEqual((await store.list({ runId: "r1" })).map((e) => e.kind), ["charge", "hold"]);
+      assert.deepEqual((await store.list({ kind: "payment" })).map((e) => e.token), ["a"]);
+    });
+
     it("a token's entries, newest 50 first, paged", async () => {
       await buy(store, 100, { id: "a" });
       for (let i = 0; i < 60; i++) await store.hold({ token: "a", reserve: 1, subject: W, runId: `r${i}`, at: T0 + i });

@@ -258,6 +258,14 @@ export interface WithdrawalInput {
   at?: number;
 }
 
+export interface EntryListQuery {
+  kind?: EntryKind;
+  runId?: string;
+  /** A seq: entries before it. */
+  before?: number;
+  limit?: number;
+}
+
 export interface EarningsRow {
   /** A subject, a day (`YYYY-MM-DD`), a package prefix, or `total`. */
   key: string;
@@ -330,7 +338,11 @@ export interface LedgerStore {
   /** Closes every open token past its expiry; what was left is earned under
    *  `expired`. */
   sweep(o?: { now?: number }): Promise<SweepResult>;
+  /** A payment out of the wallet, once it settled: one entry per payment
+   *  hash. The same hash again writes nothing and answers the first entry. */
   withdrawal(input: WithdrawalInput): Promise<LedgerEntry>;
+  /** The withdrawal recorded for a payment hash, if one is. */
+  withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined>;
 
   token(id: string): Promise<TokenBalance | undefined>;
   /** A token's entries, newest first: `ENTRIES_PAGE` of them, before `before`. */
@@ -352,6 +364,9 @@ export interface LedgerStore {
   recent(subject: string, o?: { now?: number; days?: number }): Promise<Recent>;
   /** A subject's row for one day (today by default): the daily cap reads `cost`. */
   today(subject: string, o?: { now?: number }): Promise<EarningsRow>;
+  /** Entries newest first, a page at a time (`ENTRIES_PAGE` before
+   *  `before`): of one kind, or of one run. The Earnings tab's lists. */
+  list(o?: EntryListQuery): Promise<LedgerEntry[]>;
   /** Every entry in order, a page at a time: for an audit or an export.
    *  Nothing on a request path reads it. */
   scan(o?: { after?: number; limit?: number }): Promise<LedgerEntry[]>;
