@@ -640,7 +640,7 @@ they could be built.
      app asks (`visitorKey: domain`) or the person picks it (§5.2).
    - **Through Peel's wallet connection.** Ruled 2026-11-10 and designed
      in `app-payments.md` §4.4 (R6), not here. strut's half *BUILT,
-     stakwork/strut#PRNUM* (the `ln-message` verifier, the method, the
+     stakwork/strut#645* (the `ln-message` verifier, the method, the
      `sign_in` host request and strut's UI sending it); Peel's open.
    - **Through the passkey wallet at `wallet.sphinx.chat`** (§5.4).
      *Later.* It is a Sphinx account of its own (ruled 7), so a different

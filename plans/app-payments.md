@@ -851,7 +851,7 @@ Open questions:
    paired with. On the Mac it opens through #625's remote link, on the
    iPhone directly. The person signs in through the connection, writes a
    row as themselves, then tips through the same connection.
-   - **strut:** *BUILT, stakwork/strut#PRNUM.*
+   - **strut:** *BUILT, stakwork/strut#645.*
      - the `sign_in` host request beside `buy_credit` in `specs/WALLET.md`
        §1.2, listed by `host_capability`, with vectors beside #625's
        credit vectors, which Peel copies (`sign_in_requests`,
