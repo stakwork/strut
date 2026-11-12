@@ -867,7 +867,8 @@ Open questions:
      - `sphinx` among `serve.yaml`'s and the public view's sign-in methods
        (app-repos §5.3, 6: one method for every Sphinx wallet, Peel its
        first host).
-   - **Peel:** *open.*
+   - **Peel:** *BUILT, stakwork/peel#551* (with #625's `buy_credit`), on
+     sphinx-rs v0.8.44, which holds stakwork/sphinx-rs#106's LUD-05 signing.
      - the sign-in grant on the connection sheet ("you" or "a new identity
        for this app");
      - signing with the node key, or the LUD-05 child key;
@@ -876,3 +877,13 @@ Open questions:
      - on the iPhone, direct open of a stranger's served app, with the
        handler answering that origin and every connection and sheet keyed
        by it, the page's own claims ignored (§5.3).
+   - **Tried, 2026-11-12:** a person's everyday Peel on the Mac (Peel's
+     main, strut 9d74d29) opened a public app on a local served box it is
+     not paired with (`serve.yaml` with `signIn: [sphinx]`), through #625's
+     remote link. The sign-in sheet came up, the person signed in, and the
+     app saw them as `secp:<key>`.
+   - **Not tried yet:**
+     - the iPhone's direct open: no iPhone build on v0.8.44 yet (its iOS
+       bindings are not built);
+     - the rest of the first test on a real box: a row written as the
+       visitor, then a tip and a credit purchase through the connection.
