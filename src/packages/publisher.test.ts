@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +39,7 @@ const boot = () =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -95,14 +96,24 @@ describe("publishing packages from this strut", () => {
     assert.equal(res.headers.get("cache-control"), "private, no-cache");
     const read = readCard(text, { key: publisher.key });
     assert.equal(read.digest, first.body.catalog.digest);
+    const tarRelease = read.card.packages["acme/linear"]!.releases[0]!.tar!;
+    assert.match(tarRelease.sha256, /^[0-9a-f]{64}$/);
+    assert.match(tarRelease.infohash, /^[0-9a-f]{40}$/);
     assert.deepEqual(read.card.packages, {
-      "acme/linear": { releases: [{ version: "1.0.0", digest: first.body.digest, license: "MIT" }] },
+      "acme/linear": { releases: [{ version: "1.0.0", digest: first.body.digest, license: "MIT", tar: tarRelease }] },
     });
     assert.deepEqual(read.card.channels, { stable: { "acme/linear": first.body.digest } });
     assert.equal((await req("/packages/catalog", { headers: { "if-none-match": res.headers.get("etag")! } })).status, 304);
 
     // Each release's bytes are served beside the catalog, by digest.
     assert.equal((await req(`/packages/acme/linear/archive?digest=${first.body.digest}`)).status, 200);
+    // `format=tar`: the plain tar the release names, by its sha256 (§13).
+    const plain = await req(`/packages/acme/linear/archive?digest=${first.body.digest}&format=tar`);
+    assert.equal(plain.status, 200);
+    assert.equal(plain.headers.get("content-type"), "application/x-tar");
+    assert.equal(plain.headers.get("etag"), `"${first.body.digest}.tar"`);
+    assert.equal(createHash("sha256").update(Buffer.from(await plain.arrayBuffer())).digest("hex"), tarRelease.sha256);
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${first.body.digest}&format=zip`)).status, 400);
 
     // The key is in its own encrypted file, never in plain text.
     const file = await readFile(join(root, "workspace", PUBLISHER_FILE), "utf8");
@@ -201,7 +212,9 @@ describe("publishing packages from this strut", () => {
     const pub1 = await publicCatalog();
     assert.equal(pub1.res.status, 200);
     const pubCard1 = readCard(pub1.text, { key: info.public! });
-    assert.deepEqual(pubCard1.card.packages, { "acme/linear": { releases: [{ version: "1.0.0", digest: v1.body.digest }] } });
+    const pubTar = pubCard1.card.packages["acme/linear"]!.releases[0]!.tar;
+    assert.match(pubTar?.infohash ?? "", /^[0-9a-f]{40}$/, "the public card names the plain tar too");
+    assert.deepEqual(pubCard1.card.packages, { "acme/linear": { releases: [{ version: "1.0.0", digest: v1.body.digest, tar: pubTar }] } });
     assert.deepEqual(pubCard1.card.channels, { public: { "acme/linear": v1.body.digest } });
     assert.equal(pubCard1.card.public, undefined);
     assert.ok(!pub1.text.includes(fleetKey), "the public card never names the fleet key");

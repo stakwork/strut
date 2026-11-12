@@ -255,7 +255,7 @@ for (const s of STORES) {
         views: false,
         systemWorkflows: false,
         browserWorkflows: false,
-        privacyWorkflows: false,
+        privacyWorkflows: false, mediaWorkflows: false,
       });
 
     it("loads beside the active steps: the pinned code over the helpers' ACTIVE versions, as the active step sees them", async () => {

@@ -54,7 +54,7 @@ export interface BuilderReach {
 
 /** Steps every workflow may use whatever its reach: control flow, and the
  *  steps that reach nothing but the model. */
-export const ALWAYS_IN_REACH: ReadonlySet<string> = new Set(["loop", "foreach", "if", "subflow", "log", "pack", "wait", "llm", "agent"]);
+export const ALWAYS_IN_REACH: ReadonlySet<string> = new Set(["loop", "foreach", "if", "subflow", "log", "pack", "wait", "llm", "agent", "image"]);
 
 /** What the runner needs at run time, on the services bag as `reach`
  *  (createStrut puts it there when the host set `builder.reach`). */

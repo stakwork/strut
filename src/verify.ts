@@ -469,7 +469,7 @@ export interface VerifierDeps extends ClaimsReaderDeps {
 const DEFAULT_BUDGET_USD = 10;
 const DEFAULT_BUDGET_USD_PER_DAY = 100;
 const AI_STAMP = "ai";
-const PAID_STEP_TYPES = ["agent", "llm"];
+const PAID_STEP_TYPES = ["agent", "llm", "image"];
 
 const money = (raw: string | undefined, fallback: number) => {
   const n = raw === undefined || raw === "" ? NaN : Number(raw);

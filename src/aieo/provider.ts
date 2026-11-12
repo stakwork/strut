@@ -5,7 +5,7 @@ import {
 } from "@ai-sdk/google";
 import { createOpenAI, OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
-import { LanguageModel, wrapLanguageModel } from "ai";
+import { ImageModel, LanguageModel, wrapImageModel, wrapLanguageModel } from "ai";
 import { Logger } from "./logger.js";
 import { createOpenRouter, OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
 import { env } from "./env.js";
@@ -1042,12 +1042,21 @@ export function getModelDetails(
   return { model, provider, apiKey, contextLimit, modelId }
 }
 
-export function getModel(
-  /** An aieo provider, or (through a gateway, `baseUrl`) any provider the
-   *  gateway holds as an OpenAI-compatible one. */
-  provider: Provider | string,
-  opts?: string | GetModelOptions
-): LanguageModel {
+/** What every model of a provider is built with: the key, the concrete id,
+ *  where the call goes (a caller's gateway, the provider's own endpoint, the
+ *  env gateway, or the SDK's default), the headers and the fetch. Shared by
+ *  language models (`getModel`) and media models (`getMediaModel`). */
+interface Connection {
+  apiKey: string;
+  modelId: string;
+  /** A caller passed a gateway (`baseUrl`). */
+  routed: boolean;
+  baseURL?: string;
+  extraHeaders?: Record<string, string>;
+  timeoutFetch: typeof fetch;
+}
+
+function connect(provider: Provider | string, opts?: string | GetModelOptions): Connection {
   if (typeof opts === "string") {
     opts = { apiKey: opts };
   }
@@ -1129,6 +1138,17 @@ export function getModel(
     opts?.timeoutMs ?? DEFAULT_LLM_HTTP_TIMEOUT_MS,
     opts?.abortSignal,
   );
+
+  return { apiKey, modelId, routed, baseURL, extraHeaders, timeoutFetch };
+}
+
+export function getModel(
+  /** An aieo provider, or (through a gateway, `baseUrl`) any provider the
+   *  gateway holds as an OpenAI-compatible one. */
+  provider: Provider | string,
+  opts?: string | GetModelOptions
+): LanguageModel {
+  const { apiKey, modelId, routed, baseURL, extraHeaders, timeoutFetch } = connect(provider, opts);
 
   switch (provider) {
     case "anthropic":
@@ -1297,6 +1317,152 @@ export function getModel(
       }
       throw new Error(`Unsupported provider: ${provider}`);
   }
+}
+
+// ── Media models: images today, video next ──────────────────────────────────
+//
+// Every provider SDK is one object that hands out a model of each kind it
+// makes (`imageModel`, `videoModel`, …). What is shared is the connection
+// (`connect`: key, gateway, headers, fetch); what differs per kind and per
+// provider — which providers make it, and how the call rides a gateway — is
+// one table, `MEDIA_MODELS`. A kind is one more key in it and one more
+// entry in `MediaModels`.
+//
+// Through a gateway (Bifrost) every kind rides the OpenAI-compatible route
+// with the model id naming the provider, as the chat models of xai and
+// google do. A provider whose entry has no `routed` cannot be reached
+// there, and is refused before anything is sent.
+
+/** What a model of each media kind is. */
+export interface MediaModels {
+  image: Exclude<ImageModel, string>;
+}
+
+export type MediaKind = keyof MediaModels;
+
+interface MediaRoute<M> {
+  /** The provider's own API. */
+  direct: (c: Connection) => M;
+  /** Through a gateway's OpenAI-compatible route (`compatBase`). */
+  routed?: (c: Connection, compatBase: string) => M;
+  /** Every response reports what the call cost, whichever way it went:
+   *  OpenRouter's `usage.cost`, xAI's `cost_in_usd_ticks` (which a Bifrost
+   *  gateway also returns as `usage.cost`). The others are priced from the
+   *  datasheet (`computeImageCost`). */
+  reportsCost?: true;
+}
+
+const MEDIA_MODELS: { [K in MediaKind]: Partial<Record<Provider, MediaRoute<MediaModels[K]>>> } = {
+  image: {
+    openai: {
+      direct: (c) => createOpenAI(clientSettings(c)).image(c.modelId),
+      // The bare id: @ai-sdk/openai sends `response_format` for any id not
+      // starting "gpt-image-", which OpenAI refuses for those models.
+      routed: (c, base) => createOpenAI(clientSettings(c, base)).image(c.modelId),
+    },
+    google: {
+      direct: (c) => createGoogleGenerativeAI(clientSettings(c)).image(c.modelId),
+      routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`gemini/${c.modelId}`),
+    },
+    xai: {
+      direct: (c) => createXai(clientSettings(c)).image(c.modelId),
+      routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`xai/${c.modelId}`),
+      reportsCost: true,
+    },
+    openrouter: {
+      direct: (c) => createOpenRouter(clientSettings(c)).imageModel(c.modelId),
+      // Bifrost's own openrouter provider has no image generation (every
+      // version to v2.5.1), so the gateway holds a custom OpenAI-type
+      // provider, `openrouter-images`, on OpenRouter's images API
+      // (stakwork/stakgraph#1859); a virtual key reaches it only once Hive
+      // lists it among the key's providers.
+      routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`openrouter-images/${c.modelId}`),
+      reportsCost: true,
+    },
+  },
+};
+
+/** The client settings a connection gives: the key, the headers, the fetch,
+ *  and a gateway's route (`base`) when the call goes through one. A direct
+ *  call goes to the SDK's own endpoint: never the env gateway
+ *  (LLM_GATEWAY_URL), whose model ids a media route does not write. */
+function clientSettings(c: Connection, base?: string) {
+  return {
+    apiKey: c.apiKey,
+    ...(base && { baseURL: base }),
+    ...(c.extraHeaders && { headers: c.extraHeaders }),
+    fetch: c.timeoutFetch,
+  };
+}
+
+/** The providers that make `kind`, direct; and those a gateway reaches. */
+export function mediaProviders(kind: MediaKind): { direct: Provider[]; routed: Provider[] } {
+  const table = MEDIA_MODELS[kind] as Partial<Record<Provider, MediaRoute<unknown>>>;
+  const direct = PROVIDERS.filter((p) => table[p]);
+  return { direct, routed: direct.filter((p) => table[p]!.routed) };
+}
+
+/** Whether every `kind` call to `provider` reports its own cost. */
+export function mediaReportsCost(kind: MediaKind, provider: Provider | string): boolean {
+  return !!(MEDIA_MODELS[kind] as Partial<Record<string, MediaRoute<unknown>>>)[provider]?.reportsCost;
+}
+
+/**
+ * A media model of `kind` (an `ImageModel` for "image"), connected as
+ * `getModel` connects a language model. Throws when the provider makes no
+ * such media, or makes it only directly and the call goes through a gateway.
+ * The cost a response reports (OpenRouter's and a gateway's `usage.cost`,
+ * xAI's `cost_in_usd_ticks`) is put on each call's provider metadata as
+ * `aieo.cost` (`mediaCostOf`).
+ */
+export function getMediaModel<K extends MediaKind>(kind: K, provider: Provider | string, opts?: GetModelOptions): MediaModels[K] {
+  const route = (MEDIA_MODELS[kind] as Partial<Record<string, MediaRoute<MediaModels[K]>>>)[provider];
+  const { direct, routed } = mediaProviders(kind);
+  if (!route) {
+    throw new Error(`"${provider}" makes no ${kind} models here. Providers that do: ${direct.join(", ")} (write the model as "<provider>/<id>")`);
+  }
+  if (opts?.baseUrl && !route.routed) {
+    throw new Error(
+      `${provider} ${kind} models cannot go through this deployment's LLM gateway (it has no ${kind} generation for ${provider}). ` +
+        `Through the gateway: ${routed.join(", ")}`,
+    );
+  }
+  const costs = new Map<string, number>();
+  const c = connect(provider, opts);
+  const conn = { ...c, timeoutFetch: reportedCostFetch(c.timeoutFetch, costs) };
+  const model = opts?.baseUrl ? route.routed!(conn, gatewayUrlFor("openai", opts.baseUrl)) : route.direct(conn);
+  return withMediaCost(kind, model, costs);
+}
+
+/** The model, each call's reported cost on its provider metadata as
+ *  `aieo.cost`: what `reportedCostFetch` read off the response, else xAI's
+ *  `costInUsdTicks` (1e-10 dollars each). */
+function withMediaCost<K extends MediaKind>(kind: K, model: MediaModels[K], costs: Map<string, number>): MediaModels[K] {
+  if (kind !== "image") return model;
+  return wrapImageModel({
+    model: model as MediaModels["image"],
+    middleware: {
+      specificationVersion: "v4",
+      wrapGenerate: async ({ model, params }) => {
+        const id = String(++costCalls);
+        try {
+          const result = await model.doGenerate({ ...params, headers: { ...params.headers, [COST_CALL_HEADER]: id } });
+          const ticks = costOf((result.providerMetadata?.xai as { costInUsdTicks?: unknown } | undefined)?.costInUsdTicks);
+          const cost = costs.get(id) ?? (ticks !== undefined ? ticks / 1e10 : undefined);
+          if (cost === undefined) return result;
+          return { ...result, providerMetadata: { ...result.providerMetadata, aieo: { images: [], cost } } };
+        } finally {
+          costs.delete(id);
+        }
+      },
+    },
+  }) as MediaModels[K];
+}
+
+/** The cost a media call reported (`getMediaModel` puts it there), from one
+ *  of a `generateImage` result's `calls`; undefined when none was. */
+export function mediaCostOf(providerMetadata: unknown): number | undefined {
+  return costOf((providerMetadata as { aieo?: { cost?: unknown } } | undefined)?.aieo?.cost);
 }
 
 // Context window sizes (input token limits) per model.
@@ -1468,8 +1634,24 @@ export const MODEL_CATALOG_URL = "https://getbifrost.ai/datasheet";
 
 export interface CatalogEntry {
   pricing?: TokenPricing;
+  /** An image model's prices (mode image_generation rows, and chat models
+   *  that make images). */
+  image?: ImagePricing;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+}
+
+/** What making an image costs. Token prices are dollars per MILLION tokens,
+ *  as TokenPricing's; `perImage` is dollars per image made. */
+export interface ImagePricing {
+  /** The prompt's text tokens. */
+  inputTokenPrice?: number;
+  /** Image tokens passed in (an edit's source image). */
+  inputImageTokenPrice?: number;
+  /** The image tokens made: OpenAI's gpt-image models, Gemini's. */
+  outputImageTokenPrice?: number;
+  /** A model priced per image: Imagen, Grok Imagine. */
+  perImage?: number;
 }
 
 let catalog: Map<string, CatalogEntry> | undefined;
@@ -1515,11 +1697,24 @@ export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
       };
       priced++;
     }
+    const outImageToken = positive(perMillion(row.output_cost_per_image_token));
+    const perImage = positive(row.output_cost_per_image);
+    if (outImageToken || perImage) {
+      const textIn = positive(perMillion(row.input_cost_per_token));
+      const imageIn = positive(perMillion(row.input_cost_per_image_token));
+      entry.image = {
+        ...(textIn ? { inputTokenPrice: textIn } : {}),
+        ...(imageIn ? { inputImageTokenPrice: imageIn } : {}),
+        ...(outImageToken ? { outputImageTokenPrice: outImageToken } : {}),
+        ...(perImage ? { perImage } : {}),
+      };
+      priced++;
+    }
     const maxIn = positive(row.max_input_tokens);
     const maxOut = positive(row.max_output_tokens);
     if (maxIn) entry.maxInputTokens = maxIn;
     if (maxOut) entry.maxOutputTokens = maxOut;
-    if (entry.pricing || maxIn || maxOut) out.set(key, entry);
+    if (entry.pricing || entry.image || maxIn || maxOut) out.set(key, entry);
   }
   if (!priced) throw new Error("the model catalog prices no model");
   return out;
@@ -1561,6 +1756,46 @@ export function getModelPrice(provider: Provider, modelId: string): TokenPricing
   if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
   if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.pricing;
   return getCatalogEntry(provider, modelId)?.pricing;
+}
+
+/** An image model's prices from the datasheet. Never OpenRouter's: its
+ *  rows there are not what OpenRouter charges (gemini-2.5-flash-image's
+ *  image at $3e-7, FLUX at $0), and OpenRouter reports each call's cost. */
+export function getImagePrice(provider: Provider, modelId: string): ImagePricing | undefined {
+  if (provider === "openrouter") return undefined;
+  return getCatalogEntry(provider, modelId)?.image;
+}
+
+/** What one image call made, as the step counts it. */
+export interface ImageUsageForCost {
+  /** Every input token: the prompt's text and any image passed in. */
+  inputTokens?: number;
+  /** The input tokens that were an image's, when the provider says. */
+  inputImageTokens?: number;
+  /** The image tokens made. */
+  outputTokens?: number;
+  /** The number of images made. */
+  images: number;
+}
+
+/**
+ * An image call's cost in dollars at the model's datasheet prices: the
+ * tokens when the model is priced by the token and the provider counted
+ * them, else per image. Undefined when the datasheet does not price the
+ * model (or no catalog is loaded): never a guess.
+ */
+export function computeImageCost(provider: Provider, modelId: string, u: ImageUsageForCost): number | undefined {
+  const p = getImagePrice(provider, modelId);
+  if (!p) return undefined;
+  const out = u.outputTokens ?? 0;
+  if (p.outputImageTokenPrice && out > 0) {
+    const imageIn = u.inputImageTokens ?? 0;
+    const textIn = Math.max(0, (u.inputTokens ?? 0) - imageIn);
+    const textPrice = p.inputTokenPrice ?? 0;
+    return (textIn * textPrice + imageIn * (p.inputImageTokenPrice ?? textPrice) + out * p.outputImageTokenPrice) / 1_000_000;
+  }
+  if (p.perImage) return u.images * p.perImage;
+  return undefined;
 }
 
 export interface LoadModelCatalogOptions {

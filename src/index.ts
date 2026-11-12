@@ -711,6 +711,7 @@ export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./bro
 // Pseudonymization (src/privacy/, specs/PRIVACY_SPEC.md): the privacy/* steps' logic and the `private-ask` seed.
 export * from "./privacy/index.js";
 export { seedPrivacyWorkflows, PRIVACY_WORKFLOWS, PRIVACY_CATEGORY } from "./privacy/seed.js";
+export { seedMediaWorkflows, MEDIA_WORKFLOWS, MEDIA_CATEGORY } from "./media-seed.js";
 // The `orchestrator` workflow strut ships, seeded the same way; a host's
 // delta rides on `createStrut({ orchestrator })`.
 export {

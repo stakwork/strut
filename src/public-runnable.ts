@@ -96,7 +96,7 @@ async function closureOf(flow: Flow, name: string, deps: Pick<RunnableDeps, "wor
 
 /**
  * What a closure can do, as the store's chips say it (src/packages/detail.ts):
- * `spends` — an `agent`, `llm` or `acp/prompt` step; `acts` — a step that
+ * `spends` — an `agent`, `llm`, `image` or `acp/prompt` step; `acts` — a step that
  * declares `effect: "write"`; `code` — `exec`, a custom step (TypeScript in
  * this process), or an agent with `bash` (every built-in, when its
  * `toolFilter` names none). `agentTools` grants count, a glob over today's

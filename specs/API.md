@@ -2407,7 +2407,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | GET    | `/packages/installs` | `{ installs: InstallState[] }` (`src/packages/progress.ts`): every install as it goes, whichever door started it — this route with or without `wait`, a `package/install` proposal's apply, the boot list (`STRUT_PACKAGES`), a subscription — newest first, and the last 20 that ended within the hour. In memory: a restart forgets them |
 | GET    | `/packages/installs/:id` | One `InstallState`; 404 for an id this process does not hold |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
-| GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files — ustar, a path past what its header holds in a POSIX PAX extended header, which a strut from before 2026-11-09 cannot read (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
+| GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>[&format=tar]` | With `format=tar`, the package's PLAIN TAR (`content-type: application/x-tar`, `ETag: "<digest>.tar"`): the uncompressed tar of its files in one pinned layout (`packTar`, `src/packages/archive.ts`), the same bytes on every strut that holds the package and what its torrent hashes (`plans/marketplace.md` §13); a strut fetches this form. With no `format`, the package at that digest as a `.tar.gz` of its files, for a strut from before the plain tar — ustar, a path past what its header holds in a POSIX PAX extended header, which a strut from before 2026-11-09 cannot read (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
 | GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept" \| "type", name, alone? }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name, a graph type by its type), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). `alone: true` on a Concept page that has pages under it in this graph none of which the release holds: it went alone (`conceptsAlone`), and the page picks it alone again. 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
 | GET    | `/publisher` | This strut's publisher → `{ key, name?, host: "self", createdAt, public?, publicChannels }` (`src/packages/publisher.ts`); 404 before a key is minted. `key` is the FLEET key, what a subscribing strut follows; `public` the PUBLIC key, once a channel was made public — the only key the world sees; `publicChannels` the channels in the public catalog ("One publisher, two keys" below). `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
 | POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
@@ -2793,7 +2793,10 @@ The archive is transport: a fetcher checks the unpacked TREE against the
 digest, never the archive's bytes, so any URL that serves the right tree
 is as good as the publisher's (`fetchArchive`, `src/packages/archive.ts`,
 which also refuses an entry that leaves the directory or that the digest
-never covers — a dotfile, an app's `dist/` or `data.db`).
+never covers — a dotfile, an app's `dist/` or `data.db`). It reads either
+form: the plain tar, which it asks for, or the `.tar.gz` an older strut
+answers. A release whose catalog entry names its `tar` has the plain tar
+checked against that sha256 before it is unpacked.
 
 **Publish** (`plans/marketplace.md` §13, §12.1). A strut that publishes
 has an Ed25519 key, minted once and kept in an encrypted file of its own,
@@ -2811,7 +2814,8 @@ publishes is listed in its CATALOG, a card it seals with that key:
     "acme/linear": {
       "description": "Linear issues",
       "releases": [                    // newest first; earlier ones are kept
-        { "version": "1.1.0", "digest": "sha256:…", "license": "MIT", "requires": { "secrets": ["LINEAR_API_KEY"] } },
+        { "version": "1.1.0", "digest": "sha256:…", "license": "MIT", "requires": { "secrets": ["LINEAR_API_KEY"] },
+          "tar": { "sha256": "<64 hex>", "infohash": "<40 hex>" } },  // the plain tar and its v1 torrent (§13); none before 2026-11-11
         { "version": "1.0.0", "digest": "sha256:…" }
       ]
     }

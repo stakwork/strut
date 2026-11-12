@@ -1,7 +1,8 @@
 # Torrents: strut as a BitTorrent client
 
 > **Status (2026-11-11): PROPOSED, nothing built.** Ruled so far: the
-> engine is rqbit (Evan, 2026-11-11). Written after a read of strut `main`
+> engine is rqbit, and a package travels as its plain tar (§8) (Evan,
+> 2026-11-11). Written after a read of strut `main`
 > @f392bb2, of Evan's sphinx-bittorrent (2024: rqbit + a Rust server,
 > `tome`), and of upstream rqbit at v9.1.0 (released 2026-10-29). Every
 > other choice below is a lean, listed again in §11.
@@ -16,8 +17,8 @@ One engine, three uses:
    This is the ask (2026-11-11).
 2. **Big files between struts with no server in the middle**: a job's
    4 GB deliverable to a peer, the home box to the phone.
-3. **Later, packages**: a strut that installed a package can seed it. A
-   smaller step than `plans/marketplace.md` assumed (§8).
+3. **Later, packages**: a strut that installed a package can seed it,
+   as its plain tar (§8).
 
 Not search. sphinx-bittorrent's `tome` searched Pirate Bay, torrent-csv
 and YTS for magnets; that is left out on purpose (§7).
@@ -198,17 +199,37 @@ It says its format may still change.
 - **Disk**: `TORRENT_MAX_BYTES` per add (§3); the job's idle sweep keeps
   files, so a held torrent's folder stays until the job is deleted.
 
-## 8. Packages: later, and smaller than marketplace.md thought
+## 8. Packages: the plain tar
 
-rqbit has no BitTorrent v2 (BEP 52, rqbit#70 open) and no web seeds
-(BEP 19 is not in its list). The two ways `plans/marketplace.md` §13
-names (a fixed archive served as a web seed, a v2 torrent of the folder
-with a per-file route) are not rqbit's. With rqbit a package travels as a
-v1 torrent made from its cache folder (`POST /torrents/create`), the card
-naming its infohash beside the digest (a v1 infohash depends on how it
-was made, so it is named, never derived), fetched from struts that hold
-it. HTTP stays the base, and the install checks the digest whatever
-brought the files. Not before §3–§6 have run.
+*Ruled 2026-11-11* (`plans/marketplace.md` §13, "BitTorrent, after the
+record"): a package travels as its PLAIN TAR — the uncompressed tar of
+the digest's files in one pinned layout, which every strut holding the
+package writes identically from its cache, and which the archive route
+serves with `format=tar`. Its torrent is a single-file v1 torrent built
+one fixed way (`name` the digest's hex + `.tar`, 256 KiB pieces,
+nothing else in the info dict), so the infohash follows from the digest
+and the same magnet is seeded by every holder: the publisher, the swarms
+that installed it, the index's mirror, every Peel.
+
+- **Strut writes the `.torrent` itself** (`packageTorrent`,
+  `src/packages/torrent.ts`, built 2026-11-11 with the plain tar and the
+  card's `tar`), never `POST /torrents/create`, whose piece length and keys are rqbit's
+  to choose; then hands rqbit the torrent with the tar's folder as its
+  output, and rqbit checks the pieces it already holds and seeds.
+- **The tar is made on demand** from the package cache into
+  `<dataDir>/packages/torrents/<hex>.tar` while it is seeded, removed when
+  it stops: the cache folder stays the record, the tar a copy for the
+  swarm. Not in a job's directory, so a package's torrent is held by
+  nothing a job sweep touches; who seeds what, and for how long, is the
+  install's choice (§11).
+- **No v2, no web seeds in rqbit** (BEP 52, rqbit#70 open; BEP 19 not in
+  its list). The card's web seeds are for other clients; strut falls back
+  to the HTTPS `urls` itself when the swarm is slow, and checks the tar's
+  sha256 against the card, then the unpacked tree against the digest,
+  whatever brought it.
+
+Not before §3–§6 have run, and the archive route's `format=tar` with its
+test vector comes first: it is worth having for HTTP alone.
 
 ## 9. Selling: later
 
@@ -255,3 +276,6 @@ Later: packages (§8), selling (§9), the peer allowlist (§7).
 6. **Pinning rqbit**: upstream's image by version, or an image of our own
    as `images/browser` is; the desktop binary from rqbit's GitHub release,
    sha256 pinned.
+7. **Seeding packages**: whether every strut seeds what it installed, for
+   how long, and under what upload cap — a cloud box's outbound bytes are
+   billed (§7).

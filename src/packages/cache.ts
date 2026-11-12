@@ -63,10 +63,10 @@ export class PackageCache {
   }
 
   /** Unpack an archive in, refusing it unless its tree is `expected`. */
-  async putArchive(gz: Buffer, expected: string): Promise<CachedPackage> {
+  async putArchive(archive: Buffer, expected: string): Promise<CachedPackage> {
     const have = await this.get(expected);
     if (have) return have;
-    return this.commit(expected, (scratch) => unpackArchive(gz, scratch));
+    return this.commit(expected, (scratch) => unpackArchive(archive, scratch));
   }
 
   private async commit(expected: string, fill: (scratch: string) => Promise<void>): Promise<CachedPackage> {

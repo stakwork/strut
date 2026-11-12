@@ -61,7 +61,7 @@ export const STEP_RUN_RESULT_MAX_CHARS = 5 * 1024 * 1024;
  *  shell-shaped step runs inside a workflow the app launches. `remote/*`
  *  spend (or buy) the credit this strut holds at another strut
  *  (plans/paid-runs.md §10); `remote/list` only reads. */
-export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "exec", "acp/prompt", "remote/run-workflow", "remote/call", "remote/buy-credit"];
+export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "image", "exec", "acp/prompt", "remote/run-workflow", "remote/call", "remote/buy-credit"];
 
 /** The graph writes (§4.3): checked against the declared types. */
 export const GRAPH_WRITES: ReadonlySet<string> = new Set([

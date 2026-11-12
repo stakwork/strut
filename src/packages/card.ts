@@ -92,6 +92,12 @@ export interface CatalogRelease {
   requires?: PackageManifest["requires"];
   /** Withdrawn, with the reason: still fetchable, skipped by "latest". */
   yanked?: string;
+  /** The release's PLAIN TAR (plans/marketplace.md §13): its sha256 and
+   *  its torrent's v1 infohash (./torrent.ts), both hex. Follows from the
+   *  digest, so any holder could compute it; named here so a reader checks
+   *  a fetched tar before unpacking it and finds the swarm. Never the
+   *  identity: the digest is. A release from before it has none. */
+  tar?: { sha256: string; infohash: string };
 }
 
 export interface CatalogPackage {
@@ -295,7 +301,12 @@ function shapeProblem(card: Catalog): string | undefined {
   for (const [pkg, p] of Object.entries(card.packages)) {
     if (!PACKAGE_NAME.test(pkg)) return `${JSON.stringify(pkg)} is not a package name`;
     if (!p || !Array.isArray(p.releases)) return `${pkg} has no releases list`;
-    for (const r of p.releases) if (!r || typeof r.version !== "string" || !PACKAGE_DIGEST.test(r.digest)) return `a release of ${pkg} has no version or digest`;
+    for (const r of p.releases) {
+      if (!r || typeof r.version !== "string" || !PACKAGE_DIGEST.test(r.digest)) return `a release of ${pkg} has no version or digest`;
+      if (r.tar !== undefined && !(r.tar && /^[0-9a-f]{64}$/.test(r.tar.sha256) && /^[0-9a-f]{40}$/.test(r.tar.infohash))) {
+        return `the release of ${pkg} at ${r.digest} names a tar that is not { sha256: 64 hex, infohash: 40 hex }`;
+      }
+    }
   }
   for (const [channel, held] of Object.entries(card.channels ?? {})) {
     for (const [pkg, digest] of Object.entries(held ?? {})) {

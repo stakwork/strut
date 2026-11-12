@@ -16,6 +16,7 @@ export const PALETTE = {
   run:      { fill: "rgba(21, 94, 117, 0.4)", stroke: "#22d3ee" },
   llm:      { fill: "rgba(76, 29, 149, 0.4)", stroke: "#c084fc" },
   agent:    { fill: "rgba(124, 45, 18, 0.4)", stroke: "#fb923c" },
+  image:    { fill: "rgba(131, 24, 67, 0.4)", stroke: "#f472b6" },
   /** An agent called as another agent's tool. */
   subagent: { fill: "rgba(124, 45, 18, 0.25)", stroke: "#fdba74" },
   wait:     { fill: "rgba(71, 85, 105, 0.4)", stroke: "#94a3b8" },
