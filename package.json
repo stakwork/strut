@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "build": "npm run build:engine && npm run build:kit",
-    "build:engine": "tsc && node -e \"fs.cpSync('src/workflows', 'build/workflows', { recursive: true }); fs.cpSync('src/concepts', 'build/concepts', { recursive: true }); fs.cpSync('src/apps/templates', 'build/apps/templates', { recursive: true }); fs.cpSync('src/apps/views', 'build/apps/views', { recursive: true }); fs.cpSync('src/apps/jamie', 'build/apps/jamie', { recursive: true }); fs.cpSync('src/apps/knowledge', 'build/apps/knowledge', { recursive: true })\"",
+    "build:engine": "tsc && node -e \"fs.cpSync('src/workflows', 'build/workflows', { recursive: true }); fs.cpSync('src/concepts', 'build/concepts', { recursive: true }); fs.cpSync('src/apps/templates', 'build/apps/templates', { recursive: true }); fs.cpSync('src/apps/views', 'build/apps/views', { recursive: true }); fs.cpSync('src/apps/jamie', 'build/apps/jamie', { recursive: true }); fs.cpSync('src/apps/knowledge', 'build/apps/knowledge', { recursive: true }); fs.cpSync('src/apps/earnings', 'build/apps/earnings', { recursive: true })\"",
     "build:kit": "node scripts/build-kit.mjs",
     "build:aieo": "npm --prefix aieo run build",
     "prepare": "npm run build && npm --prefix web install && npm --prefix web run build",

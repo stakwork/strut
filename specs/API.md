@@ -1470,7 +1470,7 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, admin?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `admin: true` only on an ADMIN-ONLY app, which is listed to full scope alone (§14.14); `warnings` (§14.6) only when the active version has some from the last day |
 | GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`, `title?`, `wallet?`, `permissions?` — what the version's frame is granted beyond every app's, `motion` / `camera` / `geolocation` from `app.yaml`'s `permissions:`, which a host adds to the frame's `allow` before the document loads), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
@@ -2184,6 +2184,64 @@ are made in no conversation, §12); a member sees the claims. **Waiting**
 over the graph lists the Concepts with a change waiting or a claim refuted
 (`knowledge/claims`: every Concept carrying claims, with them), each
 opening its Concept.
+
+### 14.14 `strut/earnings` — Earnings for an admin, and admin-only apps
+
+The Publish dialog's Earnings tab (§18, §19) as an app strut seeds on every
+server (`src/apps/earnings/`, `src/apps/earnings-seed.ts`): for a host that
+frames apps for an admin — Stadeum's org admin pages — and never shows
+strut's own UI. On top the wallet: its balance in sats and at the rate,
+**Add sats** (an invoice as a QR code, paid from the admin's own wallet,
+read until it settles) and **Withdraw** (a BOLT11 invoice pasted, read,
+confirmed at its amount and fee cap, paid), the credit still owed as
+service, the books' check, and the sends still on their way (Read it now;
+Record as paid or Drop once stale). Then earned, cost, margin, received and
+withdrawn over 7 / 30 / 90 days or all time, by item and by day; the credit
+this server BOUGHT at other strut servers (what is left there, a purchase
+still being paid, with Drop); which wallet is set. The wallet is read-only
+here: one the deployment sets (`LIGHTNING_*`, `env: true`, a Stadeum box's
+treasury) is changed there, one set by hand in strut's console
+(`PUT /earnings/wallet`). Buying credit at another server has no button: it
+is an accepted `remote/buy-credit` proposal (§17, `plans/paid-runs.md`
+§10), which the assistant makes and an admin accepts. A host opens it as
+`?app=strut/earnings&solo=1`; `createStrut({ earnings: false })` or
+`STRUT_HOST_CONFIG`'s `earnings: false` seeds nothing.
+
+**Admin-only.** `admin: true` in an `app.yaml` makes an app an admin's:
+`GET /apps` lists it (with `admin: true`) only to FULL scope — the
+deployment key, an admin's session (`POST /auth/ticket { actor, role:
+"admin" }`, §13.1) — and leaves it out for a member's session, a person
+token or a peer; `GET /apps/:name`, `GET /apps/:name/versions` and the
+version's files (`GET /apps/:name/:version/files[/…]`) answer those `403`.
+A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
+only a full-scope listing mints one, and the framed document is read with
+it. The flag hides the app; what it may DO is its grants and its steps'
+own checks. `strut/earnings` says it.
+
+**Its steps** go through the admin door (`src/steps/lib/earnings/_door.ts`):
+each is the route it names, made as an in-process request in the viewer's
+name (`inProcessRequest`, so a withdrawal is booked with who paid it out),
+answered as that route answers. The door is never on the shared services
+bag: the app door (`POST /mcp`) hands it to the bag of one call — a
+FIRST-PARTY page's (§14.10) whose connection holds full scope
+(`AppRef.admin`) — and to nothing else, so no workflow, agent, model-written
+page or member's page reaches it, and each step refuses without both.
+
+| Step | The route | Answers |
+| ---- | --------- | ------- |
+| `earnings/read { by?, days?, from?, to?, package?, wallet? }` | `GET /earnings` (through `ctx.services.earnings`) | §19's view |
+| `earnings/wallet` | `GET /earnings/wallet?check=1` | §18's info with `check`; `{ provider: null, receive: false, pay: false, host: true }` where the host brought its own wallet |
+| `earnings/entries { kind?, runId?, before?, limit? }` | `GET /earnings/entries` | `{ entries }` |
+| `earnings/deposit { sats }` | `POST /earnings/deposit` | the deposit, plus `qr`: the invoice (`LIGHTNING:` and upper case) as an SVG `data:` URL, since a page has no QR library |
+| `earnings/deposit-read { paymentHash }` | `POST /earnings/deposits/:hash/read` | the deposit |
+| `earnings/read-invoice { invoice, balanceMsat?, usdPerBtc?, provider? }` | none: `src/payments/withdraw-reading.ts`, the reader strut's own Withdraw dialog uses | `{ ok: true, msat, maxFeeMsat, expiresIn, usd?, overBalance, network?, invoice } \| { ok: false, error }`; pure, needs no door |
+| `earnings/withdraw { invoice, msat, maxFeeMsat? }` | `POST /earnings/withdraw` | `{ ok: true, state, paymentHash, msat, feeMsat, … }`, or the refusal as an answer, `{ ok: false, status, error, code?, walletCode? }` |
+| `earnings/withdrawal-read { paymentHash }` | `POST /earnings/withdrawals/:hash/read` | as `earnings/withdraw` |
+| `earnings/withdrawal-resolve { paymentHash, action, feeMsat? }` | `POST /earnings/withdrawals/:hash/resolve` | `{ action, entry? }` |
+| `earnings/remote-credit { balance? }` | `GET /remote/credit` | `{ sellers }` |
+| `earnings/drop-purchase { seller }` | `DELETE /remote/purchases?seller=` | `{ seller, dropped? }` |
+
+Any other refusal is the step's error, the route's `code` first.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
@@ -4070,6 +4128,8 @@ nothing for any `LIGHTNING_*` name, wherever it is held — nor for
 `STRUT_SECRET_KEY`, which decrypts `payments.json`.
 
 ## 19. Earnings, Add sats and Withdraw — what the server made, and sats in and out (`plans/paid-runs.md` §8)
+
+The same, as an app a host frames for an admin: `strut/earnings` (§14.14).
 
 What anyone's runs and calls were charged here, what they cost, and the
 wallet the sats land in (`src/payments/earnings.ts`,

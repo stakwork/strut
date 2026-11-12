@@ -189,6 +189,11 @@ export const manifestSchema = z
     icon: z.string().optional(),
     /** Images of the app the package store shows (`screenshotsSchema`). */
     screenshots: screenshotsSchema.optional(),
+    /** ADMIN-ONLY (specs/API.md §14.14): the app is an admin's — left out of
+     *  `GET /apps` and its version's files refused to anyone short of full
+     *  scope (a member's session, a person token, a peer). It hides the app;
+     *  what the app may do is still its grants and its steps' own checks. */
+    admin: z.boolean().optional(),
     /** The entry module; its default export is the root component. */
     entry: z.string().min(1).default("src/App.tsx"),
     grants: grantsSchema.default({ workflows: [], steps: [], sqlite: false, automations: [] }),

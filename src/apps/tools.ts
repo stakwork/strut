@@ -283,6 +283,12 @@ export interface AppToolDeps {
    *  member's session or a person token (plans/member-rights.md). Stamped
    *  on every call's `AppRef.admin`, and so on every run the page launches. */
   admin?: boolean;
+  /** Services added to the bag for a FIRST-PARTY page's call shown to an
+   *  ADMIN (`AppRef.firstParty` and `AppRef.admin`) and no other: the admin
+   *  door the `earnings/*` steps go through (src/steps/lib/earnings/_door.ts),
+   *  which pays out of the wallet. Never on the shared bag, so no workflow,
+   *  agent or other page's step reaches it. */
+  adminServices?: Record<string, unknown>;
   /** The graph's reader, for the node reads a write check needs. Default:
    *  the bag's `graph`, when the server wired one. */
   reader?: Pick<GraphReader, "getNode">;
@@ -355,7 +361,11 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     if (refused) return refuse(`step_run refused: ${refused}`);
     const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg, manifest) : null;
     if (closed) return refuse(`step_run refused: ${closed}`);
-    const bag = deps.visitor?.services ? deps.visitor.services(app, manifest, base) : deps.services;
+    const bag = deps.visitor?.services
+      ? deps.visitor.services(app, manifest, base)
+      : app.firstParty && app.admin && deps.adminServices
+        ? { ...(deps.services as Record<string, unknown>), ...deps.adminServices }
+        : deps.services;
     if (GRAPH_WRITES.has(base)) {
       // A per-call bag's own reader: what this caller may see of the graph.
       const own = deps.visitor?.services ? (bag as { graph?: GraphBackend } | undefined)?.graph?.reader : undefined;

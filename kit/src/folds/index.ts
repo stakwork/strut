@@ -17,3 +17,4 @@ export * from "./work-products.js";
 export * from "./replay.js";
 export * from "./walk/index.js";
 export * from "./concept-diff.js";
+export * from "./earnings.js";
