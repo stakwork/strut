@@ -6,9 +6,10 @@
 > mine and open. Strut succeeds Stakwork, and what Stakwork has that strut
 > lacks is people as PART of a workflow: a worker signs in, does a task in
 > a purpose-built UI, is tested, and is paid sats. **Build first: work
-> items 1–3** (a run that waits, the `human` step, the task store, the
-> worker's door). Tests, earnings and the staff app follow; their sections
-> are shorter and need rulings before they are built. Companion to
+> items 1, 2a, 2b and 3** (a run that waits, the task store, the `human`
+> step, the worker's door). Tests, earnings and the staff app follow;
+> their sections are shorter and need rulings before they are built.
+> Companion to
 > `specs/RUN_CONTROL_SPEC.md` (a parked run is a fourth rung), `apps.md`
 > (the app door, the kit), `app-repos.md` §5 (signed-in visitors),
 > `paid-runs.md` (the ledger's pattern, the wallet, the payer) and
@@ -138,8 +139,14 @@ resume (`prepareDurableResume` + `launchDurableResume`) with its
 `run.resumed` event marked `wake: true`. The journal replays every
 finished step, and each parked step runs again and finds its answer.
 
-- **Sources.** Whoever a step parks on registers under its prefix:
-  `{ settled(on), cancelled(on) }`. The task store registers `task`.
+- **Sources.** `on` is `<prefix>:<id>`, the prefix lowercase letters.
+  Whoever a step parks on is a source, registered in process under its
+  prefix: `strut.parking.register(prefix, source)` returns
+  `{ wake(workflow, runId) }`. A source is
+  `{ settled(on): Promise<boolean>, cancelled?(on, run): Promise<void> }`.
+  The types, `ParkedError` and `isParkedError` live in a new `src/park.ts`.
+  The task store registers `task`; item 1's tests register a source of
+  their own. A park on a prefix nobody registered fails the step.
 - **No lost wake.** After a run parks, strut asks each source whether
   `on` already settled, and wakes at once if so. A wake that arrives
   while the run is live (another branch still running, or already
@@ -148,6 +155,10 @@ finished step, and each parked step runs again and finds its answer.
 - **Across a restart.** A source keeps what it woke (`woken_at` on the
   task). At boot the task store wakes every settled task whose run was
   not woken. A wake during a drain waits until the drain lifts.
+- **A crash while parking.** If the process dies after `run.waiting` is
+  appended and before the summary is written, boot auto-resume sees a
+  cut-off run and resumes it. Its steps park again on the tasks they
+  already made.
 - **Not counted.** Boot auto-resume counts durable resumes to stop a
   crashing step looping (5). A wake is not one.
 
@@ -164,7 +175,22 @@ finished step, and each parked step runs again and finds its answer.
 | `POST …/resume` | Works as for any dead run: a person may force a wake |
 | `run/get { wait }`, the UI | `waiting`, with what it waits on. Not held as in flight |
 
-### 2.5 Limits
+### 2.5 Statuses and what the UI shows
+
+- `RunResult.status` and `RunSummary.status` (`src/core.ts`) gain
+  `"waiting"`. `run.waiting` is not a terminal event (`isTerminalEvent`,
+  `src/createStrut.ts`).
+- **A run's row** (sidebar, job timeline) shows `waiting`. `statusTone`
+  (`web/src/helpers.ts`) already gives it the tone `paused` has.
+- **The run overview** (`kit/src/folds/run-overview.ts`, `RunOverview.tsx`)
+  reads a step whose latest attempt ends in `step.parked` as `waiting`,
+  and lists what the run waits on from the summary's `waitingOn`.
+- **The canvas** gives a parked step its own status mark, apart from
+  pending and running. Its flyout shows what it waits on.
+- **`latestAttempt`** (`web/src/step-attempt.ts`) needs no change: a wake
+  runs the step again, which starts a new attempt.
+
+### 2.6 Limits
 
 - **Per-run resources are gone after a park:** a browser page, a checkout
   in the run's directory. A workflow with a `human` step keeps what later
@@ -187,14 +213,16 @@ A core step, `src/steps/core/human.ts`.
       lost: "{{ input.lost }}"
       found: "{{ input.found }}"
       guess: "{{ match.object }}"
-    within: 48h              # optional; the task type has a default
+    files: ["found.jpg", "lost-1.jpg"]   # optional; what the worker may open
+    withinHours: 48          # optional; the task type has a default
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `task` | The task type's name. It must exist and be enabled |
-| `show` | Any JSON, at most 256 KB. Files are named, not inlined (§5) |
-| `within` | How long the task may stay unanswered. Then the step fails with `task_expired:`, so `retry` and `onError` apply (an `onError` may accept the model's guess) |
+| `show` | Any JSON, at most 256 KB. Files are named, not inlined |
+| `files` | Paths under the run's files: the job's directory on a job run, else the run's artifacts, as `run/files` resolves them. Each must exist when the task is made, or the step fails. `show` refers to one by the same path (§5.5) |
+| `withinHours` | How long the task may stay unanswered; a number, fractions allowed. Then the step fails with `task_expired:`, so `retry` and `onError` apply (an `onError` may accept the model's guess). Strut has no duration parser, and its settings carry the unit in the name |
 | `copies` | Later (§7): ask several workers |
 
 Output: `{ answer, by, task }`, where `by` is the worker's actor.
@@ -246,8 +274,8 @@ file.
 
 | Table | Holds |
 | --- | --- |
-| `task_types` | name, app, the answer's JSON Schema, lease seconds, default `within`, enabled, who changed it. Later: pay, test rate, threshold, hold |
-| `tasks` | a random id, the type, the key (workflow, run id, step path; unique), `show`, status (`open`, `settled`, `expired`, `cancelled`), times, the answer, `woken_at` |
+| `task_types` | name, app, the answer's schema (§4.5), `leaseSeconds` (default 600), `withinHours` (default 72), enabled, who changed it. Later: pay, test rate, threshold, hold |
+| `tasks` | a random id, the type, the key (workflow, run id, step path; unique), `show`, its files (paths and where they are rooted: the run or its job), status (`open`, `settled`, `expired`, `cancelled`), times, the answer, `woken_at` |
 | `leases` | a random 128-bit id, task, worker, taken and expiry times, status (`open`, `submitted`, `expired`, `skipped`); one per task and worker |
 | `workers` | actor, status (`new`, `active`, `suspended`, `banned`), first seen, a note |
 | `grants` | actor, task type, who granted it, when, revoked when and why |
@@ -270,7 +298,7 @@ Earnings go in `ledger.db`, where the books check is.
    takes effect at once whatever the session says.
 7. An accepted answer settles the task and wakes its run.
 8. A sweep, every minute and at boot, reopens a task whose lease expired
-   and settles as expired a task past its `within`, which wakes its run.
+   and settles as expired a task past its `withinHours`, which wakes its run.
 
 ### 4.4 The capability
 
@@ -280,6 +308,38 @@ step's), `next`, `submit`, `skip`, `me` (the worker's), and the staff's
 Inside, the task tables and the worker tables are two modules: the task
 side asks "may this actor take this type?" and tells the worker side what
 happened. Ruling 5 may one day move the worker side.
+
+### 4.5 The answer's shape
+
+Strut has no general JSON Schema validator today: the builder's questions
+check a flat subset (`src/ai/elicitation.ts`), and the agent step checks
+only `required`. A zod converter cannot be relied on, since zod is a peer
+dependency from 4.3. So the store checks a subset itself, in a pure
+`src/tasks/answer-schema.ts`:
+
+- `type`: `object`, `array`, `string`, `number`, `integer`, `boolean`,
+  `null`.
+- `properties` and `required`. A key the schema does not name is refused.
+- `items`, `minItems`, `maxItems`.
+- `enum`, `minimum`, `maximum`, `minLength`, `maxLength`.
+- Nesting to 8 levels. An answer is at most 256 KB as JSON.
+
+A schema that uses anything else is refused when the task type is saved,
+so a type never promises a check strut does not make. A box on a photo is
+`{ type: array, items: { type: number }, minItems: 4, maxItems: 4 }`.
+
+### 4.6 A worker's status
+
+| Status | Set by | May |
+| --- | --- | --- |
+| `new` | The worker's first call | `task/me` only |
+| `active` | The first grant | Take tasks of the types granted |
+| `suspended` | Staff; staff may lift it | `task/me` only |
+| `banned` | Staff | `task/me` only |
+
+Revoking a worker's last grant leaves them `active` with nothing to take.
+A change to `suspended` or `banned` expires the worker's open lease at
+once, and the task reopens.
 
 ## 5. The worker's door
 
@@ -309,9 +369,21 @@ app cannot pull a type's tasks.
   carries `tasks` (`src/createStrut.ts`). An anonymous visitor is refused.
 - **Never kept as a run** (`keptFromApp`, `src/apps/tools.ts`): the lease
   and the answer are the record.
-- **Counted per worker.** These calls do not count against the visitor's
-  daily writes or the per-address budgets, which exist for anonymous
-  keys. The store has its own rate per worker.
+- **Counted per worker.** Three budgets stand in a worker's way today,
+  all made for anonymous keys:
+  - *Requests per address* (`PUBLIC_REQUESTS_PER_MINUTE`, 1,200, in
+    `publicMiddleware`, `src/public-routes.ts`). A request that carries a
+    visitor session whose actor is an `active` worker is counted under
+    that worker instead, at `TASK_REQUESTS_PER_MINUTE` (240). The routes
+    take a `budgetKey(c)` for it; the store answers "is this actor an
+    active worker?" from memory. Sign-in stays per address.
+  - *Visitor writes per day* (`visitorWrite`, `src/visitors.ts`). The
+    worker steps are not added to it, so they are not counted.
+  - *The app monitor's* `volume` rule. It only warns. For the worker
+    steps it counts per viewer, not per app.
+
+  The store's own limit is `TASK_CALLS_PER_MINUTE` (120) per worker, in
+  memory. A held `task/next { wait }` counts once.
 
 The first call by an actor the store has not seen writes a `workers` row
 with status `new`. Staff see it and grant task types (§6).
@@ -321,8 +393,15 @@ with status `new`. Staff see it and grant task types (§6).
 - `useTask(type)` gives `{ task, submit, skip, status }`. It holds one
   `task/next { wait }` at a time and none while the page is hidden.
 - `useWorker()` is `task/me`.
+- `useTaskFile(path)` is `task/file` for the current lease, as text,
+  base64 or a `blob:` URL, the way `useRunFile` and `useRunFileUrl` are.
 - `strut/views` gets `TaskForm`: the answer schema drawn as a form, for a
-  task type that needs no custom UI.
+  task type that needs no custom UI. It draws a schema whose properties
+  are all strings, numbers, booleans, enums or lists of enums, which is
+  what the builder's question form draws today. That mapper
+  (`fieldsOf`, `web/src/elicitation.ts`) moves to `kit/src/folds/` so the
+  kit and strut's UI share one copy. For any other schema `TaskForm` says
+  the task type needs its own UI.
 - The `App` Concept page gets a section on worker apps, so the builder
   knows the hooks and the grants.
 
@@ -336,12 +415,20 @@ builder's edits are drafts until someone makes them live.
 
 ### 5.5 Files
 
-`show` names files of the run (its artifacts, or its job's directory) and
-the store keeps the list with the task. `task/file` reads only those,
-only through the worker's open lease, at `run/files`' size cap. Never a
-run's or a job's file token: that opens every file of the run. Links
-scoped to a lease for large images, and uploads from a worker, are later
-(§11).
+The step's `files` lists what a worker may open (§3). The store keeps the
+paths with the task, with whether they are rooted in the run's artifacts
+or its job's directory. `show` mentions a file by the same path, as an
+ordinary string; the app decides what to do with it.
+
+`task/file { lease, path }` reads a file only when the path is on the
+task's list and the lease is the caller's and open. It answers as
+`run/files` does (text or base64, `fileResult`, `src/runs.ts`), so the
+practical size is the tool call's: about 3.7 MB of binary. A path not on
+the list is refused whether or not the file exists.
+
+Never a run's or a job's file token: that opens every file of the run.
+Links scoped to a lease for larger images, and uploads from a worker, are
+later (§11).
 
 ## 6. Task types and staff
 
@@ -377,7 +464,7 @@ pattern). It comes with the staff app (§9).
 - **Copies.** `copies: n` on the step asks n workers. The type says how
   they must agree; a disagreement asks one more worker or fails the step.
 
-## 8. Earnings and withdraw (item 5)
+## 8. Earnings and withdraw (items 5a and 5b)
 
 Ruled: a balance per Stadeum, earnings wait, a withdraw section. The rest
 is proposed.
@@ -460,30 +547,33 @@ directory, so past one process the answer is another strut.
 
 ## 12. Work items
 
-Each is its own PR against `main`.
+Each is its own PR against `main`, never stacked: an item that depends on
+another branches after that one has merged. Each PR updates `AGENTS.md`
+and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
+`specs/SPEC.md` for the step, `specs/API.md` for routes).
 
-1. **Parked runs** (§2). `ctx.park`, `ParkedError`, `step.parked`,
-   `run.waiting`, the `waiting` summary, `foreach`'s rule, the wake, the
-   sources, cancel of a waiting run, and every reader in §2.4. Proven
-   with a test step that parks on a source the test settles.
-2. **The task store and `human`** (§3, §4). `src/tasks/`, the
-   capability, the core step, the sweep, the boot wake.
-3. **The worker's door** (§5, §6). The `task/*` steps, `worker: true`,
-   the visitor rule, the routes, `useTask`, `useWorker`, `TaskForm`, the
-   `App` page.
-4. **Tests, copies and standing** (§7).
-5. **Earnings and withdraw** (§8). After its rulings. Peel's side of the
-   withdrawal is not in this repo.
-6. **The staff app** (§9), with `task/set-type`.
-7. **`human` with `to:`**: a named person, answered in Jamie.
+| Item | What | Needs |
+| --- | --- | --- |
+| 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing |
+| 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing |
+| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source, the boot wake | 1 and 2a |
+| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b |
+| 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 |
+| 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a |
+| 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b |
+
+Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
+merged.
 
 ## 13. Tests
 
 | Item | What proves it |
 | --- | --- |
 | 1 | A run parks and holds no controller. A wake replays and finishes. A park in one branch lets the others finish. A foreach of N parks once with N waits. Cancel of a waiting run. A restart between settle and wake still wakes. Boot auto-resume passes a waiting run over. No `run.end` callback until the real end |
-| 2 | One task per run and path across wakes. Expiry fails the step and `onError` runs. Two workers never hold one task. One answer per lease. An answer that does not fit the schema is refused |
-| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call |
+| 2a, 2b | One task per run and path across wakes. Expiry fails the step and `onError` runs. Two workers never hold one task. One answer per lease. An answer that does not fit the schema is refused. A task type whose schema uses a keyword strut does not check is refused when saved. A `files` path that does not exist fails the step |
+| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. An active worker's requests are counted per worker, a `new` one's per address |
 
 ## Rejected
 
