@@ -26,6 +26,11 @@
  * and the newest few keep their directory, and an older one is restored
  * from its tree and rebuilt the first time it is read (`ensure`). Every
  * read of a version goes through `ensure`.
+ *
+ * One read goes nowhere near the directory: `manifestOf`, what the app
+ * door asks on EVERY call a page makes (./tools.ts). It is the version's
+ * manifest off the workspace's record, remembered in memory (`appManifests`)
+ * and forgotten when the app's record is written (`watchAppWrites`).
  */
 import { randomBytes } from "node:crypto";
 import { rename, rm, stat } from "node:fs/promises";
@@ -188,10 +193,94 @@ export interface AppReleases {
   behind: LockDrift[];
 }
 
+/** What the app door needs of a version (`manifestOf`). */
+export interface AppVersionManifest {
+  /** The version read: the one asked for, else the live one. */
+  version: string;
+  manifest: AppManifest;
+  /** Strut seeded the version (`source: "seed"`): what makes a `strut/` app's page first-party. */
+  seeded: boolean;
+}
+
+/** The versions `manifestOf` has read, kept until their app's record is written. */
+export interface AppManifests {
+  /** The version's entry (no version: the live one's): remembered, else
+   *  `load`ed and remembered. A miss is never remembered. */
+  read(name: string, version: string | undefined, load: () => Promise<AppVersionManifest | null>): Promise<AppVersionManifest | null>;
+  /** The app's record was written: forget every version of it. */
+  forget(name: string): void;
+}
+
+/**
+ * A version's manifest never changes, so it is read once. What can make an
+ * entry wrong all goes through the app's record: which version is live (a
+ * publish, an activation, a release), a delete (the name's next publish is
+ * `v1` again, with another manifest) and a stamp (a version's `source`).
+ * So ANY write of the record forgets the app (`watchAppWrites`), and a load
+ * that began before a write is not kept. In this process's memory: a write
+ * made past the watched store (another process on the same workspace) is
+ * not seen until a restart.
+ */
+export function appManifests(): AppManifests {
+  // Per app, by version label; the live version's under "" (never a label).
+  const kept = new Map<string, Map<string, AppVersionManifest>>();
+  let writes = 0;
+  return {
+    async read(name, version = "", load) {
+      const hit = kept.get(name)?.get(version);
+      if (hit) return hit;
+      const before = writes;
+      const got = await load();
+      if (got && before === writes) {
+        const versions = kept.get(name) ?? new Map<string, AppVersionManifest>();
+        kept.set(name, versions.set(version, got));
+      }
+      return got;
+    },
+    forget(name) {
+      writes++;
+      kept.delete(name);
+    },
+  };
+}
+
+/** The store's methods that write an app's record; each takes the app's name first. */
+const APP_WRITES: ReadonlySet<string> = new Set(["publishApp", "setActiveAppVersion", "addAppRelease", "setAppLive", "deleteApp"]);
+
+/**
+ * The workspace store, telling `wrote(name)` once a write of an app's
+ * record returned or threw — whoever made it (this capability, a seed, a
+ * package install). Every other method, and `instanceof`, are the store's own.
+ */
+export function watchAppWrites(ws: WorkspaceStore, wrote: (name: string) => void): WorkspaceStore {
+  return new Proxy(ws, {
+    get(target, prop) {
+      // The store's own `this`: a getter or a method may read its private fields.
+      const v = Reflect.get(target, prop, target) as unknown;
+      if (typeof v !== "function") return v;
+      const fn = v as (...args: unknown[]) => unknown;
+      if (typeof prop !== "string" || !APP_WRITES.has(prop)) return fn.bind(target);
+      return async (...args: unknown[]) => {
+        try {
+          return await fn.apply(target, args);
+        } finally {
+          if (typeof args[0] === "string") wrote(args[0]);
+        }
+      };
+    },
+  });
+}
+
 export interface AppsCapability {
   /** Every app, each with its live version's warning count when it has any. */
   list(): Promise<AppListing[]>;
   get(name: string, version?: string): Promise<AppView | null>;
+  /** One version's manifest (the live one's by default), its label, and
+   *  whether strut seeded it — all the app door (`step_run`) needs, on
+   *  every call: off the workspace's record alone, remembered until the
+   *  app's record is next written. Never the files, the build, the errors
+   *  or the grants `get` reads. Null when there is no such app or version. */
+  manifestOf(name: string, version?: string): Promise<AppVersionManifest | null>;
   /** A version's directory (the active one by default), or null. */
   versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
   /** Build the directory in place (`dist/`), with the installed apps and the
@@ -273,6 +362,10 @@ export interface AppsDeps {
   grants?: AppGrantStore;
   /** Where the viewers' state lives (./state.ts), dropped with the app. */
   dataDir?: string;
+  /** What `manifestOf` remembers. Pass the one a host also hands
+   *  `watchAppWrites` when something writes app records past this
+   *  capability (createStrut: the seeds, a package install). Default: its own. */
+  manifests?: AppManifests;
 }
 
 
@@ -294,7 +387,9 @@ const exists = async (p: string) => {
 };
 
 export function createApps(deps: AppsDeps): AppsCapability {
-  const { workspace } = deps;
+  const manifests = deps.manifests ?? appManifests();
+  // Every write this capability makes of an app's record forgets the app.
+  const workspace = watchAppWrites(deps.workspace, manifests.forget);
   const grants = deps.grants ?? memoryAppGrants();
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
 
@@ -509,6 +604,12 @@ export function createApps(deps: AppsDeps): AppsCapability {
         granted: await grants.list(name),
       };
     },
+
+    manifestOf: (name, version) =>
+      manifests.read(name, version, async () => {
+        const rec = await workspace.getApp(name, version);
+        return rec ? { version: rec.version, manifest: rec.manifest, seeded: rec.versions[rec.version]?.source === "seed" } : null;
+      }),
 
     versionDir,
 

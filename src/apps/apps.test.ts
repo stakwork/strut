@@ -14,7 +14,7 @@ import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { treeFiles } from "../version.js";
 import { kitForTests } from "../test-util/app-kit.js";
-import { createApps, type AppsCapability } from "./apps.js";
+import { appManifests, createApps, type AppsCapability, type AppVersionManifest } from "./apps.js";
 import type { KitLocation } from "./kit.js";
 import { readBuildInfo } from "./build.js";
 import appList from "../steps/lib/app/list.js";
@@ -365,6 +365,40 @@ describe("the apps capability", () => {
     assert.ok(ok.ok);
     const rec = (await ws.getApp("ok"))!;
     assert.deepEqual([rec.publisher, rec.owner, rec.versions["v1"]?.source], ["ai", "bot", "agent"]);
+  });
+});
+
+describe("what the app door remembers (appManifests)", () => {
+  const entry = (title: string, version = "v1"): AppVersionManifest => ({ version, manifest: { title } as AppVersionManifest["manifest"], seeded: false });
+
+  it("a version is loaded once; a miss is never remembered; a write forgets every version of that app alone", async () => {
+    const memo = appManifests();
+    let loads = 0;
+    const read = (name: string, version: string | undefined, got: AppVersionManifest | null) => memo.read(name, version, async () => (loads++, got));
+    assert.equal(await read("a", "v1", null), null);
+    assert.equal((await read("a", "v1", entry("one")))?.manifest.title, "one", "the miss was not kept");
+    assert.equal((await read("a", "v1", entry("other")))?.manifest.title, "one");
+    assert.equal((await read("a", undefined, entry("live", "v2")))?.version, "v2", "the live version, apart from any label");
+    assert.equal((await read("a", undefined, entry("later", "v3")))?.version, "v2");
+    assert.equal((await read("b", "v1", entry("b")))?.manifest.title, "b");
+    assert.equal(loads, 4);
+    memo.forget("a");
+    assert.equal((await read("a", "v1", entry("two")))?.manifest.title, "two");
+    assert.equal((await read("a", undefined, entry("live", "v3")))?.version, "v3");
+    assert.equal((await read("b", "v1", entry("other")))?.manifest.title, "b", "another app's stay");
+  });
+
+  it("a load that began before a write is handed back and not kept", async () => {
+    const memo = appManifests();
+    let release!: () => void;
+    const slow = memo.read("a", "v1", async () => {
+      await new Promise<void>((r) => (release = r));
+      return entry("before the write");
+    });
+    memo.forget("a");
+    release();
+    assert.equal((await slow)?.manifest.title, "before the write");
+    assert.equal((await memo.read("a", "v1", async () => entry("after")))?.manifest.title, "after");
   });
 });
 

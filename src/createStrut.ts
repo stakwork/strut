@@ -103,7 +103,7 @@ import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
-import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
@@ -1037,7 +1037,12 @@ export async function createStrut<TServices = unknown>(
     claims: () => claimsAuthoring,
     apps: () => apps,
   });
-  const workspace: WorkspaceStore = history ? history.watch(baseWorkspace) : baseWorkspace;
+  // What the app door remembers of each app version (`apps.manifestOf`,
+  // read on every call a page makes): forgotten when the app's record is
+  // written through this store, whoever writes it — the apps capability, a
+  // seed, a package install.
+  const appVersions = appManifests();
+  const workspace: WorkspaceStore = watchAppWrites(history ? history.watch(baseWorkspace) : baseWorkspace, appVersions.forget);
   /** `fn` as one commit under its own cause (an install, an uninstall). */
   const recorded = <T,>(fn: () => Promise<T>, touchOf: (r: T | undefined) => HistoryTouch): Promise<T> => (history ? history.hold(fn, touchOf) : fn());
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
@@ -1662,6 +1667,7 @@ export async function createStrut<TServices = unknown>(
       grants: appGrants,
       // The viewers' state (src/apps/state.ts), dropped with the app.
       dataDir,
+      manifests: appVersions,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
     });
@@ -9188,7 +9194,8 @@ export async function createStrut<TServices = unknown>(
           // as the run steps resolve it): checked under the name it runs as.
           refusal: async (at, type, config, manifest) => {
             const surface = await publicSurface.get();
-            const live = (await apps.versionDir(at.name).catch(() => null))?.version;
+            // The live version off the record as remembered: asked on every call.
+            const live = (await apps.manifestOf(at.name).catch(() => null))?.version;
             const cfg = await inAppPackage(at.name, config);
             if (!signedIn) return visitorRefusal(surface, live, at, type, cfg);
             const no = await signedInRefusal(surface, live, at, type, cfg, {

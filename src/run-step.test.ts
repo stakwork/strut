@@ -261,6 +261,20 @@ describe("runStep", () => {
     assert.deepEqual([r.status, r.kept], ["success", undefined]);
   });
 
+  it("events: false — the result alone: no events back, and the step hashes are read only for a run that is kept", async () => {
+    const store = new MemoryRunStore();
+    let reads = 0;
+    const workspace = { ...hashWorkspace({}), getActiveStepHashes: async () => (reads++, { "clip/compute-times": "aaaabbbbcccc" }) };
+    const quiet = await runStep("clip/compute-times", echoRegistry(), {}, { config: { start: 1 }, events: false }, { store, workspace, claims: claimsOn() });
+    assert.deepEqual([quiet.status, quiet.output, quiet.events, quiet.kept, reads], ["success", { start: 1, end: 20 }, [], undefined, 0]);
+    const kept = await runStep("clip/compute-times", echoRegistry(), {}, { config: { start: 1 }, events: false }, { store, workspace, claims: claimsOn("clip/compute-times") });
+    assert.deepEqual([kept.kept, kept.events, reads], ["step:clip/compute-times", [], 1]);
+    const start = (await store.getRunEvents("step:clip/compute-times", kept.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(start.stepHashes, { "clip/compute-times": "aaaabbbbcccc" }, "a kept run is evidence: the version that ran is on its record");
+    const asked = await runStep("clip/compute-times", echoRegistry(), {}, { config: { start: 1 }, events: false, keep: true }, { store, workspace, claims: null });
+    assert.deepEqual([asked.kept, reads], ["step:clip/compute-times", 2]);
+  });
+
   it("the cassette mode rides on run.start", async () => {
     const dir = await mkdtemp(join(tmpdir(), "strut-runstep-"));
     const r = await runStep(

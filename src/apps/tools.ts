@@ -315,14 +315,17 @@ export interface AppToolDeps {
 }
 
 /** The app a call names, with its manifest and whether the version is
- *  strut's seed — or why there is none. */
+ *  strut's seed — or why there is none. Asked on every call, so it is the
+ *  record's manifest as the capability remembers it (`manifestOf`), never
+ *  `get`: that one lists and hashes the version's files and scans the
+ *  error reports. */
 async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean } | { error: string }> {
   if (isPreviewLabel(app.version)) {
     const preview = deps.apps.previewOf(app.name, app.version);
     return preview ? { manifest: preview.manifest, seeded: false } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
   }
-  const view = await deps.apps.get(app.name, app.version).catch(() => null);
-  return view ? { manifest: view.manifest, seeded: view.versions[app.version]?.source === "seed" } : { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
+  const found = await deps.apps.manifestOf(app.name, app.version).catch(() => null);
+  return found ?? { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
 }
 
 /**
@@ -384,6 +387,8 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app,
         keep: (!deps.visitor || !!deps.visitor.keep) && keptFromApp(base),
+        // The page gets the output alone.
+        events: false,
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
       deps.runStepDeps,
