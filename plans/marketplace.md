@@ -2892,5 +2892,9 @@ production until install (step 2) calls the resolver.
     or a v2 torrent of the package directory with a per-file route as its
     web seeds (§13, "BitTorrent, after the record"). The archive route as
     it packs today can be neither's web seed. Decide before the BitTorrent
-    step; until then the archive route is HTTP only.
+    step; until then the archive route is HTTP only. With rqbit, the
+    client `plans/torrents.md` proposes (2026-11-11), neither applies: it
+    has no v2 and no web seeds, so a package would be a v1 torrent of its
+    cache folder, fetched from other struts only, the card naming its
+    infohash (`plans/torrents.md` §8).
 
