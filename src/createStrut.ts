@@ -80,7 +80,7 @@ import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LI
 import type { AppManifest } from "./apps/manifest.js";
 import type { GraphReader } from "./graph/search.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
-import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
+import { WAKE_MAX, artifactsOf, createWakes, isRelayStart, parseWakeDoor, replyOf, runReply, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
@@ -100,7 +100,7 @@ import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
 import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
-import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
+import { DETACHED_HINT, aiWroteVersion, buildAuthoringCapability, type DetachedRun } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
@@ -1972,6 +1972,8 @@ export async function createStrut<TServices = unknown>(
       ...(reach ? { reach } : {}),
       // Defined further down; called only once a run is going.
       resumeRun: (name, runId, body) => resumeRun(name, runId, body),
+      // A builder job's test run is a run of its own (src/wake.ts).
+      runDetached: (caller, flow, run) => runOwn(caller, flow, run),
       controlRun: (name, runId, action, force) => controlLiveRun(name, runId, action, false, force),
     });
   }
@@ -6806,6 +6808,10 @@ export async function createStrut<TServices = unknown>(
         live?.delete(runId);
         if (!live?.size) liveSessions.delete(session);
         wakes.kick(session);
+      })
+      // A job's own session (the builder's) waits for every run of the job.
+      .finally(() => {
+        if (body.job && body.job !== session) wakes.kick(body.job);
       });
     return runId;
   }
@@ -6844,7 +6850,8 @@ export async function createStrut<TServices = unknown>(
     store,
     sessions: sessionStore,
     holder: (id) => sessions.holder(id),
-    liveOn: (id) => [...(liveSessions.get(id) ?? [])],
+    // A job's own session (the builder's) waits for every run of the job too.
+    liveOn: (id) => [...(liveSessions.get(id) ?? []), ...[...controllers.values()].filter((c) => c.job?.id === id).map((c) => c.runId)],
     isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     getWorkflow: async (name) => {
       await assertWorkflowEnabled(workspace, name);
@@ -6853,8 +6860,15 @@ export async function createStrut<TServices = unknown>(
     launch: (flow, run) =>
       launchDetached(
         flow,
-        { input: run.input, ...(run.params ? { params: run.params } : {}) },
         {
+          input: run.input,
+          ...(run.params ? { params: run.params } : {}),
+          ...(run.job ? { job: run.job } : {}),
+          ...(run.conversation ? { conversation: run.conversation } : {}),
+          ...(run.asked ? { wake: true } : {}),
+        },
+        {
+          ...(run.startedBy ? { startedBy: run.startedBy } : {}),
           ...(run.actor ? { actor: run.actor } : {}),
           ...(run.principal ? { principal: run.principal } : {}),
           ...(run.callback ? { callback: { url: run.callback } } : {}),
@@ -6863,6 +6877,97 @@ export async function createStrut<TServices = unknown>(
         },
       ),
   });
+
+  /** The session a job turn's run wakes (src/wake.ts), or undefined when
+   *  it is not one strut wakes: the job's own session (the turn's
+   *  `input.session`, else the job id — the builder's agent session) for a
+   *  turn of a job workflow with a `params.wake`, launched as a job's turn
+   *  is — not from inside another run (a job agent that runs `builder`
+   *  itself waits for it), and not by another strut or an app that is not
+   *  strut's own (a relay, which `jobEnded` never wakes: a build on a peer
+   *  answers over strut/run-workflow, which nothing reaches later). */
+  async function jobWakeSessionOf(caller: { workflow: string; runId: string; job?: string }): Promise<string | undefined> {
+    if (!wakes.enabled || !caller.job || !(JOB_WORKFLOWS as readonly string[]).includes(caller.workflow)) return undefined;
+    const flow = await workspace.getWorkflow(caller.workflow).catch(() => null);
+    if (typeof flow?.params?.["wake"] !== "string") return undefined;
+    const start = await store.getRunStart(caller.workflow, caller.runId).catch(() => null);
+    if (!start || start.parentRunId || isRelayStart(start)) return undefined;
+    const named = (start.input as Record<string, unknown> | undefined)?.["session"];
+    return typeof named === "string" && named ? named : caller.job;
+  }
+
+  /** The job turn a run was launched by as a run of its own (`runOwn`): the
+   *  run names that turn (`startedBy`, a job workflow's) and carries no job
+   *  — a job run names the conversation turn that started it, and has one. */
+  function leftGoingBy(run: { job?: string; startedBy?: StartedBy }): StartedBy | undefined {
+    return !run.job && run.startedBy && (JOB_WORKFLOWS as readonly string[]).includes(run.startedBy.workflow) ? run.startedBy : undefined;
+  }
+
+  /** The runs a job turn launched and still looks at (`runOwn`), by run id:
+   *  an end inside the look is the turn's to read, and wakes nothing. */
+  const looks = new Map<string, (res?: RunResult) => void>();
+
+  /** A builder job's test run (meta/run-workflow, src/wake.ts): a run of
+   *  its OWN from the start. No job, so the job stays free — the person's
+   *  next message reaches the build while the run goes on. No parent, so a
+   *  restart resumes it like any run. It names the turn that launched it
+   *  (`startedBy`), and that is what its end wakes (`wakeOnEnd`).
+   *
+   *  The turn looks at it for the chat's wait window: a run that ends
+   *  inside it comes back as its result, as it always did; one still going
+   *  comes back `running`, the turn ends saying so, and the run's end
+   *  starts the job's next turn. A turn stopped while it looks stops the
+   *  run too. Undefined for a caller strut does not wake, whose run stays
+   *  a child it waits out. */
+  async function runOwn(
+    caller: { workflow: string; runId: string; job?: string },
+    flow: Flow,
+    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[] },
+  ): Promise<RunResult | DetachedRun | undefined> {
+    const session = await jobWakeSessionOf(caller);
+    if (!session) return undefined;
+    const runId = launchDetached(
+      flow,
+      { input: run.input, ...(run.params ? { params: run.params } : {}) },
+      {
+        ...(run.version ? { version: run.version } : {}),
+        startedBy: { workflow: caller.workflow, runId: caller.runId, session },
+        ...(run.actor ? { actor: run.actor } : {}),
+        ...(run.principal ? { principal: run.principal } : {}),
+        ...(run.mcp?.length ? { mcp: run.mcp } : {}),
+      },
+    );
+    // The look, before anything is awaited: a run that ends at once is
+    // still the turn's to read.
+    const turn = controllers.get(`${caller.workflow}/${caller.runId}`);
+    const looked = new Promise<RunResult | undefined>((resolve) => {
+      const done = (res?: RunResult) => {
+        clearTimeout(timer);
+        clearInterval(watch);
+        looks.delete(runId);
+        resolve(res);
+      };
+      const timer = setTimeout(done, chatRunWaitMs);
+      const watch = setInterval(() => {
+        if (turn?.state !== "cancelling") return;
+        void controlLiveRun(flow.name, runId, "cancel").catch(() => {});
+        done();
+      }, 250);
+      timer.unref?.();
+      watch.unref?.();
+      looks.set(runId, done);
+    });
+    // On the job's record as the turn's child, so the job's timeline shows
+    // it under the call that launched it, as it did when it was one.
+    const jobs = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
+    if (caller.job) {
+      await jobs
+        ?.recordRun(caller.job, { workflow: flow.name, runId, parentRunId: caller.runId })
+        .catch((err) => console.error(`[job ${caller.job}] recording run ${runId} failed:`, err));
+    }
+    const ended = await looked;
+    return ended ?? { runId, workflow: flow.name, status: "running", detached: true, hint: DETACHED_HINT };
+  }
 
   /** A job turn's end as the wake keeps it: its reply, its question, what
    *  it produced, its title (the job's record), who asked for it. */
@@ -6892,7 +6997,12 @@ export async function createStrut<TServices = unknown>(
   /** What strut does when a run ends: a job turn's (`JOB_WORKFLOWS`) end
    *  wakes the conversation it names — `startedBy.session`, else the
    *  launch's `conversation` — and its run.end carries the outcome; a wake
-   *  turn's end lets the next one go, and its run.end carries its mark.
+   *  turn's end lets the next one go, and its run.end carries its mark —
+   *  unless it is a JOB's wake turn, which is a job turn too and wakes the
+   *  conversation. A run a job turn launched as its own (`runOwn`: it names
+   *  that turn and carries no job) wakes the JOB: the turn's own to read
+   *  while the turn still looks at it, else the job's next turn — never
+   *  for a run somebody cancelled, or one whose turn the person stopped.
    *  Anything else: nothing, no `wake` field. Never throws: a failure is
    *  `none`, logged. */
   async function wakeOnEnd(
@@ -6901,11 +7011,38 @@ export async function createStrut<TServices = unknown>(
     info: { job?: string; startedBy?: StartedBy; conversation?: string; asked?: boolean; actor?: string; principal?: string; mark?: WakeMark; session?: string },
   ): Promise<WakeOutcome | WakeMark | undefined> {
     try {
+      const by = info.mark ? undefined : leftGoingBy(info);
+      if (by?.session) {
+        const look = looks.get(res.runId);
+        if (look) {
+          look(res);
+          return undefined;
+        }
+        if (!wakes.enabled || res.status === "cancelled") return undefined;
+        const job = (await store.getRunStart(by.workflow, by.runId))?.job;
+        const turn = await store.getRunSummary(by.workflow, by.runId).catch(() => null);
+        if (!job || turn?.status === "cancelled") return "none";
+        return await wakes.jobEnded(by.session, {
+          kind: "run",
+          runId: res.runId,
+          workflow,
+          job,
+          status: res.status,
+          ...(res.output !== undefined ? { text: runReply(res.output) } : {}),
+          ...(res.error ? { error: res.error.message } : {}),
+          artifacts: [],
+          startedBy: by,
+          asked: true,
+          ...(info.actor ? { actor: info.actor } : {}),
+          ...(info.principal ? { principal: info.principal } : {}),
+        });
+      }
+      const jobTurn = (JOB_WORKFLOWS as readonly string[]).includes(workflow);
       if (info.mark) {
         if (info.session) await wakes.turnEnded(info.session, res.runId, res.error?.message);
-        return info.mark;
+        if (!jobTurn) return info.mark;
       }
-      if (!(JOB_WORKFLOWS as readonly string[]).includes(workflow)) return undefined;
+      if (!jobTurn) return undefined;
       const session = info.startedBy?.session ?? info.conversation;
       if (!session || !info.job || !wakes.enabled) return "none";
       return await wakes.jobEnded(session, await wakeEndOf(workflow, res, { ...info, job: info.job }));
@@ -7035,7 +7172,10 @@ export async function createStrut<TServices = unknown>(
   async function conversationOf(runId: string): Promise<string | undefined> {
     const root = rootRunOf(runId);
     if (!root) return undefined;
-    const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
+    let start = await store.getRunStart(root.workflow, root.runId).catch(() => null);
+    // A run a job turn launched as its own belongs where that turn does.
+    const turn = start ? leftGoingBy(start) : undefined;
+    if (turn) start = await store.getRunStart(turn.workflow, turn.runId).catch(() => null);
     const session = start?.startedBy
       ? start.startedBy.session
       : (start?.conversation ?? (start?.input as Record<string, unknown> | undefined)?.["session"]);

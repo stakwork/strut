@@ -25,6 +25,17 @@
  *   a run launched on it still in flight) the end waits, and every end that
  *   waited goes as ONE turn.
  *
+ * A JOB wakes too (the builder's test run): a run a job turn launched as a
+ * run of its own (`meta/run-workflow`, createStrut's `runOwn`) names that
+ * turn as its `startedBy`, with the job's own session (the job id — the
+ * builder's agent session). Its end, once the turn has stopped looking at
+ * it, is an end like a job's, `kind: "run"`, on THAT session, and the turn
+ * it wakes is the JOB's next one: a run of the job's workflow under the
+ * job, started as the job's latest person's turn was (`startedBy`, or the
+ * host's `conversation`), so its own end wakes the conversation as any job
+ * turn's does. Nothing is kept for it here until it ends: the run is a
+ * root run, its `run.start` says who to wake, and a restart resumes it.
+ *
  * Durable: an end is written to `<dataDir>/wakes/<session>.json` before
  * anything launches, and leaves it when its turn ended; `reconcile` (at boot)
  * launches what a dead process left. Once per job run, keyed by its run id
@@ -52,7 +63,8 @@ export const WAKE_SILENT = "[silent]";
 export const WAKE_REPLY_MAX = 6_000;
 /** Wake turns since the person's last turn, at most. */
 export const WAKE_MAX = 4;
-/** Job runs remembered per session, so an end heard twice wakes once. */
+/** Job runs remembered per session, so an end heard twice wakes once: a
+ *  run id, with `#<n>` after its nth durable resume. */
 const SEEN_MAX = 500;
 /** How long a busy session is waited on when no run of ours will end it. */
 const RETRY_MS = 2_000;
@@ -62,6 +74,10 @@ export type WakeOutcome = "launched" | "capped" | "none";
 /** A job turn that ended, as the wake keeps it: everything the prompt needs,
  *  so a pending wake outlives the process. */
 export interface WakeEnd {
+  /** `run`: a run a job turn left going ended — not a job turn. `runId`
+   *  and `workflow` are then that run's, `text` its output, `startedBy` the
+   *  job turn that launched it, `job` that turn's job. */
+  kind?: "run";
   /** The job run, and its workflow (`job`, `builder`). */
   runId: string;
   workflow: string;
@@ -95,7 +111,8 @@ export interface WakeFile {
   queued: WakeEnd[];
   /** The wake turn in flight, and the ends it carries. */
   turn?: { workflow: string; runId: string; ends: WakeEnd[] };
-  /** The job runs already woken on or capped, newest last. */
+  /** The job runs already woken on or capped, newest last; a healed run's
+   *  later end is `<runId>#<its durable resumes>`. */
   seen: string[];
 }
 
@@ -133,6 +150,7 @@ const line = (s: string, max = 200) => cap(s.replace(/[\u0000-\u001f\u007f]/g, "
 const unmarked = (s: string) => s.replaceAll(">>>", "> > >").replaceAll("<<<", "< < <");
 
 function outcomeOf(e: WakeEnd): string {
+  if (e.kind === "run") return e.status === "success" ? "finished" : "failed";
   if (e.status === "success") return e.ask ? "finished its turn and STOPPED FOR A DECISION (its question is below)" : "finished its turn";
   if (e.status === "cancelled") return "been stopped";
   return "failed (its reply says why)";
@@ -145,6 +163,8 @@ function jobValues(e: WakeEnd): Record<string, string> {
   const reply = e.text ?? (e.error ? `(no reply; the error: ${e.error})` : "(no reply text)");
   return {
     job,
+    run: line(e.runId),
+    workflow: line(e.workflow),
     title: line(e.title ?? e.job),
     on: e.source ? ` on @${e.source}` : "",
     started: e.source
@@ -168,7 +188,7 @@ const SECTION = /\{each\}([\s\S]*?)\{\/each\}/;
 /**
  * The wake prompt: `template` (the workflow's `params.wake`) with the part
  * between `{each}` and `{/each}` once per end, its placeholders that end's —
- * `{job}`, `{title}`, `{on}`, `{started}`, `{outcome}`, `{produced}`,
+ * `{job}`, `{run}` and `{workflow}` (the run that ended), `{title}`, `{on}`, `{started}`, `{outcome}`, `{produced}`,
  * `{reply}` (capped, the markers it sits between unbreakable), `{question}`,
  * `{continue}` — and `{silent}` everywhere. Each piece is filled once, so a
  * job's words are never read as placeholders. Without a section, the whole
@@ -269,6 +289,18 @@ export function parseWakeDoor(body: unknown): { session: string; end: WakeEnd } 
   };
 }
 
+/** A run's output as a wake carries it: its reply when it has one, else
+ *  the output as compact JSON (capped by the prompt). */
+export function runReply(output: unknown): string {
+  const { text } = replyOf(output);
+  if (text) return text;
+  try {
+    return typeof output === "string" ? output : (JSON.stringify(output) ?? "");
+  } catch {
+    return String(output);
+  }
+}
+
 /** Titles and kinds of a resolved artifact list. */
 export function artifactsOf(list: unknown): WakeEnd["artifacts"] {
   if (!Array.isArray(list)) return [];
@@ -278,10 +310,25 @@ export function artifactsOf(list: unknown): WakeEnd["artifacts"] {
   });
 }
 
+/** A turn that came from another strut or an app: the conversation is a
+ *  relay, or a namespace the raw session id does not name. A first-party
+ *  app's turn is neither (plans/jamie-app.md §3): the person's own, on
+ *  their own session, and strut is its host. */
+export const isRelayStart = (start: Pick<RunEvent, "origin" | "app"> | null | undefined): boolean =>
+  start?.origin === "peer" || (start?.origin === "app" && !isFirstParty(start.app));
+
 // ── the queue ──────────────────────────────────────────────────────────────
 
 export interface WakeLaunch {
   input: { prompt: string; session: string; context: Record<string, unknown> };
+  /** A JOB's wake: the job the turn runs under, and what named its
+   *  conversation on the job's latest person's turn — the turn that started
+   *  it (`startedBy`), or a host's `conversation` and its ask for the wake —
+   *  so the turn's own end wakes that conversation as a job turn's does. */
+  job?: string;
+  startedBy?: StartedBy;
+  conversation?: string;
+  asked?: true;
   params?: { model: string };
   actor?: string;
   principal?: string;
@@ -345,11 +392,7 @@ export function createWakes(deps: WakeDeps): Wakes {
   };
   const startOf = async (workflow: string, runId: string): Promise<RunEvent | undefined> =>
     (await deps.store.getRunEvents(workflow, runId).catch(() => [])).find((e) => e.type === "run.start");
-  /** A turn that came from another strut or an app: the conversation is a
-   *  relay, or a namespace the raw session id does not name. A first-party
-   *  app's turn is neither (plans/jamie-app.md §3): the person's own, on
-   *  their own session, and strut is its host. */
-  const relay = (start: RunEvent | undefined) => start?.origin === "peer" || (start?.origin === "app" && !isFirstParty(start.app));
+  const relay = isRelayStart;
 
   /** The session's turns, and the person's latest turn: its `run.start`
    *  (context, model, origin) and the callbacks of the newest person's turn
@@ -417,8 +460,22 @@ export function createWakes(deps: WakeDeps): Wakes {
       // Who asked for the job; an end from another strut names nobody here,
       // so the person's latest turn's.
       const who: { actor?: string; principal?: string } = first.actor ? first : (anchor.start ?? {});
+      // A job's wake is the job's next turn: under the job, started as its
+      // latest person's turn was, so its end wakes the same conversation.
+      const job = (JOB_WORKFLOWS as readonly string[]).includes(flow.name) ? first.job : undefined;
+      // A person's turn may have started during the reads above: it goes
+      // first, and its end kicks this again. From here to the launch nothing
+      // is awaited, so the two never start together.
+      if (deps.liveOn(session).length) {
+        pending.add(session);
+        return changed ? write(f) : undefined;
+      }
       const runId = deps.launch(flow, {
         input: { prompt: wakePrompt(template, ends), session, context: wakeContext(ctx, now()) },
+        ...(job ? { job } : {}),
+        ...(job && anchor.start?.startedBy ? { startedBy: anchor.start.startedBy } : {}),
+        ...(job && anchor.start?.conversation ? { conversation: anchor.start.conversation } : {}),
+        ...(job && anchor.start?.wakeAsked ? { asked: true as const } : {}),
         ...(typeof model === "string" && model ? { params: { model } } : {}),
         ...(who.actor ? { actor: who.actor } : {}),
         ...(who.principal ? { principal: who.principal } : {}),
@@ -462,7 +519,13 @@ export function createWakes(deps: WakeDeps): Wakes {
       const workflow = local?.workflow ?? anchor.turns.at(-1)?.workflow ?? "orchestrator";
       const flow = await deps.getWorkflow(workflow).catch(() => null);
       if (!flow || typeof flow.params?.["wake"] !== "string") return "none";
-      const key = end.source ? `${end.source}/${end.runId}` : end.runId;
+      // Once per ATTEMPT of a run: one healed under its own id (a durable
+      // resume) ends again, and that end is news. Another strut's run is
+      // known here by its id alone.
+      const resumes = end.source
+        ? 0
+        : (await deps.store.getRunEvents(end.workflow, end.runId).catch(() => [])).filter((e) => e.type === "run.resumed" && !e.live).length;
+      const key = end.source ? `${end.source}/${end.runId}` : resumes ? `${end.runId}#${resumes}` : end.runId;
       const outcome = await withLock(`wake:${session}`, async (): Promise<WakeOutcome> => {
         const f = await read(session);
         if (f.seen.includes(key)) return "none";
