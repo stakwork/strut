@@ -80,8 +80,9 @@ reachable by non-members; the workflow, its runs and Jamie stay private.
 
 | Word | Meaning |
 | --- | --- |
-| Task | One question for a person, with what to show them and the shape of the answer |
+| Task | One question for a person, with what to show them and the shape of the answer. Not a run and not an app: one `human` step makes one task, so a run may make none, one or many |
 | Task type | The admin's record for a kind of task: which app draws it, the answer's shape, and later its pay and test rules. Workers are granted task types |
+| Worker app | The screen that draws tasks. One app may draw many task types, each as a view (§5.1) |
 | Worker | A signed-in person (a visitor or a member) with a row in the store. Never an agent |
 | Lease | One worker's hold on one task for a limited time. The only way a worker reaches a task |
 | Park | A run leaving memory to wait for something |
@@ -221,7 +222,7 @@ A core step, `src/steps/core/human.ts`.
 | --- | --- |
 | `task` | The task type's name. It must exist and be enabled |
 | `show` | Any JSON, at most 256 KB. Files are named, not inlined |
-| `files` | Paths under the run's files: the job's directory on a job run, else the run's artifacts, as `run/files` resolves them. Each must exist when the task is made, or the step fails. `show` refers to one by the same path (§5.5) |
+| `files` | Paths under the run's files: the job's directory on a job run, else the run's artifacts, as `run/files` resolves them. An entry may be a pattern (`photos/*`): `*` and `?` match within one folder. Patterns are resolved when the task is made, so the task's list is fixed; a file written later does not join it. A path that does not exist, or a pattern that matches nothing, fails the step. At most 200 files a task. `show` refers to one by the same path (§5.5) |
 | `withinHours` | How long the task may stay unanswered; a number, fractions allowed. Then the step fails with `task_expired:`, so `retry` and `onError` apply (an `onError` may accept the model's guess). Strut has no duration parser, and its settings carry the unit in the name |
 | `copies` | Later (§7): ask several workers |
 
@@ -360,6 +361,14 @@ its own caller. Each refuses without an actor and without `ctx.app`, and
 `task/next` refuses a type whose `app` is not the calling app, so another
 app cannot pull a type's tasks.
 
+**One app, many task types.** A task type names one app, and any number
+of types may name the same one. That is the usual shape: one worker app
+per client, with a view per task type. `task/next` with no `type` gives
+the next task of any type the worker holds that names the calling app,
+oldest first, and the result's `type` tells the app which view to show.
+With a `type` it gives only that type's. `task/me` lists the types the
+worker holds in this app, so the app can show a menu.
+
 ### 5.2 Who may call them
 
 - **A member's page** (`POST /mcp`): when the app's `grants.steps` names
@@ -414,6 +423,14 @@ and nothing else. An app in the public view is held at a release, so the
 builder's edits are drafts until someone makes them live.
 
 ### 5.5 Files
+
+A task does not get its run's files. A run is the whole workflow for an
+item and a task is the one piece a `human` step hands to a person, so the
+run usually holds more than the task needs: the other 39 pages of a
+contract when the task is page 12, the client's original upload, the
+model's working notes. And strut's file access is all or nothing per run
+(below). So the files are the run's own, never copies, and the list says
+which of them this one task may show.
 
 The step's `files` lists what a worker may open (§3). The store keeps the
 paths with the task, with whether they are rooted in the run's artifacts
@@ -573,7 +590,7 @@ merged.
 | --- | --- |
 | 1 | A run parks and holds no controller. A wake replays and finishes. A park in one branch lets the others finish. A foreach of N parks once with N waits. Cancel of a waiting run. A restart between settle and wake still wakes. Boot auto-resume passes a waiting run over. No `run.end` callback until the real end |
 | 2a, 2b | One task per run and path across wakes. Expiry fails the step and `onError` runs. Two workers never hold one task. One answer per lease. An answer that does not fit the schema is refused. A task type whose schema uses a keyword strut does not check is refused when saved. A `files` path that does not exist fails the step |
-| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. An active worker's requests are counted per worker, a `new` one's per address |
+| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. A `files` pattern is resolved when the task is made. `task/next` with no `type` returns a task of any type the worker holds in the calling app. An active worker's requests are counted per worker, a `new` one's per address |
 
 ## Rejected
 
