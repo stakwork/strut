@@ -166,7 +166,11 @@ caption. Each is a file in the app's directory (`.png`, `.jpg`, `.webp` or
 `.gif`, at most 2 MB, at most 8), written as a path or `{ file, caption }`;
 a path that is not a file there is a build error. The app never loads
 them, and they are not in its document. An app with none shows its
-initials.
+initials. Make them with `app/look { name, path, saveAs:
+"public/screenshots/home.png" }`: the look's shot is also written into
+the directory there (with `input`, `steps` and `viewport` to show the page
+that matters), and nothing is saved when the page drew nothing or the look
+stopped. Then list the file under `screenshots:`.
 
 ## The kit: what an app imports
 
