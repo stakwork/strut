@@ -461,7 +461,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
       workspace, store, registry, kit, scheduler: false, serveUi: false, views: false,
-      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     await workspace.publishWorkflowByContent("score-wf", `name: score-wf\ninput:\n  value: { type: number }\nsteps:\n  - id: s\n    type: score\n    config: { value: "{{ input.value }}" }\n`);
     await workspace.publishWorkflowByContent("other-wf", `name: other-wf\nsteps:\n  - id: s\n    type: score\n    config: { value: 1 }\n`);

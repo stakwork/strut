@@ -291,7 +291,7 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     strut = await createStrut({
       workspace, store, kit, registry: await createRegistry([tally]),
       scheduler: false, serveUi: false, views: false, jamie: false, knowledge: false,
-      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     await workspace.publishWorkflowByContent("score", scoreYaml);
     for (const name of ["ghost", "paid"]) {
@@ -585,7 +585,7 @@ for (const tb of testBackends()) describe(`a signed-in visitor's rows on ${tb.na
     strut = await createStrut({
       workspace: new FileWorkspaceStore(join(root, "ws")), store, graph: b, kit: await kitForTests(), registry: await createRegistry([]),
       scheduler: false, serveUi: false, enableChat: false, enableMcp: true, job: false, orchestrator: false, builder: false, concepts: false,
-      views: false, jamie: false, knowledge: false, browserWorkflows: false, privacyWorkflows: false,
+      views: false, jamie: false, knowledge: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     const dir = join(root, "apps", "board");
     await mkdir(join(dir, "src"), { recursive: true });

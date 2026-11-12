@@ -70,7 +70,7 @@ const boot = (workspace: GraphWorkspaceStore, dataDir: string) =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,

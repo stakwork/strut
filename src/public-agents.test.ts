@@ -99,7 +99,7 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
     strut = await createStrut({
       workspace, store, registry: await createRegistry([make, echo]),
       scheduler: false, serveUi: false, views: false,
-      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
       services: { lightning: lightningCapability(wallet) },
       payments: { rate: async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" }) },
     });

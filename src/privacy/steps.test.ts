@@ -234,7 +234,7 @@ describe("private-ask", () => {
     assert.deepEqual(Object.keys(PRIVACY_WORKFLOWS), ["private-ask"]);
     const dir2 = await mkdtemp(join(tmpdir(), "strut-privacy-seed-"));
     try {
-      const b = await createStrut({ workspace: new WorkspaceManager(dir2), privacyWorkflows: false, ...quiet });
+      const b = await createStrut({ workspace: new WorkspaceManager(dir2), privacyWorkflows: false, mediaWorkflows: false, ...quiet });
       assert.equal(await b.workspace.getWorkflowMetadata("private-ask"), null);
     } finally { await rm(dir2, { recursive: true, force: true }); }
   });

@@ -107,6 +107,7 @@ import subflow from "./core/subflow.js";
 import log from "./core/log.js";
 import llm from "./core/llm.js";
 import agent from "./core/agent.js";
+import image from "./core/image.js";
 import wait from "./core/wait.js";
 import pack from "./core/pack.js";
 import exec from "./core/exec.js";
@@ -120,6 +121,7 @@ const CORE_STEPS: StepRegistry = {
   log,
   llm,
   agent,
+  image,
   wait,
   pack,
   exec,
@@ -411,8 +413,8 @@ export function coreRegistry(): StepRegistry {
  * filesystem discovery.
  *
  * The resulting registry contains:
- *   - **core/** — 8 built-in steps (http, log, if, loop, foreach,
- *     subflow, llm, wait)
+ *   - **core/** — the built-in steps (http, exec, log, if, loop,
+ *     foreach, subflow, llm, agent, image, wait, pack)
  *   - **lib/** — engine-shipped domain integrations (e.g.
  *     `github/fetch-pr`). Their step *files* are imported here (cheap:
  *     just schema + metadata); their heavy SDK deps are `await import()`-ed

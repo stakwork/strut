@@ -192,6 +192,7 @@ import { seedBrowserWorkflows } from "./browser/seed.js";
 import { openHistory, type History, type HistoryCapability, type HistoryTouch } from "./history.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
@@ -549,6 +550,9 @@ export interface StrutOptions<TServices = unknown> {
   /** The `private-ask` workflow strut ships beside the privacy/* steps
    *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
   privacyWorkflows?: false;
+  /** The `image-gen` workflow strut ships beside the `image` step
+   *  (src/media-seed.ts), seeded at boot by content hash. `false` seeds none. */
+  mediaWorkflows?: false;
   /** Home sync (src/home-sync.ts, AGENTS.md "Home sync"): `"box"` serves
    *  `POST /home/pull` and `/home/push` to a person's credential, so a strut
    *  that keeps a read copy of this memory can sync with it (on, it hands
@@ -1784,6 +1788,13 @@ export async function createStrut<TServices = unknown>(
   if (opts.privacyWorkflows !== false) {
     for (const w of await seedPrivacyWorkflows(workspace)) {
       if (w.changed) console.log(`[privacy] seeded workflow: ${w.name} @ ${w.version}`);
+    }
+  }
+
+  // `image-gen` (src/media-seed.ts), seeded like the browser workflows.
+  if (opts.mediaWorkflows !== false) {
+    for (const w of await seedMediaWorkflows(workspace)) {
+      if (w.changed) console.log(`[media] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 

@@ -33,6 +33,7 @@
     "test:stt": "STRUT_TEST_STT=1 tsx --test src/audio/stt.live.test.ts",
     "test:stt:parakeet": "STRUT_TEST_STT=1 STRUT_TEST_STT_PARAKEET=1 tsx --test src/audio/stt.live.test.ts",
     "test:tts": "STRUT_TEST_TTS=1 tsx --test src/audio/tts.live.test.ts",
+    "test:image": "STRUT_TEST_IMAGE=1 tsx --test src/steps/core/image.live.test.ts",
     "eval:dictation": "tsx src/audio/dictation-eval/run.ts",
     "check:fixer": "tsc -p fixer/tsconfig.json",
     "test:privacy": "STRUT_PRIVACY_LIVE=1 tsx --test src/privacy/privacy.live.test.ts",

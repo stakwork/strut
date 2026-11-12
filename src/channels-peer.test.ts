@@ -48,7 +48,7 @@ function open(url: string): Promise<Open> {
   });
 }
 
-const QUIET = { scheduler: false, serveUi: false, enableChat: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, views: false, concepts: false } as const;
+const QUIET = { scheduler: false, serveUi: false, enableChat: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false, views: false, concepts: false } as const;
 const KEY = "deploy-key";
 
 describe("channels through a peer", () => {
