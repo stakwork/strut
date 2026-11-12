@@ -16,8 +16,10 @@
 // launch (plans/paid-runs.md §10, ./visitor-pay): the one call it does not
 // pass through as it is. A visitor's page of ANOTHER strut server (`from`,
 // ./remote-app, specs/API.md §17.9) is the same with every request sent to
-// that server, its purse kept apart under that server's base, and its links
-// read against that server.
+// that server, its purse and its visitor's session kept apart under that
+// server's base, and its links read against that server. Either may sign
+// the visitor in (./visitor-signin): in a native host's web view (Peel), as
+// the person's Sphinx account (`sign_in`, ./native-pay `signInAsk`).
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -26,7 +28,7 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { checkChallenge } from "./challenge";
-import { createHostWalletProbe, walletAsk, type WalletAsk } from "./native-pay";
+import { createHostWalletProbe, signInAsk, walletAsk, type SignInAsk, type WalletAsk } from "./native-pay";
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
@@ -65,11 +67,12 @@ export interface AppHostHandlers {
    *  answers that the run was not paid for. */
   onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) => Promise<PayOutcome>;
   /** A VISITOR's page asks to sign the visitor in (plans/app-repos.md §5):
-   *  sign them in by one of `methods` (the sheet), answering the session,
-   *  or null when they closed it. Absent, no sign-in is offered. A page of
-   *  ANOTHER server (`from`) is never offered it: the session is this
-   *  server's. */
-  onSignIn?: (methods: SignInMethod[]) => Promise<VisitorSession | null>;
+   *  sign them in to its server — this one, or `from` — by one of `methods`
+   *  (the sheet), answering the session, or null when they closed it.
+   *  `sphinx`, when this page is a native host's main frame whose wallet
+   *  signs a visitor in (Peel): ask it first (./native-pay `signInAsk`).
+   *  Absent, no sign-in is offered. */
+  onSignIn?: (methods: SignInMethod[], sphinx?: SignInAsk) => Promise<VisitorSession | null>;
 }
 
 export interface AppHostOptions {
@@ -166,6 +169,12 @@ const thisServer: VisitorWallet = { purse: visitorPurse, save: savePurseNow, kee
  *  so a priced launch never waits on the question (./native-pay). */
 const hostWallet = createHostWalletProbe();
 
+/** The strut server a visitor's page is of, as a native wallet's sheet
+ *  names it: another server's base (`from`), or this one's — the page's
+ *  own origin on a box that serves it (a direct open, where the native
+ *  host checks against the origin it loaded). */
+const sellerOf = (from?: string) => from ?? new URL(`${API_BASE}/`, location.href).href.replace(/\/+$/, "");
+
 /** A link a page may open in a new tab: the web's own, and mail. Never a
  *  `javascript:` URL, which a new window runs on THIS page's origin. */
 const OPENABLE = /^(https?|mailto):$/;
@@ -200,9 +209,9 @@ export function createRelayClient(base = "", visitor = false, from?: string): { 
           // credit token (plans/app-repos.md §5.2).
           fetch: (url: string | URL, init?: RequestInit) => {
             const headers = new Headers(init?.headers);
-            // A signed-in visitor's session is THIS server's: never sent to
-            // another server's page (`from`).
-            const auth = remote ? {} : visitorAuth(true);
+            // A signed-in visitor's session: this server's, or the other
+            // server's own (`from`) — each sent only to its server.
+            const auth = visitorAuth(true, remote ? from : undefined);
             for (const [k, v] of Object.entries({ ...auth, ...visitorHeaders(purse) })) headers.set(k, v);
             return fetch(url, { ...init, headers, credentials: remote ? "omit" : "same-origin" });
           },
@@ -245,9 +254,13 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // this app before the bridge exists: the offer rides in ui/initialize.
   const native = opts.wallet ? nativeWalletOf(window) : undefined;
   const capability = native && opts.wallet ? await probeNativeWallet(native, opts.wallet) : undefined;
-  // A visitor's page: who is signed in, and how one signs in here.
-  const signIn = opts.visitor && !from && opts.handlers.onSignIn ? await visitorInfo().catch(() => null) : null;
+  // A visitor's page: who is signed in, and how one signs in to its server
+  // (a server from before the sign-in routes answered another origin: none).
+  const signIn = opts.visitor && opts.handlers.onSignIn ? await visitorInfo(from).catch(() => null) : null;
   const visitorCap = signIn && (signIn.methods.length || signIn.actor) ? { v: 1 as const, methods: signIn.methods, ...(signIn.actor ? { actor: signIn.actor } : {}) } : undefined;
+  // A visitor's page carries channels only where a visitor may sign in, and
+  // only this server's: another server's socket is not relayed (yet).
+  const channels = opts.visitor ? (visitorCap && !from ? opts.channels : undefined) : opts.channels;
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
@@ -256,11 +269,11 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       openLinks: {},
       sandbox: { permissions: from ? strangerMcpPermissions() : mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability || (opts.channels && !opts.visitor) || visitorCap
+      ...(capability || channels || visitorCap
         ? {
             experimental: {
               ...(capability ? { [WALLET_CAPABILITY]: capability } : {}),
-              ...(opts.channels && (!opts.visitor || visitorCap) ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
+              ...(channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
               ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
             },
           }
@@ -273,8 +286,6 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     const relay = relayNativeWallet({ bridge: bridge as unknown as RelayBridge, native, app: opts.wallet, capability });
     stopWallet = nativeWalletNotifications(window).register(opts.wallet, relay.notify);
   }
-  // A visitor's page carries channels only where a visitor may sign in.
-  const channels = opts.visitor && !visitorCap ? undefined : opts.channels;
   const channelRelay = channels
     ? relayChannels({
         bridge: bridge as unknown as Parameters<typeof relayChannels>[0]["bridge"],
@@ -287,11 +298,13 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   if (visitorCap) {
     const onSignIn = opts.handlers.onSignIn!;
     bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
-      const session = await onSignIn(visitorCap.methods as SignInMethod[]);
+      // Peel's web view: the person's Sphinx account signs the visitor in.
+      const sphinx = signInAsk({ wallet: await hostWallet(window), seller: sellerOf(from), app: opts.visitorApp });
+      const session = await onSignIn(visitorCap.methods as SignInMethod[], sphinx);
       return session ? { actor: session.actor } : {};
     }) as never);
     bridge.setRequestHandler(VISITOR_SIGN_OUT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
-      await signOutVisitor();
+      await signOutVisitor(from);
       return {};
     }) as never);
   }
@@ -341,7 +354,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     const w = visitorWalletFor(from);
     void hostWallet(window);
     // The server the credit is bought on, as a native wallet's sheet names it.
-    const seller = from ?? new URL(`${API_BASE}/`, location.href).href.replace(/\/+$/, "");
+    const seller = sellerOf(from);
     bridge.oncalltool = async (params, extra) => {
       // The page's request stays alive while the visitor pays: progress for
       // its token resets the frame's timeout.

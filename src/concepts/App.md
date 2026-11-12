@@ -419,10 +419,13 @@ a draft until a person moves it: say so when you hand one over.
 
 A public page's visitor is anonymous until they SIGN IN: the server's
 public view names how (a box serving one app says it in `serve.yaml`:
-`signIn: [key, lnurl, nostr]`), and `useVisitor().available` is then
-true. `signIn()` asks the HOST, which draws the sheet over the page and
-signs the server's challenge with a key the visitor holds — this browser's
-own key (one tap), a Lightning wallet by QR code, a Nostr extension. The
+`signIn: [key, lnurl, nostr, sphinx]`), and `useVisitor().available` is
+then true. `signIn()` asks the HOST, which draws the sheet over the page
+and signs the server's challenge with a key the visitor holds — this
+browser's own key (one tap), a Lightning wallet by QR code, a Nostr
+extension, or in Peel the person's Sphinx account (`sphinx`: one visitor
+on every app, the wallet's own sheet the sign-in). Call it from a press:
+a wallet asks for one. The
 page never sees a key; it gets the visitor's `actor` (`p256:…`, `secp:…`),
 the same on every visit from the same key, or undefined when they closed
 the sheet. `signOut()` forgets them.

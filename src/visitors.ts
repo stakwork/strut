@@ -7,17 +7,20 @@
  *
  * - VERIFIERS: a few signature checks, each naming the actor a key is —
  *   `ecdsa-p256` (a WebCrypto key: `p256:<compressed hex>`),
- *   `ecdsa-secp256k1` (an LNURL-auth linking key) and `bip340` (a Nostr or
- *   Sphinx key), both `secp:<x-only hex>`, so one secp256k1 key is one
- *   person whichever way it signed. `webauthn` is named and not built: a
- *   method that needs it is refused until it lands.
+ *   `ecdsa-secp256k1` (an LNURL-auth linking key), `bip340` (a Nostr key)
+ *   and `ln-message` (a Lightning signed message: a Sphinx key, signed the
+ *   way sphinx-rs's `sign_bytes` signs), all `secp:<x-only hex>`, so one
+ *   secp256k1 key is one person whichever way it signed. `webauthn` is
+ *   named and not built: a method that needs it is refused until it lands.
  * - METHODS: where a key lives is the CLIENT's business (a host-page
  *   provider, web/src/visitor-signin.ts); a method names the verifier and
  *   how the request carries the signature. `key` (a browser key), `ticket`
  *   (a host vouches: `POST /auth/ticket { role: "visitor" }`, traded at
- *   `POST /auth/session`), `lnurl` (LUD-04 by QR, `lnurlPending`) and
- *   `nostr` (NIP-07 + NIP-98, `nostrSigner`). A box names the methods it
- *   accepts in its public view (`serve.yaml`'s `signIn`).
+ *   `POST /auth/session`), `lnurl` (LUD-04 by QR, `lnurlPending`),
+ *   `nostr` (NIP-07 + NIP-98, `nostrSigner`) and `sphinx` (the person's
+ *   Sphinx account through the wallet that holds it — Peel — asked by the
+ *   host page with specs/WALLET.md §1.2's `sign_in`). A box names the
+ *   methods it accepts in its public view (`serve.yaml`'s `signIn`).
  * - LIMITS: writes and launches per actor per UTC day, strut's defaults
  *   changed by `serve.yaml`'s `limits`, and a budget per ADDRESS on top
  *   that no `limits` changes — a key costs nothing to make (ruled 5).
@@ -32,7 +35,7 @@ import type { VisitorKeyMode } from "./auth.js";
 
 // ── Verifiers ────────────────────────────────────────────────────────────
 
-export type VerifierName = "ecdsa-p256" | "ecdsa-secp256k1" | "bip340" | "webauthn";
+export type VerifierName = "ecdsa-p256" | "ecdsa-secp256k1" | "bip340" | "ln-message" | "webauthn";
 
 /** One signature check: does `sig` sign `message` by `key`? The key's
  *  actor id when it does, else null — never a throw for a bad signature or
@@ -47,6 +50,9 @@ export function fromHex(s: unknown): Uint8Array | undefined {
   if (typeof s !== "string" || !/^(?:[0-9a-fA-F]{2})+$/.test(s)) return undefined;
   return new Uint8Array(Buffer.from(s, "hex"));
 }
+
+/** What a Lightning signed message signs: sha256d of this ‖ the message. */
+export const LN_MESSAGE_PREFIX = "Lightning Signed Message:";
 
 let nist: Promise<typeof import("@noble/curves/nist")> | null = null;
 let secp: Promise<typeof import("@noble/curves/secp256k1")> | null = null;
@@ -80,6 +86,26 @@ export const VERIFIERS: Readonly<Partial<Record<VerifierName, Verifier>>> = {
       return null;
     }
   },
+  /** A Lightning signed message, exactly as Sphinx makes one (sphinx
+   *  `sig::sign_message`, what sphinx-rs's `sign_bytes` answers in hex):
+   *  `sig` is 65 bytes, `[31 + recovery id] ‖ r ‖ s`, a recoverable ECDSA
+   *  signature over sha256(sha256("Lightning Signed Message:" ‖ message)).
+   *  The key it recovers must be `key`, compressed (33 bytes) — a signature
+   *  over any other message, or a wrong recovery byte, recovers another. */
+  "ln-message": async (message, key, sig) => {
+    const { secp256k1 } = await (secp ??= import("@noble/curves/secp256k1"));
+    try {
+      if (sig.length !== 65 || key.length !== 33 || (key[0] !== 2 && key[0] !== 3)) return null;
+      const recovery = sig[0]! - 31;
+      if (recovery < 0 || recovery > 3) return null;
+      const prefixed = new Uint8Array([...new TextEncoder().encode(LN_MESSAGE_PREFIX), ...message]);
+      const digest = sha256(sha256(prefixed));
+      const recovered = secp256k1.Signature.fromCompact(sig.slice(1)).addRecoveryBit(recovery).recoverPublicKey(digest).toRawBytes(true);
+      return hexOf(recovered) === hexOf(key) ? `secp:${hexOf(key.slice(1))}` : null;
+    } catch {
+      return null;
+    }
+  },
   /** BIP-340 Schnorr over `message`, by a 32-byte x-only key. */
   bip340: async (message, key, sig) => {
     const { schnorr } = await (secp ??= import("@noble/curves/secp256k1"));
@@ -108,6 +134,9 @@ export const METHOD_INFO: Readonly<Record<VisitorMethod, { verifier?: VerifierNa
   ticket: {},
   lnurl: { verifier: "ecdsa-secp256k1" },
   nostr: { verifier: "bip340", rootOnly: true },
+  // The wallet derives the domain's child key itself (LUD-05) when the
+  // challenge asks for one.
+  sphinx: { verifier: "ln-message" },
 };
 
 /** The methods a box offers for its key mode: `signIn` less what cannot

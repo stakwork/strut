@@ -2927,7 +2927,7 @@ export interface PublicViewRecord {
 }
 /** The record's sign-in: the methods, a key per domain, the daily limits. */
 export interface PublicVisitors {
-  signIn: Array<"key" | "ticket" | "lnurl" | "nostr">;
+  signIn: Array<"key" | "ticket" | "lnurl" | "nostr" | "sphinx">;
   visitorKey?: "domain";
   limits?: { writesPerDay?: number; launchesPerDay?: number };
 }

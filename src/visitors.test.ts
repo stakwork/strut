@@ -10,6 +10,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac, webcrypto } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -44,11 +45,37 @@ const p256Sign = async (key: CryptoKeyPair, message: string) => ({
  *  holding a root key does where the app asks for `visitorKey: domain`
  *  (LUD-05 derives a BIP-32 path from an HMAC of the domain; an HMAC of the
  *  host straight into a key is the same idea, for a test). */
+/** A Lightning signed message the way sphinx-rs's `sign_bytes` makes one
+ *  (the ln-message vectors are its real output): for keys a test makes. */
+const lnSign = (priv: Uint8Array, message: string) => {
+  const s = secp256k1.sign(sha256(sha256(Buffer.concat([utf8("Lightning Signed Message:"), utf8(message)]))), priv);
+  return new Uint8Array([31 + s.recovery!, ...s.toCompactRawBytes()]);
+};
 const childKey = (root: Uint8Array, host: string) => {
   const n = secp256k1.CURVE.n;
   const k = BigInt(`0x${createHmac("sha256", root).update(host).digest("hex")}`) % n;
   return new Uint8Array(Buffer.from(k.toString(16).padStart(64, "0"), "hex"));
 };
+
+/** The wallet contract's vectors (specs/WALLET.md §7), which Peel copies:
+ *  its sign-in signatures were made by Sphinx's own signer. */
+const walletVectors = JSON.parse(readFileSync(new URL("../kit/src/wallet/vectors.json", import.meta.url), "utf-8")) as {
+  sign_in_signatures: Array<{ name: string; message: string; key: string; sig: string; actor: string | null }>;
+};
+
+describe("ln-message: a Lightning signed message, as Sphinx's signer makes one (sphinx-rs sign_bytes)", () => {
+  for (const v of walletVectors.sign_in_signatures) {
+    it(`${v.name}: ${v.actor ? "names " + v.actor.slice(0, 13) + "…" : "refused"}`, async () => {
+      assert.equal(await VERIFIERS["ln-message"]!(utf8(v.message), Buffer.from(v.key, "hex"), Buffer.from(v.sig, "hex")), v.actor);
+    });
+  }
+  it("one key is one actor, whichever way it signed: a Sphinx signature and a Nostr one", async () => {
+    const priv = secp256k1.utils.randomPrivateKey();
+    const key = secp256k1.getPublicKey(priv, true);
+    const viaSchnorr = await VERIFIERS.bip340!(sha256("challenge"), schnorr.getPublicKey(priv), schnorr.sign(sha256("challenge"), priv));
+    assert.equal(await VERIFIERS["ln-message"]!(utf8("the challenge"), key, lnSign(priv, "the challenge")), viaSchnorr);
+  });
+});
 
 describe("the seam (plans/app-repos.md §5.2)", () => {
   it("ecdsa-p256: a WebCrypto key's signature names p256:<compressed key>; anything else is null", async () => {
@@ -388,6 +415,57 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     const res = await req("/visitors/session", { method: "POST", headers: { ...json, authorization: `Nostr ${Buffer.from(JSON.stringify(ev)).toString("base64")}` }, body });
     assert.equal(res.status, 200, await res.clone().text());
     assert.equal(((await res.json()) as { actor: string }).actor, `secp:${pubkey}`);
+  });
+
+  it("sphinx: the person's Sphinx key signs the challenge as a Lightning message, and is secp:<its key>", async () => {
+    await putView({ signIn: ["key", "sphinx"], limits: { writesPerDay: 4, launchesPerDay: 3 } });
+    try {
+      assert.deepEqual((await challenge()).methods, ["key", "sphinx"]);
+      const priv = secp256k1.utils.randomPrivateKey();
+      const key = hex(secp256k1.getPublicKey(priv, true));
+      const post = (body: Record<string, unknown>) => req("/visitors/session", { method: "POST", headers: json, body: JSON.stringify(body) });
+      // Over another message, or naming another key: refused, and the challenge kept.
+      const { challenge: c } = await challenge();
+      const other = hex(secp256k1.getPublicKey(secp256k1.utils.randomPrivateKey(), true));
+      assert.equal((await post({ challenge: c, method: "sphinx", key, sig: hex(lnSign(priv, `${c}x`)) })).status, 401, "a signature over another message");
+      assert.equal((await post({ challenge: c, method: "sphinx", key: other, sig: hex(lnSign(priv, c)) })).status, 401, "another key named");
+      assert.equal((await post({ challenge: c, method: "sphinx", sig: hex(lnSign(priv, c)) })).status, 400, "no key");
+      const res = await post({ challenge: c, method: "sphinx", key, sig: hex(lnSign(priv, c)) });
+      assert.equal(res.status, 200, await res.clone().text());
+      const got = (await res.json()) as { actor: string; token: string };
+      assert.equal(got.actor, `secp:${key.slice(2)}`);
+      assert.deepEqual(await call("app/state", { set: { best: 1 } }, bearer(got.token)), { result: { state: { best: 1 } } });
+      // The wallet derives the domain's child key itself: offered where the app asks for one.
+      await putView({ signIn: ["key", "sphinx"], visitorKey: "domain", limits: { writesPerDay: 4, launchesPerDay: 3 } });
+      assert.deepEqual((await challenge()).methods, ["key", "sphinx"]);
+    } finally {
+      await putView({ signIn: ["key", "lnurl", "nostr"], limits: { writesPerDay: 4, launchesPerDay: 3 } });
+    }
+    // Not a method this server offers now.
+    const { challenge: c } = await challenge();
+    const priv = secp256k1.utils.randomPrivateKey();
+    const off = await req("/visitors/session", { method: "POST", headers: json, body: JSON.stringify({ challenge: c, method: "sphinx", key: hex(secp256k1.getPublicKey(priv, true)), sig: hex(lnSign(priv, c)) }) });
+    assert.equal(off.status, 401);
+    assert.match(((await off.json()) as { error: string }).error, /not a sign-in this server offers/);
+  });
+
+  it("a host page on another origin signs a visitor in here: the sign-in routes answer it (CORS)", async () => {
+    const pre = await req("/visitors/session", { method: "OPTIONS", headers: { origin: "http://localhost:5173", "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get("access-control-allow-origin"), "*");
+    assert.match(pre.headers.get("access-control-allow-headers") ?? "", /content-type/);
+    const preRead = await req("/visitors", { method: "OPTIONS", headers: { origin: "http://localhost:5173", "access-control-request-method": "GET", "access-control-request-headers": "authorization" } });
+    assert.equal(preRead.status, 204);
+    assert.match(preRead.headers.get("access-control-allow-headers") ?? "", /authorization/);
+    const read = await req("/visitors/challenge", { headers: { origin: "http://localhost:5173" } });
+    assert.equal(read.headers.get("access-control-allow-origin"), "*");
+    const { challenge: c } = await challenge();
+    const posted = await req("/visitors/session", { method: "POST", headers: { ...json, origin: "http://localhost:5173" }, body: JSON.stringify({ challenge: c, method: "key", ...(await p256Sign(await p256Key(), c)) }) });
+    assert.equal(posted.status, 200);
+    assert.equal(posted.headers.get("access-control-allow-origin"), "*");
+    // Nothing else of this server's answers a preflight with it.
+    const other = await req("/apps", { method: "OPTIONS", headers: { origin: "http://localhost:5173", "access-control-request-method": "GET" } });
+    assert.notEqual(other.headers.get("access-control-allow-origin"), "*");
   });
 
   it("lnurl: the page learns the session for its k1 once the wallet signed", async () => {

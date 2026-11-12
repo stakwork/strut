@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback.",
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback. `sign_in_requests` / `sign_in_replies` / `sign_in_signatures`: signing a visitor in (§1.2 \"sign_in\") — a request a native host may sign at `now` (ms), valid or not (above all: the challenge is a strut visitor challenge for the SELLER's host); what the host does with the answer, `signed` with the key and signature or `refused` with `code`; and Lightning signed messages over challenges made by Sphinx's own signer (sphinx-rs `sign_bytes`, scripts/ln-message-fixtures): `signer` is the seed, account index and network that made `sig`, `actor` what strut's `ln-message` verifier names (null: refused).",
   "params": [
     {
       "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
@@ -2015,7 +2015,8 @@
         "ops": [
           "buy_credit",
           "buy_credit_status",
-          "buy_credit_cancel"
+          "buy_credit_cancel",
+          "sign_in"
         ],
         "wallet": "Peel"
       },
@@ -2024,7 +2025,8 @@
         "ops": [
           "buy_credit",
           "buy_credit_status",
-          "buy_credit_cancel"
+          "buy_credit_cancel",
+          "sign_in"
         ],
         "wallet": "Peel"
       }
@@ -2042,6 +2044,23 @@
         "ops": [
           "buy_credit"
         ]
+      }
+    },
+    {
+      "name": "sign_in alone: a native host that signs a visitor in and buys nothing",
+      "capability": {
+        "version": 1,
+        "ops": [
+          "sign_in"
+        ],
+        "wallet": "Peel"
+      },
+      "expect": {
+        "version": 1,
+        "ops": [
+          "sign_in"
+        ],
+        "wallet": "Peel"
       }
     },
     {
@@ -2116,6 +2135,486 @@
       "name": "nothing",
       "capability": null,
       "expect": null
+    }
+  ],
+  "sign_in_requests": [
+    {
+      "name": "a root challenge for the seller's host",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": true
+    },
+    {
+      "name": "a challenge that asks for the domain's child key",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJkb21haW4iLCJub25jZSI6ImE0MWUyZjkwN2MzZDRiOGU5ZjFhMmMzZDRlNWY2MDcxIiwiZXhwIjoxNzkzODAwMDYwMDAwfQ.5Apk-oVrtZ6AdzGDmf8rmsi_BwWBNwHtp8so4IX1qK0"
+      },
+      "valid": true
+    },
+    {
+      "name": "a seller under a path: the host is what the challenge names",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com/lab",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": true
+    },
+    {
+      "name": "a seller on this machine: http to loopback, the port not part of the host",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "http://localhost:3000",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0IjoibG9jYWxob3N0IiwidmlzaXRvcktleSI6InJvb3QiLCJub25jZSI6IjJhM2I0YzVkNmU3ZjgwOTEyYTNiNGM1ZDZlN2Y4MDkxIiwiZXhwIjoxNzkzODAwMDYwMDAwfQ.oBSPrN2kJQGK5eCuIqFRDJ4NBVfhSF_9u3NbybuiGSs"
+      },
+      "valid": true
+    },
+    {
+      "name": "a challenge for ANOTHER host than the seller: never signed",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0IjoiZXZpbC5leGFtcGxlLm5ldCIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiIwZDljOGI3YTZmNWU0ZDNjMmIxYTA5ZjhlN2Q2YzViNCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.2QSE0rN8_1YVixhXM6gDF1iyc9nQxkugHGQNwotnkBo"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge for the seller's parent domain: never signed",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0IjoiZXhhbXBsZS5jb20iLCJ2aXNpdG9yS2V5Ijoicm9vdCIsIm5vbmNlIjoiMWYyZTNkNGM1YjZhNzk4ODFmMmUzZDRjNWI2YTc5ODgiLCJleHAiOjE3OTM4MDAwNjAwMDB9.gwXGSUvo7xJVymVNEPYyk2j9KHdrfDAQchnNfCtJXSI"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge for a subdomain of the seller: never signed",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge that has ended",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiIzYzRkNWU2ZjcwODE5MmEzM2M0ZDVlNmY3MDgxOTJhMyIsImV4cCI6MTc5Mzc5OTk5MDAwMH0.4MTy_SecXeta84EgkzYPsTtYcPIRpW2nqqYxZ6PNoUI"
+      },
+      "valid": false
+    },
+    {
+      "name": "a message that is not a strut challenge: no general signing",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "Sign in to shop.example.com"
+      },
+      "valid": false
+    },
+    {
+      "name": "an LNURL-auth k1 is not a strut challenge",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "e2af6254a8df433264fa23f67eb8188635d15ce883e8fc020989d5f82ae6f11e"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge whose claims name another key mode",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJjaGlsZCIsIm5vbmNlIjoiNGQ1ZSIsImV4cCI6MTc5MzgwMDA2MDAwMH0.AAAA"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge whose claims name no host",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJ2aXNpdG9yS2V5Ijoicm9vdCIsIm5vbmNlIjoiNGQ1ZSIsImV4cCI6MTc5MzgwMDA2MDAwMH0.AAAA"
+      },
+      "valid": false
+    },
+    {
+      "name": "a challenge whose claims are not JSON",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.aG9zdD1zaG9wLmV4YW1wbGUuY29t.AAAA"
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller over plain http, not loopback",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "http://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller URL with credentials",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://u:p@shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": false
+    },
+    {
+      "name": "no app",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_in",
+        "seller": "https://shop.example.com",
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": false
+    },
+    {
+      "name": "another op",
+      "now": 1793800000000,
+      "request": {
+        "v": 1,
+        "op": "sign_message",
+        "seller": "https://shop.example.com",
+        "app": {
+          "name": "moon-game",
+          "version": "v3",
+          "title": "Moon Game"
+        },
+        "challenge": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA"
+      },
+      "valid": false
+    }
+  ],
+  "sign_in_replies": [
+    {
+      "name": "the key and its signature: signed",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "name": "upper-case hex is read as lower case",
+      "reply": {
+        "result": {
+          "key": "02DFAB7975D5AE97A90C0C92F961D74922186221D36F7F3D20271209F663558E5E",
+          "sig": "1F60C294E6649C67044E90B7AA22D7B03426C3C51FD7DC5D3870B77FD9BC298ADF39F874921A1DA3C2444D0F705D9B8E15BDF240D70DA21EEDC326BE68569A9FDA"
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "name": "the person declined",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "You declined to sign in",
+          "data": {
+            "code": "USER_REJECTED"
+          }
+        }
+      },
+      "outcome": "refused",
+      "code": "USER_REJECTED"
+    },
+    {
+      "name": "no tap behind it: ask again from a button",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "Tap to sign in",
+          "data": {
+            "code": "RESTRICTED"
+          }
+        }
+      },
+      "outcome": "refused",
+      "code": "RESTRICTED"
+    },
+    {
+      "name": "the native host refused the request",
+      "reply": {
+        "error": {
+          "code": -32602,
+          "message": "The challenge is not for this seller",
+          "data": {
+            "code": "BAD_REQUEST"
+          }
+        }
+      },
+      "outcome": "refused",
+      "code": "BAD_REQUEST"
+    },
+    {
+      "name": "a code this contract does not know is OTHER",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "nope",
+          "data": {
+            "code": "SOMETHING_NEW"
+          }
+        }
+      },
+      "outcome": "refused",
+      "code": "OTHER"
+    },
+    {
+      "name": "no signature",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e"
+        }
+      },
+      "outcome": "refused",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "r ‖ s without the recovery byte",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+        }
+      },
+      "outcome": "refused",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "an uncompressed key",
+      "reply": {
+        "result": {
+          "key": "04dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e0000000000000000000000000000000000000000000000000000000000000000",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+        }
+      },
+      "outcome": "refused",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "neither a result nor an error",
+      "reply": {},
+      "outcome": "refused",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "no reply",
+      "reply": null,
+      "outcome": "refused",
+      "code": "INTERNAL"
+    }
+  ],
+  "sign_in_signatures": [
+    {
+      "actor": "secp:dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "the root key (account 0) signs a challenge",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+      "signer": {
+        "idx": 0,
+        "network": "bitcoin",
+        "seed": "6b1e6d2f0a9c4e3b8d7f2a1c5e9b3d7f0a4c8e2b6d1f5a9c3e7b0d4f8a2c6e1b"
+      }
+    },
+    {
+      "actor": "secp:dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJkb21haW4iLCJub25jZSI6ImE0MWUyZjkwN2MzZDRiOGU5ZjFhMmMzZDRlNWY2MDcxIiwiZXhwIjoxNzkzODAwMDYwMDAwfQ.5Apk-oVrtZ6AdzGDmf8rmsi_BwWBNwHtp8so4IX1qK0",
+      "name": "the root key signs a challenge that asks for a key per domain",
+      "sig": "1f8eab1380f8fc391fe9e2c93c95a2165e6e874d22f58d3ea4e85a090f5a5786ef3e53d5cb7d0bd62bf310a1939f2862b067dcbc0abecb5746396c4f08644f78b2",
+      "signer": {
+        "idx": 0,
+        "network": "bitcoin",
+        "seed": "6b1e6d2f0a9c4e3b8d7f2a1c5e9b3d7f0a4c8e2b6d1f5a9c3e7b0d4f8a2c6e1b"
+      }
+    },
+    {
+      "actor": "secp:dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0IjoibG9jYWxob3N0IiwidmlzaXRvcktleSI6InJvb3QiLCJub25jZSI6IjJhM2I0YzVkNmU3ZjgwOTEyYTNiNGM1ZDZlN2Y4MDkxIiwiZXhwIjoxNzkzODAwMDYwMDAwfQ.oBSPrN2kJQGK5eCuIqFRDJ4NBVfhSF_9u3NbybuiGSs",
+      "name": "the root key signs a challenge for localhost",
+      "sig": "20c79a31f592e9d854b9d51699ab9b80cb0d6d0168f11d8601cc5e3b6f807251585173043bfdfa84e8626257f9b10a665fe9a22370955f4b6e626c6c878369f91d",
+      "signer": {
+        "idx": 0,
+        "network": "bitcoin",
+        "seed": "6b1e6d2f0a9c4e3b8d7f2a1c5e9b3d7f0a4c8e2b6d1f5a9c3e7b0d4f8a2c6e1b"
+      }
+    },
+    {
+      "actor": "secp:9f59f9ce87ccec386d62cb4011bb9f2ebcf014f4980218a777889087c242d934",
+      "key": "029f59f9ce87ccec386d62cb4011bb9f2ebcf014f4980218a777889087c242d934",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "another key (account 1) is another actor",
+      "sig": "20b49febdd8e1c8916eeb4dd4e1da3d28785e6c600f9a55fd8a6847703851fa966687dbda40ed919f2eb736ac2616219bb1deb7f0223cbda7c61572eb6121200f2",
+      "signer": {
+        "idx": 1,
+        "network": "bitcoin",
+        "seed": "6b1e6d2f0a9c4e3b8d7f2a1c5e9b3d7f0a4c8e2b6d1f5a9c3e7b0d4f8a2c6e1b"
+      }
+    },
+    {
+      "actor": null,
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N1Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "a tampered message",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "actor": null,
+      "key": "029f59f9ce87ccec386d62cb4011bb9f2ebcf014f4980218a777889087c242d934",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "the signature with another key named",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "actor": null,
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "the recovery byte changed",
+      "sig": "2060c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "actor": null,
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "r ‖ s without the recovery byte",
+      "sig": "60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
+      "actor": null,
+      "key": "04dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
+      "name": "a key that is not a compressed point",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
     }
   ]
 }

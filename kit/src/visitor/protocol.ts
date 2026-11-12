@@ -15,8 +15,9 @@ export const VISITOR_SIGN_IN_METHOD = "strut/visitor/sign-in";
 export const VISITOR_SIGN_OUT_METHOD = "strut/visitor/sign-out";
 
 /** The sign-ins strut knows (src/visitors.ts): a browser key, a host that
- *  vouches, LNURL-auth by QR, a Nostr extension. */
-export type VisitorMethod = "key" | "ticket" | "lnurl" | "nostr";
+ *  vouches, LNURL-auth by QR, a Nostr extension, the person's Sphinx
+ *  account through the wallet that holds it. */
+export type VisitorMethod = "key" | "ticket" | "lnurl" | "nostr" | "sphinx";
 
 export interface VisitorCapability {
   v: 1;

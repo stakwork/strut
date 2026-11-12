@@ -454,9 +454,11 @@ under a per-app linking key only, "never the identity key". This replaces it.*
 - **By default, the root key.** The person's Sphinx node key, the one their
   payments come from. The same person is the same visitor on every app: a
   portable profile, and one apps can link.
-- **A sub-account.** A child key derived from the seed and the origin
-  (LUD-05's derivation), used when the person picks it or the app requires
-  it. The visitor is then unlinkable across apps.
+- **A sub-account.** A child key derived from the 12 words' BIP39 seed and
+  the origin by exact LUD-05 (stakwork/sphinx-rs#106, v0.8.43), used when
+  the person picks it or the app requires it. The visitor is then
+  unlinkable across apps. A Sphinx account with no words (an agent's) signs
+  in with its root key only.
   - The child key only signs in; payments still come from the account.
   - Whether a payment tells its payee who paid is the payment's business. A
     sub-account keeps the LOGIN unlinkable, nothing more.
@@ -851,17 +853,21 @@ Open questions:
    paired with. On the Mac it opens through #625's remote link, on the
    iPhone directly. The person signs in through the connection, writes a
    row as themselves, then tips through the same connection.
-   - **strut:**
+   - **strut:** *BUILT, stakwork/strut#645.*
      - the `sign_in` host request beside `buy_credit` in `specs/WALLET.md`
        §1.2, listed by `host_capability`, with vectors beside #625's
-       credit vectors, which Peel copies;
+       credit vectors, which Peel copies (`sign_in_requests`,
+       `sign_in_replies`, and `sign_in_signatures` made by Sphinx's own
+       signer, `scripts/ln-message-fixtures`);
      - strut's UI sending it for `useVisitor().signIn()`, and keeping the
-       seller's visitor token per seller;
+       seller's visitor token per seller — in #625's remote mode (the
+       seller is `from`; the sign-in routes answer CORS `*`) and on a
+       direct open (the seller is the page's own origin);
      - the `ln-message` verifier beside app-repos §5.2's four;
      - `sphinx` among `serve.yaml`'s and the public view's sign-in methods
        (app-repos §5.3, 6: one method for every Sphinx wallet, Peel its
        first host).
-   - **Peel:**
+   - **Peel:** *open.*
      - the sign-in grant on the connection sheet ("you" or "a new identity
        for this app");
      - signing with the node key, or the LUD-05 child key;
