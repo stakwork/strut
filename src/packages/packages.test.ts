@@ -276,16 +276,22 @@ describe("the archive route and fetchArchive", () => {
   const network = (serve = a) => ((url: string | URL | Request, init?: RequestInit) => serve.app.request(String(url), init)) as typeof fetch;
   const url = (pkg = "acme/linear", d = digest) => archiveUrl("http://a.test", pkg, d);
 
-  it("serves a cached package by digest, as an immutable tar.gz", async () => {
+  it("serves a cached package by digest, as an immutable plain tar, and as a tar.gz with no format", async () => {
     const res = await a.app.request(url());
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get("content-type"), "application/gzip");
-    assert.equal(res.headers.get("etag"), `"${digest}"`);
+    assert.equal(res.headers.get("content-type"), "application/x-tar");
+    assert.equal(res.headers.get("etag"), `"${digest}.tar"`);
     assert.match(res.headers.get("cache-control")!, /immutable/);
-    assert.match(res.headers.get("content-disposition")!, /acme-linear-[0-9a-f]{12}\.tar\.gz/);
+    assert.match(res.headers.get("content-disposition")!, /acme-linear-[0-9a-f]{12}\.tar"/);
     const unpacked = await packageCache(join(root, "check")).putArchive(Buffer.from(await res.arrayBuffer()), digest);
     assert.equal(unpacked.digest, digest);
-    assert.equal((await a.app.request(url(), { headers: { "if-none-match": `"${digest}"` } })).status, 304);
+    assert.equal((await a.app.request(url(), { headers: { "if-none-match": `"${digest}.tar"` } })).status, 304);
+    // With no format: the .tar.gz a strut from before the plain tar reads.
+    const gz = await a.app.request(url().replace("&format=tar", ""));
+    assert.equal(gz.headers.get("content-type"), "application/gzip");
+    assert.equal(gz.headers.get("etag"), `"${digest}"`);
+    assert.match(gz.headers.get("content-disposition")!, /acme-linear-[0-9a-f]{12}\.tar\.gz/);
+    assert.equal((await packageCache(join(root, "check-gz")).putArchive(Buffer.from(await gz.arrayBuffer()), digest)).digest, digest);
   });
 
   it("answers only for the package that digest is", async () => {

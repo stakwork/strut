@@ -377,7 +377,7 @@ async function commit(deps: CatalogDeps, fleet: Draft, touched?: { channel: stri
  *  `public`). */
 export async function publishRelease(
   deps: CatalogDeps,
-  rel: { manifest: PackageManifest; digest: string; channel?: string; public?: boolean },
+  rel: { manifest: PackageManifest; digest: string; channel?: string; public?: boolean; tar?: CatalogRelease["tar"] },
 ): Promise<CatalogFile> {
   if (rel.channel !== undefined && !CHANNEL_NAME.test(rel.channel)) throw new Error(`catalog_channel: ${JSON.stringify(rel.channel)} is not a channel name ([a-z0-9][a-z0-9._-]*)`);
   if (rel.channel !== undefined) await markChannel(deps, rel.channel, rel.public);
@@ -392,6 +392,7 @@ export async function publishRelease(
       digest: rel.digest,
       ...(rel.manifest.license ? { license: rel.manifest.license } : {}),
       ...(rel.manifest.requires ? { requires: rel.manifest.requires } : {}),
+      ...(rel.tar ? { tar: rel.tar } : {}),
     };
     entry.releases.unshift(release);
   }

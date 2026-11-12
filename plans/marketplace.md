@@ -182,7 +182,7 @@ What exists, and what's missing:
 | What is sold | ***Ruled (revised 2026-10-19):* packages.** A paid package is a gated download. Paid execution is a later plan (§6) |
 | Ownership | **By prefix, bound to a KEY in a catalog.** Package `acme/linear` owns every name under `acme/linear/`, workflows included (`acme/linear/sync`). Which KEY may publish under `acme` is a row in the index catalog (`acme → <z32 key>`, §7); a direct `pk:` ref names the key itself. No NAME is bound at install (§1, §13); the KEY is pinned: an install records the key it resolved, its updates follow that key, and an index row that later names another key is asked about, never followed (§3, §4, §7, proposed) |
 | Who publishes | ***Ruled (2026-10-24, revised the same day):* any strut.** The key lives where the publisher works, and signs there. The bytes live on a BYTE HOST anyone can reach: a swarm's own archive route, or — for a strut nothing can reach, a laptop checkout or Peel — a host it uploads to (GitHub Releases, or wherever). The pointer is the catalog's own `urls` and the index row (*revised 2026-10-28*): moving hosts is one more catalog naming the new URL, which every reader that has read it follows; the Pkarr record, later, is one more place the URL is found (§13) |
-| The protocol | ***Ruled (2026-10-28, revising 2026-10-24):* key + URL over HTTPS now, Pkarr later.** A publisher is an Ed25519 key; its catalog is a sealed card at a URL the index row and the catalog itself name; bytes are fetched by hash from any host. The seal and `seq` are the whole check, as on the fleet (§12.1, on prod). The 2026-10-24 ruling — Pkarr over the Mainline DHT for the POINTER alone, a WASM client in every strut, a relay container per swarm — is deferred: the client is relay-only, so the relay is a service Stakwork keeps alive forever, and what it buys (a pointer held by neither the byte host nor the index operator) matters only when a publisher is delisted AND its byte host removes the catalog AND it moves. When it lands it is additive: a record naming the same catalog by the same digest, one more way to find the URL (§13). *Ruled 2026-10-29:* Pkarr WILL land — deferred, not in doubt; the index box (`deploy/index/`) already runs a relay — and BitTorrent follows it as a byte transport (a magnet beside a release's HTTPS `urls`, with those URLs as web seeds — which the archive route, packing per request, cannot be as it stands: §13, "BitTorrent, after the record"). HTTP stays the base: the index catalog and every publisher catalog are always served over HTTPS, the record only says where. iroh and Hyperswarm are not adopted (`plans/p2p-distribution-research.md` Option C) |
+| The protocol | ***Ruled (2026-10-28, revising 2026-10-24):* key + URL over HTTPS now, Pkarr later.** A publisher is an Ed25519 key; its catalog is a sealed card at a URL the index row and the catalog itself name; bytes are fetched by hash from any host. The seal and `seq` are the whole check, as on the fleet (§12.1, on prod). The 2026-10-24 ruling — Pkarr over the Mainline DHT for the POINTER alone, a WASM client in every strut, a relay container per swarm — is deferred: the client is relay-only, so the relay is a service Stakwork keeps alive forever, and what it buys (a pointer held by neither the byte host nor the index operator) matters only when a publisher is delisted AND its byte host removes the catalog AND it moves. When it lands it is additive: a record naming the same catalog by the same digest, one more way to find the URL (§13). *Ruled 2026-10-29:* Pkarr WILL land — deferred, not in doubt; the index box (`deploy/index/`) already runs a relay — and BitTorrent follows it as a byte transport (a magnet beside a release's HTTPS `urls`, with those URLs as web seeds; *ruled 2026-11-11:* the torrent is of the package's PLAIN TAR, which every strut holding the package writes identically, so every holder seeds one torrent: §13, "BitTorrent, after the record"). HTTP stays the base: the index catalog and every publisher catalog are always served over HTTPS, the record only says where. iroh and Hyperswarm are not adopted (`plans/p2p-distribution-research.md` Option C) |
 | Dependencies | **A package carries only its own prefix.** Another package it executes is a `requires.packages` pin — an exact digest with a source hint — and the install resolves those with the same function, under one ask. No ranges, no solver: exact pins union, and two that disagree refuse (§1, §3) |
 | Identity | **The digest is a tree hash** over the directory, manifest included. The manifest holds nothing derivable from the files: no item list, no per-file hashes, no step types (§1) |
 | Where it lives once installed | **Nowhere new.** Installed items are ordinary workflows, steps and Concepts. Each version records its `upstream`, and "installed packages" is a fold over those records. There's no package store (§3) |
@@ -1825,36 +1825,68 @@ outside the fleet.
   catalog.
 
 **BitTorrent, after the record** (*ruled 2026-10-29*: a magnet beside a
-release's HTTPS `urls`, those URLs as web seeds; the catch below noted
-2026-11-11, not ruled). A web seed (BEP 19) must serve exactly the bytes
-the torrent hashes, and the archive route does not: it packs a fresh
-`.tar.gz` per request. The tar is the same bytes on every strut (mode
-0600, time 0, `src/tar.ts`); the gzip is not. The same input gzipped on a
-Mac (Node 24, zlib 1.3.2) and in `ghcr.io/stakwork/strut:stable` (Node 22,
-zlib 1.3.1) differs from the header's OS byte on (19 against 3), and
-nothing promises one strut's own bytes across a Node upgrade. For HTTP
-that is right — the archive is transport and the unpacked tree is what is
-checked (§5) — but a swarm's archive URL and a Peel's cannot seed one
-torrent. Two ways out, either additive:
+release's HTTPS `urls`, those URLs as web seeds. *Ruled 2026-11-11:* what
+the torrent carries is the package's PLAIN TAR). A web seed (BEP 19) must
+serve exactly the bytes the torrent hashes, and a torrent is shared only
+by hosts that hold the same bytes. The archive route as it is packs a
+fresh `.tar.gz` per request: the tar is the same bytes on every strut
+(mode 0600, time 0, `src/tar.ts`); the gzip is not. The same input
+gzipped on a Mac (Node 24, zlib 1.3.2) and in
+`ghcr.io/stakwork/strut:stable` (Node 22, zlib 1.3.1) differs from the
+header's OS byte on (19 against 3), and nothing promises one strut's own
+bytes across a Node upgrade. For HTTP that is right — the archive is
+transport and the unpacked tree is what is checked (§5) — but each host
+would be a torrent of its own. The gzip was only ever compression, and a
+package is kilobytes to a few megabytes of text.
 
-- **A fixed archive.** The archive bytes the publisher made at release are
-  what every host serves, and the catalog names their hash beside the
-  digest. A mirror keeps the publisher's file instead of packing its own,
-  and `fetchArchive`'s rule (any URL whose archive unpacks to the digest)
-  stays the HTTP check. The torrent is one file.
-- **The directory, not the archive.** A BitTorrent v2 torrent (BEP 52) of
-  the package's files, built one fixed way from the digest's file list
-  (the digest as its name, a fixed piece length), so its infohash is a
-  function of the directory and every strut that holds the package in its
-  cache (`<dataDir>/packages/sha256-<hex>/`) can seed it with nothing from
-  the publisher. v2 hashes each file as a SHA-256 tree of 16 KiB blocks,
-  which for a file of 16 KiB or less is the per-file hash the digest
-  already lists (§1) — most workflows, steps and pages; a larger file's
-  differs. A multi-file torrent's web seeds are per-file URLs (BEP 19
-  appends the name and path), so this needs a route that serves one file
-  of a cached package by digest, which the archive route is not. Casey
-  Rodarmor's filepack (2026-11) argues the same way: a package that is a
-  plain directory travels by any transport.
+**The plain tar** (*built 2026-11-11*: `packTar` and `format=tar` in
+`src/packages/archive.ts`, the torrent in `src/packages/torrent.ts`, the
+card's `tar` on every release published since, the test vector in
+`src/packages/torrent.test.ts`; nothing seeds yet — that is
+`plans/torrents.md`). A release's bytes for BitTorrent are the uncompressed
+tar of its files, which every strut that holds the package writes
+identically from its cache, with nothing kept from the publisher:
+
+- **One layout, pinned.** The files the digest covers (`packageExcluded`
+  left out), in the digest's own order (JavaScript's default string sort,
+  `readPackage`'s and `hashTree`'s), each
+  a regular file at mode 0600, owner 0, time 0, a name ustar cannot hold
+  in a PAX `path=` header and nothing else in one, two zero blocks at the
+  end — what `src/tar.ts` writes today, made a contract with a TEST
+  VECTOR (a fixed package, its tar's sha256), as the card has one. A
+  change to the layout is a new format, never an edit.
+- **The archive route serves it.** `GET …/archive?digest=…&format=tar`
+  answers the plain tar; with no `format` it stays the `.tar.gz` every
+  strut today reads, so nothing older breaks. A strut that knows the
+  format fetches the tar. The caps follow the tar's size: an unpacked
+  size of at most `MAX_UNPACKED_BYTES` (256 MB) is what the wire carries
+  too, and no compression bomb is possible.
+- **The torrent is a function of the digest.** A single-file v1 torrent
+  of the tar, built one way — `name` the digest's hex + `.tar`, a fixed
+  piece length, no other key in the info dict — so its infohash follows
+  from the tar, which follows from the digest. Any strut that holds the
+  package computes the same magnet and seeds it: the publisher, the
+  swarms that installed it, the index's mirror, every Peel. The card
+  still names them beside the digest as `tar: { sha256, infohash }`
+  (a convenience and a check before unpacking; never the identity), and
+  the archive routes that serve it with `format=tar` are its web seeds,
+  in a `.torrent`'s `url-list` and a magnet's `ws`, never in the info
+  dictionary, so the infohash is the same whoever lists which.
+- **Still checked by digest.** Whatever brought the tar — the swarm, a web
+  seed, a plain fetch — the install unpacks it and checks the tree, as
+  `fetchArchive` does now. A tar whose sha256 is not the card's is
+  refused before it is unpacked.
+
+**Later, the directory.** A BitTorrent v2 torrent (BEP 52) of the
+package's files, built one fixed way from the digest's file list, would
+let a peer fetch one file of a large app; v2 hashes each file as a
+SHA-256 tree of 16 KiB blocks, which for a file of 16 KiB or less is the
+per-file hash the digest already lists (§1), and its web seeds are
+per-file URLs (BEP 19 appends the path), so it needs a route serving one
+file of a cached package by digest. Casey Rodarmor's filepack (2026-11)
+argues the same way: a package that is a plain directory travels by any
+transport. Not before a client strut uses has v2 (rqbit does not,
+`plans/torrents.md` §8).
 
 The BEP 52 and BEP 19 details here are from memory and are checked when
 the step is taken up (open question 10). If the digest is ever redefined,
@@ -2888,13 +2920,11 @@ production until install (step 2) calls the resolver.
    nobody has installed yet may lapse while the laptop sleeps, and the
    first install waits for it to wake. Measure on the relay before step 6
    says more than that (§13).
-10. **What a torrent carries.** A fixed archive the catalog names by hash,
-    or a v2 torrent of the package directory with a per-file route as its
-    web seeds (§13, "BitTorrent, after the record"). The archive route as
-    it packs today can be neither's web seed. Decide before the BitTorrent
-    step; until then the archive route is HTTP only. With rqbit, the
-    client `plans/torrents.md` proposes (2026-11-11), neither applies: it
-    has no v2 and no web seeds, so a package would be a v1 torrent of its
-    cache folder, fetched from other struts only, the card naming its
-    infohash (`plans/torrents.md` §8).
+10. **What a torrent carries.** *Ruled 2026-11-11:* the package's plain
+    tar — the uncompressed tar of the digest's files in one pinned layout,
+    served by the archive route with `format=tar`, its single-file v1
+    torrent built one fixed way so the infohash follows from the digest
+    and any strut holding the package seeds it (§13, "BitTorrent, after
+    the record"). The v2 directory torrent is a later addition, once a
+    client strut uses has v2.
 

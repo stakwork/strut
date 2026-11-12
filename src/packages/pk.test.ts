@@ -71,7 +71,7 @@ describe("the pk: ref", () => {
   it("derives a release's archive URLs: the route beside a strut's catalog with its query, then the release's own", () => {
     const d = `sha256:${"b".repeat(64)}`;
     assert.deepEqual(releaseUrls("https://x.example/lab/packages/catalog?public=1", "acme/linear", { version: "1.0.0", digest: d }), [
-      `https://x.example/lab/packages/acme/linear/archive?digest=${encodeURIComponent(d)}&public=1`,
+      `https://x.example/lab/packages/acme/linear/archive?digest=${encodeURIComponent(d)}&format=tar&public=1`,
     ]);
     assert.deepEqual(releaseUrls("https://github.com/o/r/releases/latest/download/catalog.json", "acme/linear", { version: "1.0.0", digest: d, urls: ["https://h/a.tar.gz"] }), ["https://h/a.tar.gz"]);
   });

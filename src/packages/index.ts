@@ -27,7 +27,7 @@ import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, keyFromSeed, re
 export type { IndexLiveRow, IndexRow } from "./card.js";
 import { derivePackageDetail, summarizeDetail, type ConceptDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
 export type { AppDetail, ConceptDetail, DetailSummary, PackageCan, PackageDetail, StepDetail, WorkflowDetail } from "./detail.js";
-import { fetchCatalog, releaseUrls } from "./pk.js";
+import { fetchCatalog, releaseUrls, tarOf } from "./pk.js";
 import { CatalogStore, type CatalogFile } from "./publisher.js";
 
 const KEY_NAME = "INDEX";
@@ -442,7 +442,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       }
       const page: PageFile = { package: pkg, digest: release.digest, version: release.version, derivedAt: new Date().toISOString() };
       try {
-        const info = await fetchArchive({ urls: releaseUrls(url, pkg, release), digest: release.digest, cache: deps.cache, package: pkg, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+        const info = await fetchArchive({ urls: releaseUrls(url, pkg, release), digest: release.digest, cache: deps.cache, package: pkg, ...tarOf(release), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
         page.detail = await derivePackageDetail(info, { ...(deps.stepInfo ? { stepInfo: deps.stepInfo } : {}) });
         derived++;
       } catch (err) {
