@@ -468,6 +468,9 @@ under a per-app linking key only, "never the identity key". This replaces it.*
   §5.2's four, `ln-message`.
 - **The actor** is `secp:<x-only pubkey>`, so the same key signing in through
   any other method is the same person.
+- **The method** is `sphinx` in `serve.yaml` and the public view (app-repos
+  §5.3, 6), named for the identity, not the wallet: Peel is its first host,
+  and any later Sphinx wallet signs the same challenge the same way.
 - **`get_info` still leaves out `pubkey`.** An app learns who signed in from
   `useVisitor()`, never from the wallet.
 
@@ -475,7 +478,9 @@ under a per-app linking key only, "never the identity key". This replaces it.*
 - A browser host's wallet that can sign does the same through §5.2's
   providers: WebLN's `signMessage` (the Alby extension), or NWC where a
   wallet offers signing.
-- The browser Sphinx wallets (app-repos §5.3–5.4) come after Peel.
+- The passkey Sphinx wallet (app-repos §5.4) is `sphinx`'s next host. The
+  in-page wasm wallet is a method of its own, `sphinx-wasm`: it makes a new
+  account per domain rather than signing as the person's.
 
 ## 5. The hosts
 
@@ -853,7 +858,9 @@ Open questions:
      - strut's UI sending it for `useVisitor().signIn()`, and keeping the
        seller's visitor token per seller;
      - the `ln-message` verifier beside app-repos §5.2's four;
-     - `peel` among `serve.yaml`'s and the public view's sign-in methods.
+     - `sphinx` among `serve.yaml`'s and the public view's sign-in methods
+       (app-repos §5.3, 6: one method for every Sphinx wallet, Peel its
+       first host).
    - **Peel:**
      - the sign-in grant on the connection sheet ("you" or "a new identity
        for this app");

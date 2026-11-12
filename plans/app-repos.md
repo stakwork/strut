@@ -585,17 +585,31 @@ they could be built.
    signs a NIP-98 HTTP-auth event for `POST /visitors/session`, its
    `payload` tag the hash of the body that carries the challenge, verified
    by `bip340`. Root key only (§5.2).
-5. **Sphinx in wasm, on this origin** (`sphinx`). The Sphinx v2 core as
+5. **Sphinx in wasm, on this origin** (`sphinx-wasm`). The Sphinx v2 core as
    wasm (`sphinx/wasm`, `wasm-pack --target web`; `sphinx-chat` runs the
    same core in Node) loaded by the host page. The visitor gets a Sphinx
    account in a second, and its key signs the challenge. It is a wallet
    too (§6). The keys live in this domain's storage, so they are as safe
    as whoever serves the domain, and each domain is a separate wallet.
-6. **A Sphinx wallet at one origin, unlocked by a passkey**
-   (`sphinx-passkey`). One wallet across every app domain and the person's
-   phone, with no install. §5.4.
-7. **Peel, through its wallet connection** (`peel`). **Next**, ruled
-   2026-11-10 and designed in `app-payments.md` §4.4 (R6), not here.
+   It makes a new account, so it is a method of its own, not `sphinx` (6):
+   it gives a visitor a wallet, not their Sphinx identity.
+6. **Sphinx** (`sphinx`). The person's Sphinx account signs the challenge
+   as a Lightning signed message, checked by `ln-message`
+   (`app-payments.md` §4.4). The method is named for the identity, not the
+   wallet (owner, 2026-11-11): every wallet that holds a Sphinx key signs
+   the same way, and the host page uses whichever it can reach.
+   - **The key.** The root key by default, so one Sphinx account is one
+     visitor on every app and every box. The domain's child key when the
+     app asks (`visitorKey: domain`) or the person picks it (§5.2).
+   - **Through Peel's wallet connection.** **Next**, ruled 2026-11-10 and
+     designed in `app-payments.md` §4.4 (R6), not here.
+   - **Through the passkey wallet at `wallet.sphinx.chat`** (§5.4).
+     *Later.* It is a Sphinx account of its own (ruled 7), so a different
+     actor from the person's Peel account under the same method.
+   - **With neither in reach** (a plain browser, before §5.4), the sheet
+     does not offer it.
+
+   What Peel's connection adds:
    - **The connection.** Peel already keeps a connection per app, with
      consent and a budget; signing in becomes one more thing it grants, on
      the same sheet: "you" (the root Sphinx key) or "a new identity for
@@ -609,14 +623,14 @@ they could be built.
    - **No QR inside Peel.** A QR code is only for a page in another browser
      with Peel on the phone, which is later, with Peel as an NWC wallet
      service (`app-payments.md` §5.4).
-8. **A passkey alone** (`passkey`). WebAuthn with this domain as the RP ID
+7. **A passkey alone** (`passkey`). WebAuthn with this domain as the RP ID
    and no wallet behind it: identity that survives clearing the browser and
    syncs to the person's phone.
 
 ### 5.4 A Sphinx wallet at one origin, unlocked by a passkey
 
 *Later (owner, 2026-11-10): "We already have a wallet! It's called Peel!"
-Signing in and paying through Peel's connection come first (§5.3, 7).*
+Signing in and paying through Peel's connection come first (§5.3, 6).*
 
 The idea: **instant, cross-origin Sphinx, with the keys following the
 person to their phone.**
@@ -628,8 +642,8 @@ person to their phone.**
 - **Not Peel's wallet** (ruled 7). The browser wallet is less secure than
   Peel and is a Sphinx account of its own, never the person's Peel
   account. A person who holds sats in it can sweep them to Peel, or skip
-  it and connect Peel over NWC (§5.3, 7). Signing in with it and signing
-  in with Peel are two actors.
+  it and connect Peel over NWC (`app-payments.md` §5.4). Signing in with
+  it and with Peel are two actors, though both are `sphinx` (§5.3, 6).
 - **First use, from any app's domain.** The host page opens the wallet in
   a popup, which is first-party there, so its storage and passkeys work.
   The person creates a passkey (Face ID) with the PRF extension. The page:
@@ -698,7 +712,7 @@ person to their phone.**
    - **Bitcoin Connect**: the Alby extension's `window.webln` in the top
      page (an extension cannot reach a srcdoc frame), or any NWC wallet.
      This is `app-payments.md` §5.2, not built.
-   - **Sphinx in wasm on this origin** (§5.3, 5).
+   - **Sphinx in wasm on this origin** (`sphinx-wasm`, §5.3, 5).
    - **The passkey Sphinx wallet** (§5.4).
    - **Peel over NWC** (`app-payments.md` §5.4).
 3. **A key can be both.** A provider that holds a key (Peel first, then
@@ -750,10 +764,12 @@ players before it needs git, visitors (4) moves up to second.
    kit's `useVisitor()`, the host page's sheet. The first methods are the
    anonymous key and a host's ticket, then LNURL-auth and Nostr.
 5. **Browser wallets.** Bitcoin Connect (`app-payments.md` §5.2), then
-   Sphinx in wasm on the origin, each also a sign-in where it holds a key.
+   Sphinx in wasm on the origin (`sphinx-wasm`), each also a sign-in where
+   it holds a key.
    *Later.*
 6. **The passkey Sphinx wallet at `wallet.sphinx.chat`.** A plan of its
-   own, mostly in `sphinx`; strut's part is the provider. *Later.*
+   own, mostly in the `sphinx` repo; strut's part is the provider, the
+   `sphinx` sign-in's second host. *Later.*
 
 **Next (2026-11-10): signing in through Peel.** Items 5 and 6 wait. The
 person's wallet is Peel, and a Sphinx identity is for strut apps in
