@@ -284,7 +284,7 @@ file.
 Tests, standing and earnings add tables with their items (§7, §8).
 Earnings go in `ledger.db`, where the books check is.
 
-**Built differently (#PR-2A):** as above, plus what the rules need: a task
+**Built differently (#655):** as above, plus what the rules need: a task
 keeps `seq` (creation order: oldest first, paging), `due` (its
 `withinHours` as a time), `root` (`run` or `job`) with the `job`, the
 worker who answered (`by`) and when it left `open`; a lease keeps when it
@@ -313,7 +313,7 @@ and when. The two sides are two modules on one file
 8. A sweep, every minute and at boot, reopens a task whose lease expired
    and settles as expired a task past its `withinHours`, which wakes its run.
 
-**Built differently (#PR-2A):**
+**Built differently (#655):**
 
 - **Rule 2.** The guarded statement (`take`) covers tasks and leases. The
   grant is read from the worker side just before it and handed in as the
@@ -340,7 +340,7 @@ Inside, the task tables and the worker tables are two modules: the task
 side asks "may this actor take this type?" and tells the worker side what
 happened. Ruling 5 may one day move the worker side.
 
-**Built differently (#PR-2A):** the worker's calls take the actor as their
+**Built differently (#655):** the worker's calls take the actor as their
 first argument (`next(actor, { type?, app? })`), filled by the caller from
 the session, never from a page's input. The staff side also has `task(id)`.
 What a source needs is on the service (`strut.tasks`), not the capability:
@@ -368,7 +368,7 @@ A schema that uses anything else is refused when the task type is saved,
 so a type never promises a check strut does not make. A box on a photo is
 `{ type: array, items: { type: number }, minItems: 4, maxItems: 4 }`.
 
-**Built differently (#PR-2A):** `title` and `description` are accepted as
+**Built differently (#655):** `title` and `description` are accepted as
 labels and check nothing (a form needs them, and they promise no check).
 `type` is required on every schema and is one name, never a list. A
 keyword on a type it does not apply to (`minLength` on a number) is refused,
@@ -387,7 +387,7 @@ Revoking a worker's last grant leaves them `active` with nothing to take.
 A change to `suspended` or `banned` expires the worker's open lease at
 once, and the task reopens.
 
-**Built differently (#PR-2A):** revoking a grant also expires a live lease of
+**Built differently (#655):** revoking a grant also expires a live lease of
 that type at once, since the worker can no longer answer it. Staff may set
 any status, a ban lifted included, and may set one before the worker's
 first call. A grant moves only `new` to `active`; a suspended or banned
