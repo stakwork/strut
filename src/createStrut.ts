@@ -2102,7 +2102,7 @@ export async function createStrut<TServices = unknown>(
     // preflight for them.
     const open = read
       ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
@@ -3980,6 +3980,26 @@ export async function createStrut<TServices = unknown>(
     return c.json({ actor, token: started.token, exp: started.session.exp });
   };
   const noSecret = (c: Context) => c.json({ error: "sign-in needs STRUT_API_KEY or STRUT_SECRET_KEY: a visitor's session is signed with it" }, 503);
+  async function visitorCors(c: Context, next: () => Promise<void>) {
+    if (c.req.method === "OPTIONS") {
+      return c.body(null, 204, {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, DELETE",
+        // `authorization`: the visitor's token (GET /visitors), or a NIP-98 event.
+        "access-control-allow-headers": "content-type, authorization, x-strut-ui",
+        "access-control-max-age": "600",
+      });
+    }
+    c.header("access-control-allow-origin", "*");
+    await next();
+  }
+
+  // A host page on ANOTHER origin signs a visitor in here: another strut's
+  // UI hosting this server's public app (specs/API.md §17.9). It reads with
+  // no credential of its own — the visitor's token as a bearer — so `*`
+  // holds, and the cookie a cross-site answer sets is never stored.
+  // One registration: Hono's `/visitors/*` matches `/visitors` too.
+  app.use("/visitors/*", visitorCors);
 
   app.get("/visitors", async (c) => {
     const session = visitorOf(c);
@@ -4017,7 +4037,7 @@ export async function createStrut<TServices = unknown>(
     const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
     const claims = readVisitorChallenge(challenge);
     if (!isVisitorMethod(method) || method === "ticket") {
-      return c.json({ error: "method is key, lnurl or nostr (a host's ticket is traded at POST /auth/session { ticket })" }, 400);
+      return c.json({ error: "method is key, lnurl, nostr or sphinx (a host's ticket is traded at POST /auth/session { ticket })" }, 400);
     }
     // An LNURL login already registered: the page asks whether its wallet
     // has signed (the challenge is spent and may have expired since).
@@ -4039,6 +4059,14 @@ export async function createStrut<TServices = unknown>(
       const sig = fromHex(body["sig"]);
       if (!key || !sig) return c.json({ error: "key and sig are hex: the public key (SEC1) and the signature (r ‖ s)" }, 400);
       actor = await VERIFIERS["ecdsa-p256"]!(new TextEncoder().encode(challenge), key, sig);
+      if (!actor) return refuse("the signature does not hold for this challenge and key");
+    } else if (method === "sphinx") {
+      // The person's Sphinx key (their wallet's: specs/WALLET.md §1.2
+      // `sign_in`), a Lightning signed message over the challenge.
+      const key = fromHex(body["key"]);
+      const sig = fromHex(body["sig"]);
+      if (!key || !sig) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
+      actor = await VERIFIERS["ln-message"]!(new TextEncoder().encode(challenge), key, sig);
       if (!actor) return refuse("the signature does not hold for this challenge and key");
     } else if (method === "nostr") {
       const signer = await nostrSigner(c.req.header("authorization"), { url: `${publicUrlOf(c)}${new URL(c.req.url).pathname}`, method: "POST", body: raw }, Date.now(), (u) => {

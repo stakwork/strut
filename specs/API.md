@@ -1363,11 +1363,19 @@ nobody does.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/visitors` | `{ methods, visitorKey, actor?, exp? }`: the sign-ins offered here and who this request is signed in as. Open to anyone |
+| GET    | `/visitors` | `{ methods, visitorKey, actor?, exp? }`: the sign-ins offered here and who this request is signed in as. Open to anyone, CORS `*` (below) |
 | GET    | `/visitors/challenge` | `{ challenge, exp, methods, visitorKey }` (`cache-control: no-store`). `404` with no method named; `503` with no `STRUT_API_KEY` or `STRUT_SECRET_KEY` to sign it. Open to anyone |
 | POST   | `/visitors/session` | `{ challenge, method, … }` → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
 | DELETE | `/visitors/session` | clears the visitor's cookie → `204` |
 | GET    | `/visitors/lnurl` | LNURL-auth's callback (LUD-04): `?tag=login&k1&sig&key` from the WALLET → `{ status: "OK" }` or `{ status: "ERROR", reason }`. Open to anyone, CORS `*` |
+
+**From another origin.** Every `/visitors` route answers CORS `*`, and a
+preflight (`OPTIONS`, open to anyone) allows `content-type`,
+`authorization` and `x-strut-ui`: another strut's UI hosting this server's
+public app (§17.9) signs its visitor in HERE, with no credential of its own,
+and sends the token as `Authorization: Bearer` (`GET /visitors`) or
+`x-strut-visitor` (`POST /public/mcp`) — the cookie a cross-site answer
+sets is never stored.
 
 **The challenge** is `strut-visitor.<base64url claims>.<hmac>`, claims `{
 host, visitorKey, nonce, exp }`, signed like a sign-in ticket. It lives 60 s,
@@ -1385,6 +1393,7 @@ host (LUD-05), and a method that cannot derive (Nostr) is not offered.
 | `key` | `{ challenge, method, key, sig }`: `key` the SEC1 public key (hex), `sig` WebCrypto's ECDSA P-256 / SHA-256 signature over the challenge's UTF-8 bytes (r ‖ s, hex) | `ecdsa-p256` | `p256:<compressed key hex>` |
 | `nostr` | `{ challenge, method }` with `Authorization: Nostr <base64 event>`: a NIP-98 event (kind 27235) whose `u` is this URL, `method` `POST`, `payload` the sha256 of the exact body, `created_at` within a minute | `bip340` over the event id | `secp:<x-only hex>` |
 | `lnurl` | `{ challenge, method }` → `202 { pending, k1, exp, url, lnurl }`: show `lnurl` (LUD-01 bech32) as a QR code; the wallet calls `/visitors/lnurl`; then `{ challenge, method, k1 }` again → `202 { pending }` until it has, then the session (once). The challenge is spent at the first call; the login waits 5 minutes | `ecdsa-secp256k1` (DER over `k1`) | `secp:<x-only hex>` |
+| `sphinx` | `{ challenge, method, key, sig }`: the person's Sphinx account through the wallet that holds it (Peel, asked with `specs/WALLET.md` §1.2's `sign_in`). `key` the compressed secp256k1 key (33 bytes, hex); `sig` a Lightning signed message over the challenge's UTF-8 bytes — 65 bytes `[31 + recovery id] ‖ r ‖ s`, recoverable ECDSA over sha256(sha256(`"Lightning Signed Message:"` ‖ challenge)), hex, as sphinx-rs's `sign_bytes` makes it. The key the signature recovers must be `key`. Root or the domain's child key alike: the wallet derives the child (LUD-05) when the challenge asks | `ln-message` | `secp:<x-only hex>` |
 | `ticket` | not here: a host's server mints `POST /auth/ticket { actor, role: "visitor" }` and the page trades it at `POST /auth/session { ticket }`, which answers `{ actor, exp, role, token }` and sets the visitor's cookie | — | the host's `actor` |
 
 `webauthn` is a verifier name kept for passkeys; none is built.
@@ -3096,7 +3105,7 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
 
 Every list is optional; the body REPLACES the record. `visitors: {
 signIn, visitorKey?, limits? }` (optional) is who may SIGN IN to the public
-apps (§13.2): the methods (`key`, `ticket`, `lnurl`, `nostr`), `domain` for
+apps (§13.2): the methods (`key`, `ticket`, `lnurl`, `nostr`, `sphinx`), `domain` for
 a child key per domain, and `{ writesPerDay?, launchesPerDay? }` over
 strut's defaults. `runs: true` makes a
 workflow's runs public whole: their input, outputs, agents' transcripts
@@ -3942,6 +3951,27 @@ dictation) would reach it through the frame's `allow`. So:
   settles or ends, whether or not the sheet is still open, and again after
   a reload.
 
+**Signing in** is §13.2, with the seller as the server: the visitor signs
+the seller's challenge and is the seller's visitor.
+- The host reads `GET <from>/visitors`, `GET <from>/visitors/challenge` and
+  posts `POST <from>/visitors/session` from the browser, with no credential
+  of anyone's (the routes answer CORS `*`). A seller from before that
+  offers no sign-in here.
+- In Peel, a seller that offers `sphinx` signs the person in as their Sphinx
+  account: the native host is asked with `sign_in` (specs/WALLET.md §1.2),
+  naming the seller, the app and the seller's challenge; the native host
+  checks the challenge's `host` is the seller's.
+- The session's token is kept by this page under the seller
+  (`strut.visitorSession:<seller base>` in this site's localStorage), apart
+  from this server's and every other seller's, and rides on that seller's
+  `/public/mcp` calls as `x-strut-visitor`.
+- A remote page's channels are not carried yet.
+
+On the iPhone there is no strut UI of the person's own: Peel opens the
+served box directly, its own strut UI the main frame, and answers that
+origin alone (plans/app-payments.md §5.3, R7). Signing in there is the same
+`sign_in`, the seller this page's own origin.
+
 **The store** (`?store=1`): a live app's page has **Open in your strut**
 beside **Open full page** when the seller's `GET /public` says `host.remote`.
 It is this link into the visitor's own strut ("Your strut", kept in
@@ -4426,7 +4456,7 @@ reads: [score-board]            # the app's public reads (§17.3): step types
 runnable:                       # §17.1's runnable items
   - { kind: workflow, name: ghost, base: 0.002, markup: 1.3, capUsd: 0.05, dailyCapUsd: 5 }
 concepts: [Moon Lander]         # Concept roots in the public view
-signIn: [key, lnurl, nostr]     # how a visitor signs in (§13.2): key, ticket, lnurl, nostr; default none
+signIn: [key, lnurl, nostr]     # how a visitor signs in (§13.2): key, ticket, lnurl, nostr, sphinx; default none
 visitorKey: domain              # a child key per domain (§13.2); default root
 limits: { writesPerDay: 500 }   # per-visitor daily limits over strut's (writesPerDay, launchesPerDay)
 ```

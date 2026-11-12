@@ -851,17 +851,21 @@ Open questions:
    paired with. On the Mac it opens through #625's remote link, on the
    iPhone directly. The person signs in through the connection, writes a
    row as themselves, then tips through the same connection.
-   - **strut:**
+   - **strut:** *BUILT, stakwork/strut#PRNUM.*
      - the `sign_in` host request beside `buy_credit` in `specs/WALLET.md`
        §1.2, listed by `host_capability`, with vectors beside #625's
-       credit vectors, which Peel copies;
+       credit vectors, which Peel copies (`sign_in_requests`,
+       `sign_in_replies`, and `sign_in_signatures` made by Sphinx's own
+       signer, `scripts/ln-message-fixtures`);
      - strut's UI sending it for `useVisitor().signIn()`, and keeping the
-       seller's visitor token per seller;
+       seller's visitor token per seller — in #625's remote mode (the
+       seller is `from`; the sign-in routes answer CORS `*`) and on a
+       direct open (the seller is the page's own origin);
      - the `ln-message` verifier beside app-repos §5.2's four;
      - `sphinx` among `serve.yaml`'s and the public view's sign-in methods
        (app-repos §5.3, 6: one method for every Sphinx wallet, Peel its
        first host).
-   - **Peel:**
+   - **Peel:** *open.*
      - the sign-in grant on the connection sheet ("you" or "a new identity
        for this app");
      - signing with the node key, or the LUD-05 child key;

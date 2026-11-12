@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { creditPurchaseProblems, type CreditPurchase, type NativeWalletMessage } from "@strut/kit/wallet";
+import { readFileSync } from "node:fs";
+import { creditPurchaseProblems, signInRequestProblems, type CreditPurchase, type NativeWalletMessage, type SignInRequest } from "@strut/kit/wallet";
 import { macaroonToBase64, mintToken } from "../../src/l402.js";
 import { encodeBolt11 } from "../../src/payments/bolt11.js";
 import { checkChallenge, type CheckedChallenge } from "./challenge";
-import { WALLET_WAIT_MAX_MS, createHostWalletProbe, creditPurchaseOf, fallbackNote, walletAsk, walletWaitMs, type HostWallet, type WalletAnswer, type WalletAsk } from "./native-pay";
+import {
+  WALLET_WAIT_MAX_MS, createHostWalletProbe, creditPurchaseOf, fallbackNote, signInAsk, signInNote, walletAsk, walletWaitMs,
+  type HostWallet, type WalletAnswer, type WalletAsk,
+} from "./native-pay";
 import { callPaying, createClaimKeeper, newPurse, type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome } from "./visitor-pay";
 
 // A visitor's credit paid with one tap in a native host (./native-pay,
@@ -96,7 +100,9 @@ describe("finding the native host's wallet, once per page", () => {
     assert.equal(asked, 2, "another handler is asked again");
     assert.equal(await probe({}), undefined, "no native host");
     const cannot = createHostWalletProbe(async () => ({ version: 1, ops: ["buy_credit_status"] }));
-    assert.equal(await cannot(win), undefined, "one that does not buy credit");
+    assert.equal(await cannot(win), undefined, "one that neither buys credit nor signs in");
+    const signs = createHostWalletProbe(async () => ({ version: 1, ops: ["sign_in"], wallet: "Peel" }));
+    assert.deepEqual((await signs(win))?.cap.ops, ["sign_in"], "one that only signs a visitor in counts");
     const silent = createHostWalletProbe(async () => undefined);
     assert.equal(await silent(win), undefined, "an older one");
   });
@@ -262,5 +268,68 @@ describe("a priced launch, paid in a native host (the relay's loop)", () => {
     assert.match(result.content![0]!.text!, /does not check out: the invoice asks 7500 sats, not the 1/);
     assert.equal(shown, false);
     assert.deepEqual(native.sent, []);
+  });
+});
+
+// ── Signing a visitor in through the native wallet (`sign_in`) ─────────────
+
+/** The wallet contract's vectors: real challenges, and Sphinx's own signer's
+ *  signature over one. */
+const vectors = JSON.parse(readFileSync(new URL("../../kit/src/wallet/vectors.json", import.meta.url), "utf-8")) as {
+  sign_in_requests: Array<{ name: string; now: number; request: SignInRequest }>;
+  sign_in_signatures: Array<{ message: string; key: string; sig: string; actor: string | null }>;
+};
+const SIGN_NOW = vectors.sign_in_requests[0]!.now;
+const SHOP = "https://shop.example.com";
+const SHOP_CHALLENGE = vectors.sign_in_requests[0]!.request.challenge;
+const EVIL_CHALLENGE = vectors.sign_in_requests.find((v) => v.name.startsWith("a challenge for ANOTHER host"))!.request.challenge;
+const SIGNED = vectors.sign_in_signatures[0]!;
+const GAME = { name: "moon-game", version: "v3", title: "Moon Game" };
+const signer = (reply: (m: SignInRequest) => unknown) => new Native((m) => (m.op === "sign_in" ? reply(m) : { result: {} }));
+const signerOf = (native: Native, ops: HostWallet["cap"]["ops"] = ["sign_in"]) => signInAsk({ wallet: found(native, ops), seller: SHOP, app: GAME, now: () => SIGN_NOW });
+const err = (code: string, message: string) => ({ error: { code: -32000, message, data: { code } } });
+
+describe("signing a visitor in through the native wallet", () => {
+  it("no native host, one that does not sign in, or no app: sphinx is not offered", () => {
+    assert.equal(signInAsk({ wallet: undefined, seller: SHOP, app: GAME }), undefined);
+    assert.equal(signInAsk({ wallet: found(signer(() => ({}))), seller: SHOP, app: GAME }), undefined, "buys credit, does not sign in");
+    assert.equal(signInAsk({ wallet: found(signer(() => ({})), ["sign_in"]), seller: SHOP, app: undefined }), undefined);
+    assert.equal(signerOf(signer(() => ({})))?.name, "Peel");
+  });
+
+  it("one sign_in of the seller's challenge, as the contract has it: the key and signature to post", async () => {
+    const native = signer(() => ({ result: { key: SIGNED.key, sig: SIGNED.sig } }));
+    const r = await signerOf(native)!.sign(SHOP_CHALLENGE);
+    assert.deepEqual(r, { outcome: "signed", key: SIGNED.key, sig: SIGNED.sig });
+    assert.deepEqual(native.sent, [{ v: 1, op: "sign_in", seller: SHOP, app: GAME, challenge: SHOP_CHALLENGE }]);
+    assert.deepEqual(signInRequestProblems(native.sent[0], SIGN_NOW), [], "what the native host gets passes its own check");
+  });
+
+  it("a seller's challenge for another host is never put to the wallet", async () => {
+    const native = signer(() => ({ result: { key: SIGNED.key, sig: SIGNED.sig } }));
+    const r = await signerOf(native)!.sign(EVIL_CHALLENGE);
+    assert.equal(r.outcome, "refused");
+    assert.match(r.outcome === "refused" ? r.message : "", /does not check out: the challenge is for evil\.example\.net/);
+    assert.equal(native.sent.length, 0, "the wallet was not asked");
+    assert.equal((await signerOf(native)!.sign("Sign in to shop.example.com")).outcome, "refused", "nor is any other message");
+    assert.equal(native.sent.length, 0);
+  });
+
+  it("a decline, a wanted tap, junk, and no answer before the challenge ends", async () => {
+    const declined = await signerOf(signer(() => err("USER_REJECTED", "You declined")))!.sign(SHOP_CHALLENGE);
+    assert.deepEqual(declined, { outcome: "refused", code: "USER_REJECTED", message: "You declined", declined: true });
+    assert.equal(signInNote(declined as Extract<typeof declined, { outcome: "refused" }>, "Peel"), "You declined in Peel.");
+    const tap = await signerOf(signer(() => err("RESTRICTED", "Tap to sign in")))!.sign(SHOP_CHALLENGE);
+    assert.equal(tap.outcome === "refused" && tap.code, "RESTRICTED");
+    assert.match(signInNote(tap as Extract<typeof tap, { outcome: "refused" }>, "Peel"), /Press Sign in with Peel/);
+    const junk = await signerOf(signer(() => ({ result: { key: SIGNED.key } })))!.sign(SHOP_CHALLENGE);
+    assert.equal(junk.outcome === "refused" && junk.code, "INTERNAL");
+    // The challenge ends 60 s after SIGN_NOW: a wallet that never answers is
+    // waited on no longer than that.
+    const late = signInAsk({ wallet: found(new Native(() => new Promise(() => {})), ["sign_in"]), seller: SHOP, app: GAME, now: () => 1793800060000 - 30 })!;
+    const t = Date.now();
+    const silent = await late.sign(SHOP_CHALLENGE);
+    assert.equal(silent.outcome === "refused" && silent.code, "RESTRICTED");
+    assert.ok(Date.now() - t < 2_000);
   });
 });

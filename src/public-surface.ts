@@ -72,7 +72,7 @@ export interface PublicRunnable {
 }
 
 /** The sign-ins a box may name (plans/app-repos.md §5.3; src/visitors.ts). */
-export const VISITOR_METHOD_NAMES = ["key", "ticket", "lnurl", "nostr"] as const;
+export const VISITOR_METHOD_NAMES = ["key", "ticket", "lnurl", "nostr", "sphinx"] as const;
 
 /** Who may SIGN IN to the public apps here (plans/app-repos.md §5): the
  *  methods this server accepts, whose key signs, and the per-visitor

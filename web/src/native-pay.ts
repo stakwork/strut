@@ -19,13 +19,21 @@
 // The invoice is claimed (./visitor-pay `createClaimKeeper`) from the start,
 // so a payment whose answer was lost still buys the credit.
 //
+// The same native host SIGNS A VISITOR IN (`sign_in`, specs/WALLET.md §1.2):
+// the person's Sphinx account signs the seller's visitor challenge, method
+// `sphinx` (plans/app-payments.md §4.4). `signInAsk` builds what the sign-in
+// flow asks it: the request checked as the native host will check it (the
+// challenge is for the SELLER's host, and has not ended), one `sign_in`, its
+// answer read; the session is then the provider's (../visitor-signin).
+//
 // Pure, apart from the native host it is handed, so the root test run
-// covers it (native-pay.test.ts); ./app-host wires it, the sheet
-// (components/PaymentSheet.tsx) draws it.
+// covers it (native-pay.test.ts); ./app-host wires it, the sheets
+// (components/PaymentSheet.tsx, components/SignInSheet.tsx) draw it.
 
 import {
-  NATIVE_WALLET_HANDLER, buyCreditNatively, creditStatusNatively, nativeWalletOf, probeHostWallet,
-  type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWallet, type WalletErrorCode,
+  NATIVE_WALLET_HANDLER, buyCreditNatively, creditStatusNatively, nativeWalletOf, probeHostWallet, signInNatively,
+  signInRequestProblems, visitorChallengeClaims,
+  type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWallet, type SignInRequest, type WalletErrorCode,
 } from "@strut/kit/wallet";
 import type { CheckedChallenge } from "./challenge";
 import type { PaymentRequired } from "./visitor-pay";
@@ -36,7 +44,7 @@ export const WALLET_WAIT_MAX_MS = 10 * 60_000;
 /** How long the native host has to say what it takes. */
 export const WALLET_PROBE_MS = 5_000;
 
-/** A native host that buys credit, as this page found it. */
+/** A native host that buys credit or signs a visitor in, as this page found it. */
 export interface HostWallet {
   native: NativeWallet;
   cap: HostWalletCapability;
@@ -44,8 +52,9 @@ export interface HostWallet {
 
 /** The native host's capability, asked ONCE per page — again only when the
  *  handler itself changed — so no sheet ever waits on the question: the
- *  relay asks it as it connects, a priced launch reads the answer. Resolves
- *  undefined with no native host, or one that does not buy credit. */
+ *  relay asks it as it connects, a priced launch or a sign-in reads the
+ *  answer. Resolves undefined with no native host, or one that neither buys
+ *  credit nor signs a visitor in. */
 export function createHostWalletProbe(probe: (native: NativeWallet) => Promise<HostWalletCapability | undefined> = (n) => probeHostWallet(n, WALLET_PROBE_MS)) {
   let known: { handler: unknown; found: Promise<HostWallet | undefined> } | undefined;
   return (win: unknown): Promise<HostWallet | undefined> => {
@@ -54,7 +63,7 @@ export function createHostWalletProbe(probe: (native: NativeWallet) => Promise<H
     if (known && known.handler === handler) return known.found;
     const native = nativeWalletOf(win);
     const found = native
-      ? probe(native).then((cap) => (cap?.ops.includes("buy_credit") ? { native, cap } : undefined), () => undefined)
+      ? probe(native).then((cap) => (cap?.ops.includes("buy_credit") || cap?.ops.includes("sign_in") ? { native, cap } : undefined), () => undefined)
       : Promise.resolve(undefined);
     known = { handler, found };
     return found;
@@ -166,3 +175,60 @@ export function fallbackNote(a: Extract<WalletAnswer, { outcome: "fallback" }>, 
 export const PAYING_LONG_MS = 60_000;
 /** How often the sheet asks where a pending payment stands. */
 export const STATUS_EVERY_MS = 3_000;
+
+// ── Signing a visitor in through the native wallet (`sign_in`) ─────────────
+
+/** How a `sign_in` ended, as the sign-in flow reads it: the key and its
+ *  signature to post as method `sphinx`, or why not — `declined` when the
+ *  person said no on the native host's sheet. */
+export type SignInAnswerOf =
+  | { outcome: "signed"; key: string; sig: string }
+  | { outcome: "refused"; code: WalletErrorCode; message: string; declined: boolean };
+
+/** What the sign-in flow asks the native wallet. */
+export interface SignInAsk {
+  /** What the sheet calls it: the native host's own name, or "your wallet". */
+  name: string;
+  /** One `sign_in` of `challenge` (the seller's, just fetched). */
+  sign(challenge: string): Promise<SignInAnswerOf>;
+}
+
+/** The sign-in ask, or undefined — no native host here, one that does not
+ *  sign a visitor in, or no app to name: then `sphinx` is not offered. */
+export function signInAsk(o: {
+  wallet: HostWallet | undefined;
+  seller: string;
+  app: { name: string; version: string; title: string } | undefined;
+  now?: () => number;
+}): SignInAsk | undefined {
+  const { wallet, app } = o;
+  if (!wallet || !app || !wallet.cap.ops.includes("sign_in")) return undefined;
+  const now = o.now ?? Date.now;
+  return {
+    name: wallet.cap.wallet ?? "your wallet",
+    async sign(challenge) {
+      const request: SignInRequest = {
+        v: 1,
+        op: "sign_in",
+        seller: o.seller,
+        app: { name: app.name.slice(0, 1000), version: app.version.slice(0, 1000), title: (app.title || app.name).slice(0, 1000) },
+        challenge,
+      };
+      // A seller's junk — a challenge for another host, one that ended —
+      // is never put to the wallet.
+      const problems = signInRequestProblems(request, now());
+      if (problems.length) return { outcome: "refused", code: "BAD_REQUEST", message: `the server's sign-in challenge does not check out: ${problems.join("; ")}, so nothing was signed`, declined: false };
+      // The seller refuses a challenge past its end: wait no longer.
+      const r = await signInNatively(wallet.native, request, { timeoutMs: visitorChallengeClaims(challenge)!.exp - now() });
+      return r.outcome === "signed" ? r : { ...r, declined: r.code === "USER_REJECTED" };
+    },
+  };
+}
+
+/** The sheet's line after the wallet did not sign the visitor in. */
+export function signInNote(a: Extract<SignInAnswerOf, { outcome: "refused" }>, name = "your wallet"): string {
+  const Name = name[0]!.toUpperCase() + name.slice(1);
+  if (a.declined) return `You declined in ${name}.`;
+  if (a.code === "RESTRICTED") return `${Name} did not sign you in (${a.message}). Press Sign in with ${name} to confirm there.`;
+  return `${Name} did not sign you in (${a.message}).`;
+}

@@ -241,6 +241,7 @@ export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: strin
   { method: "key", label: "This browser's key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
   { method: "lnurl", label: "A Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
   { method: "nostr", label: "A Nostr extension", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
+  { method: "sphinx", label: "Their Sphinx account", note: "the wallet that holds it signs in — Peel today — as one visitor on every app, or a new identity for this one" },
   { method: "ticket", label: "A host's ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
 ];
 

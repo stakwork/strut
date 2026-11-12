@@ -5,12 +5,12 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes, strangerFrameAttributes } from "../frame-permissions";
-import type { WalletAsk } from "../native-pay";
+import { signInNote, type SignInAsk, type WalletAsk } from "../native-pay";
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
 import { SignInSheet } from "./SignInSheet";
-import { signInWithKey, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
+import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -53,13 +53,15 @@ import { signInWithKey, usableMethods, type SignInMethod, type VisitorSession } 
 // a native host's wallet first when this page runs in one (Peel). It may
 // ask to sign the visitor in (`useVisitor`, plans/app-repos.md §5): this
 // host draws the sheet over the frame (./SignInSheet) and keeps the
-// session; the page learns the actor, never a key. A visitor's page of
-// ANOTHER strut server (`app.from`, ../remote-app, specs/API.md §17.9) is
-// read from that server, its calls relayed there, and framed as a
-// STRANGER's: this UI's CSP written ahead of its document, no microphone
-// and nothing its version declares (the frame runs on this strut's
-// origin, whose grants a feature would hand it), and no sign-in (the
-// session is this server's).
+// session; the page learns the actor, never a key. In a native host's web
+// view whose wallet signs a visitor in (Peel), the person's Sphinx account
+// is asked first: its own sheet is the sign-in (plans/app-payments.md §4.4).
+// A visitor's page of ANOTHER strut server (`app.from`, ../remote-app,
+// specs/API.md §17.9) is read from that server, its calls relayed there,
+// the visitor signed in THERE (the session kept here under that server),
+// and framed as a STRANGER's: this UI's CSP written ahead of its document,
+// no microphone and nothing its version declares (the frame runs on this
+// strut's origin, whose grants a feature would hand it).
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
@@ -121,7 +123,7 @@ export function AppHost(props: {
   const paymentRef = useRef(payment);
   paymentRef.current = payment;
   /** The visitor's sign-in the page asked for, and where its answer goes. */
-  const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; done: (s: VisitorSession | null) => void } | null>(null);
+  const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; sphinx?: SignInAsk; note?: string; done: (s: VisitorSession | null) => void } | null>(null);
   const signInRef = useRef(signIn);
   signInRef.current = signIn;
   const connRef = useRef<AppHostConnection | null>(null);
@@ -198,15 +200,31 @@ export function AppHost(props: {
             onInitialized: markReady,
             ...(visitor
               ? {
-                  // The visitor signs in (plans/app-repos.md §5.3): one tap
-                  // when this browser's key is all there is, else the sheet.
-                  onSignIn: async (offered: SignInMethod[]) => {
-                    const methods = usableMethods(offered);
-                    if (methods.length === 1 && methods[0] === "key") return signInWithKey();
+                  // The visitor signs in (plans/app-repos.md §5.3): through
+                  // the native wallet first (Peel: its sheet IS the sign-in),
+                  // one tap when this browser's key is all there is, else
+                  // the sheet.
+                  onSignIn: async (offered: SignInMethod[], sphinx?: SignInAsk) => {
+                    const methods = usableMethods(offered, { sphinx: !!sphinx });
                     if (!methods.length) throw new Error("no sign-in this browser can do here");
+                    let note: string | undefined;
+                    if (sphinx && methods.includes("sphinx")) {
+                      try {
+                        const r = await signInWithSphinx(sphinx, from);
+                        if (r.outcome === "signed") return r.session;
+                        // Declined, with nothing else to offer: not signed in.
+                        if (r.declined && methods.length === 1) return null;
+                        note = signInNote(r, sphinx.name);
+                      } catch (err) {
+                        note = err instanceof Error ? err.message : String(err);
+                      }
+                    } else if (methods.length === 1 && methods[0] === "key") return signInWithKey(from);
                     return new Promise<VisitorSession | null>((resolve) => {
                       setSignIn({
-                        methods,
+                        // The person's own wallet first: it is who they are.
+                        methods: methods.includes("sphinx") ? ["sphinx", ...methods.filter((m) => m !== "sphinx")] : methods,
+                        ...(sphinx ? { sphinx } : {}),
+                        ...(note ? { note } : {}),
                         done: (s) => {
                           setSignIn(null);
                           resolve(s);
@@ -313,7 +331,15 @@ export function AppHost(props: {
           {...(from ? { seller: hostOf(from) } : {})}
         />
       )}
-      {signIn && <SignInSheet methods={signIn.methods} onDone={signIn.done} />}
+      {signIn && (
+        <SignInSheet
+          methods={signIn.methods}
+          onDone={signIn.done}
+          {...(signIn.sphinx ? { sphinx: signIn.sphinx } : {})}
+          {...(signIn.note ? { note: signIn.note } : {})}
+          {...(from ? { from, seller: hostOf(from) } : {})}
+        />
+      )}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

@@ -46,7 +46,8 @@ is hand-rolled; ids, timeouts and errors are the SDK's.
   (§4.4).
 - **A native host** (Peel) is reached through its web view's main frame, which
   is strut's UI relaying what the app's frame sent it (§1.1). strut's UI also
-  asks it, on its OWN account, to pay for a visitor's credit (§1.2).
+  asks it, on its OWN account, to pay for a visitor's credit and to sign a
+  visitor in (§1.2).
 
 ### 1.1 The native bridge
 
@@ -160,18 +161,20 @@ always resolved, `{ result }` or `{ error }`. They are `HostWalletMessage`
 in `protocol.ts`:
 
 ```
-{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_status", "buy_credit_cancel"], wallet?: "Peel" } }
+{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_status", "buy_credit_cancel", "sign_in"], wallet?: "Peel" } }
 { v: 1, op: "buy_credit", purchase: CreditPurchase }    → { result: Payment } | { error }   (a pay method's answer, §3, §4.1)
 { v: 1, op: "buy_credit_status", payment_hash }         → { result: Payment } | { error }   (where that purchase stands now)
 { v: 1, op: "buy_credit_cancel", payment_hash }         → { result: {} }
+{ v: 1, op: "sign_in", seller, app, challenge }         → { result: { key, sig } } | { error }   (below, "Signing a visitor in")
 ```
 
 **`host_capability`** is asked ONCE per page, as a visitor's page connects,
 so no sheet waits on it.
 - `ops` names what the native host takes: `buy_credit`, and optionally
-  `buy_credit_status` and `buy_credit_cancel`. strut's UI leaves out an op it
-  does not know (a newer native host's), never reading the whole answer as
-  none (`hostWalletCapabilityOf`; the `host_capabilities` vectors, §7).
+  `buy_credit_status` and `buy_credit_cancel`; `sign_in` when its wallet
+  signs a visitor in. strut's UI leaves out an op it does not know (a newer
+  native host's), never reading the whole answer as none
+  (`hostWalletCapabilityOf`; the `host_capabilities` vectors, §7).
 - `wallet` is its name for a person ("Peel", at most 40 characters): what
   strut's sheet calls it ("Confirm in Peel", "Pay with Peel").
 - Any other answer, or none within 5 s (`WALLET_PROBE_MS`), means no
@@ -289,6 +292,97 @@ native host made, whose answer was lost or came late, still buys the credit.
 A call pays at most once: a seller that answers `payment_required` again
 after a payment is not paid again. The page is told its payment is kept as
 credit.
+
+#### Signing a visitor in: `sign_in`
+
+A visitor's page may ask its host to sign the visitor in
+(`useVisitor().signIn()`, plans/app-repos.md §5). When the seller offers the
+`sphinx` method and the native host's wallet holds the person's Sphinx
+account, strut's UI asks the native host to sign the SELLER's visitor
+challenge (plans/app-payments.md §4.4). The person is then the same visitor
+on every app: `secp:<their key>`. Like `buy_credit`, it is the host's own
+op: no app connection carries it, and the page never sees the request, the
+challenge or a key.
+
+```
+app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/visitors/challenge──▶ the seller
+                                        │◀── { challenge, methods: [… "sphinx" …], visitorKey }
+                                        │ checks the request (below)
+                                        ├──{ v: 1, op: "sign_in", seller, app, challenge }──▶ native host ── its sheet, the person signs in
+                                        │◀── { result: { key, sig } }
+                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig } ──▶ the seller
+                                        │◀── { actor: "secp:…", token, exp }   kept by strut's UI, per seller
+```
+
+**The request** (`SignInRequest`, checked by `signInRequestProblems`; the
+`sign_in_requests` vectors, §7):
+
+| Field | |
+|---|---|
+| `seller` | the strut server the visitor signs in to, as its base URL (`isSellerUrl`, as a purchase's) |
+| `app` | `{ name, version, title }`: the public app whose page asked, as the seller serves it |
+| `challenge` | the seller's `GET /visitors/challenge`: `strut-visitor.<claims>.<hmac>`, claims `{ host, visitorKey, nonce, exp }` as base64url JSON (`visitorChallengeClaims`), `exp` in unix MILLISECONDS. The HMAC is the seller's to check |
+
+**The answer** (`SignInAnswer`, read by `readSignInReply`; the
+`sign_in_replies` vectors, §7): `{ result: { key, sig } }`, both hex —
+- `key`: the compressed secp256k1 key that signed, 33 bytes;
+- `sig`: a Lightning signed message over the challenge's UTF-8 bytes, 65
+  bytes `[31 + recovery id] ‖ r ‖ s`, a recoverable ECDSA signature over
+  `sha256(sha256("Lightning Signed Message:" ‖ challenge))`. That is what
+  sphinx-rs's `sign_bytes` answers (`Sphinxrs.signBytes`), and the
+  `sign_in_signatures` vectors (§7) are its real output.
+
+Or `{ error }` (§4.1): `USER_REJECTED` when the person declined,
+`RESTRICTED` for no tap (below) or a sheet still up when the challenge
+ended, `BAD_REQUEST` for a request the native host refused.
+
+**What strut's UI checked before asking** (`web/src/native-pay.ts`
+`signInAsk`), so a seller's junk is never put to the wallet:
+`signInRequestProblems` — above all, that the challenge is a strut visitor
+challenge minted for the seller's host and has not ended.
+
+**What the native host does:**
+1. Answers only the main frame it trusts (§1.1's rule): on the Mac, its own
+   strut UI hosting a stranger's app (specs/API.md §17.9); on the iPhone, a
+   served box it opened directly, at the origin it loaded
+   (plans/app-payments.md §5.3, R7).
+2. Runs `signInRequestProblems`, and holds the challenge's `host` to the
+   seller — on the iPhone, to the host name of the ORIGIN IT LOADED,
+   whatever `seller` and `app` say. The seller's host name is the URL's,
+   lower case, with no port and no IPv6 brackets (`sellerHost`). A challenge
+   for any other host is `BAD_REQUEST` and is never signed: one box never
+   gets a signature that logs in to another.
+3. Signs ONLY a strut visitor challenge: never a message a page chose.
+   There is no `sign_message` method (§2), and an app's
+   `window.webln.signMessage` throws `UnsupportedMethodError`.
+4. Applies §5.4's gesture rule: `RESTRICTED` unless the person tapped in the
+   web view within the last few seconds. strut's UI asks as soon as the page
+   calls `signIn()`, which a page does on a press; otherwise strut's own
+   sheet shows **Sign in with ⟨wallet⟩**, whose press is a fresh tap, and
+   sends `sign_in` again.
+5. Shows its own sheet, unless the person's connection with this page
+   already grants sign-in for this seller (then a toast):
+   - the seller by its host;
+   - the app's title, "on <seller>";
+   - **Sign in as you**: the person's root Sphinx key (account 0: the key
+     `Sphinxrs.pubkeyFromSeed(idx: 0)` names), the same visitor on every
+     app;
+   - or **as a new identity for this app**: the domain's child key for the
+     challenge's `host` (LUD-05's derivation), unlinkable across apps.
+     When the challenge's `visitorKey` is `domain`, only this one. Which
+     key it is, is the native host's; strut only checks the signature.
+6. Answers as soon as the person acts: `{ key, sig }`, or `USER_REJECTED`.
+7. Answers before the challenge's `exp`. A sheet still up then is taken
+   down and answered `RESTRICTED`: the seller refuses a challenge past its
+   minute, and strut's UI stops waiting there.
+
+**What strut's UI does with the answer:**
+
+| Answer | Outcome |
+|---|---|
+| `{ key, sig }` | **signed**: `POST <seller>/visitors/session { challenge, method: "sphinx", key, sig }`; the seller's `ln-message` verifier recovers the key from the signature and holds it to `key`. The session (`{ actor, token, exp }`) is kept by strut's UI under the seller, and its token rides on every later call of that seller's page (`x-strut-visitor` on `/public/mcp`) |
+| `USER_REJECTED` | not signed in; strut's sheet offers the seller's other methods, if any |
+| anything else | strut's sheet, with why, and **Sign in with ⟨wallet⟩** |
 
 ## 2. Methods
 
@@ -546,7 +640,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds nine lists. Every implementation runs all of them in its own
+`vectors.json` holds twelve lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -559,6 +653,9 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `host_capabilities` | `{ name, capability, expect }` | `hostWalletCapabilityOf` reads a native host's `host_capability` answer as `expect`: an op it does not know left out, `null` for no capability (§1.2) |
 | `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
 | `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` (or `buy_credit_status`) as `outcome`: `paid` with `preimage`; `pending`, a payment sent, after which the invoice is not shown again; or `fallback` with `code`, nothing sent (`readCreditReply`). A native host checks that its own answers come to what it means |
+| `sign_in_requests` | `{ name, now, request, valid }` | a `sign_in` request is (or is not) one the native host may sign at `now` (ms) (`signInRequestProblems`, §1.2): above all, the challenge is a strut visitor challenge for the SELLER's host. A native host refuses every invalid one |
+| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
+| `sign_in_signatures` | `{ name, signer?, message, key, sig, actor }` | Lightning signed messages over strut challenges, made by Sphinx's own signer (sphinx-rs `sign_bytes` / `pubkey_from_seed`, `scripts/ln-message-fixtures`): with `signer` (`{ seed, idx, network }`), `sig` is exactly what that signer makes of `message` and `key` its key — a native host's signing reproduces both; strut's `ln-message` verifier (src/visitors.ts) names `actor`, or refuses (`null`): a tampered message, another key, a changed recovery byte, no recovery byte, an uncompressed key |
 | `scenarios` | a host's behaviour, below | the host does what each step says |
 
 **A scenario** starts from:

@@ -861,18 +861,20 @@ export function isWalletCapability(c: unknown): c is WalletCapability {
 // again itself.
 
 /** The ops a host page sends that are its own, not an app's. */
-export const HOST_WALLET_OPS = ["buy_credit", "buy_credit_status", "buy_credit_cancel"] as const;
+export const HOST_WALLET_OPS = ["buy_credit", "buy_credit_status", "buy_credit_cancel", "sign_in"] as const;
 export type HostWalletOp = (typeof HOST_WALLET_OPS)[number];
 
 /** UI → native, the host's own: what the native host takes
  *  (`host_capability`), a purchase (`buy_credit`), where a purchase it
- *  answered `pending` stands now (`buy_credit_status`), and taking down the
- *  sheet of a purchase the page stopped waiting for (`buy_credit_cancel`). */
+ *  answered `pending` stands now (`buy_credit_status`), taking down the
+ *  sheet of a purchase the page stopped waiting for (`buy_credit_cancel`),
+ *  and signing a visitor in to a public app (`sign_in`). */
 export type HostWalletMessage =
   | { v: 1; op: "host_capability" }
   | { v: 1; op: "buy_credit"; purchase: CreditPurchase }
   | { v: 1; op: "buy_credit_status"; payment_hash: string }
-  | { v: 1; op: "buy_credit_cancel"; payment_hash: string };
+  | { v: 1; op: "buy_credit_cancel"; payment_hash: string }
+  | SignInRequest;
 
 /** What `host_capability` answers: `{ result: HostWalletCapability }`. A
  *  native host that does not know the op answers anything else, or nothing:
@@ -1053,4 +1055,160 @@ export async function readCreditReply(reply: unknown, paymentHash: string): Prom
     // No WebCrypto here (an insecure page): unproven, the claim decides.
   }
   return proven ? { outcome: "paid", preimage: pay.preimage!.toLowerCase() } : { outcome: "pending" };
+}
+
+// ── Signing a visitor in (specs/WALLET.md §1.2 "sign_in") ──────────────────
+// A public app's page asks its host to sign the visitor in
+// (`useVisitor().signIn()`, plans/app-repos.md §5). In a native host's web
+// view (Peel) whose wallet holds the person's Sphinx account, strut's UI
+// fetches the SELLER's visitor challenge and asks the native host to sign
+// it — method `sphinx`, checked by the seller's `ln-message` verifier. Not
+// an app's call: the page never sees the request, the challenge or a key.
+// The native host signs ONLY a strut visitor challenge whose `host` is the
+// seller's (on the iPhone: the origin it loaded), never a message a page
+// chose: there is no general `sign_message`.
+
+/** What every strut visitor challenge starts with (src/auth.ts). */
+export const VISITOR_CHALLENGE_PREFIX = "strut-visitor.";
+/** The longest challenge a sign-in carries; strut's are about 200. */
+export const VISITOR_CHALLENGE_MAX = 2048;
+
+/** What a strut visitor challenge claims — read, not verified: its HMAC is
+ *  the seller's to check. `exp` is unix MILLISECONDS. */
+export interface VisitorChallengeClaims {
+  /** The seller's host name, lower case, no port: what it was minted for. */
+  host: string;
+  /** Whose key signs: the person's root key, or the domain's child key
+   *  (LUD-05, derived from `host`). */
+  visitorKey: "root" | "domain";
+  nonce: string;
+  exp: number;
+}
+
+/** UI → native: sign the visitor in to `seller`'s public `app` by signing
+ *  `challenge` (the seller's `GET /visitors/challenge`). */
+export interface SignInRequest {
+  v: 1;
+  op: "sign_in";
+  /** The strut server the visitor signs in to, as its base URL
+   *  (`isSellerUrl`). */
+  seller: string;
+  /** The public app whose page asked, as the seller serves it. */
+  app: { name: string; version: string; title: string };
+  challenge: string;
+}
+
+/** Native → UI, `{ result: SignInAnswer }`: the key that signed and its
+ *  Lightning signed message over the challenge's UTF-8 bytes — what
+ *  sphinx-rs's `sign_bytes` answers — both hex. */
+export interface SignInAnswer {
+  /** The compressed secp256k1 key, 33 bytes: the root key's, or the
+   *  domain's child key's. */
+  key: string;
+  /** 65 bytes, `[31 + recovery id] ‖ r ‖ s`, over
+   *  sha256(sha256("Lightning Signed Message:" ‖ challenge)). */
+  sig: string;
+}
+
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+function base64urlText(s: string): string | undefined {
+  if (!B64URL.test(s)) return undefined;
+  try {
+    const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+    const bin = atob(b64);
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a challenge claims, or undefined for anything that is not a strut
+ *  visitor challenge: `strut-visitor.<base64url JSON>.<base64url HMAC>`. */
+export function visitorChallengeClaims(challenge: unknown): VisitorChallengeClaims | undefined {
+  if (typeof challenge !== "string" || challenge.length > VISITOR_CHALLENGE_MAX || !challenge.startsWith(VISITOR_CHALLENGE_PREFIX)) return undefined;
+  const parts = challenge.slice(VISITOR_CHALLENGE_PREFIX.length).split(".");
+  if (parts.length !== 2 || !B64URL.test(parts[1]!)) return undefined;
+  const text = base64urlText(parts[0]!);
+  if (text === undefined) return undefined;
+  let c: Record<string, unknown>;
+  try {
+    c = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  if (!c || typeof c !== "object" || Array.isArray(c)) return undefined;
+  const { host, visitorKey, nonce, exp } = c;
+  if (typeof host !== "string" || !host || typeof nonce !== "string" || !nonce || !isInt(exp, 1)) return undefined;
+  if (visitorKey !== "root" && visitorKey !== "domain") return undefined;
+  return { host, visitorKey, nonce, exp };
+}
+
+/** A seller's host name as a challenge names it: the URL's host name, lower
+ *  case, with no port and no IPv6 brackets. Undefined for no URL. */
+export function sellerHost(seller: unknown): string | undefined {
+  if (typeof seller !== "string") return undefined;
+  try {
+    return new URL(seller).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch {
+    return undefined;
+  }
+}
+
+/** What is wrong with a `sign_in` request; none when the host may show its
+ *  sheet. Above all: the challenge is a strut visitor challenge minted for
+ *  the SELLER's host (on the iPhone the native host checks it against the
+ *  origin it loaded, not `seller`), and has not ended at `nowMs`. */
+export function signInRequestProblems(raw: unknown, nowMs = Date.now()): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return ["a sign-in request must be an object"];
+  const r = raw as Record<string, unknown>;
+  const out: string[] = [];
+  if (r.v !== 1 || r.op !== "sign_in") out.push(`a sign-in request is { v: 1, op: "sign_in", … }`);
+  if (!isSellerUrl(r.seller)) out.push("seller must be a strut server's base URL: https, or http on loopback, with no credentials, query or fragment");
+  const app = r.app as Record<string, unknown> | undefined;
+  if (!app || typeof app !== "object") out.push("app is missing");
+  else {
+    for (const k of ["name", "version", "title"] as const) {
+      const v = app[k];
+      if (typeof v !== "string" || !v) out.push(`app.${k} must be a string`);
+      else if (v.length > CREDIT_TEXT_MAX) out.push(`app.${k} is longer than ${CREDIT_TEXT_MAX} characters`);
+    }
+  }
+  const claims = visitorChallengeClaims(r.challenge);
+  if (!claims) out.push("challenge must be a strut visitor challenge (strut-visitor.<claims>.<hmac>): nothing else is signed");
+  else {
+    const host = sellerHost(r.seller);
+    if (host !== undefined && claims.host !== host) out.push(`the challenge is for ${claims.host}, not the seller ${host}: never signed`);
+    if (claims.exp <= nowMs) out.push("the challenge has ended");
+  }
+  return out;
+}
+
+/** What the host does with the native host's answer to `sign_in`: `signed`,
+ *  the key and signature to post (`POST <seller>/visitors/session { challenge,
+ *  method: "sphinx", key, sig }`), or `refused` with the code — the person
+ *  declined (`USER_REJECTED`), the native host wants a fresh tap
+ *  (`RESTRICTED`), refused the request (`BAD_REQUEST`) — or an answer that
+ *  is neither (`INTERNAL`). */
+export type SignInReplyOutcome =
+  | { outcome: "signed"; key: string; sig: string }
+  | { outcome: "refused"; code: WalletErrorCode; message: string };
+
+const KEY_HEX = /^0[23][0-9a-fA-F]{64}$/;
+const SIG_HEX = /^[0-9a-fA-F]{130}$/;
+
+export function readSignInReply(reply: unknown): SignInReplyOutcome {
+  const refused = (code: WalletErrorCode, message: string): SignInReplyOutcome => ({ outcome: "refused", code, message });
+  if (typeof reply !== "object" || reply === null) return refused("INTERNAL", "the wallet answered with neither a result nor an error");
+  const r = reply as { result?: unknown; error?: unknown };
+  if ("error" in r) {
+    const e = r.error as { message?: unknown; data?: { code?: unknown } } | undefined;
+    const code = isWalletErrorCode(e?.data?.code) ? e!.data!.code : "OTHER";
+    return refused(code, typeof e?.message === "string" && e.message ? e.message : code);
+  }
+  const a = r.result as Partial<SignInAnswer> | null | undefined;
+  if (!a || typeof a !== "object" || typeof a.key !== "string" || typeof a.sig !== "string" || !KEY_HEX.test(a.key) || !SIG_HEX.test(a.sig)) {
+    return refused("INTERNAL", "the wallet's answer is not { key, sig }: a compressed key and a 65-byte signature, hex");
+  }
+  return { outcome: "signed", key: a.key.toLowerCase(), sig: a.sig.toLowerCase() };
 }

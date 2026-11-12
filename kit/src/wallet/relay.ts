@@ -10,9 +10,10 @@
  *  `setRequestHandler` and `notification`. */
 import {
   NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, hostWalletCapabilityOf,
-  isWalletCapability, isWalletErrorCode, nativeAppKey, notificationProblems, readCreditReply, walletErrorBody, walletRequestMethod,
+  isWalletCapability, isWalletErrorCode, nativeAppKey, notificationProblems, readCreditReply, readSignInReply, walletErrorBody, walletRequestMethod,
   type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWalletApp, type NativeWalletMessage,
-  type NativeWalletReply, type WalletCapability, type WalletErrorBody, type WalletMethod, type WalletNotification,
+  type NativeWalletReply, type SignInReplyOutcome, type SignInRequest, type WalletCapability, type WalletErrorBody, type WalletMethod,
+  type WalletNotification,
 } from "./protocol.js";
 
 /** A StandardSchemaV1 that takes any value: the SDK wants one for a custom
@@ -242,6 +243,27 @@ export async function creditStatusNatively(native: NativeWallet, paymentHash: st
     return r.outcome === "fallback" && r.code !== "PAYMENT_FAILED" ? { outcome: "pending" } : r;
   } catch {
     return { outcome: "pending" };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Sign a visitor in through the native wallet (specs/WALLET.md §1.2
+ *  "sign_in"): one request, read with `readSignInReply`. The wait ends at
+ *  `timeoutMs` — the challenge's end: the seller refuses it after — as a
+ *  `RESTRICTED` refusal. A rejected message is `INTERNAL`. Never throws. */
+export async function signInNatively(native: NativeWallet, request: SignInRequest, o: { timeoutMs: number }): Promise<SignInReplyOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (!(o.timeoutMs > 0)) return { outcome: "refused", code: "RESTRICTED", message: "the sign-in challenge has ended" };
+    const ended = new Promise<SignInReplyOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ outcome: "refused", code: "RESTRICTED", message: "the wallet did not answer before the sign-in challenge ended" }), o.timeoutMs);
+    });
+    const answered = native.postMessage(request).then(
+      (reply) => readSignInReply(reply),
+      (err): SignInReplyOutcome => ({ outcome: "refused", code: "INTERNAL", message: `the wallet did not answer: ${err instanceof Error ? err.message : String(err)}` }),
+    );
+    return await Promise.race([answered, ended]);
   } finally {
     if (timer) clearTimeout(timer);
   }

@@ -569,6 +569,7 @@ The server side is small and fixed:
 | `bip340` | a Schnorr signature over the challenge's sha256 by an x-only secp256k1 key (`@noble/curves`, already a dependency) | a Sphinx key, a Nostr key, a browser-made secp256k1 key |
 | `ecdsa-secp256k1` | LNURL-auth's DER signature over `k1` by a linking key | any Lightning wallet that does LNURL-auth |
 | `ecdsa-p256` | a raw P-256 signature by a WebCrypto key | a non-extractable browser key |
+| `ln-message` | a Lightning signed message over the challenge (65 bytes, `[31 + recovery id] ‖ r ‖ s` over sha256d("Lightning Signed Message:" ‖ challenge)), the recovered key held to the one sent | a Sphinx account, signed as sphinx-rs's `sign_bytes` signs (`sphinx`, §5.3 item 6; `app-payments.md` §4.4) |
 | `webauthn` | an assertion (authenticator data, client data, signature) against a credential the box registered at first use | a passkey with no wallet behind it |
 
 **Actor ids.** One per key, not per method:
@@ -637,8 +638,10 @@ they could be built.
    - **The key.** The root key by default, so one Sphinx account is one
      visitor on every app and every box. The domain's child key when the
      app asks (`visitorKey: domain`) or the person picks it (§5.2).
-   - **Through Peel's wallet connection.** **Next**, ruled 2026-11-10 and
-     designed in `app-payments.md` §4.4 (R6), not here.
+   - **Through Peel's wallet connection.** Ruled 2026-11-10 and designed
+     in `app-payments.md` §4.4 (R6), not here. strut's half *BUILT,
+     stakwork/strut#PRNUM* (the `ln-message` verifier, the method, the
+     `sign_in` host request and strut's UI sending it); Peel's open.
    - **Through the passkey wallet at `wallet.sphinx.chat`** (§5.4).
      *Later.* It is a Sphinx account of its own (ruled 7), so a different
      actor from the person's Peel account under the same method.
