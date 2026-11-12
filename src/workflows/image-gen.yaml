@@ -5,8 +5,9 @@ name: image-gen
 # link to it. `cost` is what the model call cost in dollars, as the step
 # reported it: a public run of this workflow is charged base + markup × it.
 #
-# Through the deployment's LLM gateway: xai/…, openai/… and google/… models.
-# OpenRouter image models only where calls go to the provider directly.
+# Through the deployment's LLM gateway: xai/…, openai/… and google/… models,
+# and openrouter/… models once the gateway holds its `openrouter-images`
+# provider (stakwork/stakgraph#1859) and Hive lists it in the virtual keys.
 #
 # Input:  { prompt, model? }
 # Output: { image, model, cost, artifacts: [{ id: image, kind: image, title, path }] }

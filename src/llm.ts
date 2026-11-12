@@ -227,10 +227,9 @@ export interface ResolvedMediaModel {
  * Name → a media model of `kind`, as `resolveModel` resolves a language
  * model: the same names (`provider/id`), keys and `llmAuth` grant. A grant
  * sends the call through its gateway when the gateway can route that kind
- * for the provider (aieo's `mediaProviders`); when it cannot (OpenRouter
- * images: Bifrost has no image generation for it), the call goes to the
- * provider directly only if the grant allows that (`direct`), else it is
- * refused before anything is sent. Throws for a provider that makes no such
+ * for the provider (aieo's `mediaProviders`); when it cannot, the call goes
+ * to the provider directly only if the grant allows that (`direct`), else it
+ * is refused before anything is sent. Throws for a provider that makes no such
  * media (anthropic, maple, …).
  */
 export async function resolveMediaModel(kind: MediaKind, opts: ResolveModelOptions): Promise<ResolvedMediaModel> {

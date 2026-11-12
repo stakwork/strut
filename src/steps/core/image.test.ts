@@ -182,23 +182,19 @@ describe("image step", () => {
       assert.equal(out.cost, 0.04, "per image, from the datasheet");
     });
 
-    it("OpenRouter, which the gateway cannot route, is refused before anything is sent", async () => {
-      stub = stubFetch(() => ({}));
-      await assert.rejects(
-        image.run({ prompt: "a fox", model: "openrouter/google/gemini-2.5-flash-image" }, ctx({}, { llmAuth: grant(false) })),
-        /openrouter image models cannot go through this deployment's LLM gateway.*Through the gateway: google, openai, xai/,
-      );
-      assert.equal(stub.sent.length, 0);
-    });
-
-    it("…and goes to OpenRouter directly, with the deployment's key, where the grant allows it", async () => {
-      stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { prompt_tokens: 16, completion_tokens: 4096, total_tokens: 4112, cost: 0.014 } }));
-      const out = await image.run({ prompt: "a fox", model: "openrouter/black-forest-labs/flux.2-klein-4b" }, ctx({}, { llmAuth: grant(true) }));
-      const s = stub.sent[0]!;
-      assert.equal(s.url, "https://openrouter.ai/api/v1/images");
-      assert.equal(s.headers["authorization"], "Bearer key-for-OPENROUTER_API_KEY");
-      assert.equal(s.headers["x-macaroon"], undefined);
-      assert.equal(out.cost, 0.014);
+    it("OpenRouter rides the gateway's openrouter-images provider, whatever the grant allows, at its usage.cost", async () => {
+      // What the gateway answers for an OpenAI-type custom provider on
+      // OpenRouter's images API (stakwork/stakgraph#1859): the cost, no tokens.
+      stub = stubFetch(() => ({ data: [{ b64_json: PNG, index: 0 }], usage: { cost: 0.014 } }));
+      for (const direct of [false, true]) {
+        const out = await image.run({ prompt: "a fox", model: "openrouter/black-forest-labs/flux.2-klein-4b" }, ctx({ path: `pics/or-${direct}` }, { llmAuth: grant(direct) }));
+        const s = stub.sent.at(-1)!;
+        assert.equal(s.url, "https://gw.test/openai/v1/images/generations");
+        assert.equal(s.body.model, "openrouter-images/black-forest-labs/flux.2-klein-4b");
+        assert.equal(s.headers["authorization"], "Bearer vk-1");
+        assert.equal(s.headers["x-macaroon"], "mac-1");
+        assert.equal(out.cost, 0.014);
+      }
     });
   });
 

@@ -1331,8 +1331,7 @@ export function getModel(
 // Through a gateway (Bifrost) every kind rides the OpenAI-compatible route
 // with the model id naming the provider, as the chat models of xai and
 // google do. A provider whose entry has no `routed` cannot be reached
-// there: Bifrost's openrouter provider has no image generation (core
-// v1.10.1, providers/openrouter: `ImageGeneration` is unsupported).
+// there, and is refused before anything is sent.
 
 /** What a model of each media kind is. */
 export interface MediaModels {
@@ -1372,6 +1371,12 @@ const MEDIA_MODELS: { [K in MediaKind]: Partial<Record<Provider, MediaRoute<Medi
     },
     openrouter: {
       direct: (c) => createOpenRouter(clientSettings(c)).imageModel(c.modelId),
+      // Bifrost's own openrouter provider has no image generation (every
+      // version to v2.5.1), so the gateway holds a custom OpenAI-type
+      // provider, `openrouter-images`, on OpenRouter's images API
+      // (stakwork/stakgraph#1859); a virtual key reaches it only once Hive
+      // lists it among the key's providers.
+      routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`openrouter-images/${c.modelId}`),
       reportsCost: true,
     },
   },
