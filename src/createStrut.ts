@@ -91,6 +91,7 @@ import { createAutomations, type Automations } from "./scheduler.js";
 import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
+import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
@@ -184,7 +185,7 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -446,6 +447,11 @@ export interface StrutOptions<TServices = unknown> {
    *  object to tune the guards. Every root run the last death cut off is
    *  considered (`AutoResumeOptions.since`, from `<dataDir>/boot.json`). */
   autoResume?: boolean | AutoResumeOptions;
+
+  /** How long a WAKE of a parked run (src/park.ts) waits for others of the
+   *  same run before it resumes it, in ms: a burst of answers is one resume.
+   *  1000 by default. */
+  wakeDelayMs?: number;
 
   /** The largest run log a durable resume will READ, in bytes — boot-time
    *  auto-resume and `POST …/resume` alike: a log past it is skipped (one
@@ -903,6 +909,13 @@ export interface Strut<TServices = unknown> {
 
   /** Stop the server started by `listen()` (no-op otherwise). */
   close: () => Promise<void>;
+
+  /** Parked runs (src/park.ts, plans/human-steps.md §2): a SOURCE — what a
+   *  step parks on with `ctx.park("<prefix>:<id>")` — registers under its
+   *  prefix and gets the way it wakes a run when that settles. Registering
+   *  asks it about every run already waiting on the prefix, so a settle the
+   *  server never woke for (a restart in between) wakes now. */
+  parking: { register(prefix: string, source: ParkSource): ParkWaker };
 }
 
 export interface StrutRunOptions<TServices = unknown> {
@@ -1101,6 +1114,43 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
+  // Parked runs (src/park.ts, plans/human-steps.md §2): a run that waits
+  // leaves memory as `waiting`; a source wakes it, and the wake is the
+  // durable resume (§5) marked `woken`. The waiting runs are kept beside the
+  // run store's kind, so a source's registration at the next boot finds
+  // what settled while no process listened.
+  const parking = createParking({
+    index: store instanceof MemoryRunStore ? new MemoryWaitingIndex() : new FileWaitingIndex(dataDir),
+    delayMs: opts.wakeDelayMs ?? 1000,
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    holdReason: () => drain.refusal() ?? null,
+    // Under the run's lock, so a cancel of the waiting run never interleaves
+    // with its wake (`cancelWaitingRun`).
+    wake: (workflow, runId) =>
+      withLock(`park:${workflow}/${runId}`, async () => {
+        if (controllers.has(`${workflow}/${runId}`)) return { waiting: false as const };
+        if (!(await stillWaiting(workflow, runId))) return { waiting: false as const };
+        const draining = drain.refusal();
+        if (draining) return { refused: draining };
+        const prepared = await prepareDurableResume(workflow, runId, {});
+        if (!prepared.ok) return { refused: prepared.error };
+        // Two resumes never launch onto one log: checked with no await
+        // before the launch registers the controller.
+        if (controllers.has(`${workflow}/${runId}`)) return { waiting: false as const };
+        launchDurableResume(prepared, { woken: true });
+        return { woken: true as const };
+      }),
+  });
+  /** Does a run still wait: its summary says so, or its log was cut off
+   *  right after `run.waiting`, before the summary (then boot's auto-resume
+   *  may have resumed it already, which the caller's liveness check sees). */
+  const stillWaiting = async (workflow: string, runId: string): Promise<boolean> => {
+    const summary = await store.getRunSummary(workflow, runId);
+    if (summary) return summary.status === "waiting";
+    if (await logTooBig(workflow, runId)) return true; // the resume refuses, and says why
+    const events = await store.getRunEvents(workflow, runId);
+    return events[events.length - 1]?.type === "run.waiting";
+  };
   /** The live runs a peer launched (`origin: "peer"`), known from the
    *  launch — before `run.start` reaches the log — so a peer's cancel of the
    *  run it has just launched is never refused. A dead run is judged by its
@@ -1118,7 +1168,12 @@ export async function createStrut<TServices = unknown>(
   };
   /** The deployment's drain (src/drain.ts, `PUT /drain`). Lifting it — by
    *  hand or at its deadline — launches the wake turns it held back. */
-  const drain = createDrain({ onLift: () => void wakes.reconcile() });
+  const drain = createDrain({
+    onLift: () => {
+      void wakes.reconcile();
+      parking.flush();
+    },
+  });
   /** The builder chats with a turn running in this process (set by the chat
    *  block; none with the chat off) — what `GET /drain` waits on beside runs. */
   let liveChats = (): string[] => [];
@@ -1155,6 +1210,8 @@ export async function createStrut<TServices = unknown>(
       controllers.delete(key);
       if (controllersByRunId.get(runId) === controller) controllersByRunId.delete(runId);
       controller.detach();
+      // A wake held while the run was live goes now (src/park.ts).
+      parking.released(workflow, runId);
     };
     return { controller, untrack };
   };
@@ -1523,6 +1580,26 @@ export async function createStrut<TServices = unknown>(
     };
     ownSink = sink;
     console.log(`[events-sink] posting every run's events to ${callbackOrigin(url)}`);
+  }
+
+  // Parked runs (src/park.ts): `ctx.park` asks the bag whether a source
+  // here wakes the target; each run's end tells the bookkeeping whether it
+  // parked (kept, and its sources asked at once) or really ended.
+  {
+    const bag = services as Record<string, unknown>;
+    if (!bag["parking"]) bag["parking"] = Object.freeze({ accepts: (on: string) => parking.accepts(on) });
+    const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
+    bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
+      try {
+        await prior?.(runId, info);
+      } finally {
+        if (info?.workflow) {
+          await (info.parked ? parking.parked(info.workflow, runId, info.waitingOn ?? []) : parking.ended(info.workflow, runId)).catch((err) =>
+            console.error(`[parking] ${info.workflow}/${runId}:`, err),
+          );
+        }
+      }
+    };
   }
 
   let ownBrowser: BrowserService | undefined;
@@ -1942,7 +2019,9 @@ export async function createStrut<TServices = unknown>(
         // Check runs are never projected or verified (the recursion guard);
         // a single-step run is verified by `runStep`, once it reaches the
         // real store.
-        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
+        // A parked run is not over: it is projected and verified at its real
+        // end (src/park.ts).
+        if (info?.workflow && !info.parked && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
           const key = info.workflow;
           // With the job index, so a run launched under a job refreshes
           // its `StrutJob` (plans/job-index.md §6).
@@ -2681,7 +2760,7 @@ export async function createStrut<TServices = unknown>(
   };
 
   /** Relaunch a prepared durable resume under its ORIGINAL runId (§5). */
-  const launchDurableResume = (p: PreparedResume) => {
+  const launchDurableResume = (p: PreparedResume, how: { woken?: boolean } = {}) => {
     launchDetached(
       p.flow,
       {
@@ -2696,6 +2775,7 @@ export async function createStrut<TServices = unknown>(
       {
         journal: p.journal,
         resume: true,
+        ...(how.woken ? { woken: true } : {}),
         ...(p.version ? { version: p.version } : {}),
         ...(p.changed ? { resumeChanged: p.changed } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
@@ -2840,8 +2920,9 @@ export async function createStrut<TServices = unknown>(
         report(name, runId, "skipped", `last event ${Math.round(ageMs / 3_600_000)}h ago exceeds the ${Math.round(maxAgeMs / 3_600_000)}h age cap`);
         return "seen";
       }
-      // Durable resumes only: an unpause of a live run (`live`) is no restart.
-      const resumes = events.filter((e) => e.type === "run.resumed" && !e.live).length;
+      // Durable resumes only: an unpause of a live run (`live`) is no
+      // restart, nor is the wake of a parked one (`woken`, src/park.ts).
+      const resumes = events.filter((e) => e.type === "run.resumed" && !e.live && !e.woken).length;
       if (resumes >= maxResumes) {
         report(name, runId, "skipped", `already resumed ${resumes} times (cap ${maxResumes}) — a step may be crashing the server; resume by hand`);
         return "seen";
@@ -2934,10 +3015,22 @@ export async function createStrut<TServices = unknown>(
     const { controller, summary, exists, byPeer } = await findRun(name, runId);
     if (!exists) return { ok: false, error: `Run "${runId}" not found`, status: 404 };
     if (peer && !byPeer) return { ok: false, error: NOT_A_PEER_RUN, status: 403 };
+    // A PARKED run is cancelled where it waits (src/park.ts): finalized as
+    // cancelled, and each source told so it closes what it opened.
+    if (!controller && action === "cancel" && summary?.status === "waiting") {
+      const out = await cancelWaitingRun(name, runId);
+      if (out === "cancelled") return { ok: true, runId, state: "cancelled", status: 202 };
+      if (out === "live") return controlLiveRun(name, runId, action, peer, force);
+    }
     if (!controller) {
       return {
         ok: false,
-        error: summary ? `Run already terminal (${summary.status})` : `Run is not live (stale) — nothing to ${action}`,
+        error:
+          summary?.status === "waiting"
+            ? `Run is waiting (parked on ${(summary.waitingOn ?? []).join(", ") || "something"}) — nothing to ${action}; cancel it, or resume it to wake it now`
+            : summary
+              ? `Run already terminal (${summary.status})`
+              : `Run is not live (stale) — nothing to ${action}`,
         status: 409,
       };
     }
@@ -2960,6 +3053,28 @@ export async function createStrut<TServices = unknown>(
     await appendControlEvent(name, runId, "run.resumed");
     return { ok: true, runId, state: controller.state, status: 202 };
   };
+  /** Cancel a PARKED run (src/park.ts) under the run's lock, which its wake
+   *  takes too: its end written as any dead run's is (`finalizeDeadRun`:
+   *  `run.cancelled`, the summary, its `run.end`), each source told, and
+   *  the run's end hooks run — the projection and the verify pass a park
+   *  put off. `live` when a wake resumed it first; `gone` when it no longer
+   *  waits. */
+  const cancelWaitingRun = (name: string, runId: string): Promise<"cancelled" | "live" | "gone"> =>
+    withLock(`park:${name}/${runId}`, async () => {
+      if (controllers.has(`${name}/${runId}`)) return "live";
+      const summary = await store.getRunSummary(name, runId);
+      if (summary?.status !== "waiting") return "gone";
+      const events = await store.getRunEvents(name, runId);
+      await finalizeDeadRun(name, runId, events, "cancelled");
+      await parking.cancelled(name, runId, summary.waitingOn ?? []);
+      const origin = events.find((e) => e.type === "run.start")?.origin;
+      try {
+        await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown }).onRunEnd?.(runId, { workflow: name, ...(origin ? { origin } : {}) });
+      } catch (err) {
+        console.error(`[parking] the end hooks of cancelled run ${name}/${runId} failed:`, err);
+      }
+      return "cancelled";
+    });
   /** The chat-tool view of controlLiveRun: same result minus the HTTP code. */
   const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume", force = false) => {
     const { status: _status, ...rest } = await controlLiveRun(name, runId, action, false, force);
@@ -6749,6 +6864,9 @@ export async function createStrut<TServices = unknown>(
       /** A durable resume onto another version: the top-level steps that
        *  re-run because they changed — recorded on `run.resumed`. */
       resumeChanged?: string[];
+      /** A durable resume that WAKES a parked run (src/park.ts): recorded
+       *  on `run.resumed` as `woken`. */
+      woken?: boolean;
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -6845,6 +6963,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
         ...(extra?.resumeChanged ? { resumeChanged: extra.resumeChanged } : {}),
+        ...(extra?.woken ? { woken: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
@@ -6884,12 +7003,16 @@ export async function createStrut<TServices = unknown>(
         },
       )
       .then(async (res) => {
+        // A PARKED run is not over (src/park.ts): nothing is charged, woken
+        // or posted until it really ends, after the wake that resumes it.
+        if (res.status === "waiting") return res;
         // A public run is charged when it ends (src/public-runs.ts): its
         // cost into the ledger's `daily`, which the daily cap reads.
         if (isPublic) await publicRuns.ended(flow.name, runId);
         return res;
       })
       .then(async (res) => {
+        if (res.status === "waiting") return;
         // What strut does about the end — a job turn's wake, decided before
         // its run.end goes out, which says so; a wake turn's end — then the
         // host hears it.
@@ -9558,6 +9681,7 @@ export async function createStrut<TServices = unknown>(
   let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
 
   async function close(): Promise<void> {
+    parking.close();
     await serveBooted;
     await served?.close();
     if (bootTimer) clearTimeout(bootTimer);
@@ -9756,6 +9880,7 @@ export async function createStrut<TServices = unknown>(
     verifier,
     listen,
     close,
+    parking: { register: (prefix, source) => parking.register(prefix, source) },
   };
 }
 

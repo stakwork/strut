@@ -351,7 +351,9 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
    *  Null when it never wrote `run.start`: nothing ran. */
   const outcomeOf = async (workflow: string, runId: string): Promise<{ outcome: RunOutcome; cost: number } | null> => {
     const summary = await o.store.getRunSummary(workflow, runId);
-    if (summary) return { outcome: summary.status, cost: summary.totals?.cost ?? 0 };
+    // A public run never parks (runner.ts `parkFor`): a `waiting` summary
+    // is not one this door made, and is charged as the run it would be.
+    if (summary) return { outcome: summary.status === "waiting" ? "error" : summary.status, cost: summary.totals?.cost ?? 0 };
     const events = await o.store.getRunEvents(workflow, runId);
     if (!events.some((e) => e.type === "run.start")) return null;
     const last = events[events.length - 1]!;

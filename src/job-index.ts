@@ -76,7 +76,7 @@ export interface JobListing {
 export interface JobRunView extends JobRun {
   /** From the run's summary; without one, `running` while it executes and
    *  `stale` when a restart cut it off and it was not resumed. */
-  status: "running" | "success" | "error" | "cancelled" | "stale";
+  status: "running" | "success" | "error" | "cancelled" | "waiting" | "stale";
   durationMs?: number;
   error?: string;
   /** A sealed workflow's run: nothing of it is read past its status. */

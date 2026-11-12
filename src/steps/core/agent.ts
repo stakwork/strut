@@ -833,6 +833,12 @@ function summarizeForEvent(v: unknown): string {
  * Each tool's `toModelOutput` is `registryToolModelOutput`: a step that marks
  * its output with `withMedia` shows the model the media beside the JSON.
  */
+/** `ctx.park` for an agent's tool call: the call fails, which the model
+ *  reads (src/park.ts) — an agent cannot wait in the middle of a turn. */
+const refuseParkInTool = (on: string): never => {
+  throw new Error(`park_refused: this step waits (${on}); an agent cannot wait in the middle of a turn — run it as a step of the workflow`);
+};
+
 export function buildRegistryTools(
   names: string[] | undefined,
   registry: StepRegistry | undefined,
@@ -904,9 +910,14 @@ export function buildRegistryTools(
         }
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
-        const childCtx: StepContext = options?.strutToolPath
-          ? { ...base, agentTool: true, path: options.strutToolPath }
-          : { ...base, agentTool: true };
+        // A tool-step cannot PARK (src/park.ts): a turn cannot be resumed
+        // mid-loop, so a step that would wait fails this call instead.
+        const childCtx: StepContext = {
+          ...base,
+          agentTool: true,
+          ...(options?.strutToolPath ? { path: options.strutToolPath } : {}),
+          park: refuseParkInTool,
+        };
         if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
         // An error the tool-step lets escape fails this call, which the model
         // reads, rather than the whole agent (src/escaped-errors.ts).

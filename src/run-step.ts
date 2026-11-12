@@ -158,6 +158,9 @@ export async function runSingleStep(
     ...(opts.app ? { app: opts.app } : {}),
     ...(pkg ? { package: pkg } : {}),
     ...(opts.aiAuthored ? { aiAuthored: true } : {}),
+    // Nothing would wake it: a single-step run is not kept to be resumed
+    // (src/park.ts), so a step that parks fails here instead.
+    noPark: "a single-step run cannot wait — run the step in a workflow",
     onEvent: (e) => {
       events.push(e);
     },
@@ -170,7 +173,8 @@ export async function runSingleStep(
 
   return {
     runId,
-    status: result.status,
+    // `noPark` above: never "waiting".
+    status: result.status === "waiting" ? "error" : result.status,
     output: result.output,
     error: result.error,
     events,

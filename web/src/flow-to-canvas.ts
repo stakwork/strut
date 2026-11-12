@@ -59,6 +59,8 @@ const STATUS_ERROR = "#ef4444";
 const STATUS_RUNNING = "#f59e0b";
 const STATUS_PENDING = "#6b7689";
 const STATUS_SKIPPED = "#4b5563";
+/** A PARKED step (src/park.ts): it waits for something outside the run. */
+const STATUS_WAITING = "#a78bfa";
 
 const PIN_COLOR = "#f5c56b";
 
@@ -121,6 +123,19 @@ function renderStatusIndicator(ctx: SlotContext): unknown {
       createElement("circle", {
         cx, cy, r: r * 0.4,
         fill: STATUS_RUNNING, opacity: 0.9,
+      }),
+    );
+  }
+
+  if (status === "waiting") {
+    // An hourglass: the step parked, and runs again when the run is woken.
+    const w = r * 0.45;
+    const h = r * 0.6;
+    return createElement("g", { pointerEvents: "none" },
+      createElement("title", null, "waiting"),
+      createElement("path", {
+        d: `M ${cx - w} ${cy - h} L ${cx + w} ${cy - h} L ${cx - w} ${cy + h} L ${cx + w} ${cy + h} Z`,
+        fill: "none", stroke: STATUS_WAITING, strokeWidth: 1.6, strokeLinejoin: "round",
       }),
     );
   }
@@ -339,9 +354,11 @@ function stepStatus(
   const hasError = stepEvts.some((e) => e.type === "step.error");
   const hasEnd = stepEvts.some((e) => e.type === "step.end");
   const hasSkipped = stepEvts.some((e) => e.type === "step.skipped");
+  const hasParked = stepEvts.some((e) => e.type === "step.parked");
   if (hasError) return "error";
   if (hasSkipped) return "skipped";
   if (hasEnd) return "success";
+  if (hasParked) return "waiting";
   return "running";
 }
 
