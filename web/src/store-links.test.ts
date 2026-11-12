@@ -63,11 +63,12 @@ test("an index followed from a link is filed under its host", () => {
 test("the apps across the hits come first, by title; the concept roots by how much sits under them", () => {
   const can = { spends: false, acts: false, code: false };
   const hits = [
-    { package: "acme/linear", version: "1.4.0", detail: { apps: [{ name: "issues", title: "Linear Issues", can }, { name: "cycles", title: "Cycle Report", can }] } },
-    { package: "acme/bare", version: "0.1.0" },
-    { package: "openlaw/civil", version: "12", detail: { apps: [{ name: "deadlines", title: "Deadline Calculator", can }] } },
+    { package: "acme/linear", version: "1.4.0", digest: "sha256:a", detail: { apps: [{ name: "issues", title: "Linear Issues", can }, { name: "cycles", title: "Cycle Report", can }] } },
+    { package: "acme/bare", version: "0.1.0", digest: "sha256:b" },
+    { package: "openlaw/civil", version: "12", digest: "sha256:c", detail: { apps: [{ name: "deadlines", title: "Deadline Calculator", can }] } },
   ];
   assert.deepEqual(appsOf(hits).map((a) => `${a.app.title} (${a.pkg})`), ["Cycle Report (acme/linear)", "Deadline Calculator (openlaw/civil)", "Linear Issues (acme/linear)"]);
+  assert.equal(appsOf(hits)[1]!.digest, "sha256:c", "each with its release, for the screenshot's link");
   const roots = conceptRoots([
     { name: "Law" },
     { name: "Civil procedure", parents: ["Law"] },

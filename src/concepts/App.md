@@ -112,6 +112,8 @@ items still call each other by their bare names.
 title: Benchmark
 description: Runs of score-wf over time.
 icon: bar-chart-3
+screenshots:                   # what the package store shows (below), in order
+  - { file: public/runs.png, caption: Every run of score-wf, newest first }
 grants:
   workflows: [score-wf]        # the app's ROUTINES: run/* on these — list, read, launch, cancel
   steps: [graph/graph-get]     # cheap, deterministic steps it may call — never llm / agent / exec
@@ -156,6 +158,15 @@ refuses the call (the promise rejects, or the event never fires):
 builds, and change nothing: every app has them. Any other name is a build
 error naming these. There is no `vibrate`: browsers block `navigator.vibrate`
 in a frame like an app's, and no permission turns it on — show it instead.
+
+`screenshots` are images of the app, for the package store: a package's
+app card on Browse shows the first as a square, and its package page shows
+them all, one large with the rest in a strip under it, each with its
+caption. Each is a file in the app's directory (`.png`, `.jpg`, `.webp` or
+`.gif`, at most 2 MB, at most 8), written as a path or `{ file, caption }`;
+a path that is not a file there is a build error. The app never loads
+them, and they are not in its document. An app with none shows its
+initials.
 
 ## The kit: what an app imports
 

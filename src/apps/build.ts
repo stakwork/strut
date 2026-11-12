@@ -29,7 +29,7 @@ import type { Message, OnResolveResult } from "esbuild";
 import { treeFiles, treeHash } from "../version.js";
 import { packagePrefixOf } from "../package-lookup.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
-import { readManifest, type AppManifest } from "./manifest.js";
+import { readManifest, SCREENSHOT_MAX_BYTES, type AppManifest } from "./manifest.js";
 
 export const DOCUMENT_FILE = "dist/index.html";
 export const BUILD_FILE = "dist/build.json";
@@ -407,6 +407,12 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     for (const key of ["workflows", "automations"] as const) {
       for (const wf of manifest.grants[key]) if (!(await exists(wf))) errors.push(`grants.${key}: no workflow "${wf}" — publish it first, or drop the grant`);
     }
+  }
+  // Screenshots are files here, within the size a store serves.
+  for (const [i, shot] of (manifest.screenshots ?? []).entries()) {
+    const size = await stat(join(root, shot.file)).then((s) => (s.isFile() ? s.size : undefined), () => undefined);
+    if (size === undefined) errors.push(`screenshots[${i}]: "${shot.file}" is not a file in the app`);
+    else if (size > SCREENSHOT_MAX_BYTES) errors.push(`screenshots[${i}]: "${shot.file}" is ${(size / 1e6).toFixed(1)} MB — a screenshot is at most ${SCREENSHOT_MAX_BYTES / 1024 / 1024} MB`);
   }
   const entryAbs = await resolveFile(resolve(root, manifest.entry));
   if (!entryAbs || !inside(root, entryAbs)) errors.push(`entry: "${manifest.entry}" is not a file in the app (its default export is the root component)`);

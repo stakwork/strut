@@ -18,15 +18,16 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { searchSteps } from "../search.js";
+import { SCREENSHOT_TYPES } from "../apps/manifest.js";
 import type { SecretStore } from "../secret-store.js";
 import { fetchArchive } from "./archive.js";
 import type { PackageCache } from "./cache.js";
 import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, keyFromSeed, releaseFor, sealCard, type Catalog, type CatalogRelease, type IndexCatalog, type IndexLiveRow, type IndexRow, type UnsignedIndexCatalog } from "./card.js";
 export type { IndexLiveRow, IndexRow } from "./card.js";
 import { derivePackageDetail, summarizeDetail, type ConceptDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
-export type { AppDetail, ConceptDetail, DetailSummary, PackageCan, PackageDetail, StepDetail, WorkflowDetail } from "./detail.js";
+export type { AppDetail, AppScreenshotDetail, ConceptDetail, DetailSummary, PackageCan, PackageDetail, StepDetail, WorkflowDetail } from "./detail.js";
 import { fetchCatalog, releaseUrls } from "./pk.js";
 import { CatalogStore, type CatalogFile } from "./publisher.js";
 
@@ -264,6 +265,14 @@ export interface IndexDeps {
   now?: () => number;
 }
 
+export interface IndexScreenshot {
+  bytes: Buffer;
+  /** Its media type, by extension (`SCREENSHOT_TYPES`). */
+  type: string;
+  /** The release it is from. */
+  digest: string;
+}
+
 export interface PackageIndex {
   /** The index as it is; undefined before its key is minted. */
   info(): Promise<IndexInfo | undefined>;
@@ -280,6 +289,10 @@ export interface PackageIndex {
   search(q: string, limit?: number): Promise<IndexHit[]>;
   /** One package's page, or undefined when no listed publisher's catalog has it. */
   package(name: string): Promise<IndexPackage | undefined>;
+  /** One of an app's screenshots in a package's current release: only a
+   *  path its derived page lists, read from the index's cache. With
+   *  `digest`, only when that is still the current release. */
+  screenshot(name: string, path: string, digest?: string): Promise<IndexScreenshot | undefined>;
   /** Every Concept page across the crawled packages (every word of `q` in the name or description). */
   concepts(q?: string): Promise<IndexConcept[]>;
   /** One Concept page with its docs, children and parents; undefined when no package carries it. */
@@ -660,7 +673,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     return out;
   };
 
-  return {
+  const index: PackageIndex = {
     info,
     async setRow(prefix, row, opts = {}) {
       const problem = indexRowProblem(prefix, row);
@@ -784,6 +797,20 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         ...(current?.error ? { detailError: current.error } : !release ? { detailError: "every release is yanked" } : !current ? { detailError: "its archive has not been read yet" } : {}),
       };
     },
+    async screenshot(name, path, digest) {
+      const page = await index.package(name);
+      const d = page?.detail;
+      if (!d || (digest !== undefined && digest !== d.digest)) return undefined;
+      if (!d.apps.some((a) => a.screenshots?.some((s) => s.path === path))) return undefined;
+      const type = SCREENSHOT_TYPES[extname(path).toLowerCase()];
+      const cached = type ? await deps.cache.get(d.digest) : undefined;
+      if (!type || !cached) return undefined;
+      try {
+        return { bytes: await readFile(join(cached.dir, path)), type, digest: d.digest };
+      } catch {
+        return undefined;
+      }
+    },
     async concepts(q = "") {
       const all = [...(await conceptsOf()).values()].map(({ docs: _docs, ...c }) => c).sort((a, b) => a.name.localeCompare(b.name));
       const words = q.trim();
@@ -806,6 +833,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       return { ...rest, ...(docs ? { docs } : {}), children, parents };
     },
   };
+  return index;
 }
 
 /** `<dataDir>/packages/catalogs/index`, the index's cards and crawl. */

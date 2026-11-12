@@ -126,14 +126,15 @@ export interface HitApp {
   title: string;
   description?: string;
   icon?: string;
+  screenshots?: Array<{ path: string; caption?: string }>;
   can: { spends: boolean; acts: boolean; code: boolean };
 }
 
 /** The apps a search's hits carry, each with its package — the Browse
  *  page's first row. Sorted by title, then package. */
-export function appsOf<A extends HitApp>(hits: ReadonlyArray<{ package: string; version: string; detail?: { apps: A[] } }>): Array<{ pkg: string; version: string; app: A }> {
-  const out: Array<{ pkg: string; version: string; app: A }> = [];
-  for (const h of hits) for (const app of h.detail?.apps ?? []) out.push({ pkg: h.package, version: h.version, app });
+export function appsOf<A extends HitApp>(hits: ReadonlyArray<{ package: string; version: string; digest: string; detail?: { apps: A[] } }>): Array<{ pkg: string; version: string; digest: string; app: A }> {
+  const out: Array<{ pkg: string; version: string; digest: string; app: A }> = [];
+  for (const h of hits) for (const app of h.detail?.apps ?? []) out.push({ pkg: h.package, version: h.version, digest: h.digest, app });
   return out.sort((a, b) => a.app.title.localeCompare(b.app.title) || a.pkg.localeCompare(b.pkg));
 }
 

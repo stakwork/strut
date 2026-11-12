@@ -2756,11 +2756,18 @@ export interface PackageCan {
   acts: boolean;
   code: boolean;
 }
+/** An app's screenshot in a package (app.yaml `screenshots`): its path in
+ *  the package, served by `storeScreenshotUrl`. */
+export interface AppScreenshot {
+  path: string;
+  caption?: string;
+}
 export interface AppDetail {
   name: string;
   title: string;
   description?: string;
   icon?: string;
+  screenshots?: AppScreenshot[];
   grants: { workflows: string[]; steps: string[] };
   can: PackageCan;
   files: number;
@@ -2811,7 +2818,7 @@ export interface PackageDetail {
 }
 /** The short form a search hit carries. */
 export interface DetailSummary {
-  apps: Array<{ name: string; title: string; description?: string; icon?: string; can: PackageCan }>;
+  apps: Array<{ name: string; title: string; description?: string; icon?: string; screenshots?: AppScreenshot[]; can: PackageCan }>;
   workflows: number;
   steps: number;
   concepts: number;
@@ -2892,6 +2899,9 @@ export const storeSearch = (q = "", limit = 200) => storeJSON<{ packages: StoreH
 /** A package's page, without its Concept pages' text (`docs=0`): the tree is
  *  drawn from names, and a page's docs are `storeConcept`'s. */
 export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}?docs=0`);
+/** One of a package's app screenshots, at that release (so cached for good). */
+export const storeScreenshotUrl = (pkg: string, path: string, digest: string) =>
+  `${BASE}/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/screenshot?path=${encodeURIComponent(path)}&digest=${encodeURIComponent(digest)}`;
 export const storeConcepts = (q = "") => storeJSON<{ concepts: StoreConcept[] }>(`/index/concepts?q=${encodeURIComponent(q)}`).then((r) => r.concepts);
 export const storeConcept = (name: string) => storeJSON<StoreConceptPage>(`/index/concepts/${encodeURIComponent(name)}`);
 /** Where this index's card is served, for the link into a strut: what the

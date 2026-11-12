@@ -5206,6 +5206,27 @@ export async function createStrut<TServices = unknown>(
       // `/index/concepts/:name`; a package of 750 pages is megabytes of them.
       return c.json(c.req.query("docs") === "0" ? withoutConceptDocs(page) : page, 200, { "cache-control": "public, no-cache" });
     });
+    // One of a package's app screenshots (app.yaml `screenshots`), read from
+    // the index's cache: only a path the derived page lists. With `digest`
+    // (the store's links carry it) it is that release's for good.
+    app.get("/index/packages/:publisher/:name/screenshot", async (c) => {
+      const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
+      const path = c.req.query("path") ?? "";
+      const digest = c.req.query("digest");
+      if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
+      const shot = path ? await index.screenshot(name, path, digest) : undefined;
+      if (!shot) return c.json({ error: `${name} has no screenshot ${path ? `at ${path}` : "named"}${digest ? ` in ${digest}` : ""}` }, 404);
+      const etag = `"${shot.digest}:${path}"`;
+      const headers = {
+        "content-type": shot.type,
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+        "cache-control": digest ? "public, max-age=31536000, immutable" : "public, no-cache",
+        etag,
+      };
+      if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+      return c.body(shot.bytes.buffer.slice(shot.bytes.byteOffset, shot.bytes.byteOffset + shot.bytes.byteLength) as ArrayBuffer, 200, headers);
+    });
     // The Concept pages across every crawled package (plans/marketplace.md
     // §7, the store): the tree, and one page with its docs.
     app.get("/index/concepts", async (c) => c.json({ concepts: await index.concepts(c.req.query("q") ?? "") }, 200, { "cache-control": "public, no-cache" }));
