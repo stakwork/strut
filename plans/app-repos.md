@@ -587,8 +587,8 @@ The server side is small and fixed:
   derived one-way from the challenge's `host`, so the visitor is a
   different actor on this domain and no other domain can tie the two
   together. The derivation is LNURL-auth's (LUD-05: a BIP-32 path from an
-  HMAC of the domain), so every provider that holds a root key gets the
-  same child for the same domain.
+  HMAC of the domain), so every wallet holding the same 12 words, Sphinx or
+  not, gets the same child for the same domain.
 - **Methods that are per domain anyway:** the anonymous browser key and a
   passkey alone live in the domain's storage or under its RP ID, and
   LNURL-auth's linking key is per domain by its spec, whatever the box

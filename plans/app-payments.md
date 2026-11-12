@@ -454,9 +454,11 @@ under a per-app linking key only, "never the identity key". This replaces it.*
 - **By default, the root key.** The person's Sphinx node key, the one their
   payments come from. The same person is the same visitor on every app: a
   portable profile, and one apps can link.
-- **A sub-account.** A child key derived from the seed and the origin
-  (LUD-05's derivation), used when the person picks it or the app requires
-  it. The visitor is then unlinkable across apps.
+- **A sub-account.** A child key derived from the 12 words' BIP39 seed and
+  the origin by exact LUD-05 (stakwork/sphinx-rs#106, v0.8.43), used when
+  the person picks it or the app requires it. The visitor is then
+  unlinkable across apps. A Sphinx account with no words (an agent's) signs
+  in with its root key only.
   - The child key only signs in; payments still come from the account.
   - Whether a payment tells its payee who paid is the payment's business. A
     sub-account keeps the LOGIN unlinkable, nothing more.
