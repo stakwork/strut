@@ -7,7 +7,7 @@ export const MEDIA_CATEGORY = "media";
 
 export const MEDIA_WORKFLOWS: Record<string, string> = {
   "image-gen":
-    "Make one image from a prompt with any image model (the `image` step) and return it as a deliverable. " +
+    "Make one image from a prompt with any image model (the `image` step) and hand the file back in `artifacts`. " +
     "Input { prompt, model? (default xai/grok-imagine-image) }; output { image (its path), model, cost (dollars), artifacts: [{ id: image, kind: image, title, path }] }.",
 };
 
