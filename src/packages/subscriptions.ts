@@ -223,18 +223,18 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
   const fetchAll = async (sub: Subscription, card: Catalog, targets: Array<{ package: string; release: CatalogRelease }>) => {
     const base = normalizeBaseUrl(sub.url);
     const self = (pkg: string, digest: string) => `${archiveUrl(base, pkg, digest)}${sub.token ? `&t=${encodeURIComponent(sub.token)}` : ""}`;
-    const queue = targets.map((t) => ({ package: t.package, digest: t.release.digest, urls: t.release.urls ?? [] }));
+    const queue = targets.map((t) => ({ package: t.package, digest: t.release.digest, urls: t.release.urls ?? [], tar: t.release.tar }));
     const done = new Set<string>();
     while (queue.length) {
       const next = queue.shift()!;
       if (done.has(next.digest)) continue;
       done.add(next.digest);
-      const got = await fetchArchive({ urls: [self(next.package, next.digest), ...next.urls], digest: next.digest, cache: deps.cache, package: next.package, fetch: doFetch });
+      const got = await fetchArchive({ urls: [self(next.package, next.digest), ...next.urls], digest: next.digest, cache: deps.cache, package: next.package, fetch: doFetch, ...(next.tar ? { tarSha256: next.tar.sha256 } : {}) });
       // What it requires and the catalog lists comes from the same place;
       // anything else resolves from its own source hint at install.
       for (const r of got.manifest.requires?.packages ?? []) {
         const listed = card.packages[r.package]?.releases.find((x) => x.digest === r.digest);
-        if (listed) queue.push({ package: r.package, digest: r.digest, urls: listed.urls ?? [] });
+        if (listed) queue.push({ package: r.package, digest: r.digest, urls: listed.urls ?? [], tar: listed.tar });
       }
     }
   };

@@ -576,8 +576,8 @@ describe("the concept tree across the crawled packages", () => {
     ) as Catalog;
     const served: Record<string, Buffer | string> = {
       "https://pub.example/packages/catalog": canonicalJson(card),
-      [`https://pub.example/packages/openlaw/civil/archive?digest=${encodeURIComponent(law.digest)}&public=1`]: law.gz,
-      [`https://pub.example/packages/openlaw/limits/archive?digest=${encodeURIComponent(forked.digest)}&public=1`]: forked.gz,
+      [`https://pub.example/packages/openlaw/civil/archive?digest=${encodeURIComponent(law.digest)}&format=tar&public=1`]: law.gz,
+      [`https://pub.example/packages/openlaw/limits/archive?digest=${encodeURIComponent(forked.digest)}&format=tar&public=1`]: forked.gz,
     };
     const fetched: string[] = [];
     const fakeFetch = (async (input: string | URL | Request) => {

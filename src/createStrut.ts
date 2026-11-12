@@ -112,7 +112,8 @@ import { createKnowledge } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
-import { packArchive } from "./packages/archive.js";
+import { packArchive, packTar } from "./packages/archive.js";
+import { packageTorrent } from "./packages/torrent.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
@@ -4131,6 +4132,11 @@ export async function createStrut<TServices = unknown>(
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    // `format=tar`: the PLAIN TAR (§13, ruled 2026-11-11), the same bytes on
+    // every strut that holds the package and what its torrent hashes; with no
+    // format, the .tar.gz a strut from before it reads.
+    const format = c.req.query("format");
+    if (format !== undefined && format !== "tar") return c.json({ error: "format is tar, or left out for the .tar.gz" }, 400);
     // A PUBLIC read (§13): `?public=1` opens a digest the public catalog
     // lists, with no credential — and nothing else, whatever the gate's
     // mode, since a host's gate hands such a read through (mcp's labAuth).
@@ -4148,17 +4154,18 @@ export async function createStrut<TServices = unknown>(
     }
     const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
-    const etag = `"${digest}"`;
+    const plain = format === "tar";
+    const etag = plain ? `"${digest}.tar"` : `"${digest}"`;
     const headers = {
-      "content-type": "application/gzip",
-      "content-disposition": `attachment; filename="${pkg.replace("/", "-")}-${digest.slice(7, 19)}.tar.gz"`,
+      "content-type": plain ? "application/x-tar" : "application/gzip",
+      "content-disposition": `attachment; filename="${pkg.replace("/", "-")}-${digest.slice(7, 19)}${plain ? ".tar" : ".tar.gz"}"`,
       "x-content-type-options": "nosniff",
       "cache-control": "private, max-age=31536000, immutable",
       etag,
     };
     if (c.req.header("if-none-match") === etag) return c.body(null, 304, headers);
-    const gz = await packArchive(info.dir, info.files);
-    return c.body(gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, 200, headers);
+    const bytes = plain ? await packTar(info.dir, info.files) : await packArchive(info.dir, info.files);
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, headers);
   });
   // What a package in the cache holds, by each item's name INSIDE it — a
   // workflow's, step's or app's path, a Concept's page name, helpers left
@@ -4765,7 +4772,10 @@ export async function createStrut<TServices = unknown>(
         }
         const built = await buildPackage(buildDeps, req);
         const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
-        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
+        // The release names its plain tar's sha256 and infohash (§13).
+        const torrent = packageTorrent(built.digest, await packTar(built.dir, built.files));
+        const tar = { sha256: torrent.sha256, infohash: torrent.infohash };
+        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, tar, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
         return { built, catalog, publicBefore };
       });
       pingSubscribers(catalog.card.key);

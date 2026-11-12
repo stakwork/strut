@@ -1,6 +1,9 @@
 /**
- * A package's BYTES between struts (plans/marketplace.md §5, §13): a gzipped
- * ustar of its files (src/tar.ts; a name ustar cannot hold — a Concept
+ * A package's BYTES between struts (plans/marketplace.md §5, §13): a ustar
+ * of its files in one pinned layout (`packTar`) — plain, the PLAIN TAR every
+ * strut writes identically from its cache and the bytes a package's torrent
+ * hashes (./torrent.ts), or gzipped, what a strut from before
+ * `format=tar` serves and reads (src/tar.ts; a name ustar cannot hold — a Concept
  * page's long node key — in a PAX header), fetched BY DIGEST from whichever URL
  * answers — the publishing strut's archive route, a mirror's. The digest is
  * the identity, so the archive is only transport: its bytes are never what
@@ -10,6 +13,7 @@
  * `fetchArchive` is the last hop of the `pk:` resolver (record → catalog →
  * archive), built first: until the catalog exists, its caller names the URLs.
  */
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -25,22 +29,40 @@ export const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 export const MAX_ARCHIVE_FILES = 10_000;
 const FETCH_TIMEOUT_MS = 60_000;
 
-/** The archive route on the strut at `baseUrl` for one package digest. */
+/** The archive route on the strut at `baseUrl` for one package digest, as
+ *  its plain tar (`format=tar`). A strut from before the plain tar ignores
+ *  the parameter and answers the .tar.gz, which `unpackArchive` reads too. */
 export function archiveUrl(baseUrl: string, pkg: string, digest: string): string {
   const [publisher, name] = pkg.split("/") as [string, string];
-  return `${baseUrl.replace(/\/+$/, "")}/packages/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/archive?digest=${encodeURIComponent(digest)}`;
+  return `${baseUrl.replace(/\/+$/, "")}/packages/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/archive?digest=${encodeURIComponent(digest)}&format=tar`;
 }
 
-/** `files` under `dir` as one tar, in the order given. */
-async function tarOf(dir: string, files: string[]): Promise<Buffer> {
+/**
+ * THE PLAIN TAR of a package (plans/marketplace.md §13, ruled 2026-11-11):
+ * `files` under `dir` in the digest's order — sorted as JavaScript sorts
+ * strings, which is `readPackage`'s order and `hashTree`'s — each written by
+ * `src/tar.ts` (a regular file, mode 0600, owner 0, time 0; a name ustar
+ * cannot hold in a PAX `path=` header and nothing else in one), then the two
+ * zero blocks. A contract, pinned by a test vector: every strut that holds a
+ * package writes these same bytes, so all of them seed one torrent. A change
+ * here is a new format, never an edit.
+ */
+export async function packTar(dir: string, files: string[]): Promise<Buffer> {
   const entries: [string, Buffer][] = [];
-  for (const rel of files) entries.push([rel, await readFile(join(dir, rel))]);
+  for (const rel of [...files].sort()) entries.push([rel, await readFile(join(dir, rel))]);
   return tar(entries);
 }
 
-/** `files` under `dir` as one .tar.gz, in the order given. */
+/** The plain tar gzipped: the archive route's answer with no `format`, for
+ *  a strut from before the plain tar. Its bytes are not fixed (zlib's and
+ *  the gzip header's vary by host), and never what anything is checked by. */
 export async function packArchive(dir: string, files: string[]): Promise<Buffer> {
-  return promisify(gzip)(await tarOf(dir, files));
+  return promisify(gzip)(await packTar(dir, files));
+}
+
+/** Whether `bytes` are gzipped (the magic `1f 8b`) rather than a plain tar. */
+export function isGzip(bytes: Buffer): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
 
 /**
@@ -54,7 +76,7 @@ export async function archiveProblem(dir: string, files: string[]): Promise<stri
   if (files.length > MAX_ARCHIVE_FILES) return `it holds ${files.length} files, more than the ${MAX_ARCHIVE_FILES} a package archive may`;
   let plain: Buffer;
   try {
-    plain = await tarOf(dir, files);
+    plain = await packTar(dir, files);
   } catch (err) {
     return `it cannot be packed: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -72,7 +94,8 @@ export async function archiveProblem(dir: string, files: string[]): Promise<stri
     const problem = entryProblem(name);
     if (problem) return `its archive's ${JSON.stringify(name)} ${problem}`;
   }
-  if (names.length !== files.length || names.some((n, i) => n !== files[i])) return "its archive does not read back as the same files";
+  const sorted = [...files].sort();
+  if (names.length !== files.length || names.some((n, i) => n !== sorted[i])) return "its archive does not read back as the same files";
   return undefined;
 }
 
@@ -90,15 +113,17 @@ function entryProblem(name: string): string | undefined {
   return undefined;
 }
 
-/** Unpack a package archive into the empty directory `into`. Throws
+/** Unpack a package archive — the plain tar, or the .tar.gz a strut from
+ *  before it serves — into the empty directory `into`. Throws
  *  `bad_package: …` on an archive that is not one, holds a path that
  *  leaves the directory or the digest, or is too big. */
-export async function unpackArchive(gz: Buffer, into: string): Promise<void> {
+export async function unpackArchive(archive: Buffer, into: string): Promise<void> {
   let entries: Map<string, Buffer>;
   try {
-    entries = untar(await promisify(gunzip)(gz, { maxOutputLength: MAX_UNPACKED_BYTES }));
+    if (!isGzip(archive) && archive.length > MAX_UNPACKED_BYTES) throw new Error(`it is ${archive.length} bytes, more than ${MAX_UNPACKED_BYTES}`);
+    entries = untar(isGzip(archive) ? await promisify(gunzip)(archive, { maxOutputLength: MAX_UNPACKED_BYTES }) : archive);
   } catch (err) {
-    throw new Error(`bad_package: not a package archive (.tar.gz): ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`bad_package: not a package archive (.tar or .tar.gz): ${err instanceof Error ? err.message : String(err)}`);
   }
   if (entries.size > MAX_ARCHIVE_FILES) throw new Error(`bad_package: the archive holds ${entries.size} files, more than ${MAX_ARCHIVE_FILES}`);
   for (const name of entries.keys()) {
@@ -149,6 +174,10 @@ export interface FetchArchiveOptions {
   /** Sent with every request: the credential the serving strut's gate
    *  wants (its key, today; a package token when selling). */
   headers?: Record<string, string>;
+  /** The plain tar's sha256 the catalog names (`CatalogRelease.tar`): a
+   *  plain tar that is not it is refused before it is unpacked. A .tar.gz
+   *  (an older strut's answer) is checked by its tree alone. */
+  tarSha256?: string;
   fetch?: typeof fetch;
 }
 
@@ -183,7 +212,16 @@ export async function fetchArchive(opts: FetchArchiveOptions): Promise<CachedPac
         await res.body?.cancel();
         throw new Error(`HTTP ${res.status}`);
       }
-      return { ...named(await cache.putArchive(await readCapped(res, MAX_ARCHIVE_BYTES), digest)), url };
+      // A plain tar is at most what a strut unpacks; a .tar.gz at most what
+      // a strut fetches.
+      const bytes = await readCapped(res, MAX_UNPACKED_BYTES);
+      if (isGzip(bytes)) {
+        if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error(`the archive is ${bytes.length} bytes, more than ${MAX_ARCHIVE_BYTES}`);
+      } else if (opts.tarSha256) {
+        const got = createHash("sha256").update(bytes).digest("hex");
+        if (got !== opts.tarSha256) throw new Error(`its tar is sha256 ${got}, not the ${opts.tarSha256} the catalog names`);
+      }
+      return { ...named(await cache.putArchive(bytes, digest)), url };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.startsWith("package_name_mismatch:")) throw err;

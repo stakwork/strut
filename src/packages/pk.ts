@@ -134,6 +134,12 @@ export async function fetchCatalog(key: string, url: string, opts: { cache: Pack
  *  catalog (`host: self`, so the catalog's own query — `public=1` — rides
  *  along), then the release's own `urls`. A catalog that is not a strut server's
  *  route (an uploaded file) has no route beside it. */
+/** What `fetchArchive` checks a release's plain tar against, when the
+ *  catalog names one. */
+export function tarOf(release: CatalogRelease): { tarSha256?: string } {
+  return release.tar ? { tarSha256: release.tar.sha256 } : {};
+}
+
 export function releaseUrls(catalogUrl: string, pkg: string, release: CatalogRelease): string[] {
   const urls: string[] = [];
   const u = new URL(catalogUrl);
@@ -167,7 +173,7 @@ export async function resolvePk(ref: string, opts: PkResolveOptions): Promise<Pk
       : `package_not_published: every release of ${parsed.package} in ${parsed.key}'s catalog is yanked`);
   }
   const doFetch = opts.fetch ?? fetch;
-  const got = await fetchArchive({ urls: releaseUrls(opts.url, parsed.package, release), digest: release.digest, cache: opts.cache, package: parsed.package, fetch: doFetch });
+  const got = await fetchArchive({ urls: releaseUrls(opts.url, parsed.package, release), digest: release.digest, cache: opts.cache, package: parsed.package, fetch: doFetch, ...tarOf(release) });
   // What it requires and the catalog lists, so the install finds it cached.
   const queue = [...(got.manifest.requires?.packages ?? [])];
   const seen = new Set<string>([release.digest]);
@@ -177,7 +183,7 @@ export async function resolvePk(ref: string, opts: PkResolveOptions): Promise<Pk
     seen.add(req.digest);
     const listed = card.packages[req.package]?.releases.find((r) => r.digest === req.digest);
     if (!listed) continue;
-    const dep = await fetchArchive({ urls: releaseUrls(opts.url, req.package, listed), digest: req.digest, cache: opts.cache, package: req.package, fetch: doFetch });
+    const dep = await fetchArchive({ urls: releaseUrls(opts.url, req.package, listed), digest: req.digest, cache: opts.cache, package: req.package, fetch: doFetch, ...tarOf(listed) });
     queue.push(...(dep.manifest.requires?.packages ?? []));
   }
   return { ...got, key: parsed.key, url: opts.url, release, catalog: { seq: card.seq, digest: catalogDigest } };
