@@ -641,7 +641,8 @@ they could be built.
    - **Through Peel's wallet connection.** Ruled 2026-11-10 and designed
      in `app-payments.md` §4.4 (R6), not here. strut's half *BUILT,
      stakwork/strut#645* (the `ln-message` verifier, the method, the
-     `sign_in` host request and strut's UI sending it); Peel's open.
+     `sign_in` host request and strut's UI sending it); Peel's *BUILT,
+     stakwork/peel#551*. Signed in end to end on the Mac, 2026-11-12.
    - **Through the passkey wallet at `wallet.sphinx.chat`** (§5.4).
      *Later.* It is a Sphinx account of its own (ruled 7), so a different
      actor from the person's Peel account under the same method.
@@ -813,7 +814,9 @@ players before it needs git, visitors (4) moves up to second.
 **Next (2026-11-10): signing in through Peel.** Items 5 and 6 wait. The
 person's wallet is Peel, and a Sphinx identity is for strut apps in
 general, not for repos. So the next sign-in is planned where Peel's
-connection is: `app-payments.md` §4.4 and its work item 9.
+connection is: `app-payments.md` §4.4 and its work item 9. *BUILT:
+stakwork/strut#645, stakwork/peel#551, stakwork/sphinx-rs#106; signed in
+end to end on the Mac 2026-11-12.*
 
 ## Validation
 
