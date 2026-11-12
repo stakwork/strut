@@ -32,6 +32,7 @@ import { appSessionId, peerSessionId, publicSessionId, type SessionsCapability }
 import { bindGraph } from "./graph-writes.js";
 import { outputTooBig } from "./output-cap.js";
 import { guardEscapes } from "./escaped-errors.js";
+import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkingCapability } from "./park.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -187,6 +188,14 @@ export interface RunOptions<TServices = unknown> {
   /** A public run a visitor's app page launched: the visit's hash
    *  (plans/paid-runs.md §10), on `run.start` and the summary. */
   visitor?: string;
+  /** Why this run may not PARK (src/park.ts): `ctx.park` fails the step
+   *  with it instead. A single-step run passes one (`runSingleStep`): it
+   *  has nothing to resume. */
+  noPark?: string;
+  /** With `resume`: the resume is a WAKE (src/park.ts) — recorded on
+   *  `run.resumed` as `woken: true`, which the crash-loop guard does not
+   *  count. */
+  woken?: boolean;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -333,6 +342,31 @@ interface Exec {
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
   disposers: Array<(info: RunEndInfo) => unknown>;
+  /** `ctx.park` for every step of the run (src/park.ts). */
+  park: (on: string) => never;
+}
+
+/** `ctx.park` for one run: a `ParkedError` when something here can wake
+ *  the run, else an ordinary error that fails the step — a park nobody
+ *  could wake would leave the run waiting for good. */
+function parkFor(services: unknown, opts: Pick<RunOptions, "noPark" | "origin"> | undefined): (on: string) => never {
+  return (on: string): never => {
+    const parking = (services as { parking?: ParkingCapability } | null | undefined)?.parking;
+    const refused =
+      parkPrefix(on) === null
+        ? `"${String(on).slice(0, 80)}" is not a park target (<prefix>:<id>, the prefix lowercase letters)`
+        : opts?.noPark
+          ? opts.noPark
+          : opts?.origin === "public"
+            ? "a public run cannot wait"
+            : !parking
+              ? "nothing on this server wakes a parked run"
+              : !parking.accepts(on)
+                ? `nothing on this server wakes a run parked on "${on}" (no source for "${parkPrefix(on)}")`
+                : undefined;
+    if (refused) throw new Error(`park_refused: ${refused}`);
+    throw new ParkedError([on]);
+  };
 }
 
 export async function runWorkflow<TServices = unknown>(
@@ -544,6 +578,7 @@ async function executeRun<TServices = unknown>(
       // changed.
       ...(opts.workflowHash ? { workflowHash: opts.workflowHash } : {}),
       ...(opts.resumeChanged ? { changed: opts.resumeChanged } : {}),
+      ...(opts.woken ? { woken: true as const } : {}),
       ...(opts.callback ? { callback: opts.callback } : {}),
       ...(opts.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
     });
@@ -626,7 +661,10 @@ async function executeRun<TServices = unknown>(
     ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts?.aiAuthored || (await aiAuthored(services, wfName, opts?.workflowHash ? { hash: opts.workflowHash } : undefined)) ? { aiAuthored: true } : {}),
     disposers: [],
+    park: parkFor(services, opts),
   };
+  /** Set when the run parks: what the teardown hooks are told. */
+  let parkedOn: string[] | undefined;
 
   try {
     const output = await executeFlow(workflow, parsedInput, exec, wfName, opts?.params);
@@ -648,6 +686,28 @@ async function executeRun<TServices = unknown>(
     });
     return { runId, status: "success", output };
   } catch (err) {
+    // Every branch ended or parked, and some parked (src/park.ts): the run
+    // WAITS. Not an end — no `run.end`, no error — and it leaves memory: a
+    // wake resumes it from its journal under the same id.
+    if (isParkedError(err)) {
+      parkedOn = err.on;
+      const finishedAt = new Date().toISOString();
+      await emit({ type: "run.waiting", path: wfName, on: err.on });
+      await store.finalize(wfName, runId, {
+        runId,
+        workflow: wfName,
+        startedAt,
+        finishedAt,
+        durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+        status: "waiting",
+        waitingOn: err.on,
+        input: parsedInput,
+        ...summaryStamp,
+        stepCounts,
+        ...spent(),
+      });
+      return { runId, status: "waiting", waitingOn: err.on };
+    }
     const cancelled = isCancelledError(err);
     const error = {
       message: err instanceof Error ? err.message : String(err),
@@ -690,7 +750,11 @@ async function executeRun<TServices = unknown>(
     // The second argument names WHICH run settled — what a post-run
     // consumer (the verify pass, plans/claims.md §4) needs and a teardown
     // hook can ignore.
-    const info: RunEndInfo = { workflow: wfName, ...(opts?.origin ? { origin: opts.origin } : {}) };
+    const info: RunEndInfo = {
+      workflow: wfName,
+      ...(opts?.origin ? { origin: opts.origin } : {}),
+      ...(parkedOn ? { parked: true as const, waitingOn: parkedOn } : {}),
+    };
     // The run's last graph writes, sent now rather than a second from now
     // (never throws: a report is a notification).
     await graphReports?.flush();
@@ -882,10 +946,15 @@ async function executeFlow(
     (r): r is PromiseRejectedResult => r.status === "rejected",
   );
   if (rejections.length > 0) {
-    // Prefer a REAL failure over a CancelledError so a genuine error isn't
-    // masked when cancellation raced in behind it.
-    const real = rejections.find((r) => !isCancelledError(r.reason));
-    throw (real ?? rejections[0]!).reason;
+    // The worst branch decides: a REAL failure over a CancelledError (so a
+    // genuine error isn't masked when cancellation raced in behind it), and
+    // either over a park — the flow parks only when every branch that did
+    // not finish parked, waiting on all of their targets (src/park.ts).
+    const real = rejections.find((r) => !isCancelledError(r.reason) && !isParkedError(r.reason));
+    if (real) throw real.reason;
+    const cancelled = rejections.find((r) => isCancelledError(r.reason));
+    if (cancelled) throw cancelled.reason;
+    throw mergeParked(rejections.map((r) => r.reason));
   }
 
   // Return last step's output (by array order). If skipped, return undefined.
@@ -1010,6 +1079,12 @@ async function executeStep(
       // Cancellation is NOT the error path (§3): never retried, never
       // diverted into onError — the branch stops at this boundary.
       if (isCancelledError(err)) throw err;
+      // Nor is a park (src/park.ts): the step waits, and runs again from the
+      // top when the run wakes.
+      if (isParkedError(err)) {
+        await exec.emit({ type: "step.parked", path, stepType: baseType(step.type), on: err.on });
+        throw err;
+      }
 
       lastError = err instanceof Error ? err : new Error(String(err));
 
@@ -1038,6 +1113,11 @@ async function executeStep(
             );
             return fallbackOutput;
           } catch (fallbackErr) {
+            // The fallback parked: the step waits with it.
+            if (isParkedError(fallbackErr)) {
+              await exec.emit({ type: "step.parked", path, stepType: baseType(step.type), on: fallbackErr.on });
+              throw fallbackErr;
+            }
             // Fallback itself failed
             await exec.emit({
               type: "step.error",
@@ -1136,6 +1216,7 @@ async function dispatchStep(
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),
+        park: exec.park,
         ...(exec.aiAuthored ? { aiAuthored: true } : {}),
       });
 
@@ -1215,7 +1296,8 @@ async function executeLoop(
     });
 
     const startTime = Date.now();
-    current = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    // A parked iteration parks the loop: its iterations depend on each other.
+    current = await parkedIteration(exec, iterPath, rawBody, i, () => dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath));
     const tooBig = outputTooBig(current, `step "${iterPath}" output`);
     if (tooBig) throw tooBig;
 
@@ -1354,7 +1436,7 @@ async function executeForeach(
     });
 
     const startTime = Date.now();
-    const output = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    const output = await parkedIteration(exec, iterPath, rawBody, i, () => dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath));
     const tooBig = outputTooBig(output, `step "${iterPath}" output`);
     if (tooBig) throw tooBig;
 
@@ -1371,10 +1453,20 @@ async function executeForeach(
     results[i] = output;
   };
 
+  // A parked iteration does not stop the others (src/park.ts): the rest
+  // run, and the foreach parks at the end on every iteration that did — so
+  // a foreach over 100 documents makes its 100 waits in one pass.
+  const parked: unknown[] = [];
   if (concurrency === 1) {
     for (let i = 0; i < items.length; i++) {
-      await runIteration(i);
+      try {
+        await runIteration(i);
+      } catch (err) {
+        if (!isParkedError(err)) throw err;
+        parked.push(err);
+      }
     }
+    if (parked.length) throw mergeParked(parked);
     return results;
   }
 
@@ -1393,6 +1485,10 @@ async function executeForeach(
       try {
         await runIteration(i);
       } catch (err) {
+        if (isParkedError(err)) {
+          parked.push(err);
+          continue;
+        }
         failures.push({ i, err });
         return;
       }
@@ -1407,8 +1503,22 @@ async function executeForeach(
     failures.sort((a, b) => a.i - b.i);
     throw failures[0]!.err;
   }
+  if (parked.length) throw mergeParked(parked);
 
   return results;
+}
+
+/** One loop or foreach iteration's body: a park there is recorded at the
+ *  iteration's own path (`step.parked`) and passed on. */
+async function parkedIteration(exec: Exec, iterPath: string, body: Step, iteration: number, run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    return await run();
+  } catch (err) {
+    if (isParkedError(err)) {
+      await exec.emit({ type: "step.parked", path: iterPath, stepType: baseType(body.type), iteration, on: err.on });
+    }
+    throw err;
+  }
 }
 
 /** A step's input as its run events keep it: the fields its def names in

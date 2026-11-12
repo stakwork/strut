@@ -194,6 +194,11 @@ export function RunOverview(props: {
           {o.actor && <> · by {displayActor(o.actor)}</>}
           {o.startedAt && <> · {fmtTime(o.startedAt)}</>}
         </div>
+        {o.status === "waiting" && (
+          <div class="ov-waiting" title="This run parked: it goes on when what it waits on happens">
+            Waiting on {o.waitingOn?.length ? o.waitingOn.join(", ") : "something outside the run"}
+          </div>
+        )}
         {o.error && (
           <button class="ov-error" title={o.error.path ? `Open ${o.error.path}` : undefined} onClick={() => o.error?.path && props.onOpenStep(o.error.path)}>
             {o.error.message || "failed"}

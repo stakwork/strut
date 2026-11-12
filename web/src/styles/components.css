@@ -4195,6 +4195,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .ov-status-error { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .ov-status-running, .ov-status-paused { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .ov-status-cancelled, .ov-status-stale { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+/* A parked run (src/park.ts): out of memory, waiting to be woken. */
+.ov-status-waiting { color: #a78bfa; background: color-mix(in srgb, #a78bfa 14%, transparent); }
+.ov-waiting { margin-top: 6px; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
 .ov-job {
   margin-left: auto;
   max-width: 150px;
@@ -4305,6 +4308,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .ov-row-on .ov-track { background: var(--surface-2); }
 .ov-bar { position: absolute; top: 0; height: 8px; border-radius: 2px; min-width: 3px; background: var(--bar); }
 .ov-row-error .ov-bar { background: var(--danger); }
+.ov-row-waiting .ov-bar { background: repeating-linear-gradient(90deg, #a78bfa 0 4px, transparent 4px 7px); }
 .ov-bar-running { animation: ov-pulse 1.4s ease-in-out infinite; }
 @keyframes ov-pulse { 50% { opacity: 0.45; } }
 .ov-num { text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }

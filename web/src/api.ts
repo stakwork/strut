@@ -915,7 +915,10 @@ export interface RunSummary {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /** `waiting`: the run parked (src/park.ts) — out of memory until a wake
+   *  resumes it; `waitingOn` says on what. */
   status: string;
+  waitingOn?: string[];
   input?: unknown;
   output?: unknown;
   error?: { message: string };
@@ -937,6 +940,8 @@ export interface RunSummary {
 }
 
 export interface RunEvent {
+  /** On `step.parked` / `run.waiting`: what it waits for (src/park.ts). */
+  on?: string[];
   ts: string;
   runId: string;
   path: string;
@@ -1123,7 +1128,7 @@ export interface JobRunView {
   runId: string;
   at: string;
   parentRunId?: string;
-  status: "running" | "success" | "error" | "cancelled" | "stale";
+  status: "running" | "success" | "error" | "cancelled" | "waiting" | "stale";
   durationMs?: number;
   error?: string;
   sealed?: true;
@@ -1897,7 +1902,7 @@ export interface AutomationView extends Automation {
   summary: string;
   /** ISO instant; null when paused or never again. */
   nextRunAt: string | null;
-  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled"; startedAt: string } | null;
+  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled" | "waiting"; startedAt: string } | null;
   /** Its previous run is still going — a fire now would be skipped. */
   running: boolean;
   /** Why the latest fire launched nothing. */

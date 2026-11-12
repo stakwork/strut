@@ -71,7 +71,7 @@ export interface AutomationView extends Automation {
   /** ISO instant of the next fire; null when paused or never again. */
   nextRunAt: string | null;
   /** This automation's latest run, any status. */
-  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled"; startedAt: string } | null;
+  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled" | "waiting"; startedAt: string } | null;
   /** Its previous run is still executing — a fire now would be skipped. */
   running: boolean;
   /** Why the latest fire launched nothing (memory only; lost on restart). */

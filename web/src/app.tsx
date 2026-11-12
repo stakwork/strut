@@ -609,7 +609,8 @@ function Shell() {
     const end = stepEvts.find((e) => e.type === "step.end");
     const error = stepEvts.find((e) => e.type === "step.error");
     const skipped = stepEvts.find((e) => e.type === "step.skipped");
-    return { start, end, error, skipped, all: stepEvts, nodes: foldAccessedNodes(viewEvents, path) };
+    const parked = stepEvts.find((e) => e.type === "step.parked");
+    return { start, end, error, skipped, parked, all: stepEvts, nodes: foldAccessedNodes(viewEvents, path) };
   }, [flyoutStepId, viewWorkflow, viewEvents]);
 
   const refreshWorkflows = useCallback(async () => {
@@ -1118,6 +1119,9 @@ function Shell() {
   const runIsPaused = runControlStatus === "paused" || runControlStatus === "pausing";
   const runIsResumable =
     runControlStatus === "stale" || runControlStatus === "error" || runControlStatus === "cancelled";
+  // A PARKED run (src/park.ts): out of memory, waiting to be woken. It can
+  // be cancelled where it waits, or resumed by hand.
+  const runIsWaiting = runControlStatus === "waiting";
 
   // A failed cancel / pause / resume shows in a popover under the buttons
   // until dismissed or the next attempt. Stored with its run, so it drops
@@ -1148,7 +1152,8 @@ function Shell() {
   const handleResumeRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
     setRunFailure(null);
-    const live = runControlStatus === "paused" || runControlStatus === "pausing";
+    // A waiting run is woken on the version it runs, like a source's wake.
+    const live = runControlStatus === "paused" || runControlStatus === "pausing" || runControlStatus === "waiting";
     try { await api.resumeRun(selectedWf, selectedRun, live ? {} : { version: "active" }); } catch (e) { setRunFailure({ run: selectedRun, msg: `Resume failed: ${errorMessage(e)}` }); return; }
     await refreshRuns(selectedWf);
     setRunEpoch((n) => n + 1); // re-tail: the log continues past its old terminal
@@ -1947,6 +1952,11 @@ function Shell() {
                   note="Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled)."
                   cancelLabel="Keep running" confirmLabel="Cancel run" onConfirm={() => handleCancelRun()} />
               )}
+              {runIsWaiting && (
+                <ConfirmButton popover label="Cancel"
+                  note="Cancel this waiting run? It ends as cancelled, and what it waits on is closed."
+                  cancelLabel="Keep waiting" confirmLabel="Cancel run" onConfirm={() => handleCancelRun()} />
+              )}
               {/* Cancel is cooperative: a step that never returns holds the run
                   `cancelling`. Force abandons it (RUN_CONTROL_SPEC / API §6.1). */}
               {runIsLive && runControlStatus === "cancelling" && (
@@ -1959,6 +1969,9 @@ function Shell() {
               )}
               {(runIsPaused || runIsResumable) && (
                 <button class="btn btn-primary" onClick={handleResumeRun}>Resume</button>
+              )}
+              {runIsWaiting && (
+                <button class="btn" title="Wake it now: its parked steps run again, and wait again if nothing they wait on has happened" onClick={handleResumeRun}>Wake now</button>
               )}
               {runControlError && (
                 <div class="anchored-popover" role="alert" ref={runErrorRef}>

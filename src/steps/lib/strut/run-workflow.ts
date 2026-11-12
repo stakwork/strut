@@ -101,7 +101,7 @@ export default defineStep({
     peer: z.string(),
     workflow: z.string(),
     runId: z.string(),
-    status: z.enum(["success", "error", "cancelled", "running"]),
+    status: z.enum(["success", "error", "cancelled", "waiting", "running"]),
     output: z.any().optional(),
     error: z.object({ message: z.string() }).optional(),
     durationMs: z.number().optional(),

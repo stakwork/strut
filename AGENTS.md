@@ -57,6 +57,7 @@ strut/
 │   ├── output-cap.ts      # the step OUTPUT cap (`STRUT_STEP_OUTPUT_MAX_BYTES`, 8 MB as JSON): `outputTooBig` — the error the runner throws for a step, loop or foreach iteration output over it and `wrapToolsWithEmit` for a tool result, naming the size, the cap and the artifacts convention; `fmtBytes` / `positiveBytes`, shared with the resume log cap (`STRUT_RESUME_MAX_LOG_BYTES`, createStrut.ts)
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md); isAncestorRun reads the tree through a step's `ctx.control` (what lets a child run share its parent's job directory)
 │   ├── escaped-errors.ts  # an error a step lets ESCAPE (a callback's throw, a promise it never awaits) fails that step instead of ending the process: `guardEscapes` runs a step's `run()` (and each tool-step an agent calls) in an AsyncLocalStorage scope, `installEscapeGuard` (createStrut, `escapeGuard: false` to opt out) adds the process's uncaughtException / unhandledRejection handlers that find the scope and fail it; an escape no step owns is logged, the server keeps serving (RUN_CONTROL_SPEC §5.5)
+│   ├── park.ts            # PARKED RUNS (plans/human-steps.md §2, RUN_CONTROL_SPEC §5.6): a run that waits for something outside it leaves memory and comes back by durable resume. `ParkedError` / `isParkedError` / `mergeParked` (what `ctx.park("<prefix>:<id>")` throws; the runner's `step.parked`, `run.waiting`, the `waiting` summary with `waitingOn`), `parkPrefix`, the WAITING INDEX (`FileWaitingIndex`: one file a run under `<dataDir>/parking/` until it really ends; `MemoryWaitingIndex`) and `createParking` — the wake's bookkeeping over seams createStrut fills: `register(prefix, { settled, cancelled? })` → `{ wake(workflow, runId) }` (registering asks the source about every run already waiting on its prefix: a settle across a restart wakes at the next boot), `parked` (indexed, each target asked whether it settled: no lost wake), `released` (a wake held while the run was live goes when its controller lets go), `ended`, `cancelled` (each source told), `flush` (the drain lifted); wakes for one run within `wakeDelayMs` are one resume. `strut.parking.register` is the door; the bag's `parking` (`accepts(on)`) is what `ctx.park` asks
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation; `changedSteps` / `invalidateSteps` — a resume onto another version re-runs what changed (§5.4); `executedWorkflowHash` — the version a run executes now (the newest durable `run.resumed`'s, else `run.start`'s)
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change; on a JOB subject `manual`, `sample` refused), the additive `claims` publish arg, publisher scoping (fixed point 1; a job is nobody's template, so any author may claim about it, and on a job an `ai` author may add a check to a PERSON's claim — plans/job-claims.md §1, ruled), the sealed check over the check closure (fixed point 2; sealed.ts), `ensureJobNode` before a claim about a job is written
@@ -2000,6 +2001,30 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   attempt finished and a resumed run reads as live everywhere. A log over
   `STRUT_RESUME_MAX_LOG_BYTES` (64 MB) is never read: the boot scan skips
   it by its size, `POST …/resume` answers 413.
+
+- **Parked runs — a run that waits outside memory** (`src/park.ts`,
+  RUN_CONTROL_SPEC §5.6, plans/human-steps.md §2). `ctx.park("<prefix>:<id>")`
+  never returns: the step, and its dependents, wait; other branches run to
+  their end; a `foreach` goes on past a parked iteration and parks at the
+  end on all of them. Not an error (no retry, no `onError`, no
+  `step.error`): `step.parked { on }`, then `run.waiting { on }` (not
+  terminal) and a summary with `status: "waiting"` + `waitingOn`, and the
+  run leaves memory — no controller, no `run.end` callback, no verify pass
+  or projection (`RunEndInfo.parked`), not in the scheduler's overlap. A
+  SOURCE registered under the prefix (`strut.parking.register`) wakes it:
+  the durable resume, `run.resumed { woken: true }` (not counted by the
+  crash-loop guard), on the run's own version; parked steps run again from
+  the top and must find what they started by `runId` + `path`. Wakes are
+  coalesced (`createStrut({ wakeDelayMs })`, 1 s), held while the run is
+  live or the server drains, and checked against each source right after a
+  park; the waiting runs are kept on file so a registration at the next
+  boot wakes what settled meanwhile. `POST …/cancel` on a waiting run
+  finalizes it as cancelled at once and tells the sources; `POST …/resume`
+  wakes it by hand. A park fails the step (`park_refused:`) where nothing
+  could wake the run: no source for the prefix, a single-step run, a
+  public run, an agent's tool call. The UI shows `waiting` on the run, an
+  hourglass on a parked step's node, and what it waits on in the run
+  overview and the step's flyout.
 
 - **`RunStore.append/finalize`** take `(workflow, runId, ...)`
   — the workflow name is the first param. `MemoryRunStore` keys

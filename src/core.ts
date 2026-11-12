@@ -284,6 +284,16 @@ export interface StepContext<TServices = unknown> {
    *  run's list. Optional (absent outside the runner, like `registry`);
    *  a hard kill skips it like any in-process `finally`. */
   onRunEnd?: (fn: (info: RunEndInfo) => unknown) => void;
+  /** PARK the run on `on` (src/park.ts, plans/human-steps.md §2): never
+   *  returns. The step, and every step that depends on it, waits for `on`
+   *  (`<prefix>:<id>`, a source registered under the prefix); the run leaves
+   *  memory as `waiting` and is resumed from its journal when the source
+   *  wakes it, so the step runs AGAIN from the top and must find what it
+   *  started (keyed by `runId` and `path`) instead of starting it twice.
+   *  Fails the step instead — an ordinary error — where nothing could wake
+   *  the run: no source for the prefix, a single-step run, a public run, an
+   *  agent's tool call. Absent outside the runner. */
+  park?: (on: string) => never;
 }
 
 /** What a run's teardown hooks (`ctx.onRunEnd`, `services.onRunEnd`) are told
@@ -292,6 +302,12 @@ export interface RunEndInfo {
   /** The flow's name — the run-store key the run was written under. */
   workflow: string;
   origin?: RunOrigin;
+  /** The run PARKED (src/park.ts): it is `waiting`, not ended. Per-run
+   *  resources go as at any end; what runs at a run's real end (the verify
+   *  pass, the projection) waits for it. */
+  parked?: true;
+  /** With `parked`: what it waits on. */
+  waitingOn?: string[];
 }
 
 /** Error handling options for a step. */
@@ -385,6 +401,11 @@ export type RunEventType =
   /** A completed step's journaled output was replayed on resume — zero cost,
    *  no side effects re-executed. Never a fake `step.end` (honest timings). */
   | "step.replayed"
+  /** The step PARKED (src/park.ts): `on` is what it waits for. Not an error
+   *  and not an end: a wake runs the step again, which starts a new attempt.
+   *  A container a parked step stopped (subflow, foreach, loop) parks too,
+   *  with everything below it in `on`. */
+  | "step.parked"
   | "run.start"
   | "run.end"
   | "run.error"
@@ -399,6 +420,10 @@ export type RunEventType =
    *  this marker is what tells boot-time auto-resume (§5.3) that the run
    *  was being cancelled, not cut off. */
   | "run.cancelling"
+  /** Not terminal: every branch of the run ended or parked, and some parked
+   *  (src/park.ts) — `on` is what it waits for. The summary says `waiting`;
+   *  a wake resumes the run from its journal (`run.resumed { woken: true }`). */
+  | "run.waiting"
   /** A piece of an agent's reply as the model writes it (`stream: true` on
    *  the agent step, plans/private-voice.md §3.4): `{ path, call, text,
    *  reset? }`, batched about every 50 ms. Kept in the log, never sent by the
@@ -607,6 +632,13 @@ export interface RunEvent {
   wakeAsked?: true;
   /** On a WAKE turn's `run.start` (src/wake.ts): the job run it woke on. */
   wake?: WakeMark;
+  /** On `step.parked` and `run.waiting`: what the step or the run waits for
+   *  (`<prefix>:<id>`, src/park.ts). */
+  on?: string[];
+  /** On a `run.resumed` a WAKE launched (src/park.ts): a parked run going on
+   *  because what it waited for happened. Never counted as a restart by the
+   *  boot-time crash-loop guard. */
+  woken?: true;
   /** On a `run.resumed` that UNPAUSED a live run (RUN_CONTROL_SPEC §4) —
    *  not a durable resume after a crash or a failure, which the boot-time
    *  crash-loop guard counts (§5.3). */
@@ -869,10 +901,17 @@ export function takeUsage(output: unknown): Partial<ModelUsage> {
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;
-  status: "success" | "error" | "cancelled";
+  /** `waiting`: the run PARKED (src/park.ts) — not an end; it goes on when
+   *  a wake resumes it. */
+  status: RunStatus;
   output?: unknown;
   error?: { message: string; stack?: string };
+  /** With `waiting`: what it waits for. */
+  waitingOn?: string[];
 }
+
+/** How a run stands once its runner returned. */
+export type RunStatus = "success" | "error" | "cancelled" | "waiting";
 
 /** Run summary written to run.json. */
 export interface RunSummary {
@@ -881,7 +920,11 @@ export interface RunSummary {
   startedAt: string;
   finishedAt: string;
   durationMs: number;
-  status: "success" | "error" | "cancelled";
+  /** `waiting`: the run PARKED (src/park.ts) and is not over — `finishedAt`
+   *  is when it parked; a wake clears this summary and the run goes on. */
+  status: RunStatus;
+  /** With `waiting`: what it waits for (`<prefix>:<id>`). */
+  waitingOn?: string[];
   input: unknown;
   output?: unknown;
   error?: { message: string; stack?: string };

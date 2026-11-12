@@ -31,7 +31,8 @@ export interface HealthStep {
 }
 
 export interface RunHealth {
-  status: "running" | "paused" | "success" | "error" | "cancelled";
+  /** `waiting`: the run parked (`run.waiting`); it goes on when woken. */
+  status: "running" | "paused" | "success" | "error" | "cancelled" | "waiting";
   /** Steps that failed, in log order — never an agent's tool call, which the agent goes past. */
   errors: Array<HealthStep & { message: string; at: string | null }>;
   /** Steps tried again: how many attempts, and whether the last one held. */
@@ -64,7 +65,8 @@ export interface RunHealth {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const errorText = (e: unknown) => (isRecord(e) && typeof e.message === "string" ? e.message : typeof e === "string" ? e : e === undefined ? "" : JSON.stringify(e));
-const ended = (t: string) => t === "step.end" || t === "step.error" || t === "step.skipped" || t === "step.replayed";
+// A parked step (`step.parked`) is not cut off: it waits, and runs again when the run is woken.
+const ended = (t: string) => t === "step.end" || t === "step.error" || t === "step.skipped" || t === "step.replayed" || t === "step.parked";
 
 export function foldRunHealth(allEvents: readonly HealthEvent[]): RunHealth {
   // `reply.delta` is a reply as it is written (agent `stream: true`): not an event of the run's health.
@@ -94,6 +96,7 @@ export function foldRunHealth(allEvents: readonly HealthEvent[]): RunHealth {
       case "run.error": status = "error"; terminal = e.ts; continue;
       case "run.cancelled": status = "cancelled"; terminal = e.ts; continue;
       case "run.paused": status = "paused"; stats.pauses++; continue;
+      case "run.waiting": status = "waiting"; terminal = e.ts; continue;
       case "run.resumed": status = "running"; terminal = undefined; stats.resumes++; continue;
     }
     if (!e.path || !e.type.startsWith("step.")) continue;
@@ -126,7 +129,7 @@ export function foldRunHealth(allEvents: readonly HealthEvent[]): RunHealth {
     if (!ended(e.type)) continue;
     open.delete(e.path);
     const r = retried.get(e.path);
-    if (r && e.type !== "step.skipped") r.outcome = e.type === "step.error" ? "error" : "success";
+    if (r && e.type !== "step.skipped" && e.type !== "step.parked") r.outcome = e.type === "step.error" ? "error" : "success";
 
     if (tool) {
       if (e.type === "step.error") {

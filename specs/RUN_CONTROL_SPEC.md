@@ -5,7 +5,7 @@ run TREES the lab produces (an evolve run that launches generation runs
 that launch candidate runs), where today the only control is killing the
 server and orphaning every in-flight log as "stale".
 
-Status: IMPLEMENTED (all three rungs). The runner/controller live in
+Status: IMPLEMENTED (all three rungs, and a fourth: parked runs, §5.6). The runner/controller live in
 `src/run-control.ts` + `src/runner.ts`, the journal in `src/journal.ts`,
 the endpoints in `src/createStrut.ts`
 (`POST /workflows/:name/runs/:runId/{cancel,pause,resume}`), the UI in
@@ -501,6 +501,84 @@ run got there without a crash of the machine, and what happens now:
   cleared the run's summary. The launcher settles it the same way, which
   puts back the end the log already had.
 
+### 5.6 Rung 4 — Parked runs: a run that waits outside memory
+
+Pause holds a run in memory, and a step that awaits a promise for days
+does too (about 42 KB a run, lost at a restart, and the drain never goes
+idle). A run that waits for something outside it — a person's answer
+(plans/human-steps.md) — PARKS instead: it leaves memory, and comes back
+by the durable resume of §5. Code: `src/park.ts`, the runner, and the
+wake in `createStrut`.
+
+**A step parks** with `ctx.park(on)`, `on` = `<prefix>:<id>` (the prefix
+lowercase letters): it throws a `ParkedError`, detected structurally like
+`CancelledError`. The step runs again from the top when the run wakes, so
+it must find what it started (by `ctx.runId` and `ctx.path`) instead of
+starting it twice.
+
+**The runner.** A park is neither the error path nor a cancel: no retry,
+no `onError`, no `step.error`. `executeStep` emits `step.parked { path,
+on }` and rethrows. Dependents of a parked step stop with it; other
+branches run to their end (the DAG already settles every branch), and the
+flow's outcome is the worst of its branches — an error, else cancelled,
+else parked, waiting on every parked branch's targets. A `foreach` does
+not stop at a parked iteration: the pool goes on, and it parks at the end
+on every iteration that did, so a foreach over 100 items makes its 100
+waits in one pass. A `loop` parks at the iteration that parked; a
+`subflow` passes a park through (same run). On a parked outcome
+`runWorkflow` appends `run.waiting { on }` — not terminal — writes the
+summary with `status: "waiting"` and `waitingOn`, and returns `{ runId,
+status: "waiting", waitingOn }`. Teardown runs with `RunEndInfo.parked`:
+per-run resources go as at any end.
+
+**Where a park fails the step instead** (`park_refused:`, an ordinary
+error) — wherever nothing could wake the run: a prefix no source
+registered, a single-step run (`runSingleStep`'s `noPark`), a public run,
+and an agent's tool call (a turn cannot be resumed mid-loop, §8).
+
+**The wake.** A source registers under its prefix in the process
+(`strut.parking.register(prefix, { settled(on), cancelled?(on, run) })`)
+and gets `{ wake(workflow, runId) }`. A wake is the durable resume of §5
+on the run's own version, its `run.resumed` marked `woken: true`:
+- **Coalesced:** wakes for one run within `wakeDelayMs` (1 s) are one
+  resume.
+- **Held while live:** a wake that arrives while the run executes (another
+  branch still running, or already resumed) is applied when the run next
+  parks or lets go of its controller. During a drain it waits for the
+  drain to lift.
+- **No lost wake:** after a run parks, each source is asked whether its
+  target already `settled`, and the run is woken at once if one did.
+- **Across a restart:** strut keeps the waiting runs on file
+  (`<dataDir>/parking/`, one file a run, until it really ends; memory
+  where the run store is). A source's registration asks it about every
+  run waiting on its prefix, so a settle no process woke for wakes at the
+  next boot — a source keeps no wake bookkeeping of its own.
+- **A crash while parking** (after `run.waiting`, before the summary)
+  leaves a cut-off run: boot's auto-resume resumes it, and its steps park
+  again on what they made.
+- **Not counted:** the crash-loop guard of §5.3 skips `woken` resumes.
+- A wake of a run that no longer waits (cancelled, ended, resumed by
+  hand) does nothing.
+
+| Reader | A `waiting` run |
+| --- | --- |
+| Boot auto-resume (§5.3) | Has a summary: passed over |
+| Controllers, `GET /runs/active`, the drain's `idle` | Not live: no controller |
+| The `run.end` callback, rooms | Nothing sent until the run really ends |
+| The verify pass, the graph projection, the conversation wake | Skipped (`RunEndInfo.parked`); they run at the real end |
+| The scheduler's overlap rule | Does not hold back the automation's next fire |
+| `POST …/cancel` | Finalizes it as cancelled at once (under the lock its wake takes), tells each source (`cancelled(on)`), and runs the end hooks a park put off |
+| `POST …/resume` | A durable resume like any dead run's: a person wakes it now |
+| `POST …/pause` | 409 |
+| `run/get { wait }` | Answers at once: `waiting`, with `waitingOn` |
+
+**Limits.** Per-run resources are gone after a park (a browser page, a
+checkout in the run's directory): what later steps need lives in step
+outputs, artifacts or a job. The log is read whole at each wake, so the
+64 MB resume cap holds; a run past it stays `waiting` and the wake says
+why. A parked run lets go of its job's hold; a wake replays `job/dir` and
+does not take it again (open, plans/human-steps.md §11).
+
 ## 6. Step-author contract (additions)
 
 - `ctx.control?: RunController` — await `checkpoint()` inside long
@@ -512,6 +590,9 @@ run got there without a crash of the machine, and what happens now:
 - Side-effectful steps must remain safe to re-execute after a crash
   mid-step (the journal only protects COMPLETED units). This is already
   the implicit contract — retries exist — now it's explicit.
+- `ctx.park?(on)` — wait for something outside the run (§5.6). The step
+  runs again from the top on the wake: find what you started by
+  `ctx.runId` + `ctx.path` rather than start it twice.
 
 ## 7. Invariants
 

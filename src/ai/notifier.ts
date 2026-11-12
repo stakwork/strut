@@ -38,7 +38,9 @@ export const NOTIFICATION_PREFIX = "[run-notification]";
 export interface RunNotificationInfo {
   workflow: string;
   runId: string;
-  status: "success" | "error" | "cancelled";
+  /** `waiting`: the run parked (src/park.ts) — not over; it goes on when
+   *  it is woken. */
+  status: "success" | "error" | "cancelled" | "waiting";
   durationMs?: number;
   output?: unknown;
   error?: { message: string };

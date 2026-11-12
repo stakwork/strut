@@ -275,8 +275,10 @@ data: {"runId":"1790436489808","status":"success","output":"Bye World after 3000
 - Every unnamed frame's `data` is one event (§5.3), an agent session
   replaced by its `transcript` link.
 - `done` carries `{ runId, status, output?, error? }` (`RunResult`), with
-  `status` one of `success`, `error`, `cancelled`. If the run has no summary
-  yet (it was resumed and is still going) `status` is its live state instead.
+  `status` one of `success`, `error`, `cancelled`, or `waiting` when the run
+  PARKED (§6.3): the tail closes there, and a wake appends past it. If the
+  run has no summary yet (it was resumed and is still going) `status` is its
+  live state instead.
 - **A stale run's tail ends.** A log with no terminal event and no live
   process behind it — a run cut off by a crash that was not resumed — is
   replayed and then closed with `done { runId, status: "stale" }` rather
@@ -341,7 +343,8 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 
 | Field          | Value |
 | -------------- | ----- |
-| `status`       | `success`, `error` or `cancelled` |
+| `status`       | `success`, `error` or `cancelled`; `waiting` while the run is parked (§6.3) — not an end: `finishedAt` is when it parked, and a wake clears this summary |
+| `waitingOn`    | with `waiting`: what it waits for, `["<prefix>:<id>", …]` |
 | `input`        | as validated (defaults filled) — the raw body when validation itself failed |
 | `output`       | the workflow's output, its last step's; success only |
 | `error`        | `{ message, stack? }`; error only. A cancelled run has neither |
@@ -415,6 +418,8 @@ One object per line of the run's append-only log. Common fields:
 | `run.cancelled`   | terminal, cancelled |
 | `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes`, `callback: { origin }` and `mcp` like `run.start`; a durable one also `workflowHash` (the version the run continues on) and, when it moved the run onto another version, `changed` |
 | `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
+| `step.parked`     | the step PARKED (§6.3): `on` is what it waits for. Not an error and not an end — a wake runs the step again, a new attempt. A container a parked step stopped (subflow, foreach, loop) parks too, `on` holding everything under it |
+| `run.waiting`     | not terminal: every branch ended or parked, and some parked; `on` lists what the run waits for. The summary says `waiting`. A wake resumes the run: `run.resumed` with `woken: true` |
 | `reply.delta`     | an `agent` step with `stream: true`: `{ path, call, text, reset? }`, a piece of the reply as the model writes it (schema mode: the answer's `text` field, from the `final_answer` call or the forced final-answer turn; no schema/finalAnswer: the assistant text), batched ~50 ms, `reset: true` when a new answer starts over what was said. Kept in the log; the events sink never sends it; UI panels and folds skip it. The SSE tail delivers an appended event within milliseconds. A consumer's rule: if a run ends with no `reply.delta` for the reply, use `output.text` |
 
 `step.start.stepVersion: { version, hash }` records a pinned custom step's
@@ -572,8 +577,10 @@ these claims.
 | POST   | `/workflows/:name/runs/:runId/resume`     | 202 `{ ok, runId, state, resumed: "in-memory" }` |
 
 404 when there is no such run; 409 when it is not live — already terminal
-(`Run already terminal (success)`) or `stale`; 403 for a peer (Auth) on a
-run no peer launched, here and in §6.2.
+(`Run already terminal (success)`), `stale`, or `waiting` for pause and
+resume-in-memory; 403 for a peer (Auth) on a run no peer launched, here and
+in §6.2. A `waiting` run (§6.3) can be cancelled: 202 `{ ok, runId, state:
+"cancelled" }`, at once.
 
 Control is **cooperative**. A request marks the run (`run.cancelling`,
 `run.paused`, `run.resumed` in the log) and takes effect at the next
@@ -625,6 +632,40 @@ run's log is over `STRUT_RESUME_MAX_LOG_BYTES` (64 MB) — refused by its
 size, never read (`{ error: "run log is 139.0 MB (…), over the 64.0 MB (…)
 resume cap (STRUT_RESUME_MAX_LOG_BYTES) — not loaded" }`); boot-time
 auto-resume skips such a run the same way.
+
+### 6.3 Parked runs: a run that waits
+
+A step may PARK the run (`ctx.park("<prefix>:<id>")`, src/park.ts): it, and
+every step that depends on it, waits for something outside the run — a
+person's answer. Other branches run to their end; then the run leaves
+memory as `waiting` (`run.waiting`, a summary with `waitingOn`). It holds
+nothing in the meantime: no controller (`GET /runs/active` does not list
+it), no `run.end` callback, no room message, no verify pass or graph
+projection — those come at its real end. A scheduled workflow's next fire
+is not held back by it.
+
+Whatever the step parks on is a SOURCE, registered in the process under its
+prefix (`strut.parking.register(prefix, { settled, cancelled? })`, which
+returns `{ wake(workflow, runId) }`). When what it waits for happens the
+source wakes the run: a durable resume (§6.2) under the same id, its
+`run.resumed` marked `woken: true` — every finished step replays, each
+parked step runs again from the top and finds its answer, and the run goes
+on (or parks again on what is still open). Wakes for one run within a
+second are one resume (`createStrut({ wakeDelayMs })`); one that arrives
+while the run is live is applied when it next parks or ends; one during a
+drain waits for the drain to lift. After a run parks, each source is asked
+whether its target already settled, so no wake is lost; and strut keeps the
+waiting runs on file (`<dataDir>/parking/`), so a source's registration at
+the next boot wakes what settled while no process listened. A wake is not
+counted by the boot crash-loop guard. A park fails the step instead, as an
+ordinary error, where nothing could wake the run: a prefix no source
+registered, a single-step run (§7), a public run, an agent's tool call.
+
+| Request on a `waiting` run | Effect |
+| --- | --- |
+| `POST …/cancel` | 202: finalized as `cancelled` at once (`run.cancelled`, the summary, its `run.end`); each source is told |
+| `POST …/resume` `{}` | wakes it now; parked steps run again and wait again if nothing answered them |
+| `POST …/pause` | 409 |
 
 ## 7. Run one step
 
@@ -871,7 +912,7 @@ interface ConversationTurn {
   workflow: string;
   at: string;               // when it launched
   by?: string;              // who took it
-  status: string;           // success | error | cancelled; while not settled running | paused, stale when no process runs it
+  status: string;           // success | error | cancelled; while not settled running | paused | waiting (parked, §6.3), stale when no process runs it
   prompt?: string;          // the person's words (input.prompt) — absent on a wake
   wake?: { job: string; runId: string; peer?: string; also?: unknown[] } | true;  // a wake turn: the job run it woke on (run.start.wake)
   delivered?: Array<{ job: string; runId: string; workflow: string; artifacts: ArtifactRef[] }>; // a wake turn: what each job run it woke on (on this strut) delivered, resolved as its run.end carried it

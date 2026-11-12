@@ -1,6 +1,7 @@
 # Human steps: people as part of a workflow
 
-> **Status (2026-11-12): proposed; nothing built.** Written against strut
+> **Status (2026-11-12): item 1 built (stakwork/strut#654); item 2a in
+> progress; the rest proposed** — §12 has each item's state. Written against strut
 > `main` @a5663769. The rows under
 > "Rulings" are the owner's, from one conversation. Everything else is
 > mine and open. Strut succeeds Stakwork, and what Stakwork has that strut
@@ -15,6 +16,12 @@
 > `paid-runs.md` (the ledger's pattern, the wallet, the payer) and
 > `elicitation.md`, which left "a step pausing for a human" to a plan of
 > its own. This is that plan.
+>
+> **Keeping this plan current.** Each session that builds an item edits
+> this file in that item's PR: its row in §12 says it is built and names
+> the PR, and wherever a section says something other than what was built,
+> it is marked **Built differently (#PR):** with what was built and why. The
+> Rulings table changes only on Evan's word.
 
 ## Rulings (2026-11-12)
 
@@ -135,10 +142,13 @@ and its step path (the `strut/run-workflow` `#launch` precedent).
 
 ### 2.3 Wake
 
-`wakeRun(workflow, runId)` in `src/createStrut.ts` is the existing durable
-resume (`prepareDurableResume` + `launchDurableResume`) with its
-`run.resumed` event marked `wake: true`. The journal replays every
-finished step, and each parked step runs again and finds its answer.
+The wake (`createParking` in `src/park.ts`, its server side in
+`src/createStrut.ts`) is the existing durable resume
+(`prepareDurableResume` + `launchDurableResume`), under a per-run lock its
+cancel takes too, with its `run.resumed` event marked `woken: true`. The
+journal replays every finished step, and each parked step runs again and
+finds its answer. **Built differently (#654):** the marker is `woken`, not
+`wake`: `RunEvent.wake` is already the conversation wake's mark.
 
 - **Sources.** `on` is `<prefix>:<id>`, the prefix lowercase letters.
   Whoever a step parks on is a source, registered in process under its
@@ -152,10 +162,16 @@ finished step, and each parked step runs again and finds its answer.
   `on` already settled, and wakes at once if so. A wake that arrives
   while the run is live (another branch still running, or already
   resumed) is kept and applied when it next parks.
-- **Coalesced.** Wakes for one run within a second are one resume.
-- **Across a restart.** A source keeps what it woke (`woken_at` on the
-  task). At boot the task store wakes every settled task whose run was
-  not woken. A wake during a drain waits until the drain lifts.
+- **Coalesced.** Wakes for one run within a second are one resume
+  (`createStrut({ wakeDelayMs })`, 1000 by default).
+- **Across a restart.** **Built differently (#654):** strut keeps the
+  waiting runs itself, one file a run under `<dataDir>/parking/` until the
+  run really ends, and when a source registers asks it `settled(on)` about
+  every run waiting on its prefix. A settle no process woke for wakes at
+  the next boot, and a source keeps no wake bookkeeping. The plan had the
+  source keep `woken_at` and wake at boot what it had not woken, which
+  left a run waiting for good if the process died between the wake and
+  the resume. A wake during a drain waits until the drain lifts.
 - **A crash while parking.** If the process dies after `run.waiting` is
   appended and before the summary is written, boot auto-resume sees a
   cut-off run and resumes it. Its steps park again on the tasks they
@@ -276,7 +292,7 @@ file.
 | Table | Holds |
 | --- | --- |
 | `task_types` | name, app, the answer's schema (§4.5), `leaseSeconds` (default 600), `withinHours` (default 72), enabled, who changed it. Later: pay, test rate, threshold, hold |
-| `tasks` | a random id, the type, the key (workflow, run id, step path; unique), `show`, its files (paths and where they are rooted: the run or its job), status (`open`, `settled`, `expired`, `cancelled`), times, the answer, `woken_at` |
+| `tasks` | a random id, the type, the key (workflow, run id, step path; unique), `show`, its files (paths and where they are rooted: the run or its job), status (`open`, `settled`, `expired`, `cancelled`), times, the answer. No `woken_at`: strut keeps the waiting runs (§2.3, built differently in #654) |
 | `leases` | a random 128-bit id, task, worker, taken and expiry times, status (`open`, `submitted`, `expired`, `skipped`); one per task and worker |
 | `workers` | actor, status (`new`, `active`, `suspended`, `banned`), first seen, a note |
 | `grants` | actor, task type, who granted it, when, revoked when and why |
@@ -569,17 +585,17 @@ another branches after that one has merged. Each PR updates `AGENTS.md`
 and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 `specs/SPEC.md` for the step, `specs/API.md` for routes).
 
-| Item | What | Needs |
-| --- | --- | --- |
-| 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing |
-| 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing |
-| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source, the boot wake | 1 and 2a |
-| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b |
-| 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 |
-| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 |
-| 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a |
-| 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b |
+| Item | What | Needs | State |
+| --- | --- | --- | --- |
+| 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing | **Built**: stakwork/strut#654. Differs in §2.3 |
+| 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | In progress |
+| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | Not started |
+| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | Not started |
+| 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |
+| 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
+| 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.

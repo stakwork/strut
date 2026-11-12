@@ -17,6 +17,8 @@ export interface StepRunEvents {
   end?: api.RunEvent;
   error?: api.RunEvent;
   skipped?: api.RunEvent;
+  /** The step parked (src/park.ts): `on` is what it waits for. */
+  parked?: api.RunEvent;
   all: api.RunEvent[];
   /** Graph nodes the step read or wrote — an agent's, through its tool
    *  calls (`foldAccessedNodes`). */
@@ -53,7 +55,7 @@ export function StepRunFlyout(props: {
   const disp = props.events;
   // LLM steps (agent, llm) report their dollar cost in the output.
   const cost = (disp.end?.output as { cost?: unknown } | null | undefined)?.cost;
-  const status = disp.error ? "error" : disp.skipped ? "skipped" : disp.end ? "success" : "running";
+  const status = disp.error ? "error" : disp.skipped ? "skipped" : disp.end ? "success" : disp.parked ? "waiting" : "running";
 
   return (
     <>
@@ -73,6 +75,12 @@ export function StepRunFlyout(props: {
               <span class="flyout-meta-label">Status</span>
               <span class={`badge badge-${statusTone(status)}`}>{status}</span>
             </div>
+            {disp.parked && (
+              <div class="flyout-meta-row">
+                <span class="flyout-meta-label">Waiting on</span>
+                <span class="flyout-meta-value">{(disp.parked.on ?? []).join(", ") || "something outside the run"}</span>
+              </div>
+            )}
             {disp.end?.durationMs != null && (
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Duration</span>
