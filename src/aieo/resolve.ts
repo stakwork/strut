@@ -36,11 +36,14 @@ import {
   TOKENFACTORY_MODELS,
   getCatalogEntry,
   getContextLimit,
+  getMediaModel,
   getModel,
   getProviderForModel,
   KEY_HEADER_ENV,
   keyHeaders,
   normalizeApiKey,
+  type MediaKind,
+  type MediaModels,
   type ModelName,
   type Provider,
 } from "./provider.js";
@@ -319,6 +322,45 @@ export async function resolveModel(opts: ResolveOptions = {}): Promise<ResolvedM
     contextLimit: getContextLimit(ref.modelId, ref.provider as Provider),
     maxOutputTokens: maxOutputTokensFor(ref.provider, ref.modelId),
   };
+}
+
+export interface ResolvedMediaModel<K extends MediaKind> extends ModelRef {
+  model: MediaModels[K];
+  apiKey: string;
+}
+
+/**
+ * Name → a media model of `kind` (an ImageModel for "image"): resolveModel's
+ * rules for the name, the key and the gateway, `getMediaModel` for the
+ * model. Throws when the provider makes no such media, or makes it only
+ * directly and `baseUrl` names a gateway.
+ */
+export async function resolveMediaModel<K extends MediaKind>(kind: K, opts: ResolveOptions = {}): Promise<ResolvedMediaModel<K>> {
+  if (!opts.model) throw new Error(`A ${kind} model is required, written as "<provider>/<id>"`);
+  const baseUrl = normalizeApiKey(opts.baseUrl);
+  const ref = canonicalModelName(opts.model, opts.provider);
+  const envName = API_KEY_ENV[ref.provider];
+  const lookup = async (name: string) =>
+    normalizeApiKey(await opts.getSecret?.(name)) ?? normalizeApiKey(env[name]);
+  const callerKey = normalizeApiKey(opts.apiKey);
+  const apiKey = callerKey ?? (await lookup(envName));
+  if (!apiKey) throw new Error(`No API key for provider "${ref.provider}": set ${envName} (or pass apiKey / getSecret)`);
+  let headers = opts.headers;
+  if (!callerKey) {
+    const found: Record<string, string | undefined> = {};
+    for (const name of Object.keys(KEY_HEADER_ENV[ref.provider] ?? {})) found[name] = await lookup(name);
+    const fromKey = keyHeaders(ref.provider, (name) => found[name]);
+    if (fromKey) headers = { ...fromKey, ...opts.headers };
+  }
+  const model = getMediaModel(kind, ref.provider, {
+    modelName: ref.name,
+    apiKey,
+    baseUrl,
+    headers,
+    abortSignal: opts.abortSignal,
+    timeoutMs: opts.timeoutMs,
+  });
+  return { ...ref, model, apiKey };
 }
 
 type ResolvedModelRef = Omit<ModelRef, "provider"> & { provider: Provider | (string & {}) };

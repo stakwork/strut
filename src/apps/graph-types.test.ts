@@ -157,7 +157,7 @@ for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, 
       concepts: false,
       views: false,
       browserWorkflows: false,
-      privacyWorkflows: false,
+      privacyWorkflows: false, mediaWorkflows: false,
     });
   });
   after(async () => {

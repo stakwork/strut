@@ -136,7 +136,7 @@ for (const tb of testBackends()) {
         enableChat: false,
         systemWorkflows: false,
         browserWorkflows: false,
-        privacyWorkflows: false,
+        privacyWorkflows: false, mediaWorkflows: false,
         job: false,
         orchestrator: false,
         builder: false,
@@ -212,7 +212,7 @@ for (const tb of testBackends()) {
       // A second boot over the same data: nothing changed, nothing committed.
       await s.close();
       struts.splice(struts.indexOf(s), 1);
-      const again = await createStrut({ workspace: new GraphWorkspaceStore(backend, { materializeDir: join(scratch, "s0", "steps") }), dataDir: join(scratch, "s0"), store: new MemoryRunStore(), serveUi: false, scheduler: false, enableChat: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, job: false, orchestrator: false, builder: false, views: false, jamie: false, knowledge: false, stt: false, history: true });
+      const again = await createStrut({ workspace: new GraphWorkspaceStore(backend, { materializeDir: join(scratch, "s0", "steps") }), dataDir: join(scratch, "s0"), store: new MemoryRunStore(), serveUi: false, scheduler: false, enableChat: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false, job: false, orchestrator: false, builder: false, views: false, jamie: false, knowledge: false, stt: false, history: true });
       struts.push(again);
       assert.equal((await commits(again)).length, 1);
     });

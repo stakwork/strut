@@ -421,7 +421,7 @@ describe("strut/jamie — its steps, as its viewer", () => {
       builder: false,
       autoResume: false,
       browserWorkflows: false,
-      privacyWorkflows: false,
+      privacyWorkflows: false, mediaWorkflows: false,
     });
     await strut.workspace.publishWorkflow("job", "v-test", { steps: [{ id: "result", type: "pack", config: { text: "{{ input.prompt }}: done", artifacts: [] } }] });
   });

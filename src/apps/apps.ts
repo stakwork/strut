@@ -55,7 +55,7 @@ export const DEFAULT_TEMPLATE = "default";
 
 /** Never a direct grant from a model-written manifest (§5.1): a paid or
  *  shell-shaped step runs inside a workflow the app launches. */
-export const PAID_OR_SHELL_STEPS: readonly string[] = ["llm", "agent", "exec", "remote/run-workflow", "remote/call", "remote/buy-credit"];
+export const PAID_OR_SHELL_STEPS: readonly string[] = ["llm", "agent", "image", "exec", "remote/run-workflow", "remote/call", "remote/buy-credit"];
 
 /** One app as `app/get` and `GET /apps/:name` read it: the record, the
  *  version's files and build, and what has moved since. */

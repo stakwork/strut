@@ -148,7 +148,7 @@ describe("a secret from strut's own app, through a whole strut", () => {
       orchestrator: false,
       autoResume: false,
       browserWorkflows: false,
-      privacyWorkflows: false,
+      privacyWorkflows: false, mediaWorkflows: false,
       jamie: false,
     });
     // strut's own app, as the seed publishes it, granted secret/add as Jamie is.

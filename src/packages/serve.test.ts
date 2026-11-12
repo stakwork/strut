@@ -55,7 +55,7 @@ const boot = (dir: string, kit: KitLocation, extra: Record<string, unknown> = {}
     enableMcp: true,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -342,7 +342,7 @@ describe("a served box over a pk: ref, followed as a subscription is", () => {
     publisherWs = new WorkspaceManager(join(root, "publisher", "ws"));
     publisher = await createStrut({
       workspace: publisherWs, store: new MemoryRunStore(), kit, serveUi: false, scheduler: false, enableChat: false, systemWorkflows: false,
-      browserWorkflows: false, privacyWorkflows: false, job: false, orchestrator: false, builder: false, views: false, jamie: false,
+      browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false, job: false, orchestrator: false, builder: false, views: false, jamie: false,
       knowledge: false, concepts: false, stt: false, subscriptionPoll: false, autoResume: false,
     });
     base = `http://127.0.0.1:${await publisher.listen(0, "127.0.0.1")}`;

@@ -219,7 +219,7 @@ describe("first-party apps through a whole strut", () => {
       builder: false,
       autoResume: false,
       browserWorkflows: false,
-      privacyWorkflows: false,
+      privacyWorkflows: false, mediaWorkflows: false,
       orchestrator: { tools: ["note", "installer"], approve: ["note", "installer"] },
       // The test publishes its own stand-in for strut's app (below).
       jamie: false,

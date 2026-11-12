@@ -12,7 +12,7 @@
  *
  * | Flag     | When |
  * | -------- | ---- |
- * | `spends` | the closure holds an `agent`, `llm` or `acp/prompt` step |
+ * | `spends` | the closure holds an `agent`, `llm`, `image` or `acp/prompt` step |
  * | `acts`   | a step this strut knows declares `effect: "write"`, or the package's own step says so in its source |
  * | `code`   | an `exec` step, or one of the package's own steps (TypeScript in the installing process) |
  *
@@ -137,7 +137,7 @@ const DOCS_MAX_CHARS = 32_000;
 /** The steps that spend: on a model (`graph/walk` asks a decision model at
  *  every hop, its `evaluate` grader), or the credit this strut bought at
  *  another strut's public door (src/remote.ts) — the `spends` flag. */
-export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "acp/prompt", "graph/walk", "remote/run-workflow", "remote/call", "remote/buy-credit"]);
+export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "image", "acp/prompt", "graph/walk", "remote/run-workflow", "remote/call", "remote/buy-credit"]);
 
 /** Regexes over a step's SOURCE — a reading of `defineStep({ … })` without
  *  loading it: its description, `effect`, declared `secrets`, and every

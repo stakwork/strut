@@ -135,7 +135,7 @@ describe("draining a strut", () => {
       builder: false,
       systemWorkflows: false,
       browserWorkflows: false,
-      privacyWorkflows: false,
+      privacyWorkflows: false, mediaWorkflows: false,
     });
     await strut.workspace.publishWorkflow("slow", "v1", { steps: [{ id: "w", type: "wait-for-test", config: {} }] });
     await strut.workspace.publishWorkflow("wf", "v1", { steps: [{ id: "p", type: "ping", config: {} }] });

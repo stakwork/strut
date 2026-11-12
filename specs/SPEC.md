@@ -263,6 +263,30 @@ Config:
 - Calls an LLM with the resolved prompt. If `schema` is provided, uses structured output (e.g. `generateObject`).
 - Output: `{ text, usage, cost }` (no schema) or the parsed object plus `usage` and `cost` (with schema; the object's own fields win a name clash).
 
+#### 4.1.6a `image`
+
+Config:
+
+```ts
+{
+  prompt: string,
+  model: string,          // "<provider>/<id>": xai/grok-imagine-image, openai/gpt-image-1-mini,
+                          // google/gemini-2.5-flash-image, openrouter/<org>/<model>
+  size?: string,          // "1024x1024" — models that take a size
+  aspectRatio?: string,   // "16:9" — models that take an aspect ratio
+  seed?: number,
+  providerOptions?: Record<string, Record<string, unknown>>, // passed through: { openai: { quality: low } }
+  name?: string,          // the file's name; default the step's own place in the run
+}
+```
+
+- Makes ONE image (the AI SDK's `generateImage`) and writes it where the run's files go: `images/<name>.<ext>` under the run's artifacts, or the job's directory on a job run (as browser screenshots do).
+- Output: `{ path, url, mediaType, bytes, model, cost, usage, revisedPrompt? }`. `path` is relative, so a workflow declares the image as a deliverable: `artifacts: [{ id, kind: image, path: "{{ <step>.path }}" }]`.
+- `cost` is the call's dollars: what the provider reported (OpenRouter's and a gateway's `usage.cost`, xAI's `cost_in_usd_ticks`), else the model's datasheet price (image tokens, else per image). A model with neither is refused before the call (`image_unpriced:`): a cost is never guessed. It is reported through `withUsage`, so a run's totals and a public run's charge count it.
+- Through an `llmAuth` grant (a gateway), xai, openai and google image models ride the gateway's OpenAI-compatible route; OpenRouter image models are refused there (Bifrost has no image generation for OpenRouter) unless the grant allows a direct call.
+- As an agent's tool (`agentTools`), the model sees a 0.6× copy of the image (`withMedia`).
+- `image` spends like `llm` and `agent`: never a page's call, a public tool or an AI-published app's grant.
+
 #### 4.1.7 `pack`
 
 Config: any object. Output: that object, template-resolved. The workflow's

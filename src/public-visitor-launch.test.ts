@@ -110,7 +110,7 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     strut = await createStrut({
       workspace, store, kit, registry: await createRegistry([make]),
       scheduler: false, serveUi: false, views: false,
-      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
       services: { lightning: lightningCapability(wallet) },
       payments: { rate: async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" }) },
     });
