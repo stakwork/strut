@@ -46,6 +46,7 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
+import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -108,6 +109,7 @@ import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
+import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { createKnowledge } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -535,6 +537,11 @@ export interface StrutOptions<TServices = unknown> {
    *  at boot after `strut/views` (it imports it; none without it). `false`
    *  seeds nothing. */
   knowledge?: false;
+  /** `strut/earnings` (`src/apps/earnings-seed.ts`, specs/API.md §14.14):
+   *  the Earnings tab — wallet, Add sats, Withdraw, what was earned, credit
+   *  bought elsewhere — as a first-party, ADMIN-ONLY app a host frames for
+   *  an admin. `false` seeds nothing. */
+  earnings?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1748,6 +1755,17 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[knowledge] seeded app: strut/knowledge @ ${r.version}`);
     } catch (err) {
       console.warn(`[knowledge] could not seed strut/knowledge:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/earnings` (src/apps/earnings-seed.ts): the Earnings tab as an
+  // admin-only first-party app, for a host that frames apps for an admin
+  // and never shows strut's own UI. A served box too: its operator sells.
+  if (opts.earnings !== false) {
+    try {
+      const r = await seedEarningsApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[earnings] seeded app: strut/earnings @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[earnings] could not seed strut/earnings:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
@@ -3701,12 +3719,29 @@ export async function createStrut<TServices = unknown>(
     return { name };
   };
 
-  app.get("/apps", async (c) => c.json({ apps: await apps.list() }));
+  // An ADMIN-ONLY app (`admin: true` in its manifest, specs/API.md §14.4)
+  // is an admin's: left out of the list, and its version's files refused,
+  // for anyone short of full scope — a member's session, a person token, a
+  // peer. Read by its file token, the document still opens: only a listing
+  // a full-scope caller made mints one.
+  app.get("/apps", async (c) => {
+    const listed = await apps.list();
+    const full = (await scopeOf(c)) === "full";
+    return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
+  });
+  const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
+    if (version && isPreviewLabel(version)) return null;
+    if ((await scopeOf(c)) === "full") return null;
+    const rec = await workspace.getApp(name, version).catch(() => null);
+    return rec?.manifest.admin ? c.json({ error: `App "${name}" is an admin's: the deployment key or an admin's session` }, 403) : null;
+  };
 
   app.get("/apps/:name", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
     const version = c.req.query("version") || undefined;
+    const admin = await adminAppRefusal(c, at.name, version);
+    if (admin) return admin;
     const view = await apps.get(at.name, version);
     if (!view) return c.json({ error: version ? `App "${at.name}" has no version ${version}` : `App "${at.name}" not found` }, 404);
     return c.json(view);
@@ -3725,6 +3760,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps/:name/versions", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
+    const admin = await adminAppRefusal(c, at.name);
+    if (admin) return admin;
     const rec = await workspace.getApp(at.name);
     if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
     // `live`, `releases` (with their locks) and `behind`: plans/app-releases.md §1.2.
@@ -3757,6 +3794,10 @@ export async function createStrut<TServices = unknown>(
     if (refused) return refused;
     const at = await appVersionRoute(c);
     if (at instanceof Response) return at;
+    if (!carriesFileToken(c)) {
+      const admin = await adminAppRefusal(c, at.name, at.version);
+      if (admin) return admin;
+    }
     const token = fileToken({ kind: "app", id: `${at.name}@${at.version}` });
     return c.json({ app: at.name, version: at.version, hash: at.hash, files: await listAppFiles(at.path), ...(token ? { token } : {}) });
   });
@@ -3766,6 +3807,10 @@ export async function createStrut<TServices = unknown>(
     if (refused) return refused;
     const at = await appVersionRoute(c);
     if (at instanceof Response) return at;
+    if (!carriesFileToken(c)) {
+      const admin = await adminAppRefusal(c, at.name, at.version);
+      if (admin) return admin;
+    }
     const relPath = c.req.param("path");
     let bytes: Uint8Array | null;
     try {
@@ -5840,6 +5885,25 @@ export async function createStrut<TServices = unknown>(
     ledger: ledgerIfAny,
     withdrawals,
     deposits,
+  });
+
+  // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and
+  // below as an in-process request, the viewer's own, for the `earnings/*`
+  // steps strut's own Earnings app calls (`strut/earnings`). Handed to the
+  // app door's bag for a first-party page shown to an admin, never to the
+  // shared one (src/apps/tools.ts `adminServices`). Its paths are these
+  // routes' alone.
+  const earningsAdminDoor: EarningsAdminDoor = Object.freeze({
+    call: async (method: string, path: string, body?: unknown, actor?: string) => {
+      if (!/^\/(earnings|remote\/credit|remote\/purchases)(\/|\?|$)/.test(path)) throw new Error(`the admin door reaches /earnings and /remote/credit alone, not ${path}`);
+      const req = new Request(`http://strut.invalid${path}`, {
+        method,
+        headers: { "content-type": "application/json", "x-strut-ui": "1" },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      const res = await app.fetch(inProcessRequest(req, actor));
+      return { ok: res.ok, status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+    },
   });
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
@@ -9001,6 +9065,7 @@ export async function createStrut<TServices = unknown>(
         services,
         ...(actor ? { actor } : {}),
         admin: scope === "full",
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor } } : {}),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
       });

@@ -459,6 +459,8 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held. */
   live?: string;
+  /** Present (true) only when its manifest says `admin: true`: listed to full scope alone. */
+  admin?: true;
 }
 
 /** `getApp`: one version (the active one by default) with the app's record around it. */
@@ -1851,6 +1853,7 @@ export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "v
     ...(meta.owner ? { owner: meta.owner } : {}),
     ...(meta.pinned ? { pinned: true } : {}),
     ...(meta.live ? { live: meta.live } : {}),
+    ...(m.admin ? { admin: true as const } : {}),
   };
 }
 

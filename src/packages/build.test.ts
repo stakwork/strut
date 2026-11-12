@@ -84,6 +84,7 @@ const boot = (workspace: WorkspaceStore, extra: Record<string, unknown> = {}) =>
     orchestrator: false,
     builder: false,
     views: false,
+    earnings: false,
     concepts: false,
     stt: false,
     ...extra,
