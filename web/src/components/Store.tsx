@@ -237,6 +237,60 @@ function AppTile(props: { app: { name: string; title: string; icon?: string } })
   return <span class="store-app-tile" title={props.app.icon ? `icon: ${props.app.icon}` : undefined}>{initials}</span>;
 }
 
+/** An app's face on a Browse card: its first screenshot as a square, with
+ *  how many more there are; the initials when it has none. */
+function AppShot(props: { app: { title: string; screenshots?: api.AppScreenshot[] }; pkg: string; digest: string }) {
+  const shots = props.app.screenshots ?? [];
+  const initials = props.app.title.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  return (
+    <span class="store-app-shot">
+      {shots[0] ? <img src={api.storeScreenshotUrl(props.pkg, shots[0].path, props.digest)} alt={`${props.app.title}: ${shots[0].caption ?? "screenshot"}`} loading="lazy" /> : <span class="store-app-shot-initials">{initials}</span>}
+      {shots.length > 1 && <span class="store-app-shot-more" title={`${shots.length} screenshots`}>+{shots.length - 1}</span>}
+    </span>
+  );
+}
+
+/** An app's screenshots on its package page: one large, the rest as a strip
+ *  under it, arrows and ← → between them; one alone has neither. */
+function AppGallery(props: { app: api.AppDetail; pkg: string; digest: string }) {
+  const shots = props.app.screenshots ?? [];
+  const [i, setI] = useState(0);
+  const n = shots.length;
+  const wrap = (k: number) => ((k % n) + n) % n;
+  const step = (by: number) => setI((at) => wrap(at + by));
+  const cur = shots[Math.min(i, n - 1)]!;
+  const url = (s: api.AppScreenshot) => api.storeScreenshotUrl(props.pkg, s.path, props.digest);
+  return (
+    <div class="store-gallery">
+      <div
+        class="store-gallery-main"
+        tabIndex={n > 1 ? 0 : undefined}
+        aria-label={n > 1 ? `${props.app.title} screenshots: use the arrow keys` : undefined}
+        onKeyDown={n > 1 ? (e) => { if (e.key === "ArrowLeft") step(-1); if (e.key === "ArrowRight") step(1); } : undefined}
+      >
+        <img src={url(cur)} alt={cur.caption ?? `${props.app.title} screenshot`} />
+        {n > 1 && (
+          <>
+            <button class="store-gallery-arrow is-prev" aria-label="Previous screenshot" onClick={() => step(-1)}><ChevronRightIcon size={18} /></button>
+            <button class="store-gallery-arrow is-next" aria-label="Next screenshot" onClick={() => step(1)}><ChevronRightIcon size={18} /></button>
+            <span class="store-gallery-pos">{i + 1} / {n}</span>
+          </>
+        )}
+      </div>
+      {cur.caption && <div class="store-gallery-caption">{cur.caption}</div>}
+      {n > 1 && (
+        <div class="store-gallery-strip">
+          {shots.map((s, k) => (
+            <button key={s.path} class={`store-gallery-thumb${k === i ? " is-on" : ""}`} aria-label={s.caption ?? `Screenshot ${k + 1}`} aria-current={k === i} onClick={() => setI(k)}>
+              <img src={url(s)} alt="" loading="lazy" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** While a read is out: the shape of what comes, never a bare word. */
 function Loading() {
   return <div class="store-skel" role="status" aria-label="Loading"><span /><span /><span /></div>;
@@ -443,16 +497,16 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
         <section>
           <SectionHead title="Apps" count={apps.length} />
           <div class="store-grid">
-            {apps.map(({ pkg, version, app }) => (
+            {apps.map(({ pkg, version, digest, app }) => (
               <button class="store-card" key={`${pkg}/${app.name}`} onClick={() => props.go({ view: "package", pkg })}>
-                <div class="store-card-head">
-                  <AppTile app={app} />
+                <div class="store-card-app">
+                  <AppShot app={app} pkg={pkg} digest={digest} />
                   <div class="store-card-title">
                     <span class="store-card-name">{app.title}</span>
-                    <span class="auto-meta"><code>{pkg}</code> {version}</span>
+                    <span class="auto-meta store-card-pkg"><code>{pkg}</code> {version}</span>
+                    {app.description && <div class="store-card-desc">{app.description}</div>}
                   </div>
                 </div>
-                {app.description && <div class="store-card-desc">{app.description}</div>}
                 <div class="store-card-foot">
                   <CanChips can={app.can} />
                   <span class="store-card-go">View <ArrowRightIcon size={13} /></span>
@@ -622,8 +676,27 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
           {d && d.apps.length > 0 && (
             <section id="store-apps">
               <SectionHead title="Apps" count={d.apps.length} />
-              <div class="store-grid">
-                {d.apps.map((a) => (
+              {d.apps.filter((a) => a.screenshots?.length).map((a) => (
+                <div class={`store-app-show${a.screenshots!.length === 1 ? " is-single" : ""}`} key={a.name}>
+                  <AppGallery app={a} pkg={props.pkg} digest={d.digest} />
+                  <div class="store-app-show-aside">
+                    <div class="store-card-title">
+                      <span class="store-app-show-name">{a.title}</span>
+                      <span class="auto-meta"><code>{a.name}</code> · {a.files} files</span>
+                    </div>
+                    {a.description && <p class="store-app-show-desc">{a.description}</p>}
+                    <CanChips can={a.can} />
+                    {a.grants.workflows.length > 0 && (
+                      <div class="store-app-show-runs">
+                        <h3>Runs</h3>
+                        <div>{a.grants.workflows.map((w) => <code key={w} class="badge">{w}</code>)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {d.apps.some((a) => !a.screenshots?.length) && <div class="store-grid">
+                {d.apps.filter((a) => !a.screenshots?.length).map((a) => (
                   <div class="store-card is-static" key={a.name}>
                     <div class="store-card-head">
                       <AppTile app={a} />
@@ -639,7 +712,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                     </div>
                   </div>
                 ))}
-              </div>
+              </div>}
             </section>
           )}
           {d && d.workflows.length > 0 && (

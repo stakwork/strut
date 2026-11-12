@@ -1,7 +1,10 @@
+import { copyFile, mkdir, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { defineStep, withMedia, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { browserOf, LOOK_VERBS, shotSinkOf } from "../browser/_shared.js";
+import { SCREENSHOT_MAX_BYTES, screenshotPathProblem } from "../../../apps/manifest.js";
 import { requireApps, resolveAppPath } from "./_shared.js";
 
 /**
@@ -31,6 +34,11 @@ import { requireApps, resolveAppPath } from "./_shared.js";
  * the one debug convention every app shares: the look returns it as
  * `debug`, and `{ do: "debug" }` reads it mid-list into `debugReads`.
  *
+ * With `path` and `saveAs`, the shot is also written into the app
+ * directory at `saveAs` (a `.png` inside it), for app.yaml's `screenshots`
+ * — what the package store shows. A look that drew nothing, could not host
+ * the app or stopped on a step saves nothing and says why.
+ *
  * Under `app/*`, so the builders, which hold that grant, have it with no
  * browser grant of their own. The chat builder's tools run under no run:
  * the look then takes a browser session and an artifact directory of its
@@ -50,7 +58,8 @@ export default defineStep({
     "`stopped`: the step that failed ({ step, verb, args, message }) — the shot and the text are of where the page got to; `text`: the page's visible text (capped); " +
     "`debug`: `window.__debug` read just after the shot (left out when the page sets none); `debugReads`: each debug step's read, in order, as { step, value } or { step, error } (step = its number in the list); a read is capped at 8,000 chars of JSON, ending in a note when cut, and 2 s; " +
     "`errors`: console errors, page errors, failed or 4xx/5xx requests, and `debug: …` when the last read failed; `appErrors`: what the app's error boundary reported during the look — and, when you are an agent, you SEE the screenshot. " +
-    "It runs the page: its reads and writes are real calls, as when a person opens it.",
+    "It runs the page: its reads and writes are real calls, as when a person opens it. " +
+    "With `path`, `saveAs` (e.g. \"public/screenshots/home.png\") also writes the shot into the app directory, returned as `saved`; list it under `screenshots:` in app.yaml (a path, or { file, caption }) and the package store shows it. A look that drew nothing, could not host the app or stopped saves nothing (`saveError` says why).",
   input: z.object({
     name: z.string().describe("The app's workspace name."),
     version: z.string().optional().describe("A published version to look at (v1, v2, …). The active (live) version when omitted. Not with `path`."),
@@ -70,13 +79,21 @@ export default defineStep({
       .object({ width: z.number().int().positive(), height: z.number().int().positive() })
       .optional()
       .describe("Viewport in CSS pixels, e.g. { width: 390, height: 844 } for a phone; default 1280×800."),
-  }).refine((q) => !(q.path && q.version), { message: "app/look takes `path` (a directory, unpublished) or `version` (a published one), not both" }),
+    saveAs: z
+      .string()
+      .optional()
+      .describe("With `path`: also write the shot into the app directory here, a .png inside it (\"public/screenshots/home.png\"), for app.yaml's `screenshots`. Replaces a file already there."),
+  })
+    .refine((q) => !(q.path && q.version), { message: "app/look takes `path` (a directory, unpublished) or `version` (a published one), not both" })
+    .refine((q) => !q.saveAs || q.path, { message: "`saveAs` writes into the app directory you are working on: it needs `path`" })
+    .refine((q) => !q.saveAs || !saveAsProblem(q.saveAs), { message: "`saveAs` is a .png path inside the app directory, relative, with no . or .. (\"public/screenshots/home.png\")" }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const apps = requireApps(ctx.services);
     let app: { name: string; version: string };
+    let dir: string | undefined;
     if (cfg.path) {
-      const dir = await resolveAppPath(ctx, cfg.path, cfg.job);
+      dir = await resolveAppPath(ctx, cfg.path, cfg.job);
       const preview = await apps.preview(dir, cfg.name, { surface: "ai" });
       if (!preview.ok) return preview;
       app = preview;
@@ -110,10 +127,40 @@ export default defineStep({
       const appErrors = reported
         .filter((e) => e.version === app.version && e.at >= since)
         .map((e) => ({ message: e.message, ...(e.stack ? { stack: e.stack } : {}), ...(e.componentStack ? { componentStack: e.componentStack } : {}) }));
-      const out = { name: app.name, version: app.version, ...looked, appErrors };
+      const out: Record<string, unknown> = { name: app.name, version: app.version, ...looked, appErrors };
+      if (cfg.saveAs && dir) Object.assign(out, await saveShot(join(looked.dir, looked.path), dir, cfg.saveAs, looked));
       return withMedia(out, [{ mediaType: "image/png", data: small, filename: looked.path }]);
     } finally {
       if (!ctx.runId) await browser.dispose(runId);
     }
   },
 });
+
+/** Why `saveAs` is not a screenshot path in the app, or nothing. */
+function saveAsProblem(file: string): string | undefined {
+  return screenshotPathProblem(file) ?? (/\.png$/i.test(file) ? undefined : "the shot is a PNG");
+}
+
+/** The shot into the app directory, unless the look shows nothing worth keeping. */
+export async function saveShot(
+  from: string,
+  dir: string,
+  saveAs: string,
+  looked: { rendered: boolean; hostError?: string; stopped?: { message: string } },
+): Promise<{ saved: string; warning?: string } | { saveError: string }> {
+  const why = looked.hostError
+    ? `the host could not show the app (${looked.hostError})`
+    : looked.stopped
+      ? `the look stopped on a step (${looked.stopped.message})`
+      : !looked.rendered
+        ? "the page drew nothing"
+        : undefined;
+  if (why) return { saveError: `not saved: ${why}` };
+  const to = join(dir, saveAs);
+  await mkdir(dirname(to), { recursive: true });
+  await copyFile(from, to);
+  const size = (await stat(to)).size;
+  return size > SCREENSHOT_MAX_BYTES
+    ? { saved: saveAs, warning: `${(size / 1e6).toFixed(1)} MB: a screenshot app.yaml lists is at most ${SCREENSHOT_MAX_BYTES / 1024 / 1024} MB — look again without fullPage, or at a smaller viewport` }
+    : { saved: saveAs };
+}

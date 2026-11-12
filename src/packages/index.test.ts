@@ -550,6 +550,49 @@ describe("the concept tree across the crawled packages", () => {
     return { gz: await packArchive(dir, info.files), digest: info.digest };
   };
 
+  it("serves an app's screenshots from the cache: only a path the derived page lists, at its current release", async () => {
+    const { privateKey, key } = keyFromSeed(Buffer.alloc(32, 9));
+    const desk = await archive("openlaw/desk", {
+      "strut.yaml": "package: openlaw/desk\nversion: 1.0.0\n",
+      "apps/desk/app.yaml": "title: Legal Desk\nscreenshots:\n  - { file: public/board.png, caption: The board }\n  - public/missing.png\n  - public/thread.jpg\n",
+      "apps/desk/src/App.tsx": "export default () => null;\n",
+      "apps/desk/public/board.png": "PNG board",
+      "apps/desk/public/thread.jpg": "JPG thread",
+    });
+    const card = sealCard(
+      { v: 1, key, seq: 1, packages: { "openlaw/desk": { releases: [{ version: "1.0.0", digest: desk.digest }] } }, channels: { public: { "openlaw/desk": desk.digest } } },
+      privateKey,
+    ) as Catalog;
+    const served: Record<string, Buffer | string> = {
+      "https://pub.example/packages/catalog": canonicalJson(card),
+      "https://pub.example/packages/openlaw/desk/archive": desk.gz,
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      const body = served[url] ?? served[url.split("?")[0]!];
+      return body === undefined ? new Response("no", { status: 404 }) : new Response(body, { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setRow("openlaw", { key, urls: ["https://pub.example/packages/catalog?public=1"] });
+    assert.equal(info.crawled[0]!.derived, 1, JSON.stringify(info.crawled));
+
+    // The derived page and the search hit list the files the archive holds, in the manifest's order.
+    const shots = [{ path: "apps/desk/public/board.png", caption: "The board" }, { path: "apps/desk/public/thread.jpg" }];
+    assert.deepEqual((await index.package("openlaw/desk"))!.detail!.apps[0]!.screenshots, shots);
+    assert.deepEqual((await index.search(""))[0]!.detail!.apps[0]!.screenshots, shots, "the Browse card's square is the first");
+
+    const board = (await index.screenshot("openlaw/desk", "apps/desk/public/board.png"))!;
+    assert.equal(board.bytes.toString(), "PNG board");
+    assert.equal(board.type, "image/png");
+    assert.equal(board.digest, desk.digest);
+    assert.equal((await index.screenshot("openlaw/desk", "apps/desk/public/thread.jpg", desk.digest))!.type, "image/jpeg");
+    // Nothing the page does not list: another file of the package, a listed one not in the archive, another release.
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/app.yaml"), undefined);
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/public/missing.png"), undefined);
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/public/board.png", `sha256:${"0".repeat(64)}`), undefined);
+    assert.equal(await index.screenshot("openlaw/nope", "apps/desk/public/board.png"), undefined);
+  });
+
   it("folds every package's Concept pages into one tree, with the docs, children and parents of each", async () => {
     const seed = Buffer.alloc(32, 7);
     const { privateKey, key } = keyFromSeed(seed);

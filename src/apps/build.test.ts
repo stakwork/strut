@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, SCREENSHOT_MAX_BYTES, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -291,6 +291,19 @@ describe("the app build", () => {
     assert.match(errorsOf(bad).join("\n"), /app\.yaml: permissions\[1\]: "rumble" is not a permission an app can declare — one of motion, camera, geolocation \(/);
   });
 
+  it("a screenshot is a file in the app within the size a store serves, or the build says which", async () => {
+    const ok = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Desk\nscreenshots: [public/board.png]\n", "public/board.png": "png" });
+    assert.ok((await build(ok)).ok);
+    const bad = await build(
+      await writeApp(fresh(), {
+        ...minimal(),
+        "app.yaml": "title: Desk\nscreenshots: [public/gone.png, { file: public/huge.png, caption: Too big }]\n",
+        "public/huge.png": "x".repeat(SCREENSHOT_MAX_BYTES + 1),
+      }),
+    );
+    assert.deepEqual(errorsOf(bad), ['screenshots[0]: "public/gone.png" is not a file in the app', 'screenshots[1]: "public/huge.png" is 2.1 MB — a screenshot is at most 2 MB']);
+  });
+
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
     const r = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: G\ngrants:\n  workflows: [exists, missing-one]\n  automations: [gone]\n" }), {
       workflowExists: async (wf) => wf === "exists",
@@ -393,6 +406,18 @@ wallet:
     );
     assert.match(errors("permissions: [vibrate]\n"), /"vibrate" is not a permission: browsers block navigator\.vibrate in a cross-origin frame/);
     assert.match(errors("permissions: fullscreen\n"), /app\.yaml: permissions: .*expected array/);
+  });
+
+  it("keeps screenshots as { file, caption }, inside the app and raster only", () => {
+    const ok = parseManifest("title: Desk\nscreenshots:\n  - public/a.png\n  - { file: shots/b.WEBP, caption: The thread }\n");
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.manifest.screenshots, [{ file: "public/a.png" }, { file: "shots/b.WEBP", caption: "The thread" }]);
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    assert.match(errors("screenshots: [../secret.png]\n"), /screenshots\[0\]: "\.\.\/secret\.png" is not a path inside the app/);
+    assert.match(errors("screenshots: [/etc/a.png]\n"), /not a path inside the app/);
+    assert.match(errors("screenshots: [public/logo.svg]\n"), /screenshots\[0\]: "public\/logo\.svg" is not a \.png, \.jpg, \.jpeg, \.webp, \.gif image/);
+    assert.match(errors(`screenshots: [${Array.from({ length: 9 }, (_, i) => `s${i}.png`).join(", ")}]\n`), /at most 8 screenshots/);
+    assert.match(errors("screenshots:\n  - { file: a.png, alt: x }\n"), /screenshots\[0\]/);
   });
 
   it("names the wallet contract's own lists", () => {

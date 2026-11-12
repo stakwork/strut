@@ -22,7 +22,7 @@
  */
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { parseManifest as parseAppManifest } from "../apps/manifest.js";
+import { parseManifest as parseAppManifest, SCREENSHOT_MAX_BYTES } from "../apps/manifest.js";
 import { walkSteps } from "../closure.js";
 import { parseConceptFile } from "../concept-seed.js";
 import type { Step, StepEffect } from "../core.js";
@@ -47,9 +47,18 @@ export interface AppDetail {
   description?: string;
   /** A lucide icon name, as the manifest says. */
   icon?: string;
+  /** The manifest's `screenshots` that are files in the archive within the
+   *  size limit, in its order — the store serves them by `path`. */
+  screenshots?: AppScreenshotDetail[];
   grants: { workflows: string[]; steps: string[] };
   can: PackageCan;
   files: number;
+}
+
+export interface AppScreenshotDetail {
+  /** The file's path in the PACKAGE (`apps/<name>/public/shot.png`). */
+  path: string;
+  caption?: string;
 }
 
 export interface WorkflowInputDetail {
@@ -368,11 +377,21 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
       if (s === "exec" || ownStep(s)) can.code = true;
       if (factsOf(s)?.effect === "write") can.acts = true;
     }
+    // Screenshots the archive holds, within the size the store serves; a
+    // missing or oversized one is left out (an install's build refuses it).
+    const screenshots: AppScreenshotDetail[] = [];
+    for (const shot of m.screenshots ?? []) {
+      const path = `${item.path}/${shot.file}`;
+      if (!info.files.includes(path)) continue;
+      if ((await stat(join(info.dir, path))).size > SCREENSHOT_MAX_BYTES) continue;
+      screenshots.push({ path, ...(shot.caption ? { caption: shot.caption } : {}) });
+    }
     apps.push({
       name,
       title: m.title,
       ...(m.description ? { description: m.description } : {}),
       ...(m.icon ? { icon: m.icon } : {}),
+      ...(screenshots.length ? { screenshots } : {}),
       grants: { workflows: [...m.grants.workflows], steps: [...m.grants.steps] },
       can,
       files,
@@ -428,7 +447,7 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
 
 /** The short form a search hit carries: the apps' faces and the counts. */
 export interface DetailSummary {
-  apps: Array<{ name: string; title: string; description?: string; icon?: string; can: PackageCan }>;
+  apps: Array<{ name: string; title: string; description?: string; icon?: string; screenshots?: AppScreenshotDetail[]; can: PackageCan }>;
   workflows: number;
   steps: number;
   concepts: number;
@@ -439,7 +458,7 @@ export interface DetailSummary {
 
 export function summarizeDetail(d: PackageDetail): DetailSummary {
   return {
-    apps: d.apps.map((a) => ({ name: a.name, title: a.title, ...(a.description ? { description: a.description } : {}), ...(a.icon ? { icon: a.icon } : {}), can: a.can })),
+    apps: d.apps.map((a) => ({ name: a.name, title: a.title, ...(a.description ? { description: a.description } : {}), ...(a.icon ? { icon: a.icon } : {}), ...(a.screenshots ? { screenshots: a.screenshots } : {}), can: a.can })),
     workflows: d.workflows.length,
     steps: d.steps.filter((s) => !s.helper).length,
     concepts: d.concepts.length,

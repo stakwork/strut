@@ -5307,6 +5307,126 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 6px 18px -8px rgba(var(--glow), 0.8);
 }
 .store-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A Browse card's app: its first screenshot as a square on the left, the
+   initials in the same square when it has none, so the grid stays even. */
+.store-card-app { display: flex; align-items: flex-start; gap: 16px; }
+.store-card-app .store-card-title { gap: 4px; }
+.store-card-app .store-card-desc { margin-top: 2px; -webkit-line-clamp: 3; }
+.store-card-pkg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.store-app-shot {
+  position: relative;
+  flex: none;
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.store-app-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.store-app-shot-initials {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+  background: linear-gradient(135deg, rgba(var(--glow), 0.55), rgba(94, 234, 212, 0.35));
+}
+.store-app-shot-more {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(5, 7, 11, 0.78);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text);
+}
+/* A package page's app with screenshots: the gallery, its facts beside it
+   (under it when narrow). One screenshot alone: smaller, no strip. */
+.store-app-show {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.store-app-show .store-gallery { flex: 999 1 520px; }
+.store-app-show.is-single { align-items: flex-start; }
+.store-app-show.is-single .store-gallery { flex: 0 1 320px; }
+.store-app-show-aside { flex: 1 1 260px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.store-app-show-name { font-size: 20px; font-weight: 650; letter-spacing: -0.015em; }
+.store-app-show-desc { margin: 0; font-size: 14px; color: var(--text-muted); line-height: 1.55; }
+.store-app-show-runs > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.store-gallery { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.store-gallery-main {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.store-gallery-main:focus-visible { outline: 2px solid rgba(var(--glow), 0.8); outline-offset: 2px; }
+.store-gallery-main img, .store-gallery-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.store-gallery-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: rgba(5, 7, 11, 0.72);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.store-gallery-arrow:hover { background: rgba(5, 7, 11, 0.9); border-color: rgba(var(--glow), 0.5); }
+.store-gallery-arrow.is-prev { left: 12px; }
+.store-gallery-arrow.is-prev svg { transform: rotate(180deg); }
+.store-gallery-arrow.is-next { right: 12px; }
+.store-gallery-pos {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(5, 7, 11, 0.78);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.store-gallery-caption { font-size: 13px; color: var(--text-muted); }
+.store-gallery-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.store-gallery-thumb {
+  padding: 0;
+  aspect-ratio: 16 / 10;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  opacity: 0.6;
+  transition: opacity 120ms, border-color 120ms;
+}
+.store-gallery-thumb:hover { opacity: 0.9; }
+.store-gallery-thumb.is-on { opacity: 1; border-color: #6ea8ff; }
+@media (max-width: 520px) {
+  .store-app-shot { width: 72px; height: 72px; }
+  .store-app-shot-initials { font-size: 20px; }
+  .store-app-show { padding: 14px; }
+  .store-gallery-arrow { width: 36px; height: 36px; }
+}
 .store-card-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
 .store-card-desc { font-size: 13.5px; color: var(--text-muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .store-card-foot { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: auto; padding-top: 4px; }

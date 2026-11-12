@@ -19,8 +19,10 @@
  * the page beyond what every app gets (§9) — motion sensors, the camera,
  * geolocation — only to a version that names them. Every app already gets
  * what a game needs (fullscreen, pointer lock, the gamepad, the wake lock).
- * Nothing else is declared: an app has no `connectDomains` — it talks to
- * the world through a workflow.
+ * `screenshots` are images in the app's own directory that the package
+ * store shows beside its title (src/packages/detail.ts): never loaded by
+ * the app, never part of the document. Nothing else is declared: an app has
+ * no `connectDomains` — it talks to the world through a workflow.
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -143,12 +145,50 @@ export const permissionsSchema = z
   // What the version asks for beyond every app's, once each.
   .transform((ps) => [...new Set(ps.filter(isDeclared))]);
 
+/** The image types a screenshot may be: raster only, so a store can serve
+ *  one to anyone with nothing in it that runs. */
+export const SCREENSHOT_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+/** At most this many, each at most this big. */
+export const SCREENSHOTS_MAX = 8;
+export const SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+/** A screenshot's path inside the app: relative, forward slashes, never
+ *  leaving the directory, one of `SCREENSHOT_TYPES`. Undefined when it is. */
+export function screenshotPathProblem(file: string): string | undefined {
+  if (file.startsWith("/") || file.includes("\\") || file.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) {
+    return `"${file}" is not a path inside the app (relative, forward slashes, no . or ..)`;
+  }
+  const dot = file.lastIndexOf(".");
+  if (dot < 0 || !SCREENSHOT_TYPES[file.slice(dot).toLowerCase()]) return `"${file}" is not a ${Object.keys(SCREENSHOT_TYPES).join(", ")} image`;
+  return undefined;
+}
+
+/** `screenshots:` — a path, or `{ file, caption }`; kept as the second. */
+export const screenshotsSchema = z
+  .array(
+    z.union([
+      z.string().min(1),
+      z.object({ file: z.string().min(1), caption: z.string().max(200).optional() }).strict(),
+    ]),
+  )
+  .max(SCREENSHOTS_MAX, `at most ${SCREENSHOTS_MAX} screenshots`)
+  .transform((xs) => xs.map((x) => (typeof x === "string" ? { file: x } : x)))
+  .superRefine((xs, ctx) => {
+    for (const [i, x] of xs.entries()) {
+      const problem = screenshotPathProblem(x.file);
+      if (problem) ctx.addIssue({ code: "custom", path: [i], message: problem });
+    }
+  });
+export type AppScreenshot = { file: string; caption?: string };
+
 export const manifestSchema = z
   .object({
     title: z.string().min(1),
     description: z.string().optional(),
     /** A lucide icon name. */
     icon: z.string().optional(),
+    /** Images of the app the package store shows (`screenshotsSchema`). */
+    screenshots: screenshotsSchema.optional(),
     /** The entry module; its default export is the root component. */
     entry: z.string().min(1).default("src/App.tsx"),
     grants: grantsSchema.default({ workflows: [], steps: [], sqlite: false, automations: [] }),
