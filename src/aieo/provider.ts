@@ -9,6 +9,7 @@ import { LanguageModel, wrapLanguageModel } from "ai";
 import { Logger } from "./logger.js";
 import { createOpenRouter, OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
 import { env } from "./env.js";
+import { cachedGatewayPrice, type GatewayPrice } from "./gateway-price.js";
 
 export type Provider = "anthropic" | "google" | "openai" | "openrouter" | "xai" | "maple" | "numes" | "tokenfactory";
 
@@ -254,7 +255,6 @@ export interface MapleModel {
    *  400), so the cap stays under 10% of it — a prompt can reach strut's
    *  compaction mark (90%) and still be answered. */
   maxOutput: number;
-  pricing: TokenPricing;
   /** The `reasoning_effort` values the model takes; any other is a 400.
    *  Absent: anything is taken (gemma4-31b: `none` or no field is no
    *  thinking, any other value turns it on; llama3-3-70b ignores it). */
@@ -266,43 +266,37 @@ export interface MapleModel {
  * OpenAI-compatible proxy (`ghcr.io/mapleprivacylabs/maple-proxy`), which
  * the deployment runs itself. Chat Completions only, no Responses API.
  * Context and efforts from the proxy's `GET /v1/models` and its 400s
- * (2026-11-03); prices are Maple's per 1M tokens, input / output. Maple
- * publishes no cached-input price, so a cached prompt token (gpt-oss reports
- * them) is billed as input.
+ * (2026-11-03). No prices here: every model's price lives in the Mothership
+ * (the LLM gateway's operator `model_pricing`, rows `maple/<model>`).
  */
 export const MAPLE_MODELS: Record<string, MapleModel> = {
-  "gemma4-31b": { context: 262_144, maxOutput: 24_576, pricing: { inputTokenPrice: 0.8, outputTokenPrice: 2.0 } },
+  "gemma4-31b": { context: 262_144, maxOutput: 24_576 },
   "gpt-oss-120b": {
     context: 131_072,
     maxOutput: 12_288,
-    pricing: { inputTokenPrice: 0.3, outputTokenPrice: 1.2 },
     efforts: ["low", "medium", "high"],
   },
   "glm-5-3-flash": {
     context: 1_048_576,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.8, outputTokenPrice: 2.5 },
     efforts: ["low", "high", "max"],
   },
   "glm-5-3": {
     context: 262_144,
     maxOutput: 24_576,
-    pricing: { inputTokenPrice: 3.6, outputTokenPrice: 11.5 },
     efforts: ["low", "high", "max"],
   },
   "kimi-k3": {
     context: 262_144,
     maxOutput: 24_576,
-    pricing: { inputTokenPrice: 8.0, outputTokenPrice: 25.0 },
     efforts: ["none", "low", "high", "max"],
   },
   "deepseek-v4-1-flash": {
     context: 1_048_576,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.65, outputTokenPrice: 1.45 },
     efforts: ["none", "low", "high", "xhigh", "max"],
   },
-  "llama3-3-70b": { context: 131_072, maxOutput: 12_288, pricing: { inputTokenPrice: 3.5, outputTokenPrice: 5.5 } },
+  "llama3-3-70b": { context: 131_072, maxOutput: 12_288 },
 };
 
 /**
@@ -515,31 +509,27 @@ export interface NumesModel {
    *  with 65,536 is a 502, with 1,000 an answer) — so a prompt can reach
    *  strut's compaction mark (90%) and still be answered. */
   maxOutput: number;
-  pricing: TokenPricing;
 }
-
-const FREE: TokenPricing = { inputTokenPrice: 0, outputTokenPrice: 0 };
 
 /**
  * Numes (numes.ai): a marketplace of inference providers behind one
  * OpenAI-compatible API, `https://api.numes.ai/api/v1` (Chat Completions;
  * its own `reasoning_effort` mapping, so any value is taken). Model ids are
  * OpenRouter-style slugs, the same on every provider that serves the model.
- * Listed: the models Numes serves FREE, from `GET /api/v1/models` on
- * 2026-11-04 (each answered, called a tool and reported `cost: 0`). A model
- * that stops being free is still priced 0 here until the list changes. Every
- * other Numes model is priced like the same slug on OpenRouter when the host
- * loaded those rates (loadModelPricing), else at TOKEN_PRICING.numes.
+ * Listed: the models Numes serves, from `GET /api/v1/models` on 2026-11-04
+ * (windows, output limits). No prices here: the Mothership's operator
+ * `model_pricing` holds them (rows `numes/<slug>`, the free models as $0
+ * rows); a model it does not list is unpriced.
  */
 export const NUMES_MODELS: Record<string, NumesModel> = {
-  "z-ai/glm-5.3": { context: 262_144, maxOutput: 24_576, pricing: FREE },
-  "z-ai/glm-5.3-flash": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "nvidia/nemotron-3-super-120b-a12b": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "nvidia/nemotron-3-ultra-550b-a55b": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/glm-5.3-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/glm-5.3-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "dealignai/deepseek-v4.1-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
-  "uniboshi/kimi-k3-abliterated-v1": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
+  "z-ai/glm-5.3": { context: 262_144, maxOutput: 24_576 },
+  "z-ai/glm-5.3-flash": { context: 1_048_576, maxOutput: 64_000 },
+  "nvidia/nemotron-3-super-120b-a12b": { context: 1_048_576, maxOutput: 64_000 },
+  "nvidia/nemotron-3-ultra-550b-a55b": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/glm-5.3-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/glm-5.3-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "dealignai/deepseek-v4.1-flash-uncensored-fp8": { context: 1_048_576, maxOutput: 64_000 },
+  "uniboshi/kimi-k3-abliterated-v1": { context: 1_048_576, maxOutput: 64_000 },
 };
 
 export interface TokenFactoryModel {
@@ -550,7 +540,6 @@ export interface TokenFactoryModel {
   /** Per-call output cap: under a tenth of the window, as for Numes (the
    *  vLLM backends refuse prompt + `max_tokens` past the window). */
   maxOutput: number;
-  pricing: TokenPricing;
 }
 
 /**
@@ -560,36 +549,31 @@ export interface TokenFactoryModel {
  * is taken (a model's own short list is not enforced), so none is rewritten.
  * The gateway reports each call's cost (a streamed call's usage `cost`, a
  * header otherwise), which withReportedCost puts on the call's usage, and a
- * host bills that; these prices answer a call that reports none (a free
- * model's stream) and the model picker.
- * Listed: `GET /v1/models` on 2026-11-09 (windows, output limits); each
- * model called a tool, and its price is what the gateway billed for that
- * call (its `x-litellm-response-cost-input` / `-output` per token): nine
- * cost nothing. A model whose price changes keeps this one until the list
- * does. An unlisted model is priced at TOKEN_PRICING.tokenfactory.
+ * host bills that. Listed: `GET /v1/models` on 2026-11-09 (windows, output
+ * limits). No prices here: the Mothership's operator `model_pricing` holds
+ * them (rows `tokenfactory/<model>`, the free ones as explicit $0 rows); a
+ * model it does not list is unpriced.
  */
 export const TOKENFACTORY_MODELS: Record<string, TokenFactoryModel> = {
-  "glm-5.3": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "glm-5.3-flash": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.15, outputTokenPrice: 0.5 } },
-  "kimi-k3.1-pro": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "minimax-m3.1-flash": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "glm-5.3": { context: 917_504, maxOutput: 64_000 },
+  "glm-5.3-flash": { context: 917_504, maxOutput: 64_000 },
+  "kimi-k3.1-pro": { context: 917_504, maxOutput: 64_000 },
+  "minimax-m3.1-flash": { context: 917_504, maxOutput: 64_000 },
   "deepseek-v4.1-flash-1017": {
     context: 917_504,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.205, outputTokenPrice: 1.163 },
   },
-  "nemotron-3-ultra": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.6, outputTokenPrice: 2.4 } },
-  "nemotron-3-super": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "nemotron-3-ultra": { context: 917_504, maxOutput: 64_000 },
+  "nemotron-3-super": { context: 917_504, maxOutput: 64_000 },
   "nemotron-3.5-lightning": {
     context: 917_504,
     maxOutput: 64_000,
-    pricing: { inputTokenPrice: 0.06, outputTokenPrice: 0.18 },
   },
-  "qwen3.8-27b": { context: 196_608, maxOutput: 24_576, pricing: FREE },
-  "glm-5.3-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "glm-5.3-flash-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "deepseek-v4.1-flash-1017-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
-  "kimi-k3-abliterated": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "qwen3.8-27b": { context: 196_608, maxOutput: 24_576 },
+  "glm-5.3-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "glm-5.3-flash-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "deepseek-v4.1-flash-1017-uncensored-fp8": { context: 917_504, maxOutput: 64_000 },
+  "kimi-k3-abliterated": { context: 917_504, maxOutput: 64_000 },
 };
 
 export function getLightModelForProvider(provider: Provider): string {
@@ -600,29 +584,70 @@ export interface TokenPricing {
   inputTokenPrice: number;
   outputTokenPrice: number;
   cacheReadPrice?: number;
+  /** 5-minute cache writes. */
   cacheWritePrice?: number;
+  /** 1-hour cache writes: the gateway's effective rate. Absent: cacheWritePrice. */
+  cacheWrite1hPrice?: number;
 }
 
 export interface TokenUsageForCost {
   input: number;
   cache_read: number;
+  /** All cache writes, the 1-hour ones included. */
   cache_write: number;
+  /** The part of cache_write written with the 1-hour TTL (default 0). */
+  cache_write_1h?: number;
   output: number;
 }
 
-/** A provider aieo does not know (one only a gateway has) has no rate here:
- *  0, and the gateway bills it. */
-export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
+const warnedUnpriced = new Set<string>();
+
+/** Where a model's price comes from: "mothership" when the Mothership (the LLM
+ *  gateway) gave `price`, else "unpriced": no price list lives in strut, so
+ *  a model the Mothership does not price (or no Mothership) is reported as
+ *  0. */
+export function modelPriceSource(_provider: Provider | string, modelId?: string, price?: GatewayPrice): "mothership" | "unpriced" {
+  return modelId && price ? "mothership" : "unpriced";
+}
+
+/** Dollars for one call's tokens. Order: the provider's own figure
+ *  (`actualCost`: Numes, Token Factory, OpenRouter report one); the
+ *  Mothership's `price` for the model (resolved by the caller,
+ *  `gatewayModelPrice`: effective rates, nothing computed here beyond tokens ×
+ *  rates); otherwise UNPRICED: 0, with one warning per provider/model. That
+ *  holds for every provider and for a call that names no model: strut has no
+ *  price list, flat rate or ceiling of its own. */
+export function computeSessionCost(
+  provider: Provider | string,
+  usage: TokenUsageForCost,
+  modelId?: string,
+  actualCost?: number,
+  price?: GatewayPrice,
+): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  // The model's own price (Maple's, Numes' or Token Factory's table, then the datasheet), else
-  // the provider's flat rate; a provider aieo does not know has neither.
-  const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
-  if (!pricing) return 0;
-  const inputCost = (usage.input / 1_000_000) * pricing.inputTokenPrice;
-  const cacheReadCost = (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice);
-  const cacheWriteCost = (usage.cache_write / 1_000_000) * (pricing.cacheWritePrice ?? pricing.inputTokenPrice);
-  const outputCost = (usage.output / 1_000_000) * pricing.outputTokenPrice;
-  return inputCost + cacheReadCost + cacheWriteCost + outputCost;
+  const pricing = modelId ? price?.pricing : undefined;
+  if (!pricing) {
+    const key = `${provider}/${modelId ?? "(no model named)"}`;
+    if (!warnedUnpriced.has(key)) {
+      warnedUnpriced.add(key);
+      console.warn(`[aieo] no Mothership price for ${key}: cost reported as 0 (unpriced)`);
+    }
+    return 0;
+  }
+  const cacheWrite = Math.max(0, usage.cache_write);
+  const write1h = Math.min(Math.max(0, usage.cache_write_1h ?? 0), cacheWrite);
+  const write5mPrice = pricing.cacheWritePrice ?? pricing.inputTokenPrice;
+  // The Mothership's rate is already effective; a missing 1h rate prices 1h
+  // writes at the 5m rate. No multiplier is invented here, and no long-prompt
+  // tier: the Mothership has none.
+  const write1hPrice = pricing.cacheWrite1hPrice ?? write5mPrice;
+  return (
+    (usage.input / 1_000_000) * pricing.inputTokenPrice +
+    (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice) +
+    ((cacheWrite - write1h) / 1_000_000) * write5mPrice +
+    (write1h / 1_000_000) * write1hPrice +
+    (usage.output / 1_000_000) * pricing.outputTokenPrice
+  );
 }
 
 export function getProviderForModel(modelName?: ModelName | string): Provider {
@@ -697,6 +722,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
         const m = modelName.toLowerCase();
         if (m.startsWith("gpt-")) return "openai";
         if (m.startsWith("gemini-")) return "google";
+        if (m.startsWith("claude-")) return "anthropic";
       }
       return "anthropic";
   }
@@ -1384,251 +1410,29 @@ const FALLBACK_CONTEXT_LIMIT = 128_000;
 
 /**
  * Get the context window size (max input tokens) for a given model: Maple's,
- * Numes' or Token Factory's table, else the datasheet (`loadModelCatalog`), else this file's.
+ * Numes' or Token Factory's table, else the Mothership's last answer for it, else this file's.
  */
 export function getContextLimit(modelId: string, provider: Provider): number {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.maple;
   if (provider === "numes") return NUMES_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.numes;
   if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.tokenfactory;
   return (
-    getCatalogEntry(provider, modelId)?.maxInputTokens ??
+    cachedGatewayPrice(provider, modelId)?.maxInputTokens ??
     MODEL_CONTEXT_LIMITS[modelId] ??
     DEFAULT_CONTEXT_LIMITS[provider] ??
     FALLBACK_CONTEXT_LIMIT
   );
 }
 
-const TOKEN_PRICING: Record<Provider, TokenPricing> = {
-  anthropic: {
-    inputTokenPrice: 3.0,
-    outputTokenPrice: 15.0,
-    cacheReadPrice: 0.3,
-    cacheWritePrice: 3.75,
-  },
-  google: {
-    inputTokenPrice: 1.25,
-    outputTokenPrice: 5.0,
-  },
-  openai: {
-    inputTokenPrice: 2.5,
-    outputTokenPrice: 10.0,
-  },
-  openrouter: {
-    inputTokenPrice: 0.6,
-    outputTokenPrice: 3.0,
-  },
-  // grok-4 rates. cacheReadPrice matters: computeSessionCost bills cache
-  // reads at full input price when it's absent, and Grok discounts cached
-  // prompt tokens 4x. (Grok has no cache-write charge — writes are billed
-  // as ordinary input, so no cacheWritePrice here.)
-  xai: {
-    inputTokenPrice: 3.0,
-    outputTokenPrice: 15.0,
-    cacheReadPrice: 0.75,
-  },
-  // An unlisted Maple model (MAPLE_MODELS has the listed ones): the dearest
-  // listed rate (kimi-k3), so a cost is never under-reported.
-  maple: {
-    inputTokenPrice: 8.0,
-    outputTokenPrice: 25.0,
-  },
-  // A Numes model neither listed free (NUMES_MODELS) nor priced by OpenRouter's
-  // rates: the dearest in Numes' catalogue (openai/gpt-6-astra, 2026-11-04),
-  // so a cost is never under-reported.
-  numes: {
-    inputTokenPrice: 12.28,
-    outputTokenPrice: 61.36,
-  },
-  // An unlisted Token Factory model: the dearest listed rate
-  // (nemotron-3-ultra), so a cost is never under-reported.
-  tokenfactory: {
-    inputTokenPrice: 0.6,
-    outputTokenPrice: 2.4,
-  },
-};
-
-export function getTokenPricing(provider: Provider): TokenPricing {
-  return TOKEN_PRICING[provider];
-}
-
-// ── The model catalog: prices and limits as data ────────────────────────────
+// ── Model prices: the Mothership's ─────────────────────────────────────────
 //
-// bifrost's datasheet — the file the LLM gateway prices every call from
-// (stakgraph gateway/internal/pricing) and bifrost prices its logs from —
-// keyed by model as bifrost names it ("claude-sonnet-5-5",
-// "gemini/gemini-3.8-flash", "openrouter/moonshotai/kimi-k3"), each with its
-// per-token prices and input and output limits. `loadModelCatalog` loads it;
-// until then, and for a model it does not hold, the tables in this file
-// answer. Maple's and Numes' own tables answer before it (the gateway's
-// runtime price rows do the same there): the key rule's last-segment form
-// would otherwise price a free Numes model, or an unlisted Maple one, at
-// another vendor's rate.
+// There is no price anywhere in this file. Every model's price (and its
+// limits) comes from the Mothership (gateway-price.ts), resolved once per step
+// and handed to `computeSessionCost`; the limits from its last answer are read
+// by `getContextLimit` / `maxOutputTokensFor` without a request.
 
-export const MODEL_CATALOG_URL = "https://getbifrost.ai/datasheet";
-
-export interface CatalogEntry {
-  pricing?: TokenPricing;
-  maxInputTokens?: number;
-  maxOutputTokens?: number;
-}
-
-let catalog: Map<string, CatalogEntry> | undefined;
-let catalogTimer: ReturnType<typeof setInterval> | undefined;
-
-/** bifrost's provider name for each of aieo's. Maple and Token Factory have
- *  none: their models are priced by their own tables only. A Numes model is looked up as the OpenRouter
- *  slug it is, as its unlisted models were priced before. */
-const CATALOG_PROVIDER: Partial<Record<Provider, string>> = {
-  anthropic: "anthropic",
-  google: "gemini",
-  openai: "openai",
-  openrouter: "openrouter",
-  xai: "xai",
-  numes: "openrouter",
-};
-
-// Per token → per million, rounded to 12 significant digits so 1e-7 is 0.1,
-// not 0.09999999999999999.
-const perMillion = (v: unknown): number | undefined =>
-  typeof v === "number" && Number.isFinite(v) && v >= 0 ? Number((v * 1_000_000).toPrecision(12)) : undefined;
-const positive = (v: unknown): number | undefined =>
-  typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
-
-/** The datasheet's JSON → entries. Throws when nothing in it is priced. */
-export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
-  const sheet = JSON.parse(raw) as Record<string, Record<string, unknown>>;
-  const out = new Map<string, CatalogEntry>();
-  let priced = 0;
-  for (const [key, row] of Object.entries(sheet ?? {})) {
-    if (!row || typeof row !== "object") continue;
-    const input = perMillion(row.input_cost_per_token);
-    const output = perMillion(row.output_cost_per_token);
-    const entry: CatalogEntry = {};
-    if (input !== undefined && output !== undefined) {
-      const cacheRead = perMillion(row.cache_read_input_token_cost);
-      const cacheWrite = perMillion(row.cache_creation_input_token_cost);
-      entry.pricing = {
-        inputTokenPrice: input,
-        outputTokenPrice: output,
-        ...(cacheRead ? { cacheReadPrice: cacheRead } : {}),
-        ...(cacheWrite ? { cacheWritePrice: cacheWrite } : {}),
-      };
-      priced++;
-    }
-    const maxIn = positive(row.max_input_tokens);
-    const maxOut = positive(row.max_output_tokens);
-    if (maxIn) entry.maxInputTokens = maxIn;
-    if (maxOut) entry.maxOutputTokens = maxOut;
-    if (entry.pricing || maxIn || maxOut) out.set(key, entry);
-  }
-  if (!priced) throw new Error("the model catalog prices no model");
-  return out;
-}
-
-/** Use these entries from now on (`undefined`: none). A host that has the
- *  sheet already, and tests, set it here; `loadModelCatalog` does it too. */
-export function setModelCatalog(next: Map<string, CatalogEntry> | undefined): void {
-  catalog = next;
-}
-
-/** The gateway's key rule (`pricing.Keys`): the model as given, then
- *  "<provider>/<model>", then the name after its last "/". */
-function catalogKeys(provider: string, model: string): string[] {
-  const keys = [model];
-  if (!model.startsWith(`${provider}/`)) keys.push(`${provider}/${model}`);
-  const i = model.lastIndexOf("/");
-  if (i >= 0 && i + 1 < model.length) keys.push(model.slice(i + 1));
-  return keys;
-}
-
-/** The datasheet's entry for a model: undefined when no catalog is loaded,
- *  the provider is Maple, or the sheet does not hold the model. */
-export function getCatalogEntry(provider: Provider, modelId: string): CatalogEntry | undefined {
-  const name = CATALOG_PROVIDER[provider];
-  if (!catalog || !name || !modelId) return undefined;
-  for (const key of catalogKeys(name, modelId)) {
-    const entry = catalog.get(key);
-    if (entry) return entry;
-  }
-  return undefined;
-}
-
-/** A model's own price per million tokens: Maple's, Numes' or Token Factory's table, then the
- *  datasheet. Undefined when neither knows it — never the provider's flat
- *  rate, which `computeSessionCost` falls back to. */
-export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
-  if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
-  if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
-  if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.pricing;
-  return getCatalogEntry(provider, modelId)?.pricing;
-}
-
-export interface LoadModelCatalogOptions {
-  /** Where the last good sheet is kept: read at once (a restart prices from
-   *  it before the first fetch), written after each fetch. Omit: memory only. */
-  cachePath?: string;
-  /** Default `MODEL_CATALOG_URL`. */
-  url?: string;
-  /** How often to fetch it again; default 24 h (the gateway's cadence), 0 never. */
-  refreshMs?: number;
-  /** For tests. */
-  fetch?: typeof fetch;
-}
-
-/** Load bifrost's datasheet: the copy at `cachePath` first, then a fetch,
- *  then a fetch every `refreshMs`. A fetch that fails keeps the last good
- *  sheet and says so; it never throws. Resolves once the first fetch is done
- *  with what is in use: how many models, and where they came from. */
-export async function loadModelCatalog(
-  opts: LoadModelCatalogOptions = {},
-): Promise<{ models: number; source: "fetch" | "cache" | "none" }> {
-  const { readFile, writeFile, rename, mkdir } = await import("node:fs/promises");
-  const { dirname } = await import("node:path");
-  const url = opts.url ?? MODEL_CATALOG_URL;
-  const get = opts.fetch ?? fetch;
-  let source: "fetch" | "cache" | "none" = catalog ? "cache" : "none";
-  if (opts.cachePath) {
-    try {
-      catalog = parseModelCatalog(await readFile(opts.cachePath, "utf8"));
-      source = "cache";
-    } catch (err: any) {
-      if (err?.code !== "ENOENT") console.warn(`[aieo] model catalog at ${opts.cachePath} unreadable (${err?.message ?? err}); waiting for a fetch`);
-    }
-  }
-  const fetchOnce = async (): Promise<boolean> => {
-    try {
-      const res = await get(url, { signal: AbortSignal.timeout(30_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const raw = await res.text();
-      catalog = parseModelCatalog(raw);
-      if (opts.cachePath) {
-        const tmp = `${opts.cachePath}.tmp`;
-        await mkdir(dirname(opts.cachePath), { recursive: true });
-        await writeFile(tmp, raw);
-        await rename(tmp, opts.cachePath);
-      }
-      return true;
-    } catch (err: any) {
-      console.warn(`[aieo] model catalog fetch from ${url} failed (${err?.message ?? err}); ${catalog ? "keeping the last good one" : "using aieo's own tables"}`);
-      return false;
-    }
-  };
-  if (await fetchOnce()) source = "fetch";
-  const every = opts.refreshMs ?? 24 * 60 * 60 * 1000;
-  if (catalogTimer) clearInterval(catalogTimer);
-  catalogTimer = undefined;
-  if (every > 0) {
-    catalogTimer = setInterval(() => void fetchOnce(), every);
-    catalogTimer.unref?.();
-  }
-  return { models: catalog?.size ?? 0, source: catalog ? source : "none" };
-}
-
-/** The datasheet with no saved copy — kept so an older caller (mcp's boot)
- *  works. It loaded OpenRouter's price list before the datasheet held it. */
-export async function loadModelPricing(): Promise<void> {
-  await loadModelCatalog();
-}
+/** @deprecated Prices come from the Mothership (gateway-price.ts); no-op, kept so an older caller keeps working. */
+export async function loadModelPricing(): Promise<void> {}
 
 export type ThinkingSpeed = "thinking" | "fast";
 

@@ -1139,6 +1139,48 @@ describe("mid-stream socket death is resumed, not lost", () => {
       { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
     ) as Promise<any>;
 
+  it("flags `costUnpriced` (and costs 0) for a model nothing prices; a priced one has no flag", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    const go = (model: string) =>
+      agent.run(
+        (agent.input as any).parse({ cwd, system: "sys", prompt: "go", model, finalAnswer: "Report.", toolFilter: ["bash"] }),
+        { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
+      ) as Promise<any>;
+    try {
+      const unpriced = await go("claude-unpriced-test-9");
+      assert.equal(unpriced.cost, 0);
+      assert.equal(unpriced.costUnpriced, true);
+      // Priced only by the gateway: a fake one that holds claude-sonnet-4-5.
+      const gw = http.createServer((req, res) => {
+        const m = new URL(req.url ?? "/", "http://x").searchParams.get("model");
+        res.setHeader("content-type", "application/json");
+        if (m === "claude-sonnet-4-5") res.end(JSON.stringify({ input_per_mtok: 3, output_per_mtok: 15, cache_read_per_mtok: 0.3, cache_write_per_mtok: 3.75, cache_write_1h_per_mtok: 6 }));
+        else (res.statusCode = 404), res.end(JSON.stringify({ error: "unpriced" }));
+      });
+      await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+      const savedGw = process.env["STRUT_GATEWAY_URL"];
+      process.env["STRUT_GATEWAY_URL"] = `http://127.0.0.1:${(gw.address() as any).port}`;
+      const { resetGatewayPriceCache } = await import("../../aieo/index.js");
+      resetGatewayPriceCache();
+      const priced = await go("claude-sonnet-4-5").finally(() => {
+        if (savedGw === undefined) delete process.env["STRUT_GATEWAY_URL"];
+        else process.env["STRUT_GATEWAY_URL"] = savedGw;
+        gw.close();
+        resetGatewayPriceCache();
+      });
+      assert.ok(priced.cost > 0);
+      assert.equal("costUnpriced" in priced, false);
+    } finally {
+      s.close();
+    }
+  });
+
   it("takes the provider key from ctx.services.secrets when env has none", async () => {
     const s = await serve((_call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });

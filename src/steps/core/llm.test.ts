@@ -78,8 +78,31 @@ describe("llm step: cost", () => {
 
     next = stub();
     const priced = await llm.run({ prompt: "ping", model: "openrouter/acme/paid-1" }, ctx);
-    // No catalog loaded, an unknown OpenRouter model: OpenRouter's flat rate,
-    // $0.60 in and $3 out per million.
-    assert.equal(priced.cost.toFixed(7), "0.0006300");
+    // No catalog loaded, an unknown OpenRouter model: unpriced, 0 and flagged.
+    assert.equal(priced.cost, 0);
+    assert.equal(priced.costUnpriced, true);
+    assert.equal(reported.costUnpriced, undefined, "a reported cost is never unpriced");
+
+    // The gateway prices it: tokens × its rates (1,000 in, 10 out).
+    const http = await import("node:http");
+    const gw = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (new URL(req.url ?? "/", "http://x").searchParams.get("model") === "acme/paid-1") {
+        res.end(JSON.stringify({ input_per_mtok: 0.6, output_per_mtok: 3 }));
+      } else (res.statusCode = 404), res.end("{}");
+    });
+    await new Promise<void>((r) => gw.listen(0, "127.0.0.1", r));
+    const saved = process.env["STRUT_GATEWAY_URL"];
+    process.env["STRUT_GATEWAY_URL"] = `http://127.0.0.1:${(gw.address() as any).port}`;
+    try {
+      next = stub();
+      const gated = await llm.run({ prompt: "ping", model: "openrouter/acme/paid-1" }, ctx);
+      assert.equal(gated.cost.toFixed(7), "0.0006300");
+      assert.equal(gated.costUnpriced, undefined);
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_GATEWAY_URL"];
+      else process.env["STRUT_GATEWAY_URL"] = saved;
+      gw.close();
+    }
   });
 });

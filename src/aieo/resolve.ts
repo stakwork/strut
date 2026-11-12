@@ -24,6 +24,7 @@
 // are added inside getModel and never surface).
 
 import type { LanguageModel } from "ai";
+import { cachedGatewayPrice } from "./gateway-price.js";
 import {
   API_KEY_ENV,
   BASE_URL_ENV,
@@ -34,7 +35,6 @@ import {
   NUMES_MODELS,
   PROVIDERS,
   TOKENFACTORY_MODELS,
-  getCatalogEntry,
   getContextLimit,
   getModel,
   getProviderForModel,
@@ -175,8 +175,8 @@ export function canonicalModelName(model?: string, provider?: Provider | string)
  * OpenAI-compatible hosts (OpenRouter et al) reject max_tokens above the
  * model limit rather than clamping, so they keep the conservative 64k
  * default. An explicit MAX_OUTPUT_TOKENS env wins, within an Anthropic
- * model's limit. With the model catalog loaded (`loadModelCatalog`), a
- * model's own `max_output_tokens` lowers either cap, never raises it.
+ * model's limit. With the gateway's answer for the model cached
+ * (gateway-price.ts), its own `max_output_tokens` lowers either cap, never raises it.
  */
 export function maxOutputTokensFor(
   provider?: string,
@@ -187,7 +187,7 @@ export function maxOutputTokensFor(
   const ownTable = provider === "maple" || provider === "numes" || provider === "tokenfactory";
   const sheet =
     modelId && provider && !ownTable && PROVIDERS.includes(provider as Provider)
-      ? getCatalogEntry(provider as Provider, modelId)?.maxOutputTokens
+      ? cachedGatewayPrice(provider, modelId)?.maxOutputTokens
       : undefined;
   const capped = (n: number) => (sheet ? Math.min(n, sheet) : n);
   if (provider === "anthropic") {

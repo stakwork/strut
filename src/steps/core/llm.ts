@@ -59,7 +59,7 @@ export default defineStep({
     // comes through the secrets boundary (secret store → env). The output
     // cap is a provider-derived infra constant (pricing.ts) — without it the
     // SDK's 4096 default truncates a long answer.
-    const { model, maxOutputTokens, provider, modelId } = await resolveModel({
+    const { model, maxOutputTokens, provider, modelId, price } = await resolveModel({
       model: cfg.model ?? bootEnv()["STRUT_LLM_MODEL"],
       provider: cfg.provider ?? bootEnv()["STRUT_LLM_PROVIDER"],
       secrets: ctx?.services?.secrets,
@@ -75,15 +75,19 @@ export default defineStep({
     });
     // Token usage + dollar cost, like the agent step's output: per model call,
     // what the provider reported, else the tokens at the model's price.
-    const { computeSessionCost } = await loadAieo();
+    const { computeSessionCost, modelPriceSource } = await loadAieo();
     const usage = usageFromSteps(result.steps);
-    const cost = (result.steps ?? []).reduce(
-      (sum: number, s: any) =>
-        sum + (reportedCost(s?.usage, s?.providerMetadata) ?? computeSessionCost(provider, usageForCost(usageFromResult(s?.usage, s?.providerMetadata)), modelId)),
-      0,
-    );
-    // Structured: the object's own fields win a name clash with usage/cost.
-    const out = cfg.schema ? { usage, cost, ...(result.output as object) } : { text: result.text, usage, cost };
+    let costUnpriced = false;
+    const cost = (result.steps ?? []).reduce((sum: number, s: any) => {
+      const reported = reportedCost(s?.usage, s?.providerMetadata);
+      if (reported !== undefined) return sum + reported;
+      if (modelPriceSource(provider, modelId, price) === "unpriced") costUnpriced = true;
+      return sum + computeSessionCost(provider, usageForCost(usageFromResult(s?.usage, s?.providerMetadata)), modelId, undefined, price);
+    }, 0);
+    // Unpriced model: cost is 0 and says so. Structured: the object's own
+    // fields win a name clash with usage/cost.
+    const flag = costUnpriced ? { costUnpriced: true } : {};
+    const out = cfg.schema ? { usage, cost, ...flag, ...(result.output as object) } : { text: result.text, usage, cost, ...flag };
     return withUsage(out, { modelCalls: result.steps.length || 1, usage, cost });
   },
 });

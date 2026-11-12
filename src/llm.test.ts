@@ -152,20 +152,15 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.equal(at("numes/z-ai/glm-5.3").default, true);
     assert.equal(at("maple/glm-5-3").alias, undefined);
     assert.equal(at("maple/glm-5-3").default, false);
-    // Maple and Numes have their own rate per model. Every other model has
-    // none: aieo's flat per-provider rate is not the model's price.
+    // No model has a price of its own here: the Mothership's cached answer is
+    // the only source (none cached in this case), so nothing is priced.
     assert.equal(at("maple/glm-5-3").contextLimit, 262_144);
-    assert.deepEqual(at("maple/glm-5-3").pricing, { inputTokenPrice: 3.6, outputTokenPrice: 11.5 });
-    assert.deepEqual(at("numes/z-ai/glm-5.3-flash").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
     assert.equal(at("numes/z-ai/glm-5.3-flash").contextLimit, 1_048_576);
     assert.equal(at("tokenfactory/glm-5.3").alias, "tokenfactory");
-    assert.deepEqual(at("tokenfactory/glm-5.3").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
-    assert.deepEqual(at("tokenfactory/glm-5.3-flash").pricing, { inputTokenPrice: 0.15, outputTokenPrice: 0.5 });
     assert.equal(at("tokenfactory/qwen3.8-27b").contextLimit, 196_608);
-    assert.equal(at("anthropic/claude-sonnet-5-5").pricing, undefined);
     for (const m of cat.models) {
       assert.ok((m.contextLimit ?? 0) > 0, `${m.name} has a window`);
-      assert.equal(!!m.pricing, ["maple", "numes", "tokenfactory"].includes(m.provider), `${m.name}: a price only from a per-model table`);
+      assert.equal(m.pricing, undefined, `${m.name}: no price without a cached Mothership answer`);
     }
     assert.equal(cat.listed, false);
   });
@@ -333,6 +328,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: (string | undefined)[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       seen.push(req.headers["anthropic-workspace-id"] as string | undefined);
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
@@ -371,6 +367,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: { path?: string; auth?: string; macaroon?: string; model?: string }[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -492,6 +489,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: string[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -559,6 +557,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
   it("the llm step bills a Token Factory call at the cost the gateway reported, not the table's", async () => {
     const { createServer } = await import("node:http");
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -706,6 +705,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const bodies: any[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
@@ -790,6 +790,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const bodies: any[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the Mothership's price lookup, not a model call
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
