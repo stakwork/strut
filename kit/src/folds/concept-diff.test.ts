@@ -204,6 +204,23 @@ describe("concept diff — source two: a pending proposal over the page now", ()
     assert.equal(proposalEntry({ step: "graph/create-node", input: { node_type: "Person", node_data: { name: "Ada" } } }, null), null);
     assert.equal(proposalEntry({ step: "graph/create-triplet", input: {} }, current), null);
   });
+
+  it("a new page under another (the dream's create-triplet): an added page with its parent named; another edge or type is no page", () => {
+    const triplet = (over: Record<string, unknown> = {}) => ({
+      step: "graph/create-triplet",
+      input: { source_ref_id: "ref-contracts", edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Leases", description: "Renting.", docs: "Term and rent." }, ...over },
+    });
+    assert.deepEqual(proposalRefs(triplet()), ["ref-contracts"]);
+    const added = proposalEntry(triplet(), null, nameOf)!;
+    assert.deepEqual(added, { path: "concepts/concept-leases.md", after: { name: "Leases", attributes: { description: "Renting." }, parents: ["Contracts"], docs: "Term and rent." } });
+    const d = foldConceptDiff([added]);
+    assert.equal(d.pages[0]!.status, "added");
+    assert.deepEqual(draw(d.tree), ["Contracts [context]", "  Leases [added]"], "drawn under its parent");
+    assert.deepEqual(proposalEntry(triplet(), null)!.after!.parents, [], "a parent nobody can name is left out");
+    assert.equal(proposalEntry(triplet({ edge_type: "RELATES_TO" }), null, nameOf), null);
+    assert.equal(proposalEntry(triplet({ target_type: "Person" }), null, nameOf), null);
+    assert.equal(proposalEntry(triplet({ target_data: { description: "no name" } }), null, nameOf), null);
+  });
 });
 
 describe("concept diff — source three: an unsaved edit", () => {

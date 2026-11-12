@@ -8,6 +8,7 @@ import { useStrutClient, type StrutClient } from "@strut/kit";
 import { getEdges, getNeighbors, type GraphHit } from "strut/views";
 import { buildTree, conceptOf, TREE_TYPE, type Concept, type ConceptTree } from "./tree";
 import { groupLinks, isSystemType, orderTypes, typeDescription, type OntologyType } from "./ontology";
+import { DREAM, type ClaimedConcept, type PageClaim, type PendingChange } from "./learning";
 
 export const FIND = "graph/find";
 /** A page of Concepts: docs run to ~6k chars, so 200 stays far under step_run's 5 MB. */
@@ -133,5 +134,49 @@ export function useLinks(refId: string | null) {
     enabled: !!refId,
     staleTime: 60_000,
     queryFn: async () => groupLinks(await getNeighbors(client, refId!)),
+  });
+}
+
+/** A Concept as its keeper reads it (`knowledge/page`): its claims, with what the evidence says. Null when there is
+ *  no Concept of that name. Refused where the page may not read the tree's namespace: the error says so at once. */
+export function usePage(name: string | undefined) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "page", name],
+    enabled: !!name,
+    staleTime: 30_000,
+    retry: false,
+    queryFn: async () => {
+      const r = await client.run("knowledge/page", { name });
+      return typeof r === "string" ? null : (r as { ref_id: string; name: string; claims: PageClaim[] });
+    },
+  });
+}
+
+/** Every Concept that carries claims (`knowledge/claims`): what the page scans for the refuted ones. */
+export function useClaimed() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "claimed"],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => answer<{ concepts?: ClaimedConcept[] }>("knowledge/claims", await client.run("knowledge/claims", {})).concepts ?? [],
+  });
+}
+
+/** The changes to the tree the dream proposed that wait on a person — pending, or accepted and failed (accepted
+ *  again once the cause is fixed) — each with what it would run with. An admin sees them; anyone else only their
+ *  own (proposal/list). */
+export function useChanges() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "changes"],
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    queryFn: async () => {
+      const read = (status: string) => client.run("proposal/list", { workflow: DREAM, status, input: true, limit: 200 });
+      const lists = await Promise.all(["pending", "failed"].map(async (s) => answer<{ proposals?: PendingChange[] }>("proposal/list", await read(s)).proposals ?? []));
+      return lists.flat();
+    },
   });
 }

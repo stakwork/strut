@@ -29,6 +29,7 @@ import { MemoryRunStore } from "../store.js";
 import addClaimStep from "../steps/lib/knowledge/add-claim.js";
 import addEvidenceStep from "../steps/lib/knowledge/add-evidence.js";
 import pageStep from "../steps/lib/knowledge/page.js";
+import claimsStep from "../steps/lib/knowledge/claims.js";
 import doneStep from "../steps/lib/dream/done.js";
 import turnsStep from "../steps/lib/dream/turns.js";
 
@@ -317,11 +318,25 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     const heard = await knowledge.addEvidence({ claim: (onRoot as { id: string }).id, workflow: ORCHESTRATOR_WORKFLOW, runId: turn["runId"], supports: false, said: "no greeting, I said", by: "evan" });
     assert.deepEqual([("ok" in heard && heard.concept), (await claimsOn("Personal"))[0]!["status"]], ["Personal", "refuted"]);
 
+    // Every Concept that carries claims, with them: what the Knowledge app scans for the ones that do not hold.
+    const claimed = await knowledge.claims();
+    assert.deepEqual(
+      claimed.map((c) => [c.concept, c.ref_id, c.claims.map((x) => [x.text, x.status])]),
+      [
+        ["Communication Style", child!.ref_id, [["Messages have no greeting", "unknown"]]],
+        ["Personal", root!.ref_id, [["A turn that writes a message opens Communication Style", "refuted"]]],
+      ],
+    );
+    assert.deepEqual(claimed[1]!.claims[0]!.latest, { content: "no greeting, I said", mode: "asserted", by: "evan" });
+    assert.deepEqual(await claimsStep.run({}, { services: strut!.services } as never), { concepts: claimed });
+
     // The door reads the graph as it is, so each step first asks whether its CALLER may read where the tree is
     // kept: on a personal strut an app's page reads `shared` alone, and the tree is private.
     const fromApp = { services: strut!.services, app: { name: "notes", version: "v1" } } as never;
     if (readers) await assert.rejects(async () => pageStep.run(pageStep.input.parse({ name: "Personal" }), fromApp), /this caller may not read "private", where the Concept tree is kept \(an app's page reads only what an app may\)/);
     else assert.equal(((await pageStep.run(pageStep.input.parse({ name: "Personal" }), fromApp)) as { name: string }).name, "Personal");
+    if (readers) await assert.rejects(async () => claimsStep.run({}, fromApp), /knowledge\/claims: this caller may not read "private"/);
+    else assert.equal(((await claimsStep.run({}, fromApp)) as { concepts: unknown[] }).concepts.length, 2);
 
     // One run adds at most so many claims.
     for (let i = 0; i < KNOWLEDGE_CLAIMS_PER_RUN; i++) assert.ok("ok" in (await knowledge.addClaim({ concept: "Personal", text: `rule ${i}` }, { runId: "r2" })));
@@ -329,10 +344,10 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     // The door is the dream's alone: its writers, and the reader of every conversation, are sealed from the meta surface.
     const patterns = sealedStepPatterns({});
-    const registry = { [addClaimStep.type]: addClaimStep, [addEvidenceStep.type]: addEvidenceStep, [turnsStep.type]: turnsStep, [doneStep.type]: doneStep, [pageStep.type]: pageStep } as never;
+    const registry = { [addClaimStep.type]: addClaimStep, [addEvidenceStep.type]: addEvidenceStep, [turnsStep.type]: turnsStep, [doneStep.type]: doneStep, [pageStep.type]: pageStep, [claimsStep.type]: claimsStep } as never;
     assert.deepEqual(
-      ["knowledge/add-claim", "knowledge/add-evidence", "dream/turns", "dream/done", "knowledge/page"].map((t) => isSealedStep(t, registry, patterns)),
-      [true, true, true, true, false],
+      ["knowledge/add-claim", "knowledge/add-evidence", "dream/turns", "dream/done", "knowledge/page", "knowledge/claims"].map((t) => isSealedStep(t, registry, patterns)),
+      [true, true, true, true, false, false],
     );
     for (const seed of ["job", "orchestrator", "builder"]) {
       assert.doesNotMatch(await readFile(new URL(`../workflows/${seed}.yaml`, import.meta.url), "utf-8"), /knowledge\/|dream\//, `${seed} is not granted the Knowledge door`);

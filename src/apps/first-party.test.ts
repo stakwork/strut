@@ -74,7 +74,7 @@ describe("first-party apps: the pure parts", () => {
   });
 
   it("proposal/decide refuses an agent's tool call, a model-written page and no person", async () => {
-    const services = { proposals: { decide: async () => ({ status: 200, body: { id: "p" } }) } };
+    const services = { proposals: { get: async () => null, decide: async () => ({ status: 200, body: { id: "p" } }) } };
     const fp = { name: "strut/jamie", version: "v1", firstParty: true as const };
     const cfg = { id: "p", action: "accept" as const };
     await assert.rejects(() => decideStep.run(cfg, { app: fp, actor: "alice", workflow: ORCHESTRATOR_WORKFLOW, services } as never), /a person's decision/);
