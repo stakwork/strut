@@ -13,17 +13,19 @@ export {
   BridgeHost, StaticHost, createStaticHost, DEFAULT_HOST_STATE,
   type BridgeApp, type DisplayMode, type HostContext, type HostState, type StrutHost, type Theme,
 } from "./host.js";
-export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, useStrutWallet, useStrutChannels, type StrutProviderProps } from "./provider.js";
+export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, useStrutWallet, useStrutChannels, useStrutVisitor, type StrutProviderProps } from "./provider.js";
 export { useWallet, useTransaction, TRANSACTION_POLL_MS, type UseWallet, type UseTransaction } from "./wallet-hooks.js";
 export * from "./wallet/index.js";
 export { useChannel, newChannel, type UseChannel, type UseChannelOptions } from "./channel-hooks.js";
 export * from "./channels/index.js";
+export { useVisitor, type UseVisitor } from "./visitor-hooks.js";
+export * from "./visitor/index.js";
 export {
   RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, RUN_EVENTS_MAX, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
   useRuns, useRun, useRunEvents, useWorkProducts, useTranscript, useTranscripts, useRunFile, useRunFileUrl, runFileBlob, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
   useAssistant, assistantJobs, ASSISTANT_WORKFLOW,
   useJobUpdates, useGraphChanges, GRAPH_CHANGES_STEP, FEED_WAIT_MS,
-  useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
+  useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS, reloadAppState,
   type JobUpdate, type GraphChange, type UseJobUpdates, type UseJobUpdatesOptions, type UseGraphChanges, type UseGraphChangesOptions,
   type AssistantMessage, type AssistantJob, type UseAssistant, type UseAssistantOptions,
   type RunSummary, type RunEvent, type RunTranscript, type RunFile, type UseRunFileOptions, type UseRunFileUrl, type WorkflowInfo, type LaunchResult, type UploadResult,

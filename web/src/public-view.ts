@@ -2,8 +2,9 @@
 // plans/public-surface.md §2): the link a visitor opens, how the
 // cascade's checked lines merge into the record, and a workflow or step
 // row's three boxes — show its definition, show its runs, anyone can run
-// it — with the price the third opens (plans/paid-runs.md §2).
-import type { PublicRunInfo, PublicRunnable, PublicViewNeeds, PublicViewRecord } from "./api";
+// it — with the price the third opens (plans/paid-runs.md §2) — and who may
+// sign in to the public apps (plans/app-repos.md §5).
+import type { PublicRunInfo, PublicRunnable, PublicViewNeeds, PublicViewRecord, PublicVisitors } from "./api";
 
 /** A visitor's link to a public app: the page alone, no credential. */
 export function visitorAppLink(name: string, here: string): string {
@@ -229,3 +230,64 @@ export function needsTick(row: Row, info: PublicRunInfo | undefined, saved: Publ
   return !saved.runnable.some(isRow(row));
 }
 
+
+// ── Sign-in (plans/app-repos.md §5) ────────────────────────────────────────
+
+export type SignInMethod = PublicVisitors["signIn"][number];
+
+/** The sign-ins a server may offer, in the order the record keeps them,
+ *  as the tab says them. */
+export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: string; note: string }> = [
+  { method: "key", label: "This browser's key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
+  { method: "lnurl", label: "A Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
+  { method: "nostr", label: "A Nostr extension", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
+  { method: "ticket", label: "A host's ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
+];
+
+/** What a visitor may do in a day when the record says nothing: the
+ *  server's `DEFAULT_VISITOR_LIMITS` (src/visitors.ts), held equal by
+ *  public-view.test.ts. */
+export const VISITOR_DEFAULT_LIMITS = { writesPerDay: 1000, launchesPerDay: 100 } as const;
+export type VisitorLimitField = keyof typeof VISITOR_DEFAULT_LIMITS;
+
+/** The record with `visitors` as given: dropped when it names no method,
+ *  as the server keeps it — so a record that offers no sign-in compares
+ *  equal to the saved one. */
+function withVisitors(rec: PublicViewRecord, v: PublicVisitors | undefined): PublicViewRecord {
+  const { visitors: _old, ...rest } = copyOf(rec);
+  if (!v || !v.signIn.length) return rest;
+  const limits = v.limits && Object.keys(v.limits).length ? v.limits : undefined;
+  return {
+    ...rest,
+    visitors: {
+      signIn: SIGN_IN_METHODS.map((m) => m.method).filter((m) => v.signIn.includes(m)),
+      ...(v.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}),
+      ...(limits ? { limits } : {}),
+    },
+  };
+}
+
+/** The record with one sign-in offered or not. The last one off takes the
+ *  key per domain and the limits with it: no sign-in, nothing to say. */
+export function setSignIn(rec: PublicViewRecord, method: SignInMethod, on: boolean): PublicViewRecord {
+  const v = rec.visitors ?? { signIn: [] };
+  const signIn = on ? [...new Set([...v.signIn, method])] : v.signIn.filter((m) => m !== method);
+  return withVisitors(rec, { ...v, signIn });
+}
+
+/** The record with a key per domain (`visitorKey: domain`) or the root key. */
+export function setVisitorKey(rec: PublicViewRecord, domain: boolean): PublicViewRecord {
+  const { visitorKey: _k, ...v } = rec.visitors ?? { signIn: [] };
+  return withVisitors(rec, domain ? { ...v, visitorKey: "domain" } : v);
+}
+
+/** The record with one daily limit typed: a whole number, or the server's
+ *  default when the box is empty (the server checks the rest). */
+export function setVisitorLimit(rec: PublicViewRecord, field: VisitorLimitField, text: string): PublicViewRecord {
+  const v = rec.visitors ?? { signIn: [] };
+  const limits = { ...(v.limits ?? {}) };
+  const n = Number(text);
+  if (text.trim() === "" || !Number.isFinite(n)) delete limits[field];
+  else limits[field] = n;
+  return withVisitors(rec, { ...v, limits });
+}

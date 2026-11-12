@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, usd, visitorAppLink } from "./public-view.js";
+import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, setSignIn, setVisitorKey, setVisitorLimit, SIGN_IN_METHODS, usd, visitorAppLink, VISITOR_DEFAULT_LIMITS } from "./public-view.js";
 import { DAILY_CAP_SHARE as SERVER_DAILY_CAP_SHARE } from "../../src/public-runnable.js";
+import { normalizeSurface, VISITOR_METHOD_NAMES } from "../../src/public-surface.js";
+import { DEFAULT_VISITOR_LIMITS } from "../../src/visitors.js";
 import type { PublicRunInfo, PublicViewNeeds } from "./api.js";
 
 const needs: PublicViewNeeds = {
@@ -139,5 +141,36 @@ describe("a workflow or step row's three boxes", () => {
     assert.equal(needsTick(wf, info(), emptyRecord()), false);
     assert.equal(needsTick(wf, undefined, emptyRecord()), false);
     assert.equal(needsTick(wf, acts, { ...emptyRecord(), runnable: [{ ...wf }] }), false, "already runnable when the tab opened");
+  });
+});
+
+describe("the Public view tab's sign-in (plans/app-repos.md §5)", () => {
+  it("offers the server's methods and says its default limits", () => {
+    assert.deepEqual(SIGN_IN_METHODS.map((m) => m.method).sort(), [...VISITOR_METHOD_NAMES].sort());
+    assert.deepEqual(VISITOR_DEFAULT_LIMITS, DEFAULT_VISITOR_LIMITS);
+  });
+
+  it("a method on makes the record's visitors, in the server's order; the last one off drops the key per domain and the limits", () => {
+    let rec = setSignIn(emptyRecord(), "nostr", true);
+    rec = setSignIn(rec, "key", true);
+    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"] });
+    rec = setVisitorKey(rec, true);
+    rec = setVisitorLimit(rec, "writesPerDay", "500");
+    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"], visitorKey: "domain", limits: { writesPerDay: 500 } });
+    // What the tab sends is what the server keeps: Save leaves it unchanged.
+    assert.deepEqual(normalizeSurface(rec), rec);
+    rec = setVisitorLimit(rec, "writesPerDay", "");
+    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"], visitorKey: "domain" }, "an empty box is the default");
+    rec = setVisitorKey(rec, false);
+    rec = setSignIn(setSignIn(rec, "key", false), "nostr", false);
+    assert.equal("visitors" in rec, false, "no method, no visitors");
+    assert.deepEqual(rec, emptyRecord());
+  });
+
+  it("the other edits keep the record's visitors", () => {
+    const rec = setSignIn(emptyRecord(), "key", true);
+    const row = { kind: "workflow" as const, name: "w" };
+    assert.deepEqual(setBox(rec, row, "definition", true).visitors, { signIn: ["key"] });
+    assert.deepEqual(removeRow(setBox(rec, row, "run", true), row).visitors, { signIn: ["key"] });
   });
 });

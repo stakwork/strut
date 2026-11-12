@@ -35,7 +35,8 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
 import { PAYMENTS_FILE } from "./payments/settings.js";
@@ -75,7 +76,9 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunLaunchBy, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import type { AppManifest } from "./apps/manifest.js";
+import type { GraphReader } from "./graph/search.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
@@ -1159,8 +1162,8 @@ export async function createStrut<TServices = unknown>(
   /** A live public run's visit (plans/paid-runs.md §10), as its summary
    *  will carry it: a visitor's own runs list before they end. */
   const liveVisitor = (controller: RunController | undefined) => {
-    const visitor = controller ? launchedAs.get(controller)?.visitor : undefined;
-    return visitor ? { visitor } : {};
+    const as = controller ? launchedAs.get(controller) : undefined;
+    return { ...(as?.visitor ? { visitor: as.visitor } : {}), ...(as?.actor ? { actor: as.actor } : {}) };
   };
   /** Append a control marker (run.paused / run.resumed) to a run's log so
    *  the parked gap is visible in the record (§4 observability). A
@@ -1559,7 +1562,11 @@ export async function createStrut<TServices = unknown>(
   // maps (plans/member-rights.md): one that carries nothing else is
   // `member`, before the hook is asked.
   const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && memberOf(c) !== undefined;
-  const resolveScope = (c: Context) => (inProcessOf(c) ? ("full" as const) : memberOnly(c) ? ("member" as const) : hostScope(c));
+  // And a VISITOR's (plans/app-repos.md §5.1): strut's own credential too,
+  // whatever a host maps — a visitor is never a member, nor the key's equal.
+  const visitorOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !memberOf(c) && visitorOf(c) !== undefined;
+  const resolveScope = (c: Context) =>
+    inProcessOf(c) ? ("full" as const) : memberOnly(c) ? ("member" as const) : visitorOnly(c) ? ("visitor" as const) : hostScope(c);
   const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
   const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
@@ -2073,6 +2080,20 @@ export async function createStrut<TServices = unknown>(
   ];
   const memberMay = (method: string, path: string) =>
     MEMBER_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
+  /** What a VISITOR's session may call past what is open to anyone (the
+   *  public apps' pages and files, `POST /public/mcp`, `/visitors/*`): who
+   *  it is, and its app's channel ticket — which names it, for a public
+   *  app at the version the public view serves (plans/app-repos.md §5.1). */
+  const VISITOR_ROUTES: Array<[method: string, path: RegExp]> = [
+    ["GET", /^\/auth\/session$/],
+    ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
+  ];
+  const visitorMay = (method: string, path: string) =>
+    VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
+  /** The sign-in routes: open to anyone, since signing in is how a visitor
+   *  gets a credential (src/visitors.ts). */
+  const VISITOR_OPEN_READ = /^\/visitors(?:\/challenge|\/lnurl)?$/;
+  const VISITOR_SESSION_PATH = "/visitors/session";
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -2080,12 +2101,16 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
+      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path)
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
       return c.json({ error: "forbidden: a member's session opens the apps here and nothing else; ask an admin for the rest" }, 403);
+    }
+    if (visitorOnly(c)) {
+      if (visitorMay(c.req.method, path)) return next();
+      return c.json({ error: "forbidden: a visitor's session opens this server's public apps and nothing else" }, 403);
     }
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
@@ -2114,6 +2139,13 @@ export async function createStrut<TServices = unknown>(
     if (body.ticket !== undefined) {
       const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim()) : undefined;
       if (!redeemed) return c.json({ error: "unauthorized: this sign-in ticket has expired, was already used, or is not this strut's" }, 401);
+      // A visitor's (plans/app-repos.md §5.3, `ticket`): its own cookie, and
+      // the token, which a page framed by another site keeps and sends as a
+      // bearer (ruled 4).
+      if (redeemed.session.role === "visitor") {
+        c.header("set-cookie", visitorSessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
+        return c.json({ ...redeemed.session, token: redeemed.token });
+      }
       c.header("set-cookie", sessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
       return c.json(redeemed.session);
     }
@@ -2135,7 +2167,7 @@ export async function createStrut<TServices = unknown>(
   // and as what (`role`: a host's ticket's; none for the key login); 404
   // for a request the key or nothing authenticated.
   app.get("/auth/session", (c) => {
-    const session = sessionOf(c);
+    const session = sessionOf(c) ?? visitorOf(c);
     return session ? c.json(session) : c.json({ error: "no session" }, 404);
   });
 
@@ -2161,7 +2193,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
     }
     const role = body.role ?? "member";
-    if (!isRole(role)) return c.json({ error: 'role must be "admin" or "member": an admin runs this strut server, a member uses its apps' }, 400);
+    if (!isRole(role)) return c.json({ error: 'role must be "admin", "member" or "visitor": an admin runs this strut server, a member uses its apps, a visitor uses its public apps as itself' }, 400);
     const minted = signInTicket(actor, role)!;
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
@@ -3900,6 +3932,16 @@ export async function createStrut<TServices = unknown>(
     // holds the version when the relay connects.
     const peer = typeof body.peer === "string" && body.peer ? body.peer : undefined;
     if (body.peer !== undefined && !peer) return c.json({ error: "peer: a peer id" }, 400);
+    // A signed-in VISITOR (plans/app-repos.md §5.1): a public app at the
+    // version the public view serves, here, named as the visitor itself.
+    const visitor = visitorOnly(c) ? visitorOf(c) : undefined;
+    if (visitor) {
+      const live = (await apps.versionDir(at.name).catch(() => null))?.version;
+      if (peer || !(await publicSurface.get()).apps.some((a) => a.name === at.name) || live !== version) {
+        return c.json({ error: `forbidden: a visitor's channels are a public app's, at the version the public view serves` }, 403);
+      }
+      return c.json(channelTicket({ actor: visitor.actor!, app: at.name, version }));
+    }
     if (peer) {
       if (!(await peerRecords.get(peer))) return c.json({ error: `no peer "${peer}" on file` }, 404);
       if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return c.json({ error: `"${version}" is not a version label` }, 404);
@@ -3908,6 +3950,136 @@ export async function createStrut<TServices = unknown>(
     }
     const actor = await resolveActor(c);
     return c.json(channelTicket({ ...(actor ? { actor } : {}), app: at.name, version, ...(peer ? { peer } : {}) }));
+  });
+
+  // ── Visitors (plans/app-repos.md §5; src/visitors.ts) ──────────────────
+  //
+  // A visitor of a public app signs strut's CHALLENGE with a key and is then
+  // that key's actor here. `GET /visitors` says how (the public view's
+  // `visitors`: on a served box, serve.yaml's `signIn`, `visitorKey`) and who
+  // this request is; `GET /visitors/challenge` mints a challenge for this
+  // host; `POST /visitors/session` checks the signature with the method's
+  // verifier and answers the visitor's cookie and `{ actor, token, exp }`
+  // (the token for a page framed by another site, ruled 4); `DELETE` signs
+  // out. LNURL-auth's wallet calls back on `GET /visitors/lnurl`. All open to
+  // anyone: signing in is how a visitor gets a credential.
+  const lnurlLogins = createLnurlLogins();
+  const visitorBudget = createVisitorBudget();
+  /** The methods offered here, and whose key signs. */
+  const visitorConfig = async (): Promise<{ methods: string[]; visitorKey: VisitorKeyMode }> => {
+    const v = (await publicSurface.get()).visitors;
+    const visitorKey: VisitorKeyMode = v?.visitorKey === "domain" ? "domain" : "root";
+    return { methods: offeredMethods(v?.signIn ?? [], visitorKey), visitorKey };
+  };
+  const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
+  /** Sign `actor` in: the visitor's cookie, and the token beside it. */
+  const signVisitorIn = (c: Context, actor: string) => {
+    const started = startVisitorSession(actor)!;
+    c.header("set-cookie", visitorSessionCookie(started.token, started.session.exp, isSecureRequest(c)));
+    c.header("cache-control", "no-store");
+    return c.json({ actor, token: started.token, exp: started.session.exp });
+  };
+  const noSecret = (c: Context) => c.json({ error: "sign-in needs STRUT_API_KEY or STRUT_SECRET_KEY: a visitor's session is signed with it" }, 503);
+
+  app.get("/visitors", async (c) => {
+    const session = visitorOf(c);
+    return c.json({ ...(await visitorConfig()), ...(session ? { actor: session.actor, exp: session.exp } : {}) });
+  });
+
+  /** The `/public` budget per address (1200 a minute): the sign-in routes
+   *  are open to anyone, and an LNURL login keeps state. */
+  const overVisitorBudget = (c: Context) =>
+    publicDoors.overBudget(visitorAddress(c)) ? c.json({ error: "too many requests from this address: try again in a minute" }, 429, { "retry-after": "60" }) : null;
+
+  app.get("/visitors/challenge", async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const { methods, visitorKey } = await visitorConfig();
+    if (!methods.length) return c.json({ error: "no sign-in on this strut server: its public view names no method (serve.yaml's signIn)" }, 404);
+    const minted = visitorChallenge(requestHost(c), visitorKey);
+    if (!minted) return noSecret(c);
+    c.header("cache-control", "no-store");
+    return c.json({ challenge: minted.challenge, exp: minted.exp, methods, visitorKey });
+  });
+
+  app.post(VISITOR_SESSION_PATH, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const raw = await c.req.text();
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "the body is JSON: { challenge, method, … }" }, 400);
+    }
+    const challenge = typeof body["challenge"] === "string" ? body["challenge"] : "";
+    const method = body["method"];
+    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const claims = readVisitorChallenge(challenge);
+    if (!isVisitorMethod(method) || method === "ticket") {
+      return c.json({ error: "method is key, lnurl or nostr (a host's ticket is traded at POST /auth/session { ticket })" }, 400);
+    }
+    // An LNURL login already registered: the page asks whether its wallet
+    // has signed (the challenge is spent and may have expired since).
+    const host = requestHost(c);
+    if (method === "lnurl" && typeof body["k1"] === "string") {
+      const got = lnurlLogins.take(body["k1"], challenge, host);
+      if ("error" in got) return refuse(got.error);
+      if ("pending" in got) return c.json({ pending: true, exp: got.exp }, 202);
+      return signVisitorIn(c, got.actor);
+    }
+    if (!claims) return refuse("this challenge has expired or is not this server's — ask GET /visitors/challenge for another");
+    if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`);
+    if (!offeredMethods((await publicSurface.get()).visitors?.signIn ?? [], claims.visitorKey).includes(method)) {
+      return refuse(`"${method}" is not a sign-in this server offers${claims.visitorKey === "domain" && METHOD_INFO[method].rootOnly ? " where its app asks for a key per domain" : ""}`);
+    }
+    let actor: string | null = null;
+    if (method === "key") {
+      const key = fromHex(body["key"]);
+      const sig = fromHex(body["sig"]);
+      if (!key || !sig) return c.json({ error: "key and sig are hex: the public key (SEC1) and the signature (r ‖ s)" }, 400);
+      actor = await VERIFIERS["ecdsa-p256"]!(new TextEncoder().encode(challenge), key, sig);
+      if (!actor) return refuse("the signature does not hold for this challenge and key");
+    } else if (method === "nostr") {
+      const signer = await nostrSigner(c.req.header("authorization"), { url: `${publicUrlOf(c)}${new URL(c.req.url).pathname}`, method: "POST", body: raw }, Date.now(), (u) => {
+        try {
+          const url = new URL(u);
+          return hostOfRequest({ host: url.host, url: u }) === host && url.pathname.endsWith(VISITOR_SESSION_PATH);
+        } catch {
+          return false;
+        }
+      });
+      if ("error" in signer) return refuse(signer.error);
+      actor = await VERIFIERS.bip340!(signer.id, signer.key, signer.sig);
+      if (!actor) return refuse("nostr: the event's signature does not hold");
+    }
+    // Spent once its signature holds, so a challenge someone only saw
+    // cannot be burned.
+    if (!redeemVisitorChallenge(challenge)) return refuse("this challenge was already used");
+    if (method === "lnurl") {
+      const { k1, exp } = lnurlLogins.register(challenge, host);
+      return c.json({ pending: true, k1, exp, ...lnurlLogin(publicUrlOf(c), k1) }, 202);
+    }
+    return signVisitorIn(c, actor!);
+  });
+
+  app.delete(VISITOR_SESSION_PATH, (c) => {
+    c.header("set-cookie", visitorSessionCookie(undefined, 0, isSecureRequest(c)));
+    return c.body(null, 204);
+  });
+
+  // LNURL-auth's callback (LUD-04): the WALLET, on a phone, signs `k1` with
+  // its linking key for this domain. Its answer is the spec's.
+  app.get("/visitors/lnurl", async (c) => {
+    c.header("access-control-allow-origin", "*");
+    if (publicDoors.overBudget(visitorAddress(c))) return c.json({ status: "ERROR", reason: "too many requests from this address" }, 429);
+    const k1 = c.req.query("k1") ?? "";
+    const sig = fromHex(c.req.query("sig"));
+    const key = fromHex(c.req.query("key"));
+    if (c.req.query("tag") !== "login" || !/^[0-9a-f]{64}$/.test(k1)) return c.json({ status: "ERROR", reason: "not an LNURL-auth login of this server" }, 400);
+    if (!sig || !key) return c.json({ status: "ERROR", reason: "sig and key are required (LUD-04)" }, 400);
+    const got = await lnurlLogins.sign(k1, sig, key);
+    return "error" in got ? c.json({ status: "ERROR", reason: got.error }) : c.json({ status: "OK" });
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -8784,36 +8956,32 @@ export async function createStrut<TServices = unknown>(
      *  (`x-strut-visit`, a secret it mints per page): the runs launched
      *  under it are the ones its page reads back. */
     app.post("/public/mcp", async (c) => {
-      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
+      const { buildAppTools, APP_TOOL_META, GRAPH_WRITES } = await import("./apps/tools.js");
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const bag = services as Record<string, unknown>;
-      const reader = publicSurface.reader();
       const who = visitorAddress(c);
       const visit = c.req.header(VISIT_HEADER);
       const visitor = visitorOfVisit(visit);
       const visitRefusal = visitProblem(visit);
-      const visitorBag = {
-        ...(bag["http"] ? { http: bag["http"] } : {}),
-        ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
-        ...(graph && reader
-          ? {
-              graph: {
-                kind: graph.kind,
-                namespace: graph.namespace,
-                cfg: graph.cfg,
-                schemas: graph.schemas,
-                reader,
-                query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
-              },
-            }
-          : {}),
-        ...(bag["runs"]
-          ? {
-              runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], {
-                surface: () => publicSurface.get(),
-                ...(visitor ? { visitor } : {}),
-                ...(visitRefusal ? { visitRefusal } : {}),
-                launch: (workflow, body) =>
+      // A SIGNED-IN visitor (plans/app-repos.md §5.1): this request carries
+      // its session — the cookie, or the token as a bearer — and the page
+      // calls as that actor, under §5.1's rules and its limits.
+      const signedIn = visitorOf(c)?.actor;
+      /** Count a launch against the visitor's limits once it went. */
+      const counted = async <T,>(go: () => Promise<T>, went: (r: T) => boolean): Promise<T> => {
+        const r = await go();
+        if (signedIn && went(r)) visitorBudget.spend("launch", signedIn, who);
+        return r;
+      };
+      const inner = bag["runs"] as (Parameters<typeof visitorRuns>[0] & RunsCapability) | undefined;
+      const runs = inner
+        ? visitorRuns(inner, {
+            surface: () => publicSurface.get(),
+            ...(visitor ? { visitor } : {}),
+            ...(visitRefusal ? { visitRefusal } : {}),
+            launch: (workflow, body) =>
+              counted(
+                () =>
                   publicDoors.launch({
                     name: workflow,
                     who,
@@ -8822,23 +8990,86 @@ export async function createStrut<TServices = unknown>(
                     scope: visitor ? `visit:${visitor}` : who,
                     ...(visitor ? { visitor } : {}),
                   }),
-              }),
-            }
-          : {}),
+                (out) => out.status === 202,
+              ),
+            ...(signedIn
+              ? {
+                  own: {
+                    actor: signedIn,
+                    // As the visitor, from its app: `input` and `key` alone —
+                    // never a job, a conversation, files or params.
+                    launch: async (q, by) => {
+                      const extra = Object.keys(q).filter((k) => !["workflow", "input", "key"].includes(k) && q[k] !== undefined);
+                      if (extra.length) throw new Error(`a visitor's launch takes input and key alone, not ${extra.join(", ")}`);
+                      return counted(
+                        () => inner.launch({ workflow: q.workflow, ...(q["input"] !== undefined ? { input: q["input"] } : {}), ...(typeof q["key"] === "string" ? { key: q["key"] } : {}) }, by as RunLaunchBy),
+                        () => true,
+                      );
+                    },
+                  },
+                }
+              : {}),
+          })
+        : undefined;
+      const graphView = (reader: GraphReader) => ({
+        kind: graph!.kind,
+        namespace: graph!.namespace,
+        cfg: graph!.cfg,
+        schemas: graph!.schemas,
+        reader,
+        query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
+      });
+      const reader = publicSurface.reader();
+      const visitorBag = {
+        ...(bag["http"] ? { http: bag["http"] } : {}),
+        ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
+        ...(graph && reader ? { graph: graphView(reader) } : {}),
+        ...(runs ? { runs } : {}),
+      };
+      /** A signed-in visitor's bag for one call: its own `app/state`, the
+       *  nodes of its app's declared types read whole, and the graph
+       *  writable — the declared-type check is the door's — for a write and
+       *  `graph/find` (on a declared type) alone. */
+      const signedInBag = (manifest: AppManifest, type: string) => {
+        const declared = Object.keys(manifest.data?.graph?.types ?? {});
+        const widened = publicSurface.reader(declared);
+        const writable = GRAPH_WRITES.has(type) || type === "graph/find";
+        return {
+          ...visitorBag,
+          dataDir,
+          ...(graph && widened ? { graph: writable ? Object.create(graph, { reader: { value: widened } }) : graphView(widened) } : {}),
+        };
       };
       const tools = buildAppTools({
         apps,
         registry,
         services: visitorBag,
+        ...(signedIn ? { actor: signedIn } : {}),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
         visitor: {
           identity: publicAppOfIdentity,
           // The page names a workflow as its package does (package-first,
           // as the run steps resolve it): checked under the name it runs as.
-          refusal: async (at, type, config) =>
-            visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, await inAppPackage(at.name, config)),
-          viewer: `visitor ${who}`,
+          refusal: async (at, type, config, manifest) => {
+            const surface = await publicSurface.get();
+            const live = (await apps.versionDir(at.name).catch(() => null))?.version;
+            const cfg = await inAppPackage(at.name, config);
+            if (!signedIn) return visitorRefusal(surface, live, at, type, cfg);
+            const no = await signedInRefusal(surface, live, at, type, cfg, {
+              declared: Object.keys(manifest.data?.graph?.types ?? {}),
+              spends: async (wf) => (await runnableCan({ kind: "workflow", name: wf }, runnableDeps).catch(() => null))?.spends ?? true,
+            });
+            if (no) return no;
+            const limits = visitorLimits(surface);
+            if (type === "run/launch") return visitorBudget.check("launch", signedIn, who, limits);
+            if (!visitorWrite(type, cfg)) return null;
+            const over = visitorBudget.check("write", signedIn, who, limits);
+            if (!over) visitorBudget.spend("write", signedIn, who);
+            return over;
+          },
+          viewer: signedIn ?? `visitor ${who}`,
+          ...(signedIn ? { keep: true, services: (_at: AppRef, manifest: AppManifest, type: string) => signedInBag(manifest, type) } : {}),
         },
       });
       // An AGENT with no account (plans/paid-runs.md §10, work item 8): the

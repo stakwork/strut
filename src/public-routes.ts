@@ -324,10 +324,12 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET, HEAD, POST",
         // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
-        // `x-strut-visit`: a visitor's page's host names the visit (§10).
-        // `mcp-method` / `mcp-name`: what an MCP client may send beside a
-        // request whose envelope names a newer protocol version.
-        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, x-strut-visit",
+        // `x-strut-visit`: a visitor's page's host names the visit (§10);
+        // `x-strut-visitor`: a signed-in visitor's token beside a credit
+        // token (plans/app-repos.md §5.2). `mcp-method` / `mcp-name`: what
+        // an MCP client may send beside a request whose envelope names a
+        // newer protocol version.
+        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, x-strut-visit, x-strut-visitor",
         "access-control-max-age": "600",
       });
     }

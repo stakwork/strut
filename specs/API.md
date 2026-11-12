@@ -1253,9 +1253,9 @@ and rotating that secret ends every session.
 | Method | Path            | Description |
 | ------ | --------------- | ----------- |
 | POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp, role? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. The key login names no role |
-| GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member`), none for the key login; `404` for a request the key authenticated |
+| GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member` \| `visitor`), none for the key login; a visitor's session (§13.2) as cookie or bearer; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
-| POST   | `/auth/ticket`  | `{ actor, role? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"` or `"member"`, **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
+| POST   | `/auth/ticket`  | `{ actor, role? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
@@ -1350,6 +1350,86 @@ framed by `acme.com` (or `app.acme.com`). Framed by another site, the
 browser neither stores nor sends the cookie: the trade spends the ticket,
 and the next request is a 401. Serve strut from a subdomain of the host's
 own site.
+
+### 13.2 Visitors — a public app's players sign in with a key
+
+`plans/app-repos.md` §5; `src/visitors.ts`. A visitor of a PUBLIC app
+(§17) is anonymous until they sign in: they sign strut's CHALLENGE with a
+key and are then that key's actor on this server. Strut keeps no key and no
+account — it checks a signature and keeps a session. The server's public
+view says how one signs in (`visitors`, §17: on a served box,
+`serve.yaml`'s `signIn`, `visitorKey`, `limits`); with no method named,
+nobody does.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/visitors` | `{ methods, visitorKey, actor?, exp? }`: the sign-ins offered here and who this request is signed in as. Open to anyone |
+| GET    | `/visitors/challenge` | `{ challenge, exp, methods, visitorKey }` (`cache-control: no-store`). `404` with no method named; `503` with no `STRUT_API_KEY` or `STRUT_SECRET_KEY` to sign it. Open to anyone |
+| POST   | `/visitors/session` | `{ challenge, method, … }` → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
+| DELETE | `/visitors/session` | clears the visitor's cookie → `204` |
+| GET    | `/visitors/lnurl` | LNURL-auth's callback (LUD-04): `?tag=login&k1&sig&key` from the WALLET → `{ status: "OK" }` or `{ status: "ERROR", reason }`. Open to anyone, CORS `*` |
+
+**The challenge** is `strut-visitor.<base64url claims>.<hmac>`, claims `{
+host, visitorKey, nonce, exp }`, signed like a sign-in ticket. It lives 60 s,
+is bound to the request's host (`x-forwarded-host`, else `Host`, without
+the port), and is spent ONCE — after its signature holds, so a challenge
+someone only saw cannot be burned. `visitorKey` is `root` (one actor on
+every box: the same key signs everywhere) unless the app asks for `domain`,
+where a provider holding a root key signs with a child derived from the
+host (LUD-05), and a method that cannot derive (Nostr) is not offered.
+
+**Methods** — where the key lives is the client's; strut verifies:
+
+| `method` | Body | Verifier | Actor |
+| -------- | ---- | -------- | ----- |
+| `key` | `{ challenge, method, key, sig }`: `key` the SEC1 public key (hex), `sig` WebCrypto's ECDSA P-256 / SHA-256 signature over the challenge's UTF-8 bytes (r ‖ s, hex) | `ecdsa-p256` | `p256:<compressed key hex>` |
+| `nostr` | `{ challenge, method }` with `Authorization: Nostr <base64 event>`: a NIP-98 event (kind 27235) whose `u` is this URL, `method` `POST`, `payload` the sha256 of the exact body, `created_at` within a minute | `bip340` over the event id | `secp:<x-only hex>` |
+| `lnurl` | `{ challenge, method }` → `202 { pending, k1, exp, url, lnurl }`: show `lnurl` (LUD-01 bech32) as a QR code; the wallet calls `/visitors/lnurl`; then `{ challenge, method, k1 }` again → `202 { pending }` until it has, then the session (once). The challenge is spent at the first call; the login waits 5 minutes | `ecdsa-secp256k1` (DER over `k1`) | `secp:<x-only hex>` |
+| `ticket` | not here: a host's server mints `POST /auth/ticket { actor, role: "visitor" }` and the page trades it at `POST /auth/session { ticket }`, which answers `{ actor, exp, role, token }` and sets the visitor's cookie | — | the host's `actor` |
+
+`webauthn` is a verifier name kept for passkeys; none is built.
+
+**The session** is signed like an admin's (§13), `role: "visitor"`, in a
+cookie of its OWN (`strut_visitor`: signing in on a box never replaces the
+operator's console session on the same origin) and lives 30 days. The
+answer's `token` is the cookie's value and works as one as
+`Authorization: Bearer <token>` — what strut's host page sends when the
+browser drops the cookie, framed by another site — or `x-strut-visitor:
+<token>`, beside a credit token on `/public/mcp`. The cookie keeps §13's
+CSRF rule (a write needs `x-strut-ui: 1`).
+
+**Scope `visitor`.** Not a member. Past what is open to anyone (`/public/*`,
+`POST /public/mcp`, `/visitors/*`), the gate passes `GET /auth/session`
+and `POST /apps/:name/channel-ticket` — a public app's, at the version the
+public view serves, naming the visitor — and every other route is `403`.
+On `POST /public/mcp` a signed-in visitor's page (§17) may also:
+
+- `app/state`: its own, kept across visits;
+- `app/report-error`;
+- graph writes on the types the app declares (`data.graph`), each KEPT as a
+  `step:<type>` run with the visitor as actor, and `graph/find` on those
+  types; the graph reads see those types' nodes besides what the public
+  view shows; never a `namespace`;
+- `run/launch` of a granted workflow whose closure spends nothing (no
+  `agent`, `llm`, `acp/prompt`, `graph/walk`, `remote/*`), as the visitor,
+  with `input` and `key` alone — and the run reads of its own runs of one
+  (`actor`'s, launched from an app); a workflow that spends launches only
+  if it is runnable, through the public run door (§17).
+
+Everything else is the anonymous visitor's rule. **Limits**: each visitor's
+writes (state sets, graph writes, error reports) and launches per UTC day —
+1 000 and 100 by default, the public view's `visitors.limits` over them —
+and every visitor from one address together at most 10 000 and 1 000,
+whatever `limits` says. Past one, the call is refused `visitor_limit: …`.
+Counted in memory: a restart starts the day over.
+
+```bash
+curl -s https://moon.game/visitors/challenge
+# → { "challenge": "strut-visitor.eyJob3N0Ijoi….Zk3…", "exp": 1794…, "methods": ["key","lnurl","nostr"], "visitorKey": "root" }
+curl -s -X POST https://moon.game/visitors/session -H 'content-type: application/json' \
+  -d '{"challenge":"strut-visitor.…","method":"key","key":"04ab…","sig":"3c9f…"}'
+# → { "actor": "p256:02ab…", "token": "eyJhY3Rvci….hZ…", "exp": 1797… }
+```
 
 ## 14. Apps — a front-end project over workflows
 
@@ -3014,7 +3094,11 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
 }
 ```
 
-Every list is optional; the body REPLACES the record. `runs: true` makes a
+Every list is optional; the body REPLACES the record. `visitors: {
+signIn, visitorKey?, limits? }` (optional) is who may SIGN IN to the public
+apps (§13.2): the methods (`key`, `ticket`, `lnurl`, `nostr`), `domain` for
+a child key per domain, and `{ writesPerDay?, launchesPerDay? }` over
+strut's defaults. `runs: true` makes a
 workflow's runs public whole: their input, outputs, agents' transcripts
 and files. An app's `reads` are the granted steps its page may call beyond
 runs and the graph (§17.3). A peer's request is a `403`, a malformed body
@@ -4342,16 +4426,19 @@ reads: [score-board]            # the app's public reads (§17.3): step types
 runnable:                       # §17.1's runnable items
   - { kind: workflow, name: ghost, base: 0.002, markup: 1.3, capUsd: 0.05, dailyCapUsd: 5 }
 concepts: [Moon Lander]         # Concept roots in the public view
+signIn: [key, lnurl, nostr]     # how a visitor signs in (§13.2): key, ticket, lnurl, nostr; default none
+visitorKey: domain              # a child key per domain (§13.2); default root
+limits: { writesPerDay: 500 }   # per-visitor daily limits over strut's (writesPerDay, launchesPerDay)
 ```
 
 Names are the package's own, resolved package-first (`ghost` is
 `acme/moonlander/ghost` when the package holds it, else the name as
 written) and written whole into the record; `app` must be one of the
-package's apps. Any other field is refused (`signIn`, `visitorKey` and
-`limits` are a later item's), so a newer strut's file fails the deploy
-whole. The record it writes:
-`{ apps: [{ name: <app>, reads }], runnable, concepts }`, every other list
-empty.
+package's apps. Any other field is refused, so a newer strut's file fails
+the deploy whole. The record it writes:
+`{ apps: [{ name: <app>, reads }], runnable, concepts, visitors? }` —
+`visitors: { signIn, visitorKey?, limits? }` when `signIn` names a method —
+every other list empty.
 
 **`/` is the app.** Every page the UI serves on a served box — `GET /`,
 `/index.html` — carries `<meta name="strut-serve" content="<app>">` (empty

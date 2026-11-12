@@ -9,6 +9,8 @@ import type { WalletAsk } from "../native-pay";
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
+import { SignInSheet } from "./SignInSheet";
+import { signInWithKey, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -48,12 +50,16 @@ import { PaymentSheet } from "./PaymentSheet";
 // A VISITOR's page (the public view) may launch a workflow anyone may run;
 // when it costs something this host — never the frame — shows the invoice
 // over the frame and pays (./PaymentSheet, plans/paid-runs.md §10), through
-// a native host's wallet first when this page runs in one (Peel). A
-// visitor's page of ANOTHER strut server (`app.from`, ../remote-app,
-// specs/API.md §17.9) is read from that server, its calls relayed there,
-// and framed as a STRANGER's: this UI's CSP written ahead of its document,
-// no microphone and nothing its version declares (the frame runs on this
-// strut's origin, whose grants a feature would hand it).
+// a native host's wallet first when this page runs in one (Peel). It may
+// ask to sign the visitor in (`useVisitor`, plans/app-repos.md §5): this
+// host draws the sheet over the frame (./SignInSheet) and keeps the
+// session; the page learns the actor, never a key. A visitor's page of
+// ANOTHER strut server (`app.from`, ../remote-app, specs/API.md §17.9) is
+// read from that server, its calls relayed there, and framed as a
+// STRANGER's: this UI's CSP written ahead of its document, no microphone
+// and nothing its version declares (the frame runs on this strut's
+// origin, whose grants a feature would hand it), and no sign-in (the
+// session is this server's).
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
@@ -114,6 +120,10 @@ export function AppHost(props: {
   } | null>(null);
   const paymentRef = useRef(payment);
   paymentRef.current = payment;
+  /** The visitor's sign-in the page asked for, and where its answer goes. */
+  const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; done: (s: VisitorSession | null) => void } | null>(null);
+  const signInRef = useRef(signIn);
+  signInRef.current = signIn;
   const connRef = useRef<AppHostConnection | null>(null);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady };
@@ -181,12 +191,29 @@ export function AppHost(props: {
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
           ...(permissions ? { permissions } : {}),
-          // Channels as the signed-in viewer: a peer's app's are relayed to the peer.
-          ...(!visitor ? { channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) } } : {}),
+          // Channels as the signed-in viewer: a peer's app's are relayed to
+          // the peer; a visitor's once they signed in.
+          channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) },
           handlers: {
             onInitialized: markReady,
             ...(visitor
               ? {
+                  // The visitor signs in (plans/app-repos.md §5.3): one tap
+                  // when this browser's key is all there is, else the sheet.
+                  onSignIn: async (offered: SignInMethod[]) => {
+                    const methods = usableMethods(offered);
+                    if (methods.length === 1 && methods[0] === "key") return signInWithKey();
+                    if (!methods.length) throw new Error("no sign-in this browser can do here");
+                    return new Promise<VisitorSession | null>((resolve) => {
+                      setSignIn({
+                        methods,
+                        done: (s) => {
+                          setSignIn(null);
+                          resolve(s);
+                        },
+                      });
+                    });
+                  },
                   onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) =>
                     new Promise<PayOutcome>((resolve) => {
                       setPayment({
@@ -245,6 +272,7 @@ export function AppHost(props: {
       cancelled = true;
       // A sheet still open answers its call: the page is going away.
       paymentRef.current?.done(null);
+      signInRef.current?.done(null);
       clearTimeout(readyTimer);
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
@@ -285,6 +313,7 @@ export function AppHost(props: {
           {...(from ? { seller: hostOf(from) } : {})}
         />
       )}
+      {signIn && <SignInSheet methods={signIn.methods} onDone={signIn.done} />}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

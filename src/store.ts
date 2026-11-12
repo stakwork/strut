@@ -385,6 +385,9 @@ export interface PartialRunSummary {
   /** A public run a visitor's page launched: the visit's hash, as on
    *  `run.start` — what lets that visit read the run while it is in flight. */
   visitor?: string;
+  /** Who launched it, as `run.start` says — what lets a signed-in visitor
+   *  read its own run while it is in flight (plans/app-repos.md §5.1). */
+  actor?: string;
   /** Latest completed output per TOP-LEVEL step (path `<wf>/<stepId>` with
    *  no deeper segment and no `#iteration`), in completion order. */
   steps: Record<string, unknown>;
@@ -465,6 +468,7 @@ export function summarizeFromEvents(
       if (e.input !== undefined) summary.input = e.input;
       if (e.origin) summary.origin = e.origin;
       if (e.visitor) summary.visitor = e.visitor;
+      if (e.actor) summary.actor = e.actor;
     }
     if ((e.type === "step.end" || e.type === "step.replayed") && isTopLevelStep(e.path)) {
       const stepId = e.path.slice(prefix.length);

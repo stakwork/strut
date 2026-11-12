@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { memberApps, pickPage, soloAppHref } from "./page";
 
 describe("pickPage", () => {
+  it("a visitor's session is none of this page's: the shell, never a member's list, and no ?shell=1 on a served box", () => {
+    const visitor = { actor: "p256:02ab", role: "visitor" as const };
+    assert.deepEqual(pickPage("", visitor), { kind: "shell" });
+    assert.deepEqual(pickPage("?shell=1", visitor, { app: "acme/moon/game", key: false }), { kind: "app", app: "acme/moon/game", input: null, visitor: true });
+  });
+
   const admin = { role: "admin" as const };
   const member = { role: "member" as const };
 

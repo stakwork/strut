@@ -10,7 +10,7 @@ import { remoteBase } from "./remote-app";
  *  ticket names the role; the key login (and the key itself) none. */
 export interface PageSession {
   actor?: string;
-  role?: "admin" | "member";
+  role?: "admin" | "member" | "visitor";
 }
 
 /** A SERVED box's page (plans/app-repos.md §4.2): the server writes
@@ -48,8 +48,11 @@ export type Page =
  *    reads is an admin's.
  *  - Anyone else: the shell.
  */
-export function pickPage(search: string | URLSearchParams, session: PageSession | null, served: ServedBox | null = null): Page {
+export function pickPage(search: string | URLSearchParams, signedIn: PageSession | null, served: ServedBox | null = null): Page {
   const p = typeof search === "string" ? new URLSearchParams(search) : search;
+  // A VISITOR's session (plans/app-repos.md §5) opens the public apps and
+  // nothing of this page's: as none here.
+  const session = signedIn?.role === "visitor" ? null : signedIn;
   if (served && !(p.get("shell") === "1" && (served.key || session))) {
     if (!served.app) return { kind: "unserved" };
     const theme = soloTheme(p.get("theme"));

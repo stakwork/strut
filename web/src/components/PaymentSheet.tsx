@@ -38,7 +38,7 @@ import { PAYING_LONG_MS, STATUS_EVERY_MS, fallbackNote, type WalletAnswer, type 
 //   native host that wants a recent tap is waiting for.
 
 /** The invoice as an SVG QR code: dark modules on white, a four-module
- *  quiet zone, scaled by the container. */
+ *  quiet zone, scaled by the container. Uppercase text: alphanumeric mode. */
 export function qrSvg(text: string): string {
   const qr = qrcode(0, "M");
   qr.addData(text, "Alphanumeric");

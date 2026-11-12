@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["vite/client"],
-    "paths": { "@strut/kit/folds": ["../kit/src/folds/index.ts"], "@strut/kit/wallet": ["../kit/src/wallet/index.ts"], "@strut/kit/channels": ["../kit/src/channels/index.ts"] }
+    "paths": { "@strut/kit/folds": ["../kit/src/folds/index.ts"], "@strut/kit/wallet": ["../kit/src/wallet/index.ts"], "@strut/kit/channels": ["../kit/src/channels/index.ts"], "@strut/kit/visitor": ["../kit/src/visitor/index.ts"] }
   },
   "include": ["src/**/*"],
   "exclude": ["**/*.test.ts"]

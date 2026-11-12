@@ -4679,6 +4679,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .pay-sheet-note { margin: 0; color: var(--text); line-height: 1.45; font-size: 12px; }
 .pay-sheet-note.is-warning { color: var(--warning); }
 .pay-sheet-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+/* The visitor's sign-in sheet (SignInSheet.tsx): a method a row. */
+.sign-in-methods { display: flex; flex-direction: column; gap: var(--sp-2); }
+.sign-in-methods .btn { justify-content: center; }
 
 /* An app a job delivered (the builder's, by name): its page in the job
    timeline, under a bar with Reload (components/JobAppPanel.tsx); large,

@@ -128,6 +128,42 @@
 > - The diff preview writes the edits into the working copy and stages
 >   them, without committing.
 >
+> **Work item 4 BUILT (stakwork/strut#624, open at writing):**
+> - the challenge (`GET /visitors/challenge`), `POST`/`DELETE
+>   /visitors/session`, `GET /visitors`, role and scope `visitor` with its
+>   route sweep, and `fullSession` made an allowlist (admin or the key
+>   login) so a new role opens nothing;
+> - the verifier seam (`src/visitors.ts`): `ecdsa-p256`, `ecdsa-secp256k1`
+>   and `bip340` built, `webauthn` named;
+> - four methods: `key` (a WebCrypto key in IndexedDB), `ticket`
+>   (`POST /auth/ticket { role: "visitor" }`), `lnurl` (LUD-04 by QR) and
+>   `nostr` (NIP-07 + NIP-98, root key only);
+> - §5.1's rules on `POST /public/mcp`, per-actor daily limits with a
+>   per-address budget on top;
+> - `serve.yaml`'s `signIn`, `visitorKey` and `limits`, written as the
+>   public view's `visitors`;
+> - the kit's `useVisitor()` over `@strut/kit/visitor`, and the host page's
+>   sign-in sheet.
+>
+> Choices beyond the text, from the PR:
+> - A visitor's session lives in a cookie of its own (`strut_visitor`), so
+>   signing in on a box never replaces the operator's console session on
+>   the same origin; it lasts 30 days.
+> - On `POST /public/mcp`, where `Authorization` carries a credit token, the
+>   host page sends the visitor's token as `x-strut-visitor`.
+> - Reads stay the anonymous visitor's, widened by the visitor's own data:
+>   its state, its runs, and the nodes of the app's declared types.
+> - A visitor's direct launch takes `input` and `key` alone: no job,
+>   conversation, files or params. A visitor cannot cancel a run.
+> - `ticket` needs no entry in `signIn`: minting one already takes the key.
+> - Limits: 1 000 writes and 100 launches a visitor a day by default; ten
+>   times that per address, fixed; counted in memory.
+> - A non-served strut names its methods in the Publish dialog's Public
+>   view tab (a Sign-in section), which writes `PUT /public-view`'s
+>   `visitors`.
+> - Signing in drops what the page set before and the server refused; an app
+>   sets it again once signed in.
+>
 > Companion to:
 > - `marketplace.md`: the package format (§1), the `git+` source and the
 >   export to git (§5, step 3; the export is this plan's round trip), the
@@ -215,7 +251,7 @@ up the app as itself in a frame with no other UI at all."* On visitors:
 | Following a publisher's catalog, ping to sync | `src/packages/subscriptions.ts` | built, `pk:` only |
 | Packages at first boot | `src/packages/boot.ts`, `STRUT_PACKAGES` | built; refs are names, `pk:`, `file:` |
 | One app alone, for a visitor: `?app=<n>&solo=1&public=1` | `web/src/page.ts`, `SoloApp.tsx`, `src/public-routes.ts` | built |
-| A visitor's door: `POST /public/mcp`, `visitorRefusal` | `src/public-surface.ts` | built; reads only, no `app/state`, no channels |
+| A visitor's door: `POST /public/mcp`, `visitorRefusal` | `src/public-surface.ts` | built; reads only, no `app/state`, no channels — until signed in (§5, `src/visitors.ts`) |
 | Public and priced runs, the L402 credit token, the ledger | `src/public-runs.ts`, `src/public-credit.ts`, `src/l402.ts`, `src/payments/` | built |
 | Roles on a session (admin, member), sign-in tickets | `src/auth.ts`, `MEMBER_ROUTES` in `createStrut.ts` | built |
 | The app wallet contract, the relay to a native host | `kit/src/wallet/`, `specs/WALLET.md` | built; a browser host has no provider yet |
@@ -729,7 +765,7 @@ players before it needs git, visitors (4) moves up to second.
 3. **The round trip.** *BUILT, stakwork/strut#622.* Open repo, Create
    repo, Commit, Pull, the `repo` door, `package/commit` as a proposal, the
    Packages tab's rows for a repo.
-4. **Signed-in visitors.** The challenge, `POST /visitors/session`, role
+4. **Signed-in visitors.** *BUILT, stakwork/strut#624.* The challenge, `POST /visitors/session`, role
    and scope `visitor`, §5.1's rules in `step_run`, per-actor budgets, the
    kit's `useVisitor()`, the host page's sheet. The first methods are the
    anonymous key and a host's ticket, then LNURL-auth and Nostr.

@@ -34,6 +34,8 @@ export default defineConfig({
       "@strut/kit/wallet": fileURLToPath(new URL("../kit/src/wallet/index.ts", import.meta.url)),
       // The channels contract and the relay a browser host runs (plans/app-channels.md).
       "@strut/kit/channels": fileURLToPath(new URL("../kit/src/channels/index.ts", import.meta.url)),
+      // The visitor contract (plans/app-repos.md §5): what the host's sign-in sheet answers.
+      "@strut/kit/visitor": fileURLToPath(new URL("../kit/src/visitor/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",

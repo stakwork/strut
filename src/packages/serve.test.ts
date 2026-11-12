@@ -99,10 +99,20 @@ describe("serve.yaml", () => {
     });
   });
 
+  it("signIn, visitorKey and limits become the record's visitors (plans/app-repos.md §5)", () => {
+    const plan = planServe(parseServeFile("app: game\nsignIn: [key, nostr]\nvisitorKey: domain\nlimits: { writesPerDay: 500 }\n"), info);
+    assert.deepEqual(plan.surface.visitors, { signIn: ["key", "nostr"], visitorKey: "domain", limits: { writesPerDay: 500 } });
+    assert.equal(planServe(parseServeFile("app: game\nvisitorKey: root\n"), info).surface.visitors, undefined, "no signIn: no sign-in");
+    assert.deepEqual(planServe(parseServeFile("app: game\nsignIn: [key]\nvisitorKey: root\n"), info).surface.visitors, { signIn: ["key"] });
+  });
+
   it("refuses what it cannot apply whole, naming it", () => {
     assert.throws(() => parseServeFile("title: x\n"), /serve_invalid: serve.yaml: app: /);
     assert.throws(() => parseServeFile("app: game\nwidth: 3\n"), /unknown field width/);
-    assert.throws(() => parseServeFile("app: game\nsignIn: [key]\n"), /signIn: not on this strut server yet/);
+    assert.throws(() => parseServeFile("app: game\nsignIn: [passkey]\n"), /signIn lists sign-ins strut knows: key, ticket, lnurl, nostr/);
+    assert.throws(() => parseServeFile("app: game\nvisitorKey: child\n"), /visitorKey is root or domain/);
+    assert.throws(() => parseServeFile("app: game\nlimits: { writesPerDay: -1 }\n"), /writesPerDay is 0 or more/);
+    assert.throws(() => parseServeFile("app: game\nlimits: { readsPerDay: 5 }\n"), /readsPerDay/);
     assert.throws(() => parseServeFile("app: game\nimage: og.txt\n"), /image is an image file/);
     assert.throws(() => parseServeFile("app: game\nrunnable:\n  - { kind: workflow, name: ghost, dailyCapUsd: 0 }\n"), /runnable: workflow "ghost": a daily cap of 0 refuses every run/);
     assert.throws(() => parseServeFile("app: [\n"), /not valid YAML/);

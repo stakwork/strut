@@ -352,6 +352,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
+| `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors") |
 
 **Deep links.** The page is opened with whatever its link carries
 (`?app=<name>&input=…`), as `useToolInput()`. The starter template's router
@@ -386,7 +387,8 @@ A person may put an app in the server's PUBLIC VIEW (the Public view
 dialog): anyone can then open it with no account, and the store can frame
 it. There `useHost().public` is true, and the server refuses whatever the
 page tries beyond reading — cancelling a run, saving state (`useAppState`
-lasts the visit), uploads, writes — and beyond starting what a person made
+lasts the visit, until the visitor signs in: see "Signed-in visitors"),
+uploads, writes — and beyond starting what a person made
 RUNNABLE: `useHost().runnable` lists the workflows the app grants that a
 visitor may start. A free one starts at once; a priced one is paid by the
 visitor to the HOST, which shows the invoice over the page and only then
@@ -412,6 +414,59 @@ kept for the visit. Do it in every app, in the
 view or not yet: a person adds an app later, and it should already be
 right. An app in the public view is held at a release, so a publish is
 a draft until a person moves it: say so when you hand one over.
+
+## Signed-in visitors
+
+A public page's visitor is anonymous until they SIGN IN: the server's
+public view names how (a box serving one app says it in `serve.yaml`:
+`signIn: [key, lnurl, nostr]`), and `useVisitor().available` is then
+true. `signIn()` asks the HOST, which draws the sheet over the page and
+signs the server's challenge with a key the visitor holds — this browser's
+own key (one tap), a Lightning wallet by QR code, a Nostr extension. The
+page never sees a key; it gets the visitor's `actor` (`p256:…`, `secp:…`),
+the same on every visit from the same key, or undefined when they closed
+the sheet. `signOut()` forgets them.
+
+Signed in, a visitor is that actor here, and the page may do a little
+more than read:
+- `useAppState` keeps THEIR state across visits — a best score, a level,
+  settings. Anonymous, it lasts the visit. Signing in reads the visitor's
+  saved state anew and drops what was set before and not kept, so to keep
+  a score won before signing in, set it again after (a functional set reads
+  the saved value: `setBest((b) => Math.max(b, score))`).
+- `useChannel` works: rooms, presence, moves, stamped with their actor.
+- Graph writes on the types the app declares (`data.graph`) — a
+  leaderboard row — each kept with the actor, so the row says who; and
+  `graph/find` on those types reads every visitor's rows. A visitor's edit
+  or delete reaches ANY row of a declared type, not only their own: for a
+  leaderboard grant `graph/create-node` alone, and put who wrote a row in
+  the row itself when the page shows it.
+- `useLaunch` starts a granted workflow that spends nothing (no `agent`,
+  no `llm`) as the visitor, who then reads back their own runs of it. One
+  that spends starts only if it is runnable (priced, or free under a daily
+  cap) — as for anyone.
+- Never another app, the assistant, jobs or anything of the server's.
+
+Each visitor has a daily budget of writes and launches (the server's,
+which `serve.yaml`'s `limits` changes), refused with a `visitor_limit:`
+error past it: save on a change that matters (a level done, a new best),
+never on every frame.
+
+```tsx
+import { useVisitor, useAppState } from "@strut/kit";
+const { available, actor, signIn } = useVisitor();
+const [best, setBest] = useAppState("best", 0);
+// After a game: anonymous, offer to sign in to keep the score.
+async function keep(score: number) {
+  if (!actor && !(await signIn())) return;
+  setBest((b) => Math.max(b, score));
+}
+{available && !actor && <Button onClick={() => void keep(score)}>Sign in to keep your score</Button>}
+```
+
+Write it so it works either way: an app is anonymous where the server
+offers no sign-in (`available` false) — hide the sign-in button then, and
+let the game play.
 
 ## The assistant
 
