@@ -1,4 +1,4 @@
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -160,6 +160,8 @@ describe("step_run — the app door", () => {
   let dataDir: string;
   let strut: Strut;
   let registry: StepRegistry;
+  /** The store as built: `strut.workspace` is this one, watched. */
+  let workspace: FileWorkspaceStore;
   const store = new MemoryRunStore();
   const backend = testBackends()[0]!;
   let graph: GraphBackend | undefined;
@@ -203,7 +205,7 @@ describe("step_run — the app door", () => {
       conceptRef = written.ref_id;
     }
     registry = await createRegistry([score, nap, whoami, talker, big, cat, attached, sess]);
-    const workspace = new FileWorkspaceStore(dataDir);
+    workspace = new FileWorkspaceStore(dataDir);
     strut = await createStrut({
       workspace,
       store,
@@ -677,6 +679,76 @@ describe("step_run — the app door", () => {
     assert.equal(listed.find((a) => a.name === "strict")?.warnings, undefined);
     assert.equal((await strut.apps.get("bench"))!.usage?.warnings[0]?.kind, "fanout", "the builder reads it through app/get");
     assert.equal((await strut.app.request("/apps/ghost/usage", { headers: auth })).status, 404);
+  });
+
+  it("a call reads the app's record once and never its files, its workflows or the error reports; a publish, a delete and a write straight to the store are seen by the next call", async () => {
+    const dir = join(root, "apps", "probe");
+    const WHOAMI = "title: Probe\ngrants:\n  workflows: [score-wf]\n  steps: [whoami]\n";
+    const NAP = "title: Probe\ngrants:\n  steps: [nap]\n";
+    const publish = async (manifest: string) => {
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "app.yaml"), manifest, "utf8");
+      await writeFile(join(dir, "src", "App.tsx"), APP_TSX, "utf8");
+      const r = await strut.apps.publish(dir, "probe", { surface: "person" });
+      assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
+      return r.version;
+    };
+    const whoami = (version: string) => ({ type: "whoami", config: {}, app: appIdentity("probe", version) });
+    const nap = (version: string) => ({ type: "nap", config: { ms: 0 }, app: appIdentity("probe", version) });
+    assert.equal(await publish(WHOAMI), "v1");
+
+    const spy = {
+      record: mock.method(workspace, "getApp"),
+      // The one way to a version's directory: its files are listed, hashed and read from there.
+      files: mock.method(workspace, "materializeAppVersion"),
+      workflows: mock.method(workspace, "getWorkflowMetadata"),
+      hashes: mock.method(workspace, "getActiveStepHashes"),
+      reports: mock.method(store, "listRuns"),
+      summaries: mock.method(store, "getRunSummary"),
+    };
+    try {
+      for (let i = 0; i < 5; i++) assert.equal((await ok(whoami("v1"))).app.name, "probe");
+      assert.equal(spy.record.mock.callCount(), 1, "the app's record: read by the first call, remembered for the rest");
+      assert.equal(spy.files.mock.callCount(), 0, "never the version's directory");
+      assert.equal(spy.workflows.mock.callCount(), 0, "never the granted workflows");
+      assert.equal(spy.reports.mock.callCount() + spy.summaries.mock.callCount(), 0, "never the error reports");
+      assert.equal(spy.hashes.mock.callCount(), 0, "a call that leaves no run records no step hashes");
+      // The full view still reads all of it.
+      await ok({ type: "app/report-error", config: { message: "boom" }, app: appIdentity("probe", "v1") });
+      const view = (await strut.apps.get("probe"))!;
+      assert.deepEqual([view.stale, view.errors?.length], [false, 1]);
+      assert.ok(spy.files.mock.callCount() > 0 && spy.reports.mock.callCount() > 0);
+    } finally {
+      for (const m of Object.values(spy)) m.mock.restore();
+    }
+
+    // A publish: the live version moves, and each version's page is held to its own manifest.
+    assert.equal((await strut.apps.manifestOf("probe"))?.version, "v1");
+    assert.equal(await publish(NAP), "v2");
+    assert.equal((await strut.apps.manifestOf("probe"))?.version, "v2");
+    await refused(whoami("v2"), /"whoami" is not granted/);
+    assert.deepEqual(await ok(nap("v2")), { slept: 0 });
+    await ok(whoami("v1"));
+    await refused(nap("v1"), /"nap" is not granted/);
+
+    // A delete: gone for the next call. The name's next publish is v1 again,
+    // with another manifest — what v1's page is then held to.
+    assert.equal(await strut.apps.delete("probe"), true);
+    await refused(whoami("v1"), /no app probe@v1/);
+    assert.equal(await strut.apps.manifestOf("probe"), null);
+    assert.equal(await publish(NAP), "v1");
+    await refused(whoami("v1"), /"whoami" is not granted/);
+    await ok(nap("v1"));
+
+    // A write straight to the store, past the capability (a seed, a package install).
+    const direct = parseManifest(WHOAMI);
+    assert.ok(direct.ok);
+    assert.equal(await strut.workspace.deleteApp("probe"), true);
+    await refused(nap("v1"), /no app probe@v1/);
+    assert.deepEqual(await strut.workspace.publishApp("probe", "direct-hash", direct.manifest), { version: "v1", changed: true });
+    await ok(whoami("v1"));
+    await refused(nap("v1"), /"nap" is not granted/);
+    await strut.apps.delete("probe");
   });
 
   it("the builder gets the app/* steps as named tools and the editor, sandboxed to its data directory", async () => {

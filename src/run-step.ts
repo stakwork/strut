@@ -220,13 +220,20 @@ export interface KeptRunStepResult extends RunStepResult {
  * `POST /steps/:type/run`), plus the two things that make a single-step run
  * usable as evidence (plans/claims.md §3):
  *
- *   - BEFORE: the active hash of every workspace step in reach goes on
- *     `run.start.stepHashes` — the only record of which version executed;
+ *   - BEFORE: whether the run will be KEPT is settled — the caller asked
+ *     (`keep: true`), or the step has an active claim and so can become
+ *     evidence (one graph read) — and the active hash of every workspace
+ *     step in reach goes on `run.start.stepHashes`, the only record of
+ *     which version executed;
  *   - AFTER: the run still executes in memory exactly as before, and is then
- *     copied into the real store under `step:<type>` ONLY when it can become
- *     evidence — the step has an active claim — or the caller asked
- *     (`keep: true`). A step with a contract keeps its test runs; a scratch
- *     step leaves nothing behind. One graph read, after the run.
+ *     copied into the real store under `step:<type>` ONLY when it is kept.
+ *     A step with a contract keeps its test runs; a scratch step leaves
+ *     nothing behind.
+ *
+ * `events: false` is for a caller that reads the result alone — the app
+ * door, on every call a page makes. The events come back empty, and a run
+ * that will not be kept skips the read of the step hashes: with no kept
+ * run and no events handed back, nothing would read them.
  *
  * `step:<type>` is a store key, never a workflow: no workflow listing, and no
  * workflow's `list_runs` / `search_runs`, can see these runs.
@@ -235,22 +242,12 @@ export async function runStep(
   named: string,
   registry: StepRegistry,
   services: unknown,
-  opts: RunStepOptions & { keep?: boolean },
+  opts: RunStepOptions & { keep?: boolean; events?: false },
   deps: RunStepDeps,
 ): Promise<KeptRunStepResult> {
-  const { keep, ...runOpts } = opts;
+  const { keep, events, ...runOpts } = opts;
   // Kept, verified and hashed as the step that runs: a package's own first.
   const type = stepInPackage(packageOfRun(runOpts), named, (t) => !!registry[t]);
-  const flowSteps = [{ id: runStepId(type), type, config: runOpts.config ?? {} }];
-  const stepHashes = runOpts.stepHashes ?? (await stepHashesFor(deps.workspace, { steps: flowSteps }));
-  const result = await runSingleStep(type, registry, services, {
-    ...runOpts,
-    workspace: runOpts.workspace ?? deps.workspace,
-    ...(stepHashes ? { stepHashes } : {}),
-  });
-  if (result.events.length === 0) return result; // never ran (unknown type)
-  const slim = (r: RunStepResult): RunStepResult => ({ ...r, events: r.events.map(slimEvent) });
-
   let wanted = keep === true;
   if (!wanted && deps.claims) {
     try {
@@ -260,11 +257,21 @@ export async function runStep(
       console.error(`[run-step] could not read claims for ${type} — run not kept:`, err);
     }
   }
-  if (!wanted) return slim(result);
+  const flowSteps = [{ id: runStepId(type), type, config: runOpts.config ?? {} }];
+  const hashed = wanted || events !== false;
+  const stepHashes = runOpts.stepHashes ?? (hashed ? await stepHashesFor(deps.workspace, { steps: flowSteps }) : undefined);
+  const result = await runSingleStep(type, registry, services, {
+    ...runOpts,
+    workspace: runOpts.workspace ?? deps.workspace,
+    ...(stepHashes ? { stepHashes } : {}),
+  });
+  if (result.events.length === 0) return result; // never ran (unknown type)
+  const out: RunStepResult = { ...result, events: events === false ? [] : result.events.map(slimEvent) };
+  if (!wanted) return out;
   const kept = await persistStepRun(deps.store, type, result);
   // Now that it is in the real store it can be verified — detached, never awaited.
   deps.onKept?.(kept, result.runId);
-  return { ...slim(result), kept };
+  return { ...out, kept };
 }
 
 /** Copy a finished single-step run (events + summary) into `store` under
