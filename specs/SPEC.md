@@ -383,6 +383,10 @@ the task's id.
   (`refused:`).
 - A run cancelled — while it waits or while it runs — cancels the tasks it
   left open. A run that fails keeps them, so a resume finds them.
+- A worker answers in the task type's app, through the `task/*` steps
+  (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
+  app door, as the page's signed-in viewer; an admin makes the task types
+  and grants them through the `/tasks` routes (specs/API.md §22).
 
 ### 4.2 Lib Steps
 

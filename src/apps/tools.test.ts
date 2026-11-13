@@ -288,6 +288,9 @@ describe("step_run — the app door", () => {
     assert.equal(grantRefusal("app/state", {}, m.manifest, registry), null, "always granted");
     assert.ok(!keptFromApp("app/state"), "never kept");
     assert.ok(keptFromApp("graph/edit-node") && keptFromApp("app/report-error") && !keptFromApp("run/list") && !keptFromApp("graph/graph-get"));
+    // A worker's step is never kept (plans/human-steps.md §5.2), whatever it is.
+    const reg = { "graph/edit-node": { worker: true } } as unknown as StepRegistry;
+    assert.ok(!keptFromApp("graph/edit-node", reg), "a step marked worker is never kept");
   });
 
   it("a preview (app/look { path }): hosted under its label with no version recorded, served with its identity, calls checked against ITS manifest, uncounted", async () => {

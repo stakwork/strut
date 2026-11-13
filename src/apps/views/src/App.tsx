@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
@@ -415,6 +415,13 @@ const ENTRIES: Entry[] = [
     demo: () => <LaunchForm workflow={WORKFLOW} initial={{ question: "What drives AF in hypertension?" }} />,
   },
   {
+    name: "TaskForm",
+    what: "A task's answer as a form, for a task type that needs no UI of its own (plans/human-steps.md §5.3): the type's answer schema — text, numbers, yes or no, one of a list, several of a list — drawn in order and checked before it is sent. A schema it cannot draw (a box on a photo) says the type needs its own UI. The page shows what the task shows; this is only the answer.",
+    grants: "grants.steps: task/next, task/submit, task/skip (useTask)",
+    usage: `const { task, submit, skip } = useTask();  task && <TaskForm task={task} onSubmit={submit} onSkip={skip} />`,
+    demo: () => <TaskFormDemo />,
+  },
+  {
     name: "RunList",
     what: "A workflow's runs, newest first, live while one is in flight; where each came from.",
     grants: "grants.workflows: the workflow",
@@ -511,5 +518,31 @@ export default function App() {
         </main>
       </div>
     </StrutProvider>
+  );
+}
+
+/** A pet-match review's answer, and a box on a photo, which needs its own UI. */
+const TASK_ANSWER = {
+  type: "object",
+  properties: {
+    same: { type: "boolean", title: "Same pet?" },
+    confidence: { type: "string", title: "How sure", enum: ["low", "medium", "high"] },
+    marks: { type: "array", title: "What matches", items: { type: "string", enum: ["coat", "ears", "collar", "markings"] } },
+    note: { type: "string", title: "Note", maxLength: 2000 },
+  },
+  required: ["same", "confidence"],
+};
+const BOX_ANSWER = { type: "object", properties: { box: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 } }, required: ["box"] };
+
+function TaskFormDemo() {
+  const [sent, setSent] = useState<unknown>(null);
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-2">
+        <TaskForm task={{ lease: "demo", answer: TASK_ANSWER }} onSubmit={(answer) => setSent(answer)} onSkip={() => setSent("skipped")} />
+        {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
+      </div>
+      <TaskForm task={{ lease: "demo-box", answer: BOX_ANSWER }} onSubmit={() => {}} />
+    </div>
   );
 }

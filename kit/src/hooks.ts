@@ -333,7 +333,12 @@ export interface UseRunFileUrl {
  */
 export function useRunFileUrl(workflow: string, runId: string | undefined, path: string | undefined, opts: UseRunFileOptions = {}): UseRunFileUrl {
   const q = useRunFile(workflow, runId, path, opts);
-  const file = q.data;
+  return useBlobUrl(q.data, q.isLoading, q.error as Error | null, () => void q.refetch());
+}
+
+/** A run file's (or a task file's) `blob:` URL, made when the file is read
+ *  and let go of when it changes or the component unmounts. */
+function useBlobUrl(file: RunFile | null | undefined, loading: boolean, readError: Error | null, refetch: () => void): UseRunFileUrl {
   const [made, setMade] = useState<{ file: RunFile | null | undefined; url: string | null; error: Error | null }>({ file: undefined, url: null, error: null });
   useEffect(() => {
     if (!file) {
@@ -354,9 +359,9 @@ export function useRunFileUrl(workflow: string, runId: string | undefined, path:
   return {
     url: current ? made.url : null,
     file,
-    pending: q.isLoading || (!!file && !current),
-    error: (q.error as Error | null) ?? (current ? made.error : null),
-    refetch: () => void q.refetch(),
+    pending: loading || (!!file && !current),
+    error: readError ?? (current ? made.error : null),
+    refetch,
   };
 }
 
@@ -834,6 +839,229 @@ export function useGraphChanges(types: readonly string[] | undefined, opts: UseG
     "now",
   );
   return { ...state, error };
+}
+
+// ── A worker's page (plans/human-steps.md §5.3) ──────────────────────────
+//
+// A worker app draws tasks: a `human` step in a workflow made one, a signed-in
+// worker the app's page shows takes it, answers it, and the run goes on. The
+// worker is always the page's viewer — the steps read it from the session,
+// never from the page. Grant `task/next`, `task/submit`, `task/skip`,
+// `task/file` and `task/me` in app.yaml's `grants.steps`.
+
+/** The worker's steps. */
+export const TASK_STEPS = {
+  next: "task/next",
+  submit: "task/submit",
+  skip: "task/skip",
+  file: "task/file",
+  me: "task/me",
+} as const;
+
+/** How long `useTask` holds one `task/next`: the server's most. */
+export const TASK_WAIT_S = 25;
+/** After a refused or failed `task/next`, the next waits this long; a worker
+ *  who may take nothing here (`not_active`, `not_granted`) waits longer. */
+const TASK_RETRY_MS = 5_000;
+const TASK_INACTIVE_RETRY_MS = 30_000;
+
+/** A task in the worker's hands, as `task/next` hands it out. */
+export interface WorkerTask {
+  /** What the answer, a skip and a file are asked by. */
+  lease: string;
+  /** The task type: which of the app's views draws it. */
+  type: string;
+  /** What the `human` step handed the worker: any JSON. */
+  show: unknown;
+  /** The files the worker may open (`useTaskFile`). */
+  files: string[];
+  /** When the lease runs out, epoch ms: the task goes to someone else. */
+  expires: number;
+  /** The task type's answer schema: what `submit` must fit, and what
+   *  strut/views' `TaskForm` draws. */
+  answer: unknown;
+}
+
+/** Who the viewer is as a worker here (`task/me`). */
+export interface WorkerInfo {
+  actor: string;
+  /** `new`: not granted anything yet; only `active` takes tasks. */
+  status: "new" | "active" | "suspended" | "banned";
+  /** The task types they hold that this app draws: the app's menu. */
+  types: Array<{ name: string; app: string }>;
+}
+
+/** The refusal code a task call's error begins with (`not_active`,
+ *  `lease_expired`, …), or undefined. */
+export function taskErrorCode(err: unknown): string | undefined {
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /\b(not_active|not_granted|wrong_app|lease_held|no_lease|lease_closed|lease_expired|task_closed|too_many|unknown_type|type_disabled|bad_answer|bad_request|not_listed|no_file)\b:/.exec(message)?.[1];
+}
+
+/** Refusals after which the task in hand is no longer the worker's. */
+const LOST = new Set(["no_lease", "lease_closed", "lease_expired", "task_closed", "not_granted", "not_active"]);
+
+/** - `waiting`: no task in hand; a `task/next { wait }` is held on the server.
+ *  - `working`: a task in hand.
+ *  - `sending`: an answer or a skip on its way.
+ *  - `inactive`: the viewer may take no task here now (`useWorker` says why).
+ *  - `error`: a call failed; it is asked again shortly. */
+export type TaskHookStatus = "waiting" | "working" | "sending" | "inactive" | "error";
+
+export interface UseTask {
+  /** The task in hand, or null. */
+  task: WorkerTask | null;
+  /** Answer it: in the task type's answer schema. Then the next one is asked for. */
+  submit: (answer: unknown) => Promise<void>;
+  /** Pass on it: it goes to someone else, never back to this worker. */
+  skip: (reason?: string) => Promise<void>;
+  status: TaskHookStatus;
+  error: Error | null;
+}
+
+export interface UseTaskOptions {
+  enabled?: boolean;
+}
+
+/**
+ * The next task for the page's viewer (`task/next`): of `type`, or of any
+ * type they hold that this app draws — its `type` says which view to show.
+ * One held `task/next { wait }` at a time while there is no task in hand,
+ * and none while the page is hidden; a page that reloads gets its task back.
+ * The task is dropped when its lease runs out or the server says it is no
+ * longer the worker's, and the next is asked for.
+ */
+export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
+  const client = useStrutClient();
+  const [task, setTask] = useState<WorkerTask | null>(null);
+  const [status, setStatus] = useState<TaskHookStatus>("waiting");
+  const [error, setError] = useState<Error | null>(null);
+  /** Moves on each time the task in hand is let go of: asks again. */
+  const [round, setRound] = useState(0);
+  const enabled = opts.enabled !== false;
+  const taskRef = useRef<WorkerTask | null>(null);
+  taskRef.current = task;
+
+  const drop = useCallback(() => {
+    setTask(null);
+    setStatus("waiting");
+    setRound((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    let endPause: (() => void) | undefined;
+    /** A wait that ends at once when the hook stops. */
+    const pause = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        endPause = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+    void (async () => {
+      while (!stopped) {
+        await whenVisible(() => stopped);
+        if (stopped) return;
+        try {
+          const got = await client.run<WorkerTask | { none: true }>(TASK_STEPS.next, compact({ type, wait: TASK_WAIT_S }));
+          if (stopped) return;
+          setError(null);
+          if ("none" in got) {
+            setStatus("waiting");
+            continue;
+          }
+          setTask(got);
+          setStatus("working");
+          return;
+        } catch (e) {
+          if (stopped) return;
+          const err = e instanceof Error ? e : new Error(String(e));
+          const code = taskErrorCode(err);
+          const inactive = code === "not_active" || code === "not_granted";
+          setError(err);
+          setStatus(inactive ? "inactive" : "error");
+          await pause(inactive ? TASK_INACTIVE_RETRY_MS : TASK_RETRY_MS);
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+      endPause?.();
+    };
+  }, [client, type, round, enabled]);
+
+  // A lease that ran out is someone else's task: let it go and ask again
+  // (a clock ahead of the server's just gets the same lease back).
+  useEffect(() => {
+    if (!task) return;
+    const timer = setTimeout(() => {
+      if (taskRef.current?.lease === task.lease) drop();
+    }, Math.max(0, task.expires - Date.now()) + 1_000);
+    return () => clearTimeout(timer);
+  }, [task, drop]);
+
+  const send = useCallback(
+    async (step: string, config: Record<string, unknown>) => {
+      const held = taskRef.current;
+      if (!held) throw new Error("no task in hand");
+      setStatus("sending");
+      try {
+        await client.run(step, { lease: held.lease, ...config });
+        setError(null);
+        drop();
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        const code = taskErrorCode(err);
+        if (code && LOST.has(code)) drop();
+        else setStatus("working");
+        throw err;
+      }
+    },
+    [client, drop],
+  );
+  const submit = useCallback((answer: unknown) => send(TASK_STEPS.submit, { answer }), [send]);
+  const skip = useCallback((reason?: string) => send(TASK_STEPS.skip, compact({ reason })), [send]);
+  return { task, submit, skip, status, error };
+}
+
+/** Who the page's viewer is as a worker here (`task/me`): their status and
+ *  the task types they hold that this app draws. The first call writes a
+ *  viewer the server has not seen as a `new` worker, for an admin to grant. */
+export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<WorkerInfo> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["strut", "task", "me"],
+    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, {}),
+    enabled: opts.enabled ?? true,
+  });
+}
+
+/** `task/file`: one file the task in hand names (`task.files`), read
+ *  through its lease — as text or base64, `run/files`' shape, so
+ *  `runFileBlob` turns it into a Blob. Only a path on the task's list. Pass
+ *  `useTask().task`; nothing is read without one. */
+export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<RunFile> {
+  const client = useStrutClient();
+  const lease = task?.lease;
+  return useQuery({
+    queryKey: ["strut", "task", "file", lease ?? "", path ?? ""],
+    queryFn: () => client.run<RunFile>(TASK_STEPS.file, { lease, path }),
+    enabled: (opts.enabled ?? true) && !!lease && !!path,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/** A task's file as a `blob:` URL (`task/file` → `runFileBlob`), for an
+ *  `<img>`, a `<video>`, a viewer: let go of when the file changes or the
+ *  component unmounts. A file cut short (past its cap) is an `error`. */
+export function useTaskFileUrl(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseRunFileUrl {
+  const q = useTaskFile(task, path, opts);
+  return useBlobUrl(q.data, q.isLoading, q.error as Error | null, () => void q.refetch());
 }
 
 /** A browser file as a step takes one: `{ name, mediaType, data }`, the

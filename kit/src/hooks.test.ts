@@ -13,6 +13,7 @@ import {
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
+  useTask, useWorker, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -701,3 +702,92 @@ describe("the live helpers", () => {
 
 
 after(() => teardownDom());
+
+describe("a worker's page (plans/human-steps.md §5.3)", () => {
+  const TASK = { lease: "l1", type: "pet-match", show: { guess: "dog" }, files: ["found.jpg"], expires: Date.now() + 600_000, answer: { type: "object" } };
+  const setVisibility = (state: "hidden" | "visible") => {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  it("useTask holds one task/next at a time, none while the page is hidden; submit lets the task go and asks again", async () => {
+    const answers: unknown[] = [{ none: true }, TASK];
+    let inFlight = 0;
+    let most = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: async () => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        const a = answers.shift();
+        if (a === undefined) return new Promise(() => {}); // held, as the server would
+        await sleep(5);
+        inFlight--;
+        return a;
+      },
+      [TASK_STEPS.submit]: () => ({ ok: true }),
+    });
+    setVisibility("hidden");
+    try {
+      const h = await renderHook(() => useTask(), { client });
+      await act(async () => { await sleep(30); });
+      assert.equal(calls.length, 0, "nothing asked while hidden");
+      setVisibility("visible");
+      await until(() => h.result().task?.lease === "l1", "the task");
+      assert.equal(h.result().status, "working");
+      assert.deepEqual(calls.slice(0, 2), [{ type: "task/next", config: { wait: TASK_WAIT_S } }, { type: "task/next", config: { wait: TASK_WAIT_S } }]);
+      assert.equal(most, 1, "one held call at a time");
+      await act(async () => { await h.result().submit({ same: true }); });
+      assert.deepEqual(calls[2], { type: "task/submit", config: { lease: "l1", answer: { same: true } } });
+      assert.equal(h.result().task, null);
+      await until(() => calls.length === 4, "the next ask");
+      assert.equal(calls[3]!.type, "task/next");
+      assert.equal(h.result().status, "waiting");
+      await h.unmount();
+    } finally {
+      setVisibility("visible");
+    }
+  });
+
+  it("a bad answer keeps the task; a lease that is gone drops it and asks again; a worker not active is `inactive`", async () => {
+    let answer: "bad" | "gone" = "bad";
+    let nexts = 0;
+    const { client } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? TASK : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => {
+        throw new Error(answer === "bad" ? "bad_answer: same is required" : "lease_expired: the time to answer this task ran out");
+      },
+    });
+    const h = await renderHook(() => useTask("pet-match"), { client });
+    await until(() => h.result().task !== null, "the task");
+    await act(async () => { await assert.rejects(h.result().submit({}), /bad_answer/); });
+    assert.equal(h.result().task?.lease, "l1", "kept: the worker fixes the answer");
+    assert.equal(taskErrorCode(h.result().error), "bad_answer");
+    answer = "gone";
+    await act(async () => { await assert.rejects(h.result().submit({ same: true }), /lease_expired/); });
+    assert.equal(h.result().task, null);
+    await until(() => nexts === 2, "asked again");
+    await h.unmount();
+
+    const { client: idle, calls } = fakeClient({ [TASK_STEPS.next]: () => { throw new Error("not_active: you have no task types yet; an admin decides who takes tasks here"); } });
+    const i = await renderHook(() => useTask(), { client: idle });
+    await until(() => i.result().status === "inactive", "inactive");
+    await act(async () => { await sleep(50); });
+    assert.equal(calls.length, 1, "it waits before asking again");
+    await i.unmount();
+  });
+
+  it("useWorker is task/me; useTaskFile reads one of the task's files through its lease, nothing without a task", async () => {
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers" }] }),
+      [TASK_STEPS.file]: (c) => ({ path: c.config?.path, mediaType: "text/plain", bytes: 2, text: "hi" }),
+    });
+    const h = await renderHook(() => ({ me: useWorker(), file: useTaskFile(TASK, "found.jpg"), none: useTaskFile(null, "found.jpg") }), { client });
+    await until(() => h.result().me.data !== undefined && h.result().file.data !== undefined, "both");
+    assert.equal(h.result().me.data!.status, "active");
+    assert.equal(h.result().file.data!.text, "hi");
+    assert.equal(h.result().none.fetchStatus, "idle");
+    assert.deepEqual(calls.map((c) => c.type).sort(), ["task/file", "task/me"]);
+    assert.deepEqual(calls.find((c) => c.type === "task/file")!.config, { lease: "l1", path: "found.jpg" });
+    await h.unmount();
+  });
+});

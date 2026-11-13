@@ -70,6 +70,12 @@ export interface PublicRouteDeps {
   liveStatus: (workflow: string, runId: string) => string;
   /** Requests per visitor address per minute (`PUBLIC_REQUESTS_PER_MINUTE`). */
   ratePerMinute?: number;
+  /** Whose budget a request counts against when it is not its address's:
+   *  a key and that key's limit a minute. createStrut's counts a request
+   *  carrying an ACTIVE worker's visitor session under that worker
+   *  (plans/human-steps.md §5.2, `TASK_REQUESTS_PER_MINUTE`), so a room of
+   *  workers behind one address is not one budget. Undefined: the address's. */
+  budgetKey?: (c: Context) => { key: string; limit: number } | undefined;
   /** Who a request is from (src/visitor-address.ts): the socket's peer, or
    *  `x-forwarded-for` read through the TRUSTED proxies createStrut was
    *  booted with. Absent: the default set. */
@@ -306,8 +312,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // minute. Reads and the visitor door only: a write elsewhere under the prefix gets no CORS.
   const limit = deps.ratePerMinute ?? PUBLIC_REQUESTS_PER_MINUTE;
   const counts = new Map<string, { minute: number; n: number }>();
-  /** Count one request of `who`'s: over this minute's budget? */
-  const overRequestBudget = (who: string): boolean => {
+  /** Count one request of `who`'s: over this minute's budget (`max`)? */
+  const overRequestBudget = (who: string, max = limit): boolean => {
     const minute = Math.floor(Date.now() / 60_000);
     const at = counts.get(who);
     if (!at || at.minute !== minute) {
@@ -315,7 +321,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       counts.set(who, { minute, n: 1 });
       return false;
     }
-    return ++at.n > limit;
+    return ++at.n > max;
   };
   const publicMiddleware = async (c: Context, next: () => Promise<void>) => {
     const method = c.req.method;
@@ -336,8 +342,10 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     // Reads, a visitor's page calling its app (`POST /public/mcp`), and a
     // launch and its cancel (plans/paid-runs.md §3).
     if (method !== "GET" && method !== "HEAD" && !(method === "POST" && PUBLIC_POST.test(c.req.path))) return next();
-    if (overRequestBudget(visitorAddress(c))) {
-      return c.json({ error: `too many requests: ${limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
+    // An active worker's own budget (a key no address can be), else the address's.
+    const own = deps.budgetKey?.(c);
+    if (own ? overRequestBudget(`\0${own.key}`, own.limit) : overRequestBudget(visitorAddress(c))) {
+      return c.json({ error: `too many requests: ${own?.limit ?? limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
     }
     c.header("access-control-allow-origin", "*");
     // A browser's L402 client reads the challenge's header.
@@ -1167,5 +1175,5 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
 
-  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing, overBudget: overRequestBudget };
+  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing, overBudget: (who) => overRequestBudget(who) };
 }

@@ -45,6 +45,7 @@ import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
+import { taskRoutes } from "./tasks/routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
@@ -54,7 +55,7 @@ import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
-import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, type TasksService } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -1499,6 +1500,19 @@ export async function createStrut<TServices = unknown>(
       runLineage(control).some((c) => noRemoteSpend.has(c))
         ? "a stranger's public run, a run another strut launched without a person's credential, or a run either started cannot ask a person (plans/human-steps.md §3)"
         : undefined,
+    // `task/file` (plans/human-steps.md §5.5): one of a task's files, read
+    // where its run's files are — the job's directory on a job run, else the
+    // run's artifacts — as `run/files` reads a run's. The service checked
+    // the lease and the task's list first; each guard keeps the path inside.
+    file: async (t, path) => {
+      try {
+        const bytes = t.root === "job" && t.job ? new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, t.job), path))) : artifacts ? await artifacts.read(t.runId, path) : null;
+        return bytes ? fileResult(path, bytes) : null;
+      } catch (err: any) {
+        if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
+        throw err;
+      }
+    },
   });
   if (!(services as Record<string, unknown>)["tasks"]) (services as Record<string, unknown>)["tasks"] = tasks.capability;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
@@ -1756,7 +1770,9 @@ export async function createStrut<TServices = unknown>(
   // page makes (`step_run`), for `GET /apps/:name/usage`, the UI's warning
   // dot and `app/get`'s `usage` — kept in each app's `.usage/` under dataDir,
   // so a restart loses only the last few seconds.
-  const appMonitor = createAppMonitor({ root: appsRoot(dataDir) });
+  // A worker's step (`task/*`, plans/human-steps.md §5.2) is counted per
+  // viewer by the volume rules: a worker app's calls grow with its workers.
+  const appMonitor = createAppMonitor({ root: appsRoot(dataDir), perViewer: (type) => registry[type]?.worker === true });
   // A person's grants of sealed workflows to an app — the assistant for an
   // app's own chat (src/apps/grants.ts): read by the publish and by the run
   // doors below (`openFlow`), on every backend under dataDir.
@@ -3674,6 +3690,13 @@ export async function createStrut<TServices = unknown>(
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
     visitorAddress,
+    // An ACTIVE worker's requests count against the worker, not the address
+    // (plans/human-steps.md §5.2): a room of workers shares one address. A
+    // `new` worker, or anyone else, is counted per address.
+    budgetKey: (c) => {
+      const actor = visitorOf(c)?.actor;
+      return actor && tasks.isActiveWorker(actor) ? { key: `worker:${actor}`, limit: TASK_REQUESTS_PER_MINUTE } : undefined;
+    },
     workspace,
     store,
     runnable: async () => {
@@ -6037,6 +6060,16 @@ export async function createStrut<TServices = unknown>(
     ledger: ledgerIfAny,
     withdrawals,
     deposits,
+  });
+
+  // ── The task store's staff routes (plans/human-steps.md §6; src/tasks/routes.ts) ──
+  // Task types, workers and their grants, the tasks and their leases: full
+  // scope only, reads included, like the earnings. The worker's own door is
+  // the `task/*` steps through an app's `step_run` (§5).
+  taskRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    tasks: ((services as Record<string, unknown>)["tasks"] as TasksCapability | undefined) ?? tasks.capability,
   });
 
   // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and
@@ -9315,6 +9348,14 @@ export async function createStrut<TServices = unknown>(
         query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
       });
       const reader = publicSurface.reader();
+      // The worker's calls of the bag's task store (strut's own, or a host's).
+      const hostTasks = bag["tasks"] as TasksCapability | undefined;
+      const workerTasks =
+        hostTasks === tasks.capability
+          ? tasks.worker
+          : hostTasks
+            ? Object.freeze({ next: hostTasks.next.bind(hostTasks), submit: hostTasks.submit.bind(hostTasks), skip: hostTasks.skip.bind(hostTasks), file: hostTasks.file.bind(hostTasks), me: hostTasks.me.bind(hostTasks) })
+            : undefined;
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
@@ -9333,6 +9374,9 @@ export async function createStrut<TServices = unknown>(
           ...visitorBag,
           dataDir,
           ...(graph && widened ? { graph: writable ? Object.create(graph, { reader: { value: widened } }) : graphView(widened) } : {}),
+          // A worker's step (plans/human-steps.md §5.2): the worker's calls
+          // of the task store alone, never the staff's.
+          ...(registry[type]?.worker === true && workerTasks ? { tasks: workerTasks } : {}),
         };
       };
       const tools = buildAppTools({
@@ -9351,10 +9395,19 @@ export async function createStrut<TServices = unknown>(
             // The live version off the record as remembered: asked on every call.
             const live = (await apps.manifestOf(at.name).catch(() => null))?.version;
             const cfg = await inAppPackage(at.name, config);
-            if (!signedIn) return visitorRefusal(surface, live, at, type, cfg);
+            // A worker's step (plans/human-steps.md §5.2) is a signed-in
+            // person's: the worker is the session's actor.
+            const worker = registry[type]?.worker === true;
+            if (!signedIn) {
+              // Never an anonymous visitor's, whatever the public view's reads list.
+              const publicHere = surface.apps.some((a) => a.name === at.name) && live === at.version;
+              if (worker && publicHere) return `${type} is a worker's: sign in first — a worker is the page's signed-in visitor`;
+              return visitorRefusal(surface, live, at, type, cfg) ?? (worker ? `${type} is a worker's: sign in first` : null);
+            }
             const no = await signedInRefusal(surface, live, at, type, cfg, {
               declared: Object.keys(manifest.data?.graph?.types ?? {}),
               spends: async (wf) => (await runnableCan({ kind: "workflow", name: wf }, runnableDeps).catch(() => null))?.spends ?? true,
+              worker: (t) => registry[t]?.worker === true,
             });
             if (no) return no;
             const limits = visitorLimits(surface);

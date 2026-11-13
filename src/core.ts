@@ -84,6 +84,12 @@ export interface StepDef<
    *  the proposal itself (`admin_required:`), so none waits on nobody.
    *  `package/install` sets it. Absent: whoever may decide the proposal. */
   approver?: "admin";
+  /** A WORKER's step (plans/human-steps.md §5.1): one that decides from its
+   *  own caller — the page's viewer, `ctx.actor` in `ctx.app` — and is never
+   *  kept as a run. A signed-in visitor's page may call one its app grants
+   *  (`signedInRefusal`), and the app monitor counts its volume per viewer.
+   *  The `task/*` steps set it. */
+  worker?: boolean;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
@@ -1007,6 +1013,8 @@ export interface AnyStepDef {
   describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
   /** Who may accept a proposal of it (see `StepDef.approver`). */
   approver?: "admin";
+  /** A worker's step (see `StepDef.worker`). */
+  worker?: boolean;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

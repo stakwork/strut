@@ -1425,6 +1425,7 @@ describe("the API key gate", () => {
     assert.ok(gated.includes("GET /public-view/runnable"), "what a runnable item costs here is behind the key");
     assert.ok(gated.includes("GET /earnings/wallet") && gated.includes("PUT /earnings/wallet"), "the wallet is behind the key");
     for (const r of ["GET /earnings", "GET /earnings/entries", "POST /earnings/withdraw"]) assert.ok(gated.includes(r), `${r} is behind the key`);
+    for (const r of ["GET /tasks", "PUT /tasks/types/x", "PUT /tasks/workers/x/grants/x"]) assert.ok(gated.includes(r), `${r} is behind the key`);
     for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];
       assert.equal((await strut.app.request(path, { method })).status, 401, route);
@@ -1473,8 +1474,9 @@ describe("the API key gate", () => {
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
     // Earnings too (§8): the books are an admin's, like the wallet. And the
     // credit this strut bought at other struts (§10), and a served box's
-    // state (plans/app-repos.md §4.4).
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve"];
+    // state (plans/app-repos.md §4.4). And the task store's staff reads
+    // (plans/human-steps.md §6): types, workers, tasks.
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks", "GET /tasks/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

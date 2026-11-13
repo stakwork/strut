@@ -24,7 +24,9 @@
  * UI's dot reads the live version's alone. A page and its viewer are one
  * caller: a burst is counted per (version, viewer, type), so thirty people
  * opening one dashboard is not a loop; the volume rules count the version's
- * calls whoever made them.
+ * calls whoever made them — but a WORKER's step's (`perViewer`, the `task/*`
+ * steps of plans/human-steps.md §5.2) per viewer: a worker app's calls grow
+ * with its workers, and one worker calling too often is what to catch.
  *
  * KEPT ON DISK, so a restart loses next to nothing: with a `root` (the apps
  * root under dataDir) every app gets `<app>/.usage/<YYYY-MM-DD>.jsonl` (UTC;
@@ -70,6 +72,8 @@ export type AppWarningKind = "fanout" | "repeat" | "volume" | "bytes" | "failing
 export interface AppWarning {
   kind: AppWarningKind;
   version: string;
+  /** volume: counted per viewer, over the worker steps (`perViewer`). */
+  perViewer?: true;
   /** The step type, for every kind but volume and bytes. */
   type?: string;
   /** The window it is counted in. */
@@ -170,6 +174,7 @@ interface Window<T> {
 interface Seen {
   kind: AppWarningKind;
   version: string;
+  perViewer?: true;
   type?: string;
   window: AppWarning["window"];
   peak: number;
@@ -219,7 +224,7 @@ const configText = (config: unknown): string => {
 const iso = (ms: number) => new Date(ms).toISOString();
 /** The UTC day a moment falls on: the file it is written to. */
 const dayOf = (ms: number) => iso(ms).slice(0, 10);
-const warningKey = (w: Pick<Seen, "kind" | "version" | "type" | "window">) => [w.kind, w.version, w.type ?? "", w.window].join("\0");
+const warningKey = (w: Pick<Seen, "kind" | "version" | "type" | "window" | "perViewer">) => [w.kind, w.version, w.type ?? "", w.window, ...(w.perViewer ? ["viewer"] : [])].join("\0");
 
 /** A size for a person: 1.2 MB, 340 KB, 12 B. */
 export function formatBytes(n: number): string {
@@ -244,6 +249,13 @@ function words(w: Seen): { message: string; fix: string } {
         fix: "Poll less often (the kit's live hooks refetch every 2 s), or share one query between components instead of one each.",
       };
     case "volume":
+      if (w.perViewer) {
+        const per = w.window === "1h" ? `an hour (the limit is ${L.volume.hour})` : `a minute (the limit is ${L.volume.minute})`;
+        return {
+          message: `one viewer made ${w.peak} worker calls (task/*) in ${per}`,
+          fix: "A worker's page holds one task/next { wait } at a time — the kit's useTask does — and reads a task's files once; look for a loop calling task/* steps.",
+        };
+      }
       return w.window === "1h"
         ? { message: `${w.peak} calls in an hour (the limit is ${L.volume.hour})`, fix: "See which step types are busiest: fetch less often, or gather a view's data in fewer calls." }
         : { message: `${w.peak} calls in a minute (the limit is ${L.volume.minute})`, fix: "See which step types are busiest: fetch less often, or gather a view's data in fewer calls." };
@@ -285,6 +297,9 @@ export interface AppMonitorOptions {
   flushEveryMs?: number;
   /** How many days of files an app keeps. */
   keepDays?: number;
+  /** A WORKER's step (`worker: true`): its calls count toward the volume
+   *  rules per viewer, apart from the version's. */
+  perViewer?: (type: string) => boolean;
 }
 
 export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
@@ -293,6 +308,13 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
   const keepDays = opts.keepDays ?? 30;
   const apps = new Map<string, AppState>();
   const L = APP_MONITOR_LIMITS;
+  const perViewer = (type: string) => opts.perViewer?.(type) ?? false;
+  /** A minute's calls the version's volume counts: every type but a worker's. */
+  const versionCalls = (m: Minute) => {
+    let n = m.totals.calls;
+    for (const [type, c] of m.types) if (perViewer(type)) n -= c.calls;
+    return n;
+  };
 
   // ── The files ──────────────────────────────────────────────────────────
   // Every write goes through one chain, in order; a failed write is one
@@ -408,7 +430,7 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
     for (const m of s.minutes) {
       if (m.t === minuteT) {
         const c = s.minute.bytes.get(m.version) ?? { calls: 0, bytes: 0 };
-        c.calls += m.totals.calls;
+        c.calls += versionCalls(m);
         c.bytes += m.totals.bytes;
         const vol = firedSince(warningKey({ kind: "volume", version: m.version, window: "1m" }), minuteT);
         if (vol) c.fired = vol;
@@ -418,7 +440,7 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
       }
       if (m.t >= hourT) {
         const c = s.hour.keys.get(m.version) ?? { calls: 0 };
-        c.calls += m.totals.calls;
+        c.calls += versionCalls(m);
         const vol = firedSince(warningKey({ kind: "volume", version: m.version, window: "1h" }), hourT);
         if (vol) c.fired = vol;
         s.hour.keys.set(m.version, c);
@@ -539,6 +561,7 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
       .map((w): AppWarning => ({
         kind: w.kind,
         version: w.version,
+        ...(w.perViewer ? { perViewer: true as const } : {}),
         ...(w.type ? { type: w.type } : {}),
         window: w.window,
         peak: w.peak,
@@ -616,9 +639,20 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
 
       const perMinute = s.minute.bytes.get(v) ?? { calls: 0, bytes: 0 };
       s.minute.bytes.set(v, perMinute);
-      perMinute.calls += 1;
       perMinute.bytes += call.bytes;
-      if (perMinute.calls >= L.volume.minute) sight(call.app, s, at, perMinute, { kind: "volume", version: v, window: "1m", peak: perMinute.calls });
+      // A worker's step: its own counter per viewer (the files keep no
+      // viewer, so a restart starts these at nought).
+      const worker = perViewer(call.type);
+      const viewerKey = `viewer\0${v}\0${call.viewer ?? ""}`;
+      if (worker) {
+        const mine = (s.minute.keys.get(viewerKey) as Counted | undefined) ?? { calls: 0 };
+        s.minute.keys.set(viewerKey, mine);
+        mine.calls += 1;
+        if (mine.calls >= L.volume.minute) sight(call.app, s, at, mine, { kind: "volume", version: v, perViewer: true, window: "1m", peak: mine.calls });
+      } else {
+        perMinute.calls += 1;
+        if (perMinute.calls >= L.volume.minute) sight(call.app, s, at, perMinute, { kind: "volume", version: v, window: "1m", peak: perMinute.calls });
+      }
       // Bytes: a counter of its own, so its first sighting in the window is
       // counted apart from the volume rule's.
       const bytesKey = `bytes\0${v}`;
@@ -627,10 +661,11 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
       if (perMinute.bytes >= L.bytes.minute) sight(call.app, s, at, b, { kind: "bytes", version: v, window: "1m", peak: perMinute.bytes });
 
       roll(s.hour, at, HOUR);
-      const perHour = s.hour.keys.get(v) ?? { calls: 0 };
-      s.hour.keys.set(v, perHour);
+      const hourKey = worker ? viewerKey : v;
+      const perHour = s.hour.keys.get(hourKey) ?? { calls: 0 };
+      s.hour.keys.set(hourKey, perHour);
       perHour.calls += 1;
-      if (perHour.calls >= L.volume.hour) sight(call.app, s, at, perHour, { kind: "volume", version: v, window: "1h", peak: perHour.calls });
+      if (perHour.calls >= L.volume.hour) sight(call.app, s, at, perHour, { kind: "volume", version: v, ...(worker ? { perViewer: true as const } : {}), window: "1h", peak: perHour.calls });
     },
 
     report,
