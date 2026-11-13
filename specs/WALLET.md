@@ -309,8 +309,8 @@ app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/vis
                                         │◀── { challenge, methods: [… "sphinx" …], visitorKey }
                                         │ checks the request (below)
                                         ├──{ v: 1, op: "sign_in", seller, app, challenge }──▶ native host ── its sheet, the person signs in
-                                        │◀── { result: { key, sig } }
-                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig } ──▶ the seller
+                                        │◀── { result: { key, sig, address? } }
+                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig, address? } ──▶ the seller
                                         │◀── { actor: "secp:…", token, exp }   kept by strut's UI, per seller
 ```
 
@@ -324,13 +324,25 @@ app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/vis
 | `challenge` | the seller's `GET /visitors/challenge`: `strut-visitor.<claims>.<hmac>`, claims `{ host, visitorKey, nonce, exp }` as base64url JSON (`visitorChallengeClaims`), `exp` in unix MILLISECONDS. The HMAC is the seller's to check |
 
 **The answer** (`SignInAnswer`, read by `readSignInReply`; the
-`sign_in_replies` vectors, §7): `{ result: { key, sig } }`, both hex —
+`sign_in_replies` vectors, §7): `{ result: { key, sig, address? } }` —
 - `key`: the compressed secp256k1 key that signed, 33 bytes;
 - `sig`: a Lightning signed message over the challenge's UTF-8 bytes, 65
   bytes `[31 + recovery id] ‖ r ‖ s`, a recoverable ECDSA signature over
   `sha256(sha256("Lightning Signed Message:" ‖ challenge))`. That is what
   sphinx-rs's `sign_bytes` answers (`Sphinxrs.signBytes`), and the
-  `sign_in_signatures` vectors (§7) are its real output.
+  `sign_in_signatures` vectors (§7) are its real output;
+- `address` (optional): the account's own Sphinx address,
+  `<pubkey>_<lsp_pubkey>_<scid>`, from `myContactInfo`. Peel sends it only
+  when it signs with the ROOT key; with a domain's child key (LUD-05) it
+  sends none. The seller keeps it to keysend the person a payout
+  (plans/human-steps.md §8.2). Its pubkey is the root sign-in key: Sphinx's
+  `get_my_contact_info` builds the address from
+  `make_signer(seed, Some(0), …).get_node_pubkey()`, and the root sign-in
+  key is `pubkey_from_seed(idx: 0)`, which reads the same key (the
+  `sign_in_addresses` vectors, §7, pin it). `readSignInReply` keeps the
+  address only when it parses (`parseSphinxAddress`) and its pubkey is
+  `key`, and drops it otherwise; strut's UI posts it as `address`, and the
+  seller checks the same again. Peel still signs nothing new.
 
 Or `{ error }` (§4.1): `USER_REJECTED` when the person declined,
 `RESTRICTED` for no tap (below) or a sheet still up when the challenge
@@ -640,7 +652,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds twelve lists. Every implementation runs all of them in its own
+`vectors.json` holds thirteen lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -654,8 +666,9 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
 | `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` (or `buy_credit_status`) as `outcome`: `paid` with `preimage`; `pending`, a payment sent, after which the invoice is not shown again; or `fallback` with `code`, nothing sent (`readCreditReply`). A native host checks that its own answers come to what it means |
 | `sign_in_requests` | `{ name, now, request, valid }` | a `sign_in` request is (or is not) one the native host may sign at `now` (ms) (`signInRequestProblems`, §1.2): above all, the challenge is a strut visitor challenge for the SELLER's host. A native host refuses every invalid one |
-| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
+| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, address?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex) and `address` only when the answer's address parses and its pubkey is `key` (one whose pubkey is another's is dropped), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
 | `sign_in_signatures` | `{ name, signer?, message, key, sig, actor }` | Lightning signed messages over strut challenges, made by Sphinx's own signer (sphinx-rs `sign_bytes` / `pubkey_from_seed`, `scripts/ln-message-fixtures`): with `signer` (`{ seed, idx, network }`), `sig` is exactly what that signer makes of `message` and `key` its key — a native host's signing reproduces both; strut's `ln-message` verifier (src/visitors.ts) names `actor`, or refuses (`null`): a tampered message, another key, a changed recovery byte, no recovery byte, an uncompressed key |
+| `sign_in_addresses` | `{ name, signer, key, address }` | one seed's Sphinx address (sphinx `get_my_contact_info`) and its root sign-in key (`pubkey_from_seed`, `idx: 0`, as in `sign_in_signatures`) agree: `address`'s pubkey is `key`. Every implementation that makes the answer checks its own address against it. `source` says what is real: the pubkey is `pubkey_from_seed(idx: 0)` of the seed (as in `sign_in_signatures`, `scripts/ln-message-fixtures`); the route hint `<lsp_pubkey>_<scid>` is illustrative, to be regenerated from sphinx `get_my_contact_info` when Peel implements it |
 | `scenarios` | a host's behaviour, below | the host does what each step says |
 
 **A scenario** starts from:

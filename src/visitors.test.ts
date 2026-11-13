@@ -247,6 +247,17 @@ const tally = defineStep({
   },
 });
 
+/** A worker's step (`worker: true`) that answers the Sphinx address its call's bag holds. */
+const whoami = defineStep({
+  type: "test/whoami",
+  worker: true,
+  input: z.object({}),
+  output: z.any(),
+  async run(_cfg, ctx) {
+    return { address: (ctx?.services as { sphinxAddress?: string } | undefined)?.sphinxAddress ?? null };
+  },
+});
+
 const scoreYaml = "name: score\ninput:\n  n: { type: number, default: 1 }\nsteps:\n  - id: t\n    type: test/tally\n    config:\n      n: \"{{ input.n }}\"\n";
 const spendingYaml = (name: string) => `name: ${name}\ninput:\n  q: { type: string, default: hi }\nsteps:\n  - id: ask\n    type: llm\n    config:\n      prompt: hello\n`;
 
@@ -303,7 +314,7 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     root = await mkdtemp(join(tmpdir(), "strut-visitors-"));
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
-      workspace, store, kit, registry: await createRegistry([tally]),
+      workspace, store, kit, registry: await createRegistry([tally, whoami]),
       scheduler: false, serveUi: false, views: false, jamie: false, knowledge: false,
       job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
@@ -315,7 +326,7 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     for (const [name, grants] of [["game", "[score, ghost, paid]"], ["other", "[score]"]] as const) {
       const dir = join(root, "apps", name);
       await mkdir(join(dir, "src"), { recursive: true });
-      await writeFile(join(dir, "app.yaml"), `title: ${name}\ngrants:\n  workflows: ${grants}\n`);
+      await writeFile(join(dir, "app.yaml"), `title: ${name}\ngrants:\n  workflows: ${grants}\n  steps: [test/whoami]\n`);
       await writeFile(join(dir, "src", "App.tsx"), `export default function App() { return <p className="p-2">${name}</p>; }\n`);
       const r = await strut.apps.publish(dir, name, { surface: "person" });
       assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -478,6 +489,49 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     const off = await req("/visitors/session", { method: "POST", headers: json, body: JSON.stringify({ challenge: c, method: "sphinx", key: hex(secp256k1.getPublicKey(priv, true)), sig: hex(lnSign(priv, c)) }) });
     assert.equal(off.status, 401);
     assert.match(((await off.json()) as { error: string }).error, /not a sign-in this server offers/);
+  });
+
+  it("sphinx: an address is kept in the session only when its pubkey is the key that signed; a worker step sees it", async () => {
+    await putView({ signIn: ["key", "sphinx"], limits: { writesPerDay: 4, launchesPerDay: 3 } });
+    try {
+      const post = (body: Record<string, unknown>) => req("/visitors/session", { method: "POST", headers: json, body: JSON.stringify(body) });
+      const lsp = `03${"ab".repeat(32)}`;
+      const addressOf = (key: string) => `${key}_${lsp}_1099511627776`;
+      /** Sign in as `priv`, sending `address` (and `method`); the address a worker step then sees. */
+      const seen = async (priv: Uint8Array, address: string | undefined, method = "sphinx") => {
+        const { challenge: c } = await challenge();
+        const key = hex(secp256k1.getPublicKey(priv, true));
+        const res = await post({ challenge: c, method, key, sig: hex(lnSign(priv, c)), ...(address ? { address } : {}) });
+        assert.equal(res.status, 200, await res.clone().text());
+        const got = (await res.json()) as Record<string, unknown>;
+        assert.deepEqual(Object.keys(got).sort(), ["actor", "exp", "token"], "the response is unchanged: the page never sees the address");
+        const out = await call("test/whoami", {}, bearer(got.token as string));
+        return (out.result as { address: string | null }).address;
+      };
+      const priv = secp256k1.utils.randomPrivateKey();
+      const key = hex(secp256k1.getPublicKey(priv, true));
+      assert.equal(await seen(priv, addressOf(key)), addressOf(key), "its own address is kept");
+      assert.equal(await seen(priv, addressOf(key).toUpperCase()), addressOf(key), "kept lower-case");
+      assert.equal(await seen(priv, addressOf(hex(secp256k1.getPublicKey(secp256k1.utils.randomPrivateKey(), true)))), null, "another pubkey is dropped");
+      assert.equal(await seen(priv, `${key}:1099511627776`), null, "not an address");
+      assert.equal(await seen(priv, undefined), null, "an older Peel sends none");
+      // Signing in again refreshes it.
+      assert.equal(await seen(priv, addressOf(key)), addressOf(key));
+      assert.equal(await seen(priv, undefined), null, "a sign-in with none leaves none");
+      // A domain's child key signs, and the root key's address is not its own.
+      const child = secp256k1.utils.randomPrivateKey();
+      assert.equal(await seen(child, addressOf(key)), null, "a different key (a domain's child) keeps none");
+      // Another method keeps none.
+      const { challenge: c } = await challenge();
+      const k = await p256Key();
+      const signed = await p256Sign(k, c);
+      const res = await post({ challenge: c, method: "key", ...signed, address: addressOf(key) });
+      assert.equal(res.status, 200, await res.clone().text());
+      const out = await call("test/whoami", {}, bearer(((await res.json()) as { token: string }).token));
+      assert.equal((out.result as { address: string | null }).address, null, "method key keeps none");
+    } finally {
+      await putView({ signIn: ["key", "lnurl", "nostr"], limits: { writesPerDay: 4, launchesPerDay: 3 } });
+    }
   });
 
   it("a host page on another origin signs a visitor in here: the sign-in routes answer it (CORS)", async () => {

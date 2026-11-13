@@ -305,6 +305,15 @@ describe("signing a visitor in through the native wallet", () => {
     assert.deepEqual(signInRequestProblems(native.sent[0], SIGN_NOW), [], "what the native host gets passes its own check");
   });
 
+  it("the account's address rides along only when its pubkey is the key that signed", async () => {
+    const address = `${SIGNED.key}_03${"ab".repeat(32)}_1099511627776`;
+    const kept = await signerOf(signer(() => ({ result: { key: SIGNED.key, sig: SIGNED.sig, address } })))!.sign(SHOP_CHALLENGE);
+    assert.deepEqual(kept, { outcome: "signed", key: SIGNED.key, sig: SIGNED.sig, address });
+    const other = `02${"cd".repeat(32)}_03${"ab".repeat(32)}_1099511627776`;
+    const dropped = await signerOf(signer(() => ({ result: { key: SIGNED.key, sig: SIGNED.sig, address: other } })))!.sign(SHOP_CHALLENGE);
+    assert.deepEqual(dropped, { outcome: "signed", key: SIGNED.key, sig: SIGNED.sig });
+  });
+
   it("a seller's challenge for another host is never put to the wallet", async () => {
     const native = signer(() => ({ result: { key: SIGNED.key, sig: SIGNED.sig } }));
     const r = await signerOf(native)!.sign(EVIL_CHALLENGE);

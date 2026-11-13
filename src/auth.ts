@@ -463,6 +463,10 @@ export interface Session {
   actor?: string;
   exp: number;
   role?: Role;
+  /** A visitor's Sphinx address (`<pubkey>_<lsp_pubkey>_<scid>`), kept from
+   *  a `sphinx` sign-in whose address is the signing key's own (claim
+   *  `address`). The door hands it to a worker step; the page never sees it. */
+  sphinxAddress?: string;
 }
 
 /** Is this session the key's equal? The key login's (no role) and an
@@ -523,7 +527,7 @@ function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number
 /** The signed token for a session — `base64url(json).hmac` — or undefined
  *  with no secret to sign it. */
 export function sessionToken(session: Session): string | undefined {
-  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}) });
+  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}), ...(session.sphinxAddress ? { address: session.sphinxAddress } : {}) });
 }
 
 /** The session a token names, if the signature holds and it has not
@@ -531,10 +535,11 @@ export function sessionToken(session: Session): string | undefined {
 export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
   const claims = readClaims("session", token, now);
   if (!claims) return undefined;
-  const { actor, exp, role } = claims;
+  const { actor, exp, role, address } = claims;
   if (actor !== undefined && typeof actor !== "string") return undefined;
   if (role !== undefined && !isRole(role)) return undefined;
-  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}) };
+  if (address !== undefined && typeof address !== "string") return undefined;
+  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}), ...(address ? { sphinxAddress: address } : {}) };
 }
 
 /**
@@ -550,8 +555,8 @@ export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()
 }
 
 /** A session for `actor` from now, as the cookie value and what it names. */
-function startSession(actor: string | undefined, ttlMs: number, role?: Role): { token: string; session: Session } | undefined {
-  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}) };
+function startSession(actor: string | undefined, ttlMs: number, role?: Role, sphinxAddress?: string): { token: string; session: Session } | undefined {
+  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}), ...(sphinxAddress ? { sphinxAddress } : {}) };
   const token = sessionToken(session);
   return token ? { token, session } : undefined;
 }
@@ -694,9 +699,10 @@ export function visitorSessionCookie(token: string | undefined, exp: number, sec
 }
 
 /** A visitor's session for `actor` from now, as its token and what it
- *  names — or undefined with no secret to sign it. */
-export function startVisitorSession(actor: string): { token: string; session: Session } | undefined {
-  return startSession(actor, visitorSessionMs(), "visitor");
+ *  names (and the Sphinx address it keeps, if any) — or undefined with no
+ *  secret to sign it. */
+export function startVisitorSession(actor: string, sphinxAddress?: string): { token: string; session: Session } | undefined {
+  return startSession(actor, visitorSessionMs(), "visitor", sphinxAddress);
 }
 
 /** Where a visitor's token rides when `Authorization` carries something

@@ -182,7 +182,7 @@ export const STATUS_EVERY_MS = 3_000;
  *  signature to post as method `sphinx`, or why not — `declined` when the
  *  person said no on the native host's sheet. */
 export type SignInAnswerOf =
-  | { outcome: "signed"; key: string; sig: string }
+  | { outcome: "signed"; key: string; sig: string; address?: string }
   | { outcome: "refused"; code: WalletErrorCode; message: string; declined: boolean };
 
 /** What the sign-in flow asks the native wallet. */

@@ -1108,6 +1108,12 @@ export interface SignInAnswer {
   /** 65 bytes, `[31 + recovery id] ‖ r ‖ s`, over
    *  sha256(sha256("Lightning Signed Message:" ‖ challenge)). */
   sig: string;
+  /** The account's Sphinx address, `<pubkey>_<lsp_pubkey>_<scid>`, from
+   *  `myContactInfo`: only when the answer is the ROOT key's. Its pubkey is
+   *  the root sign-in key (`pubkey_from_seed(idx: 0)`, the key
+   *  `get_my_contact_info` builds the address from). The seller keeps it to
+   *  keysend a payout; `readSignInReply` drops one whose pubkey is not `key`. */
+  address?: string;
 }
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
@@ -1186,12 +1192,12 @@ export function signInRequestProblems(raw: unknown, nowMs = Date.now()): string[
 
 /** What the host does with the native host's answer to `sign_in`: `signed`,
  *  the key and signature to post (`POST <seller>/visitors/session { challenge,
- *  method: "sphinx", key, sig }`), or `refused` with the code — the person
+ *  method: "sphinx", key, sig, address? }`), or `refused` with the code — the person
  *  declined (`USER_REJECTED`), the native host wants a fresh tap
  *  (`RESTRICTED`), refused the request (`BAD_REQUEST`) — or an answer that
  *  is neither (`INTERNAL`). */
 export type SignInReplyOutcome =
-  | { outcome: "signed"; key: string; sig: string }
+  | { outcome: "signed"; key: string; sig: string; address?: string }
   | { outcome: "refused"; code: WalletErrorCode; message: string };
 
 const KEY_HEX = /^0[23][0-9a-fA-F]{64}$/;
@@ -1210,5 +1216,8 @@ export function readSignInReply(reply: unknown): SignInReplyOutcome {
   if (!a || typeof a !== "object" || typeof a.key !== "string" || typeof a.sig !== "string" || !KEY_HEX.test(a.key) || !SIG_HEX.test(a.sig)) {
     return refused("INTERNAL", "the wallet's answer is not { key, sig }: a compressed key and a 65-byte signature, hex");
   }
-  return { outcome: "signed", key: a.key.toLowerCase(), sig: a.sig.toLowerCase() };
+  // The address rides along only when it is `key`'s own; else dropped.
+  const address = typeof a.address === "string" ? a.address.trim().toLowerCase() : undefined;
+  const keep = address !== undefined && parseSphinxAddress(address)?.pubkey === a.key.toLowerCase();
+  return { outcome: "signed", key: a.key.toLowerCase(), sig: a.sig.toLowerCase(), ...(keep ? { address } : {}) };
 }

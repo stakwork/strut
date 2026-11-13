@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback. `sign_in_requests` / `sign_in_replies` / `sign_in_signatures`: signing a visitor in (§1.2 \"sign_in\") — a request a native host may sign at `now` (ms), valid or not (above all: the challenge is a strut visitor challenge for the SELLER's host); what the host does with the answer, `signed` with the key and signature or `refused` with `code`; and Lightning signed messages over challenges made by Sphinx's own signer (sphinx-rs `sign_bytes`, scripts/ln-message-fixtures): `signer` is the seed, account index and network that made `sig`, `actor` what strut's `ln-message` verifier names (null: refused).",
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback. `sign_in_requests` / `sign_in_replies` / `sign_in_signatures` / `sign_in_addresses`: signing a visitor in (§1.2 \"sign_in\") — a request a native host may sign at `now` (ms), valid or not (above all: the challenge is a strut visitor challenge for the SELLER's host); what the host does with the answer, `signed` with the key and signature or `refused` with `code`; and Lightning signed messages over challenges made by Sphinx's own signer (sphinx-rs `sign_bytes`, scripts/ln-message-fixtures): `signer` is the seed, account index and network that made `sig`, `actor` what strut's `ln-message` verifier names (null: refused); an answer's `address` is kept only when its pubkey is `key`, and `sign_in_addresses` pins one seed's Sphinx address to its sign-in key (its `source` says which part is real: the pubkey is the seed's; the route hint is illustrative).",
   "params": [
     {
       "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
@@ -2420,6 +2420,33 @@
       "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
     },
     {
+      "name": "the root key with its own address: the address is kept",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+          "address": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e_03abababababababababababababababababababababababababababababababab_1099511627776"
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+      "address": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e_03abababababababababababababababababababababababababababababababab_1099511627776"
+    },
+    {
+      "name": "an address whose pubkey is not the key: dropped, still signed",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+          "address": "02cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd_03abababababababababababababababababababababababababababababababab_1099511627776"
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
       "name": "upper-case hex is read as lower case",
       "reply": {
         "result": {
@@ -2615,6 +2642,19 @@
       "message": "strut-visitor.eyJob3N0Ijoic2hvcC5leGFtcGxlLmNvbSIsInZpc2l0b3JLZXkiOiJyb290Iiwibm9uY2UiOiI2ZjBjM2E5ZDJiN2U0MWM1OGExZjBlOWQzYzJiN2E2NCIsImV4cCI6MTc5MzgwMDA2MDAwMH0.qYzkz2ZbLMhHogJxEF9YQob8BCwvg99JgWymZCESoHA",
       "name": "a key that is not a compressed point",
       "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    }
+  ],
+  "sign_in_addresses": [
+    {
+      "name": "the root key (account 0) is the pubkey of its Sphinx address",
+      "signer": {
+        "seed": "6b1e6d2f0a9c4e3b8d7f2a1c5e9b3d7f0a4c8e2b6d1f5a9c3e7b0d4f8a2c6e1b",
+        "idx": 0,
+        "network": "bitcoin"
+      },
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "address": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e_03abababababababababababababababababababababababababababababababab_1099511627776",
+      "source": "The address's pubkey is the key pubkey_from_seed(idx: 0) makes of this seed (the same key as the sign_in_signatures vectors, scripts/ln-message-fixtures). The route hint <lsp_pubkey>_<scid> is ILLUSTRATIVE, not made by Sphinx: regenerate the whole address from sphinx get_my_contact_info when Peel implements it."
     }
   ]
 }

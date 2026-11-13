@@ -501,7 +501,7 @@ each. Grant the worker's steps:
 
 ```yaml
 grants:
-  steps: [task/next, task/submit, task/skip, task/file, task/me]
+  steps: [task/next, task/submit, task/skip, task/file, task/me, task/withdraw]
 ```
 
 The worker is always the page's signed-in viewer: the steps read it from
@@ -543,6 +543,18 @@ return (
   </>
 );
 ```
+
+A worker app with a withdraw section also grants `task/withdraw`.
+`useWorker().data.payout` says whether the viewer may withdraw now — `on`,
+else `why` (`no_address`: they must sign in with Peel, which sends their
+account's address; say "Withdraw in Peel") — with `minMsat`, `maxMsat` (the
+most one withdrawal may ask now) and `out`, a payout on its way.
+`useWithdraw()` gives `{ withdraw(msat), status, error }`: `msat` is what
+the worker receives, and a fee of at most `maxFeeMsat` comes off their
+balance (say so before they confirm). It goes to the worker's own Sphinx
+account, which the server picks: the page sends an amount and never an
+address. It reads `useWorker()` again when it answers, then every 5 s while
+`out` is there.
 
 Workers are signed-in visitors of the public view (or the server's own
 members). Once the app is published and draws its task types, ask for it

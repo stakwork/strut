@@ -12,7 +12,7 @@ thing in strut that sends sats out, which is never on the services bag.
 This file is the contract each provider is built against:
 
 - **The Sphinx daemon** (`src/payments/sphinx-daemon.ts`): four routes,
-  and `POST /pay` for the payer, built in the sphinx repo
+  and `POST /pay`, `POST /keysend` and `GET /keysend/:id` for the payer, built in the sphinx repo
   (`wasm/daemon/src/http.ts`, stakwork/sphinx#428).
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
   that answer exactly this.
@@ -207,6 +207,55 @@ answers `200`:
   one with no amount), `own_invoice` (the account's own), `expired`,
   `max_fee_too_low`. The payer throws them as `wallet_refused` with the
   daemon's code as `walletCode`, and Withdraw answers them as they came.
+
+### `POST /keysend` — send an amount to a Sphinx address (the payer)
+
+With the PAY token, beside `POST /pay` (plans/human-steps.md §8.2): a worker's
+payout is an amount sent to their account, not an invoice they made.
+
+```json
+{ "id": "<64 hex>", "address": "<pubkey>_<lsp_pubkey>_<scid>", "msat": 5000000, "max_fee_msat": 25000 }
+```
+
+answers `200`:
+
+```json
+{ "id": "<64 hex>", "state": "settled", "payment_hash": "<hex>", "fee_msat": 0, "preimage": "<hex>" }
+```
+
+`{ id, state, payment_hash?, fee_msat, preimage?, error? }`, the shape of
+`POST /pay`'s answer plus the `id`.
+
+- **`id` is the caller's key,** 64 hex. The same `id` again answers that
+  payment as it stands and never sends again, a failed one included: a new
+  try is a new `id`. This is what makes it idempotent. The LSP cannot dedupe
+  a keysend as it dedupes an invoice by its hash, so the daemon writes
+  `{ id, tag, address, msat }` to its ledger BEFORE it publishes, as `pay`
+  writes the hash.
+- **`address` is a Sphinx address.** The daemon pays it with the core's
+  `keysend(…, to: pubkey, amt_msat, data: none, route_hint)`, which sends
+  async through the hint (specs/WALLET.md §6).
+- **`max_fee_msat`** must be at least the LSP's own limit for `msat`
+  (`max_fee_too_low`), as for `POST /pay`.
+- **It waits up to `PAY_WAIT_MS`** (60 s), then answers with the `state` it
+  has (`pending` while unanswered). A late answer is read with the GET
+  below.
+- **Refused before anything is sent**, `400 { code }`: `bad_request`,
+  `own_address` (the account's own), `max_fee_too_low`. Anything else that
+  failed is `state: "failed"` with `error`.
+- **The fee** is what the LSP charged, as for `POST /pay`. Within one mixer
+  that is none.
+
+### `GET /keysend/:id` — one keysend
+
+Answers the same shape and never sends. `404 { code: "not_found" }` for an
+`id` the daemon never took, and never a `no route …` 404: that is how strut
+tells a daemon without these routes (`no_keysend`) from an `id` it does not
+know.
+
+**The one way to pay twice** is a daemon that lost its ledger: it reads an
+`id` it sent as never taken, and strut then fails the payout and gives the
+reserve back. Back the daemon's ledger up with its state.
 
 ## NWC (NIP-47)
 
