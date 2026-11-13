@@ -46,14 +46,18 @@ until they accept.
 
 ## Where a lesson goes
 
+Change the pages under the tree's root, never the root itself. A root is a
+short page that stays as it is; the tree grows under it.
+
 - No page says it: the line goes in the docs of the page it belongs on.
 - The page says it, the work opened the page, and it still went wrong:
   reword the line so it cannot be misread, and put it first.
 - The page says it and the work never opened the page: before it opens a
   page the assistant sees only its name and description, in its parent's
   list. The description should say when to open it.
-- It applies on almost every turn: it belongs in the docs of the tree's
-  root, which are always read.
+- It applies on almost every turn: put it on a page directly under the
+  root, with a description that says when it applies. The root's list of
+  names and descriptions is what the assistant always sees.
 - The page already says it plainly, and it went wrong again: do not
   reword it once more. Name it as stuck: the tree may not be able to fix
   this, and a person should look.

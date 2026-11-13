@@ -159,6 +159,10 @@ describe("concept files (pure)", () => {
     assert.ok(dream.description && dream.docs?.includes("PARENT_OF"), "says its children are the sources");
     // What holds for any source: the posture, what a lesson is, the three things, where a lesson goes.
     for (const must of ["You tend a tree of Concepts", "## What is a lesson", "THE CLAIM.", "WHAT WAS SAID.", "THE EDIT.", "## Where a lesson goes", "stuck", "Never\nrewrite a page"]) assert.ok(dream.docs!.includes(must), must);
+    // A root is never edited, only the pages under it (ruled 2026-11-13): a lesson for almost every turn is a page
+    // directly under the root, whose description the assistant always sees in the root's list.
+    assert.ok(dream.docs!.includes("never the root itself") && dream.docs!.includes("a page directly under the\n  root"), dream.docs);
+    assert.doesNotMatch(dream.docs!, /docs of the tree's\s+root/);
     // The first source: the conversations dream/turns hands over.
     const convs = await read("Assistant Conversations.md");
     assert.deepEqual(convs.parents, ["Dream"]);
