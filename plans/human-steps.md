@@ -641,19 +641,425 @@ pattern). It comes with the staff app (§9).
 
 ## 7. Tests, copies and standing (item 4)
 
-- **Test tasks** live in a sealed table: a `show`, the expected answer,
-  and how to grade it. `task/next` hands one out at the type's rate,
-  higher for a new worker. Nothing in the payload, the pay or the timing
-  tells it from a real task. A test task never appears in a run log.
-- **Grading** is deep equality, or a registry step that answers in the
-  claims layer's check contract (`{ supports, content }`), so a box on a
-  photo is graded by overlap and free text by a model.
-- **Standing** is a worker's score over their last N tests of a type.
-  Below the type's threshold the grant is revoked automatically. Staff
-  may grant it again.
-- **Qualifying.** A worker's first K tasks of a type are all tests.
-- **Copies.** `copies: n` on the step asks n workers. The type says how
-  they must agree; a disagreement asks one more worker or fails the step.
+> **Design pass (2026-11-12),** written against `main` @f3634e97 with
+> items 1, 2a, 2b and 3 built. **Ruled the same day:** Evan agreed with
+> every recommendation in §7.12, the defaults of §7.8 included. Two things
+> are still proposed and marked so: the graders strut ships (PR 4c) and the
+> name of item 5a's accepted-answer hook, which is §8's to choose.
+
+Item 4 adds three things to the task store and nothing to the runner:
+
+| Part | What it does |
+| --- | --- |
+| Test tasks (§7.1 to §7.3) | Tasks whose answer staff know, handed to workers among the real ones |
+| Grading, standing, qualifying (§7.4, §7.5) | Each answered test is graded. A worker under the type's threshold loses the type, in their first K tasks of it too |
+| Copies (§7.6) | One `human` step asks several workers and settles when enough of them agree |
+
+### 7.1 Test tasks
+
+A **test** is a `show`, its files, the expected answer and how to grade
+it, for one task type. It is staff's, and it has no run.
+
+**Where it lives.** A `tests` table in `tasks.db`, sealed. The expected
+answer is read in one place, the grading code inside the service. No
+method of `ctx.services.tasks`, no step, no page, no run log and no model
+doing work sees it. The only readers are the staff routes below (full
+scope) and the grader the type names (§7.4).
+
+**What a worker is served is an INSTANCE.** When `next` hands a test to a
+worker it writes a row in `tasks`, the instance, with the test's `show` and
+file list, and a lease on it, in one transaction. From then on the
+instance goes through the code a real task goes through: `ownLease`,
+`submit`, `skip`, `file`, the lease's expiry. A page cannot tell them apart
+because the path is the same, not because some code hides a difference.
+
+| An instance's column | Value |
+| --- | --- |
+| `workflow`, `path` | `""`, which no workflow name is, so no `human` step, `cancelRun` or run filter meets one |
+| `run_id` | The instance's own id, so the key (workflow, run id, path) stays unique (rule 1) |
+| `test` | The test's id; null on a real task. Staff see it |
+| `root` | `test`: its files are the test's |
+| `served_to` | The worker; unique with `test`, so a worker is served a test once |
+
+An instance lives as long as its one lease. Answered, it is settled and
+graded. Skipped, let go of, or past its lease, it closes as `expired` and
+never reopens for anyone: `take` never hands out an instance (`test is
+null` in its guard), and the sweep closes an open instance whose lease is
+no longer live.
+
+**Files.** A test's files live in `<dataDir>/tasks/tests/<test id>/`,
+owner-only, under the paths the test lists. `task/file` on an instance
+reads there, as it reads a run's artifacts or a job's directory for a real
+task (the service's `deps.file`, with `root: "test"`). A file is at most
+what `task/file` can hand a page (about 3.7 MB of binary, §5.5), so a test
+never fails where a real task would not. A test made from a real task
+copies that task's files: the run's files may be removed later, and a
+missing file would be a tell.
+
+**Authoring.** Staff routes, full scope only, beside §6's:
+
+| Route | Does |
+| --- | --- |
+| `GET /tasks/tests[?type=&retired=]` | The tests with their expected answers, and how many times each was served, passed and failed |
+| `POST /tasks/tests { type, show, files?, expected, grade? }` | A new test. `files` lists the paths to come. `expected` is checked against the type's answer schema. → `{ test }` |
+| `PUT /tasks/tests/:id/files/<path>` | One of the listed files, the raw bytes as the body. The test is `ready`, and served, once every listed file is there |
+| `POST /tasks/:taskId/test { expected?, grade? }` | A test made from a real task: its `show`, its files copied, and its accepted answer as `expected` unless one is given (a disputed or expired task needs one). It records the task, and the worker who answered that task is never served it |
+| `PUT /tasks/tests/:id { show?, expected?, grade? }` | Only before it is first served (`409 in_use` after). A test that was served is retired and made again, so every grade on file was graded against what that worker saw |
+| `DELETE /tasks/tests/:id` | Retires it: never served again, kept for the grades that name it |
+
+A test becoming ready wakes a held `next` of its type (`wakeFor`), for a
+worker who is qualifying. Deleting a task type retires its tests.
+
+The meta surface gets no door here, and the staff app (item 6) must not
+add one that keeps a run (§7.9).
+
+### 7.2 How `next` mixes them in
+
+A type opts in with `tests` on its record (`PUT /tasks/types/:name`).
+Without it nothing below happens, and the type works as built. With it,
+`next` does this:
+
+1. As built: the worker, their live grants, the types asked for. A live
+   lease comes back as it is.
+2. **Qualifying** (§7.5): a type the worker has not yet qualified for
+   gets only its tests, oldest grant first, while fewer than `qualify` of
+   them are answered since the grant. After that, nothing of that type
+   until those answers are graded.
+3. Otherwise `next` reads, without taking, the oldest real task `take`
+   would hand out. If there is one, of type T, it draws: with chance
+   `rate`, or `newRate` while the worker has answered fewer than
+   `newTasks` real tasks of T since the grant, it serves a test of T
+   instead. That is the least-served ready test of T this worker was never
+   served, ties broken at random. With none left, the real task.
+4. Else `take`, as built. No real task and nothing qualifying:
+   `{ none: true }`.
+
+The test is served in one transaction (`takeTest`): the worker holds no
+live lease; the test is ready, not retired, never served to them and not
+made from a task they answered; then the instance and its lease. The draw
+uses an injected `random`, so a test can fix it. If someone takes the real
+task between the read and the draw, the test is still served: a real task
+was there to take.
+
+**A test only ever replaces a real task.** A test served into an empty
+queue would arrive at once while real work does not, and a held
+`next { wait }` would show it. So, outside qualifying, a worker gets a
+test only at a moment they would have got a real task of that type. While
+qualifying they get tests whenever they ask, and they are told they are
+qualifying (§7.5).
+
+What a worker sees:
+
+| | Real task | Test instance |
+| --- | --- | --- |
+| `next`'s answer | `{ lease, type, show, files, expires, answer }` | The same fields, from the same code |
+| Lease length, expiry, `skip` | The type's | The same |
+| `task/file` | The run's file | The test's copy, under the same path |
+| `submit` | `{ ok: true }`; the run wakes later, out of sight | `{ ok: true }`; grading runs later, out of sight |
+| Pay (item 5a) | An earning, held | The same earning, held (§7.9) |
+
+What can still tell, and is accepted: a revoke right after an answer
+suggests that answer was a failed test; a take-back of an earning (§8)
+says so after the fact; workers can share the answers to tests. Staff
+retire tests served too often (the served count is on the record).
+
+### 7.3 Answering a test
+
+`submit` on an instance settles it as it settles a real task, the answer
+on the instance. It does not tell `onSettle`: an instance has no run, so
+nothing wakes. The service queues it for grading instead. The worker has
+`{ ok: true }` before grading starts.
+
+### 7.4 Grading
+
+How a test is graded is its own `grade`, else its type's `tests.grade`:
+
+| `grade` | Passes when |
+| --- | --- |
+| `equal` (the default) | The answer equals `expected` as JSON: object keys in any order, arrays in order, numbers by value |
+| `{ step, config? }` | The registry step answers in the claims check contract, `{ supports, content }`, with `supports: true`, read by `mapCheckResult` (`src/verify.ts`) |
+
+A box on a photo is graded by overlap and free text by a model, each a
+step. *Still proposed (PR 4c):* strut ships two, `grade/overlap` (each box's
+intersection over union at least `min`, default 0.7) and `grade/judge`
+(a model compares the answer with `expected` under staff's rubric), both
+`sealed: true`.
+
+**Which steps may grade.** A grader reads the expected answer, so it must
+be one the AI can neither edit nor call: `equal`, or a sealed step
+(`isSealedStep`: a sealed namespace, or `sealed: true` on its
+definition). Checked when a type or test is saved and again at each
+grading, since the registry changes.
+
+**How a grader runs.** Through `runSingleStep`, the way a public tool's
+call is (`src/public-tools.ts`), from a `deps.grade` that createStrut
+hands `createTasks`, so `tasks.ts` stays free of the runner (as
+`deps.file` is):
+
+| | |
+| --- | --- |
+| Input | `{ answer, expected, show, type }`. `config` is the grade's, its templates resolved against that input; a sole `"{{ input.answer }}"` hands the value over unevaluated |
+| Services | An allowlist: `secrets` (model keys) and `llmAuth`. No artifacts, shell, http, graph, runs or tasks, and no `onRunEnd` or `onRunEvent`, so the run is never projected, verified or sent to the events sink |
+| Record | The run is in memory (`runSingleStep`'s own `MemoryRunStore`), and its events are dropped once the verdict is read. The verdict and its `content`, cut to 2,000 characters, are kept on the instance for staff |
+| Actor, principal | No actor. The principal is the deployment's grading principal (§7.12, 1), so a model grader is billed as the client's model calls are (ruling 2) |
+| Time, cost | `GRADE_TIMEOUT_MS`, 60 s (§7.8), then force-cancelled through its `RunController`. Cost capped by the type's `tests.gradeCapUsd` as `maxCostUsd`, $0.05 by default (§7.8) |
+| Concurrency | 4 at a time in the process (§7.8): a queue fed by `submit` and by the sweep |
+
+A model grader sends the expected answer to its provider. That is the one
+model that sees it.
+
+**A grader that fails or cannot run** (it throws, runs out of time, is no
+longer sealed, has nobody to bill, or returns no verdict) records `error`
+with the reason. An `error` counts neither way and never moves standing,
+so a provider outage cannot revoke a room of workers. Staff see each
+type's errors; three in a row are logged once. A test answered and not yet
+graded (`pending`) is graded by the sweep, which covers a restart.
+
+### 7.5 Standing and qualifying
+
+**Standing** is a worker's graded tests of one type since their grant,
+the newest `window` of them. After each grade the service checks it:
+
+- With at least `minGraded` graded tests, a share passed under
+  `threshold` revokes the grant: the existing `revoke`, with
+  `revokedBy: "standing"` and a sentence as `why`
+  (`standing: passed 13 of the last 20 tests of pet-match, under 80%`).
+  The worker's live lease of the type expires at once, as with any revoke.
+- `error` and `pending` grades are not counted. Skipped and expired
+  instances are not graded and not counted (ruled, §7.12, 4).
+
+Standing is computed from the instances when it is read, never stored as
+a number: the `pass` and `fail` rows by `test`, `served_to` and `type`,
+settled after the grant's `at`.
+
+**Qualifying.** A grant records `qualify`, the type's K at that moment
+(0 when the type has fewer than K ready tests, and the grant's answer says
+so). While fewer than K of the type's tests are graded since the grant,
+the worker is qualifying for it: `next` serves only its tests (§7.2,
+step 2). At K the standing rule above decides. At or over the threshold,
+real tasks start. Under it, the grant is revoked
+(`qualifying: passed 6 of 10 tests of pet-match, under 80%`). Qualifying
+is standing's first window, not a second rule. `task/me` marks a
+qualifying type (`qualifying: true`) and shows no score.
+
+**A re-grant** (`PUT /tasks/workers/:actor/grants/:type`) moves the
+grant's `at`, as built, so the window starts empty, and the worker
+qualifies again unless staff send `{ qualify: false }`. The old grades
+stay on their instances for staff and count for nothing (ruled, §7.12,
+2).
+
+Staff read standing at a new `GET /tasks/workers/:actor` (the worker, and
+per type the window, passed, graded, errors and whether qualifying), and
+as a score per grant in `GET /tasks/workers`.
+
+### 7.6 Copies
+
+```yaml
+- id: sign
+  type: human
+  config:
+    task: ballot-signature
+    show: { … }
+    copies: 2        # two workers answer
+```
+
+**One task, several answers.** Rule 1 stands: one task per workflow, run
+and step path. The task keeps `copies`, how many answers it wants, and
+each answer stays on its worker's lease (`leases.answer`). Rule 2 becomes:
+an open task with fewer live and submitted leases than `copies`. A worker
+has one lease per task, as built, so the answers come from different
+workers.
+
+The type's rule, `copies` on its record:
+
+| Field | Meaning | Default (ruled, §7.8) |
+| --- | --- | --- |
+| `max` | The most copies a step may ask for, and the most `more` may reach | 3 |
+| `agree` | How many answers must match to settle; at most what the step asked for | 2 |
+| `compare` | `equal`, or a sealed step comparing two answers in the grader's contract (one as `answer`, the other as `expected`) | `equal` |
+| `onDisagree` | `more`: ask one more worker, up to `max`. `fail`: the step fails | `more` |
+
+A step asking for more than `max` fails before a task is made.
+`copies: 1`, the default, is the task as built.
+
+**Deciding.** When the last answer asked for arrives (all of them: a
+worker already leased is not cut off), the answers are grouped by
+`compare`, each joining the first earlier answer it matches. A group of
+`agree` or more settles the task with its first answer. Otherwise `more`
+raises `copies` by one (the task is old, so it is near the front of the
+queue), and at `max`, or with `fail`, the task becomes `disputed`. With
+`equal` the decision is made in `submit`'s transaction. With a step it is
+queued like grading, and the task takes no lease meanwhile, since its
+leases already reach `copies`. The sweep decides a task left with all its
+answers and no decision, which covers a restart.
+
+What the step sees:
+
+- **Settled:** `{ answer, by, task, answers }`. `answer` is the agreed
+  one, `by` the first worker who gave it, and `answers` every copy as
+  `[{ answer, by, agrees }]` in the order given. `answers` is there only
+  when `copies` was over 1, so a one-copy workflow's output is unchanged.
+- **Disputed:** throws `task_disputed: the 3 answers to task <id>
+  (ballot-signature) did not agree`, so `onError` applies (asking an
+  expert type is the usual one). The answers stay on the task for staff,
+  and once staff know the answer they can make it a test (§7.1).
+- **Past `withinHours` with answers missing:** `task_expired:`, as built.
+
+`disputed` is a fifth task status. `onSettle` hears it, and the `task`
+source wakes the run as for the other three.
+
+Copies and tests stay apart: copies settle real tasks, tests score
+workers. Scoring a worker by agreement with other workers is later.
+
+### 7.7 The store's changes
+
+Schema version 2 (`db.ts`'s `user_version`), applied when the file is
+opened, in one transaction:
+
+| Table | Change |
+| --- | --- |
+| `task_types` | `tests` (JSON: `rate`, `newRate`, `newTasks`, `qualify`, `window`, `minGraded`, `threshold`, `grade`, `gradeCapUsd`) and `copies` (JSON: `max`, `agree`, `compare`, `onDisagree`). Null is off |
+| `tests` | New: id, type, show, files, expected, grade, the task it was made from and that task's worker, ready, created when and by, retired when and by, served |
+| `tasks` | `test`, `served_to` (unique with `test`), `copies` (default 1), `grade` (`pass`, `fail`, `error` or null), `graded_at`, `grade_note`. The status CHECK gains `disputed` and the root CHECK `test`; SQLite cannot change a CHECK, so the table is rebuilt (create, copy, rename) |
+| `leases` | `answer` |
+| `grants` | `qualify` |
+
+Copies and tests both change `tasks`' CHECKs, so the first PR rebuilds it
+once for both (§7.11).
+
+New on the service, beside `onSettle`: `onGraded` and `onAgreed` (§7.9).
+The capability gains nothing that reaches a test: authoring is the
+routes', grading the service's.
+
+Elsewhere:
+
+- **`human`:** `copies` (1 to the type's `max`), the `answers` output,
+  `task_disputed:`. `specs/SPEC.md` §4.1.9.
+- **`task/me`:** `qualifying` per type.
+- **`specs/API.md` §22:** the test routes, the type's `tests` and
+  `copies`, standing on the workers' routes, the re-grant's `qualify`,
+  and `GET /tasks?test=true|false` to list instances or leave them out.
+
+### 7.8 Defaults
+
+Ruled as written (§7.12, 9). Staff change them per task type.
+
+| Setting | Default |
+| --- | --- |
+| `rate` | 0.05 |
+| `newRate`, `newTasks` | 0.25, until the worker has answered 50 real tasks of the type since the grant |
+| `qualify` (K) | 10 |
+| `window` (N), `minGraded` | 20 and 10 (K) |
+| `threshold` | 0.8 |
+| `GRADE_TIMEOUT_MS`, `gradeCapUsd`, grading concurrency | 60 s, $0.05, 4 |
+| `copies.max`, `agree`, `onDisagree` | 3, 2, `more` |
+
+At these numbers a new worker answers 10 tests to qualify, then about one
+task in four is a test until they have answered 50 real ones, then one in
+twenty.
+
+### 7.9 Interfaces with items 5a and 6
+
+**Earnings (§8).** Item 4 hands earnings three facts. The money is §8's.
+
+| Hook, on `strut.tasks` | When | What item 5a may do with it |
+| --- | --- | --- |
+| The accepted-answer hook 5a adds (`onAnswered` *proposed*) | Every accepted answer: a real task, each copy, a test instance. `test: true` for an instance, in process only | Write the earning, the same for a test as for a real task, or pay tells |
+| `onGraded { lease, task, test, worker, type, result, answeredAt, at }`, `result` one of `pass`, `fail`, `error` | A test instance graded | A `fail` inside the hold takes back that lease's earning. An `error` does nothing |
+| `onAgreed { task, type, agreed, answers: [{ lease, worker, agrees }] }` | A copies task decided | Pay every copy, or not one that disagreed |
+
+Two limits for §8. The worker's balance must show a test's earning exactly
+as a real one's until it is graded. And a take-back is visible, so it says
+after the fact that one answer was a failed test. An automatic revoke
+takes back nothing by itself.
+
+**The staff app (§9).** It shows the tests with their served and pass
+counts, each type's grader errors, standing per worker, and disputed
+tasks. Its steps reach the routes above through the admin door. A step
+that authors a test carries the expected answer, so it lists `expected` in
+`redact` and is never kept as a run (a read is not kept already).
+`task/set-type` sets `tests` and `copies` like the rest of a type, as a
+proposal an admin accepts.
+
+### 7.10 Tests that prove it
+
+**Tests, grading, standing, qualifying:**
+
+- A page's view of an instance equals a real task's, field for field;
+  `submit`, `skip`, `file` and the lease's expiry behave the same on both.
+- No capability method, no step, and no `/tasks` answer but the test
+  routes' holds an expected answer. A grader's run writes nothing under
+  `dataDir` and sends no event to `onRunEvent`.
+- Answering a test wakes no run (`onSettle` does not hear it).
+- `take` never hands out an instance. An instance whose lease died
+  closes. A worker is never served one test twice, nor a test made from a
+  task they answered.
+- With `random` fixed: a test replaces a real task only when one was
+  takeable; an empty queue serves no test outside qualifying; `newRate`
+  gives way to `rate` after `newTasks`.
+- Qualifying serves only tests, then nothing until they are graded.
+  Passing opens real tasks; failing revokes with its reason.
+- Standing under the threshold revokes with `revokedBy: "standing"` and
+  the window in `why`, and expires the live lease. `error` grades never
+  move it. A re-grant starts an empty window and qualifies again, unless
+  `qualify: false`.
+- A grader that throws, runs out of time or is no longer sealed records
+  `error`. A pending grade survives a restart and is graded by the sweep.
+- A type or test naming an unsealed grader is refused when saved.
+- Both stores, one suite, as built.
+
+**Copies:**
+
+- `copies: 2` gives two leases to two workers, never two to one, and the
+  task settles only when both answers are in.
+- Agreement settles with the first agreeing answer and its `by`.
+  Disagreement with `more` asks a third worker; at `max` the step fails
+  `task_disputed:` and `onError` runs.
+- A step comparator decides outside the transaction and hands out no
+  lease meanwhile. A restart between the last answer and the decision is
+  decided by the sweep.
+- With `copies: 1` the output is exactly as built.
+
+### 7.11 The PRs
+
+| PR | What | After |
+| --- | --- | --- |
+| 4a | Schema version 2 whole (copies' columns and CHECKs too, unused until 4b), the `tests` table and routes, `takeTest` and the draw, the grading queue with `equal` and step graders, standing, qualifying, `onGraded`, `task/me`'s flag, `GET /tasks/workers/:actor`, the specs | 3 |
+| 4b | Copies: the step's and the type's fields, the take and settle changes, deciding, `disputed`, `answers`, `onAgreed`, the specs. No migration of its own | 4a merged |
+| 4c | *Optional:* the shipped graders, `grade/overlap` and `grade/judge`, sealed, each tested against the check contract | 4a merged |
+
+Never stacked: 4b and 4c branch from `main` after 4a has merged.
+
+### 7.12 Ruled (2026-11-12)
+
+Evan agreed with every recommendation.
+
+1. **A model grader is billed to one grading principal for the
+   deployment** (`createStrut({ tasks: { principal } })`, the
+   `tasks.principal` of STRUT_HOST_CONFIG, as `publicRuns.principal` is),
+   else to the admin who last saved the type. A test has no run to bill,
+   and on a Stadeum the client pays for model calls (ruling 2).
+2. **A re-grant restarts the window and the worker qualifies again,**
+   unless staff send `qualify: false` for a worker they know. Keeping the
+   old window would revoke them again at their next grade.
+3. **A worker is told they are qualifying:** a flag with no score. Every
+   task they get then is a test, so the flag gives nothing away, and it
+   explains tasks arriving at once.
+4. **Skipped and expired tests count for nothing.** Counting them as
+   failures would punish a skip only when it was a test, which no worker
+   can see; staff see skip rates instead.
+5. **Graders must be sealed:** `equal`, strut's `grade/*`, or a step staff
+   published with `sealed: true`. A grader reads every expected answer,
+   and one the builder could edit could log them.
+6. **A disputed task fails the step** with `task_disputed:`, so `onError`
+   applies. Returning `agreed: false` instead would add a field every
+   workflow with copies would have to check.
+7. **Copies wait for every answer asked for.** Settling at the first
+   `agree` matching answers would cut off a worker in the middle of the
+   task.
+8. **A test that was served is never edited:** it is retired and made
+   again, so each grade was against what that worker saw.
+9. **The defaults in §7.8 stand as written.**
 
 ## 8. Earnings and withdraw (items 5a and 5b)
 
