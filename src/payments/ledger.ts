@@ -30,7 +30,9 @@
  * And WORKER PAY (plans/human-steps.md §8.1), three tables of their own
  * added the same way: what an accepted answer of a paid task type earned
  * its worker, in SATS (msat), never dollars. `pay` is one row per answer
- * (its lease), written once and changed only by a take-back, once; `payees`
+ * (its lease), written once and changed only by a take-back — which a
+ * review's `ok` may undo inside the hold (`restore`, plans/human-steps.md
+ * §9.6), the take-back it cleared kept in `pay_restores`; `payees`
  * one row per worker, what they were credited, taken back and withdrawn;
  * `pay_daily` one row per UTC day and task type, what every read of pay
  * over time sums. An earning is HELD until its `releases` and withdrawable
@@ -439,6 +441,33 @@ export interface TakeBackResult {
   earning?: Earning;
 }
 
+/** A take-back undone while the earning is still held (plans/human-steps.md
+ *  §9.6: a review's rejection changed to `ok`). */
+export interface RestoreInput {
+  lease: string;
+  by?: string;
+  at?: number;
+}
+
+/** A restore's outcome: `restored` (now), `released` (past its hold: the
+ *  take-back is final) or `none` (nothing taken back, or nothing earned). */
+export interface RestoreResult {
+  lease: string;
+  result: "restored" | "released" | "none";
+  earning?: Earning;
+}
+
+/** One take-back a restore cleared, kept: when, why and by whom it was
+ *  taken back, and when and by whom it was restored. */
+export interface PayRestore {
+  lease: string;
+  takenBack: number;
+  takenBackWhy: string;
+  takenBackBy?: string;
+  restored: number;
+  restoredBy?: string;
+}
+
 /** What a worker is owed here (plans/human-steps.md §8.1, "The balance"). */
 export interface PayeeBalance {
   /** Earned, less taken back, less withdrawn. */
@@ -548,6 +577,14 @@ export interface LedgerStore {
    *  past its hold is `released` (the worker's); one taken back already is
    *  `taken` and changes nothing. */
   takeBack(input: TakeBackInput): Promise<TakeBackResult>;
+  /** Undoes a take-back while the earning is still held (§9.6): one guarded
+   *  statement, the payee's and the day's rows back down, the take-back it
+   *  cleared appended to `pay_restores`, committed with `synchronous=full`.
+   *  Past its hold the take-back is final (`released`); an earning not
+   *  taken back is `none`. The earning can be taken back again after. */
+  restore(input: RestoreInput): Promise<RestoreResult>;
+  /** The take-backs restores cleared on one lease, oldest first. */
+  restoresOf(lease: string): Promise<PayRestore[]>;
   /** What one worker is owed, held and withdrawable at `now`. */
   payeeBalance(worker: string, o?: { now?: number }): Promise<PayeeBalance>;
   /** The same for several workers in one grouped read; a worker with

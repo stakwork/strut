@@ -158,6 +158,9 @@ export const GRADE_ERRORS_LOGGED = 3;
 /** §7.6: how many copies tasks left with all their answers and no decision
  *  one sweep queues. */
 export const UNDECIDED_BATCH = 100;
+/** §9.6: how a take-back a review's rejection made begins its `why`, so
+ *  `ok` undoes that one alone. */
+export const REVIEW_TAKE_BACK = "review: ";
 /** Who a grade's take-back and a standing revoke are by. */
 export const GRADING_ACTOR = "grading";
 export const STANDING_ACTOR = "standing";
@@ -645,7 +648,10 @@ export interface TasksService {
    *  until the answer's hold ends (`until`), then it is `final`; a first
    *  verdict may come later, final at once. A MARK: nothing in the run
    *  changes. A rejection counts against the worker's standing in the type
-   *  as a failed test does (§7.5), and `ok` undoes that. A person's act
+   *  as a failed test does (§7.5), and `ok` undoes that. Inside the hold a
+   *  rejection takes the answer's earning back (`why` begins `review: `)
+   *  and `ok` restores that take-back (the ledger's `restore`); past it no
+   *  money moves. A person's act
    *  (`PUT /tasks/:id/review`, full scope); never on a capability. */
   review(o: { task: string; worker?: string; verdict: Verdict; why?: string; by?: string }): Promise<ReviewOutcome>;
   /** §7.1: the staff's tests, for the test routes alone. */
@@ -1512,6 +1518,18 @@ export function createTasks(deps: TasksDeps): TasksService {
     const before = (await s.tasks.reviewsOf([t.id])).find((r) => r.worker === l.worker);
     if (before && at >= until) {
       throw new TaskError("final", `final: the hold on ${l.worker}'s answer to task ${t.id} ended at ${new Date(until).toISOString()}, so its verdict (${before.verdict}) can no longer change`);
+    }
+    // The money (§9.6, ruled 2026-11-13: option A): inside the hold a
+    // rejection takes the earning back, and `ok` undoes a take-back a
+    // rejection made (its why begins `REVIEW_TAKE_BACK`), never a staff or a
+    // grading one. Past the hold nothing moves: paid money never moves back.
+    if (earning && at < until && deps.ledger) {
+      const ledger = await deps.ledger();
+      if (o.verdict === "rejected") {
+        earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+      } else if (earning.takenBack !== undefined && earning.takenBackWhy?.startsWith(REVIEW_TAKE_BACK)) {
+        earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+      }
     }
     const row = await s.tasks.putReview({ task: t.id, worker: l.worker, verdict: o.verdict, ...(why ? { why } : {}), ...(o.by ? { by: o.by } : {}), at });
     // §7.5: a rejection counts against standing as a failed test does, so

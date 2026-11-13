@@ -58,6 +58,9 @@ import {
   type RunOutcome,
   type SendPurpose,
   type SweepResult,
+  type PayRestore,
+  type RestoreInput,
+  type RestoreResult,
   type TakeBackInput,
   type TakeBackResult,
   type TokenBalance,
@@ -158,14 +161,36 @@ create table if not exists pay (
 create index if not exists pay_held_worker on pay(worker, releases) where taken_back is null;
 create index if not exists pay_held on pay(releases) where taken_back is null;
 create index if not exists pay_run on pay(run_id);
-create trigger if not exists pay_take_back_once before update on pay
-  when old.taken_back is not null or new.taken_back is null
+-- A pay row changes only by its take-back, and by that take-back undone
+-- (plans/human-steps.md §9.6: a review's ok inside the hold; the statement
+-- guards the hold). #664's trigger allowed the take-back alone, once: it is
+-- replaced at every open, so a file a strut from before opened works too.
+drop trigger if exists pay_take_back_once;
+create trigger if not exists pay_take_back_or_restore before update on pay
+  when not ((old.taken_back is null and new.taken_back is not null)
+         or (old.taken_back is not null and new.taken_back is null and new.taken_back_why is null and new.taken_back_by is null))
     or new.lease is not old.lease or new.task is not old.task or new.worker is not old.worker or new.type is not old.type
     or new.msat is not old.msat or new.at is not old.at or new.releases is not old.releases
     or new.workflow is not old.workflow or new.run_id is not old.run_id or new.path is not old.path
-  begin select raise(abort, 'a pay row changes only by its take-back, once'); end;
+  begin select raise(abort, 'a pay row changes only by its take-back, or that take-back undone'); end;
 create trigger if not exists pay_kept before delete on pay
   begin select raise(abort, 'pay rows are kept'); end;
+
+-- Each take-back a restore cleared (plans/human-steps.md §9.6), kept: a
+-- row is never changed or deleted.
+create table if not exists pay_restores (
+  lease text not null,
+  taken_back integer not null,
+  taken_back_why text not null,
+  taken_back_by text,
+  restored integer not null,
+  restored_by text
+) strict;
+create index if not exists pay_restores_lease on pay_restores(lease);
+create trigger if not exists pay_restores_append_only before update on pay_restores
+  begin select raise(abort, 'pay restores are kept'); end;
+create trigger if not exists pay_restores_kept before delete on pay_restores
+  begin select raise(abort, 'pay restores are kept'); end;
 
 create table if not exists payees (
   worker text primary key,
@@ -323,6 +348,15 @@ export class SqliteLedgerStore implements LedgerStore {
           where lease = ?4 and taken_back is null and releases > ?1`,
       ),
       payeeTakenBack: p("update payees set taken_back = taken_back + ? where worker = ?"),
+      // The one guarded write of a restore: taken back, and still held.
+      restore: p(
+        `update pay set taken_back = null, taken_back_why = null, taken_back_by = null
+          where lease = ?1 and taken_back is not null and releases > ?2`,
+      ),
+      insertRestore: p("insert into pay_restores (lease, taken_back, taken_back_why, taken_back_by, restored, restored_by) values (?, ?, ?, ?, ?, ?)"),
+      restoresOf: p("select * from pay_restores where lease = ? order by rowid"),
+      payeeRestored: p("update payees set taken_back = taken_back - ? where worker = ?"),
+      payDayRestored: p("update pay_daily set taken_back_answers = taken_back_answers - 1, taken_back_msat = taken_back_msat - ? where day = ? and type = ?"),
       payDayTakenBack: p("update pay_daily set taken_back_answers = taken_back_answers + 1, taken_back_msat = taken_back_msat + ? where day = ? and type = ?"),
       payeeRow: p("select * from payees where worker = ?"),
       held: p(
@@ -662,6 +696,34 @@ export class SqliteLedgerStore implements LedgerStore {
       const earning = earningRow(row);
       return { lease: input.lease, result: earning.takenBack !== undefined ? "taken" : "released", earning };
     }, true);
+  }
+
+  async restore(input: RestoreInput): Promise<RestoreResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    int("at", at);
+    return this.tx<RestoreResult>(() => {
+      const row = this.s.payOf.get(input.lease) as Row | undefined;
+      if (!row) return { lease: input.lease, result: "none" };
+      const before = earningRow(row);
+      if (before.takenBack === undefined) return { lease: input.lease, result: "none", earning: before };
+      if (Number(this.s.restore.run(input.lease, at).changes) !== 1) return { lease: input.lease, result: "released", earning: before };
+      this.s.insertRestore.run(input.lease, before.takenBack, before.takenBackWhy ?? "", before.takenBackBy ?? null, at, input.by ?? null);
+      this.s.payeeRestored.run(before.msat, before.worker);
+      this.s.payDayRestored.run(before.msat, dayOf(before.at), before.type);
+      return { lease: input.lease, result: "restored", earning: earningRow(this.s.payOf.get(input.lease) as Row) };
+    }, true);
+  }
+
+  async restoresOf(lease: string): Promise<PayRestore[]> {
+    return (this.live().s.restoresOf.all(lease) as Row[]).map((r) => ({
+      lease: r.lease as string,
+      takenBack: r.taken_back as number,
+      takenBackWhy: r.taken_back_why as string,
+      ...(r.taken_back_by !== null && r.taken_back_by !== undefined ? { takenBackBy: r.taken_back_by as string } : {}),
+      restored: r.restored as number,
+      ...(r.restored_by !== null && r.restored_by !== undefined ? { restoredBy: r.restored_by as string } : {}),
+    }));
   }
 
   async payeeBalance(worker: string, o: { now?: number } = {}): Promise<PayeeBalance> {

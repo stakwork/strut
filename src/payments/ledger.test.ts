@@ -693,6 +693,35 @@ for (const impl of impls) {
       assert.deepEqual(await store.payDaily({ to: dayOf(T0 - day) }), []);
     });
 
+    it("a restore undoes a take-back inside the hold, keeps what it cleared, and the earning can be taken back again (§9.6)", async () => {
+      const day = 24 * HOUR;
+      await earn("l1", { msat: 10_000 });
+      await earn("l2", { msat: 7_000 });
+      await store.takeBack({ lease: "l1", why: "review: a wrong box", by: "admin-1", at: T0 + HOUR });
+      const back = await store.restore({ lease: "l1", by: "admin-2", at: T0 + 2 * HOUR });
+      assert.equal(back.result, "restored");
+      assert.deepEqual([back.earning!.takenBack, back.earning!.takenBackWhy, back.earning!.takenBackBy], [undefined, undefined, undefined]);
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 2 * HOUR }), { totalMsat: 17_000, heldMsat: 17_000, withdrawableMsat: 0, nextReleaseAt: T0 + 72 * HOUR }, "held again");
+      assert.deepEqual(await store.restoresOf("l1"), [{ lease: "l1", takenBack: T0 + HOUR, takenBackWhy: "review: a wrong box", takenBackBy: "admin-1", restored: T0 + 2 * HOUR, restoredBy: "admin-2" }]);
+      assert.deepEqual((await store.payDaily()).map((r) => [r.answers, r.msat, r.takenBackAnswers, r.takenBackMsat]), [[2, 17_000, 0, 0]], "the answer's day back down");
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + 2 * HOUR }), { owedMsat: 17_000, heldMsat: 17_000, withdrawableMsat: 0, payees: 1 });
+      // Not taken back: nothing to restore. Nothing earned: none.
+      assert.equal((await store.restore({ lease: "l1", at: T0 + 3 * HOUR })).result, "none");
+      assert.deepEqual(await store.restore({ lease: "never", at: T0 }), { lease: "never", result: "none" });
+      // Taken back again, and restored again: each clearing kept.
+      assert.equal((await store.takeBack({ lease: "l1", why: "review: wrong after all", at: T0 + 4 * HOUR })).result, "taken");
+      assert.equal((await store.payeeBalance("ann", { now: T0 + 4 * HOUR })).totalMsat, 7_000);
+      assert.equal((await store.restore({ lease: "l1", at: T0 + 5 * HOUR })).result, "restored");
+      assert.deepEqual((await store.restoresOf("l1")).map((r) => [r.takenBackWhy, r.restored]), [["review: a wrong box", T0 + 2 * HOUR], ["review: wrong after all", T0 + 5 * HOUR]]);
+      // Past its hold a take-back is final: paid money never moves back.
+      await store.takeBack({ lease: "l2", why: "review: bad", at: T0 + HOUR });
+      const late = await store.restore({ lease: "l2", at: T0 + 3 * day });
+      assert.equal(late.result, "released");
+      assert.equal(late.earning!.takenBack, T0 + HOUR);
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 3 * day }), { totalMsat: 10_000, heldMsat: 0, withdrawableMsat: 10_000 });
+      assert.deepEqual(await store.restoresOf("l2"), []);
+    });
+
     it("several workers' balances in one read; a task's earnings, one per answer", async () => {
       await earn("a", { worker: "ann", task: "t1", msat: 1_000 });
       await earn("b", { worker: "bob", task: "t1", msat: 2_000, hold: HOUR });
@@ -797,19 +826,54 @@ describe("the ledger file", () => {
     }
   });
 
-  it("a pay row changes only by its take-back, once, and is never deleted", async () => {
+  it("a pay row changes only by its take-back, or that take-back undone whole, and is never deleted; a restore is kept", async () => {
     const store = await openLedger({ dataDir: dir });
     await store.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
+    await store.takeBack({ lease: "l1", why: "review: bad", at: T0 + 1 });
+    await store.restore({ lease: "l1", at: T0 + 2 });
     await store.close();
     const db = new DatabaseSync(ledgerPath(dir));
+    const refused = /take-back, or that take-back undone/;
     try {
-      assert.throws(() => db.exec("update pay set msat = 1 where lease = 'l1'"), /take-back, once/);
-      assert.throws(() => db.exec("update pay set releases = 0 where lease = 'l1'"), /take-back, once/);
+      assert.throws(() => db.exec("update pay set msat = 1 where lease = 'l1'"), refused);
+      assert.throws(() => db.exec("update pay set releases = 0 where lease = 'l1'"), refused);
       assert.throws(() => db.exec("delete from pay where lease = 'l1'"), /kept/);
       db.exec(`update pay set taken_back = ${T0}, taken_back_why = 'bad' where lease = 'l1'`);
-      assert.throws(() => db.exec(`update pay set taken_back = ${T0 + 1}, taken_back_why = 'again' where lease = 'l1'`), /take-back, once/);
+      assert.throws(() => db.exec(`update pay set taken_back = ${T0 + 1}, taken_back_why = 'again' where lease = 'l1'`), refused, "never rewritten");
+      assert.throws(() => db.exec("update pay set taken_back = null where lease = 'l1'"), refused, "undone whole or not at all");
+      assert.throws(() => db.exec(`update pay set taken_back = null, taken_back_why = null, msat = 1 where lease = 'l1'`), refused);
+      assert.throws(() => db.exec("update pay_restores set restored = 0"), /kept/);
+      assert.throws(() => db.exec("delete from pay_restores"), /kept/);
+      assert.equal((db.prepare("select count(*) n from pay_restores").get() as { n: number }).n, 1);
     } finally {
       db.close();
+    }
+  });
+
+  it("a file #664 made, with its one-way trigger, opens without it and restores (§9.6)", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
+    await one.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec(`drop trigger pay_take_back_or_restore; drop trigger pay_restores_append_only; drop trigger pay_restores_kept; drop table pay_restores;
+      create trigger pay_take_back_once before update on pay
+        when old.taken_back is not null or new.taken_back is null
+        begin select raise(abort, 'a pay row changes only by its take-back, once'); end;`);
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      await two.takeBack({ lease: "l1", why: "review: bad", at: T0 + 1 });
+      assert.equal((await two.restore({ lease: "l1", at: T0 + 2 })).result, "restored");
+      assert.equal((await two.payeeBalance("ann", { now: T0 + 2 })).totalMsat, 21_000);
+    } finally {
+      await two.close();
+    }
+    const after = new DatabaseSync(ledgerPath(dir));
+    try {
+      const triggers = (after.prepare("select name from sqlite_master where type = 'trigger' and tbl_name = 'pay' order by name").all() as Array<{ name: string }>).map((t) => t.name);
+      assert.deepEqual(triggers, ["pay_kept", "pay_take_back_or_restore"]);
+    } finally {
+      after.close();
     }
   });
 
@@ -819,7 +883,7 @@ describe("the ledger file", () => {
     await one.close();
     // What a file made before §8.1 holds: none of pay's tables.
     const db = new DatabaseSync(ledgerPath(dir));
-    db.exec("drop trigger pay_take_back_once; drop trigger pay_kept; drop table pay; drop table payees; drop table pay_daily");
+    db.exec("drop trigger pay_take_back_or_restore; drop trigger pay_kept; drop table pay; drop table payees; drop table pay_daily; drop table pay_restores");
     db.close();
     const two = await openLedger({ dataDir: dir });
     try {

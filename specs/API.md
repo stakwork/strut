@@ -5064,7 +5064,9 @@ server whose task store is its host's (which answers none of them).
 - **Taken back while held.** `POST /tasks/:id/take-back` (full scope; the
   service's alone, so no step reaches it) takes an earning back inside its
   hold, booking one not yet booked first; past its hold it is the
-  worker's (`409 released`). Once, with `why` and who did it.
+  worker's (`409 released`). Once, with `why` and who did it. A review's
+  rejection takes one back too, and its `ok` inside the hold undoes that
+  take-back alone ("Review" below).
 - **The run's cost.** The `human` step's output gains `pay: { msat, usd? }`
   for a paid answer, `usd` at the rate (`GET /rate`) when the step
   returns, and the step's `step.end` carries those dollars as `cost` with
@@ -5246,6 +5248,15 @@ second `human` step of a review type, or copies).
   after it, so it can revoke (`why` says how many of the window were
   rejected answers). `ok` takes it out of the window; it is not a pass, and
   a revoke it caused stays. A type with no tests has no standing to move.
+- **Money.** Inside the hold a rejection TAKES BACK the answer's earning
+  (its `takenBackWhy` is `review: <why>`, `takenBackBy` the reviewer), and
+  `ok` RESTORES that take-back: the earning counts and is held again, and
+  the take-back it cleared is kept in the ledger (`pay_restores`). `ok`
+  restores only a take-back a rejection made, never one by hand (`POST
+  /tasks/:id/take-back`) or a graded test's. Past the hold nothing moves:
+  a first rejection then is a mark and a standing fail alone, and paid
+  money never moves back. The answer carries its `earning` after the
+  verdict.
 
 ### Asking for a task type — `task/set-type` (`plans/human-steps.md` §9.8)
 

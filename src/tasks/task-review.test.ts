@@ -217,6 +217,72 @@ for (const impl of IMPLS) {
       assert.ok((await tasks().worker("ann"))!.grants.find((x) => x.type === TYPE)!.revokedAt !== undefined, "a revoke is an act: staff grant again");
     });
 
+    it("money: inside the hold a rejection takes the earning back and ok gives it back, again and again; a reason changed moves nothing", async () => {
+      await typeWith({ paySats: 5, holdHours: 24 }, ["ann"]);
+      const t = await ask();
+      await answer("ann");
+      const lease = (await leaseOf(t.id, "ann")).id;
+      const total = async () => (await tasks().me("ann")).balance.totalMsat;
+      assert.equal(await total(), 5_000);
+      rig.clock += HOUR;
+      const out = await review({ task: t.id, verdict: "rejected", why: "blurry", by: "ada" });
+      assert.deepEqual([out.earning?.takenBack, out.earning?.takenBackWhy, out.earning?.takenBackBy], [rig.clock, "review: blurry", "ada"]);
+      assert.equal(await total(), 0, "taken back at once");
+      rig.clock += HOUR;
+      const ok = await review({ task: t.id, verdict: "ok", by: "bo" });
+      assert.equal(ok.earning?.takenBack, undefined, "restored");
+      assert.equal(await total(), 5_000);
+      assert.deepEqual((await rig.ledger.restoresOf(lease)).map((r) => [r.takenBackWhy, r.takenBackBy, r.restoredBy]), [["review: blurry", "ada", "bo"]], "the take-back it cleared is kept");
+      rig.clock += HOUR;
+      await review({ task: t.id, verdict: "rejected", why: "blurry after all" });
+      assert.equal(await total(), 0, "taken back again");
+      await review({ task: t.id, verdict: "rejected", why: "very blurry" });
+      const e = (await leaseOf(t.id, "ann")).earning!;
+      assert.deepEqual([e.takenBackWhy, await total()], ["review: blurry after all", 0], "a new reason takes nothing more");
+      assert.equal((await leaseOf(t.id, "ann")).review?.why, "very blurry", "the verdict keeps the new one");
+    });
+
+    it("money: ok never undoes a staff take-back; past the hold nothing moves; an unpaid answer has none to move", async () => {
+      await typeWith({ paySats: 5, holdHours: 24 }, ["ann"]);
+      const t = await ask();
+      await answer("ann");
+      await rig.svc.takeBack({ task: t.id, why: "staff saw it", by: "bo" });
+      await review({ task: t.id, verdict: "rejected", why: "wrong" });
+      await review({ task: t.id, verdict: "ok" });
+      const e = (await leaseOf(t.id, "ann")).earning!;
+      assert.deepEqual([e.takenBackWhy, e.takenBackBy, (await tasks().me("ann")).balance.totalMsat], ["staff saw it", "bo", 0], "the staff's take-back stands");
+
+      const late = await ask();
+      await answer("ann");
+      rig.clock = (await leaseOf(late.id, "ann")).earning!.releases;
+      const out = await review({ task: late.id, verdict: "rejected", why: "seen late" });
+      assert.deepEqual([out.review.final, out.earning?.takenBack], [true, undefined], "after the hold: no money moves");
+      assert.equal((await tasks().me("ann")).balance.totalMsat, 5_000);
+
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48 }, "staff");
+      const free = await ask();
+      await answer("ann");
+      const unpaid = await review({ task: free.id, verdict: "rejected", why: "wrong" });
+      assert.equal(unpaid.earning, undefined);
+    });
+
+    it("money: a copies task's rejected answer loses its own earning alone", async () => {
+      await typeWith({ paySats: 5, holdHours: 24, copies: { max: 2, agree: 2, onDisagree: "fail" } });
+      const t = await ask(2);
+      await answer("ann", YES);
+      await answer("bob", NO);
+      await review({ task: t.id, worker: "bob", verdict: "rejected", why: "the other pet" });
+      const view = (await tasks().task(t.id))!;
+      assert.deepEqual(
+        view.leases.map((l) => [l.worker, l.earning?.takenBack !== undefined]),
+        [
+          ["ann", false],
+          ["bob", true],
+        ],
+      );
+      assert.deepEqual([(await tasks().me("ann")).balance.totalMsat, (await tasks().me("bob")).balance.totalMsat], [5_000, 0]);
+    });
+
     it("a rejection on a type without tests moves no standing: there are no rules to read", async () => {
       await typeWith();
       const t = await ask();

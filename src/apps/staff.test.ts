@@ -467,6 +467,10 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const rv = await admin("staff/review", { task: id, verdict: "rejected", why: "the wrong pet" });
     assert.equal(rv.error, undefined, rv.error);
     assert.deepEqual([rv.result.worker, rv.result.review.verdict, rv.result.review.by], ["w1", "rejected", "ada"]);
+    assert.equal(rv.result.earning.takenBackWhy, "the wrong pet", "taken back by staff already: the rejection takes nothing more");
+    const okd = await admin("staff/review", { task: id, verdict: "ok" });
+    assert.equal(okd.result.earning.takenBackWhy, "the wrong pet", "and ok never undoes a staff take-back");
+    await admin("staff/review", { task: id, verdict: "rejected", why: "the wrong pet" });
     assert.equal((await admin("staff/task", { id })).result.task.leases[0].review.why, "the wrong pet");
     assert.deepEqual((await admin("staff/tasks", { review: "rejected", by: "w1" })).result.tasks.map((t: { id: string }) => t.id), [id]);
     assert.equal((await admin("staff/worker", { actor: "w1" })).result.recent[0].lease.review.verdict, "rejected", "the worker's page shows it");
