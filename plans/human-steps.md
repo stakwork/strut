@@ -1004,6 +1004,52 @@ source wakes the run as for the other three.
 Copies and tests stay apart: copies settle real tasks, tests score
 workers. Scoring a worker by agreement with other workers is later.
 
+**Built differently (#675):**
+
+- **A type without a `copies` rule asks one worker** (§7.7's "null is
+  off"): a step asking more fails `bad_request: copies:` before a task is
+  made. Each copy is paid work, so how much a step may multiply it is the
+  admin's, as pay is (§6). `max` is 1 to 10 (`COPIES_MAX`), `agree` 1 to
+  `max`.
+- **`agree` is at most the copies the task wants when it is decided,** not
+  what the step first asked: the task keeps only `copies`, which `more`
+  raises. With the defaults the two are the same.
+- **Two groups of `agree` or more** (only when `agree` is at most half the
+  copies): the larger settles, then the one whose first answer came first.
+- **The type's rule is read at each decision.** A type whose copies rule
+  was turned off after a task of it was made decides that task by `equal`
+  and the default `agree`, and never asks more.
+- **A step comparator runs as a grader does** (`deps.grade`: sealed, the
+  grading principal, 60 s), capped at the type's `tests.gradeCapUsd` or
+  $0.05, in grading's queue and its concurrency of 4; `grading()` resolves
+  once neither waits. Its comparisons are made again at each decision (none
+  is kept), so after `more` the first two answers are compared again. One
+  that fails leaves the task undecided, logged once; the sweep (at most 100
+  a minute, `deciding` in its answer) tries again each minute until it
+  decides or the task expires (`task_expired:`).
+- **A one-copy task's answer is the task's alone:** `leases.answer` is
+  written for copies only, so a one-copy task's record is as built.
+- **`leases.agrees`**, a column §7.7 did not list (below): whether each copy
+  agreed. A step comparator's decision cannot be made again when the step
+  reads the task after its wake, and `answers[].agrees` needs it.
+- **`pay` is every copy's**, each having earned. A disputed task fails its
+  step, so its copies' pay is not in the run's cost, nor are an expired
+  task's answered copies'. A known limit.
+- **`onAgreed`** is `{ task, type, agreed, answers: [{ lease, worker,
+  agrees }], at }`, `agreed` false for a disputed task, told every decision
+  but `more` and never for one copy. Nothing in strut listens: every copy
+  keeps its earning, a disagreeing one included. Whether one that disagreed
+  should lose it (§7.9: "pay every copy, or not one that disagreed") is
+  open, Evan's to rule.
+- **A test made from a copies task** is never served to any worker who
+  answered it (`takeTest` reads the task's answered leases), not only to its
+  `by`: a disputed task has none.
+- **Waking held waits:** a copies task made wakes one held `next` per copy,
+  and `more` one.
+- The tests: `src/tasks/task-copies.test.ts` over both stores (§7.10's
+  "Copies" list) and `src/steps/core/human.test.ts` (the output,
+  `task_disputed:` and `onError`).
+
 ### 7.7 The store's changes
 
 Schema version 2 (`db.ts`'s `user_version`), applied when the file is
@@ -1032,6 +1078,14 @@ until then only the CHECK knows it.
 New on the service, beside `onSettle`: `onGraded` and `onAgreed` (§7.9).
 The capability gains nothing that reaches a test: authoring is the
 routes', grading the service's.
+
+**Built differently (#675, 4b):** one more nullable column,
+`leases.agrees` (1 or 0 once a copies task is decided; §7.6 says why),
+added as #664 added pay's (`ADD COLUMN` when the file lacks it,
+`user_version` still 2), and an index, `tasks_open_copies`, for the
+sweep's undecided tasks. `TASK_STATUSES` gains `disputed`. A task's record
+carries `copies` and a copies task's leases their `answer` and `agrees`, on
+`GET /tasks` and `GET /tasks/:id`.
 
 Elsewhere:
 
@@ -2025,7 +2079,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
-| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. 4b (copies) and 4c (graders) not started |
+| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). 4c (graders) not built |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |

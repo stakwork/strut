@@ -57,6 +57,16 @@
  * (`TasksService.tests`); no capability method, step or other route holds an
  * expected answer.
  *
+ * COPIES (§7.6, item 4b): a `human` step may ask several workers
+ * (`copies`, up to its type's `copies.max`; a type without a copies rule
+ * asks one). Each answers on their own lease and earns as any answer does.
+ * When the last answer asked for is in, the task is DECIDED: grouped by the
+ * type's `compare` — `equal` inside `submit`'s transaction, a sealed step
+ * through `deps.grade` in the queue grading uses, while no lease can be
+ * taken — it settles with the first answer of a group of `agree`, asks one
+ * more worker (`more`, up to `max`), or is `disputed`, which fails the step.
+ * `onAgreed` hears each decision; nothing is taken back on disagreement.
+ *
  * Nothing is made until something is asked of it: no file on a strut that
  * never runs a `human` step, and a staff READ on such a strut answers empty.
  */
@@ -70,7 +80,11 @@ import {
   DEFAULT_HOLD_HOURS,
   DEFAULT_TEST_RULES,
   MemoryTaskStore,
+  answersOf,
   payMsatOf,
+  settledOf,
+  type CopiesDecision,
+  type CopiesRule,
   type GradeResult,
   type GradeRule,
   type Lease,
@@ -87,14 +101,16 @@ import {
   type TestRules,
 } from "./task-store.js";
 import { gradeRuleOf, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
+import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
-export type { GradeResult, GradeRule, Lease, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { Standing } from "./task-tests.js";
-export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES } from "./task-store.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES } from "./task-store.js";
+export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 
 /** §4.2's defaults. */
@@ -132,6 +148,9 @@ export const GRADE_TIMEOUT_MS = 60_000;
 export const GRADE_CONCURRENCY = 4;
 export const UNGRADED_BATCH = 100;
 export const GRADE_ERRORS_LOGGED = 3;
+/** §7.6: how many copies tasks left with all their answers and no decision
+ *  one sweep queues. */
+export const UNDECIDED_BATCH = 100;
 /** Who a grade's take-back and a standing revoke are by. */
 export const GRADING_ACTOR = "grading";
 export const STANDING_ACTOR = "standing";
@@ -243,6 +262,9 @@ export interface EnsureInput {
   job?: string;
   /** Overrides the type's. */
   withinHours?: number;
+  /** How many workers answer it (§7.6): 1 by default, at most the type's
+   *  `copies.max` (1 when the type has no copies rule). */
+  copies?: number;
 }
 
 /** What only the `human` step hands `ensure` beside its input. */
@@ -273,6 +295,10 @@ export interface TaskTypeInput {
   /** Its test rules (§7.2, §7.5): §7.8's defaults with these over them;
    *  absent or null: off. */
   tests?: Partial<TestRules> | null;
+  /** Its copies rule (§7.6): §7.8's defaults (`max` 3, `agree` 2, `equal`,
+   *  `more`) with these over them; absent or null: off, a step asks one
+   *  worker. */
+  copies?: Partial<CopiesRule> | null;
 }
 
 /** What a settled task's answer earned (§8.1): the lease's stamp, and the
@@ -280,6 +306,26 @@ export interface TaskTypeInput {
 export interface TaskPay {
   msat: number;
   usd?: number;
+}
+
+/** One answer to a copies task (§7.6), in the order given: what it was,
+ *  who gave it, and whether it agreed with the answer the task settled
+ *  with. */
+export interface CopyAnswer {
+  answer: unknown;
+  by: string;
+  agrees: boolean;
+}
+
+/** A copies task decided (§7.9): settled by agreement (`agreed`) or
+ *  disputed, with each answer's lease and worker and whether it agreed.
+ *  What a rule on a disagreeing copy's earning would hear; none is built. */
+export interface AgreedTask {
+  task: string;
+  type: string;
+  agreed: boolean;
+  answers: Array<{ lease: string; worker: string; agrees: boolean }>;
+  at: number;
 }
 
 /** One task as its worker sees it: what to show, and the lease to answer by. */
@@ -396,9 +442,10 @@ export interface TakeBackOutcome {
 
 export interface TasksCapability {
   /** The `human` step's: the task keyed by workflow, run and path, made
-   *  when there is none (rule 1). A settled task comes with what its answer
-   *  earned (`pay`, §8.1), when it earned anything. */
-  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay }>;
+   *  when there is none (rule 1). A settled task comes with what its
+   *  answers earned (`pay`, §8.1), when they earned anything, and a copies
+   *  task's settled with every answer (`answers`, §7.6). */
+  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay; answers?: CopyAnswer[] }>;
 
   // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
   // app's name, when the call comes from one: a lease of a type another app
@@ -484,12 +531,18 @@ export interface TasksService {
   tests: TestAuthoring;
   /** §7.9: every test instance graded. Returns the unsubscribe. */
   onGraded(listener: (graded: GradedTest) => void): () => void;
-  /** Resolves once no answer waits in the grading queue (a test's wait). */
+  /** §7.9: every copies task decided — settled by agreement, or disputed.
+   *  Every copy keeps its earning: a rule taking back a disagreeing copy's
+   *  is not built. Returns the unsubscribe. */
+  onAgreed(listener: (agreed: AgreedTask) => void): () => void;
+  /** Resolves once nothing waits in the queue: no answered test to grade
+   *  and no copies task for a step to decide (a test's wait). */
   grading(): Promise<void>;
   /** Rule 8, now, and §8.1's backstop: books every answer whose earning is
-   *  not booked, and queues every answered test not graded (§7.4: after a
-   *  restart). Opens the store. */
-  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number; grading: number }>;
+   *  not booked, queues every answered test not graded (§7.4: after a
+   *  restart) and every copies task with all its answers and no decision
+   *  (§7.6, `deciding`). Opens the store. */
+  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number; grading: number; deciding: number }>;
   /** The sweep at once and every minute, while a store is open or on file. */
   start(): void;
   stop(): void;
@@ -813,20 +866,23 @@ export function createTasks(deps: TasksDeps): TasksService {
     await s.tasks.booked(l.id, now());
     return true;
   };
-  /** What a settled task's answer earned: the submitted lease's stamp, and
-   *  the dollars at the rate now. */
-  const payOf = async (s: TaskStores, t: TaskRecord): Promise<TaskPay | undefined> => {
-    if (t.status !== "settled") return undefined;
-    const l = (await s.tasks.leasesOf([t.id])).find((x) => x.status === "submitted" && x.worker === t.by);
-    if (!l?.payMsat) return undefined;
+  /** What a settled task's answers earned — the submitted leases' stamps,
+   *  every copy's (§7.6) — and the dollars at the rate now; and a copies
+   *  task's answers in the order given. */
+  const settledExtras = async (s: TaskStores, t: TaskRecord): Promise<{ pay?: TaskPay; answers?: CopyAnswer[] }> => {
+    if (t.status !== "settled") return {};
+    const answered = answersOf(await s.tasks.leasesOf([t.id]));
+    const answers = t.copies > 1 ? answered.map((l) => ({ answer: l.answer ?? null, by: l.worker, agrees: l.agrees === true })) : undefined;
+    const msat = answered.reduce((n, l) => n + (l.payMsat ?? 0), 0);
+    if (!msat) return answers ? { answers } : {};
     let usd: number | undefined;
     try {
       const rate = await deps.usdPerBtc?.();
-      if (typeof rate === "number" && Number.isFinite(rate) && rate > 0) usd = Math.round(((l.payMsat * rate) / 1e11) * 1e6) / 1e6;
+      if (typeof rate === "number" && Number.isFinite(rate) && rate > 0) usd = Math.round(((msat * rate) / 1e11) * 1e6) / 1e6;
     } catch (err) {
       console.warn(`[tasks] no rate for task ${t.id}'s pay in dollars: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return { msat: l.payMsat, ...(usd !== undefined && usd > 0 ? { usd } : {}) };
+    return { pay: { msat, ...(usd !== undefined && usd > 0 ? { usd } : {}) }, ...(answers ? { answers } : {}) };
   };
   const balanceOf = async (actor: string): Promise<PayeeBalance> => {
     const ledger = await deps.ledgerIfAny?.();
@@ -881,16 +937,26 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (showBytes > SHOW_MAX_BYTES) throw new TaskError("bad_request", `show is ${showBytes} bytes as JSON; at most ${SHOW_MAX_BYTES} (name files instead of inlining them)`);
       if (input.job !== undefined) need("job", input.job);
       if (input.withinHours !== undefined) hours(input.withinHours);
+      const copies = input.copies ?? 1;
+      if (!Number.isSafeInteger(copies) || copies < 1 || copies > COPIES_MAX) throw new TaskError("bad_request", `copies is a whole number from 1 to ${COPIES_MAX}`);
       const s = await stores();
       // A task already made is the step's, whatever its type became since.
       const known = await s.tasks.byKey(workflow, runId, path);
-      if (known) {
-        const pay = await payOf(s, known);
-        return { task: known, created: false, ...(pay ? { pay } : {}) };
-      }
+      if (known) return { task: known, created: false, ...(await settledExtras(s, known)) };
       const kind = await s.tasks.type(type);
       if (!kind) throw new TaskError("unknown_type", `no task type ${type} here; an admin adds it`);
       if (!kind.enabled) throw new TaskError("type_disabled", `task type ${type} is turned off`);
+      // §7.6: each copy is paid work, so how many a step may ask is the
+      // type's, an admin's.
+      const max = kind.copies?.max ?? 1;
+      if (copies > max) {
+        throw new TaskError(
+          "bad_request",
+          kind.copies
+            ? `copies: task type ${type} asks at most ${max} workers a task (its copies.max); the step asked ${copies}`
+            : `copies: task type ${type} asks one worker a task (an admin turns copies on for it); the step asked ${copies}`,
+        );
+      }
       if (o.resolveFiles) files = filesOf(await o.resolveFiles(files));
       const at = now();
       const made = await s.tasks.ensure({
@@ -904,8 +970,10 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(input.job === undefined ? {} : { job: input.job }),
         created: at,
         due: at + Math.round((input.withinHours ?? kind.withinHours) * 3_600_000),
+        copies,
       });
-      if (made.created) wakeFor(made.task.type);
+      // One waiter woken for each worker the task wants.
+      if (made.created) for (let i = 0; i < made.task.copies; i++) wakeFor(made.task.type);
       return made;
     },
 
@@ -962,8 +1030,9 @@ export function createTasks(deps: TasksDeps): TasksService {
       await appOk(s, l, o.app, kind);
       const problem = answerProblem(kind.answer, o.answer);
       if (problem) throw new TaskError("bad_answer", problem);
-      const settled = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now() });
-      if (!settled) return whyNot(s, w, l.id);
+      const r = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now(), decide: inlineDecider(kind) });
+      if (!r) return whyNot(s, w, l.id);
+      const settled = r.task;
       // The answer is accepted: what it earns is owed (§8.1), a test's as a
       // real task's (§7.9), or the pay would tell. A booking that fails is
       // never the worker's — the sweep books it.
@@ -973,7 +1042,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       // §7.3: no run waits on a test instance, so nothing is woken: it is
       // graded, out of sight. The worker hears `ok` either way.
       if (settled.test !== undefined) queueGrade(settled.id);
-      else tell([{ id: settled.id, type: settled.type, workflow: settled.workflow, runId: settled.runId, path: settled.path, status: "settled" }]);
+      // §7.6: a copies task's last answer, decided here (`equal`), or by a
+      // step in the queue; any other copy's answer waits for the rest.
+      else if (r.decision) decided(settled, r.answers ?? [], r.decision);
+      else if (r.answers) queueDecide(settled.id);
+      else if (settled.status !== "open") tell([settledOf(settled)]);
       return { ok: true };
     },
 
@@ -1047,6 +1120,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
+      const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
       const s = await stores();
       const saved = await s.tasks.putType({
         name,
@@ -1058,6 +1132,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(paySats ? { paySats } : {}),
         holdHours,
         ...(tests ? { tests } : {}),
+        ...(copies ? { copies } : {}),
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
@@ -1183,35 +1258,128 @@ export function createTasks(deps: TasksDeps): TasksService {
     return out;
   };
 
-  // ── grading (§7.4) ────────────────────────────────────────────────────
-  // A queue fed by `submit` and by the sweep, `GRADE_CONCURRENCY` at a time
-  // in the process. Each answered instance is graded once: the store's write
-  // is guarded (`grade is null`), and one queued twice is graded once.
+  // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────
+  // Fed by `submit` and by the sweep, `GRADE_CONCURRENCY` at a time in the
+  // process: an answered test instance to grade, or a copies task whose last
+  // answer is in for a step comparator to decide. Each is written once: the
+  // store's writes are guarded (`grade is null`; the task still open and
+  // wanting what was decided on), and one queued twice is done once.
   const gradedListeners = new Set<(g: GradedTest) => void>();
-  const gradeQueue: string[] = [];
+  const agreedListeners = new Set<(a: AgreedTask) => void>();
+  type Job = { kind: "grade" | "decide"; id: string };
+  const gradeQueue: Job[] = [];
   const queued = new Set<string>();
   const drained: Array<() => void> = [];
   let gradingNow = 0;
   /** Errors in a row, by type: three are logged, once. */
   const errorsInARow = new Map<string, number>();
-  const queueGrade = (id: string) => {
-    if (closing || queued.has(id)) return;
-    queued.add(id);
-    gradeQueue.push(id);
+  /** Copies tasks whose decision failed: logged once each, until one lands. */
+  const decideFailed = new Set<string>();
+  const enqueue = (job: Job) => {
+    const key = `${job.kind}:${job.id}`;
+    if (closing || queued.has(key)) return;
+    queued.add(key);
+    gradeQueue.push(job);
     pump();
   };
+  const queueGrade = (id: string) => enqueue({ kind: "grade", id });
+  const queueDecide = (id: string) => enqueue({ kind: "decide", id });
   const pump = () => {
     while (gradingNow < GRADE_CONCURRENCY && gradeQueue.length) {
-      const id = gradeQueue.shift()!;
+      const job = gradeQueue.shift()!;
       gradingNow++;
-      void gradeOne(id)
-        .catch((err) => console.error(`[tasks] grading test answer ${id} failed; the next sweep tries again:`, err))
-        .finally(() => {
-          gradingNow--;
-          queued.delete(id);
-          pump();
-          if (gradingNow === 0 && !gradeQueue.length) for (const resolve of drained.splice(0)) resolve();
-        });
+      const done =
+        job.kind === "grade"
+          ? gradeOne(job.id).catch((err) => console.error(`[tasks] grading test answer ${job.id} failed; the next sweep tries again:`, err))
+          : decideOne(job.id).then(
+              () => void decideFailed.delete(job.id),
+              (err) => {
+                if (decideFailed.has(job.id)) return;
+                decideFailed.add(job.id);
+                console.error(`[tasks] deciding copies task ${job.id} failed; the sweep tries again each minute until it is decided or expires:`, err);
+              },
+            );
+      void done.finally(() => {
+        gradingNow--;
+        queued.delete(`${job.kind}:${job.id}`);
+        pump();
+        if (gradingNow === 0 && !gradeQueue.length) for (const resolve of drained.splice(0)) resolve();
+      });
+    }
+  };
+
+  // ── deciding copies (§7.6) ────────────────────────────────────────────
+  /** `submit`'s decider for a type that compares by `equal`: the decision
+   *  in the answer's own transaction. A step comparator decides outside it
+   *  (undefined): the task then waits in the queue, and since every lease it
+   *  wants is answered, none is handed out meanwhile. */
+  const inlineDecider = (kind: TaskType) => {
+    const rule = decidingRule(kind.copies);
+    if (rule.compare !== "equal") return undefined;
+    return (answers: unknown[], copies: number) => decideCopies(groupsOf(answers.length, (i, j) => sameJson(answers[i], answers[j])), rule, copies);
+  };
+  /** A step comparator's verdict on two answers, in the grader's contract:
+   *  the later as `answer`, the earlier as `expected`. Throws when it cannot
+   *  give one, which leaves the task undecided for the sweep. */
+  const compared = async (rule: Exclude<GradeRule, "equal">, t: TaskRecord, kind: TaskType | undefined, later: unknown, earlier: unknown): Promise<boolean> => {
+    const problem = graderProblem(rule.step);
+    if (problem) throw new Error(problem);
+    if (!deps.grade) throw new Error(`this server runs no step comparator (${rule.step})`);
+    const principal = deps.principal ?? kind?.changedBy;
+    if (!principal) throw new Error(`nobody to bill ${rule.step} to: set the deployment's grading principal (tasks.principal), or save the type as an admin`);
+    const v = await deps.grade({
+      step: rule.step,
+      ...(rule.config ? { config: rule.config } : {}),
+      input: { answer: later, expected: earlier, show: t.show, type: t.type },
+      principal,
+      maxCostUsd: kind?.tests?.gradeCapUsd ?? DEFAULT_TEST_RULES.gradeCapUsd,
+      timeoutMs: deps.gradeTimeoutMs ?? GRADE_TIMEOUT_MS,
+    });
+    if (!v || typeof v.supports !== "boolean") throw new Error(`${rule.step} returned no verdict`);
+    return v.supports;
+  };
+  /** A copies task with every answer it wants and no decision: decided now
+   *  — a step's comparisons outside any transaction — and written guarded,
+   *  so a task cancelled, expired or decided meanwhile is left as it is. */
+  const decideOne = async (id: string) => {
+    const s = await stores();
+    const t = await s.tasks.task(id);
+    if (!t || t.test !== undefined || t.status !== "open" || t.copies <= 1) return;
+    const answers = answersOf(await s.tasks.leasesOf([id]));
+    if (answers.length < t.copies) return;
+    const kind = await s.tasks.type(t.type);
+    const rule = decidingRule(kind?.copies);
+    const cmp = rule.compare;
+    const groups =
+      cmp === "equal"
+        ? groupsOf(answers.length, (i, j) => sameJson(answers[i]!.answer, answers[j]!.answer))
+        : await groupsOfAsync(answers.length, (i, j) => compared(cmp, t, kind, answers[i]!.answer, answers[j]!.answer));
+    if (closing) return;
+    const decision = decideCopies(groups, rule, t.copies);
+    const after = await s.tasks.decide({ task: id, copies: t.copies, decision, now: now() });
+    if (after) decided(after, answers, decision);
+  };
+  /** A decision landed: one more worker is wanted, or the task left `open`
+   *  — its run wakes, and `onAgreed` hears it (§7.9). */
+  const decided = (t: TaskRecord, answers: Lease[], d: CopiesDecision) => {
+    if (d.outcome === "more") {
+      wakeFor(t.type);
+      return;
+    }
+    tell([settledOf(t)]);
+    const agreed: AgreedTask = {
+      task: t.id,
+      type: t.type,
+      agreed: d.outcome === "agreed",
+      answers: answers.map((a, i) => ({ lease: a.id, worker: a.worker, agrees: d.outcome === "agreed" && d.agrees[i] === true })),
+      at: t.settledAt ?? now(),
+    };
+    for (const fn of agreedListeners) {
+      try {
+        fn(agreed);
+      } catch (err) {
+        console.error(`[tasks] an agreed listener threw:`, err);
+      }
     }
   };
   /** The verdict on an answered instance: `equal` here, a step through
@@ -1466,7 +1634,11 @@ export function createTasks(deps: TasksDeps): TasksService {
     // grading failed outright — is queued again.
     const ungraded = await s.tasks.ungraded(UNGRADED_BATCH);
     for (const t of ungraded) queueGrade(t.id);
-    return { ...swept, booked, grading: ungraded.length };
+    // §7.6: a copies task with every answer and no decision — its process
+    // died while a step compared them, or the step failed — is queued again.
+    const undecided = await s.tasks.undecided(UNDECIDED_BATCH);
+    for (const t of undecided) queueDecide(t.id);
+    return { ...swept, booked, grading: ungraded.length, deciding: undecided.length };
   };
 
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -1515,6 +1687,10 @@ export function createTasks(deps: TasksDeps): TasksService {
     onGraded(listener) {
       gradedListeners.add(listener);
       return () => void gradedListeners.delete(listener);
+    },
+    onAgreed(listener) {
+      agreedListeners.add(listener);
+      return () => void agreedListeners.delete(listener);
     },
     grading: () => (gradingNow === 0 && !gradeQueue.length ? Promise.resolve() : new Promise<void>((resolve) => drained.push(resolve))),
     sweep,

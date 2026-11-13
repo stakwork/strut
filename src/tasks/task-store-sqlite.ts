@@ -19,6 +19,11 @@
  * `tasks` table is rebuilt (made anew, copied, renamed), its `seq` kept.
  * `taskSchema` does it, inside the file's one migration transaction
  * (`TaskDb.migrate`).
+ *
+ * Copies (plans/human-steps.md §7.6, item 4b) use version 2's columns and
+ * add one, `leases.agrees` (whether a copy's answer agreed, once its task
+ * was decided), the way pay's were added: `ADD COLUMN` when the file lacks
+ * it, `user_version` still 2.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -29,11 +34,14 @@ import {
   pageLimit,
   payMsatOf,
   pickIn,
+  type CopiesDecision,
+  type CopiesRule,
   type GradeResult,
   type GradeRule,
   type Lease,
   type LeaseStatus,
   type NewTask,
+  type SettleResult,
   type TaskListQuery,
   type TaskRecord,
   type TaskSettled,
@@ -113,6 +121,7 @@ create table if not exists leases (
   pay_msat integer,
   booked_at integer,
   answer text,
+  agrees integer,
   unique (task, worker)
 ) strict;
 
@@ -144,6 +153,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["leases", "pay_msat", "integer"],
   ["leases", "booked_at", "integer"],
   ["leases", "answer", "text"],
+  ["leases", "agrees", "integer"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -156,6 +166,7 @@ create index if not exists tasks_status on tasks(status, seq);
 create index if not exists tasks_open_tests on tasks(seq) where status = 'open' and test is not null;
 create index if not exists tasks_tested on tasks(served_to, type, settled_at) where test is not null;
 create index if not exists tasks_ungraded on tasks(settled_at) where test is not null and status = 'settled' and grade is null;
+create index if not exists tasks_open_copies on tasks(seq) where status = 'open' and copies > 1;
 create index if not exists leases_open_task on leases(task) where status = 'open';
 create index if not exists leases_open_worker on leases(worker) where status = 'open';
 create index if not exists leases_open_expires on leases(expires) where status = 'open';
@@ -185,11 +196,14 @@ export function taskSchema(db: TaskDb): void {
 }
 
 /** Rule 2's guard over `t` (a task) and `ty` (its type), for worker ?2 at
- *  ?3 among the types ?4: shared by `take` and `peek`. */
+ *  ?3 among the types ?4: shared by `take` and `peek`. A task is takeable
+ *  while its live and submitted leases are fewer than the answers it wants
+ *  (`copies`, §7.6): one copy, while nobody holds it. */
 const TAKEABLE = `t.status = 'open' and t.due > ?3 and ty.enabled = 1 and t.test is null
             and t.type in (select value from json_each(?4))
             and not exists (select 1 from leases l where l.task = t.id and l.worker = ?2)
-            and not exists (select 1 from leases l where l.task = t.id and l.status = 'open' and l.expires > ?3)
+            and (select count(*) from leases l where l.task = t.id
+                  and (l.status = 'submitted' or (l.status = 'open' and l.expires > ?3))) < t.copies
             and not exists (select 1 from leases l where l.worker = ?2 and l.status = 'open' and l.expires > ?3)`;
 
 export class SqliteTaskStore implements TaskStore {
@@ -202,17 +216,17 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
-           pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests`,
+           pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
       insertTask: p(
-        `insert into tasks (id, type, workflow, run_id, path, show, files, root, job, status, created, due)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+        `insert into tasks (id, type, workflow, run_id, path, show, files, root, job, status, created, due, copies)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
          on conflict (workflow, run_id, path) do nothing`,
       ),
       byKey: p("select * from tasks where workflow = ? and run_id = ? and path = ?"),
@@ -234,8 +248,20 @@ export class SqliteTaskStore implements TaskStore {
       ),
       // The same guard, read only: the type `take` would hand out (§7.2).
       peek: p(`select t.type from tasks t join task_types ty on ty.name = t.type where ${TAKEABLE} order by t.seq limit 1`),
-      submit: p("update leases set status = 'submitted', closed = ?1 where id = ?2 and worker = ?3 and status = 'open' and expires > ?1"),
+      submit: p("update leases set status = 'submitted', closed = ?1, answer = ?4 where id = ?2 and worker = ?3 and status = 'open' and expires > ?1"),
       settle: p("update tasks set status = 'settled', settled_at = ?1, answer = ?2, by = ?3 where id = ?4 and status = 'open' and due > ?1"),
+      // Copies (§7.6): the answers in the order given; a decision, each
+      // guarded by the task still open and wanting the answers decided on.
+      answers: p("select * from leases where task = ? and status = 'submitted' order by closed, taken, rowid"),
+      agreed: p("update tasks set status = 'settled', settled_at = ?1, answer = ?2, by = ?3 where id = ?4 and status = 'open' and copies = ?5"),
+      disputed: p("update tasks set status = 'disputed', settled_at = ?1 where id = ?2 and status = 'open' and copies = ?3"),
+      more: p("update tasks set copies = copies + 1 where id = ?1 and status = 'open' and copies = ?2"),
+      agrees: p("update leases set agrees = ? where id = ?"),
+      undecided: p(
+        `select * from tasks t where t.status = 'open' and t.copies > 1 and t.test is null
+           and (select count(*) from leases l where l.task = t.id and l.status = 'submitted') >= t.copies
+         order by t.seq limit ?`,
+      ),
       skip: p("update leases set status = 'skipped', closed = ?1, reason = ?2 where id = ?3 and worker = ?4 and status = 'open' and expires > ?1"),
       release: p(
         `update leases set status = 'expired', closed = ?1, reason = ?2
@@ -260,6 +286,7 @@ export class SqliteTaskStore implements TaskStore {
         `select * from tests x
           where x.type = ?1 and x.ready = 1 and x.retired is null
             and (x.from_worker is null or x.from_worker <> ?2)
+            and (x.from_task is null or not exists (select 1 from leases l where l.task = x.from_task and l.worker = ?2 and l.status = 'submitted'))
             and not exists (select 1 from tasks t where t.test = x.id and t.served_to = ?2)
           order by x.served, x.rowid
           limit 1000`,
@@ -348,6 +375,7 @@ export class SqliteTaskStore implements TaskStore {
         payMsatOf(t) ?? null,
         t.holdHours,
         t.tests ? JSON.stringify(t.tests) : null,
+        t.copies ? JSON.stringify(t.copies) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -376,6 +404,7 @@ export class SqliteTaskStore implements TaskStore {
         t.job ?? null,
         t.created,
         t.due,
+        t.copies ?? 1,
       ).changes;
       return { task: taskOf(this.s.byKey.get(t.workflow, t.runId, t.path) as Row), created: Number(changed) === 1 };
     });
@@ -435,21 +464,60 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
 
-  async settle(o: { lease: string; worker: string; answer: unknown; now: number }): Promise<TaskRecord | undefined> {
+  async settle(o: Parameters<TaskStore["settle"]>[0]): Promise<SettleResult | undefined> {
     try {
       return this.db.tx(() => {
         const l = this.s.lease.get(o.lease) as Row | undefined;
         if (!l) return undefined;
-        if (Number(this.s.submit.run(o.now, o.lease, o.worker).changes) !== 1) return undefined;
-        // The task left `open` (or ran past due) while the lease was live:
-        // nothing is written, the lease included.
-        if (Number(this.s.settle.run(o.now, JSON.stringify(o.answer), o.worker, l.task as string).changes) !== 1) throw new Unsettled();
-        return taskOf(this.s.task.get(l.task as string) as Row);
+        const t = this.s.task.get(l.task as string) as Row | undefined;
+        const many = !!t && (t.copies as number) > 1 && t.test === null;
+        // A copies task's answer stays on its lease (§7.6); one copy's is the task's.
+        if (Number(this.s.submit.run(o.now, o.lease, o.worker, many ? JSON.stringify(o.answer) : null).changes) !== 1) return undefined;
+        if (!many) {
+          // The task left `open` (or ran past due) while the lease was live:
+          // nothing is written, the lease included.
+          if (Number(this.s.settle.run(o.now, JSON.stringify(o.answer), o.worker, l.task as string).changes) !== 1) throw new Unsettled();
+          return { task: taskOf(this.s.task.get(l.task as string) as Row) };
+        }
+        if (t!.status !== "open" || (t!.due as number) <= o.now) throw new Unsettled();
+        const copies = t!.copies as number;
+        const answers = (this.s.answers.all(t!.id as string) as Row[]).map(leaseOf);
+        if (answers.length < copies) return { task: taskOf(t!) };
+        const decision = o.decide?.(answers.map((a) => a.answer), copies);
+        if (!decision) return { task: taskOf(t!), answers };
+        if (!this.apply(t!.id as string, copies, answers, decision, o.now)) throw new Unsettled();
+        return { task: taskOf(this.s.task.get(t!.id as string) as Row), answers: (this.s.answers.all(t!.id as string) as Row[]).map(leaseOf), decision };
       }, true);
     } catch (e) {
       if (e instanceof Unsettled) return undefined;
       throw e;
     }
+  }
+
+  async decide(o: { task: string; copies: number; decision: CopiesDecision; now: number }): Promise<TaskRecord | undefined> {
+    return this.db.tx(() => {
+      const t = this.s.task.get(o.task) as Row | undefined;
+      if (!t || t.status !== "open" || t.copies !== o.copies || t.test !== null) return undefined;
+      const answers = (this.s.answers.all(o.task) as Row[]).map(leaseOf);
+      if (answers.length !== o.copies) return undefined;
+      return this.apply(o.task, o.copies, answers, o.decision, o.now) ? taskOf(this.s.task.get(o.task) as Row) : undefined;
+    }, true);
+  }
+
+  async undecided(limit: number): Promise<TaskRecord[]> {
+    return (this.s.undecided.all(Math.max(0, Math.floor(limit))) as Row[]).map(taskOf);
+  }
+
+  /** Inside a transaction: a copies task's decision written (§7.6), guarded
+   *  by the task still open and wanting `copies`. False when it was not. */
+  private apply(task: string, copies: number, answers: Lease[], d: CopiesDecision, now: number): boolean {
+    if (d.outcome === "more") return Number(this.s.more.run(task, copies).changes) === 1;
+    if (d.outcome === "agreed") {
+      const won = answers[d.index]!;
+      if (Number(this.s.agreed.run(now, JSON.stringify(won.answer ?? null), won.worker, task, copies).changes) !== 1) return false;
+    } else if (Number(this.s.disputed.run(now, task, copies).changes) !== 1) return false;
+    answers.forEach((a, i) => this.s.agrees.run(d.outcome === "agreed" && d.agrees[i] === true ? 1 : 0, a.id));
+    return true;
   }
 
   async skip(o: { lease: string; worker: string; reason?: string; now: number }): Promise<boolean> {
@@ -685,6 +753,8 @@ function typeOf(r: Row): TaskType {
   if (pay !== undefined && pay > 0) t.paySats = pay / 1000;
   const tests = opt<string>(r.tests);
   if (tests !== undefined) t.tests = JSON.parse(tests) as TestRules;
+  const copies = opt<string>(r.copies);
+  if (copies !== undefined) t.copies = JSON.parse(copies) as CopiesRule;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;
@@ -704,6 +774,7 @@ function taskOf(r: Row): TaskRecord {
     status: r.status as TaskStatus,
     created: r.created as number,
     due: r.due as number,
+    copies: (r.copies as number | undefined) ?? 1,
   };
   const job = opt<string>(r.job);
   if (job !== undefined) t.job = job;
@@ -769,5 +840,9 @@ function leaseOf(r: Row): Lease {
   if (pay !== undefined && pay > 0) l.payMsat = pay;
   const booked = opt<number>(r.booked_at);
   if (booked !== undefined) l.bookedAt = booked;
+  const answer = opt<string>(r.answer);
+  if (answer !== undefined) l.answer = JSON.parse(answer);
+  const agrees = opt<number>(r.agrees);
+  if (agrees !== undefined) l.agrees = agrees === 1;
   return l;
 }
