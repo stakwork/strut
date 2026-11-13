@@ -2,8 +2,10 @@
  * CONCEPT BRANCHES (plans/concept-evals.md item b; rulings 2, 3 and 10): a
  * named copy of the Concept pages, held in a graph namespace of its own, that
  * a run can be pointed at and that can be dropped. A branch is, per ruling 2,
- * a git branch in the history plus a graph namespace holding the same pages;
- * this is the namespace half (the git half is item c).
+ * a git branch in the history plus a graph namespace holding the same pages:
+ * this file keeps the namespace, and tells the history (src/history.ts, item
+ * c) when one is made or dropped, so its git branch of the same name starts
+ * at main's commit then and is kept aside under `refs/dropped/` when it goes.
  *
  *   - CREATE copies every live Concept of the graph's own namespace and the
  *     `PARENT_OF` edges among them into `branch-<name>` (`from: "main"`), or
@@ -18,6 +20,7 @@
  *     on. It never crosses to another strut.
  *   - DROP removes the branch's pages and its record; refused while a run on
  *     it is in flight. A run that waits on a dropped branch fails when woken.
+ *     Its git branch is kept, out of the name's way (`kept`).
  *
  * The record of which branches exist is a file per branch,
  * `<dataDir>/branches/<name>.json`: name, namespace, when, who, from what.
@@ -35,9 +38,12 @@ import { withLock } from "./jobs.js";
 import type { KnowledgeCapability } from "./knowledge.js";
 import type { SessionsCapability } from "./session-store.js";
 
-/** A branch's name: what its namespace is made of, and (item c) a git
- *  branch's. Lowercase letters, digits, `-` and `_`, a letter first. */
+/** A branch's name: what its namespace is made of, and its git branch's
+ *  (item c). Lowercase letters, digits, `-` and `_`, a letter first; a new
+ *  one is never `main`, the history's own branch. */
 export const BRANCH_NAME = /^[a-z][a-z0-9_-]{0,55}$/;
+/** The history's branch (`HISTORY_BRANCH`, src/history.ts): no Concept branch's name. */
+const RESERVED = "main";
 
 export interface ConceptBranch {
   name: string;
@@ -61,8 +67,8 @@ export interface BranchesCapability {
   list(): Promise<ConceptBranch[]>;
   get(name: string): Promise<ConceptBranch | null>;
   create(input: { name: string; from?: "main" | "empty"; by?: string }): Promise<ConceptBranch>;
-  /** The pages it removed. */
-  drop(name: string): Promise<{ name: string; pages: number }>;
+  /** The pages it removed, and where its git branch is kept (`refs/dropped/<name>/<time>`) when the history keeps one. */
+  drop(name: string): Promise<{ name: string; pages: number; kept?: { ref: string; commit: string } }>;
 }
 
 /** A refusal a route answers with its status. */
@@ -94,6 +100,9 @@ export interface BranchesDeps {
   graph: GraphBackend;
   /** Whether a run on the branch is in flight in this process. */
   inFlight(name: string): boolean;
+  /** The history (src/history.ts), when it is on: told when a branch is made
+   *  and dropped. What it does is a record; a failure there fails neither. */
+  history?: { branched(name: string, t: { cause: string; actor?: string }): Promise<void>; dropBranch(name: string): Promise<{ ref: string; commit: string } | undefined> };
   now?: () => Date;
 }
 
@@ -179,7 +188,7 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
     get: read,
 
     async create({ name, from = "main", by }) {
-      const problem = branchNameProblem(name);
+      const problem = name === RESERVED ? `"${RESERVED}" is the history's own branch: name the Concept branch otherwise` : branchNameProblem(name);
       if (problem) throw new BranchError(400, problem);
       if (from !== "main" && from !== "empty") throw new BranchError(400, `from is "main" (a copy of the live tree) or "empty"`);
       return withLock(`branch:${name}`, async () => {
@@ -206,6 +215,11 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
           from,
           ...made,
         };
+        // Its git branch, from main's commit now (item c): before the record,
+        // so no run is on the branch until its git branch is there.
+        await deps.history?.branched(name, { cause: `branch ${name} from ${from}`, ...(by ? { actor: by } : {}) }).catch((err: unknown) => {
+          console.warn(`[branches] ${name}: the history did not record it: ${err instanceof Error ? err.message : String(err)}`);
+        });
         await mkdir(dir, { recursive: true });
         await writeFile(`${fileOf(name)}.tmp`, JSON.stringify(branch, null, 2) + "\n", "utf-8");
         await rename(`${fileOf(name)}.tmp`, fileOf(name));
@@ -220,12 +234,17 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
         if (deps.inFlight(name)) throw new BranchError(409, `branch "${name}" has a run in flight — drop it once the run ends (or cancel it)`);
         // The record first: a run that starts from here on finds no branch.
         await unlink(fileOf(name));
+        // Its git branch, what it last wrote committed, kept aside while the pages are still there to read.
+        const kept = await deps.history?.dropBranch(name).catch((err: unknown) => {
+          console.warn(`[branches] ${name}: the history did not keep it: ${err instanceof Error ? err.message : String(err)}`);
+          return undefined;
+        });
         const pages = await purge(branch.namespace);
         if (graph.kind === "neo4j") {
           await graph.tx((tx) => tx.run(`MATCH (s:NameSpace) SET s.data = [x IN coalesce(s.data, []) WHERE x <> $ns]`, { ns: branch.namespace }));
         }
         await mark();
-        return { name, pages };
+        return { name, pages, ...(kept ? { kept } : {}) };
       });
     },
   };

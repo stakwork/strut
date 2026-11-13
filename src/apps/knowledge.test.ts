@@ -151,6 +151,11 @@ describe("strut/knowledge: the changes view's moments", () => {
     assert.equal(momentOf("a1b2c3d4e5f6", now), "a1b2c3d4e5f6");
     assert.equal(momentOf("", now), null);
     assert.equal(momentOf("yesterday-ish", now), null);
+    // A Concept branch's name, when the history holds it (plans/concept-evals.md item c).
+    assert.equal(momentOf("try", now, ["main", "try"]), "try");
+    assert.equal(momentOf(" Try ", now, ["main", "try"]), "try");
+    assert.equal(momentOf("try", now), null);
+    assert.equal(momentOf("main", now, ["main", "try"]), "main");
   });
 });
 

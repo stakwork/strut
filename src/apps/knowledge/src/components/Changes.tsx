@@ -1,14 +1,15 @@
 // The tree between two moments (plans/concept-history.md §8 item 4): the
 // Concept pages that changed from one to the other, marked on the tree
 // (strut/views' ConceptDiff over `history/read diff`). A moment is typed —
-// `now`, `1 day ago`, a date, a commit — or picked from the recent changes,
+// `now`, `1 day ago`, a date, a commit, a Concept branch's name (main
+// against a branch: plans/concept-evals.md item c) — or picked from the recent changes,
 // which are the history's commits, never the live change feed: that is a
 // notification and empties on a restart.
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { GitCommitHorizontal, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useStrutClient } from "@strut/kit";
-import { ConceptDiff, HISTORY_STEP, readLog } from "strut/views";
+import { ConceptDiff, HISTORY_STEP, readBranches, readLog } from "strut/views";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { DEFAULT_FROM, DEFAULT_TO, momentOf } from "../lib/moments";
@@ -25,9 +26,17 @@ export function Changes({ tree, onClose, narrow, lead }: { tree?: ConceptTree; o
   // Read once the box is left, so typing a date does not read every half of it.
   const [moments, setMoments] = useState(() => ({ from: momentOf(DEFAULT_FROM)!, to: momentOf(DEFAULT_TO)! }));
   const [commit, setCommit] = useState<string | null>(null);
+  // The Concept branches a moment may name.
+  const branchList = useQuery({
+    queryKey: ["strut", HISTORY_STEP, "branches"],
+    queryFn: () => readBranches(client),
+    staleTime: 15_000,
+  });
+  const branches = useMemo(() => (branchList.data ?? []).map((b) => b.name), [branchList.data]);
+  const momentAt = (text: string) => momentOf(text, Date.now(), branches);
   const settle = () => {
-    const from = momentOf(fromText);
-    const to = momentOf(toText);
+    const from = momentAt(fromText);
+    const to = momentAt(toText);
     if (from && to) {
       setMoments({ from, to });
       setCommit(null);
@@ -70,7 +79,7 @@ export function Changes({ tree, onClose, narrow, lead }: { tree?: ConceptTree; o
           to
           <Input className="h-8 w-36 text-xs" value={toText} onChange={(e) => setToText(e.target.value)} onBlur={settle} onKeyDown={(e) => e.key === "Enter" && settle()} aria-label="To" placeholder="now" />
         </label>
-        {(!momentOf(fromText) || !momentOf(toText)) && <span className="text-xs text-muted-foreground">a time (“2 days ago”, a date) or a commit</span>}
+        {(!momentAt(fromText) || !momentAt(toText)) && <span className="text-xs text-muted-foreground">a time (“2 days ago”, a date), a commit or a branch</span>}
         <span className="flex-1" />
         <button type="button" onClick={onClose} aria-label="Close the changes" className="rounded p-1 text-muted-foreground hover:text-foreground">
           <X className="size-4" />

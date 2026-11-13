@@ -512,7 +512,10 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
     await summaryOf("hold", runId, "success");
 
     const dropped = await json(strut, "/branches/try", { method: "DELETE" });
-    assert.deepEqual(dropped, { name: "try", pages: made["pages"] });
+    assert.deepEqual([dropped["name"], dropped["pages"]], ["try", made["pages"]]);
+    // Its git branch is kept, out of the name's way (src/history.ts, item c).
+    assert.match(dropped["kept"].ref, /^refs\/dropped\/try\//);
+    assert.equal((await strut.history!.git(["rev-parse", dropped["kept"].ref])).trim(), dropped["kept"].commit);
     assert.deepEqual(await conceptsIn("branch-try"), []);
     assert.deepEqual((await json(strut, "/branches"))["branches"], []);
     assert.equal((await res(strut, "/branches/try", { method: "DELETE" })).status, 404);

@@ -3,8 +3,8 @@
 > **Status (2026-11-13):** the primitives below were ruled by Evan on
 > 2026-11-12; Paul's remarks reached the conversation through Evan, and the
 > discussion with Paul and Tom is ongoing. Work item (a) is built (this
-> file's first PR, #669), item (b) is built (its PR). The rest are not
-> started. Everything marked
+> file's first PR, #669), item (b) is built (#677), item (c) is built (its
+> PR). The rest are not started. Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
 > `job-claims.md`, `concept-history.md` (the history in git), and
@@ -87,7 +87,7 @@ Ruled: checks first. One PR each, against main.
 |---|---|---|
 | a | Whole-work checks on main (rulings 5, 9) | built (this PR) |
 | b | A branch you can create, run on and drop (2, 3, 10) | built (below) |
-| c | The branch recorded in git (2) | not started |
+| c | The branch recorded in git (2) | built (below) |
 | d | Claims following a page onto a branch, and a compare read (4) | not started |
 | e | Merge as proposals (8) | not started |
 | — | The `Dream` Concept (7) | another session, in parallel |
@@ -234,3 +234,78 @@ claims follow a page.
 
 **Not built here:** the git branch (c), claims following a page and the
 compare read (d), merge (e), the type list (ruling 6), any UI.
+
+## (c) What was built
+
+**A git branch per Concept branch** (`src/history.ts`), the git half of
+ruling 2: `refs/heads/<name>` in `<dataDir>/history.git`, beside `main`.
+A create snapshots main first (so the fork point is the live tree), then
+starts the git branch at main's commit. Its tree is main's with `concepts/`
+holding the branch's pages: a copy from main is main's tree exactly, so
+the ref IS main's commit and nothing is committed; `from: "empty"` is one
+commit, `branch <name> from empty`, with no `concepts/`.
+
+**Recording.** A run's (or an accepted proposal's) graph view on a branch
+tells the history which side a write is (`historySides`,
+src/graph-writes.ts): a page or a `PARENT_OF` link touches the branch; a
+type, a claim or a check is the live graph's (ruling 3) and touches main; a
+write of unknown type, both. The queue keeps one pending snapshot and one
+debounce per target, on the one chain, by main's rules: a commit only when
+the tree differs, the cause line, `Run:` trailers, the author, `settle`
+for read-your-writes. A write on main never touches a branch. A branch's
+snapshot never rebuilds the workspace: it reads the branch's pages alone
+(`conceptFilesOf`, packages/build.ts), writes the blobs that changed, and
+`mktree`s its last tree's other root entries with the new `concepts/`.
+
+**Reading** (`history/read`). A branch's name works wherever a commit does
+(`at`, `from`, `to`: its last commit), and `branch` says which branch a
+time is read on (main by default). `diff { from: "main", to: "<name>", path:
+"concepts" }` is exactly the pages the two hold apart; `log { from: "main",
+to: "<name>" }` lists the commits made on the branch; a new action,
+`branches`, gives each git branch's `head`, `time` and `base` (its fork
+point, `merge-base` with main) — so item (e) can diff `base..<name>` for
+what the branch changed and `base..main` for what main changed since. A
+caller whose reader list leaves out the graph's own namespace sees no
+branch: not listed, refused as `branch`, its commits (all `concepts/`) not
+in its log.
+
+**Drop.** What the branch waits to commit is committed, then its git branch
+moves to `refs/dropped/<name>/<YYYYMMDDTHHMMSSmmmZ>`; the drop's answer says
+where (`kept: { ref, commit }`), `branches` lists it under `dropped`, and the
+name is free: made again, it starts at main's commit then. A touch for a
+dropped branch is dropped from then on, and its memo forgotten.
+
+**The view.** The Knowledge app's Changes takes a branch's name as a moment
+(`momentOf` with the names `history/read branches` lists): `now` against
+`try` is main against the branch, drawn by the diff view that exists.
+
+**Off and restart.** With the history off or no `git`, a branch is exactly
+as in (b) (`kept` absent). The only state per branch is its ref: the memo
+of its tree is read back from git on first use, so a restart carries on;
+boot catches up every branch, and makes the git branch of one made while
+the history was off (at main's commit then).
+
+*Mine*, every one open to a ruling:
+- a branch commit is the branch's LAST tree with `concepts/` swapped, not
+  main's current tree: everything but the pages stays as at the fork, so
+  the branch's own diff from its fork point is pages alone (what a merge
+  needs, ruling 8), and a branch's `log` shows only its own runs' changes.
+  The price: a workflow or type on a branch commit is as it was at the
+  fork, while the run itself used the live one (ruling 3) — read those on
+  main at the run's time;
+- a create snapshots main first (a `sync`, cause `sync`), so a raw write
+  main had not heard is main's, never the branch's first commit;
+- drop KEEPS the git branch under `refs/dropped/<name>/<time>`, never deletes
+  it: a record of what was tried, reachable by its commits, out of the
+  name's way; a stale git branch of the name (from a history that missed a
+  drop) is kept aside the same way at a create;
+- a new branch may not be named `main` (it would be the history's own
+  branch); one named so under (b) still lists and drops;
+- a Concept branch's name wins over a commit id it also reads as
+  (`deadbeef`); `history/read`'s default is main even in a run on a branch;
+- `branches` is a new action, the one read that gives the fork point.
+
+**Not built here:** claims or evidence on a branch, the compare read of
+verdicts, a commit stamped on evidence (d); merge (e); the type list; any
+other UI. Checked by hand once (headless Chrome on a scratch strut): the
+Changes view from `now` to `try` drew the one page the branch had edited.

@@ -586,7 +586,7 @@ refused on every write to such a claim (the claim, its checks, attaching
 and detaching). Runs launched from those doors are still checked against
 these claims.
 
-### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` item b)
+### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` items b, c)
 
 A BRANCH is a named copy of the Concept pages, in a graph namespace of its
 own (`branch-<name>`), that a run is pointed at with the launch's `branch`
@@ -598,14 +598,20 @@ Concept, anything else written into the branch's namespace, and an edge
 between a branch page and anything off the branch are refused; raw queries
 (`graph/query`) are off; the `automation/*` steps do not schedule. Main never
 sees a branch: no read that names no namespace returns its pages, and the
-history records none. The deployment's only: every route here is a 403 for
-any other scope, and a 404 on a strut with no graph workspace.
+history's `main` records none. Where the history is on (`<dataDir>/history.git`,
+read through the `history/read` step; docs/knowledge.md "History"), each
+branch is also a GIT BRANCH of its name in it: made from `main`'s commit
+at the create (the live tree, snapshotted first), holding `main`'s tree with
+`concepts/` the branch's own pages, and committed to when a run on the branch
+(or a proposal applied on it) writes a page; a type it writes is the live
+graph's and goes to `main`. The deployment's only: every route here is a 403
+for any other scope, and a 404 on a strut with no graph workspace.
 
 | Method | Path               | Body | Response |
 | ------ | ------------------ | ---- | -------- |
 | GET    | `/branches`        | — | 200 `{ branches: ConceptBranch[] }`, by name |
 | POST   | `/branches`        | `{ name, from?: "main" \| "empty" }` | 201 `ConceptBranch` |
-| DELETE | `/branches/:name`  | — | 200 `{ name, pages }` |
+| DELETE | `/branches/:name`  | — | 200 `{ name, pages, kept? }` |
 
 `ConceptBranch` is `{ name, namespace, createdAt, createdBy?, from, pages,
 links }`: `from: "main"` (the default) copies every live Concept of the
@@ -613,11 +619,14 @@ graph's own namespace and the `PARENT_OF` edges among them — `pages` and
 `links` count them — and `"empty"` copies nothing. A copy carries the
 page's attributes and docs, never its source stamp (`unique_source_id`):
 nothing reads it as a seeded or a package's page. `name` is lowercase
-letters, digits, `-` and `_`, a letter first, at most 56 (400 otherwise);
-a name in use is a 409. `DELETE` removes the branch's pages and its record
-(`pages`: how many); 409 while a run on it is in flight here, 404 for no
-such branch. A parked run on a dropped branch ends `no_branch:` when it is
-woken.
+letters, digits, `-` and `_`, a letter first, at most 56, and never `main`,
+the history's own branch (400 otherwise); a name in use is a 409. `DELETE`
+removes the branch's pages and its record (`pages`: how many); 409 while a
+run on it is in flight here, 404 for no such branch. A parked run on a
+dropped branch ends `no_branch:` when it is woken. `kept` is `{ ref, commit
+}`: where the history keeps the branch's git branch, `refs/dropped/<name>/<time>`
+(what its runs last wrote committed first), so the name is free again and
+what was tried still reads by its commits; absent with no history.
 
 Claims are not on branches yet: a run on a branch opens the branch's
 pages, which no claim (§5.6) is about, so nothing is recorded about them,
@@ -2261,9 +2270,10 @@ From the HISTORY (`plans/concept-history.md` §8 item 4), with one more read,
 **History** — `log { path: "concepts/<key>.md" }`, the page followed through
 renames, each commit's change drawn from two `show`s, two commits compared —
 and **Changes** over the graph is the tree between two moments, `diff { from,
-to, path: "concepts" }`, from "1 day ago" to now by default; any time, date or
-commit may be typed, and "Recent changes" lists the history's last commits on
-`concepts`. With no history on the server (no graph, no `git`,
+to, path: "concepts" }`, from "1 day ago" to now by default; any time, date,
+commit or Concept branch (§5.7; `history/read branches` lists them) may be
+typed — `now` against a branch's name is main against that branch — and
+"Recent changes" lists the history's last commits on `concepts`. With no history on the server (no graph, no `git`,
 `STRUT_HISTORY=0`) both say so. There is no revert: a page may not write a
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.

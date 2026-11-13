@@ -15,6 +15,7 @@ import type { StepContext } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
 import { seedStrutDomain } from "./graph/schema-seed.js";
 import { testBackends } from "./graph/test-util.js";
+import { scopedBackend } from "./graph/scope.js";
 import { GraphWorkspaceStore } from "./graph/workspace-store.js";
 import { findGit, HISTORY_DIR, HISTORY_EMAIL } from "./history.js";
 import { buildPackage } from "./packages/build.js";
@@ -125,8 +126,7 @@ for (const tb of testBackends()) {
       await rm(scratch, { recursive: true, force: true });
     });
 
-    const boot = async (extra: Record<string, unknown> = {}) => {
-      const dir = join(scratch, `s${struts.length}`);
+    const boot = async (extra: Record<string, unknown> = {}, dir = join(scratch, `s${struts.length}`)) => {
       const s = await createStrut({
         workspace: new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps"), appsDir: join(dir, "apps") }),
         dataDir: dir,
@@ -575,6 +575,269 @@ for (const tb of testBackends()) {
       const hidden = await s.history!.sync();
       assert.ok(hidden?.commit);
       assert.ok(!(await read(s, { action: "log" })).commits.some((c: { id: string }) => c.id === hidden.commit));
+    });
+
+
+    // ── Concept branches: each a git branch (plans/concept-evals.md item c) ──
+    describe("Concept branches", () => {
+      const post = async (s: Strut, path: string, body: unknown, status = 201) => {
+        const res = await s.app.request(path, json(body));
+        assert.equal(res.status, status, await res.clone().text());
+        return (await res.json()) as Record<string, any>;
+      };
+      const drop = async (s: Strut, name: string) => {
+        const res = await s.app.request(`/branches/${name}`, { method: "DELETE" });
+        assert.equal(res.status, 200, await res.clone().text());
+        return (await res.json()) as Record<string, any>;
+      };
+      /** A ref's commit, or null. */
+      const tip = async (s: Strut, ref: string) => (await git(s, ["rev-parse", "-q", "--verify", ref]).catch(() => "")).trim() || null;
+      /** A ref's commits, newest first, as `commits` gives main's. */
+      const commitsOf = async (s: Strut, ref: string) => {
+        await s.history!.settle();
+        return (await git(s, ["log", "--format=%x1e%H%x1f%an%x1f%B", ref]))
+          .split("\x1e")
+          .filter((c) => c.trim())
+          .map((c) => {
+            const [id, author, body] = c.split("\x1f");
+            return { id: id!, author: author!, body: body!.trim(), subject: body!.trim().split("\n")[0]! };
+          });
+      };
+      const pageIn = async (ns: string, name: string) =>
+        (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { name: "$name", namespace: "$ns" })} WHERE ${backend.dialect.live("c")} RETURN c.ref_id AS r`, { name, ns }))[0]?.["r"] as string;
+      const runOn = async (s: Strut, branch: string, wf: string, input: Record<string, unknown>, actor = "ada") => {
+        const r = await s.run(wf, input, { actor, branch });
+        assert.equal(r.status, "success", JSON.stringify(r.error ?? r.output));
+        if (typeof r.output === "string") assert.fail(r.output);
+        return r;
+      };
+      /** Main with a small tree of our own: Guide > Tone. */
+      const tree = async () => {
+        const s = await ready();
+        await run(s, "t-concept", { op: "create", name: "Guide", docs: "Main guide." });
+        await run(s, "t-concept", { op: "create", name: "Tone", docs: "Main tone.", parent: "Guide" });
+        return { s, fork: (await commits(s))[0]!.id };
+      };
+
+      it("starts a branch at main's commit; a page a run on it writes commits there with its run, and main is left alone", async () => {
+        const { s, fork } = await tree();
+        const made = await post(s, "/branches", { name: "try" });
+        assert.equal(made["pages"], 2);
+        // The pages are main's: the git branch is main's commit, nothing committed.
+        assert.equal(await tip(s, "refs/heads/try"), fork);
+        assert.equal(await tip(s, "refs/heads/main"), fork);
+        const listed = await read(s, { action: "branches" });
+        assert.deepEqual(listed.branches.map((b: Record<string, string>) => [b.name, b.head, b.base]), [["main", fork, undefined], ["try", fork, fork]]);
+        assert.deepEqual(listed.dropped, []);
+        // `main` is the history's own branch, never a Concept branch's name.
+        assert.match(JSON.stringify(await post(s, "/branches", { name: "main" }, 400)), /history's own branch/);
+
+        const edited = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        let log = await commitsOf(s, "refs/heads/try");
+        assert.equal(log[0]!.subject, `run ${edited.runId}`);
+        assert.match(log[0]!.body, new RegExp(`\\nRun: ${edited.runId}$`));
+        assert.equal(log[0]!.author, "ada");
+        assert.equal(log[1]!.id, fork, "its parent is the fork point");
+        assert.deepEqual(await changed(s, log[0]!.id), [["M", "concepts/concept-guide.md"]]);
+        assert.equal(await fileAt(s, log[0]!.id, "concepts/concept-guide.md"), "---\nname: Guide\n---\nBranch guide.\n");
+
+        const added = await runOn(s, "try", "c-instance", { type: "Concept", data: { name: "Branch Only", docs: "Here alone." } });
+        log = await commitsOf(s, "refs/heads/try");
+        assert.equal(log[0]!.subject, `run ${added.runId}`);
+        assert.deepEqual(await changed(s, log[0]!.id), [["A", "concepts/concept-branchonly.md"]]);
+        // Everything but concepts/ is the fork's tree, byte for byte.
+        const rest = async (id: string) => (await git(s, ["ls-tree", id])).split("\n").filter((l) => l && !l.endsWith("\tconcepts")).join("\n");
+        assert.equal(await rest(log[0]!.id), await rest(fork));
+        // Main heard none of it.
+        assert.equal(await tip(s, "refs/heads/main"), fork);
+        assert.equal((await fileAt(s, fork, "concepts/concept-guide.md")).trim().split("\n").pop(), "Main guide.");
+        // Rewriting a page as it is: nothing to commit.
+        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Tone"), data: { docs: "Main tone." } });
+        assert.equal((await commitsOf(s, "refs/heads/try"))[0]!.id, log[0]!.id);
+      });
+
+      it("a write on main leaves the branch alone; main against the branch is exactly the pages apart, the branch's commits listable, its fork point found", async () => {
+        const { s, fork } = await tree();
+        await post(s, "/branches", { name: "try" });
+        const one = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        await s.history!.settle();
+        const two = await runOn(s, "try", "c-instance", { type: "Concept", data: { name: "Branch Only", docs: "Here alone." } });
+        const head = (await commitsOf(s, "refs/heads/try"))[0]!.id;
+
+        const onMain = await run(s, "t-concept", { op: "create", name: "Main Only", docs: "Main alone." });
+        const mainLog = await commits(s);
+        assert.equal(mainLog[0]!.subject, `run ${onMain.runId}`);
+        assert.deepEqual(await changed(s, mainLog[0]!.id), [["A", "concepts/concept-mainonly.md"]]);
+        assert.equal(await tip(s, "refs/heads/try"), head, "the branch is where it was");
+
+        const apart = await read(s, { action: "diff", from: "main", to: "try", path: "concepts" });
+        assert.deepEqual(apart.entries.map((e: { path: string; status: string }) => [e.path, e.status]), [
+          ["concepts/concept-branchonly.md", "added"],
+          ["concepts/concept-guide.md", "modified"],
+          ["concepts/concept-mainonly.md", "deleted"],
+        ]);
+        const guide = apart.entries.find((e: { path: string }) => e.path === "concepts/concept-guide.md");
+        assert.deepEqual([guide.before.parsed.docs, guide.after.parsed.docs], ["Main guide.", "Branch guide."]);
+
+        // The commits made on the branch, newest first.
+        const own = await read(s, { action: "log", from: "main", to: "try" });
+        assert.deepEqual(own.commits.map((c: { runs: string[] }) => c.runs), [[two.runId], [one.runId]]);
+        // Its fork point: what the branch changed, apart from what main changed since.
+        const base = (await read(s, { action: "branches" })).branches.find((b: { name: string }) => b.name === "try").base;
+        assert.equal(base, fork);
+        const changedOnBranch = await read(s, { action: "diff", from: base, to: "try", path: "concepts" });
+        assert.deepEqual(changedOnBranch.entries.map((e: { path: string; status: string }) => [e.path, e.status]), [["concepts/concept-branchonly.md", "added"], ["concepts/concept-guide.md", "modified"]]);
+        const changedOnMain = await read(s, { action: "diff", from: base, to: "main", path: "concepts" });
+        assert.deepEqual(changedOnMain.entries.map((e: { path: string; status: string }) => [e.path, e.status]), [["concepts/concept-mainonly.md", "added"]]);
+        // `log { branch }`: the branch's commits back through main's before it.
+        const all = await read(s, { action: "log", branch: "try", path: "concepts/concept-guide.md" });
+        assert.equal(all.commits.length, 2);
+        assert.deepEqual(all.commits[0].runs, [one.runId]);
+        assert.deepEqual(all.commits[1].changes, [{ path: "concepts/concept-guide.md", status: "added" }], "the page made on main, before the fork");
+      });
+
+      it("reads a time on a branch as that branch's commit then, and a page there", async () => {
+        const { s, fork } = await tree();
+        await post(s, "/branches", { name: "try" });
+        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "First on the branch." } });
+        const first = (await commitsOf(s, "refs/heads/try"))[0]!;
+        const firstTime = Number((await git(s, ["log", "-1", "--format=%ct", first.id])).trim());
+        await new Promise((r) => setTimeout(r, 1100));
+        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Second on the branch." } });
+        const between = new Date(firstTime * 1000 + 500).toISOString();
+        const shown = await read(s, { action: "show", path: "concepts/concept-guide.md", at: between, branch: "try" });
+        assert.equal(shown.at, first.id);
+        assert.equal(shown.parsed.docs, "First on the branch.");
+        // On main, the same time is main's commit then.
+        const onMain = await read(s, { action: "show", path: "concepts/concept-guide.md", at: between });
+        assert.equal(onMain.at, fork);
+        assert.equal(onMain.parsed.docs, "Main guide.");
+        // A branch's name is its last commit.
+        assert.equal((await read(s, { action: "show", path: "concepts/concept-guide.md", at: "try" })).parsed.docs, "Second on the branch.");
+        await assert.rejects(read(s, { action: "show", path: "concepts", at: "now", branch: "nope" }), /no branch "nope"/);
+      });
+
+      it("a branch from empty is one commit holding no page and main's tree besides; a type a run on a branch writes is main's", async () => {
+        const { s, fork } = await tree();
+        const empty = await post(s, "/branches", { name: "blank", from: "empty" });
+        assert.equal(empty["pages"], 0);
+        const log = await commitsOf(s, "refs/heads/blank");
+        assert.equal(log[0]!.subject, "branch blank from empty");
+        assert.equal(log[1]!.id, fork);
+        const root = (await git(s, ["ls-tree", "--name-only", log[0]!.id])).split("\n").filter(Boolean);
+        assert.ok(!root.includes("concepts") && root.includes("workflows") && root.includes("strut.yaml"), root.join(", "));
+        const d = await read(s, { action: "diff", from: "main", to: "blank", path: "concepts" });
+        assert.deepEqual(d.entries.map((e: { status: string }) => e.status), ["deleted", "deleted"]);
+
+        // A type is the live graph's (ruling 3): main records it, the branch does not.
+        const typed = await runOn(s, "blank", "c-schema", { type: "Statute", attributes: { name: "string", code: "?string" }, key: "name" });
+        const mainLog = await commits(s);
+        assert.equal(mainLog[0]!.subject, `run ${typed.runId}`);
+        assert.deepEqual((await changed(s, mainLog[0]!.id)).map((c) => c[1]), ["graph/Statute.yaml"]);
+        assert.equal(await tip(s, "refs/heads/blank"), log[0]!.id);
+      });
+
+      it("an accepted proposal made on a branch commits on it as `proposal <id>`", async () => {
+        const { s, fork } = await tree();
+        await post(s, "/branches", { name: "try" });
+        const proposals = (s.services as { proposals: { propose(p: unknown): Promise<{ id: string }> } }).proposals;
+        const p = await proposals.propose({
+          step: "graph/edit-node",
+          input: { ref_id: await pageIn("branch-try", "Tone"), node_data: { docs: "Proposed on the branch." } },
+          title: "Edit a page.",
+          by: { workflow: "wf", runId: "r9", path: "wf/turn/001", branch: "try" },
+        });
+        const res = await s.app.request(`/proposals/${p.id}/decide`, json({ action: "accept" }));
+        assert.equal(res.status, 200, await res.text());
+        const log = await commitsOf(s, "refs/heads/try");
+        assert.equal(log[0]!.subject, `proposal ${p.id}`);
+        assert.deepEqual(await changed(s, log[0]!.id), [["M", "concepts/concept-tone.md"]]);
+        assert.equal(await tip(s, "refs/heads/main"), fork);
+      });
+
+      it("drop commits what waits, keeps the git branch under refs/dropped/, and frees the name: made again, it starts at main's commit", async () => {
+        const { s, fork } = await tree();
+        await post(s, "/branches", { name: "try" });
+        // Not settled: the run's touch waits on the debounce when the drop comes.
+        const last = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Tried." } });
+        const dropped = await drop(s, "try");
+        assert.equal(dropped["pages"], 2);
+        assert.match(dropped["kept"].ref, /^refs\/dropped\/try\/\d{8}T\d{9}Z$/);
+        const kept = (await commitsOf(s, dropped["kept"].ref))[0]!;
+        assert.equal(kept.id, dropped["kept"].commit);
+        assert.equal(kept.subject, `run ${last.runId}`, "what the branch last wrote is in its record");
+        assert.equal(await tip(s, "refs/heads/try"), null);
+        const listed = await read(s, { action: "branches" });
+        assert.deepEqual(listed.branches.map((b: { name: string }) => b.name), ["main"]);
+        assert.deepEqual(listed.dropped.map((b: Record<string, string>) => [b.name, b.ref, b.head, b.base]), [["try", dropped["kept"].ref, kept.id, fork]]);
+        // What was tried still reads.
+        assert.equal((await read(s, { action: "show", path: "concepts/concept-guide.md", at: kept.id })).parsed.docs, "Tried.");
+
+        // The name is free: a new branch starts at main's commit, not where the old one was.
+        await run(s, "t-concept", { op: "edit", name: "Tone", docs: "Main tone, later." });
+        const now = (await commits(s))[0]!.id;
+        await post(s, "/branches", { name: "try" });
+        assert.equal(await tip(s, "refs/heads/try"), now);
+        assert.equal(await tip(s, dropped["kept"].ref), kept.id);
+        assert.equal((await read(s, { action: "show", path: "concepts/concept-guide.md", at: "try" })).parsed.docs, "Main guide.");
+      });
+
+      it("a restart carries a branch on from its git branch; a branch made with the history off gets one at boot", async () => {
+        const first = await tree();
+        const dir = first.s.dataDir;
+        await post(first.s, "/branches", { name: "try" });
+        await runOn(first.s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Before the restart." } });
+        const before = (await commitsOf(first.s, "refs/heads/try"))[0]!.id;
+        await first.s.close();
+        struts.splice(struts.indexOf(first.s), 1);
+
+        const again = await boot({}, dir);
+        await again.rebuildRegistry();
+        assert.equal(await tip(again, "refs/heads/try"), before, "boot commits nothing on a branch that has not moved");
+        const after = await runOn(again, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "After the restart." } });
+        const log = await commitsOf(again, "refs/heads/try");
+        assert.equal(log[0]!.subject, `run ${after.runId}`);
+        assert.equal(log[1]!.id, before);
+        assert.deepEqual(await changed(again, log[0]!.id), [["M", "concepts/concept-guide.md"]]);
+
+        // Made while the history was off: no git branch, until the next boot makes one at main's commit.
+        await again.close();
+        struts.splice(struts.indexOf(again), 1);
+        const off = await boot({ history: false }, dir);
+        await post(off, "/branches", { name: "late" });
+        await off.close();
+        struts.splice(struts.indexOf(off), 1);
+        const on = await boot({}, dir);
+        assert.equal(await tip(on, "refs/heads/late"), await tip(on, "refs/heads/main"));
+        assert.equal(await tip(on, "refs/heads/try"), log[0]!.id);
+      });
+
+      it("with the history off, a branch is made, run on and dropped as before, and nothing is kept", async () => {
+        const s = await boot({ history: false });
+        await s.workspace.createWorkflow("c-instance", GRAPH_WFS["c-instance"]!);
+        await s.rebuildRegistry();
+        await post(s, "/branches", { name: "try" });
+        await runOn(s, "try", "c-instance", { type: "Concept", data: { name: "Branch Only", docs: "Here alone." } });
+        assert.ok(await pageIn("branch-try", "Branch Only"));
+        const dropped = await drop(s, "try");
+        assert.equal(dropped["kept"], undefined);
+        assert.equal(await stat(join(s.dataDir, HISTORY_DIR)).catch(() => null), null);
+        assert.equal((await read(s, { action: "branches" })).history, false);
+      });
+
+      it("a caller who cannot read the graph's own pages sees no branch: not listed, not readable, its commits not in a log", async () => {
+        const { s } = await tree();
+        await post(s, "/branches", { name: "try" });
+        const edited = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        const hidden = { ...(s.services as object), graph: scopedBackend(backend, { namespaces: ["acme"] }) };
+        assert.deepEqual((await read(s, { action: "branches" }, hidden)).branches.map((b: { name: string }) => b.name), ["main"]);
+        await assert.rejects(read(s, { action: "log", branch: "try" }, hidden), /no branch "try"/);
+        const log = await read(s, { action: "log", to: "try" }, hidden);
+        assert.ok(!log.commits.some((c: { runs: string[] }) => c.runs.includes(edited.runId)));
+        assert.deepEqual((await read(s, { action: "diff", from: "main", to: "try" }, hidden)).entries, []);
+        // The same reads, for a caller who may.
+        assert.ok((await read(s, { action: "log", to: "try" })).commits.some((c: { runs: string[] }) => c.runs.includes(edited.runId)));
+      });
     });
   });
 }
