@@ -2928,7 +2928,7 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
 .run-popover-param-name {
   font-size: 12px;
   color: var(--text-muted);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 .run-popover-param input,
 .run-popover-param textarea {
@@ -4527,6 +4527,54 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-history-list li { display: flex; align-items: center; gap: var(--sp-2); }
 .app-history-list .app-version-name { font-size: 12px; min-width: 0; }
 
+/* An app's screenshots (AppScreenshots.tsx), under its versions. */
+.app-shots {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.app-shots-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.app-shots-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.app-shots-of { font-size: 11px; color: var(--text-dim); }
+.app-shots-empty { font-size: 12px; color: var(--text-muted); padding: var(--sp-2) 0; }
+.app-shots-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.app-shot-row { display: flex; align-items: center; gap: var(--sp-3); }
+.app-shot-thumb {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: block;
+}
+.app-shot-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.app-shot-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.app-shot-caption,
+.app-shots-viewport {
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.app-shot-caption { width: 100%; }
+.app-shot-caption:focus,
+.app-shots-viewport:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.app-shot-file { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-shot-actions { flex: none; display: inline-flex; gap: 2px; }
+.app-shot-actions .btn { padding: 2px 7px; font-size: 11px; }
+.app-shots-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-1); }
+.app-shots-note { font-size: 12px; color: var(--ok); }
+.app-shots-save { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+
 /* A version this browser views in place of the live one: a banner over
    the frame, the frame below it. */
 .app-preview { display: flex; flex-direction: column; width: 100%; height: 100%; }
@@ -5686,7 +5734,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .prop-field dt { color: var(--text-muted); }
 .prop-field dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .prop-field-danger dd { color: var(--danger, #c0392b); font-weight: 600; }
-.prop-code { font-family: var(--font-mono, monospace); }
+.prop-code { font-family: var(--font-mono); }
 
 /* ── The Publish dialog's Public view tab (PublicViewPanel.tsx) ──────────── */
 .public-view-panel .flyout-section { margin-top: var(--sp-3); }

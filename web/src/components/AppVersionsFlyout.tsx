@@ -15,6 +15,8 @@ import {
   when,
   type AppVersionsData,
 } from "../app-versions";
+import { newestVersion } from "../app-screenshots";
+import { AppScreenshots } from "./AppScreenshots";
 import { ConfirmButton } from "./ConfirmButton";
 import { FlyoutResizer } from "./FlyoutResizer";
 
@@ -47,6 +49,8 @@ export function AppVersionsFlyout(props: {
   /** Make a version or a release live, or follow latest: the caller
    *  refreshes the app and its frame. Throws when the server refuses. */
   onSetLive: (target: Target) => Promise<void>;
+  /** A new version was published (the Screenshots section): read the app again. */
+  onPublished: () => void | Promise<void>;
   onClose: () => void;
 }) {
   const { app, data, loadError } = props;
@@ -211,6 +215,10 @@ export function AppVersionsFlyout(props: {
                   </ul>
                 )}
               </div>
+            )}
+
+            {!seeded && newestVersion(data.versions) && (
+              <AppScreenshots name={app.name} version={newestVersion(data.versions)!} onSaved={props.onPublished} />
             )}
           </>
         )}

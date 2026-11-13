@@ -2259,6 +2259,7 @@ function Shell() {
           viewing={appShown !== appEntry.activeVersion ? appShown ?? null : null}
           onView={setAppPreview}
           onSetLive={setAppLive}
+          onPublished={async () => { await refreshApps(); setAppReload((n) => n + 1); }}
           onClose={() => setPanel(null)}
         />
       )}

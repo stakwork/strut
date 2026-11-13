@@ -76,7 +76,9 @@ import {
   isValidSecretName,
   secretBlanks,
 } from "./secret-store.js";
-import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { runStep, runSingleStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { applyScreenshots, screenshotsProblem, type ScreenshotEntry } from "./apps/screenshots.js";
+import { shotProblem } from "./steps/lib/app/look.js";
 import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunLaunchBy, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppManifest } from "./apps/manifest.js";
@@ -4086,6 +4088,72 @@ export async function createStrut<TServices = unknown>(
     // Pinning holds an app that followed latest (plans/app-releases.md): `release` is the one made.
     const live = (await workspace.getApp(at.name))?.live ?? "latest";
     return c.json({ ok: true, name: at.name, pinned: body.pinned, live, ...(made ? { release: made } : {}) });
+  });
+
+  // An app's SCREENSHOTS, a person's door (src/apps/screenshots.ts; the
+  // Versions flyout's Screenshots section): the list a version's app.yaml
+  // names, and a new list saved as a new version — a draft when the app is
+  // held. `take` looks at a version as a person opening it sees it
+  // (`app/look`) and hands back the PNG, which a save then includes.
+  app.get("/apps/:name/screenshots", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const found = await apps.manifestOf(at.name, c.req.query("version") || undefined);
+    if (!found) return c.json({ error: `App "${at.name}" not found` }, 404);
+    return c.json({ name: at.name, version: found.version, screenshots: found.manifest.screenshots ?? [] });
+  });
+
+  app.put("/apps/:name/screenshots", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const reserved = reservedAppName(at.name);
+    if (reserved) return c.json({ error: reserved }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; screenshots?: unknown };
+    const problem = screenshotsProblem(body.screenshots);
+    if (problem) return c.json({ error: problem }, 400);
+    const base = typeof body.version === "string" && body.version ? body.version : undefined;
+    if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const scratch = await mkdtemp(join(tmpdir(), "strut-app-screenshots-"));
+    let result: AppPublishResult;
+    try {
+      const dir = join(scratch, "app");
+      await apps.checkout(at.name, dir, base);
+      await applyScreenshots(dir, body.screenshots as ScreenshotEntry[]);
+      const actor = await resolveActor(c);
+      result = await apps.publish(dir, at.name, { surface: "person", source: "api", ...(actor ? { actor } : {}) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, /not found|has no version/.test(message) ? 404 : 400);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+    if (!result.ok) return c.json({ error: `the app did not build with these screenshots: ${result.errors.join("; ")}`, errors: result.errors, warnings: result.warnings }, 400);
+    return c.json(result);
+  });
+
+  app.post("/apps/:name/screenshots/take", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; viewport?: unknown; input?: unknown; fullPage?: unknown };
+    const config: Record<string, unknown> = { name: at.name };
+    if (typeof body.version === "string" && body.version) config.version = body.version;
+    if (body.viewport && typeof body.viewport === "object") config.viewport = body.viewport;
+    if (body.input && typeof body.input === "object") config.input = body.input;
+    if (body.fullPage === true) config.fullPage = true;
+    const looked = await runSingleStep("app/look", registry, services, { config, ...(await actorStamp(c)) });
+    if (looked.status !== "success") return c.json({ error: looked.error?.message ?? "the look did not finish" }, 400);
+    const out = looked.output as { dir: string; path: string; width: number; height: number; rendered: boolean; hostError?: string; stopped?: { message: string } };
+    const shot = join(out.dir, out.path);
+    try {
+      const why = shotProblem(out);
+      if (why) return c.json({ error: `No screenshot: ${why}` }, 422);
+      const bytes = await readFile(shot);
+      return c.json({ type: "image/png", data: bytes.toString("base64"), bytes: bytes.length, width: out.width, height: out.height });
+    } finally {
+      // The look's own run: nothing keeps it, so its shot goes too.
+      if (looked.runId && out.dir.endsWith(looked.runId)) await rm(out.dir, { recursive: true, force: true });
+      else await rm(shot, { force: true });
+    }
   });
 
   // A person's grants of SEALED workflows to an app (src/apps/grants.ts):
