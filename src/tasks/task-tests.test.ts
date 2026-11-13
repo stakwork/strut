@@ -641,7 +641,7 @@ for (const impl of IMPLS) {
 
 describe("the standing rule's sentences (§7.5)", () => {
   const rules = { rate: 0.05, newRate: 0.25, newTasks: 50, qualify: 10, window: 20, minGraded: 10, threshold: 0.8, grade: "equal" as const, gradeCapUsd: 0.05 };
-  const row = (passed: number, graded: number, gradedAll = graded) => ({ worker: "w", type: TYPE, passed, graded, gradedAll, errors: 0, pending: 0, real: 0 });
+  const row = (passed: number, graded: number, gradedAll = graded, rejected = 0) => ({ worker: "w", type: TYPE, passed, graded, rejected, gradedAll, errors: 0, pending: 0, real: 0 });
   it("reads the newest window once minGraded are graded; qualifying decides at K", () => {
     assert.equal(revokeWhy(row(13, 20, 40), { qualify: 0 }, rules, TYPE), `standing: passed 13 of the last 20 tests of ${TYPE}, under 80%`);
     assert.equal(revokeWhy(row(16, 20, 40), { qualify: 0 }, rules, TYPE), undefined, "at the threshold it stands");
@@ -649,6 +649,14 @@ describe("the standing rule's sentences (§7.5)", () => {
     assert.equal(revokeWhy(row(6, 10), { qualify: 10 }, rules, TYPE), `qualifying: passed 6 of 10 tests of ${TYPE}, under 80%`);
     assert.equal(revokeWhy(row(0, 9), { qualify: 10 }, rules, TYPE), undefined, "still qualifying");
     assert.equal(revokeWhy(row(3, 5), { qualify: 5 }, rules, TYPE), `qualifying: passed 3 of 5 tests of ${TYPE}, under 80%`, "K under minGraded: K decides");
+  });
+  it("an answer rejected in review is a fail in the window, and the sentence says how many (§9.6)", () => {
+    assert.equal(revokeWhy(row(13, 20, 15, 5), { qualify: 0 }, rules, TYPE), `standing: passed 13 of the last 20 tests of ${TYPE} (5 of them answers rejected in review), under 80%`);
+    assert.equal(
+      revokeWhy(row(5, 10, 10, 2), { qualify: 10 }, rules, TYPE),
+      `standing: passed 5 of the last 10 tests of ${TYPE} (2 of them answers rejected in review), under 80%`,
+      "qualified at K: a rejection after it is standing's, never qualifying's",
+    );
   });
 });
 

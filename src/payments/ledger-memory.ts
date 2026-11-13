@@ -50,6 +50,9 @@ import {
   type ReceivedRow,
   type Recent,
   type SweepResult,
+  type PayRestore,
+  type RestoreInput,
+  type RestoreResult,
   type TakeBackInput,
   type TakeBackResult,
   type TokenBalance,
@@ -80,6 +83,7 @@ export class MemoryLedgerStore implements LedgerStore {
   private readonly payByTaskWorker = new Map<string, string>();
   private readonly payeeRows = new Map<string, { accepted: number; takenBack: number; withdrawn: number; answers: number; firstAt: number; lastAt: number }>();
   private readonly payDays = new Map<string, PayDailyRow>();
+  private readonly restores: PayRestore[] = [];
 
   // ── writes ────────────────────────────────────────────────────────────
 
@@ -444,6 +448,36 @@ export class MemoryLedgerStore implements LedgerStore {
       return { lease: input.lease, result: "taken", earning: { ...e } };
     }
     return { lease: input.lease, result: e.takenBack !== undefined ? "taken" : "released", earning: { ...e } };
+  }
+
+  async restore(input: RestoreInput): Promise<RestoreResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    int("at", at);
+    const e = this.pays.get(input.lease);
+    if (!e) return { lease: input.lease, result: "none" };
+    if (e.takenBack === undefined) return { lease: input.lease, result: "none", earning: { ...e } };
+    if (e.releases <= at) return { lease: input.lease, result: "released", earning: { ...e } };
+    this.restores.push({
+      lease: e.lease,
+      takenBack: e.takenBack,
+      takenBackWhy: e.takenBackWhy ?? "",
+      ...(e.takenBackBy !== undefined ? { takenBackBy: e.takenBackBy } : {}),
+      restored: at,
+      ...(input.by !== undefined ? { restoredBy: input.by } : {}),
+    });
+    delete e.takenBack;
+    delete e.takenBackWhy;
+    delete e.takenBackBy;
+    this.payeeRows.get(e.worker)!.takenBack -= e.msat;
+    const day = this.payDay(e);
+    day.takenBackAnswers -= 1;
+    day.takenBackMsat -= e.msat;
+    return { lease: input.lease, result: "restored", earning: { ...e } };
+  }
+
+  async restoresOf(lease: string): Promise<PayRestore[]> {
+    return this.restores.filter((r) => r.lease === lease).map((r) => ({ ...r }));
   }
 
   async payeeBalance(worker: string, o: { now?: number } = {}): Promise<PayeeBalance> {

@@ -56,6 +56,7 @@ import {
   type TaskStore,
   type TaskType,
   type NewTest,
+  type ReviewRecord,
   type StandingQuery,
   type StandingRow,
   type TestChange,
@@ -148,6 +149,16 @@ create table if not exists tests (
   retired_by text,
   served integer not null default 0
 ) strict;
+
+create table if not exists reviews (
+  task text not null,
+  worker text not null,
+  verdict text not null check (verdict in ('ok', 'rejected')),
+  why text,
+  by text,
+  at integer not null,
+  primary key (task, worker)
+) strict, without rowid;
 `;
 
 /** Columns added to a table that has the rest: pay's (§8.1, #664, version 1
@@ -183,6 +194,7 @@ create index if not exists tests_type on tests(type, served) where retired is nu
 create index if not exists tasks_settled on tasks(type, settled_at) where test is null;
 create index if not exists leases_type_closed on leases(type, closed);
 create index if not exists leases_worker_taken on leases(worker, taken);
+create index if not exists reviews_rejected on reviews(worker) where verdict = 'rejected';
 `;
 
 /** The task side's tables brought to version 2, inside the file's one
@@ -384,16 +396,32 @@ export class SqliteTaskStore implements TaskStore {
       // §7.5: per worker and type since the grant, the newest `window`
       // graded instances, every pass and fail, errors, pending, and the real
       // tasks answered.
+      // §9.6: an answer to a real task rejected in review is in the window
+      // as a fail, by when it was answered; qualifying (`graded_all`)
+      // counts tests alone.
       standingGraded: p(
         `with p as (select json_extract(value, '$.worker') as worker, json_extract(value, '$.type') as type,
                            json_extract(value, '$.since') as since, json_extract(value, '$.window') as win from json_each(?1)),
-              g as (select t.served_to as worker, t.type as type, t.grade as grade, p.win as win,
-                           row_number() over (partition by t.served_to, t.type order by t.settled_at desc, t.seq desc) as rn
+              x as (select t.served_to as worker, t.type as type, t.grade as grade, 0 as review, p.win as win, t.settled_at as at, t.seq as seq
                       from tasks t join p on t.served_to = p.worker and t.type = p.type
-                     where t.test is not null and t.status = 'settled' and t.settled_at >= p.since and t.grade in ('pass', 'fail'))
-         select worker, type, sum(rn <= win) as graded, sum(rn <= win and grade = 'pass') as passed, count(*) as graded_all
+                     where t.test is not null and t.status = 'settled' and t.settled_at >= p.since and t.grade in ('pass', 'fail')
+                    union all
+                    select r.worker, l.type, 'fail', 1, p.win, l.closed, t.seq
+                      from reviews r join p on r.worker = p.worker
+                      join leases l on l.task = r.task and l.worker = r.worker and l.type = p.type
+                      join tasks t on t.id = r.task
+                     where r.verdict = 'rejected' and l.status = 'submitted' and l.closed >= p.since and t.test is null),
+              g as (select *, row_number() over (partition by worker, type order by at desc, seq desc) as rn from x)
+         select worker, type, sum(rn <= win) as graded, sum(rn <= win and grade = 'pass') as passed,
+                sum(rn <= win and review = 1) as rejected, sum(review = 0) as graded_all
            from g group by worker, type`,
       ),
+      putReview: p(
+        `insert into reviews (task, worker, verdict, why, by, at) values (?, ?, ?, ?, ?, ?)
+         on conflict (task, worker) do update set verdict = excluded.verdict, why = excluded.why, by = excluded.by, at = excluded.at`,
+      ),
+      reviewOf: p("select * from reviews where task = ? and worker = ?"),
+      reviewsOf: p("select * from reviews where task in (select value from json_each(?))"),
       standingOther: p(
         `with p as (select json_extract(value, '$.worker') as worker, json_extract(value, '$.type') as type,
                            json_extract(value, '$.since') as since from json_each(?1))
@@ -498,6 +526,20 @@ export class SqliteTaskStore implements TaskStore {
       // Any answer of theirs, a copy's too (`leases_answered`).
       where.push("id in (select task from leases where worker = ? and status = 'submitted')");
       args.push(q.by);
+    }
+    if (q.review !== undefined) {
+      // §9.6: an answer (that actor's, with `by`) with no verdict, or one
+      // marked so; a test instance is graded, never reviewed.
+      const whose = q.by ? " and l.worker = ?" : "";
+      where.push(
+        q.review === "none"
+          ? `test is null and exists (select 1 from leases l where l.task = tasks.id and l.status = 'submitted'${whose}
+               and not exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker))`
+          : `test is null and exists (select 1 from reviews r join leases l on l.task = r.task and l.worker = r.worker
+               where r.task = tasks.id and r.verdict = ? and l.status = 'submitted'${whose})`,
+      );
+      if (q.review !== "none") args.push(q.review);
+      if (q.by) args.push(q.by);
     }
     if (q.before !== undefined) {
       where.push("seq < ?");
@@ -847,12 +889,25 @@ export class SqliteTaskStore implements TaskStore {
         type: p.type,
         graded: Number(g?.graded ?? 0),
         passed: Number(g?.passed ?? 0),
+        rejected: Number(g?.rejected ?? 0),
         gradedAll: Number(g?.graded_all ?? 0),
         errors: Number(o?.errors ?? 0),
         pending: Number(o?.pending ?? 0),
         real: Number(real.get(k)?.real ?? 0),
       };
     });
+  }
+
+  async putReview(r: ReviewRecord): Promise<ReviewRecord> {
+    return this.db.tx(() => {
+      this.s.putReview.run(r.task, r.worker, r.verdict, r.why ?? null, r.by ?? null, r.at);
+      return reviewOf(this.s.reviewOf.get(r.task, r.worker) as Row);
+    }, true);
+  }
+
+  async reviewsOf(taskIds: string[]): Promise<ReviewRecord[]> {
+    if (!taskIds.length) return [];
+    return (this.s.reviewsOf.all(JSON.stringify(taskIds)) as Row[]).map(reviewOf);
   }
 
   /** Inside a transaction: an open instance whose lease is no longer live
@@ -956,6 +1011,15 @@ function testOf(r: Row): TestRecord {
     const v = opt(r[col]);
     if (v !== undefined) (x as unknown as Record<string, unknown>)[k] = v;
   }
+  return x;
+}
+
+function reviewOf(r: Row): ReviewRecord {
+  const x: ReviewRecord = { task: r.task as string, worker: r.worker as string, verdict: r.verdict as ReviewRecord["verdict"], at: r.at as number };
+  const why = opt<string>(r.why);
+  if (why !== undefined) x.why = why;
+  const by = opt<string>(r.by);
+  if (by !== undefined) x.by = by;
   return x;
 }
 

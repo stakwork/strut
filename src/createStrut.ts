@@ -6268,10 +6268,10 @@ export async function createStrut<TServices = unknown>(
     // The whole store, held here and nowhere on a bag (plans/human-steps.md
     // §9.2): strut's own, or a host's own `services.tasks`.
     tasks: hostTasks ?? tasks.capability,
-    // A person's take-back of an earning in its hold (§8.1), and the tests
-    // (§7.1): the service's, never a capability's. None with a host's own
-    // store.
-    ...(hostTasks ? {} : { takeBack: tasks.takeBack, tests: tasks.tests }),
+    // A person's take-back of an earning in its hold (§8.1), a verdict on
+    // an answer (§9.6) and the tests (§7.1): the service's, never a
+    // capability's. None with a host's own store.
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, tests: tasks.tests }),
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {

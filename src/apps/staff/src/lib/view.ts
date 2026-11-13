@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Lease, Standing, TaskStats, TaskStatus, TaskType, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Lease, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests"] as const;
 export type Tab = (typeof TABS)[number];
@@ -19,20 +19,30 @@ export interface Place {
   run?: string;
   /** Tasks one worker answered. */
   by?: string;
+  /** §9.6: tasks with an answer not reviewed, or marked so — the review
+   *  queue. */
+  review?: ReviewFilter;
 }
+
+export type ReviewFilter = "none" | Verdict;
+export const REVIEW_FILTERS: readonly ReviewFilter[] = ["none", "ok", "rejected"];
 
 /**
  * Where a deep link opens (§9.1): `input` takes one of `tab=queue|types|
  * workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
  * `test=<id>`, `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
- * answered). A thing named opens its tab; with nothing named, the Queue.
+ * answered), `review=none|ok|rejected` (the review queue, §9.6; with `by`,
+ * that worker's). A thing named opens its tab; with nothing named, the
+ * Queue.
  */
 export function placeOf(input: Record<string, unknown> | null | undefined): Place {
   const str = (k: string) => (typeof input?.[k] === "string" && (input[k] as string) ? (input[k] as string) : undefined);
   const tab = str("tab");
   const named = (TABS as readonly string[]).includes(tab ?? "") ? (tab as Tab) : undefined;
+  const review = REVIEW_FILTERS.find((r) => r === str("review"));
   if (str("task")) return { tab: "tasks", task: str("task")! };
   if (str("run")) return { tab: "tasks", run: str("run")! };
+  if (review) return { tab: "tasks", review, ...(str("by") ? { by: str("by")! } : {}) };
   if (str("by")) return { tab: "tasks", by: str("by")! };
   if (str("worker")) return { tab: "workers", worker: str("worker")! };
   if (str("test")) return { tab: "tests", test: str("test")! };
@@ -44,6 +54,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
 export function inputOf(p: Place): Record<string, string> {
   if (p.task) return { task: p.task };
   if (p.run) return { run: p.run };
+  if (p.review) return { review: p.review, ...(p.by ? { by: p.by } : {}) };
   if (p.by) return { by: p.by };
   if (p.worker) return { worker: p.worker };
   if (p.test) return { test: p.test };
@@ -103,6 +114,9 @@ export interface Shown {
   /** Item 5a: the Earned, Held and Withdrawable columns — the workers carry
    *  a `balance` and some type is paid or someone is owed. */
   earnings: boolean;
+  /** §9.6: Mark ok and Reject, and the review filter — the server's own
+   *  task store, as for tests (a host's answers `not_available` to both). */
+  review: boolean;
 }
 
 export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown" }): Shown {
@@ -115,6 +129,7 @@ export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer
     standing: tests && workers.some((w) => w.standing !== undefined) && types.some((t) => !!t.tests),
     copies: tests,
     pay,
+    review: tests,
     earnings: workers.some((w) => w.balance !== undefined) && (types.some((t) => (t.paySats ?? 0) > 0) || workers.some((w) => (w.balance?.totalMsat ?? 0) > 0)),
   };
 }
@@ -196,7 +211,7 @@ export function workersInOrder<T extends { status: WorkerStatus }>(ws: readonly 
 export function standingText(s: Standing): string {
   if (s.qualifying) return s.qualify > 0 ? `qualifying ${s.graded + s.pending}/${s.qualify}` : "qualifying";
   if (s.graded === 0) return "—";
-  return `${Math.round((s.passed / s.graded) * 100)}% of ${s.graded}`;
+  return `${Math.round((s.passed / s.graded) * 100)}% of ${s.graded}${s.rejected ? ` (${s.rejected} rejected)` : ""}`;
 }
 
 /** A standing under its threshold (it revokes at its next grade, once enough are graded). */
@@ -223,6 +238,33 @@ export function balanceCells(b: Balance | undefined): [string, string, string] {
   if (!b) return ["—", "—", "—"];
   return [fmtSats(b.totalMsat), fmtSats(b.heldMsat), fmtSats(b.withdrawableMsat)];
 }
+
+/** §9.6: the answers a verdict can be given on — a real task's, each copy's
+ *  apart. */
+export function reviewable(t: Pick<Task, "test" | "leases">): Lease[] {
+  return t.test ? [] : t.leases.filter((l) => l.status === "submitted");
+}
+
+/** A task's answers' verdicts in a cell: `ok`, `rejected`, `to review`,
+ *  `1 ok, 1 to review`; "" with no answer to review. */
+export function reviewSummary(t: Pick<Task, "test" | "leases">): string {
+  const answers = reviewable(t);
+  if (!answers.length) return "";
+  const n = { ok: 0, rejected: 0, none: 0 };
+  for (const l of answers) n[l.review?.verdict ?? "none"]++;
+  const parts = [n.ok && `${answers.length > 1 ? `${n.ok} ` : ""}ok`, n.rejected && `${answers.length > 1 ? `${n.rejected} ` : ""}rejected`, n.none && `${answers.length > 1 ? `${n.none} ` : ""}to review`];
+  return parts.filter(Boolean).join(", ");
+}
+
+/** A verdict in words (§9.6): `rejected: blurry box · by ada, 14:02 ·
+ *  changeable until Nov 16, 14:00`, or `· final`. */
+export function reviewText(r: NonNullable<Lease["review"]>, now = Date.now()): string {
+  const head = r.verdict === "rejected" ? `rejected${r.why ? `: ${r.why}` : ""}` : `ok${r.why ? `: ${r.why}` : ""}`;
+  const who = ` · ${r.by ? `by ${r.by}, ` : ""}${fmtWhen(r.at, now)}`;
+  return `${head}${who} · ${r.final || r.until <= now ? "final" : `changeable until ${fmtWhen(r.until, now)}`}`;
+}
+
+export const REVIEW_WORDS: Record<ReviewFilter, string> = { none: "Not reviewed", ok: "Marked ok", rejected: "Rejected" };
 
 export const STATUS_WORDS: Record<TaskStatus, string> = {
   open: "open",

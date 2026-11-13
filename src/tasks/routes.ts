@@ -28,10 +28,13 @@
  *   expired, cancelled, disputed, skipped and lost, with time to answer
  *   and work time (p50, p90); across types the workers by status, holding
  *   and asking. Computed on read
- * - `GET /tasks[?type=&status=&workflow=&runId=&by=&test=&before=&limit=]` → `{ tasks }`,
- *   newest first, each with its leases (an answer's `earning` with it; a
- *   copies task's answers and whether each agreed on its leases);
+ * - `GET /tasks[?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=]` → `{ tasks }`,
+ *   newest first, each with its leases (an answer's `earning` and its
+ *   verdict, `review`, with it; a copies task's answers and whether each
+ *   agreed on its leases);
  *   `by` the tasks an actor answered (any of a copies task's answers);
+ *   `review=none|ok|rejected` the real tasks with an answer not reviewed,
+ *   or marked so (that actor's, with `by`): the review queue;
  *   `test=true` the test instances alone, `false` the real tasks;
  *   `status=disputed` the copies tasks whose answers did not agree
  * - `GET /tasks/:id` → `{ task, run }`: `run` the run's status now and what
@@ -43,6 +46,11 @@
  *   earnings the task's answers made (or `worker`'s) taken back while held
  *   (plans/human-steps.md §8.1); `409 released` when every one asked for is
  *   past its hold
+ * - `PUT /tasks/:id/review { worker?, verdict, why? }` → `{ task, worker,
+ *   lease, review, earning? }`: a person's verdict on one answer, `ok` or
+ *   `rejected` (which says why) (plans/human-steps.md §9.6). `worker` only
+ *   when the task has several answers. A mark: the run is not touched. It
+ *   can change until the answer's hold ends, then `409 final`
  *
  * The TEST routes (plans/human-steps.md §7.1) — the only answers that hold
  * a test's expected answer, or what its grader said:
@@ -59,7 +67,7 @@
  * - `DELETE /tasks/tests/:id` → `{ test }`, retired
  */
 import type { Context, Hono } from "hono";
-import { TASK_STATUSES, type TaskStatus } from "./task-store.js";
+import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
 import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
 import { TEST_FILE_MAX_BYTES } from "./test-files.js";
@@ -72,6 +80,9 @@ export interface TaskRoutesDeps {
   /** A person's take-back (§8.1): the service's, never on a capability.
    *  Absent (a host's own store): the route answers 501. */
   takeBack?: TasksService["takeBack"];
+  /** A person's verdict on an answer (§9.6): the service's, never on a
+   *  capability. Absent (a host's own store): the route answers 501. */
+  review?: TasksService["review"];
   /** The staff's tests (§7.1): the service's, never on a capability.
    *  Absent (a host's own store): the test routes answer 501. */
   tests?: TasksService["tests"];
@@ -92,7 +103,9 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   unknown_test: 404,
   not_listed: 404,
   no_file: 404,
+  no_answer: 404,
   in_use: 409,
+  final: 409,
 };
 
 export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
@@ -241,6 +254,8 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       const before = num("before");
       const limit = num("limit");
       if (q["test"] && q["test"] !== "true" && q["test"] !== "false") throw new TaskError("bad_request", "test is true or false");
+      const review = q["review"] || undefined;
+      if (review !== undefined && review !== "none" && !VERDICTS.includes(review as Verdict)) throw new TaskError("bad_request", `review is none, ${VERDICTS.join(" or ")}`);
       return {
         tasks: await tasks.list({
           ...(q["test"] ? { test: q["test"] === "true" } : {}),
@@ -249,6 +264,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
           ...(q["workflow"] ? { workflow: q["workflow"] } : {}),
           ...(q["runId"] ? { runId: q["runId"] } : {}),
           ...(q["by"] ? { by: q["by"] } : {}),
+          ...(review !== undefined ? { review: review as "none" | Verdict } : {}),
           ...(before !== undefined ? { before } : {}),
           ...(limit !== undefined ? { limit } : {}),
         }),
@@ -370,6 +386,31 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         return c.json({ error: "released: past its hold, this answer's earning is the worker's", code: "released", task, earnings }, 409);
       }
       return c.json({ task, earnings });
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
+
+  // A person's verdict on one answer (§9.6): a mark, never an undo of the
+  // run, which has gone on.
+  app.put("/tasks/:id/review", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.review) return c.json({ error: "this server's task store is its host's: review is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (k !== "worker" && k !== "verdict" && k !== "why") throw new TaskError("bad_request", `a review is worker, verdict and why, not ${k}`);
+      if (b["worker"] !== undefined && typeof b["worker"] !== "string") throw new TaskError("bad_request", "worker is an actor");
+      if (b["why"] !== undefined && typeof b["why"] !== "string") throw new TaskError("bad_request", "why is a sentence");
+      const out = await deps.review({
+        task: c.req.param("id"),
+        verdict: b["verdict"] as Verdict,
+        ...(b["why"] !== undefined ? { why: b["why"] as string } : {}),
+        ...(b["worker"] !== undefined ? { worker: b["worker"] as string } : {}),
+        ...(await by(c)),
+      });
+      return c.json(out);
     } catch (err) {
       if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
       throw err;

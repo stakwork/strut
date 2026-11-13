@@ -4,8 +4,9 @@
 // answer — in the type's form, read only, when the shape draws as one — and
 // its run as it stands now. With item 4, a disputed task's copies and their
 // answers, a test instance's grade, and "make a test of it"; with 5a, each
-// answer's earning and a take-back inside its hold. Review is a mark on the
-// worker, never an undo of the run (§9.6): staff act on the worker.
+// answer's earning and a take-back inside its hold. The verdict (§9.6): each
+// answer marked ok or rejected with why, a mark on the answer and never an
+// undo of the run; the review filter is the review queue.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, FileText } from "lucide-react";
@@ -18,8 +19,11 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { earningText, fmtWhen, jsonText, leaseOutcome, parseJson, runOf, shortActor, STATUS_WORDS, whoOf, type Place, type Shown } from "../lib/view";
-import type { Task, TaskFile, TaskRun, TaskStatus, TaskType, Test, Worker } from "../lib/types";
+import {
+  earningText, fmtWhen, jsonText, leaseOutcome, parseJson, REVIEW_FILTERS, REVIEW_WORDS, reviewable, reviewSummary, reviewText, runOf, shortActor, STATUS_WORDS, whoOf,
+  type Place, type ReviewFilter, type Shown,
+} from "../lib/view";
+import type { Lease, Task, TaskFile, TaskRun, TaskStatus, TaskType, Test, Verdict, Worker } from "../lib/types";
 import { Back, Empty, ErrorLine, JsonTree, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 
 const PAGE = 50;
@@ -44,17 +48,19 @@ interface Filters {
   runId: string;
   by: string;
   test: "" | "true" | "false";
+  /** §9.6: the review queue. */
+  review: "" | ReviewFilter;
 }
 
 function filtersOf(p: Place): Filters {
   const run = p.run ? runOf(p.run) : null;
-  return { type: p.type ?? "", status: "", workflow: run?.workflow ?? "", runId: run?.runId ?? "", by: p.by ?? "", test: "" };
+  return { type: p.type ?? "", status: "", workflow: run?.workflow ?? "", runId: run?.runId ?? "", by: p.by ?? "", test: "", review: p.review ?? "" };
 }
 
 function TaskList(props: Props) {
   const client = useStrutClient();
   const [f, setF] = useState<Filters>(() => filtersOf(props.place));
-  useEffect(() => setF(filtersOf(props.place)), [props.place.type, props.place.run, props.place.by]);
+  useEffect(() => setF(filtersOf(props.place)), [props.place.type, props.place.run, props.place.by, props.place.review]);
   /** The pages read before this one (their `before`), for going back. */
   const [pages, setPages] = useState<Array<number | undefined>>([undefined]);
   const before = pages[pages.length - 1];
@@ -69,6 +75,7 @@ function TaskList(props: Props) {
         ...(f.runId ? { runId: f.runId } : {}),
         ...(f.by ? { by: f.by } : {}),
         ...(f.test ? { test: f.test === "true" } : {}),
+        ...(f.review ? { review: f.review } : {}),
         ...(before !== undefined ? { before } : {}),
         limit: PAGE,
       }),
@@ -106,6 +113,16 @@ function TaskList(props: Props) {
             </NativeSelectOption>
           ))}
         </NativeSelect>
+        {props.shown.review && (
+          <NativeSelect aria-label="Review" value={f.review} onChange={(e) => set({ review: e.target.value as Filters["review"] })}>
+            <NativeSelectOption value="">Reviewed or not</NativeSelectOption>
+            {REVIEW_FILTERS.map((r) => (
+              <NativeSelectOption key={r} value={r}>
+                {REVIEW_WORDS[r]}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        )}
         {props.shown.tests && (
           <NativeSelect aria-label="Tests" value={f.test} onChange={(e) => set({ test: e.target.value as Filters["test"] })}>
             <NativeSelectOption value="">Tasks and tests</NativeSelectOption>
@@ -133,6 +150,7 @@ function TaskList(props: Props) {
                 <TableHead>Run</TableHead>
                 <TableHead>Due</TableHead>
                 <TableHead>Answered by</TableHead>
+                {props.shown.review && <TableHead>Review</TableHead>}
                 <TableHead className="text-right">Leases</TableHead>
               </TableRow>
             </TableHeader>
@@ -149,6 +167,7 @@ function TaskList(props: Props) {
                   <TableCell className="font-mono text-xs">{t.workflow ? `${t.workflow} · ${t.runId.slice(0, 8)}` : t.test ? "a test" : "—"}</TableCell>
                   <TableCell className="whitespace-nowrap">{t.status === "open" ? fmtWhen(t.due) : "—"}</TableCell>
                   <TableCell>{t.by ? who(t.by) : (t.copies ?? 1) > 1 ? `${t.leases.filter((l) => l.status === "submitted").length} of ${t.copies}` : "—"}</TableCell>
+                  {props.shown.review && <TableCell className={t.leases.some((l) => l.review?.verdict === "rejected") ? "text-destructive" : undefined}>{reviewSummary(t) || "—"}</TableCell>}
                   <TableCell className="text-right tabular-nums">{t.leases.length}</TableCell>
                 </TableRow>
               ))}
@@ -264,6 +283,28 @@ function TaskDetail(props: Props & { id: string }) {
         )}
       </Section>
 
+      {props.shown.review && reviewable(t).length > 0 && (
+        <Section title="Review">
+          <Note>
+            A mark on {copies ? "each answer" : "the answer"}: the run has gone on and is not touched.
+            {type?.tests ? " A rejection counts against the worker's standing in this type as a failed test does, and Mark ok takes it out." : ""}
+            {props.shown.earnings && reviewable(t).some((l) => l.payMsat) ? " While the earning is held, a rejection takes it back and Mark ok gives it back (a take-back by hand stays)." : ""} It
+            can change until the answer's hold ends; then it is final.
+          </Note>
+          <ul className="flex flex-col gap-2">
+            {reviewable(t).map((l) => (
+              <ReviewLine
+                key={l.id}
+                lease={l}
+                who={copies ? who(l.worker) : undefined}
+                busy={busy !== null}
+                onReview={(verdict, why) => void act("review", () => client.run("staff/review", { task: t.id, ...(copies ? { worker: l.worker } : {}), verdict, ...(why ? { why } : {}) }))}
+              />
+            ))}
+          </ul>
+        </Section>
+      )}
+
       <Section title="Leases">
         {t.leases.length === 0 ? (
           <Note>Nobody has taken it.</Note>
@@ -331,6 +372,41 @@ function TaskDetail(props: Props & { id: string }) {
 
       {props.shown.tests && !t.test && (t.status === "settled" || t.status === "disputed") && <MakeTest task={t} go={props.go} />}
     </div>
+  );
+}
+
+/** §9.6: one answer's verdict, with Mark ok and Reject (why on a line in the
+ *  page) while it can change. A first verdict can always be given. */
+function ReviewLine(props: { lease: Lease; who?: string; busy: boolean; onReview: (verdict: Verdict, why?: string) => void }) {
+  const r = props.lease.review;
+  const now = Date.now();
+  const open = !r || (!r.final && r.until > now);
+  return (
+    <li className="flex flex-wrap items-center gap-2 text-sm">
+      {props.who && <span className="font-medium">{props.who}</span>}
+      {r ? (
+        <span className={r.verdict === "rejected" ? "text-destructive" : undefined}>{reviewText(r, now)}</span>
+      ) : (
+        <span className="text-muted-foreground">not reviewed</span>
+      )}
+      {open && (
+        <span className="ml-auto flex flex-wrap items-center gap-1">
+          {r?.verdict !== "ok" && (
+            <Button size="xs" variant="outline" disabled={props.busy} onClick={() => props.onReview("ok")}>
+              Mark ok
+            </Button>
+          )}
+          <ReasonButton
+            label={r?.verdict === "rejected" ? "Change the reason" : "Reject"}
+            placeholder="Why it is wrong (kept with the verdict)"
+            required
+            variant="outline"
+            disabled={props.busy}
+            onAct={(why) => props.onReview("rejected", why)}
+          />
+        </span>
+      )}
+    </li>
   );
 }
 

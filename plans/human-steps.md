@@ -2004,6 +2004,59 @@ So review is a mark on the answer, never an undo of the run.
 - **Checking before the run goes on** is the workflow's: a second `human`
   step of a review type after the first, or copies (§7).
 
+**Built differently (#680):**
+
+- **One verdict per ANSWER, not per task.** Copies (#675) give a task
+  several answers from different workers, and earnings and standing are
+  per worker, so `reviews` is keyed by the task and the worker (one row
+  an answer, replaced when it changes). For a one-copy task that is one row
+  a task, as ruled. `PUT /tasks/:id/review { worker?, verdict, why? }`
+  takes `worker` only when the task has several answers. Only a real
+  task's answer: a test's is graded (`400`).
+- **`why`** is required for a rejection; `ok` may carry one.
+- **When it is final.** A verdict can change until the answer's hold ends:
+  its earning's `releases` (a paid answer not booked yet is booked first),
+  or, for an unpaid answer, the type's `holdHours` from when it was
+  answered. A FIRST verdict may still be given after that (§9.6: "after
+  the hold it changes no money"); it is final at once. A change after it
+  is `409 final`. Each lease's verdict carries `until` and `final`.
+- **Standing (§7.5).** A rejection is a `fail` in the window, at the time
+  the answer was given, for answers given since the grant, and the
+  standing check runs after it as after a grade, so it can revoke. `ok`
+  takes it out of the window; it is not a pass (tests score workers, §7.6).
+  A revoke a rejection caused stays: staff grant again, which starts an
+  empty window as any re-grant does. Qualifying (`gradedAll`) counts tests
+  alone, and a revoke with a rejection in its window never reads
+  `qualifying:`; its `why` adds `(2 of them answers rejected in review)`.
+  A type with no tests has no standing rules, so a rejection there moves
+  none. `standing` gains `rejected`.
+- **Money: a take-back a rejection made is undone by `ok` inside the hold**
+  (Evan's pick of three options, 2026-11-13). Ruling 4 has a rejection
+  inside the hold take the earning back, and ruling 5 says a mistaken
+  rejection does not cost the worker pay, but #664's ledger made a
+  take-back one-way (a trigger let the take-back columns be set once and
+  never cleared). So the ledger gains `restore`: one statement guarded on
+  the hold (`… where taken_back is not null and releases > now`) clears
+  the take-back whole, the payee's and the day's taken-back counts go back
+  down, and the take-back it cleared is appended to a new append-only
+  table, `pay_restores`. #664's trigger `pay_take_back_once` is dropped at
+  every open and `pay_take_back_or_restore` allows that one more change.
+  A rejection's take-back says `review: <why>`, by the reviewer; `ok`
+  restores only such a take-back, never one by hand or a graded test's. A
+  take-back is final once the hold ends, and only held money moves, which
+  cannot be withdrawn, so paid money never moves back. Not taken: taking
+  back only when the hold ends (the ledger untouched, but a rejected
+  earning shown as held for up to 72 hours, and a sweep that must land
+  before the release), and never restoring (against ruling 5).
+- **The review queue** is `GET /tasks?review=none` (real tasks with an
+  answer no verdict was given on), beside `ok` and `rejected`, each with
+  `by` for one worker's answers.
+- **The staff app.** The Tasks tab's Review filter and column, a task's
+  Review section (Mark ok, and Reject with its reason on a line in the
+  page), and a worker's newest leases with their verdicts and links to
+  their answers to review and their rejected ones. A host's own store
+  answers no review (`501`), so none of it shows there.
+
 ### 9.7 Places for later items
 
 Each later item adds its part here. The page shows a tab or a column only
@@ -2297,7 +2350,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11 |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has

@@ -81,6 +81,7 @@ import {
   DEFAULT_TEST_RULES,
   MemoryTaskStore,
   STATS_WINDOWS,
+  VERDICTS,
   answersOf,
   payMsatOf,
   settledOf,
@@ -92,7 +93,9 @@ import {
   type GradeResult,
   type GradeRule,
   type Lease,
+  type ReviewRecord,
   type StandingRow,
+  type Verdict,
   type TaskListQuery,
   type TaskRecord,
   type TaskSettled,
@@ -110,10 +113,10 @@ import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, StatsWindow, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, WorkerWeek } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { Standing } from "./task-tests.js";
-export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES } from "./task-store.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 
@@ -155,6 +158,9 @@ export const GRADE_ERRORS_LOGGED = 3;
 /** §7.6: how many copies tasks left with all their answers and no decision
  *  one sweep queues. */
 export const UNDECIDED_BATCH = 100;
+/** §9.6: how a take-back a review's rejection made begins its `why`, so
+ *  `ok` undoes that one alone. */
+export const REVIEW_TAKE_BACK = "review: ";
 /** Who a grade's take-back and a standing revoke are by. */
 export const GRADING_ACTOR = "grading";
 export const STANDING_ACTOR = "standing";
@@ -234,7 +240,9 @@ export type TaskErrorCode =
   | "no_file"
   | "in_use"
   | "unknown_test"
-  | "bad_grader";
+  | "bad_grader"
+  | "no_answer"
+  | "final";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -364,7 +372,12 @@ export interface WorkerView {
 
 /** An answer's earning as staff read it (§8.1): booked in the ledger. */
 export type LeaseEarning = Pick<Earning, "msat" | "at" | "releases" | "takenBack" | "takenBackWhy" | "takenBackBy">;
-export type LeaseView = Lease & { earning?: LeaseEarning };
+/** A verdict as staff read it, on its answer's lease (§9.6): `until` is when
+ *  it can no longer change — the answer's earning's hold end, or for an
+ *  unpaid answer the type's hold from when it was answered — and `final`
+ *  whether that has passed. */
+export type LeaseReview = Omit<ReviewRecord, "task" | "worker"> & { until: number; final: boolean };
+export type LeaseView = Lease & { earning?: LeaseEarning; review?: LeaseReview };
 export type TaskView = TaskRecord & { leases: LeaseView[] };
 /** A worker as staff read them: with what they are owed here (§8.1), and
  *  their standing in each type with tests they hold (§7.5). */
@@ -451,6 +464,16 @@ export interface TakeBackOutcome {
   earning?: LeaseEarning;
 }
 
+/** What a verdict did (§9.6): the answer it is on, the verdict as it now
+ *  stands, and the answer's earning after it. */
+export interface ReviewOutcome {
+  task: string;
+  worker: string;
+  lease: string;
+  review: LeaseReview;
+  earning?: LeaseEarning;
+}
+
 /** p50 and p90 in ms, nearest rank (§9.4). */
 export interface Percentiles {
   p50: number;
@@ -509,8 +532,9 @@ export interface WorkerActivity {
   holding?: { lease: string; task: string; type: string; expires: number };
   /** Of the leases taken in the last 7 days, by type. */
   week: Record<string, WorkerWeek>;
-  /** Their newest leases, each with its task. */
-  recent: Array<{ lease: Lease; task: Pick<TaskRecord, "id" | "type" | "workflow" | "runId" | "status"> & { test?: string } }>;
+  /** Their newest leases, each with its task, and an answer's verdict
+   *  (§9.6). */
+  recent: Array<{ lease: LeaseView; task: Pick<TaskRecord, "id" | "type" | "workflow" | "runId" | "status"> & { test?: string } }>;
 }
 
 /** How many of a worker's leases `recent` lists. */
@@ -619,6 +643,17 @@ export interface TasksService {
    *  person's act (`POST /tasks/:id/take-back`, full scope) and item 4's
    *  (a test graded `fail`); never on a capability, so no step reaches it. */
   takeBack(o: { task: string; worker?: string; why: string; by?: string }): Promise<TakeBackOutcome[]>;
+  /** §9.6: a person's verdict on one answer — the task's, or `worker`'s
+   *  when it has several — `ok` or `rejected` (with why). It can be changed
+   *  until the answer's hold ends (`until`), then it is `final`; a first
+   *  verdict may come later, final at once. A MARK: nothing in the run
+   *  changes. A rejection counts against the worker's standing in the type
+   *  as a failed test does (§7.5), and `ok` undoes that. Inside the hold a
+   *  rejection takes the answer's earning back (`why` begins `review: `)
+   *  and `ok` restores that take-back (the ledger's `restore`); past it no
+   *  money moves. A person's act
+   *  (`PUT /tasks/:id/review`, full scope); never on a capability. */
+  review(o: { task: string; worker?: string; verdict: Verdict; why?: string; by?: string }): Promise<ReviewOutcome>;
   /** §7.1: the staff's tests, for the test routes alone. */
   tests: TestAuthoring;
   /** §7.9: every test instance graded. Returns the unsubscribe. */
@@ -928,7 +963,37 @@ export function createTasks(deps: TasksDeps): TasksService {
         if (e) l.earning = leaseEarning(e);
       }
     }
+    await withReviews(s, leases);
     return tasks.map((t) => ({ ...t, leases: leases.filter((l) => l.task === t.id) }));
+  };
+
+  // ── review (§9.6) ─────────────────────────────────────────────────────
+  /** When a verdict on answer `l` can no longer change: its earning's hold
+   *  end, or for an answer with none booked the type's hold from when it
+   *  was answered (as booking would set it). */
+  const holdEnd = (l: Lease, kind: TaskType | undefined, earning: Pick<Earning, "releases"> | undefined): number =>
+    earning?.releases ?? (l.closed ?? l.taken) + Math.round((kind?.holdHours ?? DEFAULT_HOLD_HOURS) * HOUR_MS);
+  const leaseReview = (r: ReviewRecord, until: number, at: number): LeaseReview => {
+    const { task: _t, worker: _w, ...rest } = r;
+    return { ...rest, until, final: at >= until };
+  };
+  /** Each answer's verdict on its lease, where one was given: its earning
+   *  read for its hold where the lease does not carry it yet. */
+  const withReviews = async (s: TaskStores, leases: LeaseView[]): Promise<void> => {
+    const answered = leases.filter((l) => l.status === "submitted");
+    if (!answered.length) return;
+    const reviews = new Map((await s.tasks.reviewsOf([...new Set(answered.map((l) => l.task))])).map((r) => [`${r.task}\0${r.worker}`, r]));
+    const reviewed = answered.filter((l) => reviews.has(`${l.task}\0${l.worker}`));
+    if (!reviewed.length) return;
+    const kinds = new Map((await s.tasks.types()).map((k) => [k.name, k]));
+    const unread = reviewed.filter((l) => l.payMsat !== undefined && !l.earning);
+    const ledger = unread.length ? await deps.ledgerIfAny?.() : undefined;
+    const earned = ledger ? new Map((await ledger.payFor([...new Set(unread.map((l) => l.task))])).map((e) => [e.lease, e])) : undefined;
+    const at = now();
+    for (const l of reviewed) {
+      const until = holdEnd(l, kinds.get(l.type), l.earning ?? earned?.get(l.id));
+      l.review = leaseReview(reviews.get(`${l.task}\0${l.worker}`)!, until, at);
+    }
   };
 
   // ── earnings (§8.1) ───────────────────────────────────────────────────
@@ -1370,7 +1435,9 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (!s || !(await s.workers.get(actor))) return undefined;
       const at = now();
       const held = await s.tasks.heldBy(actor, at);
-      const leases = await s.tasks.recentLeases(actor, RECENT_LEASES);
+      const leases: LeaseView[] = await s.tasks.recentLeases(actor, RECENT_LEASES);
+      // §9.6: their verdicts, on the answers among them.
+      await withReviews(s, leases);
       const tasks = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, t]));
       return {
         ...(held ? { holding: { lease: held.id, task: held.task, type: held.type, expires: held.expires } } : {}),
@@ -1421,6 +1488,54 @@ export function createTasks(deps: TasksDeps): TasksService {
       out.push({ lease: l.id, worker: l.worker, result: r.result, ...(r.earning ? { earning: leaseEarning(r.earning) } : {}) });
     }
     return out;
+  };
+
+  // ── review (§9.6) ─────────────────────────────────────────────────────
+  const review: TasksService["review"] = async (o) => {
+    if (!o || typeof o !== "object") throw new TaskError("bad_request", "a review is { worker?, verdict, why }");
+    if (!VERDICTS.includes(o.verdict)) throw new TaskError("bad_request", `verdict is ${VERDICTS.join(" or ")}`);
+    const why = o.why === undefined || o.why === null ? undefined : text("why", o.why).trim() || undefined;
+    if (o.verdict === "rejected" && !why) throw new TaskError("bad_request", "a rejection says why");
+    if (o.worker !== undefined) actorOk(o.worker);
+    const s = await storesIfAny();
+    const t = s && typeof o.task === "string" ? await s.tasks.task(o.task) : undefined;
+    if (!s || !t) throw new TaskError("unknown_task", `no task ${o?.task}`);
+    if (t.test !== undefined) throw new TaskError("bad_request", `task ${t.id} is a test: its answer is graded, not reviewed`);
+    const answers = answersOf(await s.tasks.leasesOf([t.id])).filter((l) => o.worker === undefined || l.worker === o.worker);
+    if (!answers.length) throw new TaskError("no_answer", o.worker === undefined ? `task ${t.id} has no answer yet` : `${o.worker} gave no answer to task ${t.id}`);
+    if (answers.length > 1) throw new TaskError("bad_request", `task ${t.id} has ${answers.length} answers: say whose (worker)`);
+    const l = answers[0]!;
+    const at = now();
+    // A paid answer not booked yet is booked first, so its hold is the
+    // ledger's (as a take-back does).
+    let earning: Earning | undefined;
+    if (l.payMsat && deps.ledger) {
+      await book(s, l.id);
+      earning = await (await deps.ledger()).payOf(l.id);
+    }
+    const kind = await s.tasks.type(l.type);
+    const until = holdEnd(l, kind, earning);
+    const before = (await s.tasks.reviewsOf([t.id])).find((r) => r.worker === l.worker);
+    if (before && at >= until) {
+      throw new TaskError("final", `final: the hold on ${l.worker}'s answer to task ${t.id} ended at ${new Date(until).toISOString()}, so its verdict (${before.verdict}) can no longer change`);
+    }
+    // The money (§9.6, ruled 2026-11-13: option A): inside the hold a
+    // rejection takes the earning back, and `ok` undoes a take-back a
+    // rejection made (its why begins `REVIEW_TAKE_BACK`), never a staff or a
+    // grading one. Past the hold nothing moves: paid money never moves back.
+    if (earning && at < until && deps.ledger) {
+      const ledger = await deps.ledger();
+      if (o.verdict === "rejected") {
+        earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+      } else if (earning.takenBack !== undefined && earning.takenBackWhy?.startsWith(REVIEW_TAKE_BACK)) {
+        earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+      }
+    }
+    const row = await s.tasks.putReview({ task: t.id, worker: l.worker, verdict: o.verdict, ...(why ? { why } : {}), ...(o.by ? { by: o.by } : {}), at });
+    // §7.5: a rejection counts against standing as a failed test does, so
+    // the check runs as after a grade; `ok` takes it out of the window.
+    if (o.verdict === "rejected" && kind?.tests) await standingCheck(s, l.worker, kind);
+    return { task: t.id, worker: l.worker, lease: l.id, review: leaseReview(row, until, at), ...(earning ? { earning: leaseEarning(earning) } : {}) };
   };
 
   // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────
@@ -1848,6 +1963,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       return out;
     },
     takeBack,
+    review,
     tests,
     onGraded(listener) {
       gradedListeners.add(listener);
