@@ -22,22 +22,21 @@ nothing.
 
 ## For each lesson, three things
 
-THE CLAIM. One sentence that should hold from now on: the rule itself, as
-narrow as what they said, on the page it belongs to. When that page
-already carries a claim that says the same thing, it is that claim. A
-rule that a page gets OPENED when it applies belongs on the page that
-lists it, because work that skipped a page is never checked against that
-page's claims.
+THE CLAIM. Write one sentence that should hold from now on: the rule
+itself, as narrow as what they said, on the page it belongs to. When that
+page already carries a claim that says the same thing, use that one
+rather than writing another. A rule that a page gets OPENED when it
+applies belongs on the page that lists it, because work that skipped a
+page is never checked against that page's claims.
 
-WHAT WAS SAID. Their words are evidence against the claim, about the
-piece of work they were talking about, and only when that work opened the
-claim's page: work that never read a page is not measured by it. When the
-source cannot say which work it was, or what that work opened, record
-nothing.
+WHAT WAS SAID. Record their words against the claim, about the piece of
+work they were talking about, when that work opened the claim's page:
+work that never read a page is not measured by it. When the source cannot
+say which work it was, or what that work opened, record nothing.
 
-THE EDIT. The smallest change to the tree that would have made the
-assistant get it right. A person decides each one; nothing changes until
-they accept.
+THE EDIT. Propose the smallest change to the tree that would have made
+the assistant get it right. A person decides each one; nothing changes
+until they accept.
 
 ## Where a lesson goes
 
