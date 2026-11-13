@@ -1833,7 +1833,7 @@ refusal carries the most the worker could ask now (`maxMsat`) where that
 helps (`over_balance`, the day's caps). `payout_out` carries the payout on
 its way, so a page that asked twice shows the first.
 
-**Built differently (#PR):**
+**Built differently (#688):**
 
 - **A refusal is the step's error, `code: sentence`,** as every worker
   step's is: a step can hand a page an error's text and nothing else. The
@@ -1935,7 +1935,7 @@ do: `{ state, feeMsat, paymentHash?, preimage?, error? }`.
 
   This holds because §9.2 closed the shared bag.
 
-**Built differently (#PR):** `payouts.ts` is `createPayouts({ ledger,
+**Built differently (#688):** `payouts.ts` is `createPayouts({ ledger,
 ledgerIfAny, withdrawals, payer, lightning, now })` → `pay`, `view` (`task/me`'s
 `payout`), `settings`, `saveSettings`, `list`, `read`, `resolve` and `sweep`.
 The task service is handed `pay` and `view` (`deps.payouts`); the
@@ -2092,7 +2092,7 @@ file from before opens and gains them:
 | `entries` | A `withdrawal`'s subject may be `worker`, and `SEND_PURPOSES` gains it. `withdrawal()` refuses `worker`: only a payout's settle writes one |
 | Reads | `payeeBalance`, `payeeBalances` and `owedToWorkers` subtract `out` (`payeeBalanceOf` gains it). New calls: `reservePayout`, `payoutSettled`, `payoutFailed`, `payoutOf`, `payouts(q)`, `payoutsToday({ now })`, `payoutSettings` and `setPayoutSettings`. Both stores, one suite |
 
-**Built differently (#PR):**
+**Built differently (#688):**
 
 - **A payout has a `seq`** (the row's order) for paging, `payouts({ state,
   worker, before, limit })` newest first with `before` a `seq`; the person
@@ -2224,7 +2224,7 @@ The staff door gets four steps: `staff/payouts`, `staff/save-payouts`,
 `staff/payout-read` and `staff/payout-resolve`. The `/earnings/withdrawals/…`
 routes act on a payout too, through the same hooks.
 
-**Built differently (#PR):**
+**Built differently (#688):**
 
 - **The routes' answers:** `GET /tasks/payouts` with no ledger answers the
   defaults and none, makes no file; each payout carries `stale`; `today`
@@ -2296,7 +2296,7 @@ and mark a payout in the pending list.
 | `kit/src/wallet/protocol.test.ts`, `web/src/native-pay.test.ts`, `kit/src/hooks.test.ts` | The `sign_in` vectors with an address, and the vector pinning address and key to one seed. strut's UI drops an address whose pubkey is not `key`. `useWithdraw`, and `useWorker`'s `payout` |
 | Live, once | The one-mixer check above, recorded in `docs/payments.md` |
 
-**Built differently (#PR):** PR 1's rows are proven over both ledgers where
+**Built differently (#688):** PR 1's rows are proven over both ledgers where
 they touch the ledger. Until PR 2 no session carries an address, so the
 worker-door row is split: `worker-door.test.ts` takes `task/withdraw`
 through `/public/mcp` and a member's `/mcp` (an amount alone, `no_address`,
@@ -3117,7 +3117,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
-| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#PR (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. PR 2 (sign-in keeps the address, the contracts, the kit) and PR 3 (the pages) not yet |
+| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#688 (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. PR 2 (sign-in keeps the address, the contracts, the kit) and PR 3 (the pages) not yet |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
