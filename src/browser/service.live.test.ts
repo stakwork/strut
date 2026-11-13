@@ -2,7 +2,7 @@
  * The service against a REAL Playwright server. Skipped unless BROWSER_WS_URL
  * is set:
  *
- *   docker run --rm -p 3300:3000 -e BROWSER_WS_PATH=devpath ghcr.io/stakwork/strut-browser:1.63
+ *   docker run --rm -p 3300:3000 -e BROWSER_WS_PATH=devpath ghcr.io/stakwork/strut-browser:1.64
  *   BROWSER_WS_URL=ws://127.0.0.1:3300 BROWSER_WS_PATH=devpath \
  *     npm run test:browser
  *
