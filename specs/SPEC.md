@@ -329,7 +329,7 @@ child env is scrubbed, `secretsEnv` names are injected and masked.
 
 #### 4.1.9 `human`
 
-Config: `{ task, show?, files?, withinHours? }`. Output: `{ answer, by, task, pay? }`.
+Config: `{ task, show?, files?, withinHours?, copies? }`. Output: `{ answer, by, task, pay?, answers? }`.
 
 A person as a step of a workflow (plans/human-steps.md §3). The step makes a
 TASK of the task type `task` in the task store (`ctx.services.tasks.ensure`,
@@ -373,6 +373,23 @@ the task's id.
   the type's default otherwise. Past it the store's sweep expires the task,
   which wakes the run, and the step fails `task_expired:`, so `onError`
   applies. A task the run's cancel closed fails it `task_cancelled:`.
+- `copies` (plans/human-steps.md §7.6): how many workers answer, 1 by
+  default, at most the type's `copies.max` — a type with no copies rule asks
+  one (`bad_request: copies:` otherwise, and no task is made): each copy is
+  paid work, and how much a step may ask is the admin's. Each worker answers
+  on their own lease; a worker never answers one task twice. When every
+  answer asked for is in (a worker already at it is never cut off), the
+  type's rule decides: answers that match (`equal`, or a sealed step
+  comparing two) group, and a group of `agree` settles the task — `answer`
+  is the agreed one, `by` the first worker who gave it, and `answers` every
+  answer as `[{ answer, by, agrees }]` in the order given. Otherwise the
+  task asks one more worker (`onDisagree: more`, up to `max`), and then, or
+  at once with `fail`, it is DISPUTED: the step fails `task_disputed: the 3
+  answers to task <id> (<type>) did not agree`, so `onError` applies (asking
+  an expert's task type is the usual one). With `copies: 1` the output is as
+  it always was, with no `answers`. Each copy earns as any answer does, and
+  `pay` is every copy's; a disputed task's step fails, so its copies' pay is
+  not in the run's cost (an expired one's answered copies neither).
 - One task per workflow, run id and step path, whatever wakes the run: the
   step finds the task it made. So `retry` reads the same closed task and fails
   again; `onError` is how a workflow goes on without the answer.

@@ -106,8 +106,16 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           const claim = /\\+"id\\+":\\+"([0-9a-z]{32})\\+"/.exec(all)?.[1];
           if (turn === 0) return say("knowledge_add_claim", { concept: "Personal", text: CLAIM });
           if (turn === 1) return say("knowledge_add_evidence", { claim, workflow: "orchestrator", run, said: SAID, by: "evan" });
-          if (turn === 2) return say("graph_edit_node", { ref_id: root, node_data: { docs: NEW_DOCS }, rationale: "The person said summaries run long; no page says how long they may be." });
-          return say("final_answer", { lessons: [{ session: "c-1", turn: 1, said: SAID, concept: "Personal", claim: CLAIM, claim_id: claim, recorded: true, proposed: "add the line to Personal's docs" }] });
+          // The root is never edited: the lesson goes on a page under it.
+          if (turn === 2)
+            return say("graph_create_triplet", {
+              source_ref_id: root,
+              edge_type: "PARENT_OF",
+              target_type: "Concept",
+              target_data: { name: "Summaries", description: "How long a summary may be: open it before writing one.", docs: NEW_DOCS },
+              rationale: "The person said summaries run long; no page says how long they may be.",
+            });
+          return say("final_answer", { lessons: [{ session: "c-1", turn: 1, said: SAID, concept: "Personal", claim: CLAIM, claim_id: claim, recorded: true, proposed: "a Summaries page under Personal" }] });
         }
         if (system.includes("You judge whether a piece of work did what a rule says")) {
           calls.push("judge");
@@ -232,8 +240,9 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     // The edit is a proposal: the tree is as it was.
     const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
-    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/edit-node", "pending"]]);
+    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/create-triplet", "pending"]]);
     assert.equal(await docsOf("Personal"), docsBefore);
+    assert.equal(await docsOf("Summaries"), undefined);
 
     // Nothing new to read: no model is called, and nothing is written twice.
     const quiet = await dream();
@@ -248,10 +257,12 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual(await knowledge.opened("dream", quiet["runId"]), []);
     assert.deepEqual((await verified("dream", run["runId"]))["checks"], []);
 
-    // A person accepts: the page changes, so what was said is about an older page.
+    // A person accepts: a page under the root, the root's own text as it was. The root's version covers the pages
+    // listed under it, so it moves, and what was said is about an older page.
     const decided = await post(`/proposals/${proposals[0]!["id"]}/decide`, { action: "accept" });
     assert.equal(decided["status"], "applied", JSON.stringify(decided).slice(0, 600));
-    assert.equal(await docsOf("Personal"), NEW_DOCS);
+    assert.equal(await docsOf("Personal"), docsBefore);
+    assert.equal(await docsOf("Summaries"), NEW_DOCS);
     [claim] = await claimsOn("Personal");
     assert.equal(claim!["status"], "stale");
 

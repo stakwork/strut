@@ -172,10 +172,13 @@ index. A change in this area updates this file, not AGENTS.md.
   judgment is in the dream's OWN tree, which strut seeds like `Job`
   (`src/concepts/Dream.md`): `Dream` holds what is true for any source —
   the posture, what a lesson is, the three things, and where a lesson goes
-  (the page it belongs on; reworded and put first when the work opened the
-  page and still went wrong; the description when the page was never
-  opened; the root's docs when it applies on almost every turn; `stuck`,
-  for a person, when the page already says it plainly) — and one page
+  (the pages under the tree's root, never the root itself — a root is a
+  short page that stays as it is, ruled 2026-11-13: the page it belongs
+  on; reworded and put first when the work opened the page and still went
+  wrong; the description when the page was never opened; a page directly
+  under the root, its description saying when it applies, when it applies
+  on almost every turn; `stuck`, for a person, when the page already says
+  it plainly) — and one page
   under it per KIND of source holds what that source is, what to look for
   in it and which run a person's words there are about; the first,
   `Assistant Conversations`, is the material `dream/turns` hands over.
