@@ -344,26 +344,35 @@ interface Exec {
   disposers: Array<(info: RunEndInfo) => unknown>;
   /** `ctx.park` for every step of the run (src/park.ts). */
   park: (on: string) => never;
+  /** Why `park` would refuse a target of a prefix (`ctx.parkRefusal`). */
+  parkRefusal: (prefix: string) => string | undefined;
+}
+
+/** Why `ctx.park(on)` would fail the step in one run, or undefined when
+ *  something here can wake the run: a park nobody could wake would leave
+ *  the run waiting for good. */
+function parkRefusalFor(services: unknown, opts: Pick<RunOptions, "noPark" | "origin"> | undefined): (on: string) => string | undefined {
+  return (on: string) => {
+    const parking = (services as { parking?: ParkingCapability } | null | undefined)?.parking;
+    return parkPrefix(on) === null
+      ? `"${String(on).slice(0, 80)}" is not a park target (<prefix>:<id>, the prefix lowercase letters)`
+      : opts?.noPark
+        ? opts.noPark
+        : opts?.origin === "public"
+          ? "a public run cannot wait"
+          : !parking
+            ? "nothing on this server wakes a parked run"
+            : !parking.accepts(on)
+              ? `nothing on this server wakes a run parked on "${on}" (no source for "${parkPrefix(on)}")`
+              : undefined;
+  };
 }
 
 /** `ctx.park` for one run: a `ParkedError` when something here can wake
- *  the run, else an ordinary error that fails the step — a park nobody
- *  could wake would leave the run waiting for good. */
-function parkFor(services: unknown, opts: Pick<RunOptions, "noPark" | "origin"> | undefined): (on: string) => never {
+ *  the run, else an ordinary error that fails the step. */
+function parkFor(refusal: (on: string) => string | undefined): (on: string) => never {
   return (on: string): never => {
-    const parking = (services as { parking?: ParkingCapability } | null | undefined)?.parking;
-    const refused =
-      parkPrefix(on) === null
-        ? `"${String(on).slice(0, 80)}" is not a park target (<prefix>:<id>, the prefix lowercase letters)`
-        : opts?.noPark
-          ? opts.noPark
-          : opts?.origin === "public"
-            ? "a public run cannot wait"
-            : !parking
-              ? "nothing on this server wakes a parked run"
-              : !parking.accepts(on)
-                ? `nothing on this server wakes a run parked on "${on}" (no source for "${parkPrefix(on)}")`
-                : undefined;
+    const refused = refusal(on);
     if (refused) throw new Error(`park_refused: ${refused}`);
     throw new ParkedError([on]);
   };
@@ -637,6 +646,8 @@ async function executeRun<TServices = unknown>(
     }
   }
 
+  /** Why a park in this run fails the step, or nothing (src/park.ts). */
+  const refusePark = parkRefusalFor(services, opts);
   const exec: Exec = {
     registry,
     runId,
@@ -661,10 +672,13 @@ async function executeRun<TServices = unknown>(
     ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts?.aiAuthored || (await aiAuthored(services, wfName, opts?.workflowHash ? { hash: opts.workflowHash } : undefined)) ? { aiAuthored: true } : {}),
     disposers: [],
-    park: parkFor(services, opts),
+    park: parkFor(refusePark),
+    parkRefusal: (prefix: string) => refusePark(`${prefix}:_`),
   };
   /** Set when the run parks: what the teardown hooks are told. */
   let parkedOn: string[] | undefined;
+  /** How it ended, for the teardown hooks. */
+  let endStatus: RunEndInfo["status"];
 
   try {
     const output = await executeFlow(workflow, parsedInput, exec, wfName, opts?.params);
@@ -684,6 +698,7 @@ async function executeRun<TServices = unknown>(
       stepCounts,
       ...spent(),
     });
+    endStatus = "success";
     return { runId, status: "success", output };
   } catch (err) {
     // Every branch ended or parked, and some parked (src/park.ts): the run
@@ -735,6 +750,7 @@ async function executeRun<TServices = unknown>(
       stepCounts,
       ...spent(),
     });
+    endStatus = cancelled ? "cancelled" : "error";
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {
     // Generic per-run teardown hook. A consumer's services bag may implement
@@ -754,6 +770,7 @@ async function executeRun<TServices = unknown>(
       workflow: wfName,
       ...(opts?.origin ? { origin: opts.origin } : {}),
       ...(parkedOn ? { parked: true as const, waitingOn: parkedOn } : {}),
+      ...(endStatus ? { status: endStatus } : {}),
     };
     // The run's last graph writes, sent now rather than a second from now
     // (never throws: a report is a notification).
@@ -1217,6 +1234,7 @@ async function dispatchStep(
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),
         park: exec.park,
+        parkRefusal: exec.parkRefusal,
         ...(exec.aiAuthored ? { aiAuthored: true } : {}),
       });
 

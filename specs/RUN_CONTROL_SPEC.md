@@ -534,11 +534,16 @@ per-run resources go as at any end.
 **Where a park fails the step instead** (`park_refused:`, an ordinary
 error) — wherever nothing could wake the run: a prefix no source
 registered, a single-step run (`runSingleStep`'s `noPark`), a public run,
-and an agent's tool call (a turn cannot be resumed mid-loop, §8).
+and an agent's tool call (a turn cannot be resumed mid-loop, §8). A step
+that must not START what it would wait on there asks first:
+`ctx.parkRefusal(prefix)` is the reason `ctx.park` would give for a target
+of that prefix, or undefined (the `human` step makes no task, SPEC §4.1.9).
 
 **The wake.** A source registers under its prefix in the process
 (`strut.parking.register(prefix, { settled(on), cancelled?(on, run) })`)
-and gets `{ wake(workflow, runId) }`. A wake is the durable resume of §5
+and gets `{ wake(workflow, runId) }`. strut's own is the task store,
+`task` (the `human` step, SPEC §4.1.9): a task that leaves `open` wakes
+its run, and a cancel of the run cancels the task. A wake is the durable resume of §5
 on the run's own version, its `run.resumed` marked `woken: true`:
 - **Coalesced:** wakes for one run within `wakeDelayMs` (1 s) are one
   resume.

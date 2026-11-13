@@ -1,7 +1,8 @@
 # Human steps: people as part of a workflow
 
-> **Status (2026-11-12): item 1 built (stakwork/strut#654); item 2a in
-> progress; the rest proposed** — §12 has each item's state. Written against strut
+> **Status (2026-11-12): items 1 (stakwork/strut#654), 2a
+> (stakwork/strut#655) and 2b (stakwork/strut#PRNUM) built; the rest
+> proposed** — §12 has each item's state. Written against strut
 > `main` @a5663769. The rows under
 > "Rulings" are the owner's, from one conversation. Everything else is
 > mine and open. Strut succeeds Stakwork, and what Stakwork has that strut
@@ -260,6 +261,39 @@ marks `noRemoteSpend`, as `remote/*` spending is), and as an agent's tool
 A second form, `to:` a named person with an inline `message` and `answer`
 schema, is an approval inside a workflow. It uses the same store and the
 same park. It is a later item (§12, item 7).
+
+**Built differently (#PRNUM):**
+
+- **Refused where `ctx.park` would refuse, too.** Besides the trees
+  createStrut marks `noRemoteSpend` (refused by the store's `refusal`, so
+  `ensure` makes nothing: `refused:`) and an agent's tool call, the step
+  refuses before any task is made in a single-step run (`runStep`,
+  `meta/run-step`, an app page's call) and a public run, where `ctx.park`
+  would only fail after the task was made. It asks the runner through a new
+  `ctx.parkRefusal(prefix)`: the reason `ctx.park` would give, or nothing
+  (`park_refused:`). The `noRemoteSpend` trees include the runs a public
+  run or a peer's launch started, as for `remote/*` spending.
+- **`retry` fails again; `onError` is the way on.** A task is made once per
+  step path (rule 1), so a retry reads the same expired task and fails at
+  once. Making a new task per attempt would need the attempt in the key,
+  and a wake starts the attempts over.
+- **Cancelled is `task_cancelled:`.** It is reached only by a person's
+  `POST …/resume` of a cancelled run.
+- **A run cancelled while live cancels the tasks it left open** (the
+  end hook, from a new `RunEndInfo.status`), so nobody answers for a run
+  that is over. A cancel of a waiting run closes them through the source
+  (`cancelled(on)`). A run that FAILED keeps its open tasks: a resume finds
+  them, answered or not, and they expire on their own otherwise (§11).
+- **Files.** A folder's name may be a pattern too, a name starting with `.`
+  matches only a pattern segment that starts with `.` (as a shell's glob),
+  and a pattern matches files, never folders. The list is resolved only when
+  the task is made (`ensure`'s `resolveFiles`), so a file removed after that
+  never fails the step when it runs again. The code is `src/tasks/files.ts`,
+  which item 3's `task/file` reads by.
+- **The source** registers at the end of createStrut's construction: its
+  catch-up may wake a run at once, and the wake resumes through what is
+  defined before it. An answer, an expiry and a cancel all wake the run
+  (`onSettle`); a wake of a run that no longer waits does nothing.
 
 ## 4. The task store
 
@@ -625,6 +659,15 @@ directory, so past one process the answer is another strut.
 
 - A parked run lets go of its job. On wake the journal replays `job/dir`
   and the hold is not taken again.
+- A run that fails with a task still open keeps it (§3, built differently
+  in #PRNUM): a worker may answer for a run nobody resumes, until the task
+  expires.
+- A cancel that reaches a live run after its last checkpoint is lost when
+  every branch that did not finish parked: the run ends `waiting`, not
+  `cancelled` (item 1's flow outcome; found building 2b). A cancel while
+  a woken run replays to its `human` steps is one way to meet it.
+- `PUT /public-view` takes a runnable workflow with a `human` step; its
+  public runs fail `park_refused:`.
 - Payments per second through one Sphinx daemon.
 - Whether a standalone box replaces the Stadeum for some clients.
 - Whether workers one day see one balance across clients.
@@ -639,8 +682,8 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
 | 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing | **Built**: stakwork/strut#654. Differs in §2.3 |
-| 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | In progress |
-| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | Not started |
+| 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
+| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#PRNUM. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | Not started |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |

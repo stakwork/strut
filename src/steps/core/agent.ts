@@ -838,6 +838,7 @@ function summarizeForEvent(v: unknown): string {
 const refuseParkInTool = (on: string): never => {
   throw new Error(`park_refused: this step waits (${on}); an agent cannot wait in the middle of a turn — run it as a step of the workflow`);
 };
+const parkRefusalInTool = (): string => "an agent cannot wait in the middle of a turn — run this step as a step of the workflow";
 
 export function buildRegistryTools(
   names: string[] | undefined,
@@ -917,6 +918,7 @@ export function buildRegistryTools(
           agentTool: true,
           ...(options?.strutToolPath ? { path: options.strutToolPath } : {}),
           park: refuseParkInTool,
+          parkRefusal: parkRefusalInTool,
         };
         if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
         // An error the tool-step lets escape fails this call, which the model
