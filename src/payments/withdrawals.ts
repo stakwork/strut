@@ -32,6 +32,26 @@
  *   the background only once its invoice has expired (the daemon then
  *   refuses to send it anew, and answers what it knows).
  * - Whose door it is (full scope only) is the route's; this is the work.
+ *
+ * A WORKER'S PAYOUT (plans/human-steps.md §8.2) is a third kind of send:
+ * a `keysend` of an amount to the worker's Sphinx address, keyed by the
+ * payout's key (64 hex, made before it is sent: the daemon's idempotency
+ * key, this file's key and the `withdrawal` entry's `ref`). Only payouts.ts
+ * starts one, after the ledger reserved it. It is kept, read and resolved as
+ * an invoice's send is, with two hooks into the ledger: settled →
+ * `payoutSettled` (the entry, the payout `paid`, the reserve onto
+ * `withdrawn`); failed, refused before it went, never taken (`GET
+ * /keysend/:id` 404) or dropped by a person → `payoutFailed` (the reserve
+ * back to the worker). A keysend is read with `keysendStatus`, which never
+ * sends, so the minute's check reads every one; it is stale a day after it
+ * was sent (`KEYSEND_STALE_MS`), having no expiry to count from.
+ *
+ * RULING 7 (plans/human-steps.md §8.2): every send that is not a worker's —
+ * an admin's Withdraw, an accepted `remote/buy-credit` — is refused when the
+ * amount and its whole fee cap would leave the wallet holding less than what
+ * workers are owed (`short_of_workers`), or when workers are owed and the
+ * balance cannot be read (`balance_unknown`). A retry of one already out
+ * only reads it, and checks nothing.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
@@ -40,7 +60,8 @@ import { dirname, join } from "node:path";
 import { Bolt11Error, decodeBolt11 } from "./bolt11.js";
 import { LightningError, isLightningError } from "./lightning.js";
 import type { LedgerEntry, LedgerStore, SendPurpose } from "./ledger.js";
-import { defaultMaxFeeMsat, type Payer, type PayResult, type PaymentState } from "./payer.js";
+import { defaultMaxFeeMsat, NO_KEYSEND, type KeysendResult, type Payer, type PayResult, type PaymentState } from "./payer.js";
+import { shortOfWorkers } from "./withdraw-reading.js";
 
 /** The pending sends, under the data directory. */
 export const WITHDRAWALS_FILE = join("payments", "withdrawals.json");
@@ -50,11 +71,21 @@ export const WITHDRAW_CHECK_MS = 60_000;
 export const ANSWER_WITHIN_MS = 25_000;
 /** Past its invoice's expiry by this much, a payment is stale. */
 export const STALE_AFTER_EXPIRY_MS = 60 * 60_000;
+/** A keysend still pending this long after it was sent is stale
+ *  (plans/human-steps.md §8.2): it has no expiry to count from. */
+export const KEYSEND_STALE_MS = 24 * 60 * 60_000;
 
 /** A payment that went out (or may have) and has not settled or failed. */
 export interface PendingWithdrawal {
+  /** The invoice's payment hash; a keysend's, the payout's key. */
   paymentHash: string;
-  invoice: string;
+  /** Absent (or `invoice`): an invoice paid. `keysend`: a worker's payout
+   *  to `address` (plans/human-steps.md §8.2). */
+  kind?: "invoice" | "keysend";
+  /** An invoice's BOLT11. */
+  invoice?: string;
+  /** A keysend's Sphinx address. */
+  address?: string;
   msat: number;
   maxFeeMsat: number;
   actor?: string;
@@ -64,7 +95,8 @@ export interface PendingWithdrawal {
   payer: string;
   /** Epoch ms, when it was asked for. */
   at: number;
-  /** Unix seconds, when its invoice expires. */
+  /** Unix seconds: when its invoice expires; a keysend, which has none, when
+   *  it goes stale (`KEYSEND_STALE_MS` after it was sent). */
   expiresAt: number;
   /** The wallet answered (`pending`): it is out. False: the pay call never
    *  answered, so it may or may not have gone. */
@@ -108,6 +140,10 @@ export interface WithdrawAnswer {
 }
 
 export type WithdrawErrorCode =
+  | "short_of_workers"
+  | "balance_unknown"
+  | "no_keysend"
+  | "worker_send"
   | "not_an_invoice"
   | "no_amount"
   | "amount_mismatch"
@@ -143,11 +179,26 @@ export interface WithdrawalsDeps {
   now?: () => number;
   /** How long a caller waits for the wallet (tests: less). */
   answerWithinMs?: number;
+  /** Ruling 7 (plans/human-steps.md §8.2): what workers are owed now, held
+   *  and withdrawable (0 with no ledger)… */
+  owedToWorkers?: () => Promise<number>;
+  /** …and the wallet's balance now, or undefined when it cannot be read: a
+   *  send that is not a worker's is refused when it would leave the wallet
+   *  short of what is owed. Left out: no check. */
+  balance?: () => Promise<number | undefined>;
+  /** Run first in every check: payouts.ts's sweep of a payout reserved and
+   *  never sent. */
+  sweep?: () => Promise<unknown>;
 }
 
 export interface Withdrawals {
   /** Pay an invoice out (a person's withdrawal; item 9's purchase). */
   withdraw(o: { invoice: string; msat: number; maxFeeMsat?: number; actor?: string; purpose?: SendPurpose }): Promise<WithdrawAnswer>;
+  /** A worker's payout (plans/human-steps.md §8.2): keysend `msat` to
+   *  `address` once, keyed by the payout's `key`. Only payouts.ts calls it,
+   *  after the ledger reserved the payout; a refusal before it was sent
+   *  fails the payout (its reserve back) and throws. */
+  keysend(o: { key: string; address: string; msat: number; maxFeeMsat: number; actor: string }): Promise<WithdrawAnswer>;
   /** Read one pending payment now, by its payment hash. */
   read(paymentHash: string): Promise<WithdrawAnswer>;
   /** A person settles a pending one by hand: `paid` records it (with the
@@ -181,7 +232,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
       const parsed = JSON.parse(await readFile(deps.file, "utf8")) as unknown;
       memory = Array.isArray(parsed)
         ? (parsed as PendingWithdrawal[])
-            .filter((p) => p && typeof p.paymentHash === "string" && typeof p.invoice === "string")
+            .filter((p) => p && typeof p.paymentHash === "string" && (typeof p.invoice === "string" || (p.kind === "keysend" && typeof p.address === "string")))
             .map((p) => ({ ...p, purpose: p.purpose ?? "withdrawal", payer: p.payer ?? "" }))
         : [];
     } catch (err) {
@@ -210,7 +261,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
     const list = await load();
     if (list.some((x) => x.paymentHash === hash)) await save(list.filter((x) => x.paymentHash !== hash));
   };
-  const isStale = (p: PendingWithdrawal) => now() > p.expiresAt * 1000 + STALE_AFTER_EXPIRY_MS;
+  const isStale = (p: PendingWithdrawal) => now() > p.expiresAt * 1000 + (p.kind === "keysend" ? 0 : STALE_AFTER_EXPIRY_MS);
 
   const usdOf = async (msat: number): Promise<number | undefined> => {
     try {
@@ -221,23 +272,45 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
     }
   };
 
-  const record = async (p: PendingWithdrawal, feeMsat: number) => {
+  /** A send that settled, into the books — a payout through its hook
+   *  (`payoutSettled`: its entry, `paid`, its reserve onto `withdrawn`) —
+   *  then off the pending list. */
+  const record = async (p: PendingWithdrawal, feeMsat: number, o: { walletHash?: string; by?: string } = {}) => {
     const usd = await usdOf(p.msat);
-    const entry = await (await deps.ledger()).withdrawal({
-      msat: p.msat,
-      feeMsat,
-      paymentHash: p.paymentHash,
-      purpose: p.purpose,
-      ...(p.actor ? { actor: p.actor } : {}),
-      ...(usd !== undefined ? { usd } : {}),
-      at: now(),
-    });
+    const ledger = await deps.ledger();
+    const entry =
+      p.purpose === "worker"
+        ? (
+            await ledger.payoutSettled({
+              key: p.paymentHash,
+              feeMsat,
+              ...(o.walletHash ? { paymentHash: o.walletHash } : {}),
+              ...(usd !== undefined ? { usd } : {}),
+              ...(o.by ? { by: o.by } : {}),
+              at: now(),
+            })
+          ).entry
+        : await ledger.withdrawal({
+            msat: p.msat,
+            feeMsat,
+            paymentHash: p.paymentHash,
+            purpose: p.purpose,
+            ...(p.actor ? { actor: p.actor } : {}),
+            ...(usd !== undefined ? { usd } : {}),
+            at: now(),
+          });
     await drop(p.paymentHash);
     return entry;
   };
+  /** A send that failed or never went, off the pending list — a payout
+   *  through its hook first (`payoutFailed`: its reserve back). */
+  const fail = async (p: PendingWithdrawal, why: string, by?: string) => {
+    if (p.purpose === "worker") await (await deps.ledger()).payoutFailed({ key: p.paymentHash, why, ...(by ? { by } : {}), at: now() });
+    await drop(p.paymentHash);
+  };
 
   /** What the wallet said, into the books and the pending list. */
-  const settle = async (p: PendingWithdrawal, r: PayResult): Promise<WithdrawAnswer> => {
+  const settle = async (p: PendingWithdrawal, r: PayResult & { walletHash?: string }): Promise<WithdrawAnswer> => {
     const answer: WithdrawAnswer = {
       state: r.state,
       paymentHash: p.paymentHash,
@@ -249,11 +322,11 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
       ...(r.error ? { error: r.error } : {}),
     };
     if (r.state === "settled") {
-      const entry = await record(p, r.feeMsat);
+      const entry = await record(p, r.feeMsat, r.walletHash ? { walletHash: r.walletHash } : {});
       return { ...answer, feeMsat: entry.feeMsat ?? r.feeMsat, entry };
     }
     if (r.state === "failed") {
-      await drop(p.paymentHash);
+      await fail(p, r.error ?? "the payment failed");
       return answer;
     }
     const { lastError: _gone, ...rest } = p;
@@ -271,14 +344,27 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
    *  `bad_request`, on a payment the wallet never answered): dropped.
    *  Anything else — no answer, an answer strut cannot read, a refused
    *  credential — may have gone: it stays, and the error is said. */
-  const failedCall = async (p: PendingWithdrawal, err: unknown): Promise<never> => {
+  const failedCall = async (p: PendingWithdrawal, err: unknown, reading = false): Promise<never> => {
     if (!isLightningError(err)) throw err;
-    const neverSent = !p.answered && (err.code === "wallet_refused" || err.code === "bad_request");
-    if (neverSent) await drop(p.paymentHash);
+    // A keysend is read with a GET that never sends: a refusal of the read
+    // says nothing about the payment.
+    const neverSent = !p.answered && !(reading && p.kind === "keysend") && (err.code === "wallet_refused" || err.code === "bad_request");
+    if (neverSent) await fail(p, err.message);
     else await upsert({ ...p, checkedAt: now(), lastError: err.message });
+    if (err.walletCode === NO_KEYSEND) throw new WithdrawError(409, "no_keysend", err.message, err.walletCode);
     const status = err.code === "wallet_unavailable" ? 503 : err.code === "wallet_unauthorized" || err.code === "wallet_bad_answer" ? 502 : 400;
     throw new WithdrawError(status, err.code, err.message, err.walletCode);
   };
+  /** A keysend's answer as a payment's: keyed by the payout's key, the
+   *  wallet's payment hash beside it. */
+  const keysendAsPay = (p: PendingWithdrawal, r: KeysendResult): PayResult & { walletHash?: string } => ({
+    paymentHash: p.paymentHash,
+    state: r.state,
+    feeMsat: r.feeMsat,
+    ...(r.preimage ? { preimage: r.preimage } : {}),
+    ...(r.error ? { error: r.error } : {}),
+    ...(r.paymentHash ? { walletHash: r.paymentHash } : {}),
+  });
 
   /** Run `op` for `hash` unless one is in flight, whose promise is joined. */
   const once = (hash: string, op: () => Promise<WithdrawAnswer>): Promise<WithdrawAnswer> => {
@@ -313,9 +399,13 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
 
   const readOp = (payer: Payer, p: PendingWithdrawal) => async () => {
     try {
-      return await settle(p, await payer.status({ invoice: p.invoice, paymentHash: p.paymentHash, maxFeeMsat: p.maxFeeMsat, ...(p.balanceBeforeMsat !== undefined ? { balanceBeforeMsat: p.balanceBeforeMsat } : {}) }));
+      if (p.kind === "keysend") {
+        if (!payer.keysendStatus) throw new LightningError("wallet_refused", `${payer.id} cannot read a keysend`, NO_KEYSEND);
+        return await settle(p, keysendAsPay(p, await payer.keysendStatus({ id: p.paymentHash })));
+      }
+      return await settle(p, await payer.status({ invoice: p.invoice ?? "", paymentHash: p.paymentHash, maxFeeMsat: p.maxFeeMsat, ...(p.balanceBeforeMsat !== undefined ? { balanceBeforeMsat: p.balanceBeforeMsat } : {}) }));
     } catch (err) {
-      return failedCall(p, err);
+      return failedCall(p, err, true);
     }
   };
   const otherWallet = (p: PendingWithdrawal, payer: Payer) =>
@@ -323,6 +413,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
 
   const api: Withdrawals = {
     async withdraw(o) {
+      if (o.purpose === "worker") throw new WithdrawError(400, "worker_send", "a worker's payout is a keysend from their own withdrawal (task/withdraw), never an invoice");
       let inv;
       try {
         inv = decodeBolt11(o.invoice);
@@ -357,6 +448,19 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
         return answer(hash, once(hash, readOp(payer, p)), p);
       }
       if (inv.expiresAt * 1000 <= now()) throw new WithdrawError(400, "expired", `the invoice expired at ${new Date(inv.expiresAt * 1000).toISOString()}: ask for a new one`);
+      // Ruling 7: not with sats that are workers'. A send in flight is out of
+      // the balance already (a wallet keeps the debit).
+      const owed = deps.owedToWorkers ? await deps.owedToWorkers() : 0;
+      if (owed > 0 && deps.balance) {
+        const balance = await deps.balance();
+        if (balance === undefined) {
+          throw new WithdrawError(409, "balance_unknown", `workers are owed ${owed} msat here and the wallet's balance cannot be read now: nothing is sent while it is not known to cover them`);
+        }
+        const short = shortOfWorkers({ balanceMsat: balance, msat: inv.msat, maxFeeMsat, owedMsat: owed });
+        if (short) {
+          throw new WithdrawError(409, "short_of_workers", `paying ${inv.msat} msat (and a fee of up to ${maxFeeMsat}) would leave ${short.afterMsat} msat, ${short.shortMsat} msat short of the ${short.owedMsat} msat workers are owed`);
+        }
+      }
       // On file before it goes: a crash mid-pay leaves it to be read.
       const p: PendingWithdrawal = {
         paymentHash: hash,
@@ -373,13 +477,51 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
       await upsert(p);
       const op = once(hash, async () => {
         try {
-          const r = await payer.pay({ invoice: p.invoice, maxFeeMsat });
+          const r = await payer.pay({ invoice: inv.invoice, maxFeeMsat });
           return await settle(r.balanceBeforeMsat !== undefined ? { ...p, balanceBeforeMsat: r.balanceBeforeMsat } : p, r);
         } catch (err) {
           return failedCall(p, err);
         }
       });
       return answer(hash, op, p);
+    },
+
+    async keysend(o) {
+      const key = o.key;
+      const p: PendingWithdrawal = {
+        paymentHash: key,
+        kind: "keysend",
+        address: o.address,
+        msat: o.msat,
+        maxFeeMsat: o.maxFeeMsat,
+        actor: o.actor,
+        purpose: "worker",
+        payer: "",
+        at: now(),
+        expiresAt: Math.floor((now() + KEYSEND_STALE_MS) / 1000),
+        answered: false,
+      };
+      const payer = await deps.payer();
+      if (!payer || !payer.keysend) {
+        // Refused before it was on file: nothing went, the reserve goes back.
+        const [code, why] = !payer
+          ? (["no_pay_credential", "the wallet has no pay credential: add the daemon's pay token under Earnings → Wallet"] as const)
+          : (["no_keysend", `${payer.id} cannot keysend to a Sphinx address (an NWC wallet takes no route hints): the Stadeum's wallet is the Sphinx daemon`] as const);
+        await fail(p, why);
+        throw new WithdrawError(409, code, why);
+      }
+      const keysend = payer.keysend.bind(payer);
+      const sending = { ...p, payer: payer.id };
+      // On file before it goes: a crash mid-send leaves it to be read.
+      await upsert(sending);
+      const op = once(key, async () => {
+        try {
+          return await settle(sending, keysendAsPay(sending, await keysend({ id: key, address: o.address, msat: o.msat, maxFeeMsat: o.maxFeeMsat })));
+        } catch (err) {
+          return failedCall(sending, err);
+        }
+      });
+      return answer(key, op, sending);
     },
 
     async read(paymentHash) {
@@ -404,12 +546,12 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
       if (!p) throw new WithdrawError(404, "not_pending", `no payment ${hash} is out`);
       if (inflight.has(hash)) throw new WithdrawError(409, "reading", "it is being read now: wait for the read, then decide");
       if (o.action === "drop") {
-        await drop(hash);
+        await fail(p, `dropped by ${o.actor ?? "a person"}: recorded as never received`, o.actor);
         return { action: "drop" };
       }
       const fee = o.feeMsat ?? 0;
       if (!Number.isSafeInteger(fee) || fee < 0) throw new WithdrawError(400, "bad_fee", "feeMsat must be a whole number of msat, 0 or more");
-      const entry = await record({ ...p, ...(p.actor ? {} : o.actor ? { actor: o.actor } : {}) }, fee);
+      const entry = await record({ ...p, ...(p.actor ? {} : o.actor ? { actor: o.actor } : {}) }, fee, o.actor ? { by: o.actor } : {});
       return { action: "paid", entry };
     },
 
@@ -419,7 +561,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
         .sort((a, b) => b.at - a.at)
         .map(({ invoice: _i, balanceBeforeMsat: _b, ...p }) => ({
           ...p,
-          stale: isStale({ ...p, invoice: "" }),
+          stale: isStale(p as PendingWithdrawal),
           reading: inflight.has(p.paymentHash),
           otherWallet: !!payer && !!p.payer && p.payer !== payer.id,
         }));
@@ -428,6 +570,7 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
     check() {
       if (checking) return Promise.resolve([]);
       const run = (async () => {
+        if (deps.sweep) await deps.sweep().catch((err) => console.warn(`[payments] the payouts' sweep failed: ${err instanceof Error ? err.message : String(err)}`));
         const list = await load();
         if (!list.length) return [];
         const payer = await deps.payer();
@@ -444,10 +587,11 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
             continue;
           }
           if (isStale(p)) {
-            unread("stale: past its invoice's expiry; record it as paid or drop it");
+            unread(p.kind === "keysend" ? "stale: still pending a day after it was sent; record it as paid or drop it" : "stale: past its invoice's expiry; record it as paid or drop it");
             continue;
           }
-          const unattended = p.answered || payer.provider !== "sphinx" || p.expiresAt * 1000 <= now();
+          // A keysend is read with a GET that never sends: always.
+          const unattended = p.kind === "keysend" || p.answered || payer.provider !== "sphinx" || p.expiresAt * 1000 <= now();
           if (!unattended) {
             unread("its pay call never answered: read it by asking again, or wait for the invoice to expire");
             continue;

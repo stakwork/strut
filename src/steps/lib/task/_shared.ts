@@ -5,10 +5,19 @@
  * from its input, so a page cannot name another worker (rule 5). It runs
  * only as an app page's own call through `step_run` (a one-step run): never
  * a step of a workflow, never an agent's tool — a worker is a person.
+ *
+ * Where a worker's money goes (plans/human-steps.md §8.2) is decided the same
+ * way: the Sphinx address their SESSION carries, which the door hands to a
+ * worker step's own bag beside the worker's calls (`WORKER_ADDRESS`), never
+ * a field a page sends. This is the one place a step reads it.
  */
 import { workflowOf, type StepContext } from "../../../core.js";
 import { RUN_STEP_FLOW } from "../../../run-step.js";
 import type { WorkerTasksCapability } from "../../../tasks/tasks.js";
+
+/** The key a door hands a worker step the session's Sphinx address under,
+ *  on that call's bag alone (createStrut's `workerServicesOf`). */
+export const WORKER_ADDRESS = "workerAddress";
 
 export interface WorkerCall {
   tasks: WorkerTasksCapability;
@@ -16,6 +25,9 @@ export interface WorkerCall {
   actor: string;
   /** The calling app's name: a task type names the app that draws it. */
   app: string;
+  /** The Sphinx address the viewer's session carries, what a withdrawal
+   *  pays (§8.2); absent when it carries none. */
+  address?: string;
 }
 
 export function workerCall(type: string, ctx: StepContext | undefined): WorkerCall {
@@ -25,5 +37,6 @@ export function workerCall(type: string, ctx: StepContext | undefined): WorkerCa
   if (!ctx.actor) throw new Error(`${type}: sign in first — a worker is the page's signed-in viewer`);
   const tasks = (ctx.services as { tasks?: WorkerTasksCapability } | undefined)?.tasks;
   if (!tasks) throw new Error(`${type}: this server keeps no task store (ctx.services.tasks)`);
-  return { tasks, actor: ctx.actor, app: ctx.app.name };
+  const address = (ctx.services as Record<string, unknown> | undefined)?.[WORKER_ADDRESS];
+  return { tasks, actor: ctx.actor, app: ctx.app.name, ...(typeof address === "string" && address ? { address } : {}) };
 }

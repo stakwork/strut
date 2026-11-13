@@ -237,3 +237,195 @@ describe("SphinxDaemonPayer", () => {
     assert.equal(payerFor({ provider: "nwc", url: nwc, payUrl: nwc.replace("b".repeat(64), "c".repeat(64)) })?.provider, "nwc");
   });
 });
+
+// ── keysend, for a worker's payout (plans/human-steps.md §8.2) ──────────────
+
+interface Keysend {
+  id: string;
+  address: string;
+  msat: number;
+  state: "pending" | "settled" | "failed";
+  fee_msat: number;
+  payment_hash?: string;
+  preimage?: string;
+  error?: string;
+  sent: number;
+}
+
+const ADDRESS_RE = /^(0[23][0-9a-f]{64})_(0[23][0-9a-f]{64})_(\d+)$/;
+
+/** `POST /keysend` and `GET /keysend/:id` as §8.2 writes them down for the
+ *  treasury daemon (specs/LIGHTNING.md): the pay token only; idempotent on
+ *  the caller's id — the same id again answers that payment as it stands
+ *  and never sends again, a failed one included; the id written before it
+ *  sends, so a GET of one it never took is `404 not_found`; refusals before
+ *  sending (`bad_request`, `own_address`, `max_fee_too_low`) are 400s. */
+class KeysendDaemon {
+  server!: Server;
+  url = "";
+  sends = new Map<string, Keysend>();
+  outcomes: Array<"settled" | "failed" | "pending"> = [];
+  requests: Array<{ method: string; path: string; auth: string | undefined; body: Record<string, unknown> }> = [];
+  /** The account's own address. */
+  own = `02${"9".repeat(64)}_03${"8".repeat(64)}_7`;
+  /** False: a daemon from before these routes. */
+  routes = true;
+  /** What GET answers next, once, in place of the truth. */
+  next: { status: number; body: unknown } | null = null;
+
+  async start() {
+    this.server = createServer(async (req, res) => {
+      const body = (await readBody(req)) as Record<string, unknown>;
+      const path = req.url ?? "/";
+      this.requests.push({ method: req.method ?? "", path, auth: req.headers.authorization, body });
+      const send = (status: number, b: unknown) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(b));
+      };
+      const isPost = req.method === "POST" && path === "/keysend";
+      const get = req.method === "GET" ? /^\/keysend\/([0-9a-f]{64})$/.exec(path) : null;
+      if (!this.routes || (!isPost && !get)) return send(404, { error: `no route ${req.method} ${path}`, code: "not_found" });
+      if (req.headers.authorization !== `Bearer ${PAY}`) return send(req.headers.authorization === `Bearer ${RECEIVE}` ? 403 : 401, { error: "the pay token alone keysends", code: "forbidden" });
+      if (this.next) {
+        const n = this.next;
+        this.next = null;
+        return send(n.status, n.body);
+      }
+      if (get) {
+        const k = this.sends.get(get[1]!);
+        return k ? send(200, this.answer(k)) : send(404, { error: `no keysend ${get[1]}`, code: "not_found" });
+      }
+      const id = body["id"];
+      const address = body["address"];
+      const msat = body["msat"];
+      const max = body["max_fee_msat"];
+      if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id)) return send(400, { error: "id is 64 hex", code: "bad_request" });
+      const had = this.sends.get(id);
+      if (had) return send(200, this.answer(had));
+      if (typeof address !== "string" || !ADDRESS_RE.test(address)) return send(400, { error: "address is not a Sphinx address", code: "bad_request" });
+      if (typeof msat !== "number" || !Number.isSafeInteger(msat) || msat <= 0) return send(400, { error: "msat is a whole number above 0", code: "bad_request" });
+      if (address === this.own) return send(400, { error: "the address is the account's own", code: "own_address" });
+      if (typeof max !== "number" || max < lspFeeFloorMsat(msat)) return send(400, { error: `max_fee_msat is below the LSP's own limit for ${msat} msat`, code: "max_fee_too_low" });
+      const k: Keysend = { id, address, msat, state: "pending", fee_msat: 0, sent: 1 };
+      this.sends.set(id, k);
+      const outcome = this.outcomes.shift() ?? "settled";
+      if (outcome === "settled") this.settle(id);
+      if (outcome === "failed") {
+        k.state = "failed";
+        k.error = "no route found";
+      }
+      send(200, this.answer(k));
+    });
+    await new Promise<void>((r) => this.server.listen(0, "127.0.0.1", r));
+    this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+  }
+
+  /** Settled within one mixer: no fee, a preimage that hashes to the payment. */
+  settle(id: string, o: { fee?: number; preimage?: string } = {}) {
+    const k = this.sends.get(id)!;
+    const preimage = randomBytes(32).toString("hex");
+    k.state = "settled";
+    k.fee_msat = o.fee ?? 0;
+    k.payment_hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+    k.preimage = o.preimage ?? preimage;
+  }
+
+  answer(k: Keysend) {
+    return {
+      id: k.id,
+      state: k.state,
+      fee_msat: k.state === "settled" ? k.fee_msat : 0,
+      ...(k.payment_hash ? { payment_hash: k.payment_hash } : {}),
+      ...(k.preimage && k.state === "settled" ? { preimage: k.preimage } : {}),
+      ...(k.error && k.state === "failed" ? { error: k.error } : {}),
+    };
+  }
+
+  stop() {
+    return new Promise<void>((r) => this.server.close(() => r()));
+  }
+}
+
+describe("SphinxDaemonPayer: keysend to a worker's Sphinx address (plans/human-steps.md §8.2)", () => {
+  const daemon = new KeysendDaemon();
+  let payer: SphinxDaemonPayer;
+  const id = (n: number) => n.toString(16).padStart(64, "0");
+  const address = `02${"a".repeat(64)}_03${"b".repeat(64)}_1099511627776`;
+  before(() => daemon.start());
+  after(() => daemon.stop());
+  beforeEach(() => {
+    daemon.sends.clear();
+    daemon.outcomes = [];
+    daemon.requests = [];
+    daemon.routes = true;
+    daemon.next = null;
+    payer = new SphinxDaemonPayer({ url: daemon.url, payToken: PAY });
+  });
+
+  it("sends the amount to the address once per id, with the pay token and the cap; the same id again only answers", async () => {
+    const out = await payer.keysend({ id: id(1), address, msat: 2_000_000, maxFeeMsat: 10_000 });
+    const k = daemon.sends.get(id(1))!;
+    assert.deepEqual(out, { id: id(1), state: "settled", feeMsat: 0, paymentHash: k.payment_hash, preimage: k.preimage });
+    assert.deepEqual(daemon.requests[0], { method: "POST", path: "/keysend", auth: `Bearer ${PAY}`, body: { id: id(1), address, msat: 2_000_000, max_fee_msat: 10_000 } });
+    const again = await payer.keysend({ id: id(1), address, msat: 2_000_000, maxFeeMsat: 10_000 });
+    assert.deepEqual(again, out);
+    assert.equal(k.sent, 1, "one id is sent once");
+    // A failed one stays failed under its id: a new try is a new id.
+    daemon.outcomes.push("failed");
+    assert.deepEqual(await payer.keysend({ id: id(2), address, msat: 2_000_000, maxFeeMsat: 10_000 }), { id: id(2), state: "failed", feeMsat: 0, error: "no route found" });
+    assert.equal((await payer.keysend({ id: id(2), address, msat: 2_000_000, maxFeeMsat: 10_000 })).state, "failed");
+    assert.equal(daemon.sends.get(id(2))!.sent, 1);
+  });
+
+  it("GET reads one without sending: pending, then settled with the fee the LSP charged and a preimage only when it proves the payment", async () => {
+    daemon.outcomes.push("pending");
+    assert.deepEqual(await payer.keysend({ id: id(3), address, msat: 1_000_000, maxFeeMsat: 5_000 }), { id: id(3), state: "pending", feeMsat: 0 });
+    assert.deepEqual(await payer.keysendStatus({ id: id(3) }), { id: id(3), state: "pending", feeMsat: 0 });
+    daemon.settle(id(3), { fee: 1_200, preimage: "ab".repeat(32) });
+    const read = await payer.keysendStatus({ id: id(3) });
+    assert.deepEqual(read, { id: id(3), state: "settled", feeMsat: 1_200, paymentHash: daemon.sends.get(id(3))!.payment_hash }, "a preimage that does not hash to it is not kept");
+    assert.deepEqual(daemon.requests.map((r) => `${r.method} ${r.path}`), ["POST /keysend", `GET /keysend/${id(3)}`, `GET /keysend/${id(3)}`]);
+    assert.equal(daemon.sends.get(id(3))!.sent, 1);
+  });
+
+  it("an id the daemon never took reads as failed: it writes the id before it sends", async () => {
+    assert.deepEqual(await payer.keysendStatus({ id: id(4) }), { id: id(4), state: "failed", feeMsat: 0, error: "the daemon never took this payment" });
+  });
+
+  it("refusals before sending throw with the daemon's code: a cap under the LSP's limit, the account's own address, a bad request", async () => {
+    await assert.rejects(payer.keysend({ id: id(5), address, msat: 10_000_000, maxFeeMsat: 5_000 }), code("wallet_refused", "max_fee_too_low"));
+    await assert.rejects(payer.keysend({ id: id(6), address: daemon.own, msat: 1_000_000, maxFeeMsat: 5_000 }), code("wallet_refused", "own_address"));
+    await assert.rejects(payer.keysend({ id: id(7), address: "not-an-address", msat: 1_000_000, maxFeeMsat: 5_000 }), code("wallet_refused", "bad_request"));
+    assert.equal(daemon.sends.size, 0, "nothing went out");
+    // Checked before asking.
+    const asked = daemon.requests.length;
+    await assert.rejects(payer.keysend({ id: "nope", address, msat: 1_000_000, maxFeeMsat: 5_000 }), code("bad_request"));
+    await assert.rejects(payer.keysend({ id: id(8), address, msat: 0, maxFeeMsat: 5_000 }), code("bad_request"));
+    await assert.rejects(payer.keysendStatus({ id: "nope" }), code("bad_request"));
+    assert.equal(daemon.requests.length, asked);
+  });
+
+  it("a daemon without the routes is no_keysend, on the send and on the read; the receive token cannot keysend", async () => {
+    daemon.routes = false;
+    await assert.rejects(payer.keysend({ id: id(9), address, msat: 1_000_000, maxFeeMsat: 5_000 }), code("wallet_refused", "no_keysend"));
+    await assert.rejects(payer.keysendStatus({ id: id(9) }), code("wallet_refused", "no_keysend"));
+    daemon.routes = true;
+    const withReceive = new SphinxDaemonPayer({ url: daemon.url, payToken: RECEIVE });
+    await assert.rejects(withReceive.keysend({ id: id(9), address, msat: 1_000_000, maxFeeMsat: 5_000 }), code("wallet_unauthorized"));
+  });
+
+  it("an answer for another id, or in a state it does not know, is not believed", async () => {
+    daemon.next = { status: 200, body: { id: id(11), state: "settled", fee_msat: 0 } };
+    await assert.rejects(payer.keysendStatus({ id: id(10) }), code("wallet_bad_answer"));
+    daemon.next = { status: 200, body: { id: id(10), state: "maybe" } };
+    await assert.rejects(payer.keysendStatus({ id: id(10) }), code("wallet_bad_answer"));
+  });
+
+  it("NWC cannot keysend to a Sphinx address: its payer has no keysend", () => {
+    const nwc = `nostr+walletconnect://${"a".repeat(64)}?relay=wss%3A%2F%2Frelay.example&secret=${"b".repeat(64)}`;
+    const p = payerFor({ provider: "nwc", url: nwc, payUrl: nwc.replace("b".repeat(64), "c".repeat(64)) })!;
+    assert.equal(p.keysend, undefined);
+    assert.equal(p.keysendStatus, undefined);
+    assert.equal(typeof payerFor({ provider: "sphinx", url: daemon.url, token: RECEIVE, payToken: PAY })!.keysend, "function");
+  });
+});

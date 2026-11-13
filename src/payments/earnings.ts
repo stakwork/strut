@@ -22,11 +22,17 @@
  * wallet, its COVER: the balance less what workers are owed, below 0 when
  * the wallet is short. No sats move for it, so the books check
  * (`expectedMsat`) does not change.
+ *
+ * What was PAID to workers (plans/human-steps.md §8.2): their payouts on
+ * their way now (`workers.outMsat`) and, in the range, those paid
+ * (`workers.paidOut`), from the `withdrawal` entries with subject `worker`.
+ * `withdrawn` stays the admin's own. The books check needs no change: it
+ * already counts every send and every pending one, a payout's included.
  */
 
 import type { LightningCapability } from "./lightning.js";
 import type { LedgerStore, Micros, PayDailyRow } from "./ledger.js";
-import { microsToUsd, ZERO_OWED } from "./ledger.js";
+import { ENTRIES_PAGE_MAX, microsToUsd, ZERO_OWED } from "./ledger.js";
 import type { WalletInfo } from "./settings.js";
 import type { PendingView } from "./withdrawals.js";
 
@@ -111,6 +117,11 @@ export interface WorkersView {
   accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> };
   /** Of the range's answers, those taken back. */
   takenBack: { answers: number; msat: number };
+  /** Payouts on their way now (plans/human-steps.md §8.2), their amounts. */
+  outMsat: number;
+  /** Payouts paid in the range: amounts and the fees the wallet was charged,
+   *  by UTC day. */
+  paidOut: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
 }
 
 export interface EarningsView {
@@ -262,8 +273,19 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
     // view, and for the wallet's cover whatever the scope.
     ledger && (!scoped || q.wallet) ? ledger.owedToWorkers({ now }) : Promise.resolve({ ...ZERO_OWED }),
   ]);
+  // Payouts on their way now: one per worker at most, read a page at a time.
+  let outMsat = 0;
+  if (ledger && !scoped) {
+    for (let before: number | undefined; ; ) {
+      const page = await ledger.payouts({ state: "out", limit: ENTRIES_PAGE_MAX, ...(before ? { before } : {}) });
+      outMsat += page.reduce((n, p) => n + p.msat, 0);
+      if (page.length < ENTRIES_PAGE_MAX) break;
+      before = page[page.length - 1]!.seq;
+    }
+  }
   const withdrawn = sends.filter((r) => r.purpose === "withdrawal");
   const purchased = sends.filter((r) => r.purpose === "purchase");
+  const paidOut = sends.filter((r) => r.purpose === "worker");
   const prices = new Map(runnable.map((r) => [subjectOf(r), r]));
   const view = (r: { key: string; calls: number; failed: number; earned: Micros; cost: Micros }) => ({
     calls: r.calls,
@@ -288,7 +310,7 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
       };
     }),
     outstanding: { tokens: outstanding.tokens, usd: usd(outstanding.usd), held: usd(outstanding.held) },
-    ...(scoped ? {} : { workers: workersView(owed, payDays) }),
+    ...(scoped ? {} : { workers: workersView({ ...owed, outMsat }, payDays, paidOut) }),
     received: {
       count: received.reduce((n, r) => n + r.count, 0),
       msat: received.reduce((n, r) => n + r.msat, 0),
@@ -340,7 +362,7 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
 
 /** `pay_daily`'s rows in the range, by day (every task type summed), and
  *  what workers are owed now. */
-function workersView(owed: { owedMsat: number; heldMsat: number; withdrawableMsat: number; payees: number }, rows: PayDailyRow[]): WorkersView {
+function workersView(owed: { owedMsat: number; heldMsat: number; withdrawableMsat: number; payees: number; outMsat: number }, rows: PayDailyRow[], paid: Array<{ day: string; count: number; msat: number; feeMsat: number }>): WorkersView {
   const days = new Map<string, WorkersView["accepted"]["days"][number]>();
   for (const r of rows) {
     const d = days.get(r.day) ?? { day: r.day, answers: 0, msat: 0, takenBackAnswers: 0, takenBackMsat: 0 };
@@ -359,5 +381,12 @@ function workersView(owed: { owedMsat: number; heldMsat: number; withdrawableMsa
     payees: owed.payees,
     accepted: { answers: sum("answers"), msat: sum("msat"), days: list },
     takenBack: { answers: sum("takenBackAnswers"), msat: sum("takenBackMsat") },
+    outMsat: owed.outMsat,
+    paidOut: {
+      count: paid.reduce((n, r) => n + r.count, 0),
+      msat: paid.reduce((n, r) => n + r.msat, 0),
+      feeMsat: paid.reduce((n, r) => n + r.feeMsat, 0),
+      days: paid.map((r) => ({ day: r.day, count: r.count, msat: r.msat, feeMsat: r.feeMsat })),
+    },
   };
 }

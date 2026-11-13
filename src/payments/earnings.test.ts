@@ -183,6 +183,8 @@ describe("earnings and withdraw on a server", () => {
           ],
         },
         takenBack: { answers: 1, msat: 20_000_000 },
+        outMsat: 0,
+        paidOut: { count: 0, msat: 0, feeMsat: 0, days: [] },
       });
       // The range keeps the days; what is owed is now, whatever the range.
       const later = await get(strut, `/earnings?from=${dayOf(T0 + DAY)}`);
@@ -240,6 +242,8 @@ describe("earnings and withdraw on a server", () => {
         owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0,
         accepted: { answers: 0, msat: 0, days: [] },
         takenBack: { answers: 0, msat: 0 },
+        outMsat: 0,
+        paidOut: { count: 0, msat: 0, feeMsat: 0, days: [] },
       });
       assert.equal(view.wallet!.owedToWorkersMsat, 0);
       assert.equal(view.wallet!.coverMsat, undefined, "no balance, no cover");

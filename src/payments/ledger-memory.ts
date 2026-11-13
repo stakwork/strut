@@ -22,6 +22,20 @@ import {
   RECENT_DAYS,
   ZERO_BALANCE,
   ZERO_OWED,
+  DEFAULT_PAYOUT_SETTINGS,
+  payoutChargeMsat,
+  payoutRefusal,
+  payoutSettingsOf,
+  reserveInputOf,
+  type Payout,
+  type PayoutFailedInput,
+  type PayoutListQuery,
+  type PayoutSettings,
+  type PayoutSettingsInput,
+  type PayoutSettledInput,
+  type PayoutsToday,
+  type ReservePayoutInput,
+  type ReservePayoutResult,
   type ChargeInput,
   type ChargeResult,
   type DayRange,
@@ -81,9 +95,13 @@ export class MemoryLedgerStore implements LedgerStore {
   /** Worker pay: by lease, by task + worker, by worker, by day + type. */
   private readonly pays = new Map<string, Earning>();
   private readonly payByTaskWorker = new Map<string, string>();
-  private readonly payeeRows = new Map<string, { accepted: number; takenBack: number; withdrawn: number; answers: number; firstAt: number; lastAt: number }>();
+  private readonly payeeRows = new Map<string, { accepted: number; takenBack: number; withdrawn: number; out: number; answers: number; firstAt: number; lastAt: number }>();
   private readonly payDays = new Map<string, PayDailyRow>();
   private readonly restores: PayRestore[] = [];
+  /** Payouts (plans/human-steps.md §8.2), in the order they were reserved. */
+  private readonly payoutList: Payout[] = [];
+  private readonly payoutByKey = new Map<string, Payout>();
+  private settingsRow: PayoutSettings | undefined;
 
   // ── writes ────────────────────────────────────────────────────────────
 
@@ -215,6 +233,7 @@ export class MemoryLedgerStore implements LedgerStore {
 
   async withdrawal(input: WithdrawalInput): Promise<LedgerEntry> {
     const at = input.at ?? Date.now();
+    if (input.purpose === "worker") throw new LedgerError("worker_send", "only a payout's settle writes a worker's withdrawal (payoutSettled)");
     positiveInt("msat", input.msat);
     need("paymentHash", input.paymentHash);
     if (input.feeMsat !== undefined) int("feeMsat", input.feeMsat);
@@ -411,7 +430,7 @@ export class MemoryLedgerStore implements LedgerStore {
       p.firstAt = Math.min(p.firstAt, e.at);
       p.lastAt = Math.max(p.lastAt, e.at);
     } else {
-      this.payeeRows.set(e.worker, { accepted: e.msat, takenBack: 0, withdrawn: 0, answers: 1, firstAt: e.at, lastAt: e.at });
+      this.payeeRows.set(e.worker, { accepted: e.msat, takenBack: 0, withdrawn: 0, out: 0, answers: 1, firstAt: e.at, lastAt: e.at });
     }
     const day = this.payDay(e);
     day.answers += 1;
@@ -538,7 +557,104 @@ export class MemoryLedgerStore implements LedgerStore {
       held += e.msat;
       next = next === undefined ? e.releases : Math.min(next, e.releases);
     }
-    return payeeBalanceOf({ accepted: p.accepted, takenBack: p.takenBack, withdrawn: p.withdrawn, held, ...(next !== undefined ? { nextReleaseAt: next } : {}) });
+    return payeeBalanceOf({ accepted: p.accepted, takenBack: p.takenBack, withdrawn: p.withdrawn, out: p.out, held, ...(next !== undefined ? { nextReleaseAt: next } : {}) });
+  }
+
+  // ── payouts (plans/human-steps.md §8.2) ─────────────────────────────────
+
+  async reservePayout(input: ReservePayoutInput): Promise<ReservePayoutResult> {
+    const i = reserveInputOf(input);
+    const day = dayOf(i.at);
+    const settings = this.settingsNow();
+    const out = this.payoutList.find((p) => p.worker === i.worker && p.state === "out");
+    const withdrawableMsat = this.balanceOf(i.worker, i.at)?.withdrawableMsat ?? 0;
+    const today = this.payoutDay(day, i.worker);
+    const r = payoutRefusal({ settings, msat: i.msat, maxFeeMsat: i.maxFeeMsat, out, withdrawableMsat, workerTodayMsat: today.workerMsat ?? 0, serverTodayMsat: today.paidMsat + today.outMsat });
+    if (r.reason) return { ok: false, reason: r.reason, maxMsat: r.maxMsat, ...(out ? { out: { ...out } } : {}), settings };
+    if (this.payoutByKey.has(i.key)) throw new Error(`UNIQUE constraint failed: payouts.key (${i.key})`);
+    const p: Payout = { seq: this.payoutList.length + 1, key: i.key, worker: i.worker, address: i.address, msat: i.msat, maxFeeMsat: i.maxFeeMsat, state: "out", at: i.at, day };
+    this.payoutList.push(p);
+    this.payoutByKey.set(p.key, p);
+    this.payeeRows.get(i.worker)!.out += i.msat + i.maxFeeMsat;
+    return { ok: true, payout: { ...p } };
+  }
+
+  async payoutSettled(input: PayoutSettledInput): Promise<{ payout: Payout; entry: LedgerEntry }> {
+    const at = input.at ?? Date.now();
+    need("key", input.key);
+    int("feeMsat", input.feeMsat);
+    if (input.usd !== undefined) int("usd", input.usd);
+    const p = this.payoutByKey.get(input.key);
+    if (!p) throw new LedgerError("unknown_payout", `no payout ${input.key}`);
+    if (p.state === "paid") return { payout: { ...p }, entry: { ...this.log.find((e) => e.kind === "withdrawal" && e.ref === p.key)! } };
+    if (p.state === "failed") throw new LedgerError("payout_failed", `payout ${p.key} failed (${p.why ?? "no reason"}): its reserve went back to the worker`);
+    const entry = this.entry(at, "withdrawal", { msat: p.msat, feeMsat: input.feeMsat, ref: p.key, actor: p.worker, usd: input.usd, subject: "worker" });
+    Object.assign(p, { state: "paid", feeMsat: input.feeMsat, ended: at, ...(input.paymentHash ? { paymentHash: input.paymentHash } : {}), ...(input.by !== undefined ? { by: input.by } : {}) });
+    const payee = this.payeeRows.get(p.worker)!;
+    payee.out -= p.msat + p.maxFeeMsat;
+    payee.withdrawn += payoutChargeMsat(p, input.feeMsat);
+    return { payout: { ...p }, entry: { ...entry } };
+  }
+
+  async payoutFailed(input: PayoutFailedInput): Promise<Payout> {
+    const at = input.at ?? Date.now();
+    need("key", input.key);
+    need("why", input.why);
+    const p = this.payoutByKey.get(input.key);
+    if (!p) throw new LedgerError("unknown_payout", `no payout ${input.key}`);
+    if (p.state !== "out") return { ...p };
+    Object.assign(p, { state: "failed", why: input.why, ended: at, ...(input.by !== undefined ? { by: input.by } : {}) });
+    this.payeeRows.get(p.worker)!.out -= p.msat + p.maxFeeMsat;
+    return { ...p };
+  }
+
+  async payoutOf(key: string): Promise<Payout | undefined> {
+    const p = this.payoutByKey.get(key);
+    return p ? { ...p } : undefined;
+  }
+
+  async payouts(q: PayoutListQuery = {}): Promise<Payout[]> {
+    const limit = pageLimit(q.limit, ENTRIES_PAGE, ENTRIES_PAGE_MAX);
+    const before = q.before ?? Number.MAX_SAFE_INTEGER;
+    const out: Payout[] = [];
+    for (let i = this.payoutList.length - 1; i >= 0 && out.length < limit; i--) {
+      const p = this.payoutList[i]!;
+      if (p.seq >= before || (q.state && p.state !== q.state) || (q.worker && p.worker !== q.worker)) continue;
+      out.push({ ...p });
+    }
+    return out;
+  }
+
+  async payoutsToday(o: { now?: number; worker?: string } = {}): Promise<PayoutsToday> {
+    return this.payoutDay(dayOf(o.now ?? Date.now()), o.worker);
+  }
+
+  async payoutSettings(): Promise<PayoutSettings> {
+    return this.settingsNow();
+  }
+
+  async setPayoutSettings(input: PayoutSettingsInput): Promise<PayoutSettings> {
+    const s = payoutSettingsOf(input);
+    const at = input.at ?? Date.now();
+    int("at", at);
+    this.settingsRow = { ...s, ...(input.by !== undefined ? { changedBy: input.by } : {}), changedAt: at };
+    return this.settingsNow();
+  }
+
+  private settingsNow(): PayoutSettings {
+    return { ...(this.settingsRow ?? DEFAULT_PAYOUT_SETTINGS) };
+  }
+
+  private payoutDay(day: string, worker?: string): PayoutsToday {
+    const t: PayoutsToday = { day, paidMsat: 0, outMsat: 0, count: 0, ...(worker !== undefined ? { workerMsat: 0 } : {}) };
+    for (const p of this.payoutList) {
+      if (p.day !== day || p.state === "failed") continue;
+      if (p.state === "paid") t.paidMsat += p.msat;
+      else t.outMsat += p.msat;
+      t.count++;
+      if (worker !== undefined && p.worker === worker) t.workerMsat! += p.msat;
+    }
+    return t;
   }
 
   async close(): Promise<void> {}
