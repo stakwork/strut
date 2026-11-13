@@ -39,11 +39,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Sharded like `graph` (`STRUT_TEST_SHARD`, read by `npm test`: node's
+  # --test-shard must come before the file globs, and after them it is
+  # silently ignored). In one job the suite grew from 6.5 min (3,777 tests,
+  # 11-06) to 9–15 min (4,807 tests, 11-13): most new tests boot a whole
+  # strut on a Ladybug file, and the runner alone swings a run ~1.6×.
   test:
+    name: test (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    # The suite alone took 9 m 05 s on main at 3e0f23b (3,652 tests), so 10
-    # minutes cut a green run off after its last test and marked it cancelled.
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -63,11 +71,14 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          STRUT_TEST_SHARD: ${{ matrix.shard }}/3
 
       # The npm package `aieo` (aieo/, built from src/aieo for Hive and
       # staklink; published by hand): built and imported once, so a release
-      # never finds a broken build.
+      # never finds a broken build. One shard is enough.
       - name: Build the aieo package
+        if: matrix.shard == 1
         run: |
           npm run build:aieo
           node --input-type=module -e "const m = await import('./aieo/dist/index.js'); if (m.canonicalModelName('sonnet').provider !== 'anthropic') process.exit(1)"
