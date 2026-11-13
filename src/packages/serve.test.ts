@@ -18,6 +18,9 @@ import type { KitLocation } from "../apps/kit.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { lucideIconSvg, parseServeFile, planServe, serveRefOf, servedHtml, type ServeStatus } from "./serve.js";
 import { signInOf } from "../public-surface.js";
+import type { StepContext } from "../core.js";
+import type { Proposal } from "../proposals.js";
+import { buildRegistryTools } from "../steps/core/agent.js";
 
 const HELLO = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "__fixtures__", "hello");
 const KEY = "serve-api-key";
@@ -266,6 +269,20 @@ describe("a served box over a file: ref", () => {
     const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
     assert.equal(put.status, 409);
     assert.match(((await put.json()) as { error: string }).error, /serve_owned: .*serve\.yaml writes the public view at every deploy/);
+  });
+
+  it("an agent's app/make-public is refused as the route is: the card says so, and an admin's yes changes nothing (serve_owned:)", async () => {
+    const before = await (await strut.app.request("/public-view", { headers: auth })).json();
+    const ctx = { runId: "r1", path: "builder/turn", scope: {}, input: undefined, emit: async () => {}, services: strut.services, registry: strut.getRegistry(), actor: "ann" } as StepContext;
+    const tool = buildRegistryTools(["app/make-public"], strut.getRegistry(), ctx, (d: unknown) => d, { approve: new Set(["app/make-public"]) })["app_make_public"] as { execute(i: unknown, o: unknown): Promise<{ proposal: string }> };
+    const { proposal } = await tool.execute({ name: "acme/hello/hello" }, { strutToolPath: "builder/turn/001-app_make_public" });
+    const rec = (await (strut.services as { proposals: { get(id: string): Promise<Proposal | null> } }).proposals.get(proposal))!;
+    assert.match(rec.summary!, /Accepting it fails: this strut server serves file:.*, whose serve\.yaml writes the public view at every deploy/);
+    const res = await strut.app.request(`/proposals/${proposal}/decide`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ action: "accept" }) });
+    const body = (await res.json()) as Proposal;
+    assert.equal(body.status, "failed");
+    assert.match(body.result!.error!, /^serve_owned: .*serve\.yaml writes the public view at every deploy/);
+    assert.deepEqual(await (await strut.app.request("/public-view", { headers: auth })).json(), before, "nothing changed");
   });
 
   it("/?shell=1 with the key is strut's own page; without it, still the app", async () => {

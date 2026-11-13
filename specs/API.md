@@ -1247,7 +1247,7 @@ card?: {
 ```
 
 `title` / `summary` are `describe`'s, else the description's first sentence.
-A step's `describe` may also return `fields`, `actions` and `full`; with no
+A step's `describe` may also return `fields`, `actions`, `full` and `input` — the input to KEEP on the record, the one asked with a default it read now filled in (`app/make-public` names the version live when asked), parsed by the step's schema and ignored when it does not parse, so the yes applies what the card showed; with no
 `fields` the card is built from the input (`src/proposal-card.ts`): one field
 per top-level key, strings as they are, anything else as JSON (`kind: "code"`
 for objects and arrays), a value over 500 chars cut with `… (see full input)`,
@@ -1277,7 +1277,7 @@ list. A repeat decide is still `409` with the record.
 **Only an admin accepts some** (`approver: "admin"`, plans/member-rights.md).
 A step may say that only an ADMIN of this strut accepts a proposal of it
 (`StepDef.approver`; `package/install` says it: installing a package is an
-admin's act; so do `package/commit`, `remote/buy-credit` and `task/set-type`, §22). The record and its brief carry `approver: "admin"`, copied
+admin's act; so do `package/commit`, `remote/buy-credit`, `task/set-type`, §22, and `app/make-public`, §17.1). The record and its brief carry `approver: "admin"`, copied
 from the step at proposal time. An admin is a decider with full scope: the
 deployment key, a key login, an admin's session (a ticket with `role:
 "admin"`), a host's server holding the key (Hive decides with the swarm
@@ -3378,7 +3378,7 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
 | --- | --- |
 | `GET /public-view` | `{ surface, missing }` — the record as kept, and what it names that this server does not hold |
 | `PUT /public-view` | replace the record (body below); `{ surface, missing, held? }`. Every index this server asked to list it (`/publisher/listings`) is pinged after a save, so its store reads the view again within a minute (`plans/public-view-listing.md` §6) |
-| `GET /public-view/needs?app=<name>` \| `?workflow=<name>` | what adding it brings along, for the dialog to pre-check (`src/public-view.ts`) |
+| `GET /public-view/needs?app=<name>[&version=<v>]` \| `?workflow=<name>` | what adding it brings along, for the dialog to pre-check (`src/public-view.ts`): an app at `version`, else at the version live now — the lines `app/make-public`'s card lists. A worker's step (`task/*`) is no line: a signed-in worker calls it whatever is ticked |
 | `GET /public-view/runnable?workflow=<name>` \| `?step=<type>` | what the "anyone can run it" box shows: what it can do, what its runs here cost, and what the save will ask (below) |
 
 ```json
@@ -3417,6 +3417,19 @@ release.
 ```json
 { "surface": { … }, "missing": { "workflows": [], "steps": [], "concepts": [], "apps": [] }, "held": [{ "app": "openlaw-benchmarks", "version": "v7", "release": "r3" }] }
 ```
+
+**An agent's ask** (`app/make-public`, ruled 2026-11-13): the builder job
+or the assistant may ASK to add an app; only an ADMIN's yes adds it (§12,
+`approver: "admin"`). The card lists the app and the version live when it
+was asked (pinned on the record), every line `GET /public-view/needs`
+pre-checks with what it exposes, who can sign in, and the hold. The yes
+writes through `PUT`'s own save (`savePublicView`, the same checks, a served
+box's `409 serve_owned:`): the record as it was plus the pre-checked lines
+— nothing taken out, `visitors` as it was (absent: `[sphinx]` with the root
+key) — and the app HELD at that version, even when it is in the view
+already or a later version is live; a hold that fails (`hold_failed:`)
+writes nothing. The step answers `{ app, version, added: { workflows,
+steps, reads, concepts }, signIn }`.
 
 **`runnable`** (`plans/paid-runs.md` §2): what anyone may START, a workflow
 or a step, independent of `workflows` and `steps` — an item may be run by

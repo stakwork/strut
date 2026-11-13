@@ -500,15 +500,19 @@ export async function proposeCall(
   }
   const title = described?.title?.trim() || titleOf(stepType, def.description);
   const summary = described?.summary?.trim() || undefined;
+  // A default the step read now, kept on the record (`ProposalDescription.input`):
+  // the yes applies what the card showed.
+  const pinned = described?.input !== undefined ? def.input.safeParse(described.input) : undefined;
+  const input: unknown = pinned?.success ? pinned.data : parsed;
   let card: ProposalCard | undefined;
   try {
-    card = buildCard({ input: parsed, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
+    card = buildCard({ input, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
   } catch {
     card = undefined;
   }
   const rec = await cap.propose({
     step: stepType,
-    input: parsed,
+    input,
     ...(rationale ? { rationale } : {}),
     title,
     ...(summary ? { summary } : {}),

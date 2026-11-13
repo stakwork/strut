@@ -588,6 +588,18 @@ public app. Anyone with the link can load the page; it shows a sign-in
 and nothing else. An app in the public view is held at a release, so the
 builder's edits are drafts until someone makes them live.
 
+**Built differently (#PR):** the builder does not ask the person to open
+the Public view dialog. Once the worker app draws its types it calls
+`app/make-public { name, version }`, a proposal only an ADMIN accepts
+(plans/public-surface.md decision 22, ruled 2026-11-13). The card lists
+what anyone will see (the dialog's cascade; a worker's `task/*` steps are
+no line, since a signed-in worker calls them whatever is ticked), who can
+sign in and the hold; the yes adds the app held at the version the card
+showed. It leaves the view's sign-in as it is: a view that names none
+offers `sphinx` with the root key once an app is public, which is this
+section's setting, and a view that names others keeps them (the card says
+which, and "nobody" as a danger).
+
 ### 5.5 Files
 
 A task does not get its run's files. A run is the whole workflow for an

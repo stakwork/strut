@@ -42,6 +42,7 @@ import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { HumanTasksCapability } from "./tasks/tasks.js";
 import type { TaskTypesCapability } from "./tasks/set-type.js";
+import type { PublicViewCapability } from "./public-view.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
 
@@ -489,6 +490,14 @@ export interface StrutCapabilities {
    *  for that name and input. Nothing on it grants a worker, deletes a type
    *  or changes a worker. Set by the standard server; a host's own wins. */
   taskTypes?: TaskTypesCapability;
+  /** The PUBLIC VIEW's door for an agent's ask (src/public-view.ts;
+   *  plans/public-surface.md §2 "The door"): `plan` — what adding an app
+   *  brings into view, who can sign in, the card's reads — and `addApp`,
+   *  which opens only for an ACCEPTED `app/make-public` proposal on disk (an
+   *  admin's) for that app and version, and writes through `PUT
+   *  /public-view`'s own save. Nothing on it removes from the view. Set by
+   *  the standard server; a host's own wins. */
+  publicView?: PublicViewCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
