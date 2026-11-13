@@ -650,10 +650,11 @@ for (const impl of earningsImpls) {
       return got as WorkerTask;
     };
 
-    it("a type's pay and hold: sats to the msat, at most 100,000; a hold from 1 to 720 hours, 72 by default", async () => {
+    it("a type's pay and hold: sats to the msat, at most 1,000,000; a hold from 1 to 720 hours, 72 by default", async () => {
       const bad = async (input: Record<string, unknown>) => assert.rejects(tasks().setType("t", { app: "a", answer: MATCH, ...input }), refused("bad_request"));
       await bad({ paySats: -1 });
-      await bad({ paySats: 100_001 });
+      await bad({ paySats: 1_000_001 });
+      assert.equal((await tasks().setType("t", { app: "a", answer: MATCH, paySats: 1_000_000 })).paySats, 1_000_000, "the cap itself");
       await bad({ paySats: 1.0005 });
       await bad({ paySats: "21" });
       await bad({ holdHours: 0 });

@@ -4816,7 +4816,7 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
 ### Pay (`plans/human-steps.md` §8.1)
 
 - **The admin's, never the workflow's.** A task type's `paySats` (sats to
-  the msat, at most 100,000 an answer; 0 or absent: unpaid) and `holdHours`
+  the msat, at most 1,000,000 an answer; 0 or absent: unpaid) and `holdHours`
   (1 to 720, 72 by default; never 0: earnings wait) are set by `PUT
   /tasks/types/:name` alone. A workflow names a type and cannot set its
   pay; no step a page or a model reaches writes it.

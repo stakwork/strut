@@ -1087,8 +1087,9 @@ and marks the run with it. No sats move: the wallet pays nobody until 5b.
 - **The admin's, never the workflow's** (§6). Set by `PUT
   /tasks/types/:name` (full scope) and, with item 6, by `task/set-type`
   behind an admin's yes. The YAML names a type and cannot set its pay, and
-  no step a page or a model reaches writes it. Proposed: at most 100,000
-  sats an answer, a guard against a slip, not a policy.
+  no step a page or a model reaches writes it. At most 1,000,000 sats an
+  answer, a guard against a slip, not a policy. Evan raised it from
+  100,000 (about $69 at $69,000 a bitcoin) on 2026-11-12.
 - **Sats, not dollars.** Ruled. The wallet holds sats and pays sats. Owed in sats,
   the sum the wallet must hold does not move with the price of bitcoin.
   Pay in dollars would leave the wallet owing a number of sats that does.

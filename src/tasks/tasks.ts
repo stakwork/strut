@@ -80,7 +80,7 @@ export const WITHIN_HOURS_MAX = 365 * 24;
 /** §8.1: the most one answer may earn — a guard against a slip, not a
  *  policy — and the bounds of a type's hold, in hours (never 0: earnings
  *  wait). */
-export const PAY_SATS_MAX = 100_000;
+export const PAY_SATS_MAX = 1_000_000;
 export const HOLD_HOURS_MIN = 1;
 export const HOLD_HOURS_MAX = 720;
 /** §8.1: how many unbooked answers one sweep books at most. */
