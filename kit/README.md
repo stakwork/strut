@@ -15,7 +15,7 @@ Neither lands in strut's own `node_modules`, which carries no React: the
 kit's dependencies install into `kit/node_modules`. `vendor/` is built by
 strut's own `npm run build` (its `build:kit` step, `scripts/build-kit.mjs`:
 this directory's frozen install, then `build:vendor`), so `prepare`, the
-Docker image and the desktop package all carry it — AGENTS.md "Running" says
+Docker image and the desktop package all carry it — docs/running.md says
 where each finds it. The kit may later be published as a package strut pins
 exactly (open question 4); `src/apps/kit.ts` looks for `@strut/kit` first. Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
 stack and the bridge, nothing else**: strut's own components are `strut/views`,

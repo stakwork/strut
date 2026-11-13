@@ -574,7 +574,7 @@ export interface StrutOptions<TServices = unknown> {
   /** The `image-gen` workflow strut ships beside the `image` step
    *  (src/media-seed.ts), seeded at boot by content hash. `false` seeds none. */
   mediaWorkflows?: false;
-  /** Home sync (src/home-sync.ts, AGENTS.md "Home sync"): `"box"` serves
+  /** Home sync (src/home-sync.ts, docs/moving.md "Home sync"): `"box"` serves
    *  `POST /home/pull` and `/home/push` to a person's credential, so a strut
    *  that keeps a read copy of this memory can sync with it (on, it hands
    *  the whole memory to any person token this strut minted); `"copy"`

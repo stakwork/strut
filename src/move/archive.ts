@@ -1,4 +1,4 @@
-// What a move carries, before it is sealed (AGENTS.md, "Moving strut to
+// What a move carries, before it is sealed (docs/moving.md, "Moving strut to
 // another host"): a gzip-compressed ustar archive of
 //
 //   move.json          the manifest (`Manifest`)

@@ -20,7 +20,7 @@
  *
  * Under a reach the AI publishes no step CODE (authoring.ts refuses it): a
  * step is TypeScript in this process, and reaches every door on the bag and
- * every secret whatever a scope says (AGENTS.md "Secrets"). What it may
+ * every secret whatever a scope says (docs/security.md "Secrets"). What it may
  * author is a workflow, and what a workflow can say is all this checks:
  * which steps run, with which built-ins, naming which secrets.
  *

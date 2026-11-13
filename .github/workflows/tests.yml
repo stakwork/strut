@@ -23,7 +23,7 @@ name: tests
 # 21 minutes. The rest is split over three jobs (`STRUT_TEST_SHARD`, node's
 # --test-shard: files round-robin), each with a Neo4j of its own since every
 # suite wipes it: ~5 min each where one job took 22. Same install. The STT
-# suite needs a model download and stays opt-in (see AGENTS.md).
+# suite needs a model download and stays opt-in (see docs/running.md).
 
 on:
   pull_request:

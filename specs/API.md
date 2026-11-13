@@ -27,7 +27,7 @@ the public view, and nothing when nothing is. The examples below leave the heade
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
 matching key — and is recorded on the run (`actor`, `principal`) and on the
-workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
+workflow it publishes (`owner`). docs/security.md "Auth" has the whole model.
 
 **A browser signs in instead.** The web UI trades the key for a short-lived
 session cookie at `POST /auth/session` (§13), so the key is never kept in a
@@ -2210,7 +2210,7 @@ commit may be typed, and "Recent changes" lists the history's last commits on
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.
 
-The LEARNING LOOP (the `dream`, AGENTS.md "The dream"), with five more
+The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with five more
 grants: `knowledge/page`, `knowledge/claims`, `proposal/list`,
 `proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
 (`knowledge/page { name }`, shown only when the page it answers is that

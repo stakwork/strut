@@ -3,7 +3,7 @@
 **Status: proposed, not implemented.** Supersedes the *Promote* paragraph of
 EVOLVE_SPEC §4.2 (build-time `env.manifest`); §4.1's reasoning stands and is
 the constraint this design satisfies. Companion to SPEC.md §4.1.8 (`exec`),
-AGENTS.md "Shell (subprocesses)" and "Artifacts".
+docs/engine.md "Shell (subprocesses)" and "Artifacts".
 
 ## 1. Problem
 
@@ -57,7 +57,7 @@ on the volume, versioned.
 | Node CLI | `npx -y`, or `nodejs` in the manifest | Only if called by name |
 | Native binary (ffmpeg, tesseract, poppler, pandoc, imagemagick, sox, exiftool, graphviz, gh, ripgrep, git) | manifest → conda-forge | Yes |
 | Not on conda-forge (chromium, a vendor SDK) | build-time only: Dockerfile / host install; listed as `external` so the drift check still covers it | As `external` |
-| Credentials | never here — `secretsEnv` (AGENTS.md "Secrets") | No |
+| Credentials | never here — `secretsEnv` (docs/security.md "Secrets") | No |
 
 Rule of thumb for the builder: *if a workflow names it as `cmd`, it belongs
 in the manifest; if a script imports it, it belongs in the script.*
@@ -259,7 +259,7 @@ header, not the manifest; never `pip install`, `apt`, or `brew` through
   closes it entirely for deployments that want that.
 - **Containment.** No root, nothing written outside `dataDir`; the Docker
   image can stop running as root once `apt` is out of the loop. Env
-  scrubbing (AGENTS.md "Secrets") is untouched: activation adds `PATH` and
+  scrubbing (docs/security.md "Secrets") is untouched: activation adds `PATH` and
   tool variables, never credentials.
 
 ## 11. Desktop
