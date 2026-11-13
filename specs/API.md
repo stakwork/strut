@@ -4980,6 +4980,21 @@ them apart. Per type, by the worker's grant:
   `gradeCapUsd`. Its config is `{ answer, expected, show, type }`, each
   handed over as it is, with the grade's `config` over them; it answers in
   the claims check contract, `{ supports, content }`.
+- Strut ships two such steps:
+  - `{ "step": "grade/overlap", "config": { "min"?, "key"? } }` — boxes on
+    an image. A box is `[x, y, w, h]` or `{ x, y, w, h }` (w and h above
+    0, one unit for the answer and `expected`); each side is a box, a list
+    of them, or an object holding one under `key`. Passes when the boxes
+    pair off one to one at intersection over union ≥ `min` (0.7); a missing
+    or an extra box fails. An `expected` that is not boxes grades `error`,
+    an answer that is not boxes `fail`. The note is the counts and each
+    expected box's IoU, no coordinates.
+  - `{ "step": "grade/judge", "config": { "rubric"?, "model"? } }` — one
+    model call compares the answer with `expected` under `rubric` (default:
+    it says what the expected answer says, wording aside) on `model`, else
+    `STRUT_DEFAULT_MODEL`; neither grades `error`. The reply must be one
+    line, `PASS: <reason>` or `FAIL: <reason>`, the reason the note;
+    anything else grades `error`.
 - A grader that throws, runs out of time, is no longer sealed, has nobody
   to bill or gives no verdict grades `error`, which never moves standing.
   An answer not yet graded is graded by the minute's sweep (a restart
