@@ -827,7 +827,7 @@ How a test is graded is its own `grade`, else its type's `tests.grade`:
 | `{ step, config? }` | The registry step answers in the claims check contract, `{ supports, content }`, with `supports: true`, read by `mapCheckResult` (`src/verify.ts`) |
 
 A box on a photo is graded by overlap and free text by a model, each a
-step. *Still proposed (PR 4c):* strut ships two, `grade/overlap` (each box's
+step. Strut ships two, `grade/overlap` (each box's
 intersection over union at least `min`, default 0.7) and `grade/judge`
 (a model compares the answer with `expected` under staff's rubric), both
 `sealed: true`.
@@ -886,6 +886,45 @@ graded (`pending`) is graded by the sweep, which covers a restart.
 - **The queue** is in memory, 4 at a time; `strut.tasks.grading()` resolves
   once it is empty, and the sweep (at most 100 a minute) answers how many
   it queued (`grading`).
+
+**Built differently (#676): the shipped graders,** `src/steps/lib/grade/`.
+Each is `sealed: true` on its definition (`grade/*` is not a sealed
+namespace), lists `expected` in `redact`, and reads #671's config:
+
+- **`grade/overlap`.** A box is `[x, y, w, h]`, §4.5's four numbers, or
+  `{ x, y, w, h }`: the top-left corner, then width and height above 0, in
+  whatever unit the worker app draws in (pixels or fractions), the same on
+  both sides. The answer and `expected` are each a box, a list of boxes
+  (`[]` is none), or, with `key` in the grade's config, an object holding
+  one under that key. It passes when the boxes pair off one to one, each
+  pair at intersection over union at least `min` (0.7, in (0, 1]); one
+  drawn box never counts for two expected ones, and the order they were
+  drawn in does not matter. **A missing box fails, and so does an extra
+  one:** boxes drawn everywhere must not pass. None expected and none drawn
+  passes. An `expected` that is not boxes throws, so it grades `error`:
+  it is staff's mistake, which must not fail a room of workers. An answer
+  that is not boxes, when the expected one is, fits the same schema, so it
+  is the worker's (a box of no width, which the schema subset cannot
+  refuse) and fails. `content` is the counts and each expected box's IoU,
+  never a coordinate: `1 expected, 2 drawn, 1 matched at IoU ≥ 0.7; box 1:
+  IoU 0.92; 1 drawn box matched nothing expected`.
+- **`grade/judge`.** One call on the `llm` step's model layer
+  (`resolveModel` with `stepAuth`, so `llmAuth` routes it and the grading
+  principal and cost cap reach the gateway; the output marked with
+  `withUsage`). The model is the grade's `model`, else
+  `STRUT_DEFAULT_MODEL` read through `secrets` as the agent step reads it;
+  with neither it throws. There is no `STRUT_LLM_MODEL` fallback. `rubric`
+  defaults to "The answer passes when it says what the expected answer
+  says. Wording, case, spacing and punctuation may differ." The prompt is a
+  three-line system prompt, then the rubric, `expected` and `answer` in
+  tags, the values as JSON with `<` escaped so an answer cannot close its
+  tag. `show` is not sent: the rubric says what the task is, and `show`
+  may be large or name files the model cannot see. The reply must be one
+  line, `PASS: <reason>` or `FAIL: <reason>`, the reason the `content`;
+  anything else throws, so it grades `error`, never `pass`.
+- **Open:** the worker's answer reaches the judge as data, and a worker
+  may still try to talk the model into a pass. Staff read each grade's
+  note on `GET /tasks/tests/:id`.
 
 ### 7.5 Standing and qualifying
 
@@ -2025,7 +2064,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
-| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. 4b (copies) and 4c (graders) not started |
+| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4. 4b (copies) not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
