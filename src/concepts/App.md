@@ -170,7 +170,10 @@ initials. Make them with `app/look { name, path, saveAs:
 "public/screenshots/home.png" }`: the look's shot is also written into
 the directory there (with `input`, `steps` and `viewport` to show the page
 that matters), and nothing is saved when the page drew nothing or the look
-stopped. Then list the file under `screenshots:`.
+stopped. Then list the file under `screenshots:`. A person sets them
+too, in the app's Versions panel (Screenshots: take one, upload, caption,
+reorder), which saves a new version; check out the newest version before
+you edit, so theirs are kept.
 
 ## The kit: what an app imports
 

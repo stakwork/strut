@@ -2175,6 +2175,38 @@ export const setAppPinned = (name: string, pinned: boolean) =>
     body: JSON.stringify({ pinned }),
   });
 
+/** One screenshot an app's `app.yaml` names (`GET /apps/:name/screenshots`). */
+export interface AppScreenshotEntry {
+  file: string;
+  caption?: string;
+}
+
+/** A version's screenshots: the live one's unless `version` names another. */
+export const getAppScreenshots = (name: string, version?: string) =>
+  fetchJSON<{ name: string; version: string; screenshots: AppScreenshotEntry[] }>(
+    `/apps/${encodeURIComponent(name)}/screenshots${version ? `?version=${encodeURIComponent(version)}` : ""}`,
+  );
+
+/** Save a new list (`PUT /apps/:name/screenshots`): a file the version has,
+ *  or a new image's base64 bytes. Published as a new version on `version` —
+ *  a draft when the app is held. */
+export const saveAppScreenshots = (
+  name: string,
+  version: string,
+  screenshots: Array<{ file: string; caption?: string } | { data: string; type: string; caption?: string }>,
+) =>
+  fetchJSON<{ ok: true; name: string; version: string; changed: boolean; live: boolean; liveVersion?: string }>(`/apps/${encodeURIComponent(name)}/screenshots`, {
+    method: "PUT",
+    body: JSON.stringify({ version, screenshots }),
+  });
+
+/** Look at a version as a person opening it sees it, and hand back the shot (`POST /apps/:name/screenshots/take`). */
+export const takeAppScreenshot = (name: string, opts: { version?: string; viewport?: { width: number; height: number } }) =>
+  fetchJSON<{ type: string; data: string; bytes: number; width: number; height: number }>(`/apps/${encodeURIComponent(name)}/screenshots/take`, {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+
 export const deleteApp = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
 

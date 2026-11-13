@@ -141,6 +141,17 @@ function saveAsProblem(file: string): string | undefined {
   return screenshotPathProblem(file) ?? (/\.png$/i.test(file) ? undefined : "the shot is a PNG");
 }
 
+/** Why a look's shot is not worth keeping as a screenshot, or nothing. */
+export function shotProblem(looked: { rendered: boolean; hostError?: string; stopped?: { message: string } }): string | undefined {
+  return looked.hostError
+    ? `the host could not show the app (${looked.hostError})`
+    : looked.stopped
+      ? `the look stopped on a step (${looked.stopped.message})`
+      : !looked.rendered
+        ? "the page drew nothing"
+        : undefined;
+}
+
 /** The shot into the app directory, unless the look shows nothing worth keeping. */
 export async function saveShot(
   from: string,
@@ -148,13 +159,7 @@ export async function saveShot(
   saveAs: string,
   looked: { rendered: boolean; hostError?: string; stopped?: { message: string } },
 ): Promise<{ saved: string; warning?: string } | { saveError: string }> {
-  const why = looked.hostError
-    ? `the host could not show the app (${looked.hostError})`
-    : looked.stopped
-      ? `the look stopped on a step (${looked.stopped.message})`
-      : !looked.rendered
-        ? "the page drew nothing"
-        : undefined;
+  const why = shotProblem(looked);
   if (why) return { saveError: `not saved: ${why}` };
   const to = join(dir, saveAs);
   await mkdir(dirname(to), { recursive: true });
