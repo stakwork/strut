@@ -182,7 +182,7 @@ finds its answer. **Built differently (#654):** the marker is `woken`, not
 - **Not counted.** Boot auto-resume counts durable resumes to stop a
   crashing step looping (5). A wake is not one.
 
-**Built differently (stakwork/strut#PRNUM): the wake takes the job again.**
+**Built differently (stakwork/strut#682): the wake takes the job again.**
 A park lets go of the run's job, as of every per-run resource (§2.6), so
 the job is free while the run waits. The wake takes it again where the
 run first took it: a step's new `onReplay` (RUN_CONTROL_SPEC §6) runs when
@@ -208,7 +208,7 @@ running.
 | `POST …/resume` | Works as for any dead run: a person may force a wake |
 | `run/get { wait }`, the UI | `waiting`, with what it waits on. Not held as in flight |
 
-**Built differently (stakwork/strut#PRNUM): a cancel beats a park.** §2.2's
+**Built differently (stakwork/strut#682): a cancel beats a park.** §2.2's
 outcome (an error, else cancelled, else parked) lost a cancel that reached
 a live run after the last checkpoint of every branch still open, when they
 all parked: the run ended `waiting`. A woken run cancelled while its
@@ -2348,7 +2348,7 @@ directory, so past one process the answer is another strut.
 - Whether a standalone box replaces the Stadeum for some clients.
 - Whether workers one day see one balance across clients.
 
-**Fixed** (found building items 1 to 2b; fixed in stakwork/strut#PRNUM)
+**Fixed** (found building items 1 to 2b; fixed in stakwork/strut#682)
 
 - A parked run let go of its job, and on wake the journal replayed
   `job/dir` without taking the hold again. Now every durable resume takes
