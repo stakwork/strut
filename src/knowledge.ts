@@ -90,6 +90,10 @@ export interface KnowledgeCapability {
   opened(workflow: string, runId: string): Promise<string[] | null>;
   addClaim(input: { concept: string; text: string }, by?: { runId?: string }): Promise<{ ok: true; id: string; existing?: true } | { error: string }>;
   addEvidence(input: { claim: string; workflow: string; runId: string; supports: boolean; said: string; by?: string }): Promise<{ ok: true; evidence: string; concept: string } | { error: string }>;
+  /** The door as a run on a Concept branch has it (src/branches.ts): pages
+   *  are the branch's (`namespace`); claims are shared and read as they
+   *  are, and none is added or evidenced from a branch yet (item d). */
+  onBranch?(namespace: string): KnowledgeCapability;
 }
 
 export interface KnowledgeDeps {
@@ -156,6 +160,21 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
   const added = new Map<string, number>();
 
   return {
+    onBranch(namespace) {
+      const branch = namespace.replace(/^branch-/, "");
+      const none = async () => ({ error: `this run is on Concept branch "${branch}": claims and evidence are not written from a branch yet — they are shared, and follow a page onto a branch in a later change` });
+      const door: KnowledgeCapability = {
+        ...createKnowledge({ ...deps, graph: { ...graph, query: graph.query.bind(graph), namespace } }),
+        addClaim: none,
+        addEvidence: none,
+        onBranch: (ns) => {
+          if (ns !== namespace) throw new Error(`this run is on Concept branch "${branch}", and stays on it`);
+          return door;
+        },
+      };
+      return door;
+    },
+
     async page(name) {
       const d = graph.dialect;
       const [node] = await graph.query(

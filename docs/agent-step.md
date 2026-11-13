@@ -25,7 +25,11 @@ index. A change in this area updates this file, not AGENTS.md.
   part of the name, not a hierarchy), an agent without `session` starts
   cold. The id format is strict (`idProblem`) because a multi-segment
   template renders a missing value as `""` — `/review` would otherwise be
-  one thread shared by every run that forgot an id.
+  one thread shared by every run that forgot an id. A thread stays on the
+  Concept BRANCH its first turn ran on (src/branches.ts): every run's view
+  of `sessions` (`bindBranch`) refuses a turn from a run on another branch,
+  or on main, `session_branch:`, and stamps each turn line with its run's
+  `branch` (absent: main).
   **The record** is a second store (`SessionStore`, File + Memory; the
   default follows the CHAT store's kind): `system.md` written by turn 0 and
   never again, append-only `messages.jsonl`, and `turns.jsonl`, one line per

@@ -29,7 +29,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import type { Params, Row } from "./engine.js";
-import type { GraphReader, ReadScope } from "./search.js";
+import { branchedNamespace, type GraphReader, type ReadScope } from "./search.js";
 
 export const READER_KINDS = ["assistant", "builder", "jobs", "apps", "peers", "ui"] as const;
 export type ReaderKind = (typeof READER_KINDS)[number];
@@ -130,14 +130,19 @@ export function narrowed(list: ReaderList | undefined, n: Narrowing = {}): Reade
 }
 
 /** A list as the reader applies it: `default` as the backend's own
- *  namespace, `"*"` as no namespace filter. Undefined reads everything. */
-function readScope(list: ReaderList | undefined, own: string): ReadScope | undefined {
-  if (!list) return undefined;
+ *  namespace, `"*"` as no namespace filter. Undefined reads everything. On
+ *  a Concept branch (`branch`, its namespace) the Concepts are its: a list
+ *  that reads the backend's own namespace reads the branch too. */
+function readScope(list: ReaderList | undefined, own: string, branch?: string): ReadScope | undefined {
+  if (!list) return branch ? { concepts: branch } : undefined;
   const all = list.namespaces.includes(ALL_NAMESPACES);
-  if (all && !list.exclude_domains?.length) return undefined;
+  if (all && !list.exclude_domains?.length && !branch) return undefined;
+  const namespaces = all ? undefined : [...new Set(list.namespaces.map((n) => (n === "default" ? own : n)))];
+  if (branch && namespaces?.includes(own)) namespaces.push(branch);
   return {
-    ...(all ? {} : { namespaces: [...new Set(list.namespaces.map((n) => (n === "default" ? own : n)))] }),
+    ...(namespaces ? { namespaces } : {}),
     ...(list.exclude_domains?.length ? { exclude_domains: list.exclude_domains } : {}),
+    ...(branch ? { concepts: branch } : {}),
   };
 }
 
@@ -153,6 +158,8 @@ interface ScopeInfo {
   kind?: ReaderKind;
   /** The list this backend is held to (a scoped backend). */
   list?: ReaderList;
+  /** A run on a Concept branch (src/branches.ts): its namespace. */
+  branch?: string;
 }
 const infoOf = (g: unknown): ScopeInfo | undefined => (g && typeof g === "object" ? ((g as Record<symbol, unknown>)[SCOPE] as ScopeInfo | undefined) : undefined);
 
@@ -171,11 +178,38 @@ export function carryScope<T extends object>(from: object, target: T, query: Gra
   return info ? ({ ...target, [SCOPE]: { ...info, query } } as T) : target;
 }
 
+/** Reads everything: a branch view's list when the host set none. */
+const EVERYTHING: ReaderList = { namespaces: [ALL_NAMESPACES] };
+
 /** A scoped backend's list and its unscoped query, for a read that applies
- *  the list itself (graph/find: one type, one namespace). */
+ *  the list itself (graph/find: one type, one namespace). A branch view with
+ *  no list is held to reading everything, and to its branch
+ *  (`branchedNamespaceOf`). */
 export function boundsOf(b: object): { list: ReaderList; query: GraphBackend["query"] } | undefined {
   const info = infoOf(b);
-  return info?.list ? { list: info.list, query: info.query } : undefined;
+  return info?.list || info?.branch ? { list: info.list ?? EVERYTHING, query: info.query } : undefined;
+}
+
+/** The Concept branch a view reads and writes the Concepts of (its
+ *  namespace), when it is a run's on one (`withBranch`). */
+export function branchOf(b: unknown): string | undefined {
+  return infoOf(b)?.branch;
+}
+
+/** The namespace a read of ONE type reads through `b` (graph/find,
+ *  resolve): on a branch, a Concept asked in the backend's own namespace is
+ *  the branch's (`branchedNamespace`). As asked off a branch. */
+export function branchedNamespaceOf(b: object, type: string, ns: string): string {
+  const branch = infoOf(b)?.branch;
+  return branch ? (branchedNamespace({ concepts: branch }, type, ns, (b as { namespace: string }).namespace) ?? ns) : ns;
+}
+
+/** Whether a node of `type` in `ns` is one `b` reads, as its reader's
+ *  branch rule has it: on a branch, a node is a Concept exactly when it is
+ *  in the branch's namespace. Always true off a branch. */
+export function onBranchSide(b: object, type: string, ns: string): boolean {
+  const branch = infoOf(b)?.branch;
+  return !branch || (type.trim().toLowerCase() === "concept") === (ns === branch);
 }
 
 /** Whether a list reads a namespace (`own`: the backend's, for `default`). */
@@ -219,10 +253,19 @@ export async function mayQueryRaw(list: ReaderList | undefined, reader: GraphRea
   return (await graphNamespaces(reader, own)).every((ns) => mine.has(ns));
 }
 
+/** A run on a Concept branch reads the Concepts of its branch alone: raw
+ *  rows carry nothing to hold to that. */
+export class BranchRawQueryRefused extends ScopeRefused {
+  constructor() {
+    super("raw graph queries are off in a run on a Concept branch: its Concepts are the branch's, and a raw query would read the live tree — use the typed reads (graph/graph-search, graph/graph-get, graph/graph-neighbors, graph/find)");
+  }
+}
+
 /** Throw `RawQueryRefused` when the backend's list may not run raw queries
- *  (`readQuery` and every view's `query` call it). */
+ *  (`readQuery` and every view's `query` call it), and on a branch. */
 export async function assertRawQuery(b: object): Promise<void> {
   const info = infoOf(b);
+  if (info?.branch) throw new BranchRawQueryRefused();
   if (!info?.list) return;
   const own = (b as { namespace: string }).namespace;
   if (!(await mayQueryRaw(info.list, info.reader, own))) throw new RawQueryRefused();
@@ -234,20 +277,36 @@ export function scopedBackend<B extends GraphBackend>(b: B, list: ReaderList | u
   const info = infoOf(b);
   const reader = info?.reader ?? b.reader;
   const query = info?.query ?? b.query.bind(b);
-  if (!list) return b;
-  const scope = readScope(list, b.namespace);
+  const branch = info?.branch;
+  if (!list && !branch) return b;
+  const scope = readScope(list, b.namespace, branch);
   if (scope && !reader.withScope) throw new ScopeRefused("this graph's reader cannot apply reader lists");
-  const scoped: ScopeInfo = { readers: info?.readers, reader, query, list, ...(info?.kind ? { kind: info.kind } : {}) };
+  const scoped: ScopeInfo = { readers: info?.readers, reader, query, ...(list ? { list } : {}), ...(info?.kind ? { kind: info.kind } : {}), ...(branch ? { branch } : {}) };
   const out = {
     ...b,
     reader: scope ? reader.withScope!(scope) : reader,
     async query(cypher: string, params?: Params): Promise<Row[]> {
-      if (!(await mayQueryRaw(list, reader, b.namespace))) throw new RawQueryRefused();
+      if (branch) throw new BranchRawQueryRefused();
+      if (list && !(await mayQueryRaw(list, reader, b.namespace))) throw new RawQueryRefused();
       return query(cypher, params);
     },
     [SCOPE]: scoped,
   };
   return out as B;
+}
+
+/** The backend as a run on a Concept branch reads it (src/branches.ts):
+ *  its reader held to the branch (`ReadScope.concepts`) on top of whatever
+ *  list it is held to, raw queries off, the branch carried so every
+ *  `graph/*` step's view (`graphFor`) keeps it. The writers are the
+ *  caller's to hold (src/graph/branch.ts). A view already on `branch` as
+ *  it is; one on another branch is refused. */
+export function withBranch<B extends GraphBackend>(b: B, branch: string): B {
+  const info = infoOf(b);
+  if (info?.branch === branch) return b;
+  if (info?.branch) throw new ScopeRefused(`this graph view is on another Concept branch already`);
+  const base = { ...b, [SCOPE]: { readers: info?.readers, reader: info?.reader ?? b.reader, query: info?.query ?? b.query.bind(b), ...(info?.kind ? { kind: info.kind } : {}), branch } };
+  return scopedBackend(base as B, info?.list);
 }
 
 /**
@@ -259,7 +318,7 @@ export function scopedBackend<B extends GraphBackend>(b: B, list: ReaderList | u
 export function graphView<B extends GraphBackend>(b: B, readers: GraphReaders | undefined, kind?: ReaderKind): B {
   if (!readers) return b;
   const info = infoOf(b);
-  const base = { ...b, [SCOPE]: { readers, reader: info?.reader ?? b.reader, query: info?.query ?? b.query.bind(b), ...(kind ? { kind } : {}) } } as B;
+  const base = { ...b, [SCOPE]: { readers, reader: info?.reader ?? b.reader, query: info?.query ?? b.query.bind(b), ...(kind ? { kind } : {}), ...(info?.branch ? { branch: info.branch } : {}) } } as B;
   return scopedBackend(base, listFor(readers, kind ?? "jobs"));
 }
 

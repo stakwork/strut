@@ -68,6 +68,7 @@ import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
 import { composeNodeKey } from "../graph/node-writer.js";
+import { isBranchNamespace } from "../graph/search.js";
 import type { NodeSchema } from "../graph/schema-resolver.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
@@ -1177,9 +1178,12 @@ async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise
   }
   for (const row of nodes) {
     const props = row["p"] as Record<string, unknown>;
+    const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
+    // A Concept branch's copies are not the workspace's (src/branches.ts):
+    // its own git branch records them (plans/concept-evals.md item c).
+    if (isBranchNamespace(ns)) continue;
     const page = conceptPageFile(schema, props, parents.get(String(props["ref_id"])) ?? []);
     if (!page) continue;
-    const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
     const file = ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
     if (out.has(file)) warnings.push(`two Concepts are ${file}: only one is in the snapshot`);
     else out.set(file, page.text);

@@ -40,6 +40,8 @@ export function readRunStart(
   principal?: string;
   /** The job the run was launched under (plans/jobs.md §1) — kept by a resume. */
   job?: string;
+  /** The Concept branch the run is on (src/branches.ts) — kept by a resume. */
+  branch?: string;
   /** Who launched it, when not a person or an API call — a peer's run stays
    *  the peer's to control after a resume (plans/federation.md §3). */
   origin?: RunEvent["origin"];
@@ -87,6 +89,7 @@ export function readRunStart(
     actor: start.actor,
     principal: start.principal,
     job: start.job,
+    ...(start.branch ? { branch: start.branch } : {}),
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
     ...(start.continues ? { continues: start.continues } : {}),

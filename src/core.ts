@@ -233,6 +233,11 @@ export interface StepContext<TServices = unknown> {
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
    *  templates see it as `{{ $job }}`. Absent on a plain run. */
   job?: string;
+  /** The Concept BRANCH the run is on (src/branches.ts), a launch-level
+   *  field like `job`: set by whoever launched the root, inherited by every
+   *  run it starts, never in `input`. Its Concepts are the branch's (the
+   *  bag's view, `bindBranch`). Absent: main, the live tree. */
+  branch?: string;
   /** The APP this call or run works for (plans/apps.md §5), the twin of
    *  `job`: set by the app door (`step_run`) for a page's call, and carried
    *  by a run the app launched (`run/launch`) — never by a launch body. A
@@ -574,6 +579,9 @@ export interface RunEvent {
   /** On `run.start`: the job the run was launched under (plans/jobs.md §1),
    *  read back by a resume like `principal`. */
   job?: string;
+  /** On `run.start`: the Concept branch the run is on (src/branches.ts),
+   *  read back by a resume like `job`. */
+  branch?: string;
   /** On `run.start`: the APP the run was launched for (`origin: "app"`,
    *  plans/apps.md §5) — read back by a resume like `job`. */
   app?: AppRef;
@@ -952,6 +960,8 @@ export interface RunSummary {
   /** The job the run was launched under (plans/jobs.md §1) — on the summary
    *  so a job's deliverables resolve from it alone (`…/runs/:runId/artifacts`). */
   job?: string;
+  /** The Concept branch the run was on (src/branches.ts), as on `run.start`. */
+  branch?: string;
   /** Who launched the run, when it was not a person or an API call (as on
    *  `run.start`) — on the summary so a run list can badge a scheduled, a
    *  peer's or an app's run without reading its log. */
