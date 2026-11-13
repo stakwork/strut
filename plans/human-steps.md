@@ -22,7 +22,7 @@
 > **Keeping this plan current.** Each session that builds an item edits
 > this file in that item's PR: its row in §12 says it is built and names
 > the PR, and wherever a section says something other than what was built,
-> it is marked **Built differently (#STAFFPR):** with what was built and why. The
+> it is marked **Built differently (#678):** with what was built and why. The
 > Rulings table changes only on Evan's word.
 
 ## Rulings (2026-11-12)
@@ -1700,7 +1700,7 @@ still open.
   Each move in the page is sent back as `ui/open-link` to the app, so a
   host's address bar follows, as `strut/knowledge` does.
 
-**Built differently (#STAFFPR):**
+**Built differently (#678):**
 
 - **Its grants** are the `staff/*` steps, `app/list` and `earnings/read`.
   `app/list` already carries each app's grants, so the type editor's check
@@ -1764,7 +1764,7 @@ settings stay behind a proposal" holds only once this is closed.
 in the page; the second is the builder's ask (§9.8). Neither is a worker's
 `task/*` step.
 
-**Built differently (#STAFFPR):**
+**Built differently (#678):**
 
 - **One shared door.** `src/steps/lib/_admin-door.ts` holds the check
   (`adminDoorOf`), `bodyOrThrow` and the in-process door (`inProcessDoor`,
@@ -1809,7 +1809,7 @@ and `settled_at`, a task's `by`, a lease's type and `closed`, and a lease's
 worker and `taken`. The memory store answers the same. **Proposed:** the
 page reads the stats every 10 s while it is shown, none while hidden.
 
-**Built differently (#STAFFPR):** none of §9.4 was on the routes after #671 and
+**Built differently (#678):** none of §9.4 was on the routes after #671 and
 #675. #671's `GET /tasks/workers/:actor` answered `{ worker }` alone.
 
 - **`/tasks/stats`.** What is wrong with a type's app is `appProblem`; the
@@ -1958,7 +1958,7 @@ due, who answered, leases. **A task** shows:
   A host that never shows strut's UI does what it chooses; the status is
   on the page either way.
 
-**Built differently (#STAFFPR):**
+**Built differently (#678):**
 
 - **The answer-schema check is one file in two places, not moved.** The
   engine's `tsc` has `rootDir: src`, so the store cannot import
@@ -2015,7 +2015,7 @@ when the server answers for it, never an empty "coming soon".
 | 5a, earnings (§8) | A **Pay** section in the type editor; **Earned**, **Held** and **Withdrawable** columns on Workers; a line on Queue | The type's pay and hold; what each worker earned and is owed. Queue says what is owed to all workers beside what the wallet holds. The total owed also shows in `strut/earnings` beside the credit owed as service (§8, "Books") |
 | 5b, payouts | A **Payouts** tab | Withdrawals by workers (on their way, paid, failed), the caps per worker and per day, and a switch that stops every worker's withdrawals at once |
 
-**Built differently (#STAFFPR): the places of items 4 and 5a came with PR 1.**
+**Built differently (#678): the places of items 4 and 5a came with PR 1.**
 §9.10 assumed item 6 would come first; items 4 and 5a were built before
 it, and their routes answer. What shows is decided in the page
 (`shownOf`, `src/apps/staff/src/lib/view.ts`), never as an empty "coming
@@ -2124,7 +2124,7 @@ branched after the one before merged:
 
 Each updates `AGENTS.md` and specs/API.md (§22's new reads, a `strut/staff`
 part beside §14.14). The verdict (§9.6) is ruled and comes after them.
-**Built differently (#STAFFPR):** PR 1 updates the area docs (`docs/tasks.md`,
+**Built differently (#678):** PR 1 updates the area docs (`docs/tasks.md`,
 `docs/apps.md`, `docs/web.md`, `docs/payments.md`), not `AGENTS.md`, which
 holds only rules since #668. The `strut/staff` part is specs/API.md §14.15.
 Cancelling one task is not in item 6 (ruled). The places of §9.7 come
@@ -2142,7 +2142,7 @@ with items 4, 5a and 5b.
 | `task/set-type` | A direct call is refused. The builder's call records a proposal with the card's fields. A shape strut cannot check is refused before any proposal. A member's accept is `admin_required:`; an admin's saves the type with `changedBy` set to them. A forged `ctx.proposal` with no accepted record is refused. The person's edits are merged and checked again. A field left out keeps its value |
 | The page | Its pure parts in `src/apps/staff.test.ts`: the editor's model to schema and back, every schema it writes passing `answerSchemaProblem`, a schema it cannot draw opening in JSON, the Queue's warnings, the deep-link input. `npx tsc -p kit/tsconfig.staff.json` |
 
-**Built differently (#STAFFPR):** "The bag" row was #663's. PR 1's tests are:
+**Built differently (#678):** "The bag" row was #663's. PR 1's tests are:
 
 - `src/tasks/staff-reads.test.ts`: the stats and the reads over both
   stores, with a fixed clock.
@@ -2251,7 +2251,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **PR 1 built**: stakwork/strut#STAFFPR (the app, with §9.7's places for items 4 and 5a). Differs in §9.1, §9.3–§9.5, §9.7, §9.10, §9.11. PR 2 (`task/set-type`) not started |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **PR 1 built**: stakwork/strut#678 (the app, with §9.7's places for items 4 and 5a). Differs in §9.1, §9.3–§9.5, §9.7, §9.10, §9.11. PR 2 (`task/set-type`) not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
