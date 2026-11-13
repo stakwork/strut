@@ -5,16 +5,20 @@
  * holds that credential.
  *
  * Never on the services bag, never handed to a step. createStrut holds ONE
- * (`strut.payments.payer()`), and exactly two doors call it:
- * `POST /earnings/withdraw` (§8, withdrawals.ts) and an accepted
- * `remote/buy-credit` proposal (§10, a later item). With no pay credential
- * `payer()` is null and both say so: a server can sell without paying.
+ * (`strut.payments.payer()`), and exactly three doors call it:
+ * `POST /earnings/withdraw` (§8, withdrawals.ts), an accepted
+ * `remote/buy-credit` proposal (§10), and a worker's own `task/withdraw`
+ * inside the payout settings (plans/human-steps.md §8.2, payouts.ts). With
+ * no pay credential `payer()` is null and each says so: a server can sell
+ * without paying.
  *
  * Two calls: `pay` an invoice, and `status` — where a payment that answered
  * `pending` stands now. Every answer is `{ state: settled | pending | failed }`
  * with the fee; a refusal before anything was sent (not an invoice, the
  * wallet's own, expired, a fee cap the wallet cannot keep, no balance)
- * throws a `LightningError` carrying the wallet's own code.
+ * throws a `LightningError` carrying the wallet's own code. And for a
+ * worker's payout, `keysend` an amount to a Sphinx address and
+ * `keysendStatus`, which only reads (the daemon's; NWC has no route hints).
  */
 
 import { createHash } from "node:crypto";
@@ -60,6 +64,32 @@ export interface PayRequest {
   balanceBeforeMsat?: number;
 }
 
+/** A keysend to a Sphinx address (plans/human-steps.md §8.2). */
+export interface KeysendRequest {
+  /** The caller's key, 64 hex: the same id again never sends again. */
+  id: string;
+  /** `<pubkey>_<lsp_pubkey>_<scid>`. */
+  address: string;
+  /** What the address receives. */
+  msat: number;
+  /** The routing fee it may cost at most. */
+  maxFeeMsat: number;
+}
+
+/** What a keysend's wallet says, as `pay` and `status` answer. */
+export interface KeysendResult {
+  id: string;
+  state: PaymentState;
+  /** The fee the wallet was charged: 0 unless settled. */
+  feeMsat: number;
+  /** Once the wallet knows it. */
+  paymentHash?: string;
+  /** Once settled, when it hashes to the payment hash. */
+  preimage?: string;
+  /** `failed`: the wallet's words. */
+  error?: string;
+}
+
 export interface Payer {
   readonly provider: "sphinx" | "nwc";
   /** Which wallet this is — `sphinx:<daemon url>`, `nwc:<wallet pubkey>` —
@@ -79,7 +109,20 @@ export interface Payer {
    *  (its pay is idempotent per payment hash: a settled or pending one is
    *  read, only a FAILED one is paid again); with NWC it looks it up. */
   status(req: PayRequest & { paymentHash: string }): Promise<PayResult>;
+  /** Send `msat` to a Sphinx address, once per `id`: the same id again
+   *  answers that payment as it stands, a failed one included. Absent: this
+   *  wallet cannot keysend to an address (NWC's `pay_keysend` takes no route
+   *  hints, and a Sphinx account is reached only through its LSP's). A
+   *  daemon without the route throws `wallet_refused` with walletCode
+   *  `no_keysend`. */
+  keysend?(req: KeysendRequest): Promise<KeysendResult>;
+  /** Where a keysend stands, by its id, without ever sending. An id the
+   *  wallet never took is `failed`: the daemon writes the id before it sends. */
+  keysendStatus?(req: { id: string }): Promise<KeysendResult>;
 }
+
+/** The walletCode a payer throws for a wallet with no keysend route. */
+export const NO_KEYSEND = "no_keysend";
 
 // ── the fee (fee.ts) ──────────────────────────────────────────────────────
 
@@ -249,6 +292,91 @@ export class SphinxDaemonPayer implements Payer {
     if (out.paymentHash !== checkPaymentHash(req.paymentHash)) throw new LightningError("wallet_bad_answer", "the daemon answered for another payment");
     return out;
   }
+
+  /** `POST /keysend` (plans/human-steps.md §8.2): idempotent on `id`. */
+  async keysend(req: KeysendRequest): Promise<KeysendResult> {
+    checkKeysendRequest(req);
+    return daemonKeysend(this.#daemon(), "POST", req.id, { id: req.id, address: req.address.trim(), msat: req.msat, max_fee_msat: req.maxFeeMsat });
+  }
+
+  /** `GET /keysend/:id`: reads, never sends. */
+  async keysendStatus(req: { id: string }): Promise<KeysendResult> {
+    if (!req || typeof req.id !== "string" || !/^[0-9a-f]{64}$/.test(req.id)) throw new LightningError("bad_request", "keysend's id is 64 lowercase hex characters");
+    return daemonKeysend(this.#daemon(), "GET", req.id);
+  }
+
+  #daemon() {
+    return { url: this.#url, token: this.#token, http: this.#http, timeoutMs: this.#timeoutMs };
+  }
+}
+
+// ── keysend, for a worker's payout (plans/human-steps.md §8.2) ─────────────
+
+function checkKeysendRequest(req: KeysendRequest): void {
+  if (!req || typeof req.id !== "string" || !/^[0-9a-f]{64}$/.test(req.id)) throw new LightningError("bad_request", "keysend's id is 64 lowercase hex characters");
+  if (typeof req.address !== "string" || !req.address.trim()) throw new LightningError("bad_request", "keysend takes a Sphinx address");
+  if (!Number.isSafeInteger(req.msat) || req.msat <= 0) throw new LightningError("bad_request", "msat must be a whole number of msat above 0");
+  if (!Number.isSafeInteger(req.maxFeeMsat) || req.maxFeeMsat < 0) throw new LightningError("bad_request", "maxFeeMsat must be a whole number of msat, 0 or more");
+}
+
+/**
+ * The daemon's keysend (specs/LIGHTNING.md, plans/human-steps.md §8.2):
+ * `POST /keysend { id, address, msat, max_fee_msat }` waits up to 60 s and
+ * answers `{ id, state, payment_hash?, fee_msat, preimage?, error? }`;
+ * `GET /keysend/:id` answers the same and never sends, `404 not_found` for
+ * an id it never took (read as `failed`: it writes the id before it sends).
+ * A `404 no route …` is a daemon without these routes (`no_keysend`). The
+ * fee booked is what it reports, as the LSP charged it; within one mixer
+ * that is none.
+ */
+async function daemonKeysend(o: { url: string; token: string; http: HttpCapability; timeoutMs: number }, method: "POST" | "GET", id: string, body?: Record<string, unknown>): Promise<KeysendResult> {
+  const route = method === "POST" ? "POST /keysend" : "GET /keysend/:id";
+  let res: HttpResponse;
+  try {
+    res = await o.http(method === "POST" ? `${o.url}/keysend` : `${o.url}/keysend/${id}`, {
+      method,
+      headers: { authorization: `Bearer ${o.token}`, accept: "application/json" },
+      ...(body ? { body } : {}),
+      timeout: method === "POST" ? o.timeoutMs : 10_000,
+    });
+  } catch (err) {
+    const why = err instanceof Error ? (err.name === "TimeoutError" ? `no answer in ${(method === "POST" ? o.timeoutMs : 10_000) / 1000} s` : err.message) : String(err);
+    throw new LightningError("wallet_unavailable", `the Sphinx daemon at ${o.url} did not answer ${route}: ${why}`);
+  }
+  const said = res.body && typeof res.body === "object" && !Array.isArray(res.body) ? (res.body as Record<string, unknown>) : {};
+  if (!res.ok) {
+    const message = typeof said["error"] === "string" ? said["error"] : typeof res.body === "string" && res.body ? res.body.slice(0, 200) : `HTTP ${res.status}`;
+    const walletCode = typeof said["code"] === "string" ? said["code"] : undefined;
+    if (res.status === 401 || res.status === 403) throw new LightningError("wallet_unauthorized", `the Sphinx daemon refused the pay token on ${route}: ${message}`, walletCode);
+    if (res.status >= 500) throw new LightningError("wallet_unavailable", `the Sphinx daemon failed ${route}: ${message}`, walletCode);
+    if (res.status === 404 && /^no route /.test(message)) {
+      throw new LightningError("wallet_refused", `the Sphinx daemon at ${o.url} has no ${route}: it predates the keysend strut pays workers through (specs/LIGHTNING.md)`, NO_KEYSEND);
+    }
+    if (res.status === 404 && method === "GET") return { id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
+    throw new LightningError("wallet_refused", `the Sphinx daemon refused ${route}: ${message}`, walletCode);
+  }
+  const state = said["state"];
+  if (state !== "settled" && state !== "pending" && state !== "failed") {
+    throw new LightningError("wallet_bad_answer", `the daemon's keysend state ${JSON.stringify(state)} is not settled, pending or failed`);
+  }
+  if (said["id"] !== undefined && said["id"] !== id) throw new LightningError("wallet_bad_answer", "the daemon answered for another keysend");
+  let paymentHash: string | undefined;
+  if (said["payment_hash"] !== undefined && said["payment_hash"] !== null) {
+    try {
+      paymentHash = checkPaymentHash(said["payment_hash"]);
+    } catch {
+      throw new LightningError("wallet_bad_answer", "the daemon's keysend payment_hash is not 64 hex characters");
+    }
+  }
+  const preimage = state === "settled" && paymentHash ? provenPreimage(said["preimage"], paymentHash) : undefined;
+  return {
+    id,
+    state,
+    feeMsat: state === "settled" ? wholeMsat(said["fee_msat"]) : 0,
+    ...(paymentHash ? { paymentHash } : {}),
+    ...(preimage ? { preimage } : {}),
+    ...(state === "failed" ? { error: typeof said["error"] === "string" && said["error"] ? said["error"] : "the payment failed" } : {}),
+  };
 }
 
 // ── NWC ───────────────────────────────────────────────────────────────────

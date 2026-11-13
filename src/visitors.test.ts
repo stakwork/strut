@@ -254,7 +254,7 @@ const whoami = defineStep({
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx) {
-    return { address: (ctx?.services as { sphinxAddress?: string } | undefined)?.sphinxAddress ?? null };
+    return { address: (ctx?.services as { workerAddress?: string } | undefined)?.workerAddress ?? null };
   },
 });
 

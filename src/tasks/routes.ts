@@ -66,12 +66,34 @@
  * - `PUT /tasks/tests/:id { show?, expected?, grade? }` → `{ test }`; `409
  *   in_use` once it was served
  * - `DELETE /tasks/tests/:id` → `{ test }`, retired
+ *
+ * The PAYOUT routes (plans/human-steps.md §8.2): a worker's withdrawals and
+ * the settings that let them happen with nobody's yes per payment. Nothing
+ * else reaches the settings — no step on the shared bag, no proposal, no
+ * YAML, not `task/set-type`.
+ *
+ * - `GET /tasks/payouts[?state=out|stale|paid|failed&worker=&before=&limit=]`
+ *   → `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat },
+ *   payouts }`, newest first, each with `stale` (still out a day after it
+ *   was sent: it waits for a person). With no ledger: the defaults and none
+ * - `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }`
+ *   → `{ settings }` with `changedBy` and `changedAt`: the whole row;
+ *   `minSats` at least 1, each cap at least `minSats`
+ * - `POST /tasks/payouts/:key/read` → `{ payout, state, msat, feeMsat, … }`:
+ *   read it now through the payer it went out through
+ * - `POST /tasks/payouts/:key/resolve { action: "paid" | "drop", feeMsat? }`
+ *   → `{ payout, action }`: a person settles one by hand — `paid` with the
+ *   fee they give (else 0), `drop` fails it and gives its reserve back
  */
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
 import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
 import { TEST_FILE_MAX_BYTES } from "./test-files.js";
+import { PAYOUT_STATES, type PayoutState } from "../payments/ledger.js";
+import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/payouts.js";
+import { WithdrawError } from "../payments/withdrawals.js";
+import { entryView } from "../payments/earnings-routes.js";
 
 export interface TaskRoutesDeps {
   isFull: (c: Context) => Promise<boolean>;
@@ -93,7 +115,13 @@ export interface TaskRoutesDeps {
   /** §9.4: a task's run now — its status and what it waits on — or null
    *  when there is none on file. Absent: every task's `run` is null. */
   runOf?: (workflow: string, runId: string) => Promise<{ status: string; waitingOn?: string[] } | null>;
+  /** §8.2: a worker's withdrawals and their settings (src/payments/payouts.ts).
+   *  Absent: the payout routes answer 501. */
+  payouts?: Pick<Payouts, "list" | "saveSettings" | "read" | "resolve">;
 }
+
+const PAYOUT_STATUS: Partial<Record<PayoutErrorCode, 400 | 404 | 409>> = { bad_request: 400, unknown_payout: 404 };
+const PAYOUT_KEY = /^[0-9a-f]{64}$/;
 
 const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   bad_request: 400,
@@ -134,6 +162,76 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     const actor = await deps.actorOf(c);
     return actor === undefined ? {} : { by: actor };
   };
+
+  // ── payouts (§8.2): before `/tasks/:id`, which would take `payouts` for an id ──
+  const payoutAnswer = async (c: Context, fn: (p: NonNullable<TaskRoutesDeps["payouts"]>) => Promise<Record<string, unknown>>) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.payouts) return c.json({ error: "this server pays no worker", code: "not_available" }, 501);
+    try {
+      return c.json(await fn(deps.payouts));
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      if (err instanceof PayoutError) return c.json({ error: err.message, code: err.code }, PAYOUT_STATUS[err.code] ?? 409);
+      if (err instanceof WithdrawError) return c.json({ error: err.message, code: err.code, ...(err.walletCode ? { walletCode: err.walletCode } : {}) }, err.status);
+      if (err instanceof RangeError) return c.json({ error: `bad_request: ${err.message}`, code: "bad_request" }, 400);
+      throw err;
+    }
+  };
+  const payoutKey = (c: Context) => {
+    const key = c.req.param("key") ?? "";
+    if (!PAYOUT_KEY.test(key)) throw new TaskError("bad_request", "a payout's key is 64 lowercase hex characters");
+    return key;
+  };
+
+  app.get("/tasks/payouts", (c) =>
+    payoutAnswer(c, async (p) => {
+      const state = c.req.query("state") || undefined;
+      if (state !== undefined && state !== "stale" && !PAYOUT_STATES.includes(state as PayoutState)) throw new TaskError("bad_request", `state is one of ${[...PAYOUT_STATES, "stale"].join(", ")}`);
+      const num = (k: string) => {
+        const v = c.req.query(k);
+        if (v === undefined || v === "") return undefined;
+        const n = Number(v);
+        if (!Number.isSafeInteger(n) || n <= 0) throw new TaskError("bad_request", `${k} must be a whole number above 0`);
+        return n;
+      };
+      const before = num("before");
+      const limit = num("limit");
+      const worker = c.req.query("worker") || undefined;
+      return { ...(await p.list({ ...(state ? { state: state as PayoutState | "stale" } : {}), ...(worker ? { worker } : {}), ...(before ? { before } : {}), ...(limit ? { limit } : {}) })) };
+    }),
+  );
+
+  app.put("/tasks/payouts/settings", (c) =>
+    payoutAnswer(c, async (p) => {
+      const b = await body(c);
+      const extra = Object.keys(b).filter((k) => !["on", "minSats", "workerDaySats", "serverDaySats"].includes(k));
+      if (extra.length) throw new TaskError("bad_request", `the settings are on, minSats, workerDaySats and serverDaySats; not ${extra.join(", ")}`);
+      if (typeof b["on"] !== "boolean") throw new TaskError("bad_request", "on is true or false");
+      for (const k of ["minSats", "workerDaySats", "serverDaySats"]) if (typeof b[k] !== "number") throw new TaskError("bad_request", `${k} is a whole number of sats`);
+      const settings = await p.saveSettings({ on: b["on"], minSats: b["minSats"] as number, workerDaySats: b["workerDaySats"] as number, serverDaySats: b["serverDaySats"] as number }, (await by(c)).by);
+      return { settings };
+    }),
+  );
+
+  app.post("/tasks/payouts/:key/read", (c) =>
+    payoutAnswer(c, async (p) => {
+      const { payout, answer: a } = await p.read(payoutKey(c));
+      const { entry, ...rest } = a;
+      return { payout, ...rest, ...(entry ? { entry: entryView(entry) } : {}) };
+    }),
+  );
+
+  app.post("/tasks/payouts/:key/resolve", (c) =>
+    payoutAnswer(c, async (p) => {
+      const key = payoutKey(c);
+      const b = await body(c);
+      const action = b["action"];
+      if (action !== "paid" && action !== "drop") throw new TaskError("bad_request", 'action is "paid" (it reached the worker: record it) or "drop" (it did not: give the reserve back)');
+      if (b["feeMsat"] !== undefined && (action !== "paid" || typeof b["feeMsat"] !== "number")) throw new TaskError("bad_request", "feeMsat is a number of msat, with action paid");
+      return { ...(await p.resolve(key, { action, ...(b["feeMsat"] !== undefined ? { feeMsat: b["feeMsat"] as number } : {}) }, (await by(c)).by)) };
+    }),
+  );
 
   app.get("/tasks/types", (c) => answer(c, async () => ({ types: await tasks.types() })));
 

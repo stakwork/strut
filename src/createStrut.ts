@@ -52,6 +52,8 @@ import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
+import { WORKER_ADDRESS } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
@@ -1593,6 +1595,9 @@ export async function createStrut<TServices = unknown>(
     ledger,
     ledgerIfAny,
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    // Withdraw (plans/human-steps.md §8.2): the payer's third door, built
+    // below beside the withdrawals it sends through.
+    payouts: { pay: (actor, o) => payouts.pay(actor, o), view: (actor, o) => payouts.view(actor, o) },
     ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
   });
   // On the shared bag, the `human` step's `ensure` alone (plans/human-steps.md
@@ -1611,6 +1616,15 @@ export async function createStrut<TServices = unknown>(
     : (["next", "submit", "skip", "file", "me"] as const).every((k) => typeof hostTasks[k] === "function")
       ? Object.freeze({ next: hostTasks.next.bind(hostTasks), submit: hostTasks.submit.bind(hostTasks), skip: hostTasks.skip.bind(hostTasks), file: hostTasks.file.bind(hostTasks), me: hostTasks.me.bind(hostTasks) })
       : undefined;
+  /** A worker step's own bag on an app door (§5.2): the worker's calls, and
+   *  the Sphinx address the viewer's session carries — what `task/withdraw`
+   *  pays (§8.2), handed by the door, never sent by the page. */
+  const workerServicesOf = (address: string | undefined) => (workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}) } } : {});
+  /** The Sphinx address a visitor's session carries (plans/human-steps.md
+   *  §8.2): kept by `POST /visitors/session` in the session's signed claims
+   *  when it is the signing key's own. With none, `task/withdraw` answers
+   *  `no_address`. */
+  const sessionAddress = (session: { sphinxAddress?: string } | undefined): string | undefined => session?.sphinxAddress;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
   // caps a launch is admitted against, what a run in flight counts for, and
   // its charge when it ends. What is not yet charged is on file beside the
@@ -1642,11 +1656,31 @@ export async function createStrut<TServices = unknown>(
   // `payments.payer()`, never on the services bag — and keeps a payment the
   // wallet answered `pending` on file beside the ledger until it settles
   // (one `withdrawal` entry) or fails.
+  // Ruling 7 (plans/human-steps.md §8.2): a send that is not a worker's is
+  // refused when it would leave the wallet short of what workers are owed —
+  // read where a ledger is, by the task store's clock.
   const withdrawals = createWithdrawals({
     payer: () => payments.payer(),
     ledger,
     ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
+    balance: () => walletBalanceMsat(payments.lightning(), 5_000),
+    sweep: () => payouts.sweep(),
+  });
+  // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
+  // the payer's THIRD door — a keysend to the Sphinx address the worker's
+  // sign-in gave, with nobody's yes per payment, inside the payout settings
+  // (off until an admin turns them on), the solvency check and the ledger's
+  // reserve. Handed to the task service (`withdraw`, `me`'s `payout`) and the
+  // staff's `/tasks/payouts` routes; never on a bag.
+  const payouts = createPayouts({
+    ledger,
+    ledgerIfAny,
+    withdrawals,
+    payer: () => payments.payer(),
+    lightning: () => payments.lightning(),
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
   });
   // Add sats (§8, §9; src/payments/deposits.ts): an invoice INTO the wallet,
   // made by its receive side, for an admin to pay from their own, so this
@@ -6353,6 +6387,9 @@ export async function createStrut<TServices = unknown>(
     // an answer (§9.6) and the tests (§7.1): the service's, never a
     // capability's. None with a host's own store.
     ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, tests: tasks.tests }),
+    // Withdraw's settings and payouts (§8.2): the payer's, whatever task
+    // store the routes hold.
+    payouts,
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {
@@ -9625,8 +9662,9 @@ export async function createStrut<TServices = unknown>(
         admin: scope === "full",
         ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
-        // calls of the task store on that call's bag alone.
-        ...(workerTasks ? { workerServices: { tasks: workerTasks } } : {}),
+        // calls of the task store on that call's bag alone. A member's
+        // session carries no Sphinx address: nothing to withdraw to (§8.2).
+        ...workerServicesOf(undefined),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
       });
@@ -9662,8 +9700,8 @@ export async function createStrut<TServices = unknown>(
       // A SIGNED-IN visitor (plans/app-repos.md §5.1): this request carries
       // its session — the cookie, or the token as a bearer — and the page
       // calls as that actor, under §5.1's rules and its limits.
-      const signedIn = visitorOf(c)?.actor;
-      const sphinxAddress = visitorOf(c)?.sphinxAddress;
+      const session = visitorOf(c);
+      const signedIn = session?.actor;
       /** Count a launch against the visitor's limits once it went. */
       const counted = async <T,>(go: () => Promise<T>, went: (r: T) => boolean): Promise<T> => {
         const r = await go();
@@ -9744,9 +9782,8 @@ export async function createStrut<TServices = unknown>(
         ...(signedIn ? { actor: signedIn } : {}),
         // A worker's step (plans/human-steps.md §5.2): a signed-in visitor's
         // alone (the refusal below), the worker's calls on that call's bag,
-        // and the Sphinx address the session kept (§8.2) as `sphinxAddress`:
-        // from the session, as the actor is, never from a step's input.
-        ...(workerTasks ? { workerServices: { tasks: workerTasks, ...(sphinxAddress ? { sphinxAddress } : {}) } } : {}),
+        // with the address their session carries (§8.2).
+        ...workerServicesOf(sessionAddress(session)),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
         visitor: {

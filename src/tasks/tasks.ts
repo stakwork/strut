@@ -41,8 +41,14 @@
  * it settles here, and the lease is marked `bookedAt`; a booking that fails
  * is logged, never the worker's, and the minute's sweep books what is left.
  * An earning is held the type's `holdHours` and withdrawable after; staff
- * take one back inside its hold (`takeBack`, the service's alone). No sats
- * move: the wallet pays nobody until item 5b.
+ * take one back inside its hold (`takeBack`, the service's alone).
+ *
+ * WITHDRAW (§8.2, item 5b): the worker's own `withdraw { msat }` pays what
+ * passed its hold to the Sphinx address their sign-in gave, through the
+ * payer's third door (`deps.payouts`, src/payments/payouts.ts), counted
+ * against their calls like every worker call. A worker's status stops new
+ * work, never a withdrawal (ruled). `me` says whether withdrawing is open
+ * (`payout`).
  *
  * TESTS (§7, item 4): a task type may mix TESTS — tasks whose answer staff
  * know, in a sealed `tests` table — among its real tasks (`tests` on the
@@ -75,6 +81,7 @@ import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
 import type { RunFile } from "../runs.js";
 import { ZERO_BALANCE, type Earning, type LedgerStore, type PayeeBalance } from "../payments/ledger.js";
+import { PayoutError, type PayoutAnswer, type Payouts, type PayoutView } from "../payments/payouts.js";
 import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
 import {
   DEFAULT_HOLD_HOURS,
@@ -372,8 +379,12 @@ export interface WorkerView {
    *  for it (§7.5, ruling 3): served only tests until they qualify. No
    *  score is shown. */
   types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
-  /** What they are owed here (§8.1): zeros with nothing earned. */
+  /** What they are owed here (§8.1): zeros with nothing earned. A payout
+   *  on its way is no longer in it (§8.2). */
   balance: PayeeBalance;
+  /** Whether they may withdraw now, and how much (§8.2): strut's own
+   *  store's (the `task/me` step says `not_here` for a store without it). */
+  payout?: PayoutView;
 }
 
 /** An answer's earning as staff read it (§8.1): booked in the ledger. */
@@ -581,9 +592,10 @@ export interface TasksCapability {
    *  (§5.5): only a path on the task's list, only through the caller's own
    *  live lease, whether or not another path exists. */
   file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
-  /** Who the worker is here, what they may take, and what they are owed;
-   *  the first call writes them as `new`. */
-  me(actor: string, o?: { app?: string }): Promise<WorkerView>;
+  /** Who the worker is here, what they may take, what they are owed, and
+   *  whether they may withdraw (`address`: the Sphinx address their session
+   *  carries, §8.2); the first call writes them as `new`. */
+  me(actor: string, o?: { app?: string; address?: string }): Promise<WorkerView>;
 
   // Staff's.
   types(): Promise<TaskType[]>;
@@ -685,8 +697,13 @@ export interface TasksService {
   close(): Promise<void>;
 }
 
-/** The worker's calls of the capability (§5.1). */
-export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "skip" | "file" | "me">;
+/** The worker's calls of the capability (§5.1), and their withdrawal
+ *  (§8.2): what passed its hold, keysent to `address`, the Sphinx address
+ *  their session carries — the door's, never the page's. Absent on a host's
+ *  own store (`task/withdraw` answers `not_here`). */
+export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "skip" | "file" | "me"> & {
+  withdraw?(actor: string, o: { address?: string; msat: number }): Promise<PayoutAnswer>;
+};
 
 /** What the shared services bag carries (§9.2): the `human` step's call. */
 export type HumanTasksCapability = Pick<TasksCapability, "ensure">;
@@ -715,6 +732,9 @@ export interface TasksDeps {
   /** Dollars per bitcoin now: a settled task's pay in dollars, for the run's
    *  cost (§8.1). Left out, or failing: the pay has no dollars. */
   usdPerBtc?(): Promise<number>;
+  /** §8.2: the payer's third door, a worker's withdrawal (payouts.ts). Left
+   *  out: nobody withdraws here (`me`'s `payout` says `not_here`). */
+  payouts?: Pick<Payouts, "pay" | "view">;
   /** §7.1: tests' files. `file` reads an instance's (`root: "test"`) from
    *  here, as it reads a real task's from its run, so both come back alike.
    *  Left out: a test may list no files. */
@@ -1326,8 +1346,11 @@ export function createTasks(deps: TasksDeps): TasksService {
         }
       }
       // A worker's status touches no earning (§8.1): a suspended worker
-      // still sees what they are owed.
-      return { actor: w.actor, status: w.status, types, balance: await balanceOf(w.actor) };
+      // still sees what they are owed, and may withdraw what passed its
+      // hold (§8.2).
+      const balance = await balanceOf(w.actor);
+      const payout = deps.payouts ? await deps.payouts.view(w.actor, { balance, ...(o.address ? { address: o.address } : {}) }) : undefined;
+      return { actor: w.actor, status: w.status, types, balance, ...(payout ? { payout } : {}) };
     },
 
     async types() {
@@ -2013,10 +2036,17 @@ export function createTasks(deps: TasksDeps): TasksService {
   };
 
   const frozen = Object.freeze(capability);
+  /** §8.2: the worker's withdrawal — any status, a ban included (ruled) —
+   *  counted against their calls; the payer's door decides the rest. */
+  const withdraw = async (actor: string, o: { address?: string; msat: number }): Promise<PayoutAnswer> => {
+    count(actor);
+    if (!deps.payouts) throw new PayoutError("not_here", "this server's task store pays no worker");
+    return deps.payouts.pay(actor, o);
+  };
   return {
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure }),
-    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me }),
+    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, withdraw }),
     isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {
       listeners.add(listener);

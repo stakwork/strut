@@ -1107,13 +1107,18 @@ export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<Work
 /** How often `useWithdraw` reads `useWorker()` again while a payout is on its way. */
 const PAYOUT_POLL_MS = 5_000;
 
-/** What `task/withdraw` answers: `settled`, or `pending` (on its way, and
- *  `useWorker().data.payout.out` shows it), with the fee. */
+/** What `task/withdraw` answers: `settled`, `pending` (on its way, and
+ *  `useWorker().data.payout.out` shows it) or `failed` (the reserve is back),
+ *  with the fee. */
 export interface WithdrawResult {
-  state: "settled" | "pending";
+  state: "settled" | "pending" | "failed";
+  /** The payout's key: `payout.out.key` while it is on its way. */
+  key: string;
   msat: number;
   feeMsat: number;
   maxFeeMsat: number;
+  /** A failed payout's words. */
+  error?: string;
 }
 
 export interface UseWithdraw {

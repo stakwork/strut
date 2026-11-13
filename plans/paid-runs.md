@@ -646,10 +646,13 @@ connection is harmless there; one file for both is simpler, and is what a
 pay credential needs.
 
 **The payer.** Paying is not on the capability. createStrut holds one
-payer, built from the PAY credential when there is one, and exactly two
-doors call it: `POST /earnings/withdraw` (§8) and an accepted
-`remote/buy-credit` proposal (§10). With no pay credential both say so,
-and nothing else changes: a server can sell without being able to pay.
+payer, built from the PAY credential when there is one, and exactly three
+doors call it: `POST /earnings/withdraw` (§8), an accepted
+`remote/buy-credit` proposal (§10), and a worker's own `task/withdraw`
+inside the payout settings (`plans/human-steps.md` §8.2: a keysend to the
+worker's Sphinx address, with nobody's yes per payment). With no pay
+credential each says so, and nothing else changes: a server can sell
+without being able to pay.
 
 **The treasury daemon** (decisions 9 and 10; work in the sphinx repo, not
 this one). A second container of `ghcr.io/stakwork/sphinx-daemon` with its
