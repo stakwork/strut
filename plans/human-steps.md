@@ -1326,7 +1326,7 @@ and `GET /tasks/:id` carry an answered lease's `earning` (`msat`, `at`,
 Earnings tab, `strut/earnings` and the Withdraw warning; the ledger's
 `payDaily` read is there for it.
 
-**Built differently (#PR2):**
+**Built differently (#666):**
 
 - **One more ledger read, `owedToWorkers({ now })`,** both stores:
   `owedMsat`, `heldMsat`, `withdrawableMsat` and `payees` in one
@@ -1910,7 +1910,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
-| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#PR2 (the books). Differs in §8.1 |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
