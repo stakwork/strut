@@ -440,6 +440,44 @@ describe("the human step", () => {
     }
   });
 
+  it("a cancel while a woken run runs its human steps again: cancelled, not waiting, and the task it made closed", async () => {
+    const gate = gateStep();
+    const { strut, workspace, dir } = await makeServer({ steps: { gate: gate.def } });
+    try {
+      await staff(strut);
+      await workspace.publishWorkflow("woken", "v1", {
+        steps: [
+          { id: "first", type: "human", config: { task: TYPE } },
+          // Both start once `first` is answered, on the wake: `slow` holds the
+          // run live while `second` makes its task and parks.
+          { id: "slow", type: "gate", config: {}, depends: ["first"] },
+          { id: "second", type: "human", config: { task: TYPE }, depends: ["first"] },
+        ],
+      });
+      const runId = await launch(strut, "woken");
+      await waiting(strut, "woken", runId);
+      await answerNext(strut, { same: true });
+      for (let i = 0; i < 300 && !((await tasksOf(strut, runId)).length === 2 && gate.started()); i++) await sleep(10);
+      const log = await strut.store.getRunEvents("woken", runId);
+      assert.ok(log.some((e) => e.type === "run.resumed" && e.woken), "woken");
+      assert.ok(log.some((e) => e.type === "step.parked" && e.path === "woken/second"), "the second human step parked");
+      // Every branch is past its last checkpoint: `slow` in its body, `second` parked.
+      const res = await strut.app.request(`/workflows/woken/runs/${runId}/cancel`, { method: "POST" });
+      assert.equal(res.status, 202);
+      gate.release();
+      const done = await ended(strut, "woken", runId);
+      assert.equal(done.status, "cancelled");
+      assert.equal((await strut.store.getRunEvents("woken", runId)).at(-1)?.type, "run.cancelled");
+      assert.deepEqual((await tasksOf(strut, runId)).map((t) => t.status).sort(), ["cancelled", "settled"]);
+      await sleep(30);
+      assert.equal((await strut.store.getRunSummary("woken", runId))?.status, "cancelled", "the cancel's settle wakes nothing");
+    } finally {
+      gate.release();
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a restart between the answer and the wake: the next boot wakes the run", async () => {
     const dir = join(tmpdir(), `strut-human-${randomUUID()}`);
     const one = await makeServer({ dir });
@@ -494,23 +532,28 @@ describe("the human step", () => {
     }
   });
 
-  it("refused before any task is made: a stranger's public run", async () => {
+  it("a public run: the public view will not take a workflow that asks a person, and one that reaches it anyway is refused before any task is made", async () => {
     const { strut, workspace, dir } = await makeServer();
     try {
       await staff(strut);
       await workspace.createWorkflow("open-ask", "name: open-ask\ninput:\n  pet: { type: string, default: rex }\nsteps:\n  - id: ask\n    type: human\n    config:\n      task: pet-match\n");
-      const put = await strut.app.request("/public-view", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runnable: [{ kind: "workflow", name: "open-ask", dailyCapUsd: 5 }] }),
-      });
+      const putView = (runnable: unknown[]) =>
+        strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ runnable }) });
+      const refused = await putView([{ kind: "workflow", name: "open-ask", dailyCapUsd: 5 }]);
+      assert.equal(refused.status, 400);
+      assert.match(((await refused.json()) as { error: string }).error, /workflow "open-ask" reaches step "human", which waits for a person/);
+      // A closure the save cannot read (a subflow named by the input) still
+      // reaches it: the run refuses, and makes no task.
+      await workspace.createWorkflow("open-any", "name: open-any\ninput:\n  inner: { type: string, default: open-ask }\nsteps:\n  - id: run\n    type: subflow\n    config:\n      workflow: \"{{ input.inner }}\"\n");
+      await workspace.setWorkflowOwner("open-any", "tom-1");
+      const put = await putView([{ kind: "workflow", name: "open-any", dailyCapUsd: 5 }]);
       assert.equal(put.status, 200, await put.clone().text());
-      const pub = await strut.app.request("/public/workflows/open-ask/run", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const pub = await strut.app.request("/public/workflows/open-any/run", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       assert.equal(pub.status, 202, await pub.clone().text());
       const { runId } = (await pub.json()) as { runId: string };
-      const done = await ended(strut, "open-ask", runId);
+      const done = await ended(strut, "open-any", runId);
       assert.equal(done.status, "error");
-      assert.match(done.error!.message, /^park_refused: a public run cannot wait/);
+      assert.match(done.error!.message, /park_refused: a public run cannot wait/);
       assert.deepEqual(await strut.tasks.capability.list(), []);
     } finally {
       await strut.close();

@@ -182,6 +182,19 @@ finds its answer. **Built differently (#654):** the marker is `woken`, not
 - **Not counted.** Boot auto-resume counts durable resumes to stop a
   crashing step looping (5). A wake is not one.
 
+**Built differently (stakwork/strut#682): the wake takes the job again.**
+A park lets go of the run's job, as of every per-run resource (§2.6), so
+the job is free while the run waits. The wake takes it again where the
+run first took it: a step's new `onReplay` (RUN_CONTROL_SPEC §6) runs when
+a durable resume replays it, and `job/dir` (and a kept `git/checkout`)
+take the hold there, before the steps after them. Every durable resume
+does, not only a wake: a restart and a person's resume had the same gap.
+When another run holds the job at that moment, the woken run waits for it
+to let go, live, its cancel and pause looked at every quarter second. It
+never fails `job_busy:`, which stays a fresh launch's answer: a run that
+waited days for a person is not lost to a turn that happened to be
+running.
+
 ### 2.4 What a parked run is to everything else
 
 | Reader | A run with `status: "waiting"` |
@@ -194,6 +207,15 @@ finds its answer. **Built differently (#654):** the marker is `woken`, not
 | `POST …/cancel` | Finalizes the run as cancelled and tells each source (`cancelled(on)`), which closes its open tasks |
 | `POST …/resume` | Works as for any dead run: a person may force a wake |
 | `run/get { wait }`, the UI | `waiting`, with what it waits on. Not held as in flight |
+
+**Built differently (stakwork/strut#682): a cancel beats a park.** §2.2's
+outcome (an error, else cancelled, else parked) lost a cancel that reached
+a live run after the last checkpoint of every branch still open, when they
+all parked: the run ended `waiting`. A woken run cancelled while its
+`human` steps run again is one way. Now a parked outcome whose run is being
+cancelled finalizes `cancelled`, and the end hook tells each source what
+the stopped branches waited on (`cancelled(on)`), as for a cancel of a
+waiting run: the `task` source closes the run's open tasks.
 
 ### 2.5 Statuses and what the UI shows
 
@@ -2808,20 +2830,27 @@ directory, so past one process the answer is another strut.
 
 **Open**
 
-- A parked run lets go of its job. On wake the journal replays `job/dir`
-  and the hold is not taken again.
 - A run that fails with a task still open keeps it (§3, built differently
   in #656): a worker may answer for a run nobody resumes, until the task
   expires.
-- A cancel that reaches a live run after its last checkpoint is lost when
-  every branch that did not finish parked: the run ends `waiting`, not
-  `cancelled` (item 1's flow outcome; found building 2b). A cancel while
-  a woken run replays to its `human` steps is one way to meet it.
-- `PUT /public-view` takes a runnable workflow with a `human` step; its
-  public runs fail `park_refused:`.
 - Payments per second through one Sphinx daemon.
 - Whether a standalone box replaces the Stadeum for some clients.
 - Whether workers one day see one balance across clients.
+
+**Fixed** (found building items 1 to 2b; fixed in stakwork/strut#682)
+
+- A parked run let go of its job, and on wake the journal replayed
+  `job/dir` without taking the hold again. Now every durable resume takes
+  it again where `job/dir` replays, and waits for a run that took the job
+  meanwhile (§2.3, built differently).
+- A cancel that reached a live run after its last checkpoint was lost when
+  every branch that did not finish parked: the run ended `waiting`, not
+  `cancelled`. Now a cancelling run ends `cancelled` and its sources are
+  told (§2.4, built differently).
+- `PUT /public-view` took a runnable workflow with a `human` step, whose
+  public runs could only fail `park_refused:`. Now the save refuses a
+  workflow whose closure reaches `human`, and `human` as a runnable step,
+  naming it.
 
 ## 12. Work items
 

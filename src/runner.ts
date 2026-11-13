@@ -709,7 +709,8 @@ async function executeRun<TServices = unknown>(
     park: parkFor(refusePark),
     parkRefusal: (prefix: string) => refusePark(`${prefix}:_`),
   };
-  /** Set when the run parks: what the teardown hooks are told. */
+  /** Set when the run parks, or is cancelled with its open branches parked:
+   *  what the teardown hooks are told. */
   let parkedOn: string[] | undefined;
   /** How it ended, for the teardown hooks. */
   let endStatus: RunEndInfo["status"];
@@ -737,8 +738,12 @@ async function executeRun<TServices = unknown>(
   } catch (err) {
     // Every branch ended or parked, and some parked (src/park.ts): the run
     // WAITS. Not an end — no `run.end`, no error — and it leaves memory: a
-    // wake resumes it from its journal under the same id.
-    if (isParkedError(err)) {
+    // wake resumes it from its journal under the same id. Unless it is being
+    // cancelled: a cancel that came after the last checkpoint any branch
+    // reached would be lost, so the run ends cancelled, and what it parked
+    // on is told so (`RunEndInfo.waitingOn` with `status: "cancelled"`).
+    if (isParkedError(err) && opts?.controller?.state === "cancelling") parkedOn = err.on;
+    else if (isParkedError(err)) {
       parkedOn = err.on;
       const finishedAt = new Date().toISOString();
       await emit({ type: "run.waiting", path: wfName, on: err.on });
@@ -757,7 +762,7 @@ async function executeRun<TServices = unknown>(
       });
       return { runId, status: "waiting", waitingOn: err.on };
     }
-    const cancelled = isCancelledError(err);
+    const cancelled = parkedOn !== undefined || isCancelledError(err);
     const error = {
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
@@ -803,7 +808,7 @@ async function executeRun<TServices = unknown>(
     const info: RunEndInfo = {
       workflow: wfName,
       ...(opts?.origin ? { origin: opts.origin } : {}),
-      ...(parkedOn ? { parked: true as const, waitingOn: parkedOn } : {}),
+      ...(parkedOn ? (endStatus ? { waitingOn: parkedOn } : { parked: true as const, waitingOn: parkedOn }) : {}),
       ...(endStatus ? { status: endStatus } : {}),
     };
     // The run's last graph writes, sent now rather than a second from now
@@ -1048,9 +1053,11 @@ async function executeStep(
   // Resume replay (RUN_CONTROL_SPEC §5): a step whose path has a journaled
   // output replays it — zero cost, no side effects re-executed. Emitted as
   // `step.replayed`, never a fake `step.end` (honest timings). The first path
-  // NOT in the journal executes live below.
+  // NOT in the journal executes live below. A step that held something in
+  // memory (a job's hold) takes it again first (`StepDef.onReplay`).
   if (exec.journal && hasOwn(exec.journal, path)) {
     const output = exec.journal[path];
+    await onReplay(step, scope, exec, path, output);
     await exec.emit({ type: "step.replayed", path, stepType: baseType(step.type), output });
     return output;
   }
@@ -1235,60 +1242,86 @@ async function dispatchStep(
       // Validate config against step's input schema.
       // Default to {} when no config is provided in the YAML.
       const validConfig = def.input.parse(resolvedConfig ?? {});
-
-      const stepJournal = sliceJournal(exec.journal, path);
-      const ctx: StepContext<unknown> = withinReach(step.type, validConfig, {
-        runId: exec.runId,
-        path,
-        workflow: exec.workflow,
-        ...(exec.package ? { package: exec.package } : {}),
-        frame: exec.frame,
-        ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
-        scope,
-        input: scope["input"],
-        emit: exec.emit,
-        services: exec.services,
-        registry: exec.registry,
-        settings: resolveSettings({ deployment: (exec.services as any)?.settings, workflow: scope["$settings"], step: step.options?.settings, run: exec.settings }),
-        // Unit-scoped control: a parked `ctx.control.checkpoint()` releases
-        // this unit so the subtree can quiesce (§2.2 threading).
-        ...(exec.controller ? { control: exec.controller.forUnit() } : {}),
-        ...(stepJournal ? { journal: stepJournal } : {}),
-        // Same run, same principal — a subflow's steps inherit these unchanged.
-        ...(exec.actor ? { actor: exec.actor } : {}),
-        ...(exec.principal ? { principal: exec.principal } : {}),
-        ...(exec.job ? { job: exec.job } : {}),
-        ...(exec.branch ? { branch: exec.branch } : {}),
-        ...(exec.app ? { app: exec.app } : {}),
-        ...(exec.automation ? { automation: exec.automation } : {}),
-        ...(exec.wake ? { wake: exec.wake } : {}),
-        ...(exec.mcp ? { mcp: exec.mcp } : {}),
-        ...(exec.attachments ? { attachments: exec.attachments } : {}),
-        ...(exec.maxCostUsd !== undefined ? { maxCostUsd: exec.maxCostUsd } : {}),
-        // One disposer list per run (`Exec.disposers`), whatever frame the
-        // step runs in; drained in runWorkflow's `finally`.
-        onRunEnd: (fn) => void exec.disposers.push(fn),
-        park: exec.park,
-        parkRefusal: exec.parkRefusal,
-        ...(exec.aiAuthored ? { aiAuthored: true } : {}),
-      });
-
-      if (exec.controller) {
-        // checkpoint → beginUnit with no interleaving await, so a pause can
-        // never observe a false quiesce between the two.
-        await exec.controller.checkpoint();
-        exec.controller.beginUnit();
-      }
-      try {
-        // An error the step lets escape (a callback's throw, a promise it
-        // never awaits) fails the step, not the process (src/escaped-errors.ts).
-        const running = guardEscapes(`step "${path}"`, () => def.run(validConfig, ctx));
-        // A force-cancel stops waiting on a step that never returns.
-        return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
-      } finally {
-        exec.controller?.endUnit();
-      }
+      const ctx = stepContext(step, validConfig, scope, exec, path);
+      return runUnit(exec, path, () => def.run(validConfig, ctx));
     }
+  }
+}
+
+/** What a leaf step's body is handed (`ctx`). */
+function stepContext(step: Step, validConfig: unknown, scope: Record<string, unknown>, exec: Exec, path: string): StepContext<unknown> {
+  const stepJournal = sliceJournal(exec.journal, path);
+  return withinReach(step.type, validConfig, {
+    runId: exec.runId,
+    path,
+    workflow: exec.workflow,
+    ...(exec.package ? { package: exec.package } : {}),
+    frame: exec.frame,
+    ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
+    scope,
+    input: scope["input"],
+    emit: exec.emit,
+    services: exec.services,
+    registry: exec.registry,
+    settings: resolveSettings({ deployment: (exec.services as any)?.settings, workflow: scope["$settings"], step: step.options?.settings, run: exec.settings }),
+    // Unit-scoped control: a parked `ctx.control.checkpoint()` releases
+    // this unit so the subtree can quiesce (§2.2 threading).
+    ...(exec.controller ? { control: exec.controller.forUnit() } : {}),
+    ...(stepJournal ? { journal: stepJournal } : {}),
+    // Same run, same principal — a subflow's steps inherit these unchanged.
+    ...(exec.actor ? { actor: exec.actor } : {}),
+    ...(exec.principal ? { principal: exec.principal } : {}),
+    ...(exec.job ? { job: exec.job } : {}),
+    ...(exec.branch ? { branch: exec.branch } : {}),
+    ...(exec.app ? { app: exec.app } : {}),
+    ...(exec.automation ? { automation: exec.automation } : {}),
+    ...(exec.wake ? { wake: exec.wake } : {}),
+    ...(exec.mcp ? { mcp: exec.mcp } : {}),
+    ...(exec.attachments ? { attachments: exec.attachments } : {}),
+    ...(exec.maxCostUsd !== undefined ? { maxCostUsd: exec.maxCostUsd } : {}),
+    // One disposer list per run (`Exec.disposers`), whatever frame the
+    // step runs in; drained in runWorkflow's `finally`.
+    onRunEnd: (fn) => void exec.disposers.push(fn),
+    park: exec.park,
+    parkRefusal: exec.parkRefusal,
+    ...(exec.aiAuthored ? { aiAuthored: true } : {}),
+  });
+}
+
+/** A leaf step's body as one unit of the run's work (RUN_CONTROL_SPEC §2.2). */
+async function runUnit<T>(exec: Exec, path: string, body: () => Promise<T>): Promise<T> {
+  if (exec.controller) {
+    // checkpoint → beginUnit with no interleaving await, so a pause can
+    // never observe a false quiesce between the two.
+    await exec.controller.checkpoint();
+    exec.controller.beginUnit();
+  }
+  try {
+    // An error the step lets escape (a callback's throw, a promise it
+    // never awaits) fails the step, not the process (src/escaped-errors.ts).
+    const running = guardEscapes(`step "${path}"`, body);
+    // A force-cancel stops waiting on a step that never returns.
+    return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
+  } finally {
+    exec.controller?.endUnit();
+  }
+}
+
+/** A replayed step's `onReplay` (StepDef.onReplay): what its run held in
+ *  this process's memory — a job's hold — taken again. A throw fails the
+ *  step as its `run` would (no retry: what it would retry is replayed). */
+async function onReplay(step: Step, scope: Record<string, unknown>, exec: Exec, path: string, output: unknown): Promise<void> {
+  const def = SELF_RESOLVING_STEPS.has(step.type) ? undefined : exec.registry[step.type];
+  if (!def?.onReplay) return;
+  try {
+    const validConfig = def.input.parse(resolveConfig(step.config, scope) ?? {});
+    const ctx = stepContext(step, validConfig, scope, exec, path);
+    await runUnit(exec, path, () => def.onReplay!(validConfig, ctx, output));
+  } catch (err) {
+    if (isCancelledError(err)) throw err;
+    const error = err instanceof Error ? err : new Error(String(err));
+    await exec.emit({ type: "step.error", path, stepType: baseType(step.type), error: { message: error.message, stack: error.stack } });
+    throw error;
   }
 }
 
