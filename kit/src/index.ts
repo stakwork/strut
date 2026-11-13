@@ -26,7 +26,7 @@ export {
   useAssistant, assistantJobs, ASSISTANT_WORKFLOW,
   useJobUpdates, useGraphChanges, GRAPH_CHANGES_STEP, FEED_WAIT_MS,
   useTask, useWorker, useTaskFile, useTaskFileUrl, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
-  type WorkerTask, type WorkerInfo, type UseTask, type UseTaskOptions, type TaskHookStatus,
+  type WorkerTask, type WorkerInfo, type WorkerBalance, type UseTask, type UseTaskOptions, type TaskHookStatus,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS, reloadAppState,
   type JobUpdate, type GraphChange, type UseJobUpdates, type UseJobUpdatesOptions, type UseGraphChanges, type UseGraphChangesOptions,
   type AssistantMessage, type AssistantJob, type UseAssistant, type UseAssistantOptions,

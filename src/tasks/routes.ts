@@ -7,28 +7,35 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
- * - `GET /tasks/workers[?status=]` → `{ workers }`
+ * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
  * - `PUT /tasks/workers/:actor { status?, note? }` → `{ worker }`
  * - `PUT /tasks/workers/:actor/grants/:type` → `{ worker }`
  * - `DELETE /tasks/workers/:actor/grants/:type[?why=]` → `{ worker }`
  * - `GET /tasks[?type=&status=&workflow=&runId=&before=&limit=]` → `{ tasks }`,
- *   newest first, each with its leases
+ *   newest first, each with its leases (an answer's `earning` with it)
  * - `GET /tasks/:id` → `{ task }`
+ * - `POST /tasks/:id/take-back { worker?, why }` → `{ task, earnings }`: the
+ *   earnings the task's answers made (or `worker`'s) taken back while held
+ *   (plans/human-steps.md §8.1); `409 released` when every one asked for is
+ *   past its hold
  */
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, type TaskStatus } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
-import { TaskError, type TaskErrorCode, type TasksCapability } from "./tasks.js";
+import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
 
 export interface TaskRoutesDeps {
   isFull: (c: Context) => Promise<boolean>;
   /** Who made a change: the type's `changedBy`, a grant's `by`. */
   actorOf: (c: Context) => Promise<string | undefined>;
   tasks: TasksCapability;
+  /** A person's take-back (§8.1): the service's, never on a capability.
+   *  Absent (a host's own store): the route answers 501. */
+  takeBack?: TasksService["takeBack"];
 }
 
 const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
@@ -36,6 +43,7 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   bad_schema: 400,
   unknown_type: 404,
   unknown_worker: 404,
+  unknown_task: 404,
   in_use: 409,
 };
 
@@ -75,6 +83,8 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["leaseSeconds"] !== undefined ? { leaseSeconds: b["leaseSeconds"] as number } : {}),
         ...(b["withinHours"] !== undefined ? { withinHours: b["withinHours"] as number } : {}),
         ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),
+        ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
+        ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),
@@ -138,6 +148,34 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       };
     }),
   );
+
+  // A person takes back what an answer earned while it is held (§8.1):
+  // until item 4 grades tests, an admin is who catches a bad answer.
+  app.post("/tasks/:id/take-back", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.takeBack) return c.json({ error: "this server's task store is its host's: take-back is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (k !== "worker" && k !== "why") throw new TaskError("bad_request", `a take-back is worker and why, not ${k}`);
+      if (b["worker"] !== undefined && typeof b["worker"] !== "string") throw new TaskError("bad_request", "worker is an actor");
+      const task = c.req.param("id");
+      const earnings = await deps.takeBack({
+        task,
+        why: b["why"] as string,
+        ...(b["worker"] !== undefined ? { worker: b["worker"] as string } : {}),
+        ...(await by(c)),
+      });
+      // Past its hold an earning is the worker's: nothing was taken.
+      if (earnings.some((e) => e.result === "released") && !earnings.some((e) => e.result === "taken")) {
+        return c.json({ error: "released: past its hold, this answer's earning is the worker's", code: "released", task, earnings }, 409);
+      }
+      return c.json({ task, earnings });
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
 
   app.get("/tasks/:id", async (c) => {
     const refused = await refuse(c);

@@ -17,6 +17,7 @@ import { createStrut, type Strut } from "../../createStrut.js";
 import { WorkspaceManager } from "../../workspace.js";
 import { jobRoot } from "../../jobs.js";
 import { createTasks, openTaskStores, tasksPath, type TaskView } from "../../tasks/tasks.js";
+import type { RateSource } from "../../payments/rate.js";
 import { buildRegistryTools } from "./agent.js";
 import human from "./human.js";
 import pack from "./pack.js";
@@ -65,19 +66,33 @@ function gateStep() {
   return { def, release: () => release(), started: () => started };
 }
 
-async function makeServer(o: { dir?: string; steps?: Record<string, unknown> } = {}) {
+async function makeServer(o: { dir?: string; steps?: Record<string, unknown>; rate?: RateSource } = {}) {
   const dir = o.dir ?? join(tmpdir(), `strut-human-${randomUUID()}`);
   await mkdir(dir, { recursive: true });
   const workspace = new WorkspaceManager(dir);
   const registry = { human, pack, "write-files": writeStep, ...(o.steps ?? {}) } as StepRegistry;
-  const strut = await createStrut({ workspace, registry, serveUi: false, enableChat: false, scheduler: false, autoResume: false, wakeDelayMs: 0 });
+  const strut = await createStrut({
+    workspace,
+    registry,
+    serveUi: false,
+    enableChat: false,
+    scheduler: false,
+    autoResume: false,
+    wakeDelayMs: 0,
+    ...(o.rate ? { payments: { rate: o.rate } } : {}),
+  });
   return { strut, workspace, dir };
 }
 
 /** The task type and a worker who may take it. */
-async function staff(strut: Strut, o: { withinHours?: number } = {}) {
+async function staff(strut: Strut, o: { withinHours?: number; paySats?: number } = {}) {
   const t = strut.tasks.capability;
-  await t.setType(TYPE, { app: "workers", answer: MATCH, ...(o.withinHours === undefined ? {} : { withinHours: o.withinHours }) });
+  await t.setType(TYPE, {
+    app: "workers",
+    answer: MATCH,
+    ...(o.withinHours === undefined ? {} : { withinHours: o.withinHours }),
+    ...(o.paySats === undefined ? {} : { paySats: o.paySats }),
+  });
   await t.grant(WORKER, TYPE);
 }
 
@@ -497,6 +512,121 @@ describe("the human step", () => {
       assert.equal(done.status, "error");
       assert.match(done.error!.message, /^park_refused: a public run cannot wait/);
       assert.deepEqual(await strut.tasks.capability.list(), []);
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the human step's pay (plans/human-steps.md §8.1)", () => {
+  /** $100,000 a bitcoin: a sat is $0.001. */
+  const rate: RateSource = async () => ({ usdPerBtc: 100_000, at: new Date().toISOString(), source: "test" });
+  /** Fails while `boom.on` is set: a step after the human one that a resume runs again. */
+  const boom = { on: false };
+  const boomStep = defineStep({
+    type: "boom",
+    input: z.object({}).passthrough(),
+    output: z.any(),
+    async run() {
+      if (boom.on) throw new Error("boom");
+      return "ok";
+    },
+  });
+  const PAID = {
+    steps: [
+      { id: "review", type: "human", config: { task: TYPE } },
+      { id: "after", type: "boom", config: {} },
+    ],
+  };
+  const reviewEnd = async (strut: Strut, wf: string, runId: string) =>
+    (await strut.store.getRunEvents(wf, runId)).filter((e) => e.type === "step.end" && e.path === `${wf}/review`);
+
+  it("a paid answer's step has pay, and its step.end the dollars as cost with no model call; the totals count it once across a wake and a later resume", async () => {
+    const { strut, workspace, dir } = await makeServer({ rate, steps: { boom: boomStep } });
+    try {
+      await staff(strut, { paySats: 21 });
+      await workspace.publishWorkflow("paid", "v1", PAID);
+      boom.on = true;
+      const runId = await launch(strut, "paid");
+      await waiting(strut, "paid", runId);
+      await answerNext(strut, { same: true });
+      const failed = await ended(strut, "paid", runId);
+      assert.equal(failed.status, "error", "the step after it failed");
+      const [end] = await reviewEnd(strut, "paid", runId);
+      assert.deepEqual((end!.output as { pay: unknown }).pay, { msat: 21_000, usd: 0.021 });
+      assert.deepEqual([end!.cost, end!.modelCalls], [0.021, 0]);
+      assert.equal(failed.totals?.cost, 0.021, "counted once across the wake");
+      assert.equal(failed.totals?.modelCalls, 0);
+
+      boom.on = false;
+      const res = await strut.app.request(`/workflows/paid/runs/${runId}/resume`, { method: "POST" });
+      assert.equal(res.status, 202, await res.text());
+      const done = await summaryWhen(strut, "paid", runId, (s) => s.status === "success");
+      assert.equal(done.totals?.cost, 0.021, "the replay counts nothing again");
+      assert.equal((await reviewEnd(strut, "paid", runId)).length, 1, "replayed, not run again");
+    } finally {
+      boom.on = false;
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never against the workflow's run cap: a run whose human work passes maxRunCostUsd finishes", async () => {
+    const { strut, workspace, dir } = await makeServer({ rate });
+    try {
+      await staff(strut, { paySats: 21 });
+      await workspace.publishWorkflow("capped", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE } }] });
+      await workspace.setWorkflowRunCap("capped", 0.001);
+      const runId = await launch(strut, "capped");
+      await waiting(strut, "capped", runId);
+      await answerNext(strut, { same: false });
+      const done = await ended(strut, "capped", runId);
+      assert.equal(done.status, "success", JSON.stringify(done.error));
+      assert.equal(done.totals?.cost, 0.021, "past the $0.001 cap, and the run went on");
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("with no rate the step still returns its pay in sats, and marks nothing", async () => {
+    const down: RateSource = async () => {
+      throw new Error("rate_unavailable: the source is down");
+    };
+    const { strut, workspace, dir } = await makeServer({ rate: down });
+    try {
+      await staff(strut, { paySats: 21 });
+      await workspace.publishWorkflow("norate", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE } }] });
+      const runId = await launch(strut, "norate");
+      await waiting(strut, "norate", runId);
+      await answerNext(strut, { same: true });
+      const done = await ended(strut, "norate", runId);
+      assert.equal(done.status, "success", JSON.stringify(done.error));
+      const [end] = await reviewEnd(strut, "norate", runId);
+      assert.deepEqual((end!.output as { pay: unknown }).pay, { msat: 21_000 });
+      assert.equal(end!.cost, undefined);
+      assert.equal(done.totals, undefined, "no cost at all");
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an unpaid type marks nothing and books nothing", async () => {
+    const { strut, workspace, dir } = await makeServer({ rate });
+    try {
+      await staff(strut);
+      await workspace.publishWorkflow("unpaid", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE } }] });
+      const runId = await launch(strut, "unpaid");
+      await waiting(strut, "unpaid", runId);
+      await answerNext(strut, { same: true });
+      const done = await ended(strut, "unpaid", runId);
+      const [end] = await reviewEnd(strut, "unpaid", runId);
+      assert.equal((end!.output as { pay?: unknown }).pay, undefined);
+      assert.equal(end!.cost, undefined);
+      assert.equal(done.totals, undefined);
+      assert.equal(existsSync(join(dir, "payments", "ledger.db")), false, "no ledger file");
     } finally {
       await strut.close();
       await rm(dir, { recursive: true, force: true });

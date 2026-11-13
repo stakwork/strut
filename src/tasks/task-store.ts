@@ -28,8 +28,8 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const LEASE_STATUSES = ["open", "submitted", "expired", "skipped"] as const;
 export type LeaseStatus = (typeof LEASE_STATUSES)[number];
 
-/** The admin's record for a kind of task (§4.2). Later: pay, test rate,
- *  threshold, hold. */
+/** The admin's record for a kind of task (§4.2), and its pay (§8.1). Later:
+ *  test rate, threshold. */
 export interface TaskType {
   name: string;
   /** The app that draws it. */
@@ -41,6 +41,11 @@ export interface TaskType {
   /** How long a task may stay unanswered, unless its step says otherwise. */
   withinHours: number;
   enabled: boolean;
+  /** What one accepted answer earns, in sats to the msat (§8.1); absent:
+   *  unpaid. Stamped on a lease when it is taken. */
+  paySats?: number;
+  /** How long an earning waits before it can be withdrawn, in hours. */
+  holdHours: number;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;
@@ -87,6 +92,12 @@ export interface Lease {
   closed?: number;
   /** Why it was skipped or expired early. */
   reason?: string;
+  /** What an answer under it earns, msat: the type's pay when it was taken
+   *  (§8.1). Absent: it earns nothing. */
+  payMsat?: number;
+  /** When its earning was booked in the ledger: a submitted lease with pay
+   *  and none is booked by the next sweep. */
+  bookedAt?: number;
 }
 
 /** A task that left `open`: what its run's wake needs. */
@@ -121,6 +132,9 @@ export interface TaskListQuery {
   before?: number;
   limit?: number;
 }
+
+/** §8.1: an earning waits this long by default before it can be withdrawn. */
+export const DEFAULT_HOLD_HOURS = 72;
 
 export const TASK_LIST_PAGE = 100;
 export const TASK_LIST_MAX = 1000;
@@ -166,10 +180,21 @@ export interface TaskStore {
   /** Rule 8: open leases past their expiry become `expired`; open tasks
    *  past due become `expired`, their open leases with them. */
   sweep(now: number): Promise<{ leases: number; expired: TaskSettled[] }>;
+  /** §8.1: a submitted lease's earning was booked in the ledger. Once. */
+  booked(lease: string, at: number): Promise<void>;
+  /** Submitted leases with pay whose earning is not booked yet, oldest
+   *  answer first, at most `limit`: what the sweep books. */
+  unbooked(limit: number): Promise<Lease[]>;
 }
 
 export function settledOf(t: TaskRecord): TaskSettled {
   return { id: t.id, type: t.type, workflow: t.workflow, runId: t.runId, path: t.path, status: t.status as TaskSettled["status"] };
+}
+
+/** A type's pay as a lease stamps it: whole msat, or undefined when unpaid. */
+export function payMsatOf(t: Pick<TaskType, "paySats"> | undefined): number | undefined {
+  const msat = t?.paySats ? Math.round(t.paySats * 1000) : 0;
+  return msat > 0 ? msat : undefined;
 }
 
 export function pageLimit(limit: number | undefined): number {
@@ -282,7 +307,17 @@ export class MemoryTaskStore implements TaskStore {
       const kind = this.kinds.get(t.type);
       if (!kind?.enabled) continue;
       if (leases.some((l) => l.task === t.id && (l.worker === o.worker || live(l, o.now)))) continue;
-      const lease: Lease = { id: o.id, task: t.id, worker: o.worker, type: t.type, taken: o.now, expires: o.now + kind.leaseSeconds * 1000, status: "open" };
+      const pay = payMsatOf(kind);
+      const lease: Lease = {
+        id: o.id,
+        task: t.id,
+        worker: o.worker,
+        type: t.type,
+        taken: o.now,
+        expires: o.now + kind.leaseSeconds * 1000,
+        status: "open",
+        ...(pay ? { payMsat: pay } : {}),
+      };
       this.leases.set(lease.id, lease);
       return clone(lease);
     }
@@ -333,6 +368,19 @@ export class MemoryTaskStore implements TaskStore {
       }
     }
     return { leases, expired };
+  }
+
+  async booked(lease: string, at: number): Promise<void> {
+    const l = this.leases.get(lease);
+    if (l && l.bookedAt === undefined) l.bookedAt = at;
+  }
+
+  async unbooked(limit: number): Promise<Lease[]> {
+    return [...this.leases.values()]
+      .filter((l) => l.status === "submitted" && l.payMsat !== undefined && l.bookedAt === undefined)
+      .sort((a, b) => (a.closed ?? 0) - (b.closed ?? 0))
+      .slice(0, Math.max(0, limit))
+      .map(clone);
   }
 
   private close(t: TaskRecord, status: "expired" | "cancelled", now: number): TaskSettled {

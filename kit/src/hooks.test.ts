@@ -776,6 +776,27 @@ describe("a worker's page (plans/human-steps.md §5.3)", () => {
     await i.unmount();
   });
 
+  it("an answer reads useWorker again, so its balance moves as the answer goes in (plans/human-steps.md §8.1)", async () => {
+    let held = 0;
+    let nexts = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? { ...TASK, payMsat: 21_000 } : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => {
+        held += 21_000;
+        return { ok: true };
+      },
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers", payMsat: 21_000 }], balance: { totalMsat: held, heldMsat: held, withdrawableMsat: 0 } }),
+    });
+    const h = await renderHook(() => ({ t: useTask(), me: useWorker() }), { client });
+    await until(() => h.result().t.task !== null && h.result().me.data !== undefined, "a task and the worker");
+    assert.equal(h.result().t.task!.payMsat, 21_000);
+    assert.equal(h.result().me.data!.balance.heldMsat, 0);
+    await act(async () => { await h.result().t.submit({ same: true }); });
+    await until(() => h.result().me.data?.balance.heldMsat === 21_000, "the balance read again");
+    assert.equal(calls.filter((c) => c.type === "task/me").length, 2);
+    await h.unmount();
+  });
+
   it("useWorker is task/me; useTaskFile reads one of the task's files through its lease, nothing without a task", async () => {
     const { client, calls } = fakeClient({
       [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers" }] }),

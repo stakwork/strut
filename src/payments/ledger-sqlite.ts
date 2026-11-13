@@ -15,16 +15,19 @@ import {
   chargeFor,
   creditFor,
   dayOf,
+  earningOf,
   int,
   LedgerError,
   msRange,
   pageLimit,
   positiveInt,
+  payeeBalanceOf,
   rollUp,
   ENTRIES_PAGE,
   ENTRIES_PAGE_MAX,
   EXPIRED_SUBJECT,
   RECENT_DAYS,
+  ZERO_BALANCE,
   type ChargeInput,
   type ChargeResult,
   type DayRange,
@@ -32,6 +35,7 @@ import {
   type DepositedRow,
   type DepositInput,
   type EarningsQuery,
+  type Earning,
   type EarningsRow,
   type EntryKind,
   type EntryListQuery,
@@ -44,11 +48,17 @@ import {
   type Micros,
   type OpenHold,
   type Outstanding,
+  type PayDailyRow,
+  type PayeeBalance,
+  type PayInput,
+  type PayResult,
   type ReceivedRow,
   type Recent,
   type RunOutcome,
   type SendPurpose,
   type SweepResult,
+  type TakeBackInput,
+  type TakeBackResult,
   type TokenBalance,
   type WithdrawalInput,
   type WithdrawnRow,
@@ -124,6 +134,57 @@ create table if not exists deposits (
   actor text
 ) strict;
 create index if not exists deposits_at on deposits(at);
+
+-- Worker pay (plans/human-steps.md §8.1): what accepted answers earned, in
+-- msat. Tables of their own, so no ledger file needs a migration. A pay row
+-- is written once per lease and changed only by its take-back, once.
+create table if not exists pay (
+  lease text primary key,
+  task text not null,
+  worker text not null,
+  type text not null,
+  msat integer not null check (msat > 0),
+  at integer not null,
+  releases integer not null,
+  workflow text not null,
+  run_id text not null,
+  path text not null,
+  taken_back integer,
+  taken_back_why text,
+  taken_back_by text,
+  unique (task, worker)
+) strict;
+create index if not exists pay_held_worker on pay(worker, releases) where taken_back is null;
+create index if not exists pay_held on pay(releases) where taken_back is null;
+create index if not exists pay_run on pay(run_id);
+create trigger if not exists pay_take_back_once before update on pay
+  when old.taken_back is not null or new.taken_back is null
+    or new.lease is not old.lease or new.task is not old.task or new.worker is not old.worker or new.type is not old.type
+    or new.msat is not old.msat or new.at is not old.at or new.releases is not old.releases
+    or new.workflow is not old.workflow or new.run_id is not old.run_id or new.path is not old.path
+  begin select raise(abort, 'a pay row changes only by its take-back, once'); end;
+create trigger if not exists pay_kept before delete on pay
+  begin select raise(abort, 'pay rows are kept'); end;
+
+create table if not exists payees (
+  worker text primary key,
+  accepted integer not null default 0,
+  taken_back integer not null default 0,
+  withdrawn integer not null default 0,
+  answers integer not null default 0,
+  first_at integer not null,
+  last_at integer not null
+) strict;
+
+create table if not exists pay_daily (
+  day text not null,
+  type text not null,
+  answers integer not null default 0,
+  msat integer not null default 0,
+  taken_back_answers integer not null default 0,
+  taken_back_msat integer not null default 0,
+  primary key (day, type)
+) strict, without rowid;
 `;
 
 type Row = Record<string, unknown>;
@@ -240,6 +301,40 @@ export class SqliteLedgerStore implements LedgerStore {
       listAll: p("select * from entries where seq < ? order by seq desc limit ?"),
       listKind: p("select * from entries where kind = ? and seq < ? order by seq desc limit ?"),
       listRun: p("select * from entries where run_id = ? and seq < ? order by seq desc limit ?"),
+      payOf: p("select * from pay where lease = ?"),
+      payFor: p("select * from pay where task in (select value from json_each(?)) order by task, worker"),
+      insertPay: p(
+        `insert into pay (lease, task, worker, type, msat, at, releases, workflow, run_id, path)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      payee: p(
+        `insert into payees (worker, accepted, answers, first_at, last_at) values (?1, ?2, 1, ?3, ?3)
+         on conflict (worker) do update set accepted = accepted + excluded.accepted, answers = answers + 1,
+           first_at = min(first_at, excluded.first_at), last_at = max(last_at, excluded.last_at)`,
+      ),
+      payDay: p(
+        `insert into pay_daily (day, type, answers, msat) values (?, ?, 1, ?)
+         on conflict (day, type) do update set answers = answers + 1, msat = msat + excluded.msat`,
+      ),
+      // The one guarded write of a take-back: held, and not taken back yet.
+      takeBack: p(
+        `update pay set taken_back = ?1, taken_back_why = ?2, taken_back_by = ?3
+          where lease = ?4 and taken_back is null and releases > ?1`,
+      ),
+      payeeTakenBack: p("update payees set taken_back = taken_back + ? where worker = ?"),
+      payDayTakenBack: p("update pay_daily set taken_back_answers = taken_back_answers + 1, taken_back_msat = taken_back_msat + ? where day = ? and type = ?"),
+      payeeRow: p("select * from payees where worker = ?"),
+      held: p(
+        `select coalesce(sum(msat), 0) held, min(releases) next from pay
+          where worker = ? and taken_back is null and releases > ?`,
+      ),
+      payeeRows: p("select * from payees where worker in (select value from json_each(?))"),
+      heldBy: p(
+        `select worker, coalesce(sum(msat), 0) held, min(releases) next from pay
+          where worker in (select value from json_each(?1)) and taken_back is null and releases > ?2
+          group by worker`,
+      ),
+      payDaily: p("select * from pay_daily where day >= ? and day <= ? order by day, type"),
     };
   }
 
@@ -516,6 +611,77 @@ export class SqliteLedgerStore implements LedgerStore {
     return (this.live().s.scan.all(o.after ?? 0, pageLimit(o.limit, 1000, 10_000)) as Row[]).map(entryOf);
   }
 
+  // ── worker pay (plans/human-steps.md §8.1) ──────────────────────────
+
+  async pay(input: PayInput): Promise<PayResult> {
+    const e = earningOf(input);
+    return this.tx(() => {
+      const known = this.s.payOf.get(e.lease) as Row | undefined;
+      if (known) return { earning: earningRow(known), existing: true };
+      this.s.insertPay.run(e.lease, e.task, e.worker, e.type, e.msat, e.at, e.releases, e.workflow, e.runId, e.path);
+      this.s.payee.run(e.worker, e.msat, e.at);
+      this.s.payDay.run(dayOf(e.at), e.type, e.msat);
+      return { earning: e, existing: false };
+    }, true);
+  }
+
+  async payOf(lease: string): Promise<Earning | undefined> {
+    const row = this.live().s.payOf.get(lease) as Row | undefined;
+    return row ? earningRow(row) : undefined;
+  }
+
+  async payFor(tasks: readonly string[]): Promise<Earning[]> {
+    if (!tasks.length) return [];
+    return (this.live().s.payFor.all(JSON.stringify(tasks)) as Row[]).map(earningRow);
+  }
+
+  async takeBack(input: TakeBackInput): Promise<TakeBackResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    need("why", input.why);
+    int("at", at);
+    return this.tx<TakeBackResult>(() => {
+      const row = this.s.payOf.get(input.lease) as Row | undefined;
+      if (!row) return { lease: input.lease, result: "none" };
+      if (Number(this.s.takeBack.run(at, input.why, input.by ?? null, input.lease).changes) === 1) {
+        this.s.payeeTakenBack.run(row.msat as number, row.worker as string);
+        this.s.payDayTakenBack.run(row.msat as number, dayOf(row.at as number), row.type as string);
+        return { lease: input.lease, result: "taken", earning: earningRow(this.s.payOf.get(input.lease) as Row) };
+      }
+      const earning = earningRow(row);
+      return { lease: input.lease, result: earning.takenBack !== undefined ? "taken" : "released", earning };
+    }, true);
+  }
+
+  async payeeBalance(worker: string, o: { now?: number } = {}): Promise<PayeeBalance> {
+    const s = this.live().s;
+    const p = s.payeeRow.get(worker) as Row | undefined;
+    if (!p) return { ...ZERO_BALANCE };
+    const h = s.held.get(worker, o.now ?? Date.now()) as Row;
+    return balanceRow(p, h);
+  }
+
+  async payeeBalances(workers: readonly string[], o: { now?: number } = {}): Promise<Record<string, PayeeBalance>> {
+    if (!workers.length) return {};
+    const s = this.live().s;
+    const list = JSON.stringify(workers);
+    const held = new Map((s.heldBy.all(list, o.now ?? Date.now()) as Row[]).map((r) => [r.worker as string, r]));
+    const out: Record<string, PayeeBalance> = {};
+    for (const p of s.payeeRows.all(list) as Row[]) out[p.worker as string] = balanceRow(p, held.get(p.worker as string));
+    return out;
+  }
+
+  async payDaily(range: DayRange = {}): Promise<PayDailyRow[]> {
+    return (this.live().s.payDaily.all(range.from ?? "0000-00-00", range.to ?? "9999-99-99") as Row[]).map((r) => ({
+      day: r.day as string,
+      type: r.type as string,
+      answers: r.answers as number,
+      msat: r.msat as number,
+      takenBackAnswers: r.taken_back_answers as number,
+      takenBackMsat: r.taken_back_msat as number,
+    }));
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -668,6 +834,37 @@ function holdOf(r: Row): OpenHold {
   };
   if (r.key !== null) h.key = r.key as string;
   return h;
+}
+
+function earningRow(r: Row): Earning {
+  const e: Earning = {
+    lease: r.lease as string,
+    task: r.task as string,
+    worker: r.worker as string,
+    type: r.type as string,
+    msat: r.msat as number,
+    at: r.at as number,
+    releases: r.releases as number,
+    workflow: r.workflow as string,
+    runId: r.run_id as string,
+    path: r.path as string,
+  };
+  if (r.taken_back !== null && r.taken_back !== undefined) e.takenBack = r.taken_back as number;
+  if (r.taken_back_why !== null && r.taken_back_why !== undefined) e.takenBackWhy = r.taken_back_why as string;
+  if (r.taken_back_by !== null && r.taken_back_by !== undefined) e.takenBackBy = r.taken_back_by as string;
+  return e;
+}
+
+/** A payee's row and the sum of its held earnings (absent: none held). */
+function balanceRow(p: Row, h: Row | undefined): PayeeBalance {
+  const next = h?.next;
+  return payeeBalanceOf({
+    accepted: p.accepted as number,
+    takenBack: p.taken_back as number,
+    withdrawn: p.withdrawn as number,
+    held: Number(h?.held ?? 0),
+    ...(next !== null && next !== undefined ? { nextReleaseAt: next as number } : {}),
+  });
 }
 
 function rowOf(r: Row): EarningsRow {
