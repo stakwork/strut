@@ -90,6 +90,7 @@ import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
+import { recordCaused } from "./work.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
 import { automationsRoutes } from "./automations-routes.js";
@@ -2089,8 +2090,31 @@ export async function createStrut<TServices = unknown>(
           return registry;
         },
         onSettled: (r) => verifySettled?.(r),
+        // A work is not done while one of its runs is still in flight here (src/work.ts).
+        isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
       })
     : null;
+  // The WORK record (src/work.ts, plans/concept-evals.md): every run another
+  // run caused is noted under its cause as it starts, so the verify pass
+  // finds every run of a work and judges the Concepts it opened once all of
+  // it is done. Only where the claims layer is: nothing else reads it.
+  if (verifier) {
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEvent"] as ((workflow: string, event: RunEvent) => unknown) | undefined)?.bind(bag);
+    bag["onRunEvent"] = async (workflow: string, event: RunEvent) => {
+      try {
+        await prior?.(workflow, event);
+      } finally {
+        if (event.type === "run.start") await recordCaused(dataDir, workflow, event).catch((err) => console.error(`[work] ${workflow}/${event.runId} was not recorded under what caused it:`, err));
+      }
+    };
+  }
+  /** Runs `launchDetached` reports the end of, by `<workflow>/<runId>`:
+   *  the run-end hook, which fires first, marks one due (`true`) where it
+   *  would verify it, and the launcher verifies it once strut has decided
+   *  whether the end wakes a conversation (src/wake.ts) — so a work is
+   *  never judged before the turn that reports on its job. */
+  const detachedEnds = new Map<string, boolean>();
   // The Knowledge door (src/knowledge.ts): what a workflow that tends the
   // Concept tree works through. A host's own wins.
   if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["knowledge"]) {
@@ -2145,7 +2169,8 @@ export async function createStrut<TServices = unknown>(
           void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined, ownProposals).catch((err) =>
             console.error(`[projector] run ${key}/${runId} was not projected:`, err),
           );
-          verifier?.schedule(key, runId);
+          if (detachedEnds.has(`${key}/${runId}`)) detachedEnds.set(`${key}/${runId}`, true);
+          else verifier?.schedule(key, runId);
         }
       }
     };
@@ -7081,6 +7106,7 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
+    detachedEnds.set(`${flow.name}/${runId}`, false);
     const launcher = extra?.startedBy?.runId ? controllersByRunId.get(extra.startedBy.runId) : undefined;
     if (extra?.origin === "public" || (extra?.origin === "peer" && !extra.peerPerson) || (launcher && treeSpendsNot(launcher))) {
       noRemoteSpend.add(controller);
@@ -7234,6 +7260,11 @@ export async function createStrut<TServices = unknown>(
       })
       .finally(() => {
         untrack();
+        // After the wake is decided and the run let go: verified where the
+        // run-end hook would have, and asked whether it was the last of its work.
+        const due = detachedEnds.get(`${flow.name}/${runId}`);
+        detachedEnds.delete(`${flow.name}/${runId}`);
+        if (due) verifier?.schedule(flow.name, runId);
         if (!session) return;
         const live = liveSessions.get(session);
         live?.delete(runId);
