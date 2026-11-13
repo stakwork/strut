@@ -49,7 +49,7 @@ const row = (o: Partial<TaskTypeRow> = {}): TaskTypeRow => ({
   enabled: true,
   holdHours: 72,
   changedAt: 1,
-  open: 0,
+  openTasks: 0,
   workers: 0,
   answeredWeek: 0,
   ...o,
@@ -83,7 +83,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "paySats", "holdHours", "tests", "copies", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
   });
 
@@ -105,6 +105,9 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.equal(off.copies, null);
     assert.equal(off.paySats, 0);
     assert.deepEqual(mergeType("new", undefined, { app: "workers", answer: BOX }), { app: "workers", answer: BOX });
+    // Open (ruling 9): kept when left out, changed when given.
+    assert.equal(mergeType("pet-match", { ...was, open: false }, { app: "workers" }).open, false);
+    assert.equal(mergeType("pet-match", { ...was, open: false }, { app: "workers", open: true }).open, true);
     assert.throws(() => mergeType("new", undefined, { app: "workers" }), /^TaskError: bad_request: task type new is new: it needs answer/);
   });
 
@@ -129,7 +132,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.match(answerText(BOX), /^needs the app's own view \(the answer is not an object of fields\):\n\{"type":"array"/);
   });
 
-  it("the card for a new type: its fields, nobody granted, no answer marked when none is given", () => {
+  it("the card for a new type: its fields, open by default (nobody granted), no answer marked when none is given", () => {
     const card = typeCard({ name: "pet-match", app: "workers", answer: MATCH, withinHours: 48 });
     assert.equal(card.title, "New task type pet-match");
     assert.deepEqual(card.actions, { accept: "Save type", reject: "Don't" });
@@ -141,28 +144,43 @@ describe("task/set-type: its input, the merge and the card", () => {
         ["Lease", "10 minutes", false],
         ["Expires after", "48 hours unanswered", false],
         ["On", "on", false],
-        ["Workers", "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)", false],
+        ["Who takes it", "open: any signed-in worker of workers who is not suspended or banned, with no grant", false],
+        ["Workers", "none yet: it is open, so a worker holds it from their first ask for its tasks", false],
         ["Pay", "unpaid", false],
         ["Tests", "off", false],
         ["Copies", "off: a step asks one worker", false],
       ],
     );
-    assert.match(card.summary!, /^A new task type pet-match, drawn by the app workers: .* It grants it to no worker: an admin does, in Tasks and workers\.$/);
+    assert.match(card.summary!, /^A new task type pet-match, drawn by the app workers: .* It is open: any signed-in worker of the app may take its tasks, with no grant\.$/);
+    // Invite-only: an admin grants it.
+    const invite = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false });
+    assert.equal(field(invite, "Who takes it")!.value, "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)");
+    assert.equal(field(invite, "Workers")!.value, "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)");
+    assert.match(invite.summary!, /It grants it to no worker: an admin does, in Tasks and workers\.$/);
     // A new type with no answer: the card says so as a danger, and that accepting fails.
     const none = typeCard({ name: "pet-match", app: "workers" });
     assert.equal(field(none, "The answer")?.danger, true);
     assert.match(field(none, "The answer")!.value, /none given — task type pet-match is new: it needs answer/);
     assert.match(none.summary!, /Accepting it fails: task type pet-match is new: it needs answer/);
     // A paid new type: in sats and dollars at the rate, a rise from nothing, so a danger.
-    const paid = typeCard({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10, tests: { qualify: 3 }, copies: { max: 2, agree: 2 } }, { usdPerBtc: 100_000 });
+    const paid = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, tests: { qualify: 3 }, copies: { max: 2, agree: 2 } }, { usdPerBtc: 100_000 });
     assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "10 sats an answer ($0.01), held 72 hours before it can be withdrawn", danger: true });
     assert.match(paid.summary!, /Its pay rises from nothing to 10 sats an answer \(\$0\.01\)\./);
     assert.match(field(paid, "Tests")!.value, /^on: 5% of tasks are tests \(25% until a worker has answered 50 real ones\); 3 tests to qualify before any real task; a grant is revoked under 80% passed of the last 20 graded, read once 10 are; graded by equal answers$/);
     assert.equal(field(paid, "Copies")!.value, "on: a step may ask up to 2 workers, each paid; 2 matching answers settle a task, compared by equal answers; when they disagree one more worker is asked, up to 2");
+    // Ruling 9: a new PAID type left open has no tests yet, so accepting it fails, and the card says why.
+    const paidOpen = typeCard({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10, tests: { qualify: 3 } });
+    assert.deepEqual(field(paidOpen, "Who takes it"), {
+      label: "Who takes it",
+      value: "refused: task type pet-match is paid and open to any signed-in worker, so a newcomer qualifies on its tests before any real task: it needs 3 ready tests and has 0, 3 short; save it invite-only (open: false) or unpaid until they are ready, then open it",
+      danger: true,
+    });
+    assert.match(paidOpen.summary!, /Accepting it fails: task type pet-match is paid and open .* 3 short;/);
+    assert.match(field(typeCard({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10 }), "Who takes it")!.value, /^refused: .*turn its tests on \(qualify 10 by default\)/);
   });
 
   it("the card for a change: each field before and after, the pay rise a danger with the last week's cost, the app's problem a danger; a cut in pay is none", () => {
-    const was = row({ paySats: 10, open: 3, workers: 4, answeredWeek: 40 });
+    const was = row({ paySats: 10, openTasks: 3, workers: 4, answeredWeek: 40 });
     const card = typeCard({ name: "pet-match", app: "pets", answer: { ...MATCH, required: ["same", "note"] }, paySats: 25, leaseSeconds: 1200, tests: { rate: 0.1 } }, { existing: was, usdPerBtc: 100_000, appProblem: "app pets does not grant task/submit: its page cannot answer this type's tasks" });
     assert.equal(card.title, "Change task type pet-match");
     assert.deepEqual(field(card, "Drawn by"), { label: "Drawn by", value: "pets — app pets does not grant task/submit: its page cannot answer this type's tasks", danger: true });
@@ -185,6 +203,12 @@ describe("task/set-type: its input, the merge and the card", () => {
     const tooMany = typeCard({ name: "pet-match", app: "workers", tests: { window: 4 } }, { existing: tested });
     assert.deepEqual(field(tooMany, "Tests"), { label: "Tests", value: "refused: tests.qualify is a whole number from 0 to 4", danger: true });
     assert.match(tooMany.summary!, /Accepting it fails: tests\.qualify is a whole number from 0 to 4\.$/);
+    // Opened with enough ready tests on file: no danger, and the change named; short of them, refused.
+    const ready = row({ paySats: 10, open: false, readyTests: 10, tests: tested.tests! });
+    const opened = typeCard({ name: "pet-match", app: "workers", open: true }, { existing: ready });
+    assert.equal(field(opened, "What changes")!.value, "who takes it: invite-only → open");
+    assert.deepEqual(field(opened, "Who takes it"), { label: "Who takes it", value: "open: any signed-in worker of workers who is not suspended or banned, with no grant, after qualifying on 10 tests" });
+    assert.match(field(typeCard({ name: "pet-match", app: "workers", open: true }, { existing: { ...ready, readyTests: 7 } }), "Who takes it")!.value, /^refused: .*needs 10 ready tests and has 7, 3 short/);
     // A cut in pay is no danger; unchanged, the card says so.
     const cut = typeCard({ name: "pet-match", app: "workers", paySats: 5 }, { existing: was });
     assert.equal(field(cut, "Pay")!.danger, undefined);
@@ -283,10 +307,10 @@ describe("task/set-type on a strut: the builder asks, an admin says yes", () => 
   };
   const types = async () => ((await (await strut.app.request("/tasks/types", { headers: auth })).json()) as { types: TaskType[] }).types;
 
-  it("task/types lists what is there: each type with its app, shape, on or off, pay, its open tasks, how many hold it and its week — never who", async () => {
+  it("task/types lists what is there: each type with its app, shape, on or off, open or invite-only, pay, its open tasks, how many hold it, its week and its ready tests — never who", async () => {
     assert.deepEqual(await step("task/types").run({}, ctx()), { types: [] });
     const cap = strut.tasks.capability;
-    await cap.setType("pet-match", { app: "workers", answer: MATCH, paySats: 21 }, "ada");
+    await cap.setType("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 21 }, "ada");
     await cap.setType("boxes", { app: "workers", answer: BOX, enabled: false }, "ada");
     await cap.grant("w1", "pet-match", "ada");
     await cap.grant("w2", "pet-match", "ada");
@@ -296,11 +320,11 @@ describe("task/set-type on a strut: the builder asks, an admin says yes", () => 
 
     const listed = ((await step("task/types").run({}, ctx())) as { types: TaskTypeRow[] }).types;
     const pets = listed.find((t) => t.name === "pet-match")!;
-    assert.deepEqual([pets.app, pets.enabled, pets.paySats, pets.open, pets.workers, pets.answeredWeek], ["workers", true, 21, 1, 2, 1]);
+    assert.deepEqual([pets.app, pets.enabled, pets.open, pets.paySats, pets.openTasks, pets.workers, pets.answeredWeek, pets.readyTests], ["workers", true, false, 21, 1, 2, 1, 0]);
     assert.deepEqual(pets.answer, MATCH);
     assert.equal("changedBy" in pets, false, "who saved it is the staff's to read");
     const boxes = listed.find((t) => t.name === "boxes")!;
-    assert.deepEqual([boxes.enabled, boxes.open, boxes.workers, boxes.answeredWeek], [false, 0, 0, 0]);
+    assert.deepEqual([boxes.enabled, boxes.open, boxes.openTasks, boxes.workers, boxes.answeredWeek], [false, true, 0, 0, 0]);
     assert.ok(!JSON.stringify(listed).includes("w1") && !JSON.stringify(listed).includes("w2"), "no worker named");
   });
 
@@ -348,13 +372,22 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.match(String(bad), /^Error: invalid input for "task\/set-type": [\s\S]*"answer: schema\.properties\.x: \\"format\\" is not a keyword strut checks/);
     assert.deepEqual(await proposals(), []);
 
-    const out = (await ask({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10, rationale: "Low-confidence matches go to a person." })) as { proposal: string; status: string; title: string };
+    // Ruling 9: a new paid type left open — the card's danger, and the admin's yes fails, nothing saved.
+    const open = (await ask({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10 })) as { proposal: string };
+    const openRec = await record(open.proposal);
+    assert.equal(openRec.card?.fields.find((f) => f.label === "Who takes it")?.danger, true);
+    const failed = await decide(open.proposal, { cookie: await signIn("ada", "admin") });
+    assert.equal(failed.body.status, "failed");
+    assert.match(String(failed.body.result?.error), /needs_tests: task type pet-match is paid and open/);
+    assert.deepEqual(await types(), []);
+
+    const out = (await ask({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, rationale: "Low-confidence matches go to a person." })) as { proposal: string; status: string; title: string };
     assert.equal(out.status, "pending");
     assert.equal(out.title, "New task type pet-match");
     const rec = await record(out.proposal);
     assert.equal(rec.step, "task/set-type");
     assert.equal(rec.approver, "admin");
-    assert.deepEqual(rec.input, { name: "pet-match", app: "workers", answer: MATCH, paySats: 10 });
+    assert.deepEqual(rec.input, { name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10 });
     assert.equal(rec.card?.actions.accept, "Save type");
     // No app named workers here: a danger on the card.
     assert.deepEqual(rec.card?.fields.find((f) => f.label === "Drawn by"), { label: "Drawn by", value: "workers — no app workers on this server", danger: true });
@@ -378,12 +411,13 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     const [saved] = await types();
     assert.deepEqual([saved!.name, saved!.app, saved!.paySats, saved!.enabled, saved!.leaseSeconds, saved!.changedBy], ["pet-match", "workers", 10, true, 600, "ada"]);
     assert.deepEqual(saved!.answer, MATCH);
-    await assert.rejects(taskTypes().save("pet-match", { app: "workers", answer: MATCH, paySats: 10 }, { proposal: out.proposal }), /set_type_needs_admin: .*is applied/);
+    assert.equal(saved!.open, false);
+    await assert.rejects(taskTypes().save("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 10 }, { proposal: out.proposal }), /set_type_needs_admin: .*is applied/);
   });
 
   it("a change is merged over the type, the admin's edits merged and checked again; it grants no worker; the card never shows a test's expected answer", async () => {
     const cap = strut.tasks.capability;
-    await cap.setType("pet-match", { app: "workers", answer: MATCH, paySats: 10, holdHours: 24, withinHours: 48, tests: { qualify: 0 } }, "ada");
+    await cap.setType("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 10, holdHours: 24, withinHours: 48, tests: { qualify: 0 } }, "ada");
     // A test of the type, its expected answer the secret.
     await strut.tasks.tests.create({ type: "pet-match", show: { lost: "a.jpg" }, expected: { same: true, note: SECRET } }, "ada");
     await cap.grant("w1", "pet-match", "ada");

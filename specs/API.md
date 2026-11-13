@@ -4871,7 +4871,10 @@ item. A task type may also mix TESTS among its tasks — tasks whose answer
 staff know — to qualify and score its workers (`plans/human-steps.md` §7;
 "Tests, grading and standing" below) — and let a `human` step ask several
 workers, settling when enough agree ("Copies" below). Staff mark each
-answer `ok` or `rejected` after the fact ("Review" below).
+answer `ok` or `rejected` after the fact ("Review" below). A task type is
+OPEN by default: any signed-in worker who is not suspended or banned takes
+its tasks with no grant from staff, and staff may make one invite-only
+("Open task types" below).
 
 ### The worker's steps — through an app's `step_run`
 
@@ -4896,7 +4899,9 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 - **`task/next`** leases the oldest open task of a type the worker holds a
   live grant for that THIS app draws (the type's `app` is the calling
   app's name), or of `type` alone — refused `wrong_app` for a type another
-  app draws. The worker's own live lease comes back as it is (a page that
+  app draws. An OPEN type of this app the worker never held (asked by name,
+  or any with no `type`) is entered first: the ask records their grant
+  ("Open task types" below). The worker's own live lease comes back as it is (a page that
   reloads gets its task again); a live lease of a type not asked for is
   `lease_held`. `expires` is epoch ms; `answer` is the type's answer
   schema; `files` the paths the `human` step named. `wait` (seconds, 0 to
@@ -4923,7 +4928,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   the run's artifacts).
 - **`task/me`**: the first call of an actor the store has not seen writes
   them as a `new` worker. `types` are those they hold that this app draws,
-  each with what an answer earns now (`payMsat`) and whether they are
+  then this app's open types they may enter (none for a suspended or banned
+  worker; only reading, so nothing is recorded), each with what an answer earns now (`payMsat`) and whether they are
   `qualifying` for it: every task they get of it is a test until they
   qualify, so tasks arrive at once (a flag, never a score). `balance` is what they
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
@@ -4935,8 +4941,10 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   `wrong_app`.
 
 Refusals are step errors whose message begins with a code: `not_active`
-(the worker is `new`, `suspended` or `banned`: only `task/me` answers),
-`not_granted`, `wrong_app`, `lease_held`, `no_lease` (not the caller's),
+(the worker is `suspended` or `banned`, or `new` with nothing they may
+enter here: only `task/me` answers), `not_granted` (a type they do not
+hold: invite-only, revoked, or a paid open type short of tests for a
+newcomer — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
 `lease_closed`, `lease_expired`, `task_closed`, `bad_answer`,
 `not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`.
 
@@ -4962,20 +4970,20 @@ with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
 `bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
 `unknown_task`, `unknown_test`, `not_listed`, `no_file`, `no_answer`),
-`409` (`in_use`, `released`, `final`); `501 not_available` for the
+`409` (`in_use`, `released`, `final`, `needs_tests`); `501 not_available` for the
 take-back, the review, the test routes, the queue and a task's file on a
 server whose task store is its host's (which answers none of them).
 
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold, no tests, no copies) |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies). A PAID open type needs its tests on, `tests.qualify` (K) at least 1 and K ready tests: else `409 needs_tests`, its message naming the shortfall ("Open task types") |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
 | `GET /tasks/workers/:actor` | `{ worker: WorkerRecord, holding?, week, recent }`: the same for one worker, with their live lease (`{ lease, task, type, expires }`), what they did of the leases taken in the last 7 days by type (`{ [type]: { answered, skipped, lost } }`, `lost` a lease that ran out) and their newest 50 leases (`[{ lease: Lease, task: { id, type, workflow, runId, status, test? } }]`, an answer's lease with its `review`); `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
-| `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
+| `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. The only way back into a type whose grant was revoked, open or not. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
 | `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
@@ -4990,6 +4998,7 @@ server whose task store is its host's (which answers none of them).
   "app": "workers",                 // the app that draws it
   "answer": { "type": "object", "properties": { "same": { "type": "boolean" } }, "required": ["same"] },
   "leaseSeconds": 600, "withinHours": 72, "enabled": true,
+  "open": true,                     // any signed-in worker takes it, no grant; false: invite-only. True for a type saved before it existed
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
   "holdHours": 72,                  // how long an earning waits before it can be withdrawn
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
@@ -5011,7 +5020,8 @@ server whose task store is its host's (which answers none of them).
   "actor": "p256:02ab…", "status": "active",  // new | active | suspended | banned
   "firstSeen": 1762948800000, "changedAt": 1762948900000, "changedBy": "admin-1", "note": "…",
   "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000, "qualify": 10
-               /*, "revokedAt", "revokedBy", "why" */ }],   // revokedBy "standing" when standing revoked it
+               /*, "revokedAt", "revokedBy", "why" */ }],   // revokedBy "standing" when standing revoked it;
+                                                         // by "open" when the worker's first ask of an open type recorded it
   "balance": { "totalMsat": 21000, "heldMsat": 21000, "withdrawableMsat": 0, "nextReleaseAt": 1763208000000 },
   "standing": {                     // per live grant of a type with tests
     "pet-match": { "qualifying": false, "qualify": 10, "window": 20, "graded": 14, "passed": 13,
@@ -5061,6 +5071,7 @@ server whose task store is its host's (which answers none of them).
     "granted": 4,          // workers holding a live grant
     "holding": 1,          // live leases of the type
     "asking": 2,           // workers whose page holds a task/next waiting
+    "readyTests": 10,      // its ready tests, not retired: what a paid open type's K is held to
     "appProblem": "app workers does not grant task/submit: its page cannot answer this type's tasks",  // absent when the app is fine
     "windows": {           // the last hour, day and week
       "hour": { "answered": 4, "expired": 0, "cancelled": 0, "disputed": 0, "skipped": 1, "leasesLost": 0,
@@ -5082,6 +5093,44 @@ server whose task store is its host's (which answers none of them).
   "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000,
                "takenBack": 1762952600000, "takenBackWhy": "the wrong dog", "takenBackBy": "admin-1" } }
 ```
+
+### Open task types (`plans/human-steps.md` ruling 9)
+
+- **Open by default.** A type is `open` unless staff save it `open: false`
+  (invite-only); a type saved before the field existed is open. Any
+  signed-in worker of its app who is not `suspended` or `banned` takes its
+  tasks with no grant from staff, a `new` one included.
+- **The first ask records a grant.** A worker's `task/next` that reaches an
+  open, enabled type they have NO grant row for (named, or any of the
+  app's with no `type`) records one, `by: "open"`, with `qualify` the
+  type's K at that moment — as a staff grant records it: K when the type
+  has K ready tests, else 0 — and a `new` worker becomes `active` (counted
+  per worker from then on, "Budgets"). Qualifying, standing, the automatic
+  revoke and review then work on it unchanged ("Tests, grading and
+  standing", "Review"). `task/me` only reads: it lists the open types the
+  worker may enter (`qualifying` when they would qualify first) and
+  records nothing.
+- **A revoke sticks.** A revoked grant — by standing, by staff, or by the
+  type's deletion — is never made live again by "open": only `PUT
+  /tasks/workers/:actor/grants/:type` does. `task/next` by name answers
+  `not_granted` saying so.
+- **Invite-only.** `open: false`: a worker takes it only with a staff
+  grant, as before (`not_active` for a `new` worker, `not_granted` for an
+  active one).
+- **A paid open type qualifies every newcomer.** Signing in proves nothing
+  about a person, so a PAID open type (`paySats` > 0) needs its tests on,
+  `tests.qualify` (K) at least 1 and at least K READY tests (not retired,
+  every file in place) when it is saved — else `409 needs_tests`, whose
+  message says what is short and the way out: save it invite-only or
+  unpaid until the tests are ready, then open it. So a new paid type is
+  saved invite-only first: its tests need the type. An unpaid open type
+  needs no tests.
+- **Short of tests later.** When a paid open type's ready tests fall under
+  K after it was saved (one retired), it takes NO newcomer until they are
+  back: a worker with no grant of it is treated as for an invite-only type
+  and told why (`not_granted`, or `not_active` for a `new` worker: "takes
+  new workers while it has K ready tests … ask again later"), and
+  `task/me` does not offer it. A worker already in keeps their grant.
 
 ### Pay (`plans/human-steps.md` §8.1)
 
@@ -5305,8 +5354,8 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/types` | `{}` | `{ types: [TaskType less changedBy, plus open?, workers?, answeredWeek?] }`: each type, its open tasks (`open`), how many workers hold it (`workers`, a count: who is the staff's to read) and its answers in the last 7 days (`answeredWeek`). The three counts are absent on a server whose task store is its host's and answers no queue |
-| `task/set-type` | `{ name, app, answer?, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/types` | `{}` | `{ types: [TaskType less changedBy, plus openTasks?, workers?, answeredWeek?, readyTests?] }`: each type (`open`: open or invite-only), its open tasks (`openTasks`), how many workers hold it (`workers`, a count: who is the staff's to read), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`). The four counts are absent on a server whose task store is its host's and answers no queue |
+| `task/set-type` | `{ name, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
 
 - **Only as a proposal an admin accepted** (`approver: "admin"`, as
   `package/install`): a direct call, a workflow's step, `meta/run-step`
@@ -5325,6 +5374,10 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   default; `tests` and `copies` objects merge over the type's own rules (or
   the defaults), and `null` turns them off. A new type needs `answer`
   (`bad_request:` on accept otherwise; the card says so first).
+- **Open unless asked otherwise.** A new type left without `open` is open
+  ("Open task types"), so a new PAID type must be asked for `open: false`:
+  it has no tests yet, and accepting it open fails `needs_tests:` — the
+  card says so first.
 - **What it cannot do.** It grants no worker, deletes no type and changes
   no worker: those are an admin's, in `strut/staff` (§14.15).
 - **Seeds.** Only the `builder` workflow grants `task/types` and
@@ -5338,10 +5391,13 @@ is "New task type <name>", "Change task type <name>" or "Turn off task type
 does not grant `task/next` and `task/submit`, the queue's `appProblem`),
 **The answer** (one line per field — `same ("The same pet?"): yes or no,
 required` — or "needs the app's own view" with the schema, when it is not a
-form `TaskForm` draws), **Lease**, **Expires after**, **On**; for a change,
+form `TaskForm` draws), **Lease**, **Expires after**, **On**, **Who takes
+it** (open or invite-only; a paid open type short of ready tests is a
+danger, "refused:" with the shortfall); for a change,
 **What changes** (each field before and after) and **Open tasks** (with a
 new shape, that their answers are checked against it); **Workers** (how
-many hold it); **Pay** (sats and dollars at the rate, held how long, and
+many hold it; a new open type's, that a worker holds it from their first
+ask); **Pay** (sats and dollars at the rate, held how long, and
 what the last week's answers would have cost; a RISE is a danger);
 **Tests** and **Copies** (their settings; a merge the save would refuse is
 a danger). It reads a type's rules, never a test: no expected answer is on

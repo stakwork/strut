@@ -23,7 +23,9 @@
  * Copies (plans/human-steps.md §7.6, item 4b) use version 2's columns and
  * add one, `leases.agrees` (whether a copy's answer agreed, once its task
  * was decided), the way pay's were added: `ADD COLUMN` when the file lacks
- * it, `user_version` still 2.
+ * it, `user_version` still 2. *
+ * Open types (plans/human-steps.md ruling 9) add `task_types.invite_only`
+ * the same way: null or 0 is open, so a type on file from before is open.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -112,7 +114,8 @@ create table if not exists task_types (
   pay_msat integer,
   hold_hours real,
   tests text,
-  copies text
+  copies text,
+  invite_only integer
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -168,6 +171,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["task_types", "hold_hours", "real"],
   ["task_types", "tests", "text"],
   ["task_types", "copies", "text"],
+  ["task_types", "invite_only", "integer"],
   ["leases", "pay_msat", "integer"],
   ["leases", "booked_at", "integer"],
   ["leases", "answer", "text"],
@@ -238,11 +242,12 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
-           pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies`,
+           pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
+           invite_only = excluded.invite_only`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -465,6 +470,7 @@ export class SqliteTaskStore implements TaskStore {
         t.holdHours,
         t.tests ? JSON.stringify(t.tests) : null,
         t.copies ? JSON.stringify(t.copies) : null,
+        t.open === false ? 1 : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -938,6 +944,7 @@ function typeOf(r: Row): TaskType {
     leaseSeconds: r.lease_seconds as number,
     withinHours: r.within_hours as number,
     enabled: r.enabled === 1,
+    open: !opt<number>(r.invite_only),
     holdHours: opt<number>(r.hold_hours) ?? DEFAULT_HOLD_HOURS,
     changedAt: r.changed_at as number,
   };

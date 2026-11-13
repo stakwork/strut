@@ -91,7 +91,7 @@ async function staff(strut: Strut, o: { withinHours?: number; paySats?: number }
     app: "workers",
     answer: MATCH,
     ...(o.withinHours === undefined ? {} : { withinHours: o.withinHours }),
-    ...(o.paySats === undefined ? {} : { paySats: o.paySats }),
+    ...(o.paySats === undefined ? {} : { open: false, paySats: o.paySats }),
   });
   await t.grant(WORKER, TYPE);
 }

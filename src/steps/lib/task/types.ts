@@ -13,8 +13,8 @@ export default defineStep({
   type: "task/types",
   effect: "read",
   description:
-    "The task types on this strut server — what a workflow's `human` step names in `task` — each with its app, answer shape (a JSON Schema), lease (leaseSeconds), expiry (withinHours), on or off (enabled), pay (paySats, holdHours), tests and copies, " +
-    "its open tasks (`open`), how many workers hold it (`workers`) and its answers in the last 7 days (`answeredWeek`). Answers { types }. Ask for a new type or a change with task/set-type.",
+    "The task types on this strut server — what a workflow's `human` step names in `task` — each with its app, answer shape (a JSON Schema), lease (leaseSeconds), expiry (withinHours), on or off (enabled), open to any signed-in worker or invite-only (open), pay (paySats, holdHours), tests and copies, " +
+    "its open tasks (`openTasks`), how many workers hold it (`workers`), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`: a paid open type needs at least tests.qualify of them). Answers { types }. Ask for a new type or a change with task/set-type.",
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx: StepContext<StrutCapabilities>) {

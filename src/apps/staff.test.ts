@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  fmtWhen, inputOf, leaseOutcome, owedLine, placeOf, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, openPayHint, owedLine, placeOf, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -109,11 +109,11 @@ describe("strut/staff: the answer's shape in the type editor", () => {
 
 describe("strut/staff: the type editor's draft", () => {
   const type: TaskType = {
-    name: "pets", app: "workers", answer: MATCH as never, leaseSeconds: 900, withinHours: 48, enabled: false, paySats: 20, holdHours: 24,
+    name: "pets", app: "workers", answer: MATCH as never, leaseSeconds: 900, withinHours: 48, enabled: false, open: false, paySats: 20, holdHours: 24,
     tests: { rate: 0.1, newRate: 0.3, newTasks: 40, qualify: 5, window: 10, minGraded: 5, threshold: 0.7, grade: { step: "grade/judge", config: { rubric: "same pet" } }, gradeCapUsd: 0.02 },
     copies: { max: 3, agree: 2, compare: "equal", onDisagree: "fail" }, changedAt: 0,
   };
-  const all = { pay: true, tests: true, copies: true };
+  const all = { pay: true, tests: true, copies: true, open: true };
 
   it("a type to a draft and back is the type, every part kept", () => {
     const out = saveOf(draftOf(type), all, type);
@@ -127,7 +127,10 @@ describe("strut/staff: the type editor's draft", () => {
   it("a part the page does not show is sent back as it was, never dropped by the whole-type PUT", () => {
     const out = saveOf(draftOf(type), { pay: false, tests: false, copies: false }, type);
     assert.ok("input" in out);
-    assert.deepEqual([out.input["paySats"], out.input["holdHours"], out.input["tests"], out.input["copies"]], [20, 24, type.tests, type.copies]);
+    assert.deepEqual([out.input["paySats"], out.input["holdHours"], out.input["tests"], out.input["copies"], out.input["open"]], [20, 24, type.tests, type.copies, false]);
+    // A server from before open types: no choice shown, and nothing sent, so its own default holds.
+    const { open: _o, ...older } = type;
+    assert.equal("open" in (saveOf(draftOf(older), { pay: true, tests: true, copies: true }, older) as { input: Record<string, unknown> }).input, false);
   });
 
   it("tests and copies turned off are sent as null; a new type starts from the store's defaults; a changed shape is seen", () => {
@@ -136,7 +139,7 @@ describe("strut/staff: the type editor's draft", () => {
     assert.ok("input" in out);
     assert.deepEqual([out.input["tests"], out.input["copies"]], [null, null]);
     const fresh = draftOf();
-    assert.deepEqual([fresh.leaseMinutes, fresh.withinHours, fresh.holdHours, fresh.enabled, fresh.testsOn], ["10", "72", "72", true, false]);
+    assert.deepEqual([fresh.leaseMinutes, fresh.withinHours, fresh.holdHours, fresh.enabled, fresh.testsOn, fresh.open], ["10", "72", "72", true, false, true], "a new type open, as the store's default");
     assert.match((saveOf(fresh, all) as { problem: string }).problem, /pick the app/);
     assert.equal(shapeChanged(type, { required: ["same"], properties: MATCH.properties, type: "object" } as never), false, "key order is not a change");
     assert.equal(shapeChanged(type, { type: "boolean" } as never), true);
@@ -197,14 +200,15 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
   it("items 4 and 5a show only when the server answers for them", () => {
     const plain: TaskType = { name: "a", app: "w", answer: { type: "boolean" } as never, leaseSeconds: 600, withinHours: 72, enabled: true, changedAt: 0 };
     const worker: Worker = { actor: "w1", status: "active", firstSeen: 0, changedAt: 0, grants: [] };
-    // A host's own store: no test routes, no pay on its types, no balance or standing on its workers.
-    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false });
+    // A host's own store: no test routes, no pay on its types, no balance or standing on its workers, no open on its types.
+    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false, open: false });
     // This strut, before anything is tested or paid: the sections, not the empty columns.
-    const here = shownOf({ types: [{ ...plain, holdHours: 72 }], workers: [{ ...worker, balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true });
+    const here = shownOf({ types: [{ ...plain, holdHours: 72, open: true }], workers: [{ ...worker, balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
+    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true, open: true });
     // A tested, paid type: the columns too.
-    const busy = shownOf({ types: [{ ...plain, holdHours: 72, paySats: 5, tests: { qualify: 1 } as never }], workers: [{ ...worker, balance: { totalMsat: 5000, heldMsat: 5000, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true });
+    const busy = shownOf({ types: [{ ...plain, holdHours: 72, open: false, paySats: 5, tests: { qualify: 1 } as never }], workers: [{ ...worker, balance: { totalMsat: 5000, heldMsat: 5000, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
+    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true, open: true });
+    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes" }).open, true, "no type yet: the choice is shown for the first");
     assert.equal(testsAnswerOf({ error: new Error("step_run: not_available: this server's task store is its host's") }), "no");
     assert.equal(testsAnswerOf({ error: new Error("network") }), "unknown");
     assert.equal(testsAnswerOf({ data: { tests: [] } }), "yes");
@@ -218,6 +222,20 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
       short: false,
     });
     assert.equal(owedLine({ workers: workers(20_000), wallet: { balance: { msat: 5_000 }, coverMsat: -15_000 } })!.short, true);
+  });
+
+  it("an open grant and a paid open type's shortfall, in words (ruling 9)", () => {
+    assert.equal(grantedBy({ by: "ada" }), "by ada");
+    assert.equal(grantedBy({ by: "open" }), "by themselves: the type is open");
+    assert.equal(liveTypesText({ grants: [{ type: "a", at: 0, by: "open" }, { type: "b", at: 0, by: "ada" }, { type: "c", at: 0, by: "open", revokedAt: 1 }] }), "a (open), b");
+    const paid = { open: true, paySats: 5, testsOn: true, qualify: 10 };
+    assert.equal(openPayHint(paid, 10), null);
+    assert.match(openPayHint(paid, 7)!, /needs 10 ready tests to qualify newcomers on and has 7/);
+    assert.match(openPayHint({ ...paid, testsOn: false }, 0)!, /turn tests on/);
+    assert.match(openPayHint({ ...paid, qualify: 0 }, 9)!, /qualify to 1 or more/);
+    assert.equal(openPayHint({ ...paid, open: false }, 0), null, "invite-only");
+    assert.equal(openPayHint({ ...paid, paySats: 0 }, 0), null, "unpaid");
+    assert.equal(openPayHint(paid, undefined), null, "not counted here: the server says");
   });
 
   it("who a worker is, their standing in a cell, a lease's outcome, the list's order", () => {
@@ -418,7 +436,7 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
 
   it("an admin's page: saves a type, grants as the admin, reads the queue, the workers, a task with its run and its file", async () => {
     const admin = page(signIn("ada", "admin"));
-    const saved = await admin("staff/save-type", { name: "pets", app: "workers", answer: MATCH, paySats: 10, holdHours: 24, copies: { max: 3, agree: 2 } });
+    const saved = await admin("staff/save-type", { name: "pets", app: "workers", answer: MATCH, open: false, paySats: 10, holdHours: 24, copies: { max: 3, agree: 2 } });
     assert.equal(saved.error, undefined, saved.error);
     assert.equal(saved.result.type.changedBy, "ada", "the admin who did it");
     // A worker signs in and is seen; the admin grants them.

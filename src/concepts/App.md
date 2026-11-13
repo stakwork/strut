@@ -506,8 +506,9 @@ grants:
 
 The worker is always the page's signed-in viewer: the steps read it from
 the session, never from the page. `useWorker()` is who they are here —
-`status` (`new` until an admin grants them a type; `active` takes tasks;
-`suspended`, `banned`), the `types` they hold in this app (each with
+`status` (`new` until they take up an open type or an admin grants them
+one; `active` takes tasks; `suspended`, `banned`), the `types` they hold
+or may take up in this app (an open type needs no grant; each with
 `payMsat`, what an answer earns, and `qualifying` — true while every task
 of that type they get is a test they qualify on: say so on the page, since
 those arrive at once and no score is shown) and their `balance` — `{ heldMsat,

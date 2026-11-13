@@ -26,7 +26,7 @@ import type { CardField, ProposalDescription } from "../core.js";
 import type { Proposal } from "../proposals.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
-import { RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
+import { openPayProblem, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
 import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
@@ -83,6 +83,13 @@ export const typeChangeInput = z.object({
   leaseSeconds: z.number().int().min(1).max(LEASE_SECONDS_MAX).optional().describe("How long a worker holds a task once taken, in seconds (600 for a new type)."),
   withinHours: z.number().positive().max(WITHIN_HOURS_MAX).optional().describe("How long a task may wait unanswered before it expires, in hours (72 for a new type); a `human` step may set its own."),
   enabled: z.boolean().optional().describe("false turns the type off: no new task of it, and its open tasks are not handed out and expire when due."),
+  open: z
+    .boolean()
+    .optional()
+    .describe(
+      "true (a new type's default): any signed-in worker of the app who is not suspended or banned takes its tasks with no grant, qualifying first on its tests when it has them. false: invite-only, an admin grants each worker. " +
+        "A PAID open type needs its tests on and at least `tests.qualify` (10 by default) of them ready, or the save is refused: make a new paid type invite-only, or unpaid, until an admin has made its tests.",
+    ),
   paySats: z
     .number()
     .min(0)
@@ -112,9 +119,9 @@ export type TypeFields = Omit<TypeChange, "name">;
 
 /** One type as `list()` reads it: the type, without who saved it last
  *  (who is the staff's to read), with its open tasks, how many workers hold
- *  it and its answers in the last 7 days — where the store counts them (a
- *  host's own store may not). */
-export type TaskTypeRow = Omit<TaskType, "changedBy"> & { open?: number; workers?: number; answeredWeek?: number };
+ *  it, its answers in the last 7 days and its ready tests — where the store
+ *  counts them (a host's own store may not). */
+export type TaskTypeRow = Omit<TaskType, "changedBy" | "open"> & { open?: boolean; openTasks?: number; workers?: number; answeredWeek?: number; readyTests?: number };
 
 /** `ctx.services.taskTypes` (plans/human-steps.md §9.2, §9.8). */
 export interface TaskTypesCapability {
@@ -143,7 +150,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 /** `change` merged over `existing` (ruled, §9.12): what is left out keeps
  *  its value; `tests` and `copies` merge over the type's own rules, `null`
  *  turns them off. A new type needs `answer` (`bad_request`). */
-export function mergeType(name: string, existing: Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies"> | undefined, change: TypeFields): TaskTypeInput {
+export function mergeType(
+  name: string,
+  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies"> & { open?: boolean }) | undefined,
+  change: TypeFields,
+): TaskTypeInput {
   const answer = change.answer !== undefined ? change.answer : existing?.answer;
   if (answer === undefined) throw new TaskError("bad_request", `task type ${name} is new: it needs answer, the shape of its answer`);
   const rules = <T extends object>(was: T | undefined, given: Record<string, unknown> | null | undefined): Partial<T> | null | undefined =>
@@ -152,6 +163,7 @@ export function mergeType(name: string, existing: Pick<TaskType, "app" | "answer
   const leaseSeconds = change.leaseSeconds ?? existing?.leaseSeconds;
   const withinHours = change.withinHours ?? existing?.withinHours;
   const enabled = change.enabled ?? existing?.enabled;
+  const open = change.open ?? existing?.open;
   const paySats = change.paySats ?? existing?.paySats;
   const holdHours = change.holdHours ?? existing?.holdHours;
   const tests = rules<TestRules>(existing?.tests, change.tests);
@@ -159,6 +171,7 @@ export function mergeType(name: string, existing: Pick<TaskType, "app" | "answer
   if (leaseSeconds !== undefined) out.leaseSeconds = leaseSeconds;
   if (withinHours !== undefined) out.withinHours = withinHours;
   if (enabled !== undefined) out.enabled = enabled;
+  if (open !== undefined) out.open = open;
   if (paySats !== undefined) out.paySats = paySats;
   if (holdHours !== undefined) out.holdHours = holdHours;
   if (tests !== undefined) out.tests = tests;
@@ -176,7 +189,10 @@ export function createTaskTypes(deps: TaskTypesDeps): TaskTypesCapability {
       return types.map((t) => {
         const { changedBy: _who, ...type } = t;
         const s = counted.get(t.name);
-        return { ...type, ...(s ? { open: s.waiting + s.working, workers: s.granted, answeredWeek: s.windows.week.answered } : {}) };
+        return {
+          ...type,
+          ...(s ? { openTasks: s.waiting + s.working, workers: s.granted, answeredWeek: s.windows.week.answered, ...(s.readyTests === undefined ? {} : { readyTests: s.readyTests }) } : {}),
+        };
       });
     },
 
@@ -220,6 +236,7 @@ interface Planned {
   leaseSeconds: number;
   withinHours: number;
   enabled: boolean;
+  open: boolean;
   paySats: number;
   holdHours: number;
   tests?: TestRules;
@@ -232,14 +249,23 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   leaseSeconds: t.leaseSeconds,
   withinHours: t.withinHours,
   enabled: t.enabled,
+  open: t.open ?? true,
   paySats: t.paySats ?? 0,
   holdHours: t.holdHours,
   ...(t.tests ? { tests: t.tests } : {}),
   ...(t.copies ? { copies: t.copies } : {}),
 });
 
-function plan(name: string, existing: TaskTypeRow | undefined, change: TypeFields): { planned: Planned; problems: { answer?: string; tests?: string; copies?: string } } {
-  const problems: { answer?: string; tests?: string; copies?: string } = {};
+interface Problems {
+  answer?: string;
+  tests?: string;
+  copies?: string;
+  /** Ruling 9: paid and open with too few ready tests (`openPayProblem`). */
+  open?: string;
+}
+
+function plan(name: string, existing: TaskTypeRow | undefined, change: TypeFields): { planned: Planned; problems: Problems } {
+  const problems: Problems = {};
   let merged: TaskTypeInput;
   try {
     merged = mergeType(name, existing, change);
@@ -258,6 +284,12 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   const tests = rule("tests", () => testRulesOf(merged.tests, shapeOnly));
   const copies = rule("copies", () => copiesRuleOf(merged.copies, shapeOnly));
   const pay = merged.paySats && merged.paySats > 0 ? Math.round(merged.paySats * 1000) / 1000 : 0;
+  // A new type has no tests yet; a host's store that counts none is not checked here.
+  const ready = existing ? existing.readyTests : 0;
+  if (!problems.tests && ready !== undefined) {
+    const short = openPayProblem({ name, open: merged.open ?? true, paySats: pay, ...(tests ? { tests } : {}) }, ready);
+    if (short) problems.open = short;
+  }
   return {
     planned: {
       app: merged.app,
@@ -265,6 +297,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       leaseSeconds: merged.leaseSeconds ?? DEFAULT_LEASE_SECONDS,
       withinHours: merged.withinHours ?? DEFAULT_WITHIN_HOURS,
       enabled: merged.enabled ?? true,
+      open: merged.open ?? true,
       paySats: pay,
       holdHours: merged.holdHours ?? DEFAULT_HOLD_HOURS,
       ...(tests ? { tests } : {}),
@@ -401,6 +434,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     if (before.leaseSeconds !== after.leaseSeconds) changes.push(`lease: ${secondsText(before.leaseSeconds)} → ${secondsText(after.leaseSeconds)}`);
     if (before.withinHours !== after.withinHours) changes.push(`expires after: ${plural(before.withinHours, "hour")} → ${plural(after.withinHours, "hour")}`);
     if (before.enabled !== after.enabled) changes.push(after.enabled ? "turned on" : "turned off");
+    if (before.open !== after.open) changes.push(after.open ? "who takes it: invite-only → open" : "who takes it: open → invite-only");
     if (before.paySats !== after.paySats) changes.push(`pay: ${before.paySats ? satsText(before.paySats) : "unpaid"} → ${after.paySats ? satsText(after.paySats) : "unpaid"}`);
     if (before.holdHours !== after.holdHours) changes.push(`hold: ${plural(before.holdHours, "hour")} → ${plural(after.holdHours, "hour")}`);
     if (!problems.tests) {
@@ -426,9 +460,19 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   fields.push({ label: "Lease", value: secondsText(after.leaseSeconds) });
   fields.push({ label: "Expires after", value: `${plural(after.withinHours, "hour")} unanswered` });
   fields.push({ label: "On", value: onOff(after.enabled) });
+  fields.push(
+    problems.open
+      ? { label: "Who takes it", value: `refused: ${problems.open}`, danger: true }
+      : {
+          label: "Who takes it",
+          value: after.open
+            ? `open: any signed-in worker of ${after.app} who is not suspended or banned, with no grant${after.tests?.qualify ? `, after qualifying on ${plural(after.tests.qualify, "test")}` : ""}`
+            : "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)",
+        },
+  );
   if (before) {
     fields.push({ label: "What changes", value: changes.length ? changes.join("\n") : "nothing: the type is already so" });
-    const open = existing?.open;
+    const open = existing?.openTasks;
     fields.push({
       label: "Open tasks",
       value:
@@ -445,7 +489,9 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   fields.push({
     label: "Workers",
     value: !existing
-      ? "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)"
+      ? after.open
+        ? "none yet: it is open, so a worker holds it from their first ask for its tasks"
+        : "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)"
       : workers === undefined
         ? "not counted on this server"
         : `${workers} hold it`,
@@ -466,7 +512,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const lines: string[] = [];
   if (!existing) {
     lines.push(`A new task type ${name}, drawn by the app ${after.app}: a \`human\` step that names it makes a task a worker answers there.`);
-    lines.push("It grants it to no worker: an admin does, in Tasks and workers.");
+    lines.push(after.open ? "It is open: any signed-in worker of the app may take its tasks, with no grant." : "It grants it to no worker: an admin does, in Tasks and workers.");
   } else if (turnsOff) {
     lines.push(`Turns off the task type ${name}: a \`human\` step can make no new task of it, and its open tasks are not handed out and expire when due.`);
   } else {
@@ -474,7 +520,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   }
   if (appProblem) lines.push(`Workers cannot answer it yet: ${appProblem}.`);
   if (rises) lines.push(`Its pay rises from ${payBefore ? satsText(payBefore) : "nothing"} to ${satsText(after.paySats)} an answer${dollars(after.paySats)}.`);
-  const fails = problems.answer ?? problems.tests ?? problems.copies;
+  const fails = problems.answer ?? problems.tests ?? problems.copies ?? problems.open;
   if (fails) lines.push(`Accepting it fails: ${fails}.`);
   return { title, summary: lines.join(" "), fields, actions: { accept: "Save type", reject: "Don't" }, full: true };
 }

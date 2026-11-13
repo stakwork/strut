@@ -17,13 +17,16 @@ import { typeCard, typeChangeInput } from "../../../tasks/set-type.js";
  *
  * Its input is merged over the type when there is one, so a field left out
  * keeps its value; a new type needs `answer`. It grants no worker, deletes
- * no type and changes no worker: those are a person's, in `strut/staff`.
+ * no type and changes no worker: those are a person's, in `strut/staff`. A
+ * type is open by default (ruling 9); a paid open type with fewer ready
+ * tests than its K is refused when saved, and the card says so first.
  * Only the `builder` seed grants it (not `job`, not `orchestrator`, not the
  * builder chat, which has no proposals).
  *
  * The CARD (`describe`) says what the type would be: the app that draws it
  * (a danger when it is missing or does not grant task/next and task/submit),
- * the answer one line per field, lease, expiry, on or off, for a change each
+ * the answer one line per field, lease, expiry, on or off, open or
+ * invite-only (refused, a danger, when paid and short of tests), for a change each
  * field before and after, its open tasks and workers, its pay in sats and
  * dollars with what the last week's answers would have cost (a rise is a
  * danger), and its tests and copies settings. It reads no test: no expected
@@ -34,10 +37,10 @@ export default defineStep({
   effect: "write",
   approver: "admin",
   description:
-    "Ask an admin to make or change a TASK TYPE — what a workflow's `human` step names: the app that draws its tasks, the answer's shape, lease, expiry, on or off, pay, tests and copies. " +
+    "Ask an admin to make or change a TASK TYPE — what a workflow's `human` step names: the app that draws its tasks, the answer's shape, lease, expiry, on or off, open or invite-only, pay, tests and copies. " +
     "The call becomes a proposal an ADMIN of this strut server approves on a card that shows the type, what changes, its workers and its pay; strut saves it when they accept, and tells you the result on a later turn. " +
     "Read task/types first: an existing name is CHANGED, the fields you leave out kept as they are; a new name needs `answer`. The app must grant task/next and task/submit. " +
-    "It grants the type to no worker — an admin does, in Tasks and workers (strut/staff); say so in your reply. Put the reason in `rationale`, in the person's terms. " +
+    "A type is OPEN by default: any signed-in worker of the app takes its tasks with no grant. A PAID open type needs at least tests.qualify ready tests (task/types' readyTests), so ask for a new paid type with open: false (invite-only: an admin grants workers in Tasks and workers, strut/staff) and say so in your reply. Put the reason in `rationale`, in the person's terms. " +
     "Never saves on its own: a direct call is refused. When the person is not an admin, the call is refused (admin_required:) — tell them an admin makes task types, and to ask one.",
   input: typeChangeInput,
   output: z.any(),

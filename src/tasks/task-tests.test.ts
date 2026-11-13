@@ -127,7 +127,7 @@ for (const impl of IMPLS) {
 
     /** The type with tests on (§7.8's defaults under `tests`). */
     const typeWith = (tests: Record<string, unknown>, o: { paySats?: number; answer?: unknown; by?: string } = {}) =>
-      tasks().setType(TYPE, { app: "workers", answer: o.answer ?? MATCH, leaseSeconds: 600, withinHours: 48, tests, ...(o.paySats ? { paySats: o.paySats } : {}) }, o.by ?? "staff");
+      tasks().setType(TYPE, { app: "workers", answer: o.answer ?? MATCH, leaseSeconds: 600, withinHours: 48, tests, ...(o.paySats ? { open: false, paySats: o.paySats } : {}) }, o.by ?? "staff");
     let n = 0;
     /** `count` real tasks of one run. */
     const real = async (count = 1, o: { files?: string[] } = {}) => {
@@ -896,7 +896,7 @@ describe("an older tasks.db (§7.7)", () => {
         const t3 = (await svc.capability.ensure({ type: TYPE, workflow: "pets", runId: "r2", path: "pets/c" })).task;
         assert.equal(t3.seq, 3, "seq goes on from the old rows");
         // Version 2 at work: a test and its instance.
-        await svc.capability.setType(TYPE, { app: "workers", answer: MATCH, paySats: 21, holdHours: 24, tests: { qualify: 0, rate: 1, newRate: 1 } }, "staff");
+        await svc.capability.setType(TYPE, { app: "workers", answer: MATCH, open: false, paySats: 21, holdHours: 24, tests: { qualify: 0, rate: 1, newRate: 1 } }, "staff");
         await svc.tests.create({ type: TYPE, expected: YES });
         const got = (await svc.capability.next("ann")) as WorkerTask;
         assert.equal((await svc.capability.list({ test: true }))[0]!.leases[0]!.id, got.lease);

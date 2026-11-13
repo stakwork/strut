@@ -192,7 +192,8 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     ungranted = await tokenOf("plain");
     version = identity.match(/^app:workers@(v\d+)\./)![1]!;
     // The staff's: the type, drawn by the worker app.
-    const put = await staff("PUT", `/tasks/types/${TYPE}`, { app: "workers", answer: MATCH, leaseSeconds: 600 });
+    // Invite-only, as built in #657: open types are the last test's (ruling 9).
+    const put = await staff("PUT", `/tasks/types/${TYPE}`, { app: "workers", answer: MATCH, leaseSeconds: 600, open: false });
     assert.equal(put.status, 200, await put.clone().text());
   });
   after(async () => {
@@ -235,7 +236,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     for (const bad of [{ paySats: -1 }, { paySats: 1_000_001 }, { paySats: 0.0001 }, { holdHours: 0 }, { holdHours: 721 }]) {
       assert.equal((await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, ...bad })).status, 400, JSON.stringify(bad));
     }
-    const put = await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, paySats: 21, holdHours: 1 });
+    const put = await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, open: false, paySats: 21, holdHours: 1 });
     assert.equal(put.status, 200, await put.clone().text());
     const saved = await typeOf(put);
     assert.deepEqual([saved.paySats, saved.holdHours], [21, 1]);
@@ -392,7 +393,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   });
 
   it("task/next with no type returns a task of any type the worker holds in the calling app", async () => {
-    await staff("PUT", "/tasks/types/ballot", { app: "workers", answer: MATCH });
+    await staff("PUT", "/tasks/types/ballot", { app: "workers", answer: MATCH, open: false });
     const w = await signIn();
     await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}/grants/ballot`);
     // Only `ballot` is held: the pets runs' tasks are not this worker's.
@@ -430,6 +431,51 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     assert.deepEqual((await summaryWhen(runId, (s) => s.status === "success")).output, { same: false, by: "ada-1" });
   });
 
+  // After the tests that read `other` as drawing nothing, before the budgets spend the address's requests.
+  it("an open type end to end: a new signed-in visitor's page takes and answers a parked run's task through /public/mcp with no grant (ruling 9)", async () => {
+    // A paid open type with no tests is refused; unpaid, open is the default.
+    const paid = await staff("PUT", "/tasks/types/open-paid", { app: "other", answer: MATCH, paySats: 5 });
+    assert.equal(paid.status, 409);
+    assert.deepEqual(((await paid.json()) as { code: string }).code, "needs_tests");
+    const put = await staff("PUT", "/tasks/types/open-match", { app: "other", answer: MATCH });
+    assert.equal(put.status, 200, await put.clone().text());
+    assert.equal(((await put.json()) as { type: { open: boolean } }).type.open, true);
+    await strut.workspace.publishWorkflowByContent("opened", `name: opened\nsteps:\n  - id: review\n    type: human\n    config:\n      task: open-match\n      show:\n        guess: "{{ input.guess }}"\n`);
+    const res = await req("/workflows/opened/run", { method: "POST", headers: auth, body: JSON.stringify({ input: { guess: "a stray" } }) });
+    assert.equal(res.status, 202, await res.clone().text());
+    const { runId } = (await res.json()) as { runId: string };
+    const until = async (status: string) => {
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const s = await strut.store.getRunSummary("opened", runId);
+        if (s?.status === status) return s;
+        if (Date.now() > deadline) throw new Error(`never ${status}: ${JSON.stringify(s?.status)}`);
+        await sleep(10);
+      }
+    };
+    await until("waiting");
+
+    // A stranger signs in: new, offered the open type, and nobody granted them anything.
+    const w = await signIn();
+    assert.deepEqual(await call(w.token, "task/me", {}, otherIdentity), { result: { actor: w.actor, status: "new", types: [{ name: "open-match", app: "other", payMsat: 0, qualifying: false }], balance: NOTHING } });
+    assert.match((await call(undefined, "task/next", {}, otherIdentity)).error ?? "", /sign in first/, "an anonymous visitor, nothing");
+    const got = (await call(w.token, "task/next", { wait: 1 }, otherIdentity)).result as { lease: string; type: string; show: unknown };
+    assert.deepEqual([got.type, got.show], ["open-match", { guess: "a stray" }]);
+    assert.deepEqual(await call(w.token, "task/submit", { lease: got.lease, answer: { same: true } }, otherIdentity), { result: { ok: true } });
+    const done = await until("success");
+    assert.deepEqual((done.output as { answer: unknown; by: string }).by, w.actor);
+    // Staff see the grant the first ask recorded, by open; the worker is active and counted as one.
+    const seen = (await (await staff("GET", `/tasks/workers/${encodeURIComponent(w.actor)}`)).json()) as { worker: { status: string; grants: Array<{ type: string; by: string }> } };
+    assert.deepEqual([seen.worker.status, seen.worker.grants.map((g) => [g.type, g.by])], ["active", [["open-match", "open"]]]);
+    assert.equal(strut.tasks.isActiveWorker(w.actor), true);
+    // The worker app's own types stay invite-only: nothing of them through `workers`.
+    assert.match((await call(w.token, "task/next", { type: TYPE })).error ?? "", /not_granted: you do not hold task type pet-match: it is invite-only/);
+
+    // Suspended: refused at once, the open type notwithstanding.
+    await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}`, { status: "suspended" });
+    assert.match((await call(w.token, "task/next", {}, otherIdentity)).error ?? "", /not_active: you are suspended/);
+  });
+
   it("an active worker's requests are counted per worker; a new one's per address", async () => {
     const active = await signIn();
     await staff("PUT", `/tasks/workers/${encodeURIComponent(active.actor)}/grants/${TYPE}`);
@@ -463,7 +509,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     }
     assert.equal((await staff("PUT", "/tasks/types/Bad%20Name", { app: "workers", answer: MATCH })).status, 400);
     assert.equal((await staff("PUT", "/tasks/types/acme%2Fbox", { app: "workers", answer: { type: "string", pattern: "x" } })).status, 400);
-    const box = await staff("PUT", "/tasks/types/acme%2Fbox", { app: "workers", answer: MATCH, withinHours: 2 });
+    const box = await staff("PUT", "/tasks/types/acme%2Fbox", { app: "workers", answer: MATCH, withinHours: 2, open: false });
     assert.equal(box.status, 200, await box.clone().text());
     assert.deepEqual(((await box.json()) as { type: { name: string; withinHours: number; changedBy?: string } }).type.name, "acme/box");
     const types = (await (await staff("GET", "/tasks/types")).json()) as { types: Array<{ name: string }> };

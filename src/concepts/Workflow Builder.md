@@ -29,5 +29,9 @@ same turn you publish the workflow that names it, and put why in
 
 The type's `app` is the WORKER APP its tasks are answered in, and it must
 grant the worker's steps — `task/next` and `task/submit` at least; the App
-page's "Worker apps" has the rest. Nobody answers a task until an admin
-grants the type to workers in Tasks and workers: say so in your reply.
+page's "Worker apps" has the rest. A type is OPEN unless you ask for
+`open: false`: anyone signed in to its app takes its tasks with no grant.
+A PAID type can be open only once an admin has made its qualifying tests,
+so ask for a new paid type with `open: false` — then nobody answers its
+tasks until an admin grants it to workers in Tasks and workers — and say
+so in your reply.

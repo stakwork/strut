@@ -34,6 +34,9 @@ export interface TaskType {
   leaseSeconds: number;
   withinHours: number;
   enabled: boolean;
+  /** Ruling 9: open to any signed-in worker (true) or invite-only. Absent on
+   *  a server from before open types, which has no choice to show. */
+  open?: boolean;
   /** 5a: absent when unpaid. `holdHours` is there on a server that pays. */
   paySats?: number;
   holdHours?: number;
@@ -73,6 +76,8 @@ export interface TypeStats {
   granted: number;
   holding: number;
   asking: number;
+  /** Its ready tests (ruling 9: a paid open type needs its K of them). */
+  readyTests?: number;
   windows: Record<StatsWindow, StatsWindowView>;
   appProblem?: string;
 }
@@ -87,6 +92,8 @@ export interface TaskStats {
 
 export interface Grant {
   type: string;
+  /** Who granted it: an admin, or `open` (OPEN_GRANT_BY) when the worker's
+   *  first ask of an open type recorded it (ruling 9). */
   by?: string;
   at: number;
   revokedAt?: number;

@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Lease, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Lease, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests"] as const;
 export type Tab = (typeof TABS)[number];
@@ -117,6 +117,9 @@ export interface Shown {
   /** §9.6: Mark ok and Reject, and the review filter — the server's own
    *  task store, as for tests (a host's answers `not_available` to both). */
   review: boolean;
+  /** Ruling 9: a type's Open / Invite-only choice — every type carries
+   *  `open` (with no type yet, shown). */
+  open: boolean;
 }
 
 export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown" }): Shown {
@@ -130,6 +133,7 @@ export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer
     copies: tests,
     pay,
     review: tests,
+    open: types.every((t) => t.open !== undefined),
     earnings: workers.some((w) => w.balance !== undefined) && (types.some((t) => (t.paySats ?? 0) > 0) || workers.some((w) => (w.balance?.totalMsat ?? 0) > 0)),
   };
 }
@@ -194,6 +198,33 @@ export function shortActor(actor: string): string {
 export function whoOf(w: Pick<Worker, "actor" | "note">): string {
   const first = w.note?.split("\n")[0]?.trim();
   return first ? first : shortActor(w.actor);
+}
+
+/** Who an open type's grant is by (src/tasks/worker-store.ts): the worker's
+ *  own first ask, never an actor. */
+export const OPEN_GRANT_BY = "open";
+
+/** Who granted it, in words: `by ada`, or that the worker took an open type
+ *  up themselves (ruling 9). */
+export function grantedBy(g: Pick<Grant, "by">): string {
+  if (g.by === OPEN_GRANT_BY) return "by themselves: the type is open";
+  return g.by ? `by ${g.by}` : "";
+}
+
+/** A worker's live types, an open grant marked: `pets (open), ballots`. */
+export function liveTypesText(w: Pick<Worker, "grants">): string {
+  return w.grants.filter((g) => g.revokedAt === undefined).map((g) => (g.by === OPEN_GRANT_BY ? `${g.type} (open)` : g.type)).join(", ");
+}
+
+/** Why a PAID OPEN type cannot be saved yet, or null (ruling 9; the
+ *  server's `openPayProblem` decides): tests on, K at least 1, K ready.
+ *  `ready` undefined: not counted here, so nothing is said. */
+export function openPayHint(d: { open: boolean; paySats: number; testsOn: boolean; qualify: number }, ready: number | undefined): string | null {
+  if (!d.open || !(d.paySats > 0) || ready === undefined) return null;
+  if (!d.testsOn) return "Paid and open: a newcomer qualifies on its tests first, so turn tests on and make them ready, or make it invite-only until they are.";
+  if (!(d.qualify >= 1)) return "Paid and open: set Tests to qualify to 1 or more, or make it invite-only.";
+  if (ready < d.qualify) return `Paid and open: it needs ${d.qualify} ready tests to qualify newcomers on and has ${ready}. Make it invite-only until they are ready.`;
+  return null;
 }
 
 /** The live grants first, then the revoked, each by type. */

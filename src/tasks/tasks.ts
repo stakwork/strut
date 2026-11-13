@@ -107,7 +107,7 @@ import {
   type TestRecord,
   type TestRules,
 } from "./task-store.js";
-import { gradeRuleOf, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
+import { gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
@@ -119,6 +119,7 @@ export type { Standing } from "./task-tests.js";
 export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
+export { OPEN_GRANT_BY } from "./worker-store.js";
 
 /** §4.2's defaults. */
 export const DEFAULT_LEASE_SECONDS = 600;
@@ -242,7 +243,8 @@ export type TaskErrorCode =
   | "unknown_test"
   | "bad_grader"
   | "no_answer"
-  | "final";
+  | "final"
+  | "needs_tests";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -299,6 +301,10 @@ export interface TaskTypeInput {
   leaseSeconds?: number;
   withinHours?: number;
   enabled?: boolean;
+  /** Open to any signed-in worker with no grant (ruling 9); true when left
+   *  out. A PAID open type needs its tests on and at least K of them ready
+   *  (`needs_tests` otherwise, `openPayProblem`). */
+  open?: boolean;
   /** What one accepted answer earns, in sats to the msat (§8.1), at most
    *  `PAY_SATS_MAX`; absent or 0: unpaid. */
   paySats?: number;
@@ -511,6 +517,9 @@ export interface TypeStats {
   granted: number;
   holding: number;
   asking: number;
+  /** Its ready tests, not retired (§7.1): what a paid open type's K is held
+   *  to (ruling 9). */
+  readyTests: number;
   windows: Record<StatsWindow, StatsWindowView>;
   /** What is wrong with its app (`taskAppProblem`): the routes add it. */
   appProblem?: string;
@@ -837,15 +846,20 @@ export function createTasks(deps: TasksDeps): TasksService {
   };
   /** One try at a task: the lease, or the types the worker may take now. */
   const attempt = async (actor: string, o: { type?: string; app?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
-    const { s, w } = await worker(actor);
-    mayWork(w);
-    const held = liveGrants(w);
+    const seen = await worker(actor);
+    const s = seen.s;
+    if (seen.w.status === "suspended" || seen.w.status === "banned") mayWork(seen.w);
     const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
+    // Ruling 9: the open types this ask reaches, never held, are entered now.
+    const reach = [...kinds.values()].filter((k) => (o.app === undefined || k.app === o.app) && (o.type === undefined || k.name === o.type));
+    const { w, closed } = await enter(s, seen.w, reach);
+    mayWork(w, closed);
+    const held = liveGrants(w);
     if (o.type !== undefined) {
       const kind = kinds.get(o.type);
       if (!kind) throw new TaskError("unknown_type", `no task type ${o.type} here`);
       if (o.app !== undefined && kind.app !== o.app) throw new TaskError("wrong_app", `task type ${o.type} is drawn by another app`);
-      if (!held.includes(o.type)) throw new TaskError("not_granted", `you do not hold task type ${o.type}`);
+      if (!held.includes(o.type)) throw new TaskError("not_granted", closed[0] ?? notHeld(w, kind));
     }
     const types = held.filter((name) => {
       const kind = kinds.get(name);
@@ -910,10 +924,58 @@ export function createTasks(deps: TasksDeps): TasksService {
     const rows = await s.tasks.standings(tested.map((k) => ({ worker: actor, type: k.name, since: grants.get(k.name)!.at, window: k.tests!.window })));
     return new Map(rows.map((r) => [r.type, r]));
   };
-  const mayWork = (w: WorkerRecord) => {
+  /** Only an `active` worker takes, answers or skips a task; a `new` one
+   *  becomes active by entering an open type (`enter`) or a staff grant.
+   *  `closed`: why the open types this ask reached took no newcomer. */
+  const mayWork = (w: WorkerRecord, closed: string[] = []) => {
+    if (w.status === "new" && closed.length) throw new TaskError("not_active", `you have no task types yet: ${closed.join("; ")}`);
     if (w.status !== "active") {
       throw new TaskError("not_active", `${w.status === "new" ? "you have no task types yet" : `you are ${w.status}`}; an admin decides who takes tasks here`);
     }
+  };
+  /** Why `w` may not take `kind`, which they do not hold. */
+  const notHeld = (w: WorkerRecord, kind: TaskType): string => {
+    const g = w.grants.find((x) => x.type === kind.name);
+    if (g) return `your grant of task type ${kind.name} was revoked${g.why ? ` (${g.why})` : ""}; only staff can grant it again`;
+    return kind.open ? `task type ${kind.name} is off` : `you do not hold task type ${kind.name}: it is invite-only, and staff grant it`;
+  };
+
+  // ── open types (ruling 9) ─────────────────────────────────────────────
+  /** Whether a worker who never held open type `k` may enter it now, with
+   *  the K their grant records — as a staff grant records it (§7.5): the
+   *  type's when it has that many ready tests, else 0 — or why not: a PAID
+   *  open type takes a newcomer only while `openPayProblem` passes, so a
+   *  stranger always qualifies first. Its tests running short after it was
+   *  saved (one retired) makes it invite-only for newcomers until they are
+   *  back; a worker already in keeps their grant. */
+  const entry = async (s: TaskStores, k: TaskType): Promise<{ qualify: number } | { why: string }> => {
+    const want = k.tests?.qualify ?? 0;
+    const ready = want > 0 ? await s.tasks.readyTests(k.name) : 0;
+    if (openPayProblem(k, ready)) {
+      return {
+        why:
+          want > 0
+            ? `task type ${k.name} takes new workers while it has ${want} ready tests to qualify them on, and has ${ready} now: ask again later`
+            : `task type ${k.name} is paid and has no qualifying tests, so it takes new workers only by a staff grant`,
+      };
+    }
+    return { qualify: ready >= want ? want : 0 };
+  };
+  /** Ruling 9: records the grant (`grantOpen`, by `OPEN_GRANT_BY`) of each
+   *  open, enabled type among `reach` the worker has no row of — never one
+   *  revoked, which only staff grant again — unless suspended or banned.
+   *  The worker after, and why any open type took no newcomer. */
+  const enter = async (s: TaskStores, w: WorkerRecord, reach: TaskType[]): Promise<{ w: WorkerRecord; closed: string[] }> => {
+    const closed: string[] = [];
+    if (w.status === "suspended" || w.status === "banned") return { w, closed };
+    const known = new Set(w.grants.map((g) => g.type));
+    for (const k of reach) {
+      if (!k.open || !k.enabled || known.has(k.name)) continue;
+      const e = await entry(s, k);
+      if ("why" in e) closed.push(e.why);
+      else w = note(await s.workers.grantOpen(w.actor, k.name, now(), e.qualify));
+    }
+    return { w, closed };
   };
 
   /** A lease the caller may act on (rule 3): their own, open, not past its
@@ -1244,9 +1306,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       count(actor);
       const { s, w } = await worker(actor);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
-      const held = liveGrants(w)
-        .map((name) => kinds.get(name))
-        .filter((k): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app));
+      const inApp = (k: TaskType | undefined): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app);
+      const held = liveGrants(w).map((name) => kinds.get(name)).filter(inApp);
       // Ruling 3: a qualifying type is marked, with no score.
       const grants = grantsOf(w);
       const rows = await standingRows(s, w.actor, held, grants);
@@ -1254,6 +1315,16 @@ export function createTasks(deps: TasksDeps): TasksService {
         const row = rows.get(k.name);
         return { name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying: !!(k.tests && row) && phaseOf(row!, grants.get(k.name)!) !== "qualified" };
       });
+      // Ruling 9: the open types they may enter, as their first ask would —
+      // qualifying first when the grant would record a K. Read, not entered.
+      if (w.status === "new" || w.status === "active") {
+        const known = new Set(w.grants.map((g) => g.type));
+        for (const k of [...kinds.values()].filter(inApp)) {
+          if (!k.open || known.has(k.name)) continue;
+          const e = await entry(s, k);
+          if ("qualify" in e) types.push({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying: e.qualify > 0 });
+        }
+      }
       // A worker's status touches no earning (§8.1): a suspended worker
       // still sees what they are owed.
       return { actor: w.actor, status: w.status, types, balance: await balanceOf(w.actor) };
@@ -1277,11 +1348,16 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
       const withinHours = hours(input.withinHours ?? DEFAULT_WITHIN_HOURS);
       if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new TaskError("bad_request", "enabled is true or false");
+      if (input.open !== undefined && typeof input.open !== "boolean") throw new TaskError("bad_request", "open is true or false");
+      const open = input.open ?? true;
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
       const s = await stores();
+      // Ruling 9: a paid open type qualifies every newcomer on K ready tests.
+      const short = openPayProblem({ name, open, ...(paySats ? { paySats } : {}), ...(tests ? { tests } : {}) }, tests && open && paySats ? await s.tasks.readyTests(name) : 0);
+      if (short) throw new TaskError("needs_tests", short);
       const saved = await s.tasks.putType({
         name,
         app,
@@ -1289,6 +1365,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         leaseSeconds,
         withinHours,
         enabled: input.enabled ?? true,
+        open,
         ...(paySats ? { paySats } : {}),
         holdHours,
         ...(tests ? { tests } : {}),
@@ -1402,6 +1479,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (q.type !== undefined && !kinds.length) throw new TaskError("unknown_type", `no task type ${q.type} here`);
       const counted = s ? await s.tasks.stats({ types: kinds.map((k) => k.name), now: at }) : { types: [], holding: 0 };
       const people = s ? await s.workers.counts() : { statuses: noStatuses(), granted: {} };
+      const ready = s ? await Promise.all(kinds.map((k) => s.tasks.readyTests(k.name))) : [];
       const types = counted.types.map((c, i): TypeStats => {
         const kind = kinds[i]!;
         const windows = {} as Record<StatsWindow, StatsWindowView>;
@@ -1423,6 +1501,7 @@ export function createTasks(deps: TasksDeps): TasksService {
           granted: people.granted[c.type] ?? 0,
           holding: c.holding,
           asking: waiting.filter((w) => w.types.has(c.type)).length,
+          readyTests: ready[i] ?? 0,
           windows,
         };
       });

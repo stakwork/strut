@@ -7,9 +7,10 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   `tests` and `copies` off)
+ *   open, `tests` and `copies` off). A paid open type with fewer ready
+ *   tests than its K is refused, `409 needs_tests` (ruling 9)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
@@ -106,6 +107,7 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   no_answer: 404,
   in_use: 409,
   final: 409,
+  needs_tests: 409,
 };
 
 export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
@@ -144,6 +146,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["leaseSeconds"] !== undefined ? { leaseSeconds: b["leaseSeconds"] as number } : {}),
         ...(b["withinHours"] !== undefined ? { withinHours: b["withinHours"] as number } : {}),
         ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),
+        ...(b["open"] !== undefined ? { open: b["open"] as boolean } : {}),
         ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
