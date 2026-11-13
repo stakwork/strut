@@ -2,12 +2,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { creditPurchaseProblems, signInRequestProblems, type CreditPurchase, type NativeWalletMessage, type SignInRequest } from "@strut/kit/wallet";
+import {
+  creditPurchaseProblems, probeNativeWallet, relayNativeWallet, signInRequestProblems,
+  type CreditPurchase, type NativeWalletApp, type NativeWalletMessage, type RelayBridge, type SignInRequest, type WalletCapability,
+} from "@strut/kit/wallet";
 import { macaroonToBase64, mintToken } from "../../src/l402.js";
 import { encodeBolt11 } from "../../src/payments/bolt11.js";
 import { checkChallenge, type CheckedChallenge } from "./challenge";
 import {
-  WALLET_WAIT_MAX_MS, createHostWalletProbe, creditPurchaseOf, fallbackNote, signInAsk, signInNote, walletAsk, walletWaitMs,
+  WALLET_WAIT_MAX_MS, createHostWalletProbe, creditPurchaseOf, fallbackNote, nativeWalletApp, sellerOf, signInAsk, signInNote, walletAsk, walletWaitMs,
   type HostWallet, type WalletAnswer, type WalletAsk,
 } from "./native-pay";
 import { callPaying, createClaimKeeper, newPurse, type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome } from "./visitor-pay";
@@ -340,5 +343,83 @@ describe("signing a visitor in through the native wallet", () => {
     const silent = await late.sign(SHOP_CHALLENGE);
     assert.equal(silent.outcome === "refused" && silent.code, "RESTRICTED");
     assert.ok(Date.now() - t < 2_000);
+  });
+});
+
+// An app's OWN wallet connection (specs/WALLET.md §1.1): offered to a
+// member's page and a visitor's alike (plans/app-payments.md §11 R8), its
+// identity naming the seller — the strut server whose app it is — which the
+// native host keys the connection by. Through the kit's relay, with a
+// native host that answers like Peel's handler.
+describe("an app's own wallet, its identity naming the seller", () => {
+  const REQ = { request_methods: ["pay_keysend", "get_budget"], max_amount: 5_000_000, renewal_period: "weekly" };
+  const CAP: WalletCapability = { version: 1, methods: ["connect", "get_info", "pay_keysend", "get_budget"], notifications: ["payment_sent"], wallet: "sphinx", connected: false };
+  const PK = "02" + "a".repeat(64);
+  const HERE = "http://127.0.0.1:3000/?app=tip-jar&public=1";
+
+  function nativeHost() {
+    const sent: NativeWalletMessage[] = [];
+    return {
+      sent,
+      async postMessage(m: NativeWalletMessage) {
+        sent.push(structuredClone(m));
+        if (m.op === "capability") return { result: CAP };
+        return { result: { transaction_id: "tx-1", state: "pending", payment_hash: "ab".repeat(32), amount: 21_000, created_at: 1793800000 } };
+      },
+    };
+  }
+  /** The bridge as the relay uses it: the handlers it sets, called by hand. */
+  function bridge() {
+    const handlers = new Map<string, (params: unknown) => unknown>();
+    const b: RelayBridge = {
+      setRequestHandler: (method, _schemas, handler) => void handlers.set(method, handler),
+      notification: async () => {},
+    };
+    return { b, handlers };
+  }
+
+  it("the seller is this server's base, under its mount, or the other server's (`from`)", () => {
+    assert.equal(sellerOf(undefined, "", HERE), "http://127.0.0.1:3000");
+    assert.equal(sellerOf(undefined, "/lab", "https://swarm.test/lab/?app=tip-jar&public=1"), "https://swarm.test/lab");
+    assert.equal(sellerOf("https://shop.example.com", "", `http://127.0.0.1:3000/?app=tip-jar&public=1&from=${encodeURIComponent("https://shop.example.com")}`), "https://shop.example.com");
+  });
+
+  it("a visitor's page whose version requests a wallet is offered it through the relay, the seller in every message", async () => {
+    const seller = sellerOf(undefined, "", HERE);
+    const app = nativeWalletApp({ app: { name: "tip-jar", version: "v1" }, title: "Tip jar", request: REQ, seller });
+    assert.deepEqual(app, { name: "tip-jar", version: "v1", seller: "http://127.0.0.1:3000", title: "Tip jar", request: REQ });
+    const native = nativeHost();
+    const capability = await probeNativeWallet(native, app!);
+    assert.deepEqual(capability, CAP, "the wallet capability, for ui/initialize");
+    const { b, handlers } = bridge();
+    relayNativeWallet({ bridge: b, native, app: app!, capability: capability! });
+    await handlers.get("strut/wallet/pay_keysend")!({ pubkey: PK, amount: 21_000 });
+    assert.deepEqual(native.sent.map((m) => [m.op, (m as { app?: NativeWalletApp }).app?.seller]), [["capability", seller], ["call", seller]]);
+  });
+
+  it("a version that asks for no wallet, or for one that is not a request, is offered none: the native host never hears of it", async () => {
+    const native = nativeHost();
+    for (const request of [undefined, null, { request_methods: ["drain_everything"] }, { request_methods: ["pay_keysend"], renewal_period: "weekly" }, "pay_keysend"]) {
+      const app = nativeWalletApp({ app: { name: "tip-jar", version: "v1" }, title: "Tip jar", request, seller: sellerOf(undefined, "", HERE) });
+      assert.equal(app, undefined, JSON.stringify(request));
+    }
+    // And a seller that is no seller's base: no identity, so no wallet.
+    assert.equal(nativeWalletApp({ app: { name: "tip-jar", version: "v1" }, title: "Tip jar", request: REQ, seller: "http://192.168.1.2:3000" }), undefined);
+    assert.deepEqual(native.sent, []);
+  });
+
+  it("another server's public app names that server as its seller", async () => {
+    const app = nativeWalletApp({ app: { name: "tip-jar", version: "v1" }, title: "Tip jar", request: REQ, seller: sellerOf("https://shop.example.com", "", HERE) });
+    assert.equal(app?.seller, "https://shop.example.com");
+    const native = nativeHost();
+    assert.deepEqual(await probeNativeWallet(native, app!), CAP);
+    assert.deepEqual(native.sent, [{ v: 1, op: "capability", app: { name: "tip-jar", version: "v1", seller: "https://shop.example.com", title: "Tip jar", request: REQ } }]);
+  });
+
+  it("a member's page: the identity it always had, the seller beside it", () => {
+    const app = nativeWalletApp({ app: { name: "tip-jar", version: "v3", peer: "acme" }, title: "Tip jar", request: REQ, seller: sellerOf(undefined, "", "http://127.0.0.1:3000/?app=@acme/tip-jar") });
+    const { seller, ...rest } = app!;
+    assert.equal(seller, "http://127.0.0.1:3000");
+    assert.deepEqual(rest, { name: "tip-jar", version: "v3", peer: "acme", title: "Tip jar", request: REQ });
   });
 });

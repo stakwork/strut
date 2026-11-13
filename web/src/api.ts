@@ -3033,6 +3033,11 @@ export interface PublicAppInfo {
   icon?: string;
   /** The browser features its frame is granted (./frame-permissions). */
   permissions?: string[];
+  /** The wallet connection its version requests (its build's `wallet`):
+   *  what a native host's sheet asks the visitor for (specs/WALLET.md §1.1).
+   *  Another server's is checked before it is used (./native-pay
+   *  `nativeWalletApp`). */
+  wallet?: ConnectionRequest;
 }
 /** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
 async function publicFetch(path: string): Promise<Response> {

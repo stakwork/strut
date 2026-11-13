@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   ERROR_CODES, NOTIFICATION_TYPES, PAY_METHODS, REQUESTABLE_METHODS, WALLET_METHODS, WalletError,
   checkParams, connectionRequestProblems, creditPurchaseProblems, hostWalletCapabilityOf, isSellerUrl, isWalletErrorCode,
-  isWalletMethod, msatToSats, notificationProblems, parseSphinxAddress, readCreditReply, readSignInReply, resultProblems, satsToMsat,
+  isWalletMethod, msatToSats, nativeWalletAppProblems, notificationProblems, parseSphinxAddress, readCreditReply, readSignInReply, resultProblems, satsToMsat,
   sellerHost, signInRequestProblems, sphinxRouteHint, verifyPreimage, visitorChallengeClaims, walletErrorBody, walletErrorCodeOf,
   walletMethodOf, walletRequestMethod, type WalletMethod,
 } from "./protocol.js";
@@ -15,6 +15,7 @@ type Vectors = {
   results: Array<{ name: string; method: WalletMethod; result: unknown; valid: boolean }>;
   notifications: Array<{ name: string; notification: unknown; valid: boolean }>;
   connection_requests: Array<{ name: string; request: unknown; valid: boolean }>;
+  native_apps: Array<{ name: string; app: unknown; valid: boolean }>;
   preimages: Array<{ preimage: string; payment_hash: string; valid: boolean }>;
   host_capabilities: Array<{ name: string; capability: unknown; expect: unknown }>;
   credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
@@ -77,6 +78,19 @@ describe("wallet vectors: connection requests", () => {
       assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
     });
   }
+});
+
+describe("wallet vectors: native apps (the identity a native host keys a connection by, §1.1)", () => {
+  for (const v of vectors.native_apps) {
+    it(v.name, () => {
+      const problems = nativeWalletAppProblems(v.app);
+      assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
+    });
+  }
+  it("names the seller when it is missing", () => {
+    const none = vectors.native_apps.find((v) => v.name === "no seller")!;
+    assert.match(nativeWalletAppProblems(none.app).join("; "), /^seller must be/);
+  });
 });
 
 describe("wallet vectors: preimages", () => {

@@ -3591,7 +3591,7 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
-| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says) |
+| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
 
@@ -4268,8 +4268,11 @@ dictation) would reach it through the frame's `allow`. So:
   loosened its own is held to it all the same: no script, fetch, form or
   image to a host of its choosing. Not covered: a frame navigating itself
   away. A native host can refuse that, a browser cannot;
-- its page is offered no app wallet (`strut/wallet/*`, specs/WALLET.md
-  §1.1): only the host's own purchase (§1.2);
+- its page is offered the person's wallet (`strut/wallet/*`, specs/WALLET.md
+  §1.1) when its version requests one, as any visitor's page is: the request
+  from the seller's `GET /public/apps/:name`, checked first, and the app's
+  identity naming the seller, which a native host keys the connection by and
+  its sheet names (plans/app-payments.md §11 R8);
 - its `ui/open-link` is read against the SELLER's UI. `?app=<other>` is an
   app there, never one of this strut's: it opens in a new tab HOSTED HERE
   too, `?app=<other>&public=1&from=<seller>`, never by the seller's own UI.

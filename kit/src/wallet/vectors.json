@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback. `sign_in_requests` / `sign_in_replies` / `sign_in_signatures` / `sign_in_addresses`: signing a visitor in (§1.2 \"sign_in\") — a request a native host may sign at `now` (ms), valid or not (above all: the challenge is a strut visitor challenge for the SELLER's host); what the host does with the answer, `signed` with the key and signature or `refused` with `code`; and Lightning signed messages over challenges made by Sphinx's own signer (sphinx-rs `sign_bytes`, scripts/ln-message-fixtures): `signer` is the seed, account index and network that made `sig`, `actor` what strut's `ln-message` verifier names (null: refused); an answer's `address` is kept only when its pubkey is `key`, and `sign_in_addresses` pins one seed's Sphinx address to its sign-in key (its `source` says which part is real: the pubkey is the seed's; the route hint is illustrative).",
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `native_apps`: the app identity strut's UI sends a native host (§1.1 `NativeWalletApp`), valid or not — above all, it names its `seller`, the strut server whose app it is, by which the native host keys the connection. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback. `sign_in_requests` / `sign_in_replies` / `sign_in_signatures` / `sign_in_addresses`: signing a visitor in (§1.2 \"sign_in\") — a request a native host may sign at `now` (ms), valid or not (above all: the challenge is a strut visitor challenge for the SELLER's host); what the host does with the answer, `signed` with the key and signature or `refused` with `code`; and Lightning signed messages over challenges made by Sphinx's own signer (sphinx-rs `sign_bytes`, scripts/ln-message-fixtures): `signer` is the seed, account index and network that made `sig`, `actor` what strut's `ln-message` verifier names (null: refused); an answer's `address` is kept only when its pubkey is `key`, and `sign_in_addresses` pins one seed's Sphinx address to its sign-in key (its `source` says which part is real: the pubkey is the seed's; the route hint is illustrative).",
   "params": [
     {
       "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
@@ -2655,6 +2655,292 @@
       "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
       "address": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e_03abababababababababababababababababababababababababababababababab_1099511627776",
       "source": "The address's pubkey is the key pubkey_from_seed(idx: 0) makes of this seed (the same key as the sign_in_signatures vectors, scripts/ln-message-fixtures). The route hint <lsp_pubkey>_<scid> is ILLUSTRATIVE, not made by Sphinx: regenerate the whole address from sphinx get_my_contact_info when Peel implements it."
+    }
+  ],
+  "native_apps": [
+    {
+      "name": "this server's own app, on the Mac's local strut",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a peer's app, through this server's read-through: the seller is this server, the peer names the org",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "peer": "acme",
+        "seller": "https://org.example.com",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "another server's public app (a visitor's page, `from`): the seller is that server's base",
+      "app": {
+        "name": "tip-jar",
+        "version": "v1",
+        "seller": "https://shop.example.com",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a seller under a path",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "https://acme.example/lab",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a version that asks for no wallet: an identity, whose capability the native host refuses",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar",
+        "request": null
+      },
+      "valid": true
+    },
+    {
+      "name": "no seller",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller on plain http off this machine",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://192.168.1.2:3000",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller that carries a query",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "https://shop.example.com/?k=1",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller that carries credentials",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "https://u:p@shop.example.com",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller that is no URL",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "shop.example.com",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "no name",
+      "app": {
+        "name": "",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a peer with a slash",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent",
+            "payment_failed"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly"
+        },
+        "peer": "acme/evil"
+      },
+      "valid": false
+    },
+    {
+      "name": "a request that is not one",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar",
+        "request": {
+          "request_methods": [
+            "drain_everything"
+          ]
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "no request at all (null is none)",
+      "app": {
+        "name": "tip-jar",
+        "version": "v3",
+        "seller": "http://127.0.0.1:3000",
+        "title": "Tip jar"
+      },
+      "valid": false
+    },
+    {
+      "name": "not an object",
+      "app": "tip-jar",
+      "valid": false
     }
   ]
 }

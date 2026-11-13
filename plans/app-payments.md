@@ -356,8 +356,12 @@ wallet:                                  # NWC-08's request fields, msat
   - the budget and renewal, which the person may lower;
   - the expiry;
   - whether to ask over budget, or refuse.
-- **What is kept.** A connection record in the HOST, keyed by (viewer, strut or
-  org, app name):
+- **What is kept.** A connection record in the HOST, keyed by (viewer, seller,
+  app name). The seller is the strut server whose app it is, which the app's
+  identity names (`NativeWalletApp.seller`, specs/WALLET.md §1.1; R8): a
+  stranger's app named like a trusted one never holds that one's connection.
+  On the iPhone the org or the origin Peel loaded stands in for it (§5.3). It
+  is kept in:
   - Peel's preferences on the person's devices;
   - a browser host's own storage, or Hive's server for a Hive user;
   - never the app's state or strut's.
@@ -525,6 +529,10 @@ the host does not control.
 Hive can also keep a user's NWC connection on its server, so their apps have a
 wallet on any device. That is Hive's choice; the wire is the same.
 
+The seller rides in the app's identity (`NativeWalletApp.seller`, R8): this
+server's base, or a stranger's public app's `from`. A browser host keys its
+connections by it, as Peel does.
+
 ### 5.3 Peel
 
 In Peel the money is in the engine, so the WalletHost is NATIVE (Swift): its
@@ -533,7 +541,11 @@ decremented in the same transaction as the payment (`commitAndPublish`). strut's
 UI, as Peel's main frame, is a pass-through:
 - It sees `window.webkit.messageHandlers.strutWallet` and forwards every
   `strut/wallet/*` request to it, with the app it is hosting
-  (`{ name, version, peer }`).
+  (`{ name, version, peer, seller }`).
+- The seller rides in that identity (R8): Peel's own strut for the
+  person's and an org's apps, the `from` of a stranger's public app. Peel
+  holds it to its own record of the address it opened, keys the connection
+  by it, and names it on the connect sheet.
 - The reply comes back through `WKScriptMessageHandlerWithReply`'s promise: no
   global callback, no id juggling.
 
@@ -805,6 +817,24 @@ the KMP desktop, Electron.
     the page, and the iPhone has none. The Mac keeps remote mode.
   - **Later.** Bundling strut's UI in Peel on the iPhone (§12, 8) would let
     it use remote mode too.
+- **R8, ruled 2026-11-13. A visitor's page gets the wallet connection,**
+  this server's public apps and other servers' alike, keyed by seller (§4.2,
+  §5.2, §5.3).
+  - **What it means.** A public app's page whose version requests a wallet
+    is offered the person's wallet in Peel's web view, as a member's page
+    is. Its request comes from the public read (`GET /public/apps/:name`:
+    the build's `wallet`, nothing else of the build). A stranger's page
+    (#625's remote mode) still gets nothing else its version declares.
+  - **The key.** The app's identity names its `seller`, always: this
+    server's base, or `from`. Every connection is keyed by (viewer, seller,
+    app name), so a stranger's app with a trusted app's name never reuses
+    its connection or budget. Peel's sheet names the seller, as
+    `buy_credit`'s does.
+  - **Why.** §12 item 9's first test ends with a tip through the
+    connection, and a visitor's page had no wallet to tip with
+    (`AppHost.tsx` offered it only when `!visitor`, 32d09ae5).
+  - **Not changed.** `get_info` still leaves out `pubkey`; strut's relay
+    now drops it too, whatever the native host answers.
 
 Open questions:
 - **Keysend via the core to a non-Sphinx node.** Is the route through the LSP's
@@ -887,3 +917,27 @@ Open questions:
        bindings are not built);
      - the rest of the first test on a real box: a row written as the
        visitor, then a tip and a credit purchase through the connection.
+10. **A visitor's page pays through the connection (R8).** What item 9's tip
+    needs: a public app's page, this server's or another's, holds a wallet
+    connection keyed by its seller.
+    - **strut:** *this PR.*
+      - `GET /public/apps/:name` (and so another server's read, through
+        `from`) carries the version's `wallet` from its `dist/build.json`;
+      - `NativeWalletApp.seller`, always present, checked by
+        `nativeWalletAppProblems`, with the `native_apps` vectors, which
+        Peel copies;
+      - `AppHost.tsx` offers the native wallet to a visitor's page whose
+        version requests one, a stranger's included (its other declared
+        permissions still dropped);
+      - the relay drops `pubkey` from `get_info`.
+    - **Peel** (stakwork/peel, a separate change):
+      - reads `seller` in `WalletApp` and runs the `native_apps` vectors;
+      - holds it to its own record of what it opened: its own strut's
+        origin for an app there, the `from` it opened for a stranger's
+        (`WalletScope.remote`); on the iPhone, ignores it (keyed by org or
+        origin, §5.3);
+      - keys every connection by seller (`remote:` already is) and names
+        the seller on the connect sheet and in Connected apps, as
+        `buy_credit`'s sheet does.
+    - **Not tried yet:** a tip from a stranger's page on the Mac, and from
+      a served box opened directly on the iPhone.

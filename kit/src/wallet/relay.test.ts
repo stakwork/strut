@@ -33,6 +33,7 @@ const APP: NativeWalletApp = {
   name: "tip-jar",
   version: "v3",
   peer: "acme",
+  seller: "http://127.0.0.1:3000",
   title: "Tip jar",
   request: { request_methods: ["pay_keysend", "get_budget"], notification_types: ["payment_sent", "payment_failed"], max_amount: 5_000_000, renewal_period: "weekly" },
 };
@@ -98,6 +99,15 @@ describe("the wallet relay", () => {
     assert.deepEqual(native.calls(), [
       { v: 1, op: "call", method: "pay_keysend", app: APP, params: { pubkey: PK, amount: 20_000, route_hints: [[{ pubkey: LSP, short_channel_id: "1099511627776" }]] } },
     ]);
+    await t.close();
+  });
+
+  it("never hands a page the node key, whatever get_info answered", async () => {
+    const native = new FakeNative();
+    const info = { alias: "Peel", network: "bitcoin", methods: ["connect", "get_info", "pay_keysend"], notifications: ["payment_sent"] };
+    native.answer = () => ({ result: { ...info, pubkey: PK } });
+    const t = await connected(native);
+    assert.deepEqual(await t.wallet.call("get_info", {}), info);
     await t.close();
   });
 
@@ -186,6 +196,25 @@ describe("finding the native host", () => {
     assert.equal(await probeNativeWallet(answering({ error: { code: -32000, message: "no", data: { code: "RESTRICTED" } } }), APP), undefined);
     assert.equal(await probeNativeWallet({ postMessage: () => new Promise(() => {}) }, APP, 20), undefined);
     assert.equal(await probeNativeWallet({ postMessage: async () => { throw new Error("x"); } }, APP), undefined);
+  });
+
+  it("never sends an identity that names no seller, or a request that is not one: no wallet", async () => {
+    const native = new FakeNative();
+    native.answer = () => ({ result: CAPABILITY });
+    const { seller: _seller, ...noSeller } = APP;
+    for (const app of [
+      noSeller,
+      { ...APP, seller: "http://192.168.1.2:3000" },
+      { ...APP, seller: "https://shop.example?k=1" },
+      { ...APP, request: { request_methods: ["drain_everything"] } },
+    ]) {
+      assert.equal(await probeNativeWallet(native, app as unknown as NativeWalletApp), undefined, JSON.stringify(app));
+    }
+    assert.deepEqual(native.sent, [], "the native host heard nothing");
+    // Another server's public app: its seller is that server's base.
+    const stranger: NativeWalletApp = { name: "tip-jar", version: "v1", seller: "https://shop.example.com", title: "Tip jar", request: APP.request };
+    assert.deepEqual(await probeNativeWallet(native, stranger), CAPABILITY);
+    assert.deepEqual(native.sent, [{ v: 1, op: "capability", app: stranger }]);
   });
 });
 
