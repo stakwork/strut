@@ -36,7 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini \
 # MUST be bumped whenever a Chrome CVE fix lands (and PLAYWRIGHT_VERSION when
 # Playwright catches up, at which point this layer can go). The version is in
 # the RUN text, so changing the pin changes the layer key; the build fails if
-# the binary does not report this version.
+# the binary does not report this version. Chrome for Testing has no linux
+# arm64 build, so on arm64 the bundled Chromium is kept: it is older than the
+# CVE fix, so arm64 images are NOT CVE-patched.
 ARG CHROME_VERSION=156.0.8078.73
 RUN set -eux; \
     echo "chrome pin: ${CHROME_VERSION}"; \
@@ -57,7 +59,7 @@ RUN set -eux; \
       rm -rf /tmp/chrome* /tmp/shell.zip; \
       "$full/chrome" --version | tee /dev/stderr | grep -F "${CHROME_VERSION}"; \
       "$shell/chrome-headless-shell" --version | tee /dev/stderr | grep -F "${CHROME_VERSION}"; \
-    else exit 1; fi
+    else echo "keeping bundled Chromium for $(uname -m)"; fi
 
 # Playwright launches Chromium without its sandbox, so not as root.
 USER pwuser
