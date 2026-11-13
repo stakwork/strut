@@ -656,16 +656,291 @@ pattern). It comes with the staff app (§9).
 
 ## 8. Earnings and withdraw (items 5a and 5b)
 
-Ruled: a balance per Stadeum, earnings wait, a withdraw section. The rest
-is proposed.
+Ruled: a balance per Stadeum, earnings wait, a withdraw section (the
+Rulings table), and the seven questions at the end of 8.1 (2026-11-12).
+The rest is proposed.
 
-- **Earning.** An accepted answer writes one earning, in msat, to
-  `ledger.db`. It becomes withdrawable after the type's hold (proposed
-  default 72 h). A failed test inside the hold takes it back.
-- **The run's cost.** The `human` step marks its output with what was
-  earned (`withUsage`, as `remote/call` marks a seller's charge). The run
-  then shows model calls plus human work per item. It is a number on the
-  run, not a charge to anyone.
+### 8.1 Earnings recorded and shown (item 5a)
+
+Evan ruled on 8.1's questions on 2026-11-12, agreeing with every
+recommendation. They are listed at its end, and where the text below rests
+on one it says so. The rest of 8.1 is proposed.
+
+An accepted answer is owed to its worker. 5a
+writes what is owed, holds it, shows it to the worker and to the admin,
+and marks the run with it. No sats move: the wallet pays nobody until 5b.
+
+#### Pay
+
+| On the task type | Unit | Meaning |
+| --- | --- | --- |
+| `paySats` | sats, to the msat | What one accepted answer earns. Absent or 0: the type is unpaid, and its answers write nothing to the ledger |
+| `holdHours` | hours | How long an earning waits before it can be withdrawn. Ruled: 72 by default, from 1 to 720, never 0, since earnings wait (the Rulings table's 3) |
+
+- **The admin's, never the workflow's** (§6). Set by `PUT
+  /tasks/types/:name` (full scope) and, with item 6, by `task/set-type`
+  behind an admin's yes. The YAML names a type and cannot set its pay, and
+  no step a page or a model reaches writes it. Proposed: at most 100,000
+  sats an answer, a guard against a slip, not a policy.
+- **Sats, not dollars.** Ruled. The wallet holds sats and pays sats. Owed in sats,
+  the sum the wallet must hold does not move with the price of bitcoin.
+  Pay in dollars would leave the wallet owing a number of sats that does.
+- **Locked when the task is taken.** Ruled. `next` stamps the type's pay on the
+  lease and hands it to the page (`WorkerTask.payMsat`). A worker sees what
+  an answer earns before doing it, and the answer earns exactly that. A
+  change to the type's pay reaches the next lease, never one in hand. A
+  lease with no stamp, taken before the type was paid, earns nothing.
+- **No rate is locked.** The earning is sats and stays sats. Dollars appear
+  only where something is shown: the run's cost is read at the rate when
+  the step returns, and the Earnings tab shows sats at the rate of the
+  moment, as it shows the wallet's balance.
+
+`tasks.db` gains four nullable columns: `task_types.pay_msat`,
+`task_types.hold_hours`, `leases.pay_msat` and `leases.booked_at`. Each is
+added with `ALTER TABLE … ADD COLUMN` when `table_info` lacks it, and
+`user_version` stays 1. A file #655 made opens as it is, and a strut from
+before still opens one that has them: it reads past them and writes them
+null.
+
+#### The earning
+
+**In `ledger.db`,** where the books check is and where 5b's payout will be
+written. A payout must take from the balance and record the send in one
+transaction, so the balance lives beside the withdrawals. The answer
+itself settles in `tasks.db`. So an earning crosses from one file to the
+other, and is safe to cross because it is written once per lease and
+marked when it lands.
+
+Three tables, each `create table if not exists`, as `deposits` is. A
+ledger file from before opens unchanged, and a strut from before opens one
+that has them.
+
+| Table | One row per | Holds |
+| --- | --- | --- |
+| `pay` | accepted answer (a lease) | `lease` (the key), `task`, `worker`, `type`, `msat`, `at` (when the answer was accepted), `releases` (`at` plus the hold), `workflow`, `run_id`, `path` (empty for item 4's test tasks, which book through the same call), and `taken_back`, `taken_back_why`, `taken_back_by`. Unique on `task` and `worker`, so item 4's copies each earn. A trigger refuses any update but setting the take-back columns, once |
+| `payees` | worker | `worker` (the key), `accepted` (msat, every earning), `taken_back` (msat), `withdrawn` (msat; 0 until 5b), `answers`, the first and last `at` |
+| `pay_daily` | UTC day and task type | `answers`, `msat`, `taken_back_answers`, `taken_back_msat`. What every read of pay over time sums, never `pay` |
+
+Indexes: `pay(worker, releases) where taken_back is null` (one worker's
+held sum), `pay(releases) where taken_back is null` (everyone's) and
+`pay(run_id)`. Both ledger stores, the file and its memory twin, pass one
+suite.
+
+**Booking.** `submit` (§5.1) goes on as #657 built it, then:
+
+1. The task settles in `tasks.db` (rules 4 and 7). The lease keeps the pay
+   it was stamped with.
+2. `ledger.pay(…)` writes the `pay` row and adds to the payee's row and the
+   day's, in one `BEGIN IMMEDIATE` committed at `synchronous=full`. The
+   same lease again writes nothing and answers the first row. The first
+   paid answer makes `ledger.db`.
+3. The lease is marked `booked_at` in `tasks.db`.
+4. `onSettle` hears it and the run wakes, as today.
+
+A failure at 2 or 3 is logged and never the worker's: their answer was
+accepted, and `submit` answers `ok`. The minute's sweep books every
+submitted lease with pay and no `booked_at`, read off a partial index on
+`leases`, so a crash between 1 and 3 is booked at the next sweep, once. An
+unpaid lease is never on that list.
+
+**The hold.** An earning is held until `releases` and withdrawable from
+then. Computed on every read (`releases <= now`), never swept, as a
+lease's expiry is: nothing waits on a timer to be right. `releases` is the
+answer's time plus the type's hold when the earning is booked, so a later
+change to the hold reaches only later earnings.
+
+**Taken back.** Item 4 (§7) decides which answers lose their pay. 5a gives
+it one hook:
+
+- `strut.tasks.takeBack({ task, worker?, why, by? })`: every earning the
+  task's answers made, or that worker's alone. For each, `taken` or why
+  not: `released` (past its hold, it is the worker's), `none` (nothing was
+  earned) or `taken` (already).
+- It books an answer not yet booked first, so a take-back never loses a
+  race with the sweep.
+- In `ledger.db` it is one guarded statement (`… where lease = ? and
+  taken_back is null and releases > ?`), with the payee's and the day's
+  rows, at `synchronous=full`.
+- It is on the service (`TasksService`), never the capability: no step
+  reaches it.
+- A person reaches it as `POST /tasks/:id/take-back { worker?, why }`, full
+  scope, `409 released` past the hold. Ruled: the route ships in 5a, so an
+  answer an admin finds bad inside the hold loses its pay before item 4
+  exists.
+
+A worker's status touches no earning (ruled). A suspension or a ban stops
+new work; what was earned stays owed until it is taken back. Whether a
+banned worker may withdraw is 5b's.
+
+#### The balance
+
+`task/me` answers one more field, and each type it lists carries its
+`payMsat`:
+
+```
+balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }
+```
+
+| Field | Read from |
+| --- | --- |
+| `totalMsat` | The payee's row: `accepted − taken_back − withdrawn` |
+| `heldMsat` | The sum of the worker's earnings not taken back whose `releases` is still ahead, over the `(worker, releases)` index |
+| `withdrawableMsat` | `total − held` |
+| `nextReleaseAt` | The soonest `releases` ahead, on the same index |
+
+- **Cheap per call.** A read of one row by its key and a range of one
+  index, bounded by what the worker answered within one hold: thousands at
+  the most, well under a millisecond. `task/me` already counts against the
+  worker's 120 calls a minute, so the balance costs no budget of its own.
+- **No file for nothing.** The ledger is read only where one is
+  (`ledgerIfAny`): a worker with nothing earned reads zeros, and a strut
+  whose types are all unpaid never makes `ledger.db`.
+- **The kit.** `WorkerInfo` gains `balance`, and `useTask().submit`
+  refetches `useWorker()`, so the balance moves as the answer goes in.
+- **Totals only.** The worker sees no list of earnings in 5a. A history,
+  and whether it may say an answer was a test, is item 4's and item 6's.
+
+#### The run's cost
+
+The `human` step's output gains `pay: { msat, usd? }` when the answer
+earned. The step marks the output with the dollars,
+`withUsage(out, { modelCalls: 0, usage: empty, cost: usd })`, as
+`remote/call` marks what a seller charged. `ensure` answers a settled task
+with its pay (the submitted lease's stamp) and the dollars at the rate
+now: `createTasks` is handed the rate by createStrut. A rate that cannot
+be read leaves `usd` out and marks nothing, and the step still returns.
+
+| Reader | Worker pay |
+| --- | --- |
+| `RunSummary.totals.cost`, the run overview's Cost and its split, `StrutRun.cost_usd`, the events sink | Counted. A run's cost is its model calls plus its human work, per item |
+| `modelCalls`, tokens | Not counted |
+| A workflow's `maxRunCostUsd`, `STRUT_RUN_MAX_COST_USD`, the Mothership | Not counted. The gateway enforces them on model calls and never sees pay |
+| A public run's charge and an item's `dailyCapUsd` | Nothing today: `human` is refused in a public run (§3). If §11's "`human` in a public run" is built, pay reaches the charge through `withUsage` as a seller's charge does, and the reserve must cover it |
+| The verify budget | Nothing: a check cannot park |
+| The ledger | Not from here. What is owed is the `pay` row, written when the answer was accepted |
+
+**Worker pay does not count against the model caps** (ruled). They are the
+gateway's brake on a model that loops, and the gateway never sees pay.
+Counting pay would need a cap strut enforces between steps, and a run
+stopped after a worker answered still owes the worker. Pay's brake is the
+task type's: its pay, and how many tasks the workflow makes. A daily
+budget per type, which stops handing out tasks once the day's pay reaches
+it, is later. The wallet's cover (below) is 5b's.
+
+A journal replay counts nothing again (`step.replayed`). A "re-run from
+here" on the `human` step itself reads the same answer and marks its pay
+again: the run's totals count it twice while the ledger counts it once. A
+known limit, as for any step run again.
+
+#### The books
+
+What is owed to workers is a debt in sats, beside the credit owed as
+service, which is in dollars. 5a shows it. It moves no sats, so the books
+check (`expectedMsat`) does not change.
+
+`readEarnings` (`GET /earnings`, `earnings/read`) gains, in the unscoped
+view only, as `received` and `withdrawn` are:
+
+```
+workers: {
+  owedMsat, heldMsat, withdrawableMsat,  // now, not ranged
+  payees,                                // workers with a balance
+  accepted: { answers, msat, days },     // in the range, from pay_daily
+  takenBack: { answers, msat }
+}
+```
+
+With `wallet`, it adds `wallet.owedToWorkersMsat` and `wallet.coverMsat`:
+the balance less what workers are owed, below 0 when the wallet is short.
+
+| Where | Shows |
+| --- | --- |
+| The Earnings tab and `strut/earnings` (one fold, `kit/src/folds/earnings.ts`) | **Owed to workers** beside **Outstanding credit**: sats, at the rate of the moment, held and withdrawable. A **Workers** column by day: sats accepted, less taken back. Under the balance, whether it covers what workers are owed, in red when short |
+| The admin's Withdraw dialog | What workers are owed beside the balance, and a warning when the amount would leave the wallet short of it. Ruled: 5a warns, 5b refuses |
+| `GET /tasks/workers` | Each worker's balance, in one grouped read |
+| `GET /tasks/:id` | Each answer's pay: sats, held until when, taken back |
+
+Worker pay never enters `daily`. There "earned" is what this server sold
+(paid-runs.md §8), and an item's margin stays its own.
+
+**The solvency 5b will need.**
+
+- The wallet must hold what workers are owed, held and withdrawable both:
+  `cover = balance − owed`. Sats against sats, so the price of bitcoin
+  never moves it.
+- The credit owed as service is not added in. It is owed as runs, not as
+  sats, and the client's deposits are what fund the workers (ruling 2).
+- A send in flight is already out of the balance (a wallet keeps the
+  debit). So a payout counts as gone from the moment it is sent, and must
+  leave the payee's balance at that moment too.
+- Ruled: 5b refuses an admin's withdrawal that would leave the wallet
+  short of what workers are owed. Whether a worker's withdrawal is refused
+  while the wallet is short is 5b's to design.
+
+#### Tests that prove it
+
+| File | What proves it |
+| --- | --- |
+| `src/payments/ledger.test.ts`, both stores | One `pay` row per lease: the same lease again writes nothing and answers the first. A payee's total is accepted less taken back less withdrawn. An earning is held one millisecond before `releases` and withdrawable at it. A take-back inside the hold leaves held and total; one past it is `released`; a second is `taken` and changes nothing. The trigger refuses changing a row's `msat`. `pay_daily` sums by day and type. A ledger file without the tables opens and gains them, and the existing suite passes unchanged |
+| `src/tasks/tasks.test.ts`, both stores | `next` stamps the type's pay on the lease and hands it out; a pay change after the take leaves the lease's. A paid answer books once, with the type's hold; an unpaid one books nothing and makes no ledger file. A ledger that throws inside `submit` still answers `ok` and wakes the run, and the next sweep books it, once. A take-back of an answer not yet booked books it first. A `tasks.db` made by #655's schema opens, gains the columns and keeps its rows. `me` answers held, withdrawable and total on a fake clock |
+| `src/steps/core/human.test.ts` | A paid answer's step has `pay`, and its `step.end` has `cost` at the rate and `modelCalls: 0`. The run's totals count it once across a wake and a later resume. With no rate, nothing is marked and the step still returns. An unpaid type marks nothing |
+| `src/tasks/worker-door.test.ts` | End to end: a run parks, a signed-in visitor answers through `/public/mcp`, and the run finishes with its totals counting the pay. `task/me` through the door shows it held, then withdrawable once the clock passes the hold. No step a visitor's page reaches can take pay back |
+| `src/payments/earnings.test.ts` | `workers` owed, held, withdrawable and by day. `coverMsat` against a fake wallet, below 0 when short. A scoped view leaves workers out. Zeros, and no file, without a ledger |
+| The routes | `PUT /tasks/types` takes and checks `paySats` and `holdHours`. `POST /tasks/:id/take-back` is full scope only and answers 409 past the hold. `GET /tasks/workers` and `GET /tasks/:id` carry pay |
+
+#### PRs
+
+Two, against `main`. The second branches after the first has merged.
+
+1. **The earning.** Pay on the type and the lease, the three ledger tables
+   in both stores, booking and the sweep, the take-back hook and route,
+   the balance in `task/me` and pay in `task/next`, the step's `pay` and
+   mark, the kit's types. `specs/API.md` §22, `specs/SPEC.md`'s `human`.
+2. **The books.** `readEarnings`' `workers` and `cover`, the earnings fold,
+   the Earnings tab, `strut/earnings` and the Withdraw dialog's warning.
+   `specs/API.md` §19. Checked in the browser.
+
+#### Ruled (2026-11-12)
+
+Evan agreed with every recommendation.
+
+1. **Pay is in sats.** The wallet holds and pays sats, so what is owed
+   never moves with the price.
+2. **Pay is locked when the lease is taken.** The worker sees it before
+   doing the work, and an admin who raises pay reaches the queue at once.
+3. **The hold is per type: 72 hours by default, from 1 to 720, never 0.**
+   Long enough for item 4 to grade a test and an admin to look, and
+   earnings wait (the Rulings table's 3).
+4. **Worker pay counts in the run's totals, never against
+   `maxRunCostUsd` or the Mothership.** Those brake model loops at the
+   gateway, and a stopped run still owes the worker.
+5. **A person's take-back ships in 5a,** as `POST /tasks/:id/take-back`.
+   Until item 4, a person is the only one who catches a bad answer, and
+   that is what the hold is for.
+6. **A ban touches no earning;** staff take back what was bad. Pay for
+   accepted work is owed, and a ban is often for later conduct. Whether a
+   banned worker may withdraw is 5b's.
+7. **5a warns, and 5b refuses, an admin's withdrawal that would leave the
+   wallet short of what workers are owed.** paid-runs.md §8 lets Withdraw
+   take any sats because they are the seller's; once workers are owed,
+   some of them are not.
+
+### 8.2 Withdraw (item 5b)
+
+Needs its own design and a ruling, the payer's third door first. One thing
+is ruled already (8.1's ruling 7): 5b refuses an admin's withdrawal that
+would leave the wallet short of what workers are owed. 5a hands it:
+
+- `payees.withdrawn`, which a payout adds to in the same transaction as
+  its `withdrawal` entry (purpose `worker`, actor the worker).
+- The withdrawable sum, computed inside the statement that guards a
+  payout, as `hold` guards a token's credit.
+- What workers are owed, and the wallet's cover, for the solvency check.
+- The rule that a released earning is the worker's, so a payout never
+  meets a take-back.
+
+The bullets below are as they stood before 5a was designed.
+
 - **Withdraw.** The worker's host makes an invoice (Peel, from the
   worker's own account) and strut's payer pays it. The page asks for a
   withdrawal and never supplies the invoice.
