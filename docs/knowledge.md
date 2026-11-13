@@ -145,7 +145,8 @@ index. A change in this area updates this file, not AGENTS.md.
   (`src/workflows/system/dream/`, `src/knowledge.ts`, the `knowledge/*` and
   `dream/*` steps). A system workflow, off until its automation is switched
   on (daily, 04:00), one per tree: its input `root` names the tree
-  (`Personal` by default), so a second tree is a second automation. It is
+  (`Personal` by default) and `review` whether a person accepts each change
+  (off by default), so a second tree is a second automation. It is
   the one workflow that holds the Knowledge door, and Concepts are the only
   thing it evolves. `dream/turns` (code) hands it the turns no dream has
   read, as a transcript in which every turn names its run and the Concept
@@ -160,13 +161,29 @@ index. A change in this area updates this file, not AGENTS.md.
   unjudged, so the next is judged in its place);
   (2) records WHAT WAS SAID with `knowledge/add-evidence` as that person's
   word against the claim, when the run whose work they corrected opened
-  the page (the claim then reads `refuted` on that version); (3) PROPOSES
-  the smallest change to the tree with `graph/edit-node` or
-  `graph/create-triplet`, both in the workflow's `approve:`, so nothing in
-  the tree changes until a person accepts. The loop closes in the claims
-  layer with nothing of the dream's own: an accepted edit moves the page's
-  version, the claim reads `stale`, and the next run that opens the page is
-  judged. **Its rules are Concept pages, not its prompt** (ruling 7 of
+  the page (the claim then reads `refuted` on that version); (3) CHANGES
+  the tree as little as would have got it right, with `graph/edit-node` or
+  `graph/create-triplet`. **Automatic by default** (ruled 2026-11-13: "in
+  practice no one should need to review, it should be automatic"; "Main,
+  with history"): the change lands as the dream makes it, on the live tree,
+  and the history keeps it — the commit carries the dream's run (`Run:`),
+  and the run's answer holds the lessons that led to it. REVIEW is a switch
+  per tree, the input `review: true` on that tree's automation: the two
+  tools then sit under the agent's `approve:` (`input.review ?
+  params.review : params.none`), each call records a proposal, its answer
+  says it waits (`GATE_NOTE`), and nothing changes until a person accepts
+  it in the Knowledge app. The dream's own words (the `Dream` page, the
+  prompt, the answer's `change`) hold in both modes. The loop closes in the
+  claims layer with nothing of the dream's own: a change, made or
+  accepted, moves the page's version, the claim reads `stale`, and the next
+  run that opens the page is judged. Nothing caps the changes one cycle
+  makes but the agent's 60 model steps (each may carry several tool calls)
+  and the lessons it finds (at most 60 turns read, 10 claims written); and
+  `dream/turns` reads every person's conversations on the server, so with
+  review off anyone the assistant talks to can change that tree. Neither a
+  cap nor a rule about whose words count is ruled. No undo: a change is
+  put back by another change (plans/concept-history.md, "Open: Revert in
+  the Knowledge app"). **Its rules are Concept pages, not its prompt** (ruling 7 of
   2026-11-12): the YAML keeps the mechanics — the steps, how each tool is
   called, that the material is data, the answer's shape — and the
   judgment is in the dream's OWN tree, which strut seeds like `Job`
@@ -202,12 +219,24 @@ index. A change in this area updates this file, not AGENTS.md.
   so are its writing steps and `dream/turns`: the meta surface cannot run
   them, read the dream's runs or publish a workflow that reaches them. A
   person keeps it in the Knowledge app (strut/knowledge, above):
-  a Concept's claims with their status, the dream's changes to it drawn
-  over the page and accepted or rejected there by an ADMIN (a proposal made
-  in no conversation shows on strut's own pages to an admin, `pageSees`),
-  and what waits across the tree. Not built: launching a dream from the
-  app, a chat with the tender, sources other than conversations, moving a
-  page, retiring a claim.
+  a Concept's claims with their status; where its tree is reviewed, the
+  dream's changes to it drawn over the page and accepted or rejected there
+  by an ADMIN (a proposal made in no conversation shows on strut's own
+  pages to an admin, `pageSees`), and what waits across the tree; and,
+  afterwards, WHAT THE DREAM LEARNED, cycle by cycle (`knowledge/cycles`,
+  an admin's read, below): when each dream ran, its tree, whether it was
+  reviewed, its lessons (what a person said, the claim, the change) and,
+  opened, the diff of the commits carrying its run (`history/read log {
+  run }`, drawn by `ConceptDiff` from the commit before the first to the
+  last; commits that land in one window share a `Run:` list, so another
+  run's write may show beside it). "Learned" over the graph lists the
+  tree's recent cycles; a Concept's card lists those whose lesson is on it
+  or whose run changed its page (the `runs` of its own history). Where the
+  history is off, the view says so; where review was on, nothing changed
+  under the run itself, and what a person accepted is its own `proposal
+  <id>` commit. Not built: launching a dream from the app, a chat with the
+  tender, sources other than conversations, moving a page, retiring a
+  claim, reverting a change from the app.
 
 - **Concept branches — a copy of the tree a run can be pointed at**
   (`src/branches.ts`, plans/concept-evals.md item b; rulings 2, 3 and 10).
@@ -345,7 +374,7 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 
 ### `src/knowledge.ts`
 
-the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. Changing a Concept is not here: the workflow's `approve:` makes it a proposal
+the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. `cycles({ limit, tree })`: the dream's recent runs that read something, newest first, from the run store (`cycleOf` folds a summary — run, status, times, tree, source, `review`, turns, `more`, lessons with `change` (`proposed` on runs from before review was a switch), `stuck`, error — and leaves out a quiet or parked run; at most 200 runs looked through). Changing a Concept is not here: the workflow's own graph steps change it, and where the tree is reviewed its `approve:` makes each change a proposal
 
 ### `src/branches.ts`
 
@@ -377,7 +406,7 @@ context/concept: a Concept as an agent's context — the page's docs (capped at 
 
 ### `src/steps/lib/knowledge/`
 
-the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the two reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused
+the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/cycles { tree?, limit? } (`effect: read`: what the dream learned, cycle by cycle, `cycles()`; its lessons quote the conversations the sealed dream read, so it answers ONE caller: strut's own page (`isFirstParty`) shown to an ADMIN, in the page's own call (`RUN_STEP_FLOW`) — the viewer who sees the dream's proposals (`pageSees`); a workflow, an agent's tool, a run a page launched, a member's page or a model-written one is refused `is an admin's`, before anything is read; not `sealed`, since a sealed step is refused to every app), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the three reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused
 
 ### `src/steps/lib/dream/`
 

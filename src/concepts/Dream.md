@@ -42,9 +42,9 @@ work they were talking about, when that work opened the claim's page:
 work that never read a page is not measured by it. When the source cannot
 say which work it was, or what that work opened, record nothing.
 
-THE EDIT. Propose the smallest change to the tree that would have made
-the assistant get it right. A person decides each one; nothing changes
-until they accept.
+THE CHANGE. Make the smallest change to the tree that would have made
+the assistant get it right, and make it now. Where a person reviews this
+tree, the tool answers that it waits for their yes: leave it to them.
 
 ## Where a lesson goes
 

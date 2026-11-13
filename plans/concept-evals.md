@@ -3,8 +3,9 @@
 > **Status (2026-11-13):** the primitives below were ruled by Evan on
 > 2026-11-12; Paul's remarks reached the conversation through Evan, and the
 > discussion with Paul and Tom is ongoing. Work item (a) is built (this
-> file's first PR, #669), item (b) is built (#677), item (c) is built (its
-> PR). The rest are not started. Everything marked
+> file's first PR, #669), item (b) is built (#677), item (c) is built
+> (#683), and the dream is automatic by default ("Automatic by default",
+> below). The rest are not started. Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
 > `job-claims.md`, `concept-history.md` (the history in git), and
@@ -78,6 +79,65 @@ knowledge work (like the legal concept tree)."
   commits carry the run (`Run:` trailer), and the run leads to the
   conversations it read. No branch per cycle: no nightly copy of the tree,
   no merge.
+
+### What was built (the dream made automatic)
+
+- **Automatic by default.** The dream's page changes land as it makes
+  them: `graph/edit-node` and `graph/create-triplet` run at once, through
+  the run's graph view, so the history's commit for them is `run <id>`
+  with a `Run:` trailer naming the dream's run. **Review is a switch per
+  tree**: the dream's input `review` (default `false`), set on that tree's
+  automation, puts the two tools back under the agent's `approve:` exactly
+  as before (`approve: "{{ input.review ? params.review : params.none }}"`).
+  *Mine:* the switch is an input, not a param, since each tree is its own
+  automation and an automation sets input.
+- **The words hold in both modes.** The `Dream` page's third thing is THE
+  CHANGE: "Make the smallest change … and make it now. Where a person
+  reviews this tree, the tool answers that it waits for their yes: leave it
+  to them." The prompt's tool line says the same, and the gated tool's own
+  description (`GATE_NOTE`) says it waits only where review is on. The
+  answer's `proposed` is now `change`; `review` is on the answer too. The
+  other rules on the page are unchanged.
+- **What a cycle changed, and why** (the Knowledge app). `knowledge/cycles`
+  (a read step beside `knowledge/claims`, over a new `cycles()` on the
+  Knowledge door) folds the dream's recent runs that read something: when,
+  the tree, `review`, turns, the lessons (said, claim, change), `stuck`, an
+  error. *Mine:* it answers ONE caller, strut's own page shown to an admin
+  in the page's own call — the viewer who sees the dream's proposals
+  (`pageSees`) — and refuses a workflow, an agent's tool, a run a page
+  launched and a member's page; it is not `sealed`, since a sealed step is
+  refused to every app. The app's **Learned** (over the graph, shown only
+  when that read answers) lists the cycles; each opens to the diff of the
+  commits carrying its run (`history/read log { run }`, drawn by
+  `ConceptDiff`), and says so where the history is off. A Concept's card
+  lists the cycles about it: a lesson's claim on it, or a run named on its
+  own history. The waiting queue is as it was, for a tree under review.
+- **At upgrade.** A deployment whose dream automation is already on keeps
+  its input (an automation's input is never touched at boot), which names
+  no `review`, so its next cycle is automatic. To keep reviewing, set
+  `review: true` on that automation's input. *Mine:* no migration. The
+  dream's proposals still pending stay pending, listed and decided in the
+  Knowledge app as before; an accept applies them as it always did.
+- **Not built.** Undo (Evan's open decision, plans/concept-history.md,
+  "Open: Revert in the Knowledge app"); a cap on changes per cycle (today
+  nothing caps them but the agent's 60 model steps, each of which may carry
+  several tool calls, and the lessons found: at most 60 turns read, 10
+  claims written); a rule about whose words count (`dream/turns` reads
+  every person's conversations on the server, so with review off anyone
+  the assistant talks to can change that tree). Neither is ruled. Under
+  review, the run itself changes nothing, and what a person accepts is its
+  own `proposal <id>` commit, which names no run: the cycle view shows that
+  cycle's lessons and says its changes waited.
+- **Checked with a real model** (Sonnet 5.5, a scratch strut on a Ladybug
+  file, `concepts: { personal: true }`): two assistant turns, the second a
+  correction ("Too formal … Notes to my team are casual and three lines at
+  most, from now on"). The dream, automatic, wrote the claim on `Personal`,
+  recorded the person's words, and added a page `Team notes` under the
+  root ("Open when writing any note, message or announcement to the
+  person's team"), the root's own text untouched; no proposal; one commit,
+  `run <id>`, adding `concepts/concept-teamnotes.md`; $0.04. The app's
+  Learned view showed the cycle, its lesson and that diff to an admin, and
+  the `Team notes` card listed it; a member's page showed no Learned.
 
 ## Build order
 

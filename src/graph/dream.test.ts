@@ -3,11 +3,13 @@
  * `dream` and `concept-check` workflows, and a stand-in model that plays
  * each agent by its system prompt. A person corrects the assistant; the
  * dream reads the turns, writes a claim on the page with the standard
- * check, records what the person said against it, and PROPOSES the edit.
- * Nothing in the tree changes until a person accepts; then the page's
- * version moves, the claim reads stale, and the next turn that opens the
- * page is judged by `concept-check`. A dream with nothing new calls no
- * model.
+ * check, records what the person said against it, and CHANGES the tree:
+ * at once by default, the history's commit carrying its run; as a
+ * proposal a person accepts first where the tree is reviewed (`review`).
+ * Either way the page's version moves, the claim reads stale, and the next
+ * turn that opens the page is judged by `concept-check`. What a cycle
+ * learned is read back afterwards (`knowledge/cycles`). A dream with
+ * nothing new calls no model.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -30,8 +32,11 @@ import addClaimStep from "../steps/lib/knowledge/add-claim.js";
 import addEvidenceStep from "../steps/lib/knowledge/add-evidence.js";
 import pageStep from "../steps/lib/knowledge/page.js";
 import claimsStep from "../steps/lib/knowledge/claims.js";
+import cyclesStep from "../steps/lib/knowledge/cycles.js";
 import doneStep from "../steps/lib/dream/done.js";
 import turnsStep from "../steps/lib/dream/turns.js";
+import historyRead from "../steps/lib/history/read.js";
+import { RUN_STEP_FLOW } from "../run-step.js";
 
 const sse = (o: unknown) => `event: ${(o as { type: string }).type}\ndata: ${JSON.stringify(o)}\n\n`;
 const start = sse({
@@ -73,6 +78,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   /** What the dream's agent was first sent (its system prompt, and its messages), and what each judge was sent. */
   let tendSystem = "";
   let tendPrompt = "";
+  /** The tools the dream's agent was offered, as the model sees them. */
+  let tendTools = "";
   let judged: string[] = [];
   /** What the stand-in judge answers: a verdict, or none (the rule is not about that run). */
   let verdict: boolean | null = false;
@@ -89,7 +96,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       let raw = "";
       req.on("data", (d) => (raw += d));
       req.on("end", () => {
-        const body = JSON.parse(raw) as { system?: unknown; messages: Array<{ role: string; content: unknown }> };
+        const body = JSON.parse(raw) as { system?: unknown; tools?: unknown; messages: Array<{ role: string; content: unknown }> };
         const system = JSON.stringify(body.system ?? "");
         const all = JSON.stringify(body.messages);
         const say = (name: string, input: unknown) => res.end(toolUse(`toolu_${++n}`, name, input));
@@ -97,7 +104,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
         if (system.includes("You are the dream.")) {
           calls.push("tend");
           const turn = body.messages.filter((m) => m.role === "assistant").length;
-          if (turn === 0) [tendSystem, tendPrompt] = [system, all];
+          if (turn === 0) [tendSystem, tendPrompt, tendTools] = [system, all, JSON.stringify(body.tools ?? [])];
           if (openFirst && turn === 0) return say("graph_graph_get", { node_type: "Concept", name: openFirst, children: "PARENT_OF" });
           if (!lesson) return say("final_answer", { lessons: [] });
           // The run whose work was corrected (turn 0's), the root's ref_id, and the claim once it is written.
@@ -115,7 +122,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
               target_data: { name: "Summaries", description: "How long a summary may be: open it before writing one.", docs: NEW_DOCS },
               rationale: "The person said summaries run long; no page says how long they may be.",
             });
-          return say("final_answer", { lessons: [{ session: "c-1", turn: 1, said: SAID, concept: "Personal", claim: CLAIM, claim_id: claim, recorded: true, proposed: "a Summaries page under Personal" }] });
+          return say("final_answer", { lessons: [{ session: "c-1", turn: 1, said: SAID, concept: "Personal", claim: CLAIM, claim_id: claim, recorded: true, change: "a Summaries page under Personal" }] });
         }
         if (system.includes("You judge whether a piece of work did what a rule says")) {
           calls.push("judge");
@@ -151,6 +158,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     judged = [];
     tendSystem = "";
     tendPrompt = "";
+    tendTools = "";
     verdict = false;
     lesson = true;
     openFirst = "";
@@ -206,7 +214,23 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   const claimsOn = async (name: string) => (await json<{ claims: Array<Record<string, any>> }>(`/claims?kind=concept&name=${encodeURIComponent(name)}`)).claims;
   const docsOf = async (name: string) => (await (strut!.services as unknown as { knowledge: KnowledgeCapability }).knowledge.page(name))?.docs;
 
-  it("a correction becomes a claim with the standard check, the person's word against it, and a PROPOSED edit; accepted, the page moves and the next turn is judged", async () => {
+  /** The history's commits carrying `run` that changed a Concept page; null where this strut keeps no history (no `git`). */
+  const commitsOf = async (run: string) => {
+    const r = (await historyRead.run(historyRead.input.parse({ action: "log", run, path: "concepts" }), { services: strut!.services } as never)) as {
+      history?: false;
+      commits?: Array<{ subject: string; runs: string[]; changes: Array<{ path: string; status: string }> }>;
+    };
+    return r.history === false ? null : r.commits!;
+  };
+  /** What the dream learned, cycle by cycle (the Knowledge door's `cycles`). */
+  const cycles = async (opts: { tree?: string } = {}) =>
+    (await (strut!.services as unknown as { knowledge: KnowledgeCapability }).knowledge.cycles(opts)) as unknown as Array<Record<string, any>>;
+  /** The page strut ships, shown to an admin: what knowledge/cycles answers, and no one else. */
+  const ADMIN_PAGE = { workflow: RUN_STEP_FLOW, app: { name: "strut/knowledge", version: "v1", firstParty: true, admin: true } };
+  const cyclesAs = async (ctx: Record<string, unknown>) =>
+    ((await cyclesStep.run(cyclesStep.input.parse({}), { services: strut!.services, ...ctx } as never)) as { cycles: Array<Record<string, any>> }).cycles;
+
+  it("a correction becomes a claim with the standard check, the person's word against it, and a CHANGE made at once: no proposal, the history's commit carries the run, and the next turn is judged", async () => {
     const first = await say("summarise my notes from Monday");
     await say(SAID);
     const docsBefore = await docsOf("Personal");
@@ -218,13 +242,16 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     const at = (s: string) => tendSystem.indexOf(s);
     for (const s of ["You are the dream.", 'the \\"Dream\\" Concept', "## Where a lesson goes", "- Assistant Conversations — ", 'the \\"Assistant Conversations\\" Concept', "Look for the moments a person corrected the assistant"]) assert.ok(at(s) >= 0, s);
     assert.ok(at("You are the dream.") < at('the \\"Dream\\" Concept') && at("## Where a lesson goes") < at('the \\"Assistant Conversations\\" Concept'), "mechanics, the root, then the source");
+    // Not reviewed: the tools that change the tree run, and none says it waits for a person.
+    assert.ok(tendTools.includes("graph_create_triplet") && tendTools.includes("graph_edit_node"), tendTools.slice(0, 300));
+    assert.ok(!tendTools.includes("PROPOSED") && !tendSystem.includes("nothing changes until"), "nothing waits");
     // The transcript the agent was handed: each turn with its run and the pages that run opened, then the root as a tender reads it.
     assert.match(tendPrompt, new RegExp(`\\[session c-1 · turn 0 · [^\\]]* · run orchestrator ${first["runId"]}[^\\]]*\\]\\\\+nOPENED: [^\\\\]*Personal`));
     assert.match(tendPrompt, /PERSON: too long, keep summaries to three lines/);
     assert.match(tendPrompt, /CONCEPT \\+"Personal\\+" \(ref_id [0-9a-f-]+\) — a root/);
     const out = run["output"] as Record<string, any>;
-    assert.deepEqual([out["root"], out["turns"], out["more"], out["stuck"]], ["Personal", 2, false, []]);
-    assert.deepEqual(out["lessons"].map((l: any) => [l.session, l.turn, l.concept, l.claim, l.recorded]), [["c-1", 1, "Personal", CLAIM, true]]);
+    assert.deepEqual([out["root"], out["review"], out["turns"], out["more"], out["stuck"]], ["Personal", false, 2, false, []]);
+    assert.deepEqual(out["lessons"].map((l: any) => [l.session, l.turn, l.concept, l.claim, l.recorded, l.change]), [["c-1", 1, "Personal", CLAIM, true, "a Summaries page under Personal"]]);
     assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks, { "c-1": 1 });
 
     // The claim: written at once, by the AI, with the one check a tender's claims get.
@@ -234,21 +261,36 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       claim!["checks"].map((k: any) => [k.name, k.type, k.config.workflow, k.config.input.claim, k.policy, k.publisher]),
       [["judge", "subflow", CONCEPT_CHECK_WORKFLOW, CLAIM, "on_change", "ai"]],
     );
-    // What the person said is their word against it, about the page as turn 0's run read it: refuted, and nothing has judged it yet.
-    assert.deepEqual([claim!["status"], claim!["assertedOnly"], claim!["unverified"]], ["refuted", true, 1]);
+    // What the person said is their word against it, about the page as turn 0's run read it. The change then
+    // landed, and the root's version covers the pages listed under it: the claim reads stale, waiting for a judge.
+    assert.deepEqual([claim!["status"], claim!["unverified"]], ["stale", 1]);
     assert.deepEqual([claim!["latest"].content, claim!["latest"].by, claim!["latest"].run.runId, claim!["latest"].mode], [SAID, "evan", first["runId"], "asserted"]);
 
-    // The edit is a proposal: the tree is as it was.
-    const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
-    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/create-triplet", "pending"]]);
+    // The change is made, not proposed: a page under the root, the root's own text as it was.
+    assert.deepEqual((await json<{ proposals: unknown[] }>(`/proposals?runId=${run["runId"]}`)).proposals, []);
     assert.equal(await docsOf("Personal"), docsBefore);
-    assert.equal(await docsOf("Summaries"), undefined);
+    assert.equal(await docsOf("Summaries"), NEW_DOCS);
 
-    // Nothing new to read: no model is called, and nothing is written twice.
+    // What it changed is the history's: the commit carries the dream's run (`Run:`).
+    const commits = await commitsOf(run["runId"]);
+    assert.equal(commits === null, !strut!.history, "read wherever this strut keeps a history");
+    if (commits) {
+      assert.ok(commits.length >= 1 && commits.every((c) => c.runs.includes(run["runId"])), JSON.stringify(commits));
+      assert.ok(commits.some((c) => c.changes.some((ch) => ch.path === "concepts/concept-summaries.md" && ch.status === "added")), JSON.stringify(commits));
+    }
+
+    // And what it learned, read back as strut's own page shows an admin: the cycle, with its lessons.
+    const [cycle] = await cycles();
+    assert.deepEqual([cycle!["run"], cycle!["status"], cycle!["tree"], cycle!["source"], cycle!["review"], cycle!["turns"]], [run["runId"], "success", "Personal", "Assistant Conversations", false, 2]);
+    assert.deepEqual(cycle!["lessons"], [{ session: "c-1", turn: 1, said: SAID, concept: "Personal", claim: CLAIM, claim_id: claim!["id"], recorded: true, change: "a Summaries page under Personal" }]);
+
+    // Nothing new to read: no model is called, nothing is written twice, and it is no cycle.
     const quiet = await dream();
     assert.deepEqual(calls, []);
     assert.deepEqual([quiet["output"]["turns"], quiet["output"]["lessons"]], [0, []]);
     assert.equal((await claimsOn("Personal")).length, 1);
+    assert.deepEqual((await cycles()).map((c) => c["run"]), [run["runId"]]);
+    assert.deepEqual(await cycles({ tree: "Job" }), []);
 
     // The dream's own run opened its own pages, never the tree it tends (a tender reads through knowledge/page):
     // it is not checked against the claim on Personal. A quiet dream opened nothing.
@@ -256,15 +298,6 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual((await knowledge.opened("dream", run["runId"]))?.sort(), ["Assistant Conversations", "Dream"]);
     assert.deepEqual(await knowledge.opened("dream", quiet["runId"]), []);
     assert.deepEqual((await verified("dream", run["runId"]))["checks"], []);
-
-    // A person accepts: a page under the root, the root's own text as it was. The root's version covers the pages
-    // listed under it, so it moves, and what was said is about an older page.
-    const decided = await post(`/proposals/${proposals[0]!["id"]}/decide`, { action: "accept" });
-    assert.equal(decided["status"], "applied", JSON.stringify(decided).slice(0, 600));
-    assert.equal(await docsOf("Personal"), docsBefore);
-    assert.equal(await docsOf("Summaries"), NEW_DOCS);
-    [claim] = await claimsOn("Personal");
-    assert.equal(claim!["status"], "stale");
 
     // The next turn opens the new page, and the judge is handed that run.
     verdict = true;
@@ -284,6 +317,48 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     const again = await say("and Wednesday's");
     assert.deepEqual((await verified(ORCHESTRATOR_WORKFLOW, again["runId"]))["checks"].map((k: any) => k.lastVerify), [{ skipped: "policy" }]);
     assert.equal(judged.length, 1);
+  });
+
+  it("a tree under review: each change is a proposal and the tree is as it was until a person accepts it", async () => {
+    await say("summarise my notes from Monday");
+    await say(SAID);
+    const docsBefore = await docsOf("Personal");
+
+    const run = await dream({ review: true });
+    // The tools that change the tree say the change waits; the dream's own words hold either way.
+    assert.match(tendTools, /graph_create_triplet[^]*PROPOSED, not run/);
+    assert.ok(tendSystem.includes("Where a person reviews this tree, the answer says the change"));
+    assert.deepEqual([run["output"]["review"], run["output"]["lessons"].length], [true, 1]);
+
+    const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
+    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/create-triplet", "pending"]]);
+    assert.equal(await docsOf("Personal"), docsBefore);
+    assert.equal(await docsOf("Summaries"), undefined);
+    assert.equal((await claimsOn("Personal"))[0]!["status"], "refuted");
+    // Nothing in the tree changed under the dream's run, and its cycle says its changes waited.
+    const commits = await commitsOf(run["runId"]);
+    if (commits) assert.deepEqual(commits, []);
+    assert.deepEqual((await cycles()).map((c) => [c["run"], c["review"]]), [[run["runId"], true]]);
+
+    // A person accepts: the page lands, and the claim reads stale.
+    const decided = await post(`/proposals/${proposals[0]!["id"]}/decide`, { action: "accept" });
+    assert.equal(decided["status"], "applied", JSON.stringify(decided).slice(0, 600));
+    assert.equal(await docsOf("Personal"), docsBefore);
+    assert.equal(await docsOf("Summaries"), NEW_DOCS);
+    assert.equal((await claimsOn("Personal"))[0]!["status"], "stale");
+  });
+
+  it("knowledge/cycles answers strut's own page shown to an admin, and no one else: the lessons quote what people said", async () => {
+    await say(SAID);
+    const run = await dream();
+    const page = (over: Record<string, unknown>) => ({ ...ADMIN_PAGE, app: { ...ADMIN_PAGE.app, ...over } });
+    // A workflow's step or an agent's tool, a run the page launched, a member's page, a page strut did not ship.
+    for (const ctx of [{}, { workflow: "some-flow", app: ADMIN_PAGE.app }, page({ admin: false }), page({ firstParty: false }), { workflow: RUN_STEP_FLOW }]) {
+      await assert.rejects(async () => cyclesAs(ctx), /knowledge\/cycles is an admin's/, JSON.stringify(ctx));
+    }
+    // Where a page may not read the tree's namespace (a personal strut), it is refused as the claims are.
+    if (readers) await assert.rejects(async () => cyclesAs(ADMIN_PAGE), /may not read "private", where the Concept tree is kept/);
+    else assert.deepEqual((await cyclesAs(ADMIN_PAGE)).map((c) => [c["run"], c["lessons"].length]), [[run["runId"], 1]]);
   });
 
   it("a run the rule is not about is left unjudged: nothing is recorded, and the next run that opens the page is judged in its place", async () => {

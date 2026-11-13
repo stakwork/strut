@@ -10,11 +10,16 @@ description: Reads the new turns of the conversations with the assistant and kee
 #     against it, once all of it is done (src/work.ts);
 #   - records WHAT WAS SAID as that person's word against the claim, when
 #     the run whose work they corrected opened the page;
-#   - PROPOSES the smallest change to the tree that would have got it right.
+#   - CHANGES the tree as little as would have got it right.
 #
-# Claims and what was said are written at once. A change to a Concept is a
-# proposal a person decides (`params.approve`): nothing in the tree changes
-# until they accept it. Concepts are the only thing the dream evolves.
+# Claims and what was said are written at once. A change to a Concept lands
+# as the dream makes it, and the history keeps it: its commit carries the
+# dream's run (`Run:`), and the run's answer holds the lessons that led to
+# it, so what a cycle changed and why is read afterwards (the Knowledge
+# app). REVIEW is a switch per tree, `input.review`: on, the two tools that
+# change the tree are under `approve:`, so each change is a proposal a
+# person accepts or rejects first. Concepts are the only thing the dream
+# evolves.
 #
 # HOW it judges all of that is not here: it is on Concept pages the agent
 # reads, the dream's own tree (src/concepts/Dream.md): `Dream` holds what is
@@ -39,13 +44,15 @@ description: Reads the new turns of the conversations with the assistant and kee
 # that fails reads them again. With no new turns no model is called, and no
 # page is read.
 #
-# One workflow, set up per tree by its input: `root` names the tree. A second
-# tree is a second automation. Sealed: its run log holds the conversations it
-# read. No model: strut's default.
+# One workflow, set up per tree by its input: `root` names the tree and
+# `review` whether a person accepts each change. A second tree is a second
+# automation. Sealed: its run log holds the conversations it read. No model:
+# strut's default.
 sealed: true
 input:
   root: { type: string, default: Personal, description: "the tree it tends: the root Concept's name" }
   source: { type: string, default: Assistant Conversations, description: "the kind of source it learns from: the name of that source's page under the Dream Concept" }
+  review: { type: boolean, default: false, description: "true: each change to the tree waits for a person's yes, a proposal decided in the Knowledge app; false: changes land as the dream makes them, and the history keeps each one" }
   limit: { type: number, default: 60, description: "most turns to read in one dream" }
   days: { type: number, default: 14, description: "how far back the first dream reads, in days" }
 params:
@@ -57,8 +64,9 @@ params:
   # around `Dream` or its source's page): opening it is recorded, so the
   # claims on that page judge this run.
   tools: [knowledge/page, knowledge/add-claim, knowledge/add-evidence, graph/edit-node, graph/create-triplet, graph/graph-get]
-  # What waits for a person: every change to the tree.
-  approve: [graph/edit-node, graph/create-triplet]
+  # What waits for a person when the tree is reviewed (`input.review`): every
+  # change to the tree. Not reviewed, nothing waits.
+  review: [graph/edit-node, graph/create-triplet]
   none: []
   # The mechanics, above the pages: what the tools do and how they are
   # called. The judgment is the pages'.
@@ -80,8 +88,9 @@ params:
       every claim: you never write a check.
     - knowledge_add_evidence records a person's words against a claim,
       naming the run their words were about as the material names it.
-    - graph_edit_node and graph_create_triplet change the tree, and each call
-      is a PROPOSAL: nothing changes until a person accepts it.
+    - graph_edit_node and graph_create_triplet change the tree, once per
+      change. Where a person reviews this tree, the answer says the change
+      waits for their yes: go on, and never make the same call again.
       graph_edit_node takes the page's ref_id from knowledge_page:
       `node_data: { docs }` is the WHOLE new text, so copy the page's docs
       and change only what you mean to; `node_data: { description }` is its
@@ -136,7 +145,7 @@ steps:
       toolFilter: [none]
       mcp: false
       agentTools: "{{ params.tools }}"
-      approve: "{{ params.approve }}"
+      approve: "{{ input.review ? params.review : params.none }}"
       maxSteps: 60
       system: |-
         {{ params.system }}
@@ -164,7 +173,7 @@ steps:
                 claim: { type: string, description: "the sentence that should hold from now on" }
                 claim_id: { type: string, description: "the claim's id" }
                 recorded: { type: boolean, description: "true when their words were recorded against the claim" }
-                proposed: { type: string, description: "the change to the tree you proposed, in a line; empty when none" }
+                change: { type: string, description: "the change you made to the tree, in a line (it waits for a person where this tree is reviewed); empty when none" }
           stuck:
             type: array
             description: "claims that went wrong again though their page already says it plainly: what a person should look at, one line each"
@@ -191,6 +200,7 @@ steps:
     depends: done
     config:
       root: "{{ input.root }}"
+      review: "{{ input.review }}"
       turns: "{{ turns.count }}"
       more: "{{ turns.more || false }}"
       lessons: "{{ tend?.object?.lessons || params.none }}"

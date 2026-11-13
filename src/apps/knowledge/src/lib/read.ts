@@ -4,11 +4,12 @@
 // `graph/graph-edges` reads the edges among them, 1,000 at a time with
 // every Concept as `among`. The same steps on a Neo4j and a Ladybug file.
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useStrutClient, type StrutClient } from "@strut/kit";
-import { getEdges, getNeighbors, type GraphHit } from "strut/views";
+import { conceptPagePath, useStrutClient, type StrutClient } from "@strut/kit";
+import { getEdges, getNeighbors, readLog, type GraphHit } from "strut/views";
 import { buildTree, conceptOf, TREE_TYPE, type Concept, type ConceptTree } from "./tree";
 import { groupLinks, isSystemType, orderTypes, typeDescription, type OntologyType } from "./ontology";
 import { DREAM, type ClaimedConcept, type PageClaim, type PendingChange } from "./learning";
+import { CYCLES_STEP, cycleSpan, runsOf, type DreamCycle } from "./cycles";
 
 export const FIND = "graph/find";
 /** A page of Concepts: docs run to ~6k chars, so 200 stays far under step_run's 5 MB. */
@@ -177,6 +178,53 @@ export function useChanges() {
       const read = (status: string) => client.run("proposal/list", { workflow: DREAM, status, input: true, limit: 200 });
       const lists = await Promise.all(["pending", "failed"].map(async (s) => answer<{ proposals?: PendingChange[] }>("proposal/list", await read(s)).proposals ?? []));
       return lists.flat();
+    },
+  });
+}
+
+/** The dream's recent cycles, newest first (`knowledge/cycles`): refused to anyone but an admin, since its lessons
+ *  quote what people said. */
+export function useCycles() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "cycles"],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => answer<{ cycles?: DreamCycle[] }>(CYCLES_STEP, await client.run(CYCLES_STEP, { limit: 30 })).cycles ?? [],
+  });
+}
+
+/** What one cycle changed in the tree: the commits carrying its run (`history/read log { run }`) and the two moments
+ *  that draw them (`cycleSpan`, null when nothing changed under it). Throws where the history is off, saying so. */
+export function useCycleChange(run: string | null) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "cycle-change", run],
+    enabled: !!run,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => {
+      const { commits } = await readLog(client, { path: "concepts", run: run!, limit: 10 });
+      const oldest = commits[commits.length - 1];
+      // The commit before the first: the next older one that touched a page (readLog reads one past `limit`).
+      const before = oldest ? (await readLog(client, { path: "concepts", to: oldest.id, limit: 1 })).commits[1] : undefined;
+      return { commits, span: cycleSpan(commits, before) };
+    },
+  });
+}
+
+/** The runs that changed one Concept's page: the `runs` on its own history. Empty where there is no history. */
+export function usePageRuns(name: string | undefined) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "page-runs", name],
+    enabled: !!name,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => {
+      const path = await conceptPagePath(name!);
+      if (!path) return new Set<string>();
+      return runsOf((await readLog(client, { path, limit: 50 }).catch(() => ({ commits: [] }))).commits);
     },
   });
 }

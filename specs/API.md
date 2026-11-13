@@ -2278,15 +2278,16 @@ typed — `now` against a branch's name is main against that branch — and
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.
 
-The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with five more
-grants: `knowledge/page`, `knowledge/claims`, `proposal/list`,
-`proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
+The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with six more
+grants: `knowledge/page`, `knowledge/claims`, `knowledge/cycles`,
+`proposal/list`, `proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
 (`knowledge/page { name }`, shown only when the page it answers is that
 node) — each sentence, its status (supported, refuted, stale, unknown) and
 the latest evidence in a line: what a person said and who, or what a check
 saw. Where the page may not read the namespace the tree is kept in (a
 personal strut, whose pages read `shared`) or the server keeps no claims,
-the step refuses and the panel says why in one line. Above them, the
+the step refuses and the panel says why in one line. Above them, where the tree is reviewed (the dream's input `review: true`;
+by default its changes land at once), the
 CHANGES to that Concept the dream proposed and waiting on a person
 (`proposal/list { workflow: "dream", status, input: true }`, pending and
 failed): a `graph/edit-node`, `move-node` or `delete-node` on its `ref_id`,
@@ -2299,6 +2300,25 @@ are made in no conversation, §12); a member sees the claims. **Waiting**
 over the graph lists the Concepts with a change waiting or a claim refuted
 (`knowledge/claims`: every Concept carrying claims, with them), each
 opening its Concept.
+
+WHAT THE DREAM LEARNED, afterwards, for an ADMIN: `knowledge/cycles { tree?,
+limit? }` (default 20, at most 100) answers `{ cycles: [{ run, status,
+startedAt, finishedAt, tree, source?, review, turns, more?, lessons: [{
+session, turn, said, concept, claim, claim_id?, recorded?, change? }],
+stuck, error? }] }`, newest first: the dream's runs that read something
+(a quiet or parked run is none). Its lessons quote the conversations the
+sealed dream read, so it answers strut's own page shown to an admin, in the
+page's own call, and refuses everyone else (`… is an admin's`): the same
+viewer who sees the dream's proposals. **Learned** over the graph (shown
+only when the read answers) lists the recent cycles, each with when it ran,
+its tree, `reviewed` when its changes waited for a person, and its lessons
+(what a person said, the claim on which page, the change); opened, the diff
+of what its run changed (`history/read log { run, path: "concepts" }`, then
+the commit before the first: `ConceptDiff { from, to }`). A Concept's panel
+lists the cycles about it: a lesson's claim on it, or a run named on its
+own history's commits. With no history on the server the diff says so; a
+reviewed cycle changed nothing under its own run (what a person accepted
+is its own `proposal <id>` commit).
 
 ### 14.14 `strut/earnings` — Earnings for an admin, and admin-only apps
 
