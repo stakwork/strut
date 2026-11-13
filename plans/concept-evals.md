@@ -73,10 +73,11 @@ knowledge work (like the legal concept tree)."
 - **What follows for (d):** a branch refuses claims and evidence today
   (item b), and the dream writes both as it goes, so the dream cannot yet
   be evaluated on a branch end to end. (d) lifts that first.
-- **Open:** whether everyday dreaming also runs on a branch per cycle
-  (merged at its end, the branch kept to inspect) or on main directly (the
-  history's commits, one `Run:` trailer per run, are what a person
-  inspects). Not decided.
+- **Everyday dreaming writes main** (ruled the same day: "Main, with
+  history"). What a cycle changed, and why, is read from the history: its
+  commits carry the run (`Run:` trailer), and the run leads to the
+  conversations it read. No branch per cycle: no nightly copy of the tree,
+  no merge.
 
 ## Build order
 
