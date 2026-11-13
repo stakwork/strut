@@ -641,9 +641,10 @@ pattern). It comes with the staff app (§9).
 ## 7. Tests, copies and standing (item 4)
 
 > **Design pass (2026-11-12),** written against `main` @f3634e97 with
-> items 1, 2a, 2b and 3 built. All of it is proposed. Numbers marked
-> *proposed* are defaults to rule on, and the questions that need a ruling
-> are listed in §7.12.
+> items 1, 2a, 2b and 3 built. **Ruled the same day:** Evan agreed with
+> every recommendation in §7.12, the defaults of §7.8 included. Two things
+> are still proposed and marked so: the graders strut ships (PR 4c) and the
+> name of item 5a's accepted-answer hook, which is §8's to choose.
 
 Item 4 adds three things to the task store and nothing to the runner:
 
@@ -778,7 +779,7 @@ How a test is graded is its own `grade`, else its type's `tests.grade`:
 | `{ step, config? }` | The registry step answers in the claims check contract, `{ supports, content }`, with `supports: true`, read by `mapCheckResult` (`src/verify.ts`) |
 
 A box on a photo is graded by overlap and free text by a model, each a
-step. *Proposed:* strut ships two, `grade/overlap` (each box's
+step. *Still proposed (PR 4c):* strut ships two, `grade/overlap` (each box's
 intersection over union at least `min`, default 0.7) and `grade/judge`
 (a model compares the answer with `expected` under staff's rubric), both
 `sealed: true`.
@@ -800,8 +801,8 @@ hands `createTasks`, so `tasks.ts` stays free of the runner (as
 | Services | An allowlist: `secrets` (model keys) and `llmAuth`. No artifacts, shell, http, graph, runs or tasks, and no `onRunEnd` or `onRunEvent`, so the run is never projected, verified or sent to the events sink |
 | Record | The run is in memory (`runSingleStep`'s own `MemoryRunStore`), and its events are dropped once the verdict is read. The verdict and its `content`, cut to 2,000 characters, are kept on the instance for staff |
 | Actor, principal | No actor. The principal is the deployment's grading principal (§7.12, 1), so a model grader is billed as the client's model calls are (ruling 2) |
-| Time, cost | `GRADE_TIMEOUT_MS`, 60 s *proposed*, then force-cancelled through its `RunController`. Cost capped by the type's `tests.gradeCapUsd` as `maxCostUsd`, $0.05 *proposed* |
-| Concurrency | 4 at a time in the process *proposed*: a queue fed by `submit` and by the sweep |
+| Time, cost | `GRADE_TIMEOUT_MS`, 60 s (§7.8), then force-cancelled through its `RunController`. Cost capped by the type's `tests.gradeCapUsd` as `maxCostUsd`, $0.05 by default (§7.8) |
+| Concurrency | 4 at a time in the process (§7.8): a queue fed by `submit` and by the sweep |
 
 A model grader sends the expected answer to its provider. That is the one
 model that sees it.
@@ -824,7 +825,7 @@ the newest `window` of them. After each grade the service checks it:
   (`standing: passed 13 of the last 20 tests of pet-match, under 80%`).
   The worker's live lease of the type expires at once, as with any revoke.
 - `error` and `pending` grades are not counted. Skipped and expired
-  instances are not graded and not counted *(proposed; §7.12, 4)*.
+  instances are not graded and not counted (ruled, §7.12, 4).
 
 Standing is computed from the instances when it is read, never stored as
 a number: the `pass` and `fail` rows by `test`, `served_to` and `type`,
@@ -843,8 +844,8 @@ qualifying type (`qualifying: true`) and shows no score.
 **A re-grant** (`PUT /tasks/workers/:actor/grants/:type`) moves the
 grant's `at`, as built, so the window starts empty, and the worker
 qualifies again unless staff send `{ qualify: false }`. The old grades
-stay on their instances for staff and count for nothing *(proposed;
-§7.12, 2)*.
+stay on their instances for staff and count for nothing (ruled, §7.12,
+2).
 
 Staff read standing at a new `GET /tasks/workers/:actor` (the worker, and
 per type the window, passed, graded, errors and whether qualifying), and
@@ -870,7 +871,7 @@ workers.
 
 The type's rule, `copies` on its record:
 
-| Field | Meaning | *Proposed* default |
+| Field | Meaning | Default (ruled, §7.8) |
 | --- | --- | --- |
 | `max` | The most copies a step may ask for, and the most `more` may reach | 3 |
 | `agree` | How many answers must match to settle; at most what the step asked for | 2 |
@@ -938,7 +939,9 @@ Elsewhere:
   `copies`, standing on the workers' routes, the re-grant's `qualify`,
   and `GET /tasks?test=true|false` to list instances or leave them out.
 
-### 7.8 Proposed defaults
+### 7.8 Defaults
+
+Ruled as written (§7.12, 9). Staff change them per task type.
 
 | Setting | Default |
 | --- | --- |
@@ -1026,38 +1029,36 @@ proposal an admin accepts.
 
 Never stacked: 4b and 4c branch from `main` after 4a has merged.
 
-### 7.12 Open for ruling
+### 7.12 Ruled (2026-11-12)
 
-1. **Who pays for a model grader.** *Recommended:* one grading principal
-   for the deployment (`createStrut({ tasks: { principal } })`, the
+Evan agreed with every recommendation.
+
+1. **A model grader is billed to one grading principal for the
+   deployment** (`createStrut({ tasks: { principal } })`, the
    `tasks.principal` of STRUT_HOST_CONFIG, as `publicRuns.principal` is),
-   else the admin who last saved the type. A test has no run to bill, and
-   on a Stadeum the client pays for model calls (ruling 2).
-2. **A re-grant restarts the window and requalifies.** *Recommended:*
-   yes, with `qualify: false` for a worker staff know. Keeping the old
-   window would revoke them again at their next grade.
-3. **A worker is told they are qualifying.** *Recommended:* yes, a flag
-   with no score. Every task they get then is a test, so the flag gives
-   nothing away, and it explains tasks arriving at once.
-4. **Skipped and expired tests count for nothing.** *Recommended:* yes.
-   Counting them as failures would punish a skip only when it was a test,
-   which no worker can see; staff see skip rates instead. The other way is
-   a stronger brake on skipping hard tasks.
-5. **Graders must be sealed.** *Recommended:* yes: `equal`, strut's
-   `grade/*`, or a step staff published with `sealed: true`. A grader
-   reads every expected answer, and one the builder could edit could log
-   them.
-6. **A disputed task fails the step.** *Recommended:* yes,
-   `task_disputed:` with `onError`. The other way returns
-   `agreed: false` for an `if` to branch on, a field every workflow with
-   copies would have to check.
-7. **Copies wait for every answer asked for.** *Recommended:* yes.
-   Settling at the first `agree` matching answers saves a copy but cuts
-   off a worker in the middle of the task, and their unpaid work becomes
-   §8's problem.
-8. **A test that was served is never edited.** *Recommended:* yes: retire
-   it and make it again, so each grade was against what that worker saw.
-9. **The defaults in §7.8.**
+   else to the admin who last saved the type. A test has no run to bill,
+   and on a Stadeum the client pays for model calls (ruling 2).
+2. **A re-grant restarts the window and the worker qualifies again,**
+   unless staff send `qualify: false` for a worker they know. Keeping the
+   old window would revoke them again at their next grade.
+3. **A worker is told they are qualifying:** a flag with no score. Every
+   task they get then is a test, so the flag gives nothing away, and it
+   explains tasks arriving at once.
+4. **Skipped and expired tests count for nothing.** Counting them as
+   failures would punish a skip only when it was a test, which no worker
+   can see; staff see skip rates instead.
+5. **Graders must be sealed:** `equal`, strut's `grade/*`, or a step staff
+   published with `sealed: true`. A grader reads every expected answer,
+   and one the builder could edit could log them.
+6. **A disputed task fails the step** with `task_disputed:`, so `onError`
+   applies. Returning `agreed: false` instead would add a field every
+   workflow with copies would have to check.
+7. **Copies wait for every answer asked for.** Settling at the first
+   `agree` matching answers would cut off a worker in the middle of the
+   task.
+8. **A test that was served is never edited:** it is retired and made
+   again, so each grade was against what that worker saw.
+9. **The defaults in §7.8 stand as written.**
 
 ## 8. Earnings and withdraw (items 5a and 5b)
 
