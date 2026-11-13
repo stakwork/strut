@@ -532,25 +532,43 @@ carries the ledger as `claims`; `GET /jobs/:id/claims` serves it alone:
 
 A claim may be about a **Concept** — `{ kind: "concept", name: <the
 Concept's exact name> }` on every claim route and tool — and then states
-what the work of a run that opened that page must look like ("a plan has a
-rollout section"). Every workflow run that opened the page is checked
-against it.
+what a piece of work that opened that page must look like ("a plan has a
+rollout section"). Every WORK that opened the page is checked against it,
+once, when the work is done.
 
-- **Opened** means its page was read with `graph/graph-get`: a workflow's
-  own step (`context/concept` is one) or an agent's tool call. A run that
-  wrote the Concept, listed it, or never read it is no observation of it.
+- **A work** is a root run and every run it caused: a child run it waited
+  on (`run.start.parentRunId`), a job a turn started (`startedBy.runId`),
+  a turn strut ran to report on a job (`wake.runId`), and on. A person's
+  message to the orchestrator is the usual root. A run started with
+  `run/launch`, an automation's fire, a host's launch and another strut's
+  run start works of their own. The work is **done** when every run in it
+  ended (not `waiting`) and no wake is still on its way for a job in it;
+  until then nothing about it is judged. A work of one run is judged when
+  that run ends, as it always was.
+- **Opened** means its page was read with `graph/graph-get` by one of the
+  work's runs: a workflow's own step (`context/concept` is one) or an
+  agent's tool call. A run that wrote the Concept, listed it, or never
+  read it is no observation of it.
 - **Its version** is a hash of what that read returned: the page's name,
   description and docs, and the name and description of each Concept under
   it. The run's log records it (`step.end.nodes[].version`), evidence is
   about that version, and the claim reads `stale` once the page, or the
-  line a child shows in it, changes.
-- **Its check** reads the run as a workflow's check does (`{{ input.input }}`,
-  `{{ input.output }}` or `{{ input.error }}`, `{{ input.params }}`,
-  `{{ input.runId }}`), and beside it `{{ input.concept }}`,
-  `{{ input.concepts }}` (every page the run opened, by name),
-  `{{ input.dir }}` (the run's files: its job's directory, else its
-  artifacts) and `{{ input.job }}`. A check that does not apply to the run
-  returns no `supports`, and nothing is recorded.
+  line a child shows in it, changes. A page the work's runs read at
+  different versions (it was edited while the work went on) is observed at
+  none of them.
+- **Its check** reads the work's ROOT run as a workflow's check does
+  (`{{ input.input }}`, `{{ input.output }}` or `{{ input.error }}`,
+  `{{ input.params }}`, `{{ input.runId }}`), and beside it
+  `{{ input.concept }}`, `{{ input.concepts }}` (every page the work
+  opened, by name), `{{ input.dir }}` (the root's files: its job's
+  directory, else its artifacts), `{{ input.job }}` and `{{ input.work }}`
+  (each run in order: `n`, `workflow`, `runId`, `cause` — `{ kind: child |
+  job | wake, of: [n] }` — `job`, `status`, `concepts`, `files`, the label
+  of its folder in `work.files`, and what it `delivered`). A check that
+  does not apply to the work returns no `supports`, and nothing is
+  recorded. The standard check (`concept-check`) reads each run's request
+  and result and may open the work's files: read only, those folders alone.
+- **Evidence** is sourced to the root run (`run.path: "concept:<name>"`).
 - **A page that was not opened** is caught one level up: put the claim on
   the page that lists it, with a check over `{{ input.concepts }}`.
 

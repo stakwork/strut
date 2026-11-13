@@ -32,8 +32,10 @@ index. A change in this area updates this file, not AGENTS.md.
   seeder that writes YAML straight into the store needs no claims code. The
   block is content: it rides in the version hash, and a claim retired in
   the UI comes back at the next boot until the YAML drops it. Evidence: every top-level run is verified,
-  detached, by `src/verify.ts`, hooked where `services.onRunEnd` fires;
-  check runs carry `origin: "verify"` and are never verified. The builder
+  detached, by `src/verify.ts`, hooked where `services.onRunEnd` fires (a
+  run `launchDetached` started: once strut has decided whether its end
+  wakes a conversation); check runs carry `origin: "verify"` and are never
+  verified. The builder
   reads its contract in tool RESULTS (`src/ledger.ts`): run results list
   the claims `pending`, and a `[verify-notification]` (or the run's
   `[run-notification]`, when the pass settles within 5 s —
@@ -74,9 +76,22 @@ index. A change in this area updates this file, not AGENTS.md.
   claims when the ask is understood, verify before saying done.
   **A CONCEPT is the fourth subject kind** (`{ kind: "concept", name }` on
   every door, the Concept of that name in the backend's own namespace): a
-  claim about what the work of a run that OPENED the page must look like
+  claim about what a piece of work that OPENED the page must look like
   ("a plan has a rollout section"). One rule covers all four kinds: a run
-  observes each thing it used, at the version it used. A Concept's version
+  observes each thing it used, at the version it used. A Concept, though,
+  is observed by a WORK, never by one run (src/work.ts,
+  plans/concept-evals.md rulings 5 and 9): a root run and every run it
+  caused — the jobs a turn started (`startedBy`), the turns strut ran to
+  report on them (`wake`), the child runs each waited on (`parentRunId`),
+  and on. Each time a run ends the pass asks the stores whether it was the
+  last of its work: every run in it ended, none still in flight, and no
+  wake on its way for a job in it. Once it was, the work observes every
+  page any of its runs opened, at the version those reads returned (a page
+  its runs read at DIFFERENT versions, edited while the work went on, is
+  observed at none: no one version made the work), and each claim's checks
+  run once over it. A turn that starts a job is judged with the job and the
+  turn that reported on it, not before. A work of one run is judged as one
+  run always was. A Concept's version
   is a hash of what opening its page returns — its name, description and
   docs, and the name and description of each Concept under it
   (`src/graph/concept-version.ts`; a child's docs, or a page elsewhere, do
@@ -88,16 +103,23 @@ index. A change in this area updates this file, not AGENTS.md.
   traversed (`graph-get-batched`, `graph-neighbors`, a walk), touched by a
   run this one launched, another strut's, or of that name in another
   namespace — is not observed. A Concept keeps no node per version:
-  evidence is `ABOUT` the Concept itself, sourced to the run
+  evidence is `ABOUT` the Concept itself, sourced to the work's ROOT run
   (`HAS_SOURCE`), with the version on the source (`SourceContext.version`),
   at path `concept:<name>`; two seeded edge rules, `Claim —ABOUT→ Concept`
-  and `Evidence —ABOUT→ Concept`. The check reads the RUN as a workflow's
-  check does (`input.input`, `input.output` or `input.error`,
+  and `Evidence —ABOUT→ Concept`. The check reads the ROOT run as a
+  workflow's check does (`input.input`, `input.output` or `input.error`,
   `input.params`) plus `input.concept`, `input.concepts` (every page the
-  run opened, by name), `input.dir` (the run's files: its job's directory,
-  else its artifacts) and `input.job`; a check that does not apply to the
-  run returns no `supports`, and nothing is recorded. A run that skipped a
-  page never observes it, so a claim that a page GETS OPENED sits on the
+  work opened, by name), `input.dir` (the root's files: its job's
+  directory, else its artifacts), `input.job` and `input.work` (each run in
+  order: how it came about, its status, the pages it opened, its files'
+  folder); a check that does not apply to the work returns no `supports`,
+  and nothing is recorded. The standard judge (`concept-check`) reads the
+  whole work — each run's request and result, cut in code — and may open
+  its files with `context/work-file`, both through `ctx.services.work`,
+  which only the verify pass puts on a check's bag: read only, the work's
+  own folders, no shell, no web, the work never instructions. A person's
+  word (`knowledge/add-evidence`) is still about the one run it cites. A
+  work that skipped a page never observes it, so a claim that a page GETS OPENED sits on the
   page that lists it ("a request of a kind opens that kind's page" on
   `Job`, checked with `input.concepts`), and rewriting the child's
   description moves that parent's version. Checks take a template's
@@ -132,9 +154,10 @@ index. A change in this area updates this file, not AGENTS.md.
   three things for each thing a person corrected or asked for: (1) writes a
   CLAIM on the page it belongs to with `knowledge/add-claim`, at once — the
   sentence alone, since the check is always the standard one, the
-  `concept-check` workflow, a model with no tools judging each later run
-  that opened the page (`on_change`: once per version of the page, a run the
-  rule is not about left unjudged, so the next is judged in its place);
+  `concept-check` workflow, a model judging each later piece of work that
+  opened the page, its one tool a read of that work's files (`on_change`:
+  once per version of the page, a work the rule is not about left
+  unjudged, so the next is judged in its place);
   (2) records WHAT WAS SAID with `knowledge/add-evidence` as that person's
   word against the claim, when the run whose work they corrected opened
   the page (the claim then reads `refuted` on that version); (3) PROPOSES
@@ -254,11 +277,15 @@ what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`
 
 ### `src/verify.ts`
 
-the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
+the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step — a run `launchDetached` started only once strut has decided whether its end wakes a conversation (createStrut's `detachedEnds`), so a work is never judged before the turn that reports on its job; check runs (`origin: "verify"`) are never verified. A run's step, workflow and job subjects are its own; its CONCEPT subjects belong to its WORK (src/work.ts): each pass asks whether the run was the last of its work (`workPasses`, nothing read when no Concept carries a claim) and, once it was, judges the work (`verifyWork`, one at a time per root): the pages any of its runs opened, at the version their reads returned (a page the runs read at different versions is observed at none, `unknown-version`), each check handed the root run, every page the work opened and `work`, its bag carrying `ctx.services.work`; the evidence sourced to the root run
+
+### `src/work.ts`
+
+a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it caused — a child it waited on (`parentRunId`), a job a turn started (`startedBy.runId`), a turn reporting on a job (`wake.runId` + `also`, not another strut's); `run/launch`, an automation's fire and a host's launch start works of their own. `recordCaused`: at each `run.start` (createStrut's `onRunEvent`, only where the claims layer is) one line naming the run appended to `<dataDir>/works/<cause runId>.jsonl`; `membersOf` walks down those files, `rootsOf` up the causes (null for a child: its parent's end decides; a wake on two works' jobs is in both). `workDone`: read from the stores each time, so a restart loses nothing — every run that is no child ended (a summary not `waiting`), none still in flight here (`isLive`), and no wake on its way for a job in it (its session's wake file holds it queued, or in a wake turn not ended). `foldWork` → `Work` (each run in start order: how it came about, status, input, result, pages opened, its files' folder — a job's directory, else its artifacts — and what it delivered), `renderWork` (a judge's text, cut in code; a work of one run reads as `context/run` always rendered a run), `workCapability` (what the verify pass puts on a check's bag: the work and a READ of its folders, realpath-contained, text in pieces of 30k, a Word file as text, an image as bytes). Pure parts tested in work.test.ts, the whole in graph/work.test.ts
 
 ### `src/knowledge.ts`
 
-the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the run; the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. Changing a Concept is not here: the workflow's `approve:` makes it a proposal
+the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. Changing a Concept is not here: the workflow's `approve:` makes it a proposal
 
 ### `src/ledger.ts`
 
@@ -282,7 +309,7 @@ the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow
 
 ### `src/steps/lib/context/`
 
-context/concept: a Concept as an agent's context — the page's docs (capped at 6k) and the name + description of each Concept under it (PARENT_OF), read through graph/graph-get and rendered as a system-prompt section, framed as the workspace's notes, with how to open a child page (`tool`: the agent's name for graph-get; `""` for an agent with none). `docs: false` renders the kinds under the page ALONE — for an agent that routes BY them rather than follows a page's convention; nothing under the page is `""`. The builder's default `chatSystem` is this step on `Workflow Builder`; the `job` workflow puts `{{ concepts.text }}` after `params.system` on `Job`, the `orchestrator` the kinds alone under `Job` and under `Workflow Builder` (`docs: false`, `tool: ""`). `{ text: "" }` without a wired graph or the page — never a failed run, never a Neo4j-from-env fallback. Not under `graph/`, so a `graph/*` grant does not hand it to an agent. context/run: a run as a JUDGE's context — what it was asked, what it returned (or the error it ended in) and the Concept pages it opened, as one block of text cut to its head and tail in code (12,000 characters by default), so a large output never reaches a prompt whole; pure, unsealed (the `concept-check` workflow's first step, which an `ai`-stamped check must be able to reach)
+context/concept: a Concept as an agent's context — the page's docs (capped at 6k) and the name + description of each Concept under it (PARENT_OF), read through graph/graph-get and rendered as a system-prompt section, framed as the workspace's notes, with how to open a child page (`tool`: the agent's name for graph-get; `""` for an agent with none). `docs: false` renders the kinds under the page ALONE — for an agent that routes BY them rather than follows a page's convention; nothing under the page is `""`. The builder's default `chatSystem` is this step on `Workflow Builder`; the `job` workflow puts `{{ concepts.text }}` after `params.system` on `Job`, the `orchestrator` the kinds alone under `Job` and under `Workflow Builder` (`docs: false`, `tool: ""`). `{ text: "" }` without a wired graph or the page — never a failed run, never a Neo4j-from-env fallback. Not under `graph/`, so a `graph/*` grant does not hand it to an agent. context/run: a run as a JUDGE's context — what it was asked, what it returned (or the error it ended in) and the Concept pages it opened, as one block of text cut to its head and tail in code (12,000 characters by default), so a large output never reaches a prompt whole; inside a check the verify pass runs over a WORK it renders that work instead, from `ctx.services.work` (src/work.ts `renderWork`), never from its input; unsealed (the `concept-check` workflow's first step, which an `ai`-stamped check must be able to reach). context/work-file { path, from? }: one file or folder of the work a check judges (`<folder>/<path>`, `""` lists the folders), read through `ctx.services.work` — which only the verify pass sets, so no input points a read elsewhere; read only, the work's own folders, symbolic links resolved; text in pieces, a Word file as text, an image SHOWN (`withMedia`); refuses outside such a check. The standard judge's one tool; unsealed
 
 ### `src/steps/lib/knowledge/`
 

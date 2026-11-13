@@ -6,7 +6,8 @@ description: Reads the new turns of the conversations with the assistant and kee
 #
 #   - writes a CLAIM on the page it belongs to: one sentence the readers of
 #     that page must hold to, with the standard check (the `concept-check`
-#     workflow). Every later run that opens the page is judged against it;
+#     workflow). Every later piece of work that opens the page is judged
+#     against it, once all of it is done (src/work.ts);
 #   - records WHAT WAS SAID as that person's word against the claim, when
 #     the run whose work they corrected opened the page;
 #   - PROPOSES the smallest change to the tree that would have got it right.

@@ -47,6 +47,7 @@ import type { GraphBackend } from "./backend.js";
 import type { Dialect } from "./engine.js";
 import { typeValue } from "./strut-schemas.js";
 import { readConceptVersion } from "./concept-version.js";
+import type { WorkSubject } from "../work.js";
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -211,6 +212,11 @@ export interface RunCheckSubject {
   job?: string;
   /** Where the run's files are: its job's directory, else its artifacts. */
   dir?: string;
+  /** A CONCEPT subject's check reads a WORK (src/work.ts): the root run is
+   *  `input`, `output`, `error` above, and this is every run in the work —
+   *  in order, how each came about, the pages each opened, its files'
+   *  folder — with `concepts` every page the work opened. */
+  work?: WorkSubject;
 }
 
 /** What a `publish` check reads: the new version's source. */

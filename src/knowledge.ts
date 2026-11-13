@@ -18,9 +18,10 @@
  *     "the page was never opened" from "it was opened and not followed";
  *   - `addClaim`: one sentence a Concept's readers must hold to, written
  *     directly, with the STANDARD check: the `concept-check` workflow, a
- *     model with no tools judging the run against the sentence. A tender
- *     never writes a check's config: what it reads (conversations) is
- *     untrusted text, and a check is something strut runs;
+ *     model judging each piece of work that opened the page (src/work.ts)
+ *     against the sentence, its one tool a read of that work's files. A
+ *     tender never writes a check's config: what it reads (conversations)
+ *     is untrusted text, and a check is something strut runs;
  *   - `addEvidence`: what a person SAID about a run's work, as their word
  *     against (or for) a claim — only about a run that opened the page.
  *
@@ -115,7 +116,8 @@ function claimOf(c: ClaimListing): KnowledgeClaim {
   };
 }
 
-/** The standard check: the run that opened the page, handed to the judge. */
+/** The standard check: the ROOT run of a work that opened the page, handed
+ *  to the judge, which reads the whole work off its bag (src/work.ts). */
 export function conceptCheckSpec(claim: string) {
   return {
     type: "subflow",

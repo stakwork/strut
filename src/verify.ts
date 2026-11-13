@@ -35,15 +35,26 @@
  * /jobs/:id/verify`) APPENDS evidence at `job:<id>#<n>` instead of being a
  * no-op, and accepts a run still in flight.
  *
- * A CONCEPT is the fourth: a workflow run observes every Concept whose page
- * it opened, at the version that read returned — recorded on the run's log
- * by the read itself (`AccessedNode.version`, graph/graph-get), so this pass
- * never asks the graph what the Concept says now. Its checks read the run
- * as a workflow's do, with the Concepts the run opened beside it. A run
- * that never opened a page is no observation of it: a claim that a page
- * gets opened belongs on the page that lists it.
+ * A CONCEPT is the fourth, and the one observed by a WORK, never by one run
+ * (src/work.ts, plans/concept-evals.md rulings 5 and 9): a root run and every
+ * run it caused — the jobs a turn started, the turns that reported on them,
+ * the child runs each waited on. When a run ends, the pass asks the stores
+ * whether that was the last of its work; once it was, the work observes
+ * every Concept whose page any of its runs opened, at the version that read
+ * returned — recorded on the run's log by the read itself
+ * (`AccessedNode.version`, graph/graph-get), so this pass never asks the
+ * graph what the Concept says now. A page the work's runs read at
+ * different versions is observed at none (no version made the work). Its
+ * checks read the ROOT run as a workflow's do, with the pages the work
+ * opened and the work itself beside it (`work`); the standard judge reads
+ * the work and its files through a capability on its bag
+ * (`ctx.services.work`), which nothing but this pass sets. Evidence is ABOUT
+ * the Concept, sourced to the root run. A work that never opened a page is
+ * no observation of it: a claim that a page gets opened belongs on the page
+ * that lists it. A work of one run is judged exactly as one run was before.
  */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closureIncludes, flowClosure } from "./closure.js";
@@ -85,6 +96,8 @@ import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { bootEnv } from "./env.js";
 import { executedWorkflowHash } from "./journal.js";
+import { foldWork, membersOf, rootsOf, workCapability, workDone, workSubject, type RunRef, type WorkMember } from "./work.js";
+import type { ArtifactsCapability } from "./capabilities.js";
 
 // ── What a run observed ─────────────────────────────────────────────────────
 
@@ -464,6 +477,11 @@ export interface VerifierDeps extends ClaimsReaderDeps {
   /** A DETACHED pass settled — always called, no-op passes included, so a
    *  listener waiting on that run can stop waiting. */
   onSettled?: (result: VerifyResult) => void;
+  /** Is the run still in flight in this process (createStrut's
+   *  controllers)? A work is not done while one of its runs is: a run's
+   *  summary is written before strut decides whether its end wakes a
+   *  conversation (src/work.ts `workDone`). */
+  isLive?: (workflow: string, runId: string) => boolean;
 }
 
 const DEFAULT_BUDGET_USD = 10;
@@ -487,6 +505,8 @@ export function createVerifier(deps: VerifierDeps) {
   const inflight = new Map<string, { explicit: boolean; promise: Promise<VerifyResult> }>();
   /** Explicit job passes in flight, by job: a second one joins the first. */
   const inflightJobs = new Map<string, Promise<JobVerifyResult>>();
+  /** Passes over a work in flight, by its root run: a second one joins. */
+  const inflightWorks = new Map<string, { explicit: boolean; promise: Promise<VerifyResult | null> }>();
   const dataDir = () => (deps.services() as { dataDir?: string } | undefined)?.dataDir ?? join(tmpdir(), "strut");
 
   /** What the check would execute as right now: `exec`, `clip/judge@<hash>`,
@@ -528,6 +548,9 @@ export function createVerifier(deps: VerifierDeps) {
       // The source run's principal: its checks are billed to the same person
       // (plans/mothership-cost-control.md §2).
       principal: undefined as string | undefined,
+      /** The bag checks run with, when not the deployment's: a pass over a
+       *  work adds the work (`ctx.services.work`, src/work.ts). */
+      services: undefined as unknown,
     };
   }
   type Pass = ReturnType<typeof newPass>;
@@ -702,7 +725,7 @@ export function createVerifier(deps: VerifierDeps) {
 
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
     const checkVersion = await resolveCheckVersion(check, config, pass.activeStepHashes);
-    const run = await runSingleStep(type, pass.registry, deps.services(), {
+    const run = await runSingleStep(type, pass.registry, pass.services ?? deps.services(), {
       // A failed assertion is a result, not a crash: let `exec` return its exit code.
       config: type === "exec" && config["allowFailure"] === undefined ? { ...config, allowFailure: true } : config,
       input,
@@ -844,14 +867,16 @@ export function createVerifier(deps: VerifierDeps) {
 
   /** Every active claim on one observed subject, every runnable check — the
    *  loop `runPass` and `verifyJob` share. `only` narrows to claim ids. */
-  async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[]): Promise<void> {
+  async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[], preset?: LastVerify): Promise<void> {
     const claims = (await claimsOf(pass, o.subject)).filter((c) => !only || only.includes(c.id));
     if (claims.length === 0 || !(await ours(o))) return;
     if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
 
     let input: RunCheckSubject | JobCheckSubject | null = null;
-    let skip: LastVerify | undefined;
-    if (o.subject.kind === "job") {
+    let skip: LastVerify | undefined = preset;
+    if (skip) {
+      // Decided before any check runs (a work that read the page at more than one version).
+    } else if (o.subject.kind === "job") {
       // Only the newest turn is ever verified (plans/job-claims.md §2): a job
       // check reads the LIVE app, and would file what it sees under an older turn.
       const active = await activeTurn(pass, o.subject.id);
@@ -895,7 +920,130 @@ export function createVerifier(deps: VerifierDeps) {
     pass.principal = launch.principal;
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
-    for (const o of subjectsOfRun(key, events)) await verifySubject(pass, o);
+    // A Concept is observed by the run's WORK, never by the run alone.
+    for (const o of subjectsOfRun(key, events)) if (o.subject.kind !== "concept") await verifySubject(pass, o);
+    for (const w of await workPasses(key, runId, explicit)) {
+      for (const s of w.subjects) if (!pass.result.subjects.some((x) => sameSubject(x, s))) pass.result.subjects.push(s);
+      pass.result.checks.push(...w.checks);
+      pass.result.evidence += w.evidence;
+      pass.result.slots += w.slots;
+      pass.result.costUsd += w.costUsd;
+    }
+    return pass.result;
+  }
+
+  // ── A work (src/work.ts): the Concepts it opened, judged once it is done ──
+
+  /** The passes over the work(s) the run belongs to, each run only when the
+   *  work is done: a run that was not the last of its work adds nothing. A
+   *  child run asks nothing (its parent's end does), nor does a single-step
+   *  or check run. No claim on any Concept: nothing is read. */
+  async function workPasses(key: string, runId: string, explicit: boolean): Promise<VerifyResult[]> {
+    if (key.includes(":")) return [];
+    if (!(await reader.claimedSubjects("concept")).length) return [];
+    const ended: RunRef = { workflow: key, runId };
+    const roots = await rootsOf(store, ended);
+    if (!roots) return [];
+    const out: VerifyResult[] = [];
+    for (const root of roots) {
+      const r = await verifyWorkOnce(root, explicit, ended);
+      if (r) out.push(r);
+    }
+    return out;
+  }
+
+  /** One pass per work at a time; an explicit one after an automatic one
+   *  goes again, for its `manual` checks (as `verifyRun`). */
+  async function verifyWorkOnce(root: RunRef, explicit: boolean, ended: RunRef): Promise<VerifyResult | null> {
+    const running = inflightWorks.get(root.runId);
+    if (running) {
+      const first = await running.promise.catch(() => null);
+      if (!explicit || running.explicit) return first;
+    }
+    const promise = verifyWork(root, explicit, ended).finally(() => {
+      if (inflightWorks.get(root.runId)?.promise === promise) inflightWorks.delete(root.runId);
+    });
+    inflightWorks.set(root.runId, { explicit, promise });
+    return promise;
+  }
+
+  /** Where a run's files are: its job's directory, else its own artifacts
+   *  when it left any. */
+  async function filesDirOf(runId: string, job: string | undefined): Promise<string | undefined> {
+    if (job) {
+      const dir = jobRoot(dataDir(), job);
+      return existsSync(dir) ? dir : undefined;
+    }
+    const artifacts = (deps.services() as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+    if (!artifacts) return undefined;
+    const files = await artifacts.list(runId).catch(() => [] as string[]);
+    return files.length ? artifacts.dir(runId).catch(() => undefined) : undefined;
+  }
+
+  /**
+   * The pass over one WORK, null while it is not done. The work observes
+   * each Concept with claims that any of its runs opened, at the version
+   * their reads returned (each run's last read, as one run always did); a
+   * page the runs read at different versions is observed at none. Each
+   * check reads the root run (`input`, `params`, `output` or `error`), the
+   * pages the work opened (`concepts`), the root's job and files, and the
+   * work (`work`); its bag carries the work for the standard judge.
+   */
+  async function verifyWork(root: RunRef, explicit: boolean, ended: RunRef): Promise<VerifyResult | null> {
+    const members = await membersOf(dataDir(), root);
+    const state = await workDone({ store, dataDir: dataDir(), ...(deps.isLive ? { isLive: deps.isLive } : {}) }, members, ended);
+    if (!state.done) return null;
+    const claimed = new Set(await reader.claimedSubjects("concept"));
+    const pass = newPass(root.workflow, root.runId, explicit);
+    const folded: WorkMember[] = [];
+    const reads = new Map<string, Array<{ ref?: string; version: string }>>();
+    let rootCheck: ObservedSubject["check"] | undefined;
+    let endedAt = "";
+    for (const m of members) {
+      const [events, summary] = await Promise.all([store.getRunEvents(m.workflow, m.runId), store.getRunSummary(m.workflow, m.runId)]);
+      const start = events.find((e) => e.type === "run.start");
+      // A child cut off by a crash and relaunched by its parent did nothing that finished.
+      if (!start || !summary || !["success", "error", "cancelled"].includes(summary.status)) continue;
+      const observed = subjectsOfRun(m.workflow, events);
+      const pages = observed.filter((o) => o.subject.kind === "concept");
+      for (const o of pages) {
+        const name = subjectName(o.subject);
+        reads.set(name, [...(reads.get(name) ?? []), { ...(o.ref ? { ref: o.ref } : {}), version: o.version! }]);
+      }
+      const end = [...events].reverse().find((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled");
+      if (end && end.ts > endedAt) endedAt = end.ts;
+      if (m.runId === root.runId) {
+        pass.principal = start.principal;
+        rootCheck = observed.find((o) => o.subject.kind === "workflow" && o.path === start.path)?.check ?? {
+          runId: root.runId,
+          input: start.input,
+          path: start.path,
+          error: { message: summary.status === "cancelled" ? "the run was cancelled" : (summary.error?.message ?? "unknown error") },
+        };
+      }
+      const dir = await filesDirOf(m.runId, start.job);
+      folded.push({ ref: m, start, summary, concepts: pages.map((o) => subjectName(o.subject)), ...(dir ? { dir } : {}) });
+    }
+    if (!rootCheck) return null;
+    const work = foldWork(root, folded);
+    pass.services = { ...(deps.services() as object), work: workCapability(work) };
+    const rootJob = work.runs[0]?.job;
+    const check = { ...rootCheck, concepts: work.concepts, ...(rootJob ? { job: rootJob } : {}), work: workSubject(work) };
+    for (const [name, rs] of reads) {
+      if (!claimed.has(name)) continue;
+      const subject: SubjectRef = { kind: "concept", name };
+      const ref = await reader.subjectRefId(subject);
+      // Reads of a page of that name elsewhere (another namespace) are not this graph's.
+      const versions = [...new Set(rs.filter((r) => r.ref === ref).map((r) => r.version))];
+      if (!ref || !versions.length) continue;
+      const o: ObservedSubject = { subject, version: versions[0]!, ref, path: conceptSubjectPath(name), at: endedAt, check: { ...check, concept: name } };
+      await verifySubject(
+        pass,
+        o,
+        undefined,
+        versions.length > 1 ? { skipped: "unknown-version", reason: `the work read this page at ${versions.length} versions: no one version made it` } : undefined,
+      );
+    }
     return pass.result;
   }
 
