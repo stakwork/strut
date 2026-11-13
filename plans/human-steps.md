@@ -647,9 +647,9 @@ pattern). It comes with the staff app (§9).
 > are still proposed and marked so: the graders strut ships (PR 4c) and the
 > name of item 5a's accepted-answer hook, which is §8's to choose.
 >
-> **4a built (stakwork/strut#NNN):** tests, grading, standing and
+> **4a built (stakwork/strut#671):** tests, grading, standing and
 > qualifying. Where it differs, the subsection says **Built differently
-> (#NNN)**. Copies (4b) and the shipped graders (4c) are not built.
+> (#671)**. Copies (4b) and the shipped graders (4c) are not built.
 
 Item 4 adds three things to the task store and nothing to the runner:
 
@@ -717,7 +717,7 @@ worker who is qualifying. Deleting a task type retires its tests.
 The meta surface gets no door here, and the staff app (item 6) must not
 add one that keeps a run (§7.9).
 
-**Built differently (#NNN):**
+**Built differently (#671):**
 
 - **One more route, `GET /tasks/tests/:id`:** the test with each instance
   served (`{ task, lease, worker, status, served, answer?, answeredAt?,
@@ -790,7 +790,7 @@ suggests that answer was a failed test; a take-back of an earning (§8)
 says so after the fact; workers can share the answers to tests. Staff
 retire tests served too often (the served count is on the record).
 
-**Built differently (#NNN):**
+**Built differently (#671):**
 
 - **Step 2 counts an answer graded `error` for nothing**, so another test
   takes its place: a worker serves tests while their answers that are
@@ -810,7 +810,7 @@ on the instance. It does not tell `onSettle`: an instance has no run, so
 nothing wakes. The service queues it for grading instead. The worker has
 `{ ok: true }` before grading starts.
 
-**Built differently (#NNN): the earning.** 5a books an earning inside
+**Built differently (#671): the earning.** 5a books an earning inside
 `submit` (§8.1), so there is no accepted-answer hook: `takeTest` stamps
 the type's pay on the instance's lease as `take` does, and `submit` books
 it exactly as a real answer's, before the instance is queued for grading.
@@ -862,7 +862,7 @@ so a provider outage cannot revoke a room of workers. Staff see each
 type's errors; three in a row are logged once. A test answered and not yet
 graded (`pending`) is graded by the sweep, which covers a restart.
 
-**Built differently (#NNN):**
+**Built differently (#671):**
 
 - **A step grader's config** is the four inputs, each as a sole
   expression (`answer: '{{ input["answer"] }}'`, handed over
@@ -924,7 +924,7 @@ Staff read standing at a new `GET /tasks/workers/:actor` (the worker, and
 per type the window, passed, graded, errors and whether qualifying), and
 as a score per grant in `GET /tasks/workers`.
 
-**Built differently (#NNN):**
+**Built differently (#671):**
 
 - **`GET /tasks/workers/:actor` answers `{ worker }`**, the worker as a row
   of `GET /tasks/workers` is: with its `balance` and `standing`, a map by
@@ -1020,7 +1020,7 @@ opened, in one transaction:
 Copies and tests both change `tasks`' CHECKs, so the first PR rebuilds it
 once for both (§7.11).
 
-**Built differently (#NNN):** the migration is `TaskDb.migrate`, one
+**Built differently (#671):** the migration is `TaskDb.migrate`, one
 transaction at `synchronous=full` over both sides (`taskSchema`,
 `workerSchema`), run at every open and a no-op at 2. The rebuild is
 decided by the table's own CHECK (`sqlite_master`), not the version, and
@@ -1075,7 +1075,7 @@ as a real one's until it is graded. And a take-back is visible, so it says
 after the fact that one answer was a failed test. An automatic revoke
 takes back nothing by itself.
 
-**Built differently (#NNN):** no accepted-answer hook (§7.3). `onGraded` is
+**Built differently (#671):** no accepted-answer hook (§7.3). `onGraded` is
 built as above, and the `fail` rule is the service's own, not a listener's:
 a `fail` takes back that lease's earning through `takeBack` (`by:
 "grading"`, `why: "the answer to a test was graded fail"`), which does
@@ -1117,7 +1117,7 @@ proposal an admin accepts.
 - A type or test naming an unsealed grader is refused when saved.
 - Both stores, one suite, as built.
 
-**Built differently (#NNN):** in `src/tasks/task-tests.test.ts`, with a
+**Built differently (#671):** in `src/tasks/task-tests.test.ts`, with a
 version 1 file (#655's tables and #664's columns) migrated and one whose
 migration fails left at 1. No step authors a test in 4a (the staff app is
 item 6), so "a test-authoring step lists `expected` in `redact`" is a
@@ -2025,7 +2025,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
-| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#NNN (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. 4b (copies) and 4c (graders) not started |
+| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. 4b (copies) and 4c (graders) not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
