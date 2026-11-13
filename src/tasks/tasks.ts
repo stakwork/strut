@@ -80,10 +80,14 @@ import {
   DEFAULT_HOLD_HOURS,
   DEFAULT_TEST_RULES,
   MemoryTaskStore,
+  STATS_WINDOWS,
   answersOf,
   payMsatOf,
   settledOf,
   type CopiesDecision,
+  type StatsWindow,
+  type WindowCounts,
+  type WorkerWeek,
   type CopiesRule,
   type GradeResult,
   type GradeRule,
@@ -103,10 +107,10 @@ import {
 import { gradeRuleOf, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
-import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
+import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, StatsWindow, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { Standing } from "./task-tests.js";
 export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES } from "./task-store.js";
@@ -363,7 +367,13 @@ export type LeaseView = Lease & { earning?: LeaseEarning };
 export type TaskView = TaskRecord & { leases: LeaseView[] };
 /** A worker as staff read them: with what they are owed here (§8.1), and
  *  their standing in each type with tests they hold (§7.5). */
-export type StaffWorker = WorkerRecord & { balance: PayeeBalance; standing: Record<string, Standing> };
+export type StaffWorker = WorkerRecord & {
+  balance: PayeeBalance;
+  standing: Record<string, Standing>;
+  /** §9.5: answers in the last 7 days, and the type of the lease they hold now. */
+  week: number;
+  holding?: string;
+};
 
 /** A test as staff read it (§7.1): with how its instances were graded, and
  *  the listed files not there yet (absent once it is ready). */
@@ -440,6 +450,79 @@ export interface TakeBackOutcome {
   earning?: LeaseEarning;
 }
 
+/** p50 and p90 in ms, nearest rank (§9.4). */
+export interface Percentiles {
+  p50: number;
+  p90: number;
+}
+
+/** One window of one type's queue as staff read it (§9.4). */
+export interface StatsWindowView {
+  answered: number;
+  expired: number;
+  cancelled: number;
+  disputed: number;
+  skipped: number;
+  leasesLost: number;
+  /** Made to answered, over the newest `STATS_SAMPLE` settled tasks; taken
+   *  to answered, over the newest answers. Absent with none. */
+  toAnswer?: Percentiles;
+  work?: Percentiles;
+}
+
+/** One type's row of the Queue (§9.4, §9.5). */
+export interface TypeStats {
+  type: string;
+  app: string;
+  enabled: boolean;
+  /** Open and not past due, with no live lease and with one. */
+  waiting: number;
+  working: number;
+  /** The oldest waiting task's age, ms. */
+  oldest?: number;
+  /** Open tasks due within 24 hours, and within the hour. */
+  dueSoon: number;
+  dueHour: number;
+  /** Workers who hold it live, hold a lease of it now, and ask for one now. */
+  granted: number;
+  holding: number;
+  asking: number;
+  windows: Record<StatsWindow, StatsWindowView>;
+  /** What is wrong with its app (`taskAppProblem`): the routes add it. */
+  appProblem?: string;
+}
+
+/** `GET /tasks/stats` (§9.4): computed on read, never stored. */
+export interface TaskStats {
+  at: number;
+  types: TypeStats[];
+  /** Across every type: workers by status, live leases, held `task/next`s. */
+  workers: Record<WorkerStatus, number>;
+  holding: number;
+  asking: number;
+}
+
+/** One worker as `GET /tasks/workers/:actor` adds them up (§9.4). */
+export interface WorkerActivity {
+  /** Their live lease now. */
+  holding?: { lease: string; task: string; type: string; expires: number };
+  /** Of the leases taken in the last 7 days, by type. */
+  week: Record<string, WorkerWeek>;
+  /** Their newest leases, each with its task. */
+  recent: Array<{ lease: Lease; task: Pick<TaskRecord, "id" | "type" | "workflow" | "runId" | "status"> & { test?: string } }>;
+}
+
+/** How many of a worker's leases `recent` lists. */
+export const RECENT_LEASES = 50;
+
+/** p50 and p90 of `xs` by nearest rank; undefined for none. */
+export function percentiles(xs: readonly number[]): Percentiles | undefined {
+  if (!xs.length) return undefined;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const at = (q: number) => sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)]!;
+  return { p50: at(0.5), p90: at(0.9) };
+}
+
 export interface TasksCapability {
   /** The `human` step's: the task keyed by workflow, run and path, made
    *  when there is none (rule 1). A settled task comes with what its
@@ -494,6 +577,14 @@ export interface TasksCapability {
   task(id: string): Promise<TaskView | undefined>;
   /** One worker as staff read them, with their standing (§7.5). */
   worker(actor: string): Promise<StaffWorker | undefined>;
+  /** §9.4: each type's queue (one type with `type`), and the workers across
+   *  them. Computed on read. */
+  stats(q?: { type?: string }): Promise<TaskStats>;
+  /** §9.4: what one worker holds and did; undefined for nobody here. */
+  activity(actor: string): Promise<WorkerActivity | undefined>;
+  /** §9.4: one of a task's files, as `file` answers it, read by staff
+   *  without a lease: only a path on the task's list (`not_listed`). */
+  taskFile(id: string, path: string): Promise<RunFile>;
 }
 
 export interface TasksService {
@@ -911,6 +1002,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       w.grants.filter((g) => g.revokedAt === undefined && tested.has(g.type)).map((g) => ({ worker: w.actor, type: g.type, since: g.at, window: tested.get(g.type)!.tests!.window })),
     );
     const rows = pairs.length ? await s.tasks.standings(pairs) : [];
+    const at = now();
+    const doing = list.length ? await s.tasks.workersNow(at - STATS_WINDOWS.week, at) : { answered: {}, holding: {} };
     return list.map((w) => {
       const standing: Record<string, Standing> = {};
       for (const r of rows) {
@@ -918,7 +1011,8 @@ export function createTasks(deps: TasksDeps): TasksService {
         const g = w.grants.find((x) => x.type === r.type)!;
         standing[r.type] = standingOf(r, g, tested.get(r.type)!.tests!);
       }
-      return { ...w, balance: owed[w.actor] ?? { ...ZERO_BALANCE }, standing };
+      const holding = doing.holding[w.actor];
+      return { ...w, balance: owed[w.actor] ?? { ...ZERO_BALANCE }, standing, week: doing.answered[w.actor] ?? 0, ...(holding !== undefined ? { holding } : {}) };
     });
   };
 
@@ -1232,6 +1326,76 @@ export function createTasks(deps: TasksDeps): TasksService {
       const s = await storesIfAny();
       const t = s && (await s.tasks.task(id));
       return t ? (await views(s, [t]))[0] : undefined;
+    },
+
+    async stats(q = {}) {
+      if (q.type !== undefined && typeof q.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+      const at = now();
+      const s = await storesIfAny();
+      const kinds = s ? (await s.tasks.types()).filter((k) => q.type === undefined || k.name === q.type) : [];
+      if (q.type !== undefined && !kinds.length) throw new TaskError("unknown_type", `no task type ${q.type} here`);
+      const counted = s ? await s.tasks.stats({ types: kinds.map((k) => k.name), now: at }) : { types: [], holding: 0 };
+      const people = s ? await s.workers.counts() : { statuses: noStatuses(), granted: {} };
+      const types = counted.types.map((c, i): TypeStats => {
+        const kind = kinds[i]!;
+        const windows = {} as Record<StatsWindow, StatsWindowView>;
+        for (const [w, v] of Object.entries(c.windows) as Array<[StatsWindow, WindowCounts]>) {
+          const { toAnswer, work, ...counts } = v;
+          const a = percentiles(toAnswer);
+          const b = percentiles(work);
+          windows[w] = { ...counts, ...(a ? { toAnswer: a } : {}), ...(b ? { work: b } : {}) };
+        }
+        return {
+          type: c.type,
+          app: kind.app,
+          enabled: kind.enabled,
+          waiting: c.waiting,
+          working: c.working,
+          ...(c.oldestCreated !== undefined ? { oldest: Math.max(0, at - c.oldestCreated) } : {}),
+          dueSoon: c.dueSoon,
+          dueHour: c.dueHour,
+          granted: people.granted[c.type] ?? 0,
+          holding: c.holding,
+          asking: waiting.filter((w) => w.types.has(c.type)).length,
+          windows,
+        };
+      });
+      return { at, types, workers: people.statuses, holding: counted.holding, asking: new Set(waiting.map((w) => w.actor)).size };
+    },
+
+    async activity(actor) {
+      actorOk(actor);
+      const s = await storesIfAny();
+      if (!s || !(await s.workers.get(actor))) return undefined;
+      const at = now();
+      const held = await s.tasks.heldBy(actor, at);
+      const leases = await s.tasks.recentLeases(actor, RECENT_LEASES);
+      const tasks = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, t]));
+      return {
+        ...(held ? { holding: { lease: held.id, task: held.task, type: held.type, expires: held.expires } } : {}),
+        week: await s.tasks.workerWeek(actor, at - STATS_WINDOWS.week, at),
+        recent: leases.map((lease) => {
+          const t = tasks.get(lease.task);
+          return {
+            lease,
+            task: t
+              ? { id: t.id, type: t.type, workflow: t.workflow, runId: t.runId, status: t.status, ...(t.test !== undefined ? { test: t.test } : {}) }
+              : { id: lease.task, type: lease.type, workflow: "", runId: "", status: "open" as const },
+          };
+        }),
+      };
+    },
+
+    async taskFile(id, path) {
+      if (typeof path !== "string" || !path) throw new TaskError("bad_request", "path is required");
+      const s = await storesIfAny();
+      const t = s && typeof id === "string" ? await s.tasks.task(id) : undefined;
+      if (!t) throw new TaskError("unknown_task", `no task ${id}`);
+      // A path not on the list is refused whether or not it exists (§5.5).
+      if (!t.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of this task's files`);
+      const f = deps.file ? await deps.file(t, path) : null;
+      if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
+      return f;
     },
   };
 

@@ -2285,7 +2285,8 @@ version's files (`GET /apps/:name/:version/files[/…]`) answer those `403`.
 A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
 only a full-scope listing mints one, and the framed document is read with
 it. The flag hides the app; what it may DO is its grants and its steps'
-own checks. `strut/earnings` says it.
+own checks. `strut/earnings` and `strut/staff` (§14.15) say it; their
+usage (`GET /apps/:name/usage`, §14.6) is an admin's too.
 
 **Its steps** go through the admin door (`src/steps/lib/earnings/_door.ts`):
 each is the route it names, made as an in-process request in the viewer's
@@ -2311,6 +2312,91 @@ page or member's page reaches it, and each step refuses without both.
 | `earnings/drop-purchase { seller }` | `DELETE /remote/purchases?seller=` | `{ seller, dropped? }` |
 
 Any other refusal is the step's error, the route's `code` first.
+
+### 14.15 `strut/staff` — Tasks and workers, for an admin (`plans/human-steps.md` §9)
+
+The staff's `/tasks` routes (§22) as an app strut seeds on every server
+(`src/apps/staff/`, `src/apps/staff-seed.ts`, after `strut/views`: it
+imports `TaskForm`), titled "Tasks and workers", `admin: true` as
+`strut/earnings` is (§14.14): listed to full scope alone, its files,
+versions and usage `403` to anyone else. Strut's UI lists it under Apps to
+an admin, and a waiting run's `task:<id>` (the run overview's "Waiting on",
+a parked step's flyout) opens it on that task; a host (Stadeum) frames
+`?app=strut/staff&solo=1` for a person it signed in as an admin.
+`createStrut({ staff: false })` or `STRUT_HOST_CONFIG`'s `"staff": false`
+seeds nothing. The page is only a face: the routes decide.
+
+Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
+workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
+`test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`. Each move goes back to
+the host as `ui/open-link`, so its address bar follows.
+
+- **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
+  what needs a person above it (a type with tasks waiting and nobody
+  granted, tasks due within the hour, a type turned off with open tasks, a
+  type whose app is missing or does not grant `task/next` and
+  `task/submit`, new workers); with pay, what workers are owed beside what
+  the wallet holds (`earnings/read`, §19).
+- **Types**: the editor writes the whole type. Its answer shape is fields
+  (text, number, whole number, yes or no, pick one, pick several, numbers,
+  group), JSON, and a preview in `TaskForm`; it writes only what the store
+  checks. Pay, Tests and Copies sections; the workers who hold it, with
+  Revoke and Grant.
+- **Workers**: `new` first, several granted at once; each with their status,
+  note, grants (revoked ones with when, who and why, an automatic revoke by
+  `standing` too), the week, their newest leases, standing, and what they
+  earned, hold and may withdraw.
+- **Tasks**: filtered by type, status, run and who answered; a task with what
+  it showed and its files, its leases (a copy's answer, each earning with
+  Take back), the answer in its type's form read only, its run now, and
+  "make a test of it".
+- **Tests**: a type's tests with their expected answers and counts; a test
+  with each instance served and what its grader said; new, change (before
+  it is served), its files, retire.
+
+A part of items 4 (tests, standing, copies) and 5a (pay, earnings) shows
+only when the server answers for it: a host's own task store answers no
+test route, so the page shows no Tests tab.
+
+**Its steps** go through the STAFF DOOR, `staffAdmin`
+(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` route — no
+other path — in process and in the admin's name (`inProcessRequest`), so a
+grant's `by`, a type's `changedBy` and a take-back's `takenBackBy` name the
+admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
+the `earnings/*` steps share: only strut's own page shown to an admin of
+this server, never a workflow, an agent's tool, a model-written page or a
+member's. A route's refusal is the step's error, its `code` first. None is
+kept as a run, and a call through an admin door hands the deployment's
+`onRunEvent` no event (src/apps/tools.ts `adminBag`), so a test's expected
+answer and a grader's note, which the test steps read and write, stay
+behind the routes; the steps that write one list `expected` in `redact`,
+and the app monitor keeps a call's config with those fields redacted.
+
+| Step | The route | Answers |
+| ---- | --------- | ------- |
+| `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
+| `staff/types` | `GET /tasks/types` | `{ types }` |
+| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
+| `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
+| `staff/worker { actor }` | `GET /tasks/workers/:actor` | `{ worker, holding?, week, recent }` |
+| `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
+| `staff/grant { actor, type, qualify? }` | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
+| `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
+| `staff/tasks { type?, status?, workflow?, runId?, by?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
+| `staff/task { id }` | `GET /tasks/:id` | `{ task, run }` |
+| `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers |
+| `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
+| `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
+| `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
+| `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
+| `staff/test-file { id, path, base64 }` | `PUT /tasks/tests/:id/files/<path>` (the bytes) | `{ test }` |
+| `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
+| `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
+
+Beside them it grants `app/list` (the type editor's app picker, whose
+grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
+line on what workers are owed). It launches nothing.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
@@ -4825,9 +4911,10 @@ A member's session, a peer and a person token are refused (`403`). A name
 with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
 `bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
-`unknown_task`, `unknown_test`, `not_listed`), `409` (`in_use`,
-`released`); `501 not_available` for the take-back and the test routes on a
-server whose task store is its host's.
+`unknown_task`, `unknown_test`, `not_listed`, `no_file`), `409` (`in_use`,
+`released`); `501 not_available` for the take-back, the test routes, the
+queue and a task's file on a server whose task store is its host's (which
+answers none of them).
 
 | Route | |
 | --- | --- |
@@ -4835,12 +4922,14 @@ server whose task store is its host's.
 | `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold, no tests, no copies) |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
-| `GET /tasks/workers/:actor` | `{ worker: WorkerRecord }`, the same for one worker; `404 unknown_worker` |
+| `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
+| `GET /tasks/workers/:actor` | `{ worker: WorkerRecord, holding?, week, recent }`: the same for one worker, with their live lease (`{ lease, task, type, expires }`), what they did of the leases taken in the last 7 days by type (`{ [type]: { answered, skipped, lost } }`, `lost` a lease that ran out) and their newest 50 leases (`[{ lease: Lease, task: { id, type, workflow, runId, status, test? } }]`); `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
-| `GET /tasks/:id` | `{ task: TaskView }` |
+| `GET /tasks?type=&status=&workflow=&runId=&by=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
+| `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
+| `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list only, `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 
 ```jsonc
@@ -4861,7 +4950,8 @@ server whose task store is its host's.
   },
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
-// The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts):
+// The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,
+// the same file as the kit's kit/src/folds/answer-schema.ts, which the staff app runs):
 // type (one name), properties + required (no other key), items, minItems,
 // maxItems, enum, minimum, maximum, minLength, maxLength, title, description.
 
@@ -4875,7 +4965,9 @@ server whose task store is its host's.
   "standing": {                     // per live grant of a type with tests
     "pet-match": { "qualifying": false, "qualify": 10, "window": 20, "graded": 14, "passed": 13,
                    "errors": 1, "pending": 0, "minGraded": 10, "threshold": 0.8 }
-  }
+  },
+  "week": 12,                       // answers in the last 7 days
+  "holding": "pet-match"            // the type of the lease they hold now; absent with none
 }
 
 // TaskView: the task with its leases
@@ -4900,6 +4992,33 @@ server whose task store is its host's.
                "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000
                             /*, "takenBack", "takenBackWhy", "takenBackBy" */ } }]
 }
+
+// TaskStats: the queue (GET /tasks/stats). Test instances are not the queue: none is counted
+{
+  "at": 1762952600000,
+  "types": [{
+    "type": "pet-match", "app": "workers", "enabled": true,
+    "waiting": 3,          // open, not past due, no live lease (a lease past its expiry is waiting before the sweep marks it)
+    "working": 1,          // open, not past due, a live lease
+    "oldest": 840000,      // the oldest waiting task's age, ms; absent with none
+    "dueSoon": 2, "dueHour": 0,   // open tasks due within 24 hours, within the hour
+    "granted": 4,          // workers holding a live grant
+    "holding": 1,          // live leases of the type
+    "asking": 2,           // workers whose page holds a task/next waiting
+    "appProblem": "app workers does not grant task/submit: its page cannot answer this type's tasks",  // absent when the app is fine
+    "windows": {           // the last hour, day and week
+      "hour": { "answered": 4, "expired": 0, "cancelled": 0, "disputed": 0, "skipped": 1, "leasesLost": 0,
+                "toAnswer": { "p50": 300000, "p90": 900000 },   // made → settled, newest 1,000 settled tasks; absent with none
+                "work": { "p50": 45000, "p90": 120000 } },      // taken → answered, newest 1,000 answers
+      "day": { … }, "week": { … }
+    }
+  }],
+  "workers": { "new": 1, "active": 4, "suspended": 0, "banned": 0 },
+  "holding": 1,            // live leases across types
+  "asking": 2              // workers with a held task/next
+}
+// `answered` counts answers (every copy); `expired` a task past due before the
+// sweep marks it too, at its due; `leasesLost` the leases that ran out.
 
 // TakeBackOutcome: one answer's earning
 { "lease": "…", "worker": "p256:02ab…",

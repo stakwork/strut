@@ -1,0 +1,16 @@
+{
+  "//": "Type-checks strut/staff (src/apps/staff, plans/human-steps.md §9) against the kit and strut/views: its own src first for @/, then strut/views' (TaskForm), then the kit's; `strut/views` from its sources; bare packages from the kit's install. `npx tsc -p kit/tsconfig.staff.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "strut/views": ["../src/apps/views/src/index.ts"],
+      "@/*": ["../src/apps/staff/src/*", "../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/staff/src/**/*"]
+}

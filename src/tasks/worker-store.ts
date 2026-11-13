@@ -71,6 +71,19 @@ export interface WorkerStore {
   grant(actor: string, type: string, by: string | undefined, now: number, qualify?: number): Promise<WorkerRecord>;
   /** Revokes a live grant; the status stays. Undefined: no such worker. */
   revoke(actor: string, type: string, o: { by?: string; why?: string; now: number }): Promise<WorkerRecord | undefined>;
+  /** The queue's counts (plans/human-steps.md §9.4): workers by status, and
+   *  live grants by type. */
+  counts(): Promise<WorkerCounts>;
+}
+
+export interface WorkerCounts {
+  statuses: Record<WorkerStatus, number>;
+  granted: Record<string, number>;
+}
+
+/** Every status at nought. */
+export function noStatuses(): Record<WorkerStatus, number> {
+  return Object.fromEntries(WORKER_STATUSES.map((s) => [s, 0])) as Record<WorkerStatus, number>;
 }
 
 /** The types a worker holds a live grant for, by name. */
@@ -131,6 +144,14 @@ export class MemoryWorkerStore implements WorkerStore {
       if (o.why !== undefined) g.why = o.why;
     }
     return this.record(actor);
+  }
+
+  async counts(): Promise<WorkerCounts> {
+    const statuses = noStatuses();
+    for (const r of this.rows.values()) statuses[r.status] += 1;
+    const granted: Record<string, number> = {};
+    for (const mine of this.grants.values()) for (const g of mine.values()) if (g.revokedAt === undefined) granted[g.type] = (granted[g.type] ?? 0) + 1;
+    return { statuses, granted };
   }
 
   private record(actor: string): WorkerRecord | undefined {

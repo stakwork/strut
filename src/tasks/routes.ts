@@ -14,17 +14,31 @@
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
  *   and its `standing` per type with tests
- * - `GET /tasks/workers/:actor` → `{ worker }`, the same for one
+ * - `GET /tasks/workers/:actor` → `{ worker, holding?, week, recent }`: the
+ *   same for one, with their live lease, the last 7 days by type and their
+ *   newest 50 leases (plans/human-steps.md §9.4)
  * - `PUT /tasks/workers/:actor { status?, note? }` → `{ worker }`
  * - `PUT /tasks/workers/:actor/grants/:type [{ qualify?: false }]` →
  *   `{ worker, notice? }`: a grant of a type with tests records its K
  * - `DELETE /tasks/workers/:actor/grants/:type[?why=]` → `{ worker }`
- * - `GET /tasks[?type=&status=&workflow=&runId=&test=&before=&limit=]` → `{ tasks }`,
+ * - `GET /tasks/stats[?type=]` → the queue (plans/human-steps.md §9.4): per
+ *   type waiting, working, the oldest waiting, due within a day, workers
+ *   granted, holding and asking, what is wrong with its app
+ *   (`appProblem`), and per hour, day and week what was answered,
+ *   expired, cancelled, disputed, skipped and lost, with time to answer
+ *   and work time (p50, p90); across types the workers by status, holding
+ *   and asking. Computed on read
+ * - `GET /tasks[?type=&status=&workflow=&runId=&by=&test=&before=&limit=]` → `{ tasks }`,
  *   newest first, each with its leases (an answer's `earning` with it; a
  *   copies task's answers and whether each agreed on its leases);
+ *   `by` the tasks an actor answered (any of a copies task's answers);
  *   `test=true` the test instances alone, `false` the real tasks;
  *   `status=disputed` the copies tasks whose answers did not agree
- * - `GET /tasks/:id` → `{ task }`
+ * - `GET /tasks/:id` → `{ task, run }`: `run` the run's status now and what
+ *   it waits on (`{ status, waitingOn? }`), null for a test instance or a
+ *   run not on file
+ * - `GET /tasks/:id/files/<path>` → one of the task's files, as `run/files`
+ *   answers one; `404 not_listed` for a path not on its list
  * - `POST /tasks/:id/take-back { worker?, why }` → `{ task, earnings }`: the
  *   earnings the task's answers made (or `worker`'s) taken back while held
  *   (plans/human-steps.md §8.1); `409 released` when every one asked for is
@@ -61,6 +75,12 @@ export interface TaskRoutesDeps {
   /** The staff's tests (§7.1): the service's, never on a capability.
    *  Absent (a host's own store): the test routes answer 501. */
   tests?: TasksService["tests"];
+  /** §9.4: what is wrong with the app a type names (`taskAppProblem`), for
+   *  the queue. Absent: not checked. */
+  appProblem?: (app: string) => Promise<string | undefined>;
+  /** §9.4: a task's run now — its status and what it waits on — or null
+   *  when there is none on file. Absent: every task's `run` is null. */
+  runOf?: (workflow: string, runId: string) => Promise<{ status: string; waitingOn?: string[] } | null>;
 }
 
 const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
@@ -71,6 +91,7 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   unknown_task: 404,
   unknown_test: 404,
   not_listed: 404,
+  no_file: 404,
   in_use: 409,
 };
 
@@ -129,15 +150,39 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     }),
   );
 
+  /** A route a host's own store may predate: 501 when it lacks `method`. */
+  const lacks = async (c: Context, method: keyof TasksCapability, what: string) =>
+    typeof tasks[method] === "function" ? null : ((await refuse(c)) ?? c.json({ error: `this server's task store is its host's: it has no ${what}`, code: "not_available" }, 501));
+
   app.get("/tasks/workers/:actor", async (c) => {
-    // A host's own store may predate the one-worker read.
-    if (typeof tasks.worker !== "function") {
-      return (await refuse(c)) ?? c.json({ error: "this server's task store is its host's: it has no one-worker read", code: "not_available" }, 501);
-    }
+    const missing = await lacks(c, "worker", "one-worker read");
+    if (missing) return missing;
     return answer(c, async () => {
-      const worker = await tasks.worker(c.req.param("actor"));
-      if (!worker) throw new TaskError("unknown_worker", `no worker ${c.req.param("actor")} here`);
-      return { worker };
+      const actor = c.req.param("actor");
+      const worker = await tasks.worker(actor);
+      if (!worker) throw new TaskError("unknown_worker", `no worker ${actor} here`);
+      // What they hold and did (§9.4), where the store answers it.
+      const activity = typeof tasks.activity === "function" ? await tasks.activity(actor) : undefined;
+      return { worker, ...(activity ?? {}) };
+    });
+  });
+
+  // The queue (§9.4), before `/tasks/:id`.
+  app.get("/tasks/stats", async (c) => {
+    const missing = await lacks(c, "stats", "queue counts");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const type = c.req.query("type") || undefined;
+      const stats = await tasks.stats(type ? { type } : {});
+      if (deps.appProblem) {
+        const problems = new Map<string, string | undefined>();
+        for (const app of new Set(stats.types.map((t) => t.app))) problems.set(app, await deps.appProblem(app));
+        for (const t of stats.types) {
+          const problem = problems.get(t.app);
+          if (problem) t.appProblem = problem;
+        }
+      }
+      return stats as unknown as Record<string, unknown>;
     });
   });
 
@@ -203,6 +248,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
           ...(q["status"] ? { status: q["status"] as TaskStatus } : {}),
           ...(q["workflow"] ? { workflow: q["workflow"] } : {}),
           ...(q["runId"] ? { runId: q["runId"] } : {}),
+          ...(q["by"] ? { by: q["by"] } : {}),
           ...(before !== undefined ? { before } : {}),
           ...(limit !== undefined ? { limit } : {}),
         }),
@@ -330,10 +376,30 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     }
   });
 
+  // One of a task's files, read by staff without a lease (§9.4).
+  app.get("/tasks/:id/files/*", async (c) => {
+    const missing = await lacks(c, "taskFile", "file read for staff");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const id = c.req.param("id");
+      const marker = `/tasks/${id}/files/`;
+      let path: string;
+      try {
+        path = c.req.path.slice(c.req.path.indexOf(marker) + marker.length).split("/").map(decodeURIComponent).join("/");
+      } catch {
+        throw new TaskError("bad_request", "the file's path is not well encoded");
+      }
+      return (await tasks.taskFile(id, path)) as unknown as Record<string, unknown>;
+    });
+  });
+
   app.get("/tasks/:id", async (c) => {
     const refused = await refuse(c);
     if (refused) return refused;
     const task = await tasks.task(c.req.param("id"));
-    return task ? c.json({ task }) : c.json({ error: `no task ${c.req.param("id")}`, code: "unknown_task" }, 404);
+    if (!task) return c.json({ error: `no task ${c.req.param("id")}`, code: "unknown_task" }, 404);
+    // The run as it stands now (§9.4); a test instance has none.
+    const run = task.workflow && deps.runOf ? await deps.runOf(task.workflow, task.runId).catch(() => null) : null;
+    return c.json({ task, run });
   });
 }

@@ -30,7 +30,14 @@ import { opt, type Row, type TaskDb } from "./db.js";
 import type { AnswerSchema } from "./answer-schema.js";
 import {
   DEFAULT_HOLD_HOURS,
+  DUE_SOON_MS,
   GRADE_NOTE_MAX,
+  STATS_SAMPLE,
+  STATS_WINDOWS,
+  type QueueCounts,
+  type StatsWindow,
+  type WindowCounts,
+  type WorkerWeek,
   pageLimit,
   payMsatOf,
   pickIn,
@@ -173,6 +180,9 @@ create index if not exists leases_open_expires on leases(expires) where status =
 create index if not exists leases_unbooked on leases(closed) where status = 'submitted' and pay_msat is not null and booked_at is null;
 create index if not exists leases_answered on leases(worker, type, closed) where status = 'submitted';
 create index if not exists tests_type on tests(type, served) where retired is null;
+create index if not exists tasks_settled on tasks(type, settled_at) where test is null;
+create index if not exists leases_type_closed on leases(type, closed);
+create index if not exists leases_worker_taken on leases(worker, taken);
 `;
 
 /** The task side's tables brought to version 2, inside the file's one
@@ -274,6 +284,57 @@ export class SqliteTaskStore implements TaskStore {
       closeLeases: p("update leases set status = 'expired', closed = ?, reason = ? where task = ? and status = 'open'"),
       staleLeases: p("update leases set status = 'expired', closed = ?1 where status = 'open' and expires <= ?1"),
       leasesOf: p("select * from leases where task in (select value from json_each(?)) order by taken, rowid"),
+      // §9.4's reads: a worker's leases, and each type's queue.
+      byIds: p("select * from tasks where id in (select value from json_each(?))"),
+      recentLeases: p("select * from leases where worker = ? order by taken desc, rowid desc limit ?"),
+      answeredSince: p("select worker, count(*) n from leases where status = 'submitted' and closed >= ? group by worker"),
+      holdingNow: p("select worker, type from leases where status = 'open' and expires > ?"),
+      workerWeek: p(
+        `select type, sum(status = 'submitted') answered, sum(status = 'skipped') skipped,
+                sum((status = 'expired' and reason is null) or (status = 'open' and expires <= ?3)) lost
+           from leases where worker = ?1 and taken >= ?2 group by type`,
+      ),
+      queueOpen: p(
+        `select count(*) open,
+                sum(not exists (select 1 from leases l where l.task = t.id and l.status = 'open' and l.expires > ?2)) waiting,
+                min(case when not exists (select 1 from leases l where l.task = t.id and l.status = 'open' and l.expires > ?2) then t.created end) oldest,
+                sum(t.due <= ?3) due_soon, sum(t.due <= ?4) due_hour
+           from tasks t where t.type = ?1 and t.status = 'open' and t.test is null and t.due > ?2`,
+      ),
+      queueHolding: p("select count(*) n from leases where type = ?1 and status = 'open' and expires > ?2"),
+      holdingAll: p("select count(*) n from leases where status = 'open' and expires > ?"),
+      // Each window as a sum over the week's rows: ?2 the hour's start, ?3
+      // the day's, ?4 the week's, ?5 now.
+      queueLeft: p(
+        `select status, sum(settled_at >= ?2) hour, sum(settled_at >= ?3) day, count(*) week
+           from tasks where type = ?1 and test is null and status in ('expired', 'cancelled', 'disputed') and settled_at >= ?4
+          group by status`,
+      ),
+      queuePastDue: p(
+        `select sum(due >= ?2) hour, sum(due >= ?3) day, count(*) week
+           from tasks where type = ?1 and status = 'open' and test is null and due <= ?5 and due >= ?4`,
+      ),
+      queueLeases: p(
+        `select case when l.status = 'expired' and l.reason is null then 'lost' else l.status end kind,
+                sum(l.closed >= ?2) hour, sum(l.closed >= ?3) day, count(*) week
+           from leases l join tasks t on t.id = l.task and t.test is null
+          where l.type = ?1 and l.closed >= ?4 and (l.status in ('submitted', 'skipped') or (l.status = 'expired' and l.reason is null))
+          group by kind`,
+      ),
+      queueLeasesOut: p(
+        `select sum(l.expires >= ?2) hour, sum(l.expires >= ?3) day, count(*) week
+           from leases l join tasks t on t.id = l.task and t.test is null
+          where l.type = ?1 and l.status = 'open' and l.expires <= ?5 and l.expires >= ?4`,
+      ),
+      // The newest answers of the week: the newest of an hour or a day are
+      // among them, so one read serves all three windows.
+      queueToAnswer: p(
+        "select settled_at at, settled_at - created ms from tasks where type = ?1 and test is null and status = 'settled' and settled_at >= ?2 order by settled_at desc limit ?3",
+      ),
+      queueWork: p(
+        `select l.closed at, l.closed - l.taken ms from leases l join tasks t on t.id = l.task and t.test is null
+          where l.type = ?1 and l.status = 'submitted' and l.closed >= ?2 order by l.closed desc limit ?3`,
+      ),
       booked: p("update leases set booked_at = ? where id = ? and booked_at is null"),
       unbooked: p("select * from leases where status = 'submitted' and pay_msat is not null and booked_at is null order by closed limit ?"),
       // An open instance whose lease is no longer live closes (§7.1).
@@ -433,6 +494,11 @@ export class SqliteTaskStore implements TaskStore {
     eq("workflow", q.workflow);
     eq("run_id", q.runId);
     if (q.test !== undefined) where.push(q.test ? "test is not null" : "test is null");
+    if (q.by) {
+      // Any answer of theirs, a copy's too (`leases_answered`).
+      where.push("id in (select task from leases where worker = ? and status = 'submitted')");
+      args.push(q.by);
+    }
     if (q.before !== undefined) {
       where.push("seq < ?");
       args.push(q.before);
@@ -444,6 +510,77 @@ export class SqliteTaskStore implements TaskStore {
   async leasesOf(taskIds: string[]): Promise<Lease[]> {
     if (!taskIds.length) return [];
     return (this.s.leasesOf.all(JSON.stringify(taskIds)) as Row[]).map(leaseOf);
+  }
+
+  async byIds(ids: string[]): Promise<TaskRecord[]> {
+    if (!ids.length) return [];
+    return (this.s.byIds.all(JSON.stringify(ids)) as Row[]).map(taskOf);
+  }
+
+  async recentLeases(worker: string, limit: number): Promise<Lease[]> {
+    return (this.s.recentLeases.all(worker, Math.max(0, Math.floor(limit))) as Row[]).map(leaseOf);
+  }
+
+  async workersNow(since: number, now: number): Promise<{ answered: Record<string, number>; holding: Record<string, string> }> {
+    const answered: Record<string, number> = {};
+    for (const r of this.s.answeredSince.all(since) as Row[]) answered[r.worker as string] = Number(r.n);
+    const holding: Record<string, string> = {};
+    for (const r of this.s.holdingNow.all(now) as Row[]) holding[r.worker as string] = r.type as string;
+    return { answered, holding };
+  }
+
+  async workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>> {
+    const out: Record<string, WorkerWeek> = {};
+    for (const r of this.s.workerWeek.all(worker, since, now) as Row[]) {
+      out[r.type as string] = { answered: Number(r.answered ?? 0), skipped: Number(r.skipped ?? 0), lost: Number(r.lost ?? 0) };
+    }
+    return out;
+  }
+
+  async stats(o: { types: string[]; now: number }): Promise<{ types: QueueCounts[]; holding: number }> {
+    const { now } = o;
+    const hour = now - STATS_WINDOWS.hour;
+    const day = now - STATS_WINDOWS.day;
+    const week = now - STATS_WINDOWS.week;
+    const n = (v: unknown) => Number(v ?? 0);
+    // Synchronous on the one connection, so the counts are of one moment.
+    const types = o.types.map((type): QueueCounts => {
+        const open = this.s.queueOpen.get(type, now, now + DUE_SOON_MS, now + STATS_WINDOWS.hour) as Row;
+        const windows = {} as Record<StatsWindow, WindowCounts>;
+        for (const w of Object.keys(STATS_WINDOWS) as StatsWindow[]) {
+          windows[w] = { answered: 0, expired: 0, cancelled: 0, disputed: 0, skipped: 0, leasesLost: 0, toAnswer: [], work: [] };
+        }
+        const add = (rows: Row[], key: (r: Row) => keyof WindowCounts | undefined) => {
+          for (const r of rows) {
+            const k = key(r);
+            if (!k) continue;
+            for (const w of Object.keys(STATS_WINDOWS) as StatsWindow[]) (windows[w][k] as number) += n(r[w]);
+          }
+        };
+        add(this.s.queueLeft.all(type, hour, day, week) as Row[], (r) => r.status as "expired" | "cancelled" | "disputed");
+        add(this.s.queuePastDue.all(type, hour, day, week, now) as Row[], () => "expired");
+        add(this.s.queueLeases.all(type, hour, day, week) as Row[], (r) => (r.kind === "submitted" ? "answered" : r.kind === "skipped" ? "skipped" : "leasesLost"));
+        add(this.s.queueLeasesOut.all(type, hour, day, week, now) as Row[], () => "leasesLost");
+        const times = (rows: Row[], k: "toAnswer" | "work") => {
+          for (const r of rows) {
+            for (const w of Object.keys(STATS_WINDOWS) as StatsWindow[]) if (n(r.at) >= now - STATS_WINDOWS[w]) windows[w][k].push(n(r.ms));
+          }
+        };
+        times(this.s.queueToAnswer.all(type, week, STATS_SAMPLE) as Row[], "toAnswer");
+        times(this.s.queueWork.all(type, week, STATS_SAMPLE) as Row[], "work");
+        const oldest = opt<number>(open.oldest);
+        return {
+          type,
+          waiting: n(open.waiting),
+          working: n(open.open) - n(open.waiting),
+          ...(oldest !== undefined ? { oldestCreated: oldest } : {}),
+          dueSoon: n(open.due_soon),
+          dueHour: n(open.due_hour),
+          holding: n((this.s.queueHolding.get(type, now) as Row).n),
+          windows,
+        };
+      });
+    return { types, holding: n((this.s.holdingAll.get(now) as Row).n) };
   }
 
   async lease(id: string): Promise<Lease | undefined> {

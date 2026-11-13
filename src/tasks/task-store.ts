@@ -250,9 +250,60 @@ export interface TaskListQuery {
   runId?: string;
   /** True: test instances only; false: real tasks only. */
   test?: boolean;
+  /** Tasks this actor answered (a submitted lease of theirs: with copies,
+   *  any of the answers, not only the task's `by`). */
+  by?: string;
   /** A `seq`: tasks made before it. */
   before?: number;
   limit?: number;
+}
+
+/** The windows the queue's counts are read over (plans/human-steps.md §9.4). */
+export const STATS_WINDOWS = { hour: 60 * 60 * 1000, day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000 } as const;
+export type StatsWindow = keyof typeof STATS_WINDOWS;
+/** The newest answers a window's times are read over. */
+export const STATS_SAMPLE = 1000;
+/** "Due soon": open tasks due within this. */
+export const DUE_SOON_MS = 24 * 60 * 60 * 1000;
+
+/** One window of one type's real tasks (§9.4): what left `open` in it, the
+ *  answers given, the leases skipped and run out, and the newest
+ *  `STATS_SAMPLE` times, in ms — made to answered (`toAnswer`, a settled
+ *  task's) and taken to answered (`work`, an answer's). */
+export interface WindowCounts {
+  answered: number;
+  expired: number;
+  cancelled: number;
+  disputed: number;
+  skipped: number;
+  leasesLost: number;
+  toAnswer: number[];
+  work: number[];
+}
+
+/** One type's queue now, from the task side (§9.4). Test instances are
+ *  not the queue: none is counted. */
+export interface QueueCounts {
+  type: string;
+  /** Open, not past due: with no live lease, and with one. */
+  waiting: number;
+  working: number;
+  /** When the oldest waiting task was made. */
+  oldestCreated?: number;
+  /** Open, not past due, due within `DUE_SOON_MS`, and within the hour. */
+  dueSoon: number;
+  dueHour: number;
+  /** Live leases of the type, an instance's too: a worker holds one at most. */
+  holding: number;
+  windows: Record<StatsWindow, WindowCounts>;
+}
+
+/** What one worker did of one type in a window (§9.4): answers given,
+ *  leases skipped, leases that ran out. */
+export interface WorkerWeek {
+  answered: number;
+  skipped: number;
+  lost: number;
 }
 
 /** A test (§7.1): staff's, sealed — no worker call reads this. */
@@ -364,8 +415,23 @@ export interface TaskStore {
   byKey(workflow: string, runId: string, path: string): Promise<TaskRecord | undefined>;
   /** Newest first, `TASK_LIST_PAGE` at a time. */
   list(q?: TaskListQuery): Promise<TaskRecord[]>;
+  /** These tasks, in no order; an id not on file left out. */
+  byIds(ids: string[]): Promise<TaskRecord[]>;
   /** Every lease on these tasks, oldest first. */
   leasesOf(taskIds: string[]): Promise<Lease[]>;
+  /** §9.4: one worker's newest leases, by when taken, at most `limit`. */
+  recentLeases(worker: string, limit: number): Promise<Lease[]>;
+  /** §9.5's Workers list, one grouped read: each worker's answers since
+   *  `since`, and the type of the live lease each holds now. */
+  workersNow(since: number, now: number): Promise<{ answered: Record<string, number>; holding: Record<string, string> }>;
+  /** §9.4: what one worker did, by type, of the leases taken since `since`:
+   *  a lease past its expiry is lost before the sweep marks it. */
+  workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>>;
+  /** §9.4: each type's queue now and over `STATS_WINDOWS` back from `now`,
+   *  computed on read (one type when asked). A lease past its expiry is
+   *  waiting and lost, and a task past due expired at its due, before the
+   *  sweep marks them. */
+  stats(o: { types: string[]; now: number }): Promise<{ types: QueueCounts[]; holding: number }>;
   lease(id: string): Promise<Lease | undefined>;
   /** The worker's live lease, if any. */
   heldBy(worker: string, now: number): Promise<Lease | undefined>;
@@ -475,6 +541,9 @@ export function pageLimit(limit: number | undefined): number {
 
 const keyOf = (workflow: string, runId: string, path: string) => `${workflow}\0${runId}\0${path}`;
 const live = (l: Lease, now: number) => l.status === "open" && l.expires > now;
+/** A lease that ran out (§9.4): swept as `expired` with no reason (one closed
+ *  early has one), or open past its expiry before the sweep. */
+const ranOut = (l: Lease, now: number) => (l.status === "expired" && l.reason === undefined) || (l.status === "open" && l.expires <= now);
 const clone = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
 
 export class MemoryTaskStore implements TaskStore {
@@ -553,15 +622,98 @@ export class MemoryTaskStore implements TaskStore {
       if (q.workflow && t.workflow !== q.workflow) continue;
       if (q.runId && t.runId !== q.runId) continue;
       if (q.test !== undefined && (t.test !== undefined) !== q.test) continue;
+      if (q.by && ![...this.leases.values()].some((l) => l.task === t.id && l.worker === q.by && l.status === "submitted")) continue;
       out.push(clone(t));
       if (out.length >= limit) break;
     }
     return out;
   }
 
+  async byIds(ids: string[]): Promise<TaskRecord[]> {
+    return ids.flatMap((id) => (this.tasks.has(id) ? [clone(this.tasks.get(id)!)] : []));
+  }
+
   async leasesOf(taskIds: string[]): Promise<Lease[]> {
     const ids = new Set(taskIds);
     return [...this.leases.values()].filter((l) => ids.has(l.task)).map(clone);
+  }
+
+  async recentLeases(worker: string, limit: number): Promise<Lease[]> {
+    return [...this.leases.values()]
+      .filter((l) => l.worker === worker)
+      .reverse()
+      .sort((a, b) => b.taken - a.taken)
+      .slice(0, Math.max(0, limit))
+      .map(clone);
+  }
+
+  async workersNow(since: number, now: number): Promise<{ answered: Record<string, number>; holding: Record<string, string> }> {
+    const answered: Record<string, number> = {};
+    const holding: Record<string, string> = {};
+    for (const l of this.leases.values()) {
+      if (l.status === "submitted" && (l.closed ?? 0) >= since) answered[l.worker] = (answered[l.worker] ?? 0) + 1;
+      if (live(l, now)) holding[l.worker] = l.type;
+    }
+    return { answered, holding };
+  }
+
+  async workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>> {
+    const out: Record<string, WorkerWeek> = {};
+    for (const l of this.leases.values()) {
+      if (l.worker !== worker || l.taken < since) continue;
+      const w = (out[l.type] ??= { answered: 0, skipped: 0, lost: 0 });
+      if (l.status === "submitted") w.answered++;
+      else if (l.status === "skipped") w.skipped++;
+      else if (ranOut(l, now)) w.lost++;
+    }
+    return out;
+  }
+
+  async stats(o: { types: string[]; now: number }): Promise<{ types: QueueCounts[]; holding: number }> {
+    const leases = [...this.leases.values()];
+    const holding = leases.filter((l) => live(l, o.now)).length;
+    const types = o.types.map((type): QueueCounts => {
+      const real = [...this.tasks.values()].filter((t) => t.type === type && t.test === undefined);
+      const ids = new Set(real.map((t) => t.id));
+      const mine = leases.filter((l) => l.type === type);
+      const held = new Set(mine.filter((l) => live(l, o.now)).map((l) => l.task));
+      const open = real.filter((t) => t.status === "open" && t.due > o.now);
+      const waiting = open.filter((t) => !held.has(t.id));
+      const answers = mine.filter((l) => ids.has(l.task));
+      const windows = {} as Record<StatsWindow, WindowCounts>;
+      for (const [w, ms] of Object.entries(STATS_WINDOWS) as Array<[StatsWindow, number]>) {
+        const from = o.now - ms;
+        const left = (status: TaskStatus) => real.filter((t) => t.status === status && (t.settledAt ?? 0) >= from).length;
+        const given = answers.filter((l) => l.status === "submitted" && (l.closed ?? 0) >= from).sort((a, b) => b.closed! - a.closed!);
+        windows[w] = {
+          answered: given.length,
+          // A task past due counts as expired at its due before the sweep marks it.
+          expired: left("expired") + real.filter((t) => t.status === "open" && t.due <= o.now && t.due >= from).length,
+          cancelled: left("cancelled"),
+          disputed: left("disputed"),
+          skipped: answers.filter((l) => l.status === "skipped" && (l.closed ?? 0) >= from).length,
+          leasesLost: answers.filter((l) => ranOut(l, o.now) && (l.closed ?? l.expires) >= from).length,
+          toAnswer: real
+            .filter((t) => t.status === "settled" && (t.settledAt ?? 0) >= from)
+            .sort((a, b) => b.settledAt! - a.settledAt!)
+            .slice(0, STATS_SAMPLE)
+            .map((t) => t.settledAt! - t.created),
+          work: given.slice(0, STATS_SAMPLE).map((l) => l.closed! - l.taken),
+        };
+      }
+      const oldest = waiting.reduce<number | undefined>((m, t) => (m === undefined || t.created < m ? t.created : m), undefined);
+      return {
+        type,
+        waiting: waiting.length,
+        working: open.length - waiting.length,
+        ...(oldest !== undefined ? { oldestCreated: oldest } : {}),
+        dueSoon: open.filter((t) => t.due <= o.now + DUE_SOON_MS).length,
+        dueHour: open.filter((t) => t.due <= o.now + STATS_WINDOWS.hour).length,
+        holding: mine.filter((l) => live(l, o.now)).length,
+        windows,
+      };
+    });
+    return { types, holding };
   }
 
   async lease(id: string): Promise<Lease | undefined> {

@@ -4198,6 +4198,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 /* A parked run (src/park.ts): out of memory, waiting to be woken. */
 .ov-status-waiting { color: #a78bfa; background: color-mix(in srgb, #a78bfa 14%, transparent); }
 .ov-waiting { margin-top: 6px; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+/* A waiting run's task, opened in strut/staff (WaitingOn). */
+.link-button { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.link-button:hover { color: var(--text); }
 .ov-job {
   margin-left: auto;
   max-width: 150px;

@@ -13,8 +13,13 @@ import { errorText } from "../lib/format";
 export interface TaskFormProps {
   /** The task in hand (`useTask().task`): its `answer` schema is the form. */
   task: Pick<WorkerTask, "lease" | "answer">;
-  /** Sends the answer: `useTask().submit`. */
-  onSubmit: (answer: Record<string, unknown>) => Promise<unknown> | unknown;
+  /** Sends the answer: `useTask().submit`. No Submit button without it. */
+  onSubmit?: (answer: Record<string, unknown>) => Promise<unknown> | unknown;
+  /** An answer given, drawn in the form READ ONLY (plans/human-steps.md
+   *  §9.5: staff reading what a worker answered): every field disabled, no
+   *  buttons. */
+  readOnly?: boolean;
+  value?: Record<string, unknown>;
   /** Passes on the task: `useTask().skip`. No Skip button without it. */
   onSkip?: () => Promise<unknown> | unknown;
   /** The submit button's text. */
@@ -37,18 +42,19 @@ const long = (schema: FormSchema, name: string) => {
  * as a box on a photo — says the task type needs its own UI. The page draws
  * what the task shows (`task.show`, `useTaskFileUrl`); this is only the answer.
  */
-export function TaskForm({ task, onSubmit, onSkip, label = "Submit", className }: TaskFormProps) {
+export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, label = "Submit", className }: TaskFormProps) {
   const problem = useMemo(() => formProblem(task.answer), [task.answer]);
   const schema = task.answer as FormSchema;
   const fields = useMemo(() => (problem ? [] : fieldsOf(schema, { other: false })), [problem, schema]);
-  const [content, setContent] = useState<Record<string, unknown>>(() => (problem ? {} : initialContent(schema)));
+  const start = () => (problem ? {} : readOnly && value ? { ...value } : initialContent(schema));
+  const [content, setContent] = useState<Record<string, unknown>>(start);
   const [busy, setBusy] = useState<"submit" | "skip" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // A new task starts a new form.
+  // A new task starts a new form; an answer shown read only follows its value.
   useEffect(() => {
-    setContent(problem ? {} : initialContent(schema));
+    setContent(start());
     setError(null);
-  }, [task.lease]);
+  }, [task.lease, readOnly ? value : undefined]);
 
   if (problem) {
     return (
@@ -61,6 +67,7 @@ export function TaskForm({ task, onSubmit, onSkip, label = "Submit", className }
   const set = (name: string, v: unknown) => setContent((c) => ({ ...c, [name]: v }));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (readOnly || !onSubmit) return;
     const read = answerOf(schema, content);
     if ("problem" in read) return setError(read.problem);
     setError(null);
@@ -86,24 +93,28 @@ export function TaskForm({ task, onSubmit, onSkip, label = "Submit", className }
   };
 
   return (
-    <form onSubmit={submit} className={cn("flex flex-col gap-3 text-sm", className)} data-testid="task-form">
-      <fieldset disabled={busy !== null} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
+    <form onSubmit={submit} className={cn("flex flex-col gap-3 text-sm", className)} data-testid={readOnly ? "task-form-read-only" : "task-form"}>
+      <fieldset disabled={busy !== null || readOnly} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
         {fields.map((f) => (
           <Field key={f.name} field={f} long={long(schema, f.name)} value={content[f.name]} set={(v) => set(f.name, v)} />
         ))}
         {error && <p className="text-destructive">{error}</p>}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit">
-            {busy === "submit" ? <Loader2 className="animate-spin" /> : <Check />}
-            {label}
-          </Button>
-          {onSkip && (
-            <Button type="button" variant="outline" onClick={() => void skip()}>
-              {busy === "skip" ? <Loader2 className="animate-spin" /> : <SkipForward />}
-              Skip
-            </Button>
-          )}
-        </div>
+        {!readOnly && (onSubmit || onSkip) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {onSubmit && (
+              <Button type="submit">
+                {busy === "submit" ? <Loader2 className="animate-spin" /> : <Check />}
+                {label}
+              </Button>
+            )}
+            {onSkip && (
+              <Button type="button" variant="outline" onClick={() => void skip()}>
+                {busy === "skip" ? <Loader2 className="animate-spin" /> : <SkipForward />}
+                Skip
+              </Button>
+            )}
+          </div>
+        )}
       </fieldset>
     </form>
   );

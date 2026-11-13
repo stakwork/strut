@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ANSWER_MAX_BYTES, answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
+import { ANSWER_MAX_BYTES, answerProblem, answerSchemaProblem, taskAppProblem, type AnswerSchema } from "./answer-schema.js";
 
 /** plans/human-steps.md §4.5: the subset strut checks, at save and at submit. */
 
@@ -104,5 +104,23 @@ describe("an answer", () => {
     for (let i = 0; i < 8; i++) deep = [deep];
     assert.equal(answerProblem(any, deep), undefined);
     assert.match(answerProblem(any, [deep])!, /deeper than 8/);
+  });
+});
+
+describe("the answer schema's two copies (plans/human-steps.md §9.5)", () => {
+  it("kit/src/folds/answer-schema.ts, which the staff page runs, is src/tasks/answer-schema.ts byte for byte", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const store = await readFile(new URL("./answer-schema.ts", import.meta.url), "utf8");
+    const kit = await readFile(new URL("../../kit/src/folds/answer-schema.ts", import.meta.url), "utf8");
+    assert.equal(kit, store, "change both: the engine's build cannot import the kit");
+  });
+
+  it("taskAppProblem: an app not here, or one that does not grant task/next and task/submit", () => {
+    assert.match(taskAppProblem("workers", null)!, /no app workers/);
+    assert.match(taskAppProblem("workers", { grants: { steps: ["task/me"] } })!, /does not grant task\/next and task\/submit: its page cannot take or answer/);
+    assert.match(taskAppProblem("workers", { grants: { steps: ["task/next"] } })!, /does not grant task\/submit: its page cannot answer/);
+    assert.equal(taskAppProblem("workers", { grants: { steps: ["task/next", "task/submit"] } }), undefined);
+    assert.equal(taskAppProblem("workers", { grants: { steps: ["task/*"] } }), undefined, "a glob reaches them");
+    assert.match(taskAppProblem("workers", { grants: { steps: ["task.*"] } })!, /does not grant/, "a dot is a dot");
   });
 });

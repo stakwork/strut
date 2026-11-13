@@ -357,6 +357,27 @@ export function firstPartyApp(app: AppRef, seeded: boolean, actor: string | unde
   return !visitor && !!actor && seeded && isFirstPartyName(app.name);
 }
 
+/** The bag of a first-party page's call shown to an admin: the admin doors
+ *  beside the shared bag, WITHOUT the deployment's `onRunEvent`. What such a
+ *  call reads is its routes' alone — a test's expected answer, a grader's
+ *  note (plans/human-steps.md §7.9), the wallet — and its run's events carry
+ *  it, so no listener of every run's events (a host's own, the events sink)
+ *  is handed them, as a grader's run is handed none (src/tasks/grade-step.ts). */
+export function adminBag(services: unknown, adminServices: Record<string, unknown>): Record<string, unknown> {
+  const { onRunEvent: _events, ...rest } = (services ?? {}) as Record<string, unknown>;
+  return { ...rest, ...adminServices };
+}
+
+/** A call's config with the fields its step lists in `redact` as
+ *  `"[redacted]"`, as a run's events keep them (src/runner.ts). */
+export function redactedConfig(registry: StepRegistry, type: string, config: unknown): unknown {
+  const fields = registry[type]?.redact;
+  if (!fields?.length || !isRecord(config)) return config;
+  const out: Record<string, unknown> = { ...config };
+  for (const f of fields) if (f in out) out[f] = "[redacted]";
+  return out;
+}
+
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
 export function buildAppTools(deps: AppToolDeps): ToolSet {
   // As the `apps` reader where the host set `graphReaders` (src/graph/scope.ts).
@@ -382,7 +403,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     const shared = deps.visitor?.services
       ? deps.visitor.services(app, manifest, base)
       : app.firstParty && app.admin && deps.adminServices
-        ? { ...(deps.services as Record<string, unknown>), ...deps.adminServices }
+        ? adminBag(deps.services, deps.adminServices)
         : deps.services;
     // A worker's call leaves nothing behind but its lease and answer: no
     // claims read, so nothing makes it a kept run. Its bag alone carries
@@ -456,7 +477,10 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
           app: app.name,
           version: app.version,
           type: baseType(type),
-          config,
+          // What the monitor keeps of a call (a failing or fanning-out
+          // call's example) never holds a field its step redacts: a test's
+          // expected answer (plans/human-steps.md §7.9), a typed secret.
+          config: redactedConfig(deps.registry, baseType(type), config),
           ...(deps.visitor?.viewer ?? deps.actor ? { viewer: (deps.visitor?.viewer ?? deps.actor)! } : {}),
           status: call.status,
           ms: Date.now() - started,
