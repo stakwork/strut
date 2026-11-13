@@ -78,6 +78,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   let verdict: boolean | null = false;
   /** What the stand-in tender does: the usual script, or nothing to learn. */
   let lesson = true;
+  /** A page of its own guidance the stand-in tender opens first, by name. */
+  let openFirst = "";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
@@ -96,6 +98,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           calls.push("tend");
           const turn = body.messages.filter((m) => m.role === "assistant").length;
           if (turn === 0) [tendSystem, tendPrompt] = [system, all];
+          if (openFirst && turn === 0) return say("graph_graph_get", { node_type: "Concept", name: openFirst, children: "PARENT_OF" });
           if (!lesson) return say("final_answer", { lessons: [] });
           // The run whose work was corrected (turn 0's), the root's ref_id, and the claim once it is written.
           const run = /turn 0 · [^\]]*? · run orchestrator (\d+)/.exec(all)?.[1];
@@ -142,6 +145,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     tendPrompt = "";
     verdict = false;
     lesson = true;
+    openFirst = "";
     dir = join(tmpdir(), `strut-dream-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     strut = await createStrut({
@@ -296,13 +300,25 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks, { "c-1": 2 });
   });
 
-  it("the dream's rules are pages: another source's page swaps in by name, and a claim on the Dream page judges the dream's own runs", async () => {
+  it("the dream's rules are pages: the shipped ones a fixed base, the pages a workspace adds around them read and measured, another source swapped in by name", async () => {
     lesson = false;
     const knowledge = (strut!.services as unknown as { knowledge: KnowledgeCapability }).knowledge;
+    const under = async (parent: string, data: Record<string, string>) => {
+      const [node] = await backend.nodes.writeMany([{ type: "Concept", data }]);
+      await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await knowledge.page(parent))!.ref_id, target_ref_id: node!.ref_id });
+    };
+    // What a workspace learns about learning is in pages around the shipped ones: one under the conversations'
+    // page is listed with how to open it, the dream opens it, and its run records the page as followed.
+    await under("Assistant Conversations", { name: "Quiet Corrections", description: "corrections made without saying no", docs: "A person rewriting the reply themselves is a correction." });
+    await say("hello");
+    openFirst = "Quiet Corrections";
+    const around = await dream();
+    assert.ok(tendSystem.includes("- Quiet Corrections — corrections made without saying no") && tendSystem.includes("graph_graph_get({ node_type: \\\"Concept\\\", name: \\\"<name>\\\""), "listed under the source, with how to open it");
+    assert.deepEqual((await knowledge.opened("dream", around["runId"]))?.sort(), ["Assistant Conversations", "Dream", "Quiet Corrections"]);
+    openFirst = "";
+
     // A second kind of source is a page under Dream: the dream reads it in place of the conversations' page.
-    const dreamPage = await knowledge.page("Dream");
-    const [other] = await backend.nodes.writeMany([{ type: "Concept", data: { name: "Field Notes", description: "notes people wrote", docs: "Look for the lines a person underlined." } }]);
-    await backend.edges.write({ edge: "PARENT_OF", source_ref_id: dreamPage!.ref_id, target_ref_id: other!.ref_id });
+    await under("Dream", { name: "Field Notes", description: "notes people wrote", docs: "Look for the lines a person underlined." });
 
     // A claim on the Dream page itself: what every dream must hold to.
     const rule = await knowledge.addClaim({ concept: "Dream", text: "A lesson quotes the person's own words" });

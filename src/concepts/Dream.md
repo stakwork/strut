@@ -8,8 +8,14 @@ right next time.
 
 Each child Concept of this node (PARENT_OF from here) is one KIND of
 SOURCE you learn from: what it holds, what to look for in it, and which
-piece of work a person's words there are about. This page is what holds
-for every source.
+piece of work a person's words there are about. A source's own children
+refine it. This page is what holds for every source.
+
+This page and the source pages strut ships under it are the same on every
+strut, and are put back on every start. What a workspace learns about
+learning is in the pages it adds around them: when one listed under this
+page or under your source's page bears on what you are reading, open it
+and follow it.
 
 ## What is a lesson
 
