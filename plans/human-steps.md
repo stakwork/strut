@@ -38,6 +38,7 @@
 | 7 | Order | **`human` and the task store first** |
 | 8 | Items 4, 5a and 6: the questions their design passes left open | **All as recommended** (2026-11-12): §7.12 (#662), §8's ruled list (#660), §9.12 (#661) |
 | 9 | Who may take a task type's tasks | **Task types are open to any signed-in worker by default; a paid open type needs at least K ready tests** (ruled 2026-11-13). Staff can still make a type invite-only, and then grants work as before. An unpaid open type needs no tests |
+| 10 | Item 5b (withdraw) | **The ten questions all as recommended; a payout pays the worker's Sphinx address from sign-in by keysend, not an invoice** (ruled 2026-11-13). §8.2's "Ruled (2026-11-13)" |
 
 ## Problem
 
@@ -1696,18 +1697,22 @@ Evan agreed with every recommendation.
 
 ### 8.2 Withdraw (item 5b)
 
-> **Design pass (2026-11-13),** written against `main` @e4aecbe1 with items
-> 1 to 6 and the review verdict built. One thing was ruled before it (8.1's
-> ruling 7). The rest is proposed. The questions for Evan are at the end
-> ("Open for ruling"), each with a recommendation. Peel's side is not in
-> this repo: this section designs the contract Peel implements, as
-> `specs/WALLET.md` does for `buy_credit` and `sign_in`.
+> **Ruled (2026-11-13).** The design pass (#681) left ten questions. Evan
+> accepted every recommendation, and ruled one redesign: **a payout pays the
+> worker's Sphinx address, which strut keeps from the worker's sign-in, by
+> keysend. It is not an invoice that Peel makes and signs.** The section is
+> written against `main` @57f332b5 and describes that design. The rulings are
+> at its end, "Ruled (2026-11-13)", and the Rulings table's row 10 records
+> them. Peel's side is in stakwork/peel, and the treasury daemon's is in
+> stakwork/sphinx. This section designs the contracts they implement:
+> `specs/WALLET.md`'s `sign_in` and `specs/LIGHTNING.md`'s daemon.
 
-A worker withdraws what passed its hold. The worker's own wallet makes the
-invoice and signs for it, so strut knows the money goes where the worker
-asked. Strut's payer pays it through a third door, with no admin's yes per
-payment, inside caps, a solvency check and a switch. One payment per
-withdrawal (the Rulings table's 3).
+A worker withdraws what passed its hold. They sign in to the worker app with
+their Sphinx account, and that sign-in hands strut their Sphinx address. To
+withdraw, the page asks for an amount. Strut sends that amount by keysend to
+the address the sign-in gave. The payment goes through the payer's third
+door, with no admin's yes per payment, inside caps, a solvency check and a
+switch. Each withdrawal is one payment (the Rulings table's 3).
 
 What 5a hands it:
 
@@ -1724,104 +1729,123 @@ What 5a hands it:
 #### The flow
 
 ```
-worker app ──strut/visitor/withdraw { msat }──▶ strut's UI
-                                    ├──{ v: 1, op: "withdraw", seller, app, msat }──▶ Peel ── its sheet, the person taps,
-                                    │                                                     an invoice for msat from their own account
-                                    │◀── { result: { invoice, key, sig } }
-                                    │ checks: the invoice asks exactly msat, and has not ended
-                                    └──POST <seller>/public/mcp, step_run task/withdraw { invoice, msat, key, sig } ──▶ strut
-                                    │◀── { state, paymentHash, msat, feeMsat, maxFeeMsat }
-worker app ◀── the same answer, never the invoice
+Sign-in, once:
+Peel ──sign_in → { key, sig, address }──▶ strut's UI ──POST /visitors/session { challenge, method: "sphinx", key, sig, address }──▶ strut
+                                                       strut keeps the address in the session when its pubkey is the key that signed
+
+Each withdrawal:
+worker app ──step_run task/withdraw { msat }──▶ strut (the session: the actor and the address)
+                                                  │ checks, reserves
+                                                  ├──POST /keysend { id, address, msat, max_fee_msat }──▶ the treasury daemon ──▶ the worker's account
+                                                  │◀── { id, state, payment_hash?, fee_msat }
+worker app ◀── { state, msat, feeMsat, maxFeeMsat }
 ```
 
-1. **The page asks for an amount.** The kit's `useWithdraw().withdraw(msat)`
-   sends `strut/visitor/withdraw { msat }` to its host, beside
-   `strut/visitor/sign-in`. It is not a step call: the page never holds an
-   invoice, a key or a signature. `msat` is what the worker receives.
-2. **strut's UI asks the native host** with a host op, `withdraw`, as it
-   asks `sign_in` (`specs/WALLET.md` §1.2). No app connection carries it, no
-   app budget counts it, and the page never sees it.
-3. **Peel** shows its sheet, makes an invoice for exactly `msat` from the
-   person's own Sphinx account (the mixer-made invoice of `make_invoice`),
-   and signs `strut-payout:<host>:<invoice>` with the key it signs the
-   person in to that host with. It answers `{ invoice, key, sig }`.
-4. **strut's UI** decodes the invoice: it must ask exactly `msat` and not
-   have ended. Then it calls `task/withdraw` in the app's name with the
-   visitor's session, as it relays the page's own calls.
-5. **strut** checks (below), reserves the amount in the ledger, and pays
-   through the payer.
-6. **The answer** goes back to the page: `settled`, `pending` (on its way;
-   `task/me` shows it) or `failed`, with the fee. A refusal is a JSON-RPC
-   error whose `data.code` is strut's code or the native host's.
+1. **Sign-in gives the address.** When Peel signs a worker in with the root
+   key, its `sign_in` answer also carries the account's Sphinx address,
+   `<pubkey>_<lsp_pubkey>_<scid>`. strut's UI passes it on in
+   `POST /visitors/session`.
+2. **The page asks for an amount.** The kit's `useWithdraw().withdraw(msat)`
+   calls `task/withdraw { msat }`, a worker step, as `useTask` calls
+   `task/submit`. `msat` is what the worker receives. The page never sends
+   or sees an address.
+3. **strut checks** (below), reserves the amount in the ledger, and keysends
+   it to the session's address through the payer.
+4. **The answer** goes back to the page: `settled`, `pending` (on its way,
+   and `task/me` shows it) or `failed`, with the fee. A refusal is a code and
+   a sentence.
 
-#### The message Peel signs
+#### The address
 
-`strut-payout:<host>:<invoice>`, its UTF-8 bytes signed as a Lightning
-signed message (sphinx-rs's `sign_bytes`), the way Peel signs a visitor
-challenge.
+**Why it is the worker's own.** Two checks in the code back it:
 
-- `host` is the seller's host name as a visitor challenge names it
-  (`sellerHost`: lower case, no port). On the iPhone Peel holds it to the
-  origin it loaded, whatever strut's UI says (`sign_in`'s rule 2).
-- `invoice` is the invoice Peel just made, lower case, with no `lightning:`.
-- The key is the one the person is signed in to that host with: the root
-  key, or that host's child key. So its actor is the worker's.
-- Peel signs this only for an invoice it made itself, in this op. Never a
-  message a page chose.
+- **The address's pubkey is the root sign-in key.** Sphinx builds an
+  address in `get_my_contact_info` (`sphinx/src/bindings/mod.rs`) from
+  `make_signer(seed, Some(0), …).get_node_pubkey()`. Peel's root sign-in key
+  (its `accountKey`) is `pubkey_from_seed(idx: 0)` (`sphinx-ffi/src/onion.rs`).
+  That function calls the same `make_signer(seed, Some(0), …)` and reads the
+  same `get_node_pubkey()`, which is `secret_for_idx(0)` and does not depend
+  on the time. So the key the worker signs in with is the key a keysend to
+  their address is encrypted to. This holds for the root key only, which the
+  worker app uses (`visitorKey: root`, §5.4). A domain child key (LUD-05) is
+  no address's key.
+- **Only that key can claim the payment.** A keysend's preimage rides in an
+  onion encrypted to the address's pubkey. The route hint
+  (`<lsp_pubkey>_<scid>`) only says how to reach it. A wrong hint makes the
+  payment fail. It cannot send the money to anyone else. So the hint needs
+  no signature, and only the pubkey is checked.
 
-No strut challenge comes first. The parts of a challenge's work are done
-already: the payment hash is paid once (below), the host is in the message,
-and the invoice's expiry bounds when it can be used. That saves a round trip
-and a store of nonces. A signed message only ever pays the worker's own
-invoice from the worker's own balance, so a replay can do nothing the worker
-did not ask for.
+**Where strut keeps it: in the visitor's session.**
+`POST /visitors/session` takes an optional `address` beside
+`{ challenge, method, key, sig }`. Strut keeps it only when all of these
+hold:
+
+- the method is `sphinx`;
+- the address parses (`parseSphinxAddress`, `kit/src/wallet/protocol.ts`);
+- its pubkey is the `key` that signed.
+
+The address then rides in the session's signed claims, beside the actor.
+Any other address is dropped and the sign-in still holds, so an older Peel
+signs in as before. Keeping it in the session means:
+
+- nothing is written for a visitor who never works;
+- each sign-in refreshes it;
+- it belongs to the session's own actor;
+- the door hands it to a worker step the way it hands the actor, never from
+  the step's input.
+
+A worker whose session has no address withdraws nothing until they sign in
+again with a Peel that sends one (`no_address`).
+
+**What Peel adds** (`specs/WALLET.md` §1.2, `sign_in`). The answer is
+`{ key, sig, address? }`. It carries `address` only when Peel signs with the
+root key, and the address is the account's own (Peel's `contactInfo`, from
+`myContactInfo`). strut's UI reads it with `readSignInReply`. It checks that
+the address's pubkey is `key`, and drops it otherwise. Peel still signs
+nothing new. The `sign_in_replies` vectors gain an answer with an address,
+and a new vector pins that one seed's address (from `get_my_contact_info`)
+and its sign-in key (from `pubkey_from_seed(idx: 0)`) agree.
 
 #### `task/withdraw`
 
-A `worker: true` step, `effect: "write"`, in `src/steps/lib/task/`, with the
-other worker steps' rules (§5.1, §5.2): an app page's own call, for its
-signed-in viewer, counted against the worker's calls, never kept as a run.
-Its input is `{ invoice, msat, key, sig }`. It reaches the payer only through
-`tasks.withdraw(actor, { host, … })`, a call the worker capability gains
-(below). The door fills `actor` from the session and `host` from the request
-(`hostOfRequest`, `src/visitors.ts`), never from the input.
+A `worker: true` step with `effect: "write"`, in `src/steps/lib/task/`. It
+follows the other worker steps' rules (§5.1, §5.2):
+
+- it runs only as an app page's own call, for its signed-in viewer;
+- it counts against the worker's calls;
+- it is never kept as a run.
+
+Its input is `{ msat }`. It reaches the payer only through
+`tasks.withdraw(actor, { address, msat })`, a call the worker capability
+gains (below). The door fills `actor` and `address` from the session.
 
 Strut checks, in this order, before anything is reserved:
 
 | # | Check | Refused |
 | --- | --- | --- |
-| 1 | The actor is a `secp:` key: someone who signed in with a key that can sign this | `no_key` |
-| 2 | `sig` is an `ln-message` signature by `key` over `strut-payout:<host>:<invoice>`, `host` this request's, and the actor it gives is the worker (`VERIFIERS["ln-message"]` answers the actor) | `bad_signature`, `not_your_key` |
-| 3 | The invoice decodes and asks exactly `msat`, as `withdrawals.ts` holds an admin's | `not_an_invoice`, `no_amount`, `amount_mismatch` |
-| 4 | It has at least 60 s left and ends within an hour, so the minute's check calls it stale in good time | `expired`, `expires_too_late` |
-| 5 | Its payment hash was never paid by this wallet and is not on its way, unless as this worker's own payout | `payment_reused` |
-| 6 | The switch is on, and the wallet has a pay credential | `payouts_off`, `no_pay_credential` |
-| 7 | The solvency check (below) | `wallet_short`, `wallet_unavailable` |
-| 8 | The ledger's reserve, one guarded statement (below): the minimum, one on its way, the balance, the day's caps | `below_minimum`, `payout_out`, `over_balance`, `over_worker_day`, `over_server_day` |
+| 1 | The session carries an address whose pubkey is the actor's key (`secp:<x-only>`) | `no_address` |
+| 2 | The switch is on, and the wallet can keysend: a Sphinx daemon with a pay token and the keysend route | `payouts_off`, `no_pay_credential`, `no_keysend` |
+| 3 | The solvency check (below) | `wallet_short`, `wallet_unavailable` |
+| 4 | The ledger's reserve, one guarded statement (below): the minimum, one payout on its way, the balance, the day's caps | `below_minimum`, `payout_out`, `over_balance`, `over_worker_day`, `over_server_day` |
 
-- **A hash this worker already has a payout for** skips 4 to 8 and answers
-  that payout: paid, failed, or read through `withdrawals.read` while it is
-  on its way. So a retry reads, and an invoice ended or a switch turned off
-  meanwhile does not hide a payment already sent.
-- **Then the send** goes through `withdrawals.ts`, as an admin's does.
-- **Why the signature is the check.** Strut cannot read from a BOLT11
-  invoice which account it pays: a mixer-made invoice names the LSP's node,
-  not the person. So the invoice is the worker's own because only the
-  worker's key can sign for it, only Peel holds that key, and Peel signs
-  only invoices it made from the person's own account.
-- **A refusal** carries the most the worker could ask now (`maxMsat`) where
-  that helps (`over_balance`, the day's caps).
+Then the keysend goes through `withdrawals.ts`, as an admin's send does. A
+refusal carries the most the worker could ask now (`maxMsat`) where that
+helps (`over_balance`, the day's caps). `payout_out` carries the payout on
+its way, so a page that asked twice shows the first.
 
 #### A worker on a plain browser
 
-Nothing in v1, and no worker is left out by it. A worker app signs in with
-`sphinx` alone (§5.4), and a plain browser cannot sign in with `sphinx`
-today (`app-repos.md` §5.3, 6: the sheet does not offer it). So every
-worker with a balance is in Peel. In a plain browser the visitor capability
-offers no withdraw, `task/me` says `on: false`, and the page can say
-"Withdraw in Peel". When the passkey wallet of `app-repos.md` §5.4 lands, its
-page can answer the same `withdraw` op. It is a different Sphinx account
-there, so a different actor.
+Nothing in v1, and no worker is left out by it. A worker app signs in only
+with `sphinx` (§5.4). A plain browser cannot sign in with `sphinx` today
+(`app-repos.md` §5.3, 6: the sheet does not offer it). So every worker with
+a balance signed in through Peel, the one wallet that sends an address
+today.
+
+- `task/me` says `on: false`, `why: "no_address"`, to anyone else, and the
+  page can say "Withdraw in Peel".
+- When another wallet signs in with a Sphinx account (the passkey wallet of
+  `app-repos.md` §5.4), it can send its address the same way. That is a
+  different account, so a different actor.
 
 #### The payer's third door
 
@@ -1829,23 +1853,38 @@ there, so a different actor.
 | --- | --- | --- |
 | `POST /earnings/withdraw` | An admin, per payment | Any invoice, from the wallet |
 | An accepted `remote/buy-credit` | An admin, per proposal | Another strut's invoice, for credit |
-| `task/withdraw` (new) | Nobody per payment: the worker's signature, inside the settings below | The worker's own invoice, from their released balance |
+| `task/withdraw` (new) | The worker, by asking; nobody per payment, inside the settings below | A keysend to the worker's own address, from their released balance |
 
-`src/payments/payouts.ts`, built by createStrut beside `withdrawals`:
-`pay(actor, { host, invoice, msat, key, sig })` runs the checks above,
-reserves, and pays through `withdrawals.withdraw({ …, purpose: "worker" })`.
-The task service is handed it as `deps.payouts`, as it is handed `grade` and
-`file`, so `tasks.ts` stays free of the payer. `TasksService.worker` gains
-`withdraw`, which counts the call against the worker's budget as every
-worker call does. A host's own task store has no `withdraw`, and
-`task/withdraw` answers `not_here`. `payer.ts`'s comment and `paid-runs.md`
-§9 then name three doors.
+**`src/payments/payouts.ts`.** createStrut builds it beside `withdrawals`.
+`pay(actor, { address, msat })` runs the checks above, reserves, and sends
+through `withdrawals.keysend({ …, purpose: "worker" })`.
+
+- The task service is handed it as `deps.payouts`, as it is handed `grade`
+  and `file`, so `tasks.ts` stays free of the payer.
+- `TasksService.worker` gains `withdraw`. It counts the call against the
+  worker's budget, as every worker call does.
+- A host's own task store has no `withdraw`, and `task/withdraw` answers
+  `not_here` there.
+- `payer.ts`'s comment and `paid-runs.md` §9 then name three doors.
+
+**The payer's keysend.** `Payer` gains `keysend({ id, address, msat,
+maxFeeMsat })` and `keysendStatus({ id })`. Both answer as `pay` and `status`
+do: `{ state, feeMsat, paymentHash?, preimage?, error? }`.
+
+- **The Sphinx daemon:** `POST /keysend`, and `GET /keysend/:id` to read
+  one (below, "The daemon's keysend").
+- **NWC: not in v1.** NIP-47's `pay_keysend` takes `amount`, `pubkey`,
+  `preimage` and `tlv_records`, but no route hints (`specs/WALLET.md` §6
+  says the same). A Sphinx account is reached only through its LSP's hint,
+  so an NWC treasury cannot pay a Sphinx address. Its payer answers
+  `no_keysend`, and `task/me` says so. The Stadeum's wallet is the Sphinx
+  daemon (ruling 2).
 
 **The settings.** Money settings (§9.9), one row in `ledger.db`:
 
-| Setting | Meaning | Proposed default |
+| Setting | Meaning | Default (ruled) |
 | --- | --- | --- |
-| `on` | The switch. Off: no new payout is reserved, for any worker, from the moment the change commits. Payouts already on their way go on: a sent payment cannot be called back | Off, until an admin turns it on |
+| `on` | The switch. Off: no new payout is reserved, for any worker, from the moment the change commits. Payouts already on their way go on, since a sent payment cannot be called back | Off, until an admin turns it on |
 | `minSats` | The least one withdrawal may ask | 1,000 sats |
 | `workerDaySats` | The most one worker's payouts may come to in a UTC day | 200,000 sats |
 | `serverDaySats` | The most all workers' payouts may come to in a UTC day | 2,000,000 sats |
@@ -1853,367 +1892,445 @@ worker call does. A host's own task store has no `withdraw`, and
 - **The caps count amounts, not fees,** of the payouts on their way and
   paid that UTC day. A failed payout counts for nothing. UTC days, as the
   rest of the ledger keeps them. The caps are a brake on a bug or a theft,
-  not a budget: set well above a day of honest work, so they bite only then.
+  not a budget: they sit well above a day of honest work, so they bite only
+  then.
 - **Where they live:** a table of their own in `ledger.db`, beside the
   balances. The reserve reads them inside its own transaction, so a switch
-  turned off or a cap lowered holds at once, with no window. They are backed
-  up with the ledger. With no ledger yet nobody has earned, and the routes
-  answer the defaults.
+  turned off or a cap lowered takes hold at once, with no window. They are
+  backed up with the ledger. With no ledger yet nobody has earned, and the
+  routes answer the defaults.
 - **Who changes them** (§9.9): an admin, in `strut/staff`'s Payouts tab or
-  with `PUT /tasks/payouts/settings`, full scope. The row keeps who changed
-  it last and when. No step on the shared bag reads or writes them, no
-  proposal reaches them, `task/set-type` has no field for them, and no YAML
-  names them. They hold because §9.2 closed the shared bag.
+  with `PUT /tasks/payouts/settings`, full scope only. The row keeps who
+  changed it last and when. Nothing else reaches them:
+  - no step on the shared bag reads or writes them;
+  - no proposal reaches them;
+  - `task/set-type` has no field for them;
+  - no YAML names them.
 
-**The solvency check.** Before the reserve, strut reads the wallet's balance
-(`lightning.balance()`, at most 5 s) and what all workers are owed
-(`owedToWorkers`: held and withdrawable). It refuses when the balance is
-less than what is owed (`wallet_short`).
+  This holds because §9.2 closed the shared bag.
 
-- What is owed includes this payout's amount and fee cap: they are the
-  worker's until reserved. With the worker paying the fee (below), a payout
-  leaves the cover as it was: the wallet loses `msat + fee`, and what is owed
-  drops by the same. Were the fee the client's, the check would be
-  `balance ≥ owed + maxFee`.
-- A balance that cannot be read refuses (`wallet_unavailable`). An
-  unattended door fails closed.
-- On a short wallet every worker is refused alike. Paying whoever asks
-  first would leave the rest owed with nothing behind it. The admin sees the
-  cover in red: the Earnings tab, the Queue's line, the Payouts tab.
+**The solvency check.** Before the reserve, strut reads two things: the
+wallet's balance (`lightning.balance()`, waiting at most 5 s), and what all
+workers are owed, held and withdrawable (`owedToWorkers`). It refuses when
+the balance is less than what is owed (`wallet_short`).
+
+- **What is owed includes this payout's amount and fee cap,** because they
+  are the worker's until the reserve. The worker pays the fee, so a payout
+  leaves the cover as it was: the wallet loses `msat + fee`, and what is
+  owed drops by the same amount.
+- **A balance that cannot be read refuses** (`wallet_unavailable`). A door
+  that pays with nobody watching fails closed.
+- **A short wallet refuses every worker alike.** Paying whoever asks first
+  would leave the rest owed with nothing behind it. The admin sees the
+  cover in red: in the Earnings tab, the Queue's line and the Payouts tab.
 
 #### The money
 
 **Only released earnings.** The reserve takes at most what is withdrawable:
 `accepted − taken_back − withdrawn − out`, less what is still held at that
-moment. A take-back and a review's restore move only held earnings (each is
-guarded `releases > now`); a reserve moves only released ones. Each guard
-compares with a time read just before its statement, with no `await`
-between: the ledger is synchronous `node:sqlite`, one `BEGIN IMMEDIATE` at a
-time. So one earning is never both taken back and withdrawn.
+moment.
+
+- A take-back and a review's restore move only held earnings: each is
+  guarded `releases > now`. A reserve moves only released ones.
+- Each guard compares with a time read just before its statement, with no
+  `await` between. The ledger is synchronous `node:sqlite`, one
+  `BEGIN IMMEDIATE` at a time.
+- So one earning is never both taken back and withdrawn.
+
+**The key.** Strut makes each payout's key before it sends: 32 random bytes,
+in hex. A keysend has no payment hash before it is sent, because the Sphinx
+core makes its preimage, so the key stands in for one everywhere:
+
+- the `payouts` row's key;
+- the daemon's idempotency key (`id`);
+- the pending entry's key in `withdrawals.ts`;
+- the `withdrawal` entry's `ref`.
+
+The payment hash the daemon reports is kept beside it.
 
 **The reserve.** A payout leaves the worker's balance when it is reserved,
-before it is sent. A wallet keeps the debit of a send in flight (§8.1, "The
-solvency 5b will need"), so what workers are owed must drop with it, or the
-cover would read short by every payout on its way. One `BEGIN IMMEDIATE` at
-`synchronous=full`:
+before it is sent. Otherwise what workers are owed would still count it
+while it is on its way, and the cover would read short by it. One
+`BEGIN IMMEDIATE` at `synchronous=full`:
 
-1. The same payment hash from the same worker answers the payout on file.
-   From another worker, or a hash this wallet already paid as anything
-   else, it is `payment_reused`.
-2. The settings row: `on`, then `minSats`.
-3. No other payout of this worker is on its way (`payout_out`).
-4. `msat + maxFeeMsat` fits in what is withdrawable now (`over_balance`).
-5. The worker's day and the server's day, with this one, fit their caps.
-6. The `payouts` row is written as `out`, and `payees.out` grows by
-   `msat + maxFeeMsat`.
+1. Reads the settings row: `on`, then `minSats`.
+2. Checks that no other payout of this worker is on its way (`payout_out`).
+3. Checks that `msat + maxFeeMsat` fits in what is withdrawable now
+   (`over_balance`).
+4. Checks that the worker's day and the server's day, with this payout, fit
+   their caps.
+5. Writes the `payouts` row as `out`, with the address it pays, and grows
+   `payees.out` by `msat + maxFeeMsat`.
 
-**Settled.** One transaction writes the `withdrawal` entry (subject
-`worker`, actor the worker, the amount, the fee the wallet was charged, the
-payment hash), marks the payout `paid`, takes the reserve off `payees.out`,
-and adds what the worker is charged to `payees.withdrawn`: the amount, plus
-the fee up to its cap. So `payees.withdrawn` moves with the `withdrawal`
-entry, as 5a said, and the books check counts it as it counts every send.
+**Settled.** One transaction does four things:
+
+- writes the `withdrawal` entry: subject `worker`, actor the worker, the
+  amount, the fee the wallet was charged, and the key as `ref`;
+- marks the payout `paid`, with its payment hash;
+- takes the reserve off `payees.out`;
+- adds what the worker is charged to `payees.withdrawn`: the amount, plus
+  the fee up to its cap.
+
+So `payees.withdrawn` moves with the `withdrawal` entry, as 5a said, and the
+books check counts the payout as it counts every send.
 
 **On its way, failed, stale.** `withdrawals.ts` sends, reads and keeps a
-worker's payout as it does an admin's. It gains purpose `worker` and two
-hooks into the ledger:
+payout as it does an admin's send. It gains a kind of send, `keysend`, keyed
+by the payout's key, with the address in place of an invoice. It also gains
+purpose `worker` and two hooks into the ledger:
 
-| What happens | `withdrawals.ts`, as built | What a worker's payout adds |
+| What happens | `withdrawals.ts`, as built | What a payout adds |
 | --- | --- | --- |
-| The wallet answers `settled` | One `withdrawal` entry; the pending entry dropped | The entry is the payout's settle above, one transaction |
-| The wallet answers `pending`, or nothing within 25 s | Kept on file (`withdrawals.json`), read by the minute's check | The reserve stays out. `task/me` shows the payout on its way |
-| The wallet answers `failed`, or refused it before sending | Dropped | The payout is `failed` with the wallet's words, and the reserve goes back to the worker's balance |
-| The process dies between the reserve and the pending entry | — | Nothing was sent: the pending entry is written before the payer is called. The minute's check fails a payout that is `out` in the ledger, on no pending list and paid nowhere, a minute after it was reserved |
-| Stale: an hour past its invoice's expiry, the daemon still saying `pending` | No more polling. A person records it as paid or drops it | The same, from the Payouts tab or the Earnings tab. `paid` settles the payout (with the fee the person gives, else 0). `drop` fails it and gives the reserve back |
+| The daemon answers `settled` | One `withdrawal` entry; the pending entry dropped | The entry is the payout's settle above, in one transaction |
+| The daemon answers `pending`, or nothing within 25 s | Kept on file (`withdrawals.json`) and read by the minute's check | The reserve stays out, and `task/me` shows the payout on its way. A keysend is read with `GET /keysend/:id`, which never sends, so the minute's check reads every one, answered or not |
+| The daemon answers `failed`, or refused it before sending | Dropped | The payout is `failed` with the daemon's words, and the reserve goes back to the worker's balance |
+| `GET /keysend/:id` answers 404 | — | The daemon never took it: it writes the id before it sends. The payout fails, and the reserve goes back |
+| The process dies between the reserve and the pending entry | — | Nothing was sent, because the pending entry is written before the payer is called. A minute after the reserve, the minute's check fails a payout that is `out` in the ledger, on no pending list and paid nowhere |
+| Stale: still `pending` a day after it was sent | Polling stops. A person records it as paid or drops it | The same, from the Payouts tab or the Earnings tab. `paid` settles the payout, with the fee the person gives (else 0). `drop` fails it and gives the reserve back |
 
-A stale payout needs a person's judgment. The Sphinx mixer keeps the debit
-of a payment its LSP never answered (`withdrawals.ts`), so the wallet has
-lost the sats either way. If the worker received them, `paid` is right. If
-not, `drop` makes them owed again, and the client bears the loss. Only the
+**Stale after a day.** A keysend has no expiry to measure from, and a
+payment within one mixer waits on the worker's client (below). The worker
+asked from Peel, so Peel is usually open and answers at once. A day is long
+enough for a worker who closed it straight away.
+
+**A stale payout needs a person's judgment.** If the worker received the
+sats, `paid` is right. If not, `drop` makes them owed again. Only the
 worker's wallet knows which, and the Payouts tab says so beside the buttons.
 
-**Who pays the routing fee: the worker** (proposed).
+**Who pays the routing fee: the worker** (ruled).
 
-- The page shows "you receive 5,000 sats; a fee of at most 25 sats comes off
-  your balance".
+- The page shows: "you receive 5,000 sats; a fee of at most 25 sats comes
+  off your balance".
 - The cap is `defaultMaxFeeMsat(msat)`: the Sphinx LSP's own limit, 0.5% or
-  5 sats, which the daemon requires even for a payment it routes nowhere.
-- The worker is charged the fee the wallet was charged, never more than the
-  cap. On an NWC wallet, which keeps no cap, a fee over it is the client's.
-- "Withdraw all" asks the largest amount whose cap still fits beside it, the
-  search `maxWithdrawMsat` makes for an NWC wallet (`withdraw-reading.ts`).
+  5 sats. The daemon takes no lower cap, as for `POST /pay`.
+- The worker is charged the fee the daemon was charged, never more than the
+  cap.
+- "Withdraw all" asks the largest amount whose cap still fits beside it. That
+  is the search `maxWithdrawMsat` makes for an NWC wallet
+  (`withdraw-reading.ts`).
 
-**A minimum of 1,000 sats** (proposed). Under it the LSP's 5-sat floor is
-more than 0.5%, and it bounds how many payouts one balance can make.
+**A minimum of 1,000 sats** (ruled). Below it, the LSP's 5-sat floor is more
+than 0.5% of the amount. The minimum also bounds how many payouts one
+balance can make.
 
-**Between two accounts on one mixer.** The Stadeum's wallet is a Sphinx
-daemon on the mixer Stakwork runs, and so are its workers' accounts
-(ruling 5). The mixer's code moves such a payment inside itself
-(`move_funds`) and charges no routing fee, but no real payment has checked
-that. The build checks it once, on a staging Stadeum with Peel on the same
-mixer:
+**Within one mixer.** The Stadeum's wallet is a Sphinx daemon on the mixer
+Stakwork runs, and so are its workers' accounts (ruling 5). The mixer's
+code handles such a payment inside itself:
+
+- `send_now` sees a local recipient and calls `handle_local`.
+- `handle_local` waits for the recipient's client to answer with the
+  preimage.
+- Then `move_funds` calls `shift_balance`, which moves exactly the amount.
+  No routing fee is taken.
+- Until the recipient answers, the payment is `pending` and nothing is
+  debited. Meanwhile the books' expected balance reads below the wallet's
+  by the amount, and the cover reads high by it.
+
+No real payment has checked any of this. The build checks it once, on a
+staging Stadeum with Peel on the same mixer:
 
 1. Read the daemon's `GET /balance`.
-2. Peel makes a 1,000-sat invoice, and the daemon pays it (`POST /pay`, the
-   cap at the floor).
+2. Keysend 1,000 sats to Peel's address, with the cap at the floor.
 3. Read the balance again, and what Peel received.
 
-Free means `fee_msat` is 0, the balance fell by exactly 1,000,000 msat, and
-Peel received 1,000 sats. The same with an invoice from outside the mixer
-shows a fee to compare. The result goes in `docs/payments.md`. Nothing in
-the design depends on it: the worker is charged the fee the wallet was
-charged, which is 0 if it is free.
+Free means:
 
-**The ledger's changes.** Each is `create … if not exists`, so a ledger
+- `fee_msat` is 0;
+- the balance fell by exactly 1,000,000 msat;
+- Peel received 1,000 sats.
+
+Do it once with Peel open and once with it closed, then reopened. The
+result goes in `docs/payments.md`. Nothing in the design depends on it: the
+worker is charged the fee the daemon was charged, which is 0 if the payment
+is free.
+
+**The ledger's changes.** Each uses `create … if not exists`, so a ledger
 file from before opens and gains them:
 
 | What | Change |
 | --- | --- |
-| `payouts` (new) | One row per payment hash: `worker`, `msat`, `max_fee_msat`, `fee_msat` (the wallet's, once paid), `state` (`out`, `paid`, `failed`), `at`, `day` (UTC), `ended`, `why` (a failure's words), `by` (a person who resolved it). A unique index on `worker` where `out`: one on its way per worker. Indexes on `(worker, day)` and on `day`, where not `failed`, for the caps. A trigger lets a row change only from `out` to `paid` or `failed`, once. Never deleted |
+| `payouts` (new) | One row per payout key: `worker`, `address`, `msat`, `max_fee_msat`, `fee_msat` (the daemon's, once paid), `payment_hash` (once known), `state` (`out`, `paid` or `failed`), `at`, `day` (UTC), `ended`, `why` (a failure's words), `by` (a person who resolved it). A unique index on `worker` where `out`, so one payout per worker is on its way. Indexes on `(worker, day)` and on `day`, where not `failed`, for the caps. A trigger lets a row change only from `out` to `paid` or `failed`, once. Never deleted |
 | `payees.out` (new column) | What this worker's payout on its way holds back: `msat + max_fee_msat`. Added with `ALTER TABLE … ADD COLUMN` when `table_info` lacks it, as #664 added pay's columns to `tasks.db`. A strut from before reads a payout on its way as still owed |
 | `payout_settings` (new) | The one row of settings, with `changed_by` and `changed_at` |
-| `entries` | A `withdrawal`'s subject may be `worker`; `SEND_PURPOSES` gains it. `withdrawal()` refuses `worker`: only a payout's settle writes one |
-| Reads | `payeeBalance`, `payeeBalances` and `owedToWorkers` subtract `out` (`payeeBalanceOf` gains it). New: `reservePayout`, `payoutSettled`, `payoutFailed`, `payoutOf`, `payouts(q)`, `payoutsToday({ now })`, `payoutSettings`, `setPayoutSettings`. Both stores, one suite |
+| `entries` | A `withdrawal`'s subject may be `worker`, and `SEND_PURPOSES` gains it. `withdrawal()` refuses `worker`: only a payout's settle writes one |
+| Reads | `payeeBalance`, `payeeBalances` and `owedToWorkers` subtract `out` (`payeeBalanceOf` gains it). New calls: `reservePayout`, `payoutSettled`, `payoutFailed`, `payoutOf`, `payouts(q)`, `payoutsToday({ now })`, `payoutSettings` and `setPayoutSettings`. Both stores, one suite |
+
+#### The daemon's keysend (`specs/LIGHTNING.md`)
+
+Two routes on the pay token, beside `POST /pay`. The daemon pays an invoice
+today and sends a text, but it cannot send an amount to an address.
+
+**`POST /keysend { id, address, msat, max_fee_msat }`** sends `msat` to
+`address` once.
+
+- `id` is the caller's key, 64 hex. The same `id` again answers that payment
+  as it stands and never sends again, a failed one included: a new try is a
+  new id. This is what makes it idempotent. The LSP cannot dedupe a keysend
+  as it dedupes an invoice by its hash, so the daemon writes
+  `{ id, tag, address, msat }` to its ledger before it publishes, as `pay`
+  writes the hash.
+- `address` is a Sphinx address. The daemon pays it with the core's
+  `keysend(…, to: pubkey, amt_msat, data: none, route_hint)`, which sends
+  async through the hint (`specs/WALLET.md` §6).
+- `max_fee_msat` must be at least the LSP's own limit for `msat`
+  (`max_fee_too_low`), as for `POST /pay`.
+- It waits up to `PAY_WAIT_MS` (60 s), then answers
+  `{ id, state, payment_hash?, fee_msat, preimage?, error? }`. A late answer
+  is read with the GET below.
+- Refused before anything is sent (400, with `code`): `bad_request`;
+  `own_address` (the account's own); `max_fee_too_low`. Anything else that
+  failed is `state: "failed"`.
+- The fee: what the LSP charged, as for `POST /pay`. Within one mixer that
+  is none (above).
+
+**`GET /keysend/:id`** answers the same shape and never sends. It answers
+`404 not_found` for an id the daemon never took, and never a
+`no route …` 404: that is how strut tells a daemon without these routes
+(`no_keysend`) from an id it does not know.
+
+**The one way to pay twice** is a daemon that lost its ledger. It reads an
+id it sent as never taken, and strut then fails the payout and gives the
+reserve back. LIGHTNING.md says to back the ledger up with the daemon's
+state.
 
 #### Standing and status
 
-**A suspended or banned worker may withdraw what passed its hold**
-(proposed). 8.1's ruling 6 says a ban touches no earning: pay for accepted
-work is owed, and a ban is often for later conduct. Staff take back what was
-bad inside the hold, and what is released is past review. A `new` worker has
-earned nothing. Two levers stay: the switch stops everyone at once, and
-disabling a worker's account on the mixer (ruling 5) stops their Peel from
-making an invoice. A freeze on one worker's payouts is not built.
+**A suspended or banned worker may withdraw what passed its hold** (ruled).
+8.1's ruling 6 says a ban touches no earning: pay for accepted work is owed,
+and a ban is often for later conduct. Staff take back what was bad inside
+the hold, and what is released is past review. A `new` worker has earned
+nothing. Two levers stay:
+
+- the switch stops everyone at once;
+- disabling a worker's account on the mixer (ruling 5) stops the payment
+  reaching them.
+
+A freeze on one worker's payouts is not built.
 
 **`task/me` gains `payout`:**
 
 ```
 payout: {
   on: boolean,                 // withdrawing is open here now
-  why?: "off" | "no_wallet" | "no_key" | "not_here",
+  why?: "off" | "no_wallet" | "no_keysend" | "no_address" | "not_here",
   minMsat: number,
   dayLeftMsat: number,         // this worker's cap left today
   maxMsat: number,             // the most one withdrawal may ask now; 0 when under minMsat
-  out?: { paymentHash, msat, maxFeeMsat, at, stale: boolean }
+  out?: { key, msat, maxFeeMsat, at, stale: boolean }
 }
 ```
 
-- `on` says only what strut knows without asking the wallet: the switch, a
-  pay credential, a `secp:` actor, strut's own task store. The solvency
-  check is made when a payout is asked for, never on every `task/me`.
-- `maxMsat` is the least of three: the largest amount whose fee cap fits in
-  what is withdrawable, the worker's day left, and the server's day left.
+- **`on` says only what strut knows without asking the wallet:** the switch,
+  a pay credential that can keysend, an address in the session, and strut's
+  own task store. The solvency check runs when a payout is asked for, never
+  on every `task/me`.
+- **`maxMsat` is the least of three:** the largest amount whose fee cap fits
+  in what is withdrawable, the worker's day left, and the server's day left.
   The server's figure is never shown on its own.
 - `balance.totalMsat` already leaves out a payout on its way (`out`).
-- Cheap: the settings row, the worker's open payout on its unique index,
-  and two day sums on theirs.
+- **It is cheap to read:** the settings row, the worker's open payout on its
+  unique index, and two day sums on theirs.
 
 **The kit.** `WorkerInfo` gains `payout`. `useWithdraw()` gives
-`{ withdraw(msat), status, error }` and refetches `useWorker()` when it
+`{ withdraw(msat), status, error }`. It refetches `useWorker()` when it
 answers, then every 5 s while `out` is there. The `App` Concept page says a
 worker app with a withdraw section grants `task/withdraw`.
 
-#### The contract with Peel (`specs/WALLET.md` §1.2)
-
-A host op beside `buy_credit` and `sign_in`, in the same section and style.
-Not a `strut/wallet/*` method: those are the page's own connection, and
-`make_invoice` there would hand the page the invoice.
-
-```
-{ v: 1, op: "host_capability" }              → its ops may include "withdraw"
-{ v: 1, op: "withdraw", seller, app, msat }  → { result: { invoice, key, sig } } | { error }
-```
-
-| Field | |
-| --- | --- |
-| `seller` | the strut server the worker withdraws from, as its base URL (`isSellerUrl`) |
-| `app` | `{ name, version, title }`: the worker app whose page asked, as the seller serves it |
-| `msat` | what the worker receives: a whole number of msat, at least 1 |
-
-The answer is `invoice` (BOLT11, lower case, asking exactly `msat`), `key`
-(the compressed key, 33 bytes, hex) and `sig` (65 bytes, hex, over
-`strut-payout:<host>:<invoice>`). Or an error: `USER_REJECTED`, `RESTRICTED`
-(no tap, or a sheet up too long) or `BAD_REQUEST`.
-
-**What the native host does:**
-
-1. Answers only the main frame it trusts (§1.1's rule).
-2. Runs `withdrawRequestProblems` (new in `protocol.ts`), and holds the
-   host to the seller's: on the iPhone, to the origin it loaded.
-3. Applies §5.4's gesture rule: `RESTRICTED` without a tap in the last few
-   seconds. strut's own sheet then shows **Withdraw with ⟨wallet⟩**, whose
-   press is a fresh tap, and sends `withdraw` again.
-4. Shows its own sheet: the seller by its host, "from ⟨app title⟩ on
-   ⟨seller⟩", **the amount in sats** (in dollars only at its own rate), and
-   that it goes to this account. Every withdrawal asks. A sheet still up at
-   9 minutes is taken down, `RESTRICTED` (§1.1).
-5. On a yes, makes the invoice from the person's own account, ending in 10
-   minutes (strut takes 60 s to an hour). The account is Peel's whichever
-   key signs: the invoice says where the money goes, the key says who
-   asked.
-6. Signs the message with the key it signs the person in to that host with,
-   and answers. It never signs an invoice it did not just make.
-7. Shows the payment arrive as any payment received. It tells strut
-   nothing: strut's UI waits on strut's own answer.
-
-**What strut's UI does with the answer** (`readWithdrawReply`, new):
-
-| Answer | Outcome |
-| --- | --- |
-| `{ invoice, key, sig }`, the invoice asking exactly `msat` and not ended | **signed**: `task/withdraw { invoice, msat, key, sig }`, and its answer to the page |
-| `USER_REJECTED` | the page hears `USER_REJECTED`; strut was asked nothing |
-| anything else, an invoice for another amount included | strut's sheet, with why, and **Withdraw with ⟨wallet⟩**; strut was asked nothing |
-
-The visitor capability gains `withdraw: true` when the native host lists
-the op, so the page knows to offer it. New vectors: `withdraw_requests`,
-`withdraw_replies`, and `payout_signatures` (real `sign_bytes` output over
-payout messages, in `sign_in_signatures`' shape), which strut's verifier
-and Peel's signer both pass.
-
 #### The admin's side
 
-**Ruling 7's refusal.** `POST /earnings/withdraw` refuses
-`409 short_of_workers` when the amount and its whole fee cap would leave
-the wallet holding less than what workers are owed (`shortOfWorkers`, the
-balance read at that moment). With workers owed and a balance that cannot
-be read, it is `409 balance_unknown`.
+**Ruling 7's refusal.** `POST /earnings/withdraw` refuses with
+`409 short_of_workers` when the amount and its whole fee cap would leave the
+wallet holding less than what workers are owed. It uses `shortOfWorkers`,
+with the balance read at that moment. When workers are owed and the balance
+cannot be read, the refusal is `409 balance_unknown`.
 
-- The check lives in `withdrawals.withdraw`, so it holds for every send that
-  is not a worker's: an admin's Withdraw, and an accepted
-  `remote/buy-credit` (proposed, below).
-- A retry of a send already out reads it and checks nothing.
-- The Withdraw dialogs' warning (#666) becomes why their button is off.
+- The check lives in `withdrawals.withdraw`, so it covers every send that is
+  not a worker's: an admin's Withdraw, and an accepted `remote/buy-credit`
+  (ruled).
+- A retry of a send already out only reads it, and checks nothing.
+- The Withdraw dialogs' warning (#666) becomes the reason their button is
+  off.
 
 **Routes**, full scope, in `src/tasks/routes.ts` beside §6's, so the staff
 door reaches them (`STAFF_ROUTES`):
 
 | Route | Does |
 | --- | --- |
-| `GET /tasks/payouts?state=&worker=&before=&limit=` | `{ settings, today: { paidMsat, outMsat, count, serverLeftMsat }, payouts }`, newest first. `state` is `out`, `stale`, `paid` or `failed` |
-| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }` | The whole row. Answers `{ settings }` with `changedBy` and `changedAt`. `minSats` is at least 1, each cap at least `minSats` |
-| `POST /tasks/payouts/:paymentHash/read` | `withdrawals.read`, for a worker's payout |
-| `POST /tasks/payouts/:paymentHash/resolve { action, feeMsat? }` | `withdrawals.resolve`, for a worker's payout |
+| `GET /tasks/payouts?state=&worker=&before=&limit=` | Answers `{ settings, today: { paidMsat, outMsat, count, serverLeftMsat }, payouts }`, newest first. `state` is `out`, `stale`, `paid` or `failed` |
+| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }` | Saves the whole row and answers `{ settings }` with `changedBy` and `changedAt`. `minSats` is at least 1, and each cap at least `minSats` |
+| `POST /tasks/payouts/:key/read` | `withdrawals.read`, for a payout |
+| `POST /tasks/payouts/:key/resolve { action, feeMsat? }` | `withdrawals.resolve`, for a payout |
 
-Steps on the staff door: `staff/payouts`, `staff/save-payouts`,
-`staff/payout-read`, `staff/payout-resolve`. The `/earnings/withdrawals/…`
-routes act on a worker's payout too, through the same hooks.
+The staff door gets four steps: `staff/payouts`, `staff/save-payouts`,
+`staff/payout-read` and `staff/payout-resolve`. The `/earnings/withdrawals/…`
+routes act on a payout too, through the same hooks.
 
-**The Payouts tab** (§9.7), shown when `/tasks/payouts` answers:
+**The Payouts tab** (§9.7) shows when `/tasks/payouts` answers. It has four
+parts:
 
-- **The switch**, at the top. Turning it on asks first and says what it
-  does: "Workers may withdraw what passed its hold, up to the caps below,
-  with nobody's yes per payment." Off: "No new withdrawal starts; those on
-  their way finish."
+- **The switch**, at the top. Turning it on asks first, and says what it
+  does: "Workers may withdraw what passed its hold to their own Sphinx
+  address, up to the caps below, with nobody's yes per payment." Turning it
+  off says: "No new withdrawal starts; those on their way finish."
 - **The caps**, edited in place, each with today's use against it.
 - **The wallet's cover**, from `earnings/read`, in red when short:
   "Withdrawals are refused while the wallet is short."
-- **The list**: who, the amount, the fee, the state, when, and a failure's
-  words. A stale one has Read again, Record as paid and Drop, with the note
-  on what only the worker's wallet knows. A worker's page links to their
-  payouts (`tab=payouts&worker=`), and `payout=<hash>` opens one.
+- **The list**: who, the address (shortened), the amount, the fee, the
+  state, when, and a failure's words.
+  - A stale payout has Read again, Record as paid and Drop, with the note on
+    what only the worker's wallet knows.
+  - A worker's page links to their payouts (`tab=payouts&worker=`), and
+    `payout=<key>` opens one.
 
-**The books.** `readEarnings` gains, in the unscoped view,
-`workers.outMsat` (payouts on their way now) and
-`workers.paidOut: { count, msat, feeMsat, days }` in the range, from the
-`withdrawal` entries with subject `worker`. `withdrawn` stays the admin's
-own. `expectedMsat` needs no change: it already counts every send and every
-pending one. The Earnings tab and `strut/earnings` show **Paid to workers**
-beside Withdrawn and Purchases, and mark a worker's send in the pending
-list.
+**The books.** `readEarnings` gains two fields in the unscoped view:
+
+- `workers.outMsat`: the payouts on their way now;
+- `workers.paidOut: { count, msat, feeMsat, days }` in the range, from the
+  `withdrawal` entries with subject `worker`.
+
+`withdrawn` stays the admin's own. `expectedMsat` needs no change, because
+it already counts every send and every pending one. The Earnings tab and
+`strut/earnings` show **Paid to workers** beside Withdrawn and Purchases,
+and mark a payout in the pending list.
 
 #### Abuse
 
 | Case | What stops it |
 | --- | --- |
-| A worker asks again and again | One payout on its way at a time, the minimum, the day's cap, the worker's 120 calls a minute (§5.2), and Peel's tap and sheet for each |
+| A worker asks again and again | One payout on its way at a time, the minimum, the day's cap, and the worker's 120 calls a minute (§5.2) |
 | Two tabs at once | Each reaches the reserve, one statement at a time. The second meets the first on its way (`payout_out`), or a balance without it (`over_balance`) |
-| A double click, a retry | One payout per payment hash: the same hash answers the first. `withdrawals.ts` joins a pay already in flight |
-| An invoice for another account | Only the worker's key can sign for one, and Peel signs only invoices it made from the worker's own account. A worker who moves their key to another wallet and signs another's invoice is spending their own balance |
-| A worker app's page that wants the money (a builder's mistake, a prompt injected into Jamie) | It holds no key, sees no invoice and gets no signature. `strut/visitor/withdraw` pays only the worker's own wallet. Calling `task/withdraw` itself needs a signature it cannot make |
-| A stolen visitor session | Without the key, no signature, no payout |
-| A signed message replayed | The hash is paid once. The host is in the message, so another Stadeum cannot use it. The invoice's expiry ends it |
-| A race with a take-back or a review's restore | They move only held earnings and the reserve only released ones, each guarded on the time it runs at |
+| A double click, a retry | `payout_out`, carrying the first. The daemon sends one id once |
+| An address that is not the worker's | The address comes only from the worker's own sign-in. Its pubkey must be the key that signed, and is checked again at the payout. Only that key can claim a keysend to it. A wrong route hint makes the payment fail; it cannot pay anyone else |
+| A worker app's page that wants the money (a builder's mistake, or a prompt injected into Jamie) | The page chooses only an amount, and the session decides where it goes. A page that withdraws unasked moves the worker's money to the worker's own account, at most for a fee, which is none within one mixer |
+| A stolen visitor session | The same: it can pay only the session's address, and the session cannot be changed without the key |
+| A race with a take-back or a review's restore | Those move only held earnings, and the reserve only released ones. Each is guarded on the time it runs at |
 | A balance the page read seconds ago | The reserve reads it again, and refuses with the most the worker may ask now |
-| Many accounts that each earned | Grants are staff's, earnings wait out the hold, and the server's day cap and the switch bound the whole |
+| Many accounts that each earned | A paid open type takes a newcomer only after K tests (ruling 9), earnings wait out the hold, and the server's day cap and the switch bound the whole |
 | A bug that pays in a loop | The day caps, and one payout on its way per worker |
+| A daemon that lost its ledger | The one way a keysend is paid twice (above). Back the ledger up with the daemon's state |
 
 #### Tests that prove it
 
 | File | What proves it |
 | --- | --- |
-| `src/payments/ledger.test.ts`, both stores | The reserve takes only what is withdrawable: a held earning is not, one a millisecond past `releases` is. Each refusal, in order. The same hash from the same worker answers the first; from another, `payment_reused`. A settle writes one `withdrawal` entry (subject `worker`) and moves `out` to `withdrawn`, the fee capped. A failure gives the reserve back. The trigger refuses any other change. `owedToWorkers` and the balance leave out what is on its way. A take-back or a restore a millisecond before `releases` and a reserve a millisecond after, in both orders, never both count one earning. A file from before gains the tables and the column, and the suite as built passes unchanged |
-| `src/payments/payouts.test.ts` (new) | With `FakeWallet` and `FakePayer`: a payout settles at once; one `pending` stays reserved and settles at the minute's check; one `failed` is given back; a crash between the reserve and the send is failed by the check; a stale one is resolved as paid or dropped. The signature: another key, another host, another invoice, another amount, an ended or too-long invoice, an actor that is not `secp:`. The switch off. A short wallet, and one whose balance cannot be read. An admin's Withdraw and a purchase refused `short_of_workers` |
-| `src/tasks/worker-door.test.ts` | End to end through `/public/mcp`: a run parks, a visitor answers, the clock passes the hold, `task/me` shows `payout`, and `task/withdraw` signed by a test key pays. The books' expected balance equals the fake wallet's. Two calls at once: one pays, one is `payout_out`. A suspended and a banned worker withdraw. A member's page answers `no_key`, a host's own store `not_here`. No step on the shared bag reaches a payout |
-| `src/tasks/payout-routes.test.ts` (new) | The routes are full scope only. Settings keep `changedBy`. The `staff/*` steps reach the routes through the door |
-| `src/payments/earnings.test.ts` | `workers.outMsat` and `paidOut`. A worker's send is in `expectedMsat` while pending and after. The cover does not move with a worker's payout |
-| `kit/src/wallet/protocol.test.ts` | The new vectors |
-| `web/src/native-pay.test.ts`, `kit/src/hooks.test.ts` | strut's UI refuses an answer whose invoice asks another amount or has ended, and never sends it on. `useWithdraw`, and `useWorker`'s `payout` |
-| Live, once | The one-mixer fee check above, recorded in `docs/payments.md` |
+| `src/payments/ledger.test.ts`, both stores | The reserve takes only what is withdrawable: a held earning is not, one a millisecond past `releases` is. Each refusal, in order. A settle writes one `withdrawal` entry (subject `worker`, the key as `ref`), and moves `out` to `withdrawn` with the fee capped. A failure gives the reserve back. The trigger refuses any other change. `owedToWorkers` and the balance leave out what is on its way. A take-back or a restore a millisecond before `releases` and a reserve a millisecond after never both count one earning, in either order. A file from before gains the tables and the column, and the suite as built passes unchanged |
+| `src/payments/payouts.test.ts` (new) | With `FakeWallet` and a fake keysend payer: a payout settles at once; one `pending` stays reserved and settles at the minute's check; one `failed` is given back; a 404 on the read fails it; a crash between the reserve and the send is failed by the check; a stale one is resolved as paid or dropped. `no_address`, an address whose pubkey is not the actor's, `no_keysend` (NWC, or a daemon without the route), the switch off, a short wallet and an unreadable balance. An admin's Withdraw and a purchase refused `short_of_workers` |
+| `src/payments/sphinx-daemon.test.ts` | The payer's keysend against a fake daemon: the request's shape, one id sent once, the GET read, the 404 that means never taken, `max_fee_too_low`, `own_address`, and a daemon without the routes read as `no_keysend` |
+| `src/visitors.test.ts` | A `sphinx` sign-in with an address keeps it in the session when its pubkey is the key. Otherwise it keeps none and the sign-in still holds: another pubkey, a domain key, an older Peel with no address, another method. Signing in again refreshes it |
+| `src/tasks/worker-door.test.ts` | End to end through `/public/mcp`: a run parks, a visitor signed in with a test key and address answers, the clock passes the hold, `task/me` shows `payout`, and `task/withdraw` pays the session's address. The books' expected balance equals the fake wallet's. Two calls at once: one pays, one is `payout_out`. A suspended and a banned worker withdraw. A member's page answers `no_address`, and a host's own store `not_here`. No step on the shared bag reaches a payout |
+| `src/tasks/payout-routes.test.ts` (new) | The routes are full scope only, settings keep `changedBy`, and the `staff/*` steps reach the routes through the door |
+| `src/payments/earnings.test.ts` | `workers.outMsat` and `paidOut`. A payout is in `expectedMsat` while pending and after. The cover does not move with a payout |
+| `kit/src/wallet/protocol.test.ts`, `web/src/native-pay.test.ts`, `kit/src/hooks.test.ts` | The `sign_in` vectors with an address, and the vector pinning address and key to one seed. strut's UI drops an address whose pubkey is not `key`. `useWithdraw`, and `useWorker`'s `payout` |
+| Live, once | The one-mixer check above, recorded in `docs/payments.md` |
 
 #### PRs
 
 Against `main`, never stacked.
 
-1. **Strut's money side.** The ledger's tables and calls in both stores,
-   `payouts.ts`, `withdrawals.ts`'s `worker` purpose and hooks, ruling 7's
-   refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts`
-   routes and `staff/*` steps, the books' `paidOut`. `specs/API.md` §19 and
-   §22, `docs/payments.md`, `docs/tasks.md`.
-2. **The contract, strut's UI and the kit.** `specs/WALLET.md` §1.2's
-   `withdraw`, `protocol.ts` and its vectors, strut's UI asking the native
-   host (`web/src/native-pay.ts`), `strut/visitor/withdraw` and the
-   capability, `useWithdraw`, `WorkerInfo.payout`, the `App` page. It can be
-   built beside PR 1: it touches the kit and the UI, PR 1 the server.
-3. **The pages.** The Payouts tab in `strut/staff`, Paid to workers in the
-   Earnings tab and `strut/earnings`, and the Withdraw dialogs' refusal.
-   After PR 1. Checked in the browser.
+1. **Strut's money side:**
+   - the ledger's tables and calls, in both stores;
+   - `payouts.ts`;
+   - the payer's keysend for the daemon;
+   - `withdrawals.ts`'s `keysend` kind, `worker` purpose and hooks;
+   - ruling 7's refusal;
+   - `task/withdraw` and `task/me`'s `payout`;
+   - the `/tasks/payouts` routes and `staff/*` steps;
+   - the books' `paidOut`.
 
-**Peel's side is stakwork/peel,** after PR 2: the `withdraw` op, its sheet,
-the invoice, the signature with the host's sign-in key, and the vectors.
+   It updates `specs/API.md` §19 and §22, `docs/payments.md` and
+   `docs/tasks.md`. The payer is built to the route above, against a fake
+   daemon.
+2. **Sign-in keeps the address, and the contracts:**
+   - `POST /visitors/session`'s `address`, kept in the session, and the
+     door handing it to a worker step;
+   - `specs/WALLET.md`'s `sign_in` answer with `address`, `protocol.ts` and
+     its vectors, and strut's UI passing it on;
+   - `specs/LIGHTNING.md`'s `POST /keysend` and `GET /keysend/:id`;
+   - `useWithdraw`, `WorkerInfo.payout` and the `App` page.
+
+   It can be built beside PR 1: it touches sign-in, the kit and the specs,
+   and PR 1 the money. Until both have merged, a worker has no address and
+   `task/withdraw` answers `no_address`.
+3. **The pages:** the Payouts tab in `strut/staff`; Paid to workers in the
+   Earnings tab and `strut/earnings`; the Withdraw dialogs' refusal. It
+   comes after PR 1 and is checked in the browser.
+
+**Outside strut, separate repos:**
+
+- **stakwork/sphinx:** the treasury daemon's `POST /keysend` and
+  `GET /keysend/:id`, to LIGHTNING.md as PR 2 writes it.
+- **stakwork/peel:** `address` in its `sign_in` answer when it signs with the
+  root key.
+
 Then one real withdrawal end to end, with the one-mixer check.
 
 #### Not taken
 
-- **The page hands strut an invoice.** A page a model wrote would choose
-  where a worker's money goes.
+- **An invoice from Peel, signed for each withdrawal** (#681's design). The
+  page asked its host, Peel showed a sheet and made an invoice, and signed
+  `strut-payout:<host>:<invoice>` with the sign-in key. Strut checked the
+  signature, the invoice's amount and its expiry. It was dropped for paying
+  the address (ruled 2026-11-13). The address gives the same guarantee,
+  that only the worker's key can take the money, with none of that machinery:
+  - no Peel sheet and tap for each withdrawal;
+  - no new host op;
+  - no signed message;
+  - no invoice to check;
+  - no invoice expiry to judge staleness by.
+- **The page hands strut an invoice or an address.** A page a model wrote
+  would choose where a worker's money goes.
 - **LNURL-withdraw for a plain browser.** Whoever reads its link takes the
   money, a page included, and no worker needs it in v1.
-- **A strut challenge before Peel signs.** A round trip and a nonce store,
-  for work the hash, the host and the expiry already do.
-- **Reserving when the page asks, before Peel's sheet.** A declined sheet
-  would leave a reserve to clear.
+- **An NWC treasury in v1.** NIP-47's `pay_keysend` has no route hints
+  (above).
+- **The address kept in its own table.** The session carries it, so nothing
+  is written for a visitor who never works, and each sign-in refreshes it.
 
-#### Open for ruling
+#### Ruled (2026-11-13)
 
-1. **The third door: a worker's own withdrawal paid with nobody's yes per
-   payment.** Recommended: yes, inside the settings, the solvency check and
-   the signature. A yes per payment would make staff a payroll desk, and the
-   hold, the review and the take-back are where a person already says no.
-2. **Off until an admin turns it on.** Recommended: yes. A door that pays
-   unattended opens on a person's act, once, with the caps in front of them.
-3. **The worker pays the routing fee, at most its cap.** Recommended: yes.
-   The worker chooses when and how much, a payout then leaves the cover as
-   it was, and on one mixer the fee may be nothing.
-4. **A minimum of 1,000 sats.** Recommended: yes. The LSP's 5-sat floor is
-   0.5% there, and less would cost more in fees than it is worth.
-5. **Caps of 200,000 sats a worker and 2,000,000 sats for the server, a UTC
-   day.** Recommended as defaults staff change: a brake on a bug or a theft,
-   well above a day of honest work.
-6. **A suspended or banned worker may withdraw what passed its hold.**
-   Recommended: yes, as 8.1's ruling 6 has it. Staff take back inside the
-   hold, and the switch and a mixer ban remain.
+Evan: "Accept all", and "Yes, redesign" to paying the address. Where the
+redesign changes what a ruling covers, the ruling says so.
+
+1. **The third door pays a worker's own withdrawal with nobody's yes per
+   payment,** inside the settings and the solvency check. A yes per payment
+   would make staff a payroll desk. The hold, the review and the take-back
+   are where a person already says no. With the address, the worker's own
+   call is the ask: the payment can only reach the address from their
+   sign-in.
+2. **Withdrawals are off until an admin turns them on.** A door that pays
+   with nobody watching opens on a person's act, once, with the caps in
+   front of them.
+3. **The worker pays the routing fee, at most its cap.** The worker chooses
+   when and how much, and a payout then leaves the cover as it was. Within
+   one mixer the code moves exactly the amount (`shift_balance`), so the fee
+   is likely none; the build checks it once.
+4. **The minimum withdrawal is 1,000 sats.** The LSP's 5-sat floor is 0.5% of
+   that amount.
+5. **The caps are 200,000 sats a worker and 2,000,000 sats for the server,
+   per UTC day,** as defaults staff can change. They are a brake on a bug or
+   a theft, well above a day of honest work.
+6. **A suspended or banned worker may withdraw what passed its hold,** as
+   8.1's ruling 6 has it. Staff take back inside the hold, and the switch
+   and a mixer ban remain.
 7. **A worker's withdrawal is refused while the wallet is short of what all
-   workers are owed, held included.** Recommended: yes. Paying whoever asks
-   first would leave the rest owed with nothing behind it.
-8. **Ruling 7's refusal also covers an accepted `remote/buy-credit`.**
-   Recommended: yes, every send that is not a worker's. Ruling 7's reason,
-   that some of the sats are not the seller's, holds for a purchase too.
-9. **One payout on its way per worker, a stale one waiting for staff.**
-   Recommended: yes. It answers two tabs simply, and a stuck payment is
-   when a person should look before more goes to that worker.
-10. **Withdrawing only through Peel in v1.** Recommended: yes. Every worker
-    signs in through Peel today, and another wallet can answer the same op
-    later.
+   workers are owed, held included.** Paying whoever asks first would leave
+   the rest owed with nothing behind it.
+8. **Ruling 7's refusal also covers an accepted `remote/buy-credit`:** every
+   send that is not a worker's. Ruling 7's reason, that some of the sats are
+   not the seller's, holds for a purchase too.
+9. **One payout per worker may be on its way, and a stale one waits for
+   staff.** It answers two tabs simply, and a stuck payment is when a person
+   should look before more goes to that worker. With a keysend, stale means
+   still pending a day after it was sent: there is no invoice expiry to
+   count from.
+10. **In v1 a worker withdraws only through Peel.** This still holds after
+    the redesign: Peel is the one wallet that shares an address at sign-in
+    today. Another wallet can send its address the same way later.
+11. **A payout pays the worker's Sphinx address from their sign-in, by
+    keysend, not an invoice** (the redesign). Peel's `sign_in` answer
+    carries the address. Strut keeps it in the session when its pubkey is
+    the key that signed. The treasury daemon gains a keysend route,
+    idempotent on strut's key.
 
 ## 9. The staff app (item 6)
 
