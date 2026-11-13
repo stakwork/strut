@@ -11,7 +11,8 @@
  * `graph/graph-get-batched`, `graph/graph-edges` (RunGraph), `graph/graph-neighbors`
  * and `graph/graph-search` in `grants.steps` for the graph views, `sheets/get-values` for SheetView
  * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow; ConceptDiff reads
- * `history/read` (and `proposal/get` + `graph/graph-get-batched` for a proposal). The folds they draw are
+ * `history/read` (and `proposal/get` + `graph/graph-get-batched` for a proposal); TaskForm only draws a task's answer
+ * schema — the page's `useTask().submit` sends it (`task/submit` in grants.steps). The folds they draw are
  * `@strut/kit`'s. Its own page is the gallery: every component over fixtures.
  */
 export { RunStatus } from "./components/RunStatus";
@@ -19,6 +20,7 @@ export { RunList, type RunListProps } from "./components/RunList";
 export { RunTimeline, type RunTimelineProps } from "./components/RunTimeline";
 export { Transcript, type TranscriptProps } from "./components/Transcript";
 export { LaunchForm, type LaunchFormProps, type InputField } from "./components/LaunchForm";
+export { TaskForm, type TaskFormProps } from "./components/TaskForm";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";

@@ -88,6 +88,8 @@ export class SqliteTaskStore implements TaskStore {
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by`,
       ),
+      deleteType: p("delete from task_types where name = ?"),
+      openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
       insertTask: p(
         `insert into tasks (id, type, workflow, run_id, path, show, files, root, job, status, created, due)
          values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
@@ -142,6 +144,15 @@ export class SqliteTaskStore implements TaskStore {
     return this.db.tx(() => {
       this.s.putType.run(t.name, t.app, JSON.stringify(t.answer), t.leaseSeconds, t.withinHours, t.enabled ? 1 : 0, t.changedAt, t.changedBy ?? null);
       return typeOf(this.s.type.get(t.name) as Row);
+    });
+  }
+
+  async deleteType(name: string): Promise<"deleted" | "missing" | "in_use"> {
+    return this.db.tx(() => {
+      if (!this.s.type.get(name)) return "missing";
+      if (this.s.openOfType.get(name)) return "in_use";
+      this.s.deleteType.run(name);
+      return "deleted";
     });
   }
 

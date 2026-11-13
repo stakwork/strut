@@ -288,6 +288,9 @@ describe("step_run — the app door", () => {
     assert.equal(grantRefusal("app/state", {}, m.manifest, registry), null, "always granted");
     assert.ok(!keptFromApp("app/state"), "never kept");
     assert.ok(keptFromApp("graph/edit-node") && keptFromApp("app/report-error") && !keptFromApp("run/list") && !keptFromApp("graph/graph-get"));
+    // A worker's step is never kept (plans/human-steps.md §5.2), whatever it is.
+    const reg = { "graph/edit-node": { worker: true } } as unknown as StepRegistry;
+    assert.ok(!keptFromApp("graph/edit-node", reg), "a step marked worker is never kept");
   });
 
   it("a preview (app/look { path }): hosted under its label with no version recorded, served with its identity, calls checked against ITS manifest, uncounted", async () => {
@@ -696,6 +699,9 @@ describe("step_run — the app door", () => {
     const whoami = (version: string) => ({ type: "whoami", config: {}, app: appIdentity("probe", version) });
     const nap = (version: string) => ({ type: "nap", config: { ms: 0 }, app: appIdentity("probe", version) });
     assert.equal(await publish(WHOAMI), "v1");
+    // On a graph the publish is a history touch, whose snapshot a second later
+    // reads every app's record: take it now, so only the door's reads count.
+    await strut.history?.settle();
 
     const spy = {
       record: mock.method(workspace, "getApp"),

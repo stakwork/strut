@@ -114,7 +114,18 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   status lines and graph writes as they happen) and `useGraphChanges(types)`
   → `{ rev, changes }` (`graph/changes` from now: put `rev` in the
   dependencies of the reads that show those types). Grant the step in
-  `grants.steps`. SQL and automation hooks are later work items.
+  `grants.steps`. A WORKER's page (`plans/human-steps.md` §5.3: a person
+  answering a workflow's `human` step), the worker always the page's
+  signed-in viewer: `useTask(type?)` → `{ task, submit(answer), skip(reason?),
+  status, error }` (`task/next { wait }` held on the server one at a time
+  and none while the page is hidden; `task` is `{ lease, type, show, files,
+  expires, answer }`, `answer` the type's schema; dropped when its lease
+  runs out or the server says it is gone, and the next asked for),
+  `useWorker()` (`task/me`: `status` and the `types` held in this app) and
+  `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
+  `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
+  `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation
+  hooks are later work items.
 - **`src/channel-hooks.ts`** — `useChannel(name, { onMessage?, enabled? })`
   → `{ available, ready, client, members, states, events, error, send(data,
   { key? }) }`: live messages between the people on the app
@@ -210,7 +221,12 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `concept-diff.ts` (`foldConceptDiff`: two states of the Concept tree's
   pages — from the history, a proposal laid over a page, an unsaved edit —
   as the tree with each page added, removed, renamed, moved or edited;
-  `lineDiff` / `foldDiffLines`, the docs line by line), and
+  `lineDiff` / `foldDiffLines`, the docs line by line), `answer-form.ts`
+  (a FLAT FORM over a JSON Schema: `fieldsOf`, `initialContent`,
+  `missingRequired`, `contentToSubmit`, `answerOf` — the form's content as
+  the answer, numbers read and a pick mapped back to the schema's value —
+  and `formProblem`, why a schema is no form; strut's UI draws the
+  builder's questions with it, `strut/views`' TaskForm a task's answer), and
   `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is

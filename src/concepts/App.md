@@ -489,6 +489,57 @@ Write it so it works either way: an app is anonymous where the server
 offers no sign-in (`available` false) — hide the sign-in button then, and
 let the game play.
 
+## Worker apps: people as a step of a workflow
+
+A workflow asks a PERSON with a `human` step: it makes a TASK of a task
+type and waits, out of memory, until a worker answers it. A WORKER APP is
+the page they answer in. The task type — the app that draws it and the
+answer's schema — is an admin's (the server's `/tasks` routes); a workflow
+names a type, never its shape. One app usually draws several types, a view
+each. Grant the worker's steps:
+
+```yaml
+grants:
+  steps: [task/next, task/submit, task/skip, task/file, task/me]
+```
+
+The worker is always the page's signed-in viewer: the steps read it from
+the session, never from the page. `useWorker()` is who they are here —
+`status` (`new` until an admin grants them a type; `active` takes tasks;
+`suspended`, `banned`) and the `types` they hold in this app. `useTask()`
+holds one `task/next` on the server at a time (none while the page is
+hidden) and hands back `task` — `{ lease, type, show, files, expires,
+answer }`, `type` saying which view to draw, `show` what the workflow put
+there — then `submit(answer)` (it must fit the type's `answer` schema) and
+`skip()` let it go and the next is asked for. `useTask("pet-match")` asks
+for one type alone. `useTaskFileUrl(task, path)` is one of `task.files`
+as a `blob:` URL for an `<img>`; nothing off that list opens. A type whose
+answer is plain fields (text, numbers, yes or no, a pick from a list) needs
+no form of yours: `TaskForm` from `strut/views` draws it.
+
+```tsx
+import { useTask, useTaskFileUrl, useWorker } from "@strut/kit";
+import { TaskForm } from "strut/views";
+const me = useWorker();
+const { task, submit, skip, status } = useTask();
+const photo = useTaskFileUrl(task, task?.files[0]);
+if (me.data && me.data.status !== "active") return <p>An admin has not given you tasks here yet.</p>;
+if (!task) return <p>{status === "waiting" ? "Waiting for the next task…" : status}</p>;
+return (
+  <>
+    {photo.url && <img src={photo.url} alt="" />}
+    <TaskForm task={task} onSubmit={submit} onSkip={() => skip()} />
+  </>
+);
+```
+
+Workers are signed-in visitors of the public view (or the server's own
+members): ask the person to put the app in the public view with `sphinx`
+as its sign-in and `visitorKey: root`, so a worker is one person on every
+server. Anyone with the link sees a sign-in and nothing else; a worker's
+calls are never kept as runs, and none counts against a visitor's daily
+writes.
+
 ## The assistant
 
 An app whose chat should be the person's ASSISTANT — the one that starts

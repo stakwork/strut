@@ -213,6 +213,20 @@ describe("the seam (plans/app-repos.md §5.2)", () => {
     assert.match((await refusal("job/start", {}))!, /not available in the public view/);
     assert.match((await refusal("app/state", {}, "v1"))!, /not the version in the public view/);
     assert.match((await signedInRefusal(surface, "v1", { name: "other", version: "v1" }, "app/state", {}, rules))!, /not in this strut server's public view/);
+    // A worker's step (plans/human-steps.md §5.2): passed for a signed-in
+    // visitor where the step says it is one, on the app at its version only.
+    assert.match((await refusal("task/next"))!, /not one of this app's public reads/, "with no worker rule, a step like any other");
+    const worker = { ...rules, worker: (t: string) => t.startsWith("task/") };
+    assert.equal(await signedInRefusal(surface, "v2", app, "task/next", {}, worker), null);
+    assert.equal(await signedInRefusal(surface, "v2", app, "task/submit", { lease: "l", answer: {} }, worker), null);
+    assert.match((await signedInRefusal(surface, "v1", app, "task/next", {}, worker))!, /not the version in the public view/);
+    assert.match((await signedInRefusal(surface, "v2", app, "app/grant", {}, worker))!, /not available/);
+  });
+
+  it("a worker's step is no visitor write: the task store counts its calls per worker", () => {
+    for (const t of ["task/next", "task/submit", "task/skip", "task/file", "task/me"]) assert.equal(visitorWrite(t, { answer: { a: 1 } }), false, t);
+    assert.equal(visitorWrite("graph/create-node", {}), true);
+    assert.equal(visitorWrite("app/state", { set: { a: 1 } }), true);
   });
 });
 

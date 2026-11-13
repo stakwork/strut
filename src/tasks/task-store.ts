@@ -129,6 +129,10 @@ export interface TaskStore {
   types(): Promise<TaskType[]>;
   type(name: string): Promise<TaskType | undefined>;
   putType(t: TaskType): Promise<TaskType>;
+  /** Removes the type, in one step, unless an open task is of it
+   *  (`in_use`); `missing` when there is no such type. Its tasks on file
+   *  keep its name. */
+  deleteType(name: string): Promise<"deleted" | "missing" | "in_use">;
   /** The task keyed by `t`'s workflow, run id and path, written from `t`
    *  when there is none (rule 1). */
   ensure(t: NewTask): Promise<{ task: TaskRecord; created: boolean }>;
@@ -198,6 +202,13 @@ export class MemoryTaskStore implements TaskStore {
   async putType(t: TaskType): Promise<TaskType> {
     this.kinds.set(t.name, clone(t));
     return clone(t);
+  }
+
+  async deleteType(name: string): Promise<"deleted" | "missing" | "in_use"> {
+    if (!this.kinds.has(name)) return "missing";
+    for (const t of this.tasks.values()) if (t.type === name && t.status === "open") return "in_use";
+    this.kinds.delete(name);
+    return "deleted";
   }
 
   async ensure(t: NewTask): Promise<{ task: TaskRecord; created: boolean }> {

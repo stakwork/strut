@@ -1469,7 +1469,10 @@ On `POST /public/mcp` a signed-in visitor's page (§17) may also:
   `agent`, `llm`, `acp/prompt`, `graph/walk`, `remote/*`), as the visitor,
   with `input` and `key` alone — and the run reads of its own runs of one
   (`actor`'s, launched from an app); a workflow that spends launches only
-  if it is runnable, through the public run door (§17).
+  if it is runnable, through the public run door (§17);
+- a WORKER's step the app grants — `task/next`, `task/submit`,
+  `task/skip`, `task/file`, `task/me` (§22) — the visitor the worker:
+  never kept as a run, and not a daily write.
 
 Everything else is the anonymous visitor's rule. **Limits**: each visitor's
 writes (state sets, graph writes, error reports) and launches per UTC day —
@@ -4653,3 +4656,126 @@ any strut with a public view.
 The state is kept in `<dataDir>/serve.json`, so a restart whose ref no
 longer resolves still serves what it served. `error` is cleared by the next
 deploy that serves, or a read that finds the ref back at what is serving.
+
+## 22. Tasks — people as a step of a workflow (`plans/human-steps.md` §5, §6)
+
+A workflow asks a PERSON with a `human` step (specs/SPEC.md §4.1.9): it
+makes a TASK of a task type in the task store (`src/tasks/`) and the run
+waits, out of memory, until a WORKER answers it. A worker answers in a
+WORKER APP — an ordinary app — through the `task/*` steps on the app door,
+and the staff run the task types and the workers through the `/tasks`
+routes below.
+
+### The worker's steps — through an app's `step_run`
+
+The worker is ALWAYS the page's viewer (the connection's actor): no step
+takes an actor, and a page cannot name another worker. Each step runs only
+as an app page's own call (`step_run` on `POST /mcp` or `POST
+/public/mcp`), never as a workflow's step or an agent's tool, and is never
+kept as a run (`worker: true` on the step's definition). The app must name
+the step in `grants.steps`.
+
+| Step | Config | Answers |
+| --- | --- | --- |
+| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer }` or `{ none: true }` |
+| `task/submit` | `{ lease, answer }` | `{ ok: true }` |
+| `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
+| `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
+| `task/me` | `{}` | `{ actor, status, types: [{ name, app }] }` |
+
+- **`task/next`** leases the oldest open task of a type the worker holds a
+  live grant for that THIS app draws (the type's `app` is the calling
+  app's name), or of `type` alone — refused `wrong_app` for a type another
+  app draws. The worker's own live lease comes back as it is (a page that
+  reloads gets its task again); a live lease of a type not asked for is
+  `lease_held`. `expires` is epoch ms; `answer` is the type's answer
+  schema; `files` the paths the `human` step named. `wait` (seconds, 0 to
+  25) holds the call until a task appears — woken when one is made or
+  skipped, a grant changes, or the sweep frees one — then `{ none: true }`.
+- **`task/submit`**: once per lease, before it expires, checked against
+  the type's answer schema (`bad_answer`). It settles the task, and the
+  waiting run goes on with `{ answer, by, task }`.
+- **`task/skip`**: the task reopens for another worker, never this one.
+- **`task/file`**: only a path on the task's `files` (`not_listed`
+  whatever else the run holds), only through the caller's own live lease;
+  read where the run's files are (the job's directory on a job run, else
+  the run's artifacts).
+- **`task/me`**: the first call of an actor the store has not seen writes
+  them as a `new` worker. `types` are those they hold that this app draws.
+- A `submit`, `skip` or `file` by a lease of a type another app draws is
+  `wrong_app`.
+
+Refusals are step errors whose message begins with a code: `not_active`
+(the worker is `new`, `suspended` or `banned`: only `task/me` answers),
+`not_granted`, `wrong_app`, `lease_held`, `no_lease` (not the caller's),
+`lease_closed`, `lease_expired`, `task_closed`, `bad_answer`,
+`not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`.
+
+**Who may call them.** A member's page (`POST /mcp`, a member's session or
+a person token) as that person. A SIGNED-IN visitor's page (`POST
+/public/mcp`, §17.3; the app in the public view, its sign-in on): the
+visitor is the worker. An anonymous visitor is refused ("sign in first").
+
+**Budgets.** The task store's own: 120 worker calls a minute per worker
+(`TASK_CALLS_PER_MINUTE`, `too_many`); a held `task/next { wait }` counts
+once. A `/public/*` request carrying the visitor session of an ACTIVE
+worker counts against that worker, 240 a minute
+(`TASK_REQUESTS_PER_MINUTE`), not against the address's 1,200; anyone
+else's — a `new` worker's included — against the address. The worker
+steps are not a signed-in visitor's daily writes, and the app monitor's
+`volume` rule counts them per viewer (`AppWarning.perViewer`).
+
+### The staff's routes — `/tasks`
+
+FULL SCOPE only, reads included: the deployment key or an admin's session.
+A member's session, a peer and a person token are refused (`403`). A name
+with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
+A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
+`404` (`unknown_type`, `unknown_worker`, `unknown_task`), `409` (`in_use`).
+
+| Route | |
+| --- | --- |
+| `GET /tasks/types` | `{ types: TaskType[] }` |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled) |
+| `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked; its tasks on file keep its name |
+| `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first |
+| `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
+| `PUT /tasks/workers/:actor/grants/:type` | `{ worker }`: a `new` worker becomes `active` |
+| `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
+| `GET /tasks?type=&status=&workflow=&runId=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000) |
+| `GET /tasks/:id` | `{ task: TaskView }` |
+
+```jsonc
+// TaskType
+{
+  "name": "pet-match",
+  "app": "workers",                 // the app that draws it
+  "answer": { "type": "object", "properties": { "same": { "type": "boolean" } }, "required": ["same"] },
+  "leaseSeconds": 600, "withinHours": 72, "enabled": true,
+  "changedAt": 1762948800000, "changedBy": "admin-1"
+}
+// The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts):
+// type (one name), properties + required (no other key), items, minItems,
+// maxItems, enum, minimum, maximum, minLength, maxLength, title, description.
+
+// WorkerRecord
+{
+  "actor": "p256:02ab…", "status": "active",  // new | active | suspended | banned
+  "firstSeen": 1762948800000, "changedAt": 1762948900000, "changedBy": "admin-1", "note": "…",
+  "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000 /*, "revokedAt", "revokedBy", "why" */ }]
+}
+
+// TaskView: the task with its leases
+{
+  "id": "9f2c…", "seq": 41, "type": "pet-match",
+  "workflow": "pets", "runId": "1762948800000", "path": "pets/each#3/review",
+  "show": { "guess": "same dog" }, "files": ["found.jpg", "lost/a.jpg"],
+  "root": "run",                     // run | job (with "job")
+  "status": "settled",               // open | settled | expired | cancelled
+  "created": 1762948800000, "due": 1763208000000, "settledAt": 1762949000000,
+  "answer": { "same": true }, "by": "p256:02ab…",
+  "leases": [{ "id": "…", "task": "9f2c…", "worker": "p256:02ab…", "type": "pet-match",
+               "taken": 1762948950000, "expires": 1762949550000,
+               "status": "submitted", "closed": 1762949000000 /*, "reason" */ }]
+}
+```
