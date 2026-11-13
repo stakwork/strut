@@ -1162,6 +1162,8 @@ export async function createStrut<TServices = unknown>(
   const branchesCap: BranchesCapability | undefined = graph
     ? createBranches({ dataDir, graph, inFlight: (name) => [...controllers.values()].some((c) => c.branch === name) })
     : undefined;
+  // Before anything reads: a read on main leaves the branches out while there are any.
+  await branchesCap?.load();
   // Parked runs (src/park.ts, plans/human-steps.md §2): a run that waits
   // leaves memory as `waiting`; a source wakes it, and the wake is the
   // durable resume (§5) marked `woken`. The waiting runs are kept beside the

@@ -187,11 +187,15 @@ names no namespace. Neo4j's reads, `knowledge.ts`, the claims reads, the
 package fold (`installed.ts`), the seeder, the public surface and the
 dream's reads all name the graph's own namespace. Two did not: a Ladybug
 search (and fact search) that names no namespace read every namespace, and
-now leaves out `branch-*`; and the history snapshot (`allConceptFiles`,
+now leaves out `branch-*` while the graph holds a branch (with none it
+issues the query it always did: the backend's `branches.held`, loaded
+from the records at boot and kept by create and drop); and the history snapshot (`allConceptFiles`,
 packages/build.ts) filed other namespaces under `namespaces/<ns>/`, and
 now leaves a branch out until item (c) gives it its own git branch. The
 builder's Ladybug Cypher conventions tell its model to leave `branch-*`
-out. Outside this repo and not fixed: the mcp lab (stakgraph
+out. A branch's namespace does not take raw queries away from a reader
+list that reads the graph's own namespace (its pages are copies of that
+one's); it still counts against a list that does not. Outside this repo and not fixed: the mcp lab (stakgraph
 `mcp/src/lab/concepts/store/*`) and Hive run raw Cypher over `:Concept`
 with no namespace, which sees a branch's copies.
 

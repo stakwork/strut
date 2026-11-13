@@ -29,7 +29,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import type { Params, Row } from "./engine.js";
-import { branchedNamespace, type GraphReader, type ReadScope } from "./search.js";
+import { branchedNamespace, isBranchNamespace, type GraphReader, type ReadScope } from "./search.js";
 
 export const READER_KINDS = ["assistant", "builder", "jobs", "apps", "peers", "ui"] as const;
 export type ReaderKind = (typeof READER_KINDS)[number];
@@ -244,13 +244,16 @@ async function graphNamespaces(reader: GraphReader, own: string): Promise<string
   return [...new Set([own, ...(await reader.listNamespaces())])];
 }
 
-/** Whether a list may run a raw query on this graph. */
+/** Whether a list may run a raw query on this graph. A Concept branch's
+ *  namespace (src/branches.ts) holds copies of the graph's own pages: it
+ *  counts as read by a list that reads the own namespace, and against one
+ *  that does not. */
 export async function mayQueryRaw(list: ReaderList | undefined, reader: GraphReader, own: string): Promise<boolean> {
   if (!list) return true;
   if (list.exclude_domains?.length) return false;
   if (list.namespaces.includes(ALL_NAMESPACES)) return true;
   const mine = new Set(list.namespaces.map((n) => (n === "default" ? own : n)));
-  return (await graphNamespaces(reader, own)).every((ns) => mine.has(ns));
+  return (await graphNamespaces(reader, own)).every((ns) => mine.has(ns) || (isBranchNamespace(ns) && mine.has(own)));
 }
 
 /** A run on a Concept branch reads the Concepts of its branch alone: raw

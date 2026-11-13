@@ -60,6 +60,12 @@ export const DEFAULT_NAMESPACE = "default";
  *  file's search), never reads a branch's — main does not see a branch. */
 export const BRANCH_NAMESPACE_PREFIX = "branch-";
 export const isBranchNamespace = (ns: unknown): boolean => typeof ns === "string" && ns.startsWith(BRANCH_NAMESPACE_PREFIX);
+/** Whether the graph holds a Concept branch now (`GraphBackendBase.branches`):
+ *  kept by the branches service, read where a read that names no namespace
+ *  must leave `branch-*` out — and only while one is there. */
+export interface BranchesHeld {
+  held: boolean;
+}
 
 /** `node_visibility_helper.BLOCKED_NODE_STATUSES`. */
 export const BLOCKED_NODE_STATUSES = ["halted", "paused", "stopped", "stopping", "error", "failed", "stuck"];

@@ -79,7 +79,7 @@ import {
   type SearchParams,
   type SearchResult,
 } from "../search.js";
-import { BRANCH_NAMESPACE_PREFIX, branchedNamespace } from "../search.js";
+import { BRANCH_NAMESPACE_PREFIX, branchedNamespace, type BranchesHeld } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
 
 /** The type a branch's namespace holds (`ReadScope.concepts`). */
@@ -99,6 +99,8 @@ import { temporalEdgeTypes } from "./temporal.js";
 export interface LadybugReaderOptions {
   /** The semantic half; without it search is keyword-only. */
   embedder?: Embedder;
+  /** Whether the file holds a Concept branch now (`GraphBackendBase.branches`). */
+  branches?: BranchesHeld;
 }
 
 type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: LadybugCatalog; readonly schemaSource: LadybugSchemas };
@@ -491,15 +493,17 @@ export class LadybugReader implements GraphReader {
 
   /** A search's namespace clause: the one asked for (on a branch, with the
    *  branch's, where its Concepts are); none asked reads every namespace
-   *  but a Concept branch's — main never sees a branch's copies — or, on a
-   *  branch, every one, `sql` keeping that branch's Concepts alone. Sets
-   *  `$namespace` / `$branch_prefix` in `base`; null when nothing to add. */
+   *  but a Concept branch's while the file holds one (`branches.held`) —
+   *  main never sees a branch's copies, and a file with none reads as it
+   *  always did — or, on a branch, every one, `sql` keeping that branch's
+   *  Concepts alone. Sets `$namespace` / `$branch_prefix` in `base`; null
+   *  when nothing to add. */
   private branchClause(alias: string, asked: string | undefined, base: Params): string | null {
     if (asked !== undefined) {
       base["namespace"] = namespaceName(asked, this.engine.namespace) ?? asked;
       return this.scope?.concepts ? `(${alias}.namespace = $namespace OR ${alias}.namespace = $scope_concepts)` : `${alias}.namespace = $namespace`;
     }
-    if (this.scope?.concepts) return null;
+    if (this.scope?.concepts || !this.opts.branches?.held) return null;
     base["branch_prefix"] = BRANCH_NAMESPACE_PREFIX;
     return `NOT ${alias}.namespace STARTS WITH $branch_prefix`;
   }

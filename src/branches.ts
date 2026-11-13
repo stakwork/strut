@@ -55,6 +55,9 @@ export interface ConceptBranch {
 
 /** `ctx.services.branches`, which `createStrut` sets on a graph workspace. */
 export interface BranchesCapability {
+  /** Read the records at boot: what tells a read on main to leave the
+   *  branches out (`GraphBackendBase.branches`). */
+  load(): Promise<void>;
   list(): Promise<ConceptBranch[]>;
   get(name: string): Promise<ConceptBranch | null>;
   create(input: { name: string; from?: "main" | "empty"; by?: string }): Promise<ConceptBranch>;
@@ -153,7 +156,15 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
     return { pages: pages.length, links: links.length };
   };
 
-  return {
+  /** Whether the graph holds a branch: set before a create writes a page,
+   *  read again from the records once a drop or a failed create is done. */
+  const mark = async (held?: boolean) => {
+    if (graph.branches) graph.branches.held = held ?? (await cap.list()).length > 0;
+  };
+
+  const cap: BranchesCapability = {
+    load: () => mark(),
+
     async list() {
       let names: string[];
       try {
@@ -178,11 +189,13 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
         await graph.reader.registerNamespace(namespace);
         // What a create cut off before its record left behind.
         await purge(namespace);
+        await mark(true);
         let made: { pages: number; links: number };
         try {
           made = from === "main" ? await copy(namespace) : { pages: 0, links: 0 };
         } catch (err) {
           await purge(namespace).catch(() => {});
+          await mark().catch(() => {});
           throw err;
         }
         const branch: ConceptBranch = {
@@ -211,10 +224,12 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
         if (graph.kind === "neo4j") {
           await graph.tx((tx) => tx.run(`MATCH (s:NameSpace) SET s.data = [x IN coalesce(s.data, []) WHERE x <> $ns]`, { ns: branch.namespace }));
         }
+        await mark();
         return { name, pages };
       });
     },
   };
+  return cap;
 }
 
 // ── a run's view ──────────────────────────────────────────────────────────

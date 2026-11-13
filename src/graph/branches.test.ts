@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { GraphBackend } from "./backend.js";
 import { projectionsSettled } from "./projector.js";
+import { mayQueryRaw } from "./scope.js";
+import { fetchLimit } from "./search.js";
 import { testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { defineStep, type RunEvent, type StepRegistry } from "../core.js";
@@ -437,6 +439,63 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
     const { files } = await packageFiles({ workspace: strut.workspace, cache: packageCache(dir), graph: backend }, EVERYTHING);
     assert.ok([...files.keys()].some((f) => f.startsWith("concepts/")));
     assert.deepEqual([...files.keys()].filter((f) => f.includes("branch-")), []);
+  });
+
+  it("a plain search on main reads as it always did while no branch exists; while one does it leaves branch-* out; the mark follows create, drop and a restart", { skip: tb.kind !== "ladybug" ? "a Ladybug file's search reads every namespace" : false }, async () => {
+    const strut = await boot();
+    await tree();
+    // The FTS statements a plain search issues, and the top-k each asks for.
+    const engine = (backend.reader as unknown as { engine: { query: (c: string, p?: Record<string, unknown>) => Promise<unknown> } }).engine;
+    const ftsOf = async () => {
+      const seen: Array<{ cypher: string; k: unknown }> = [];
+      const query = engine.query;
+      engine.query = (c, p) => {
+        if (c.includes("QUERY_FTS_INDEX")) seen.push({ cypher: c, k: p?.["k"] });
+        return query.call(engine, c, p);
+      };
+      try {
+        await backend.reader.search({ q: "Guide", limit: 10 });
+      } finally {
+        engine.query = query;
+      }
+      assert.ok(seen.length, "the search read the index");
+      return seen;
+    };
+    // No branch clause anywhere; the node half's top-k is the page asked for
+    // (the fact half, `node_type = 'EdgeText'`, always over-fetches).
+    const plain = (seen: Array<{ cypher: string; k: unknown }>) =>
+      seen.every((f) => !f.cypher.includes("branch_prefix") && (f.cypher.includes("node.node_type = 'EdgeText'") || f.k === fetchLimit(10, 0)));
+    assert.equal(backend.branches!.held, false);
+    assert.ok(plain(await ftsOf()), "no branch: the query main always issued, no over-fetch");
+
+    await post(strut, "/branches", { name: "try" });
+    assert.equal(backend.branches!.held, true);
+    const branched = await ftsOf();
+    assert.ok(branched.some((f) => f.cypher.includes("STARTS WITH $branch_prefix")) && !plain(branched), "a branch: left out, over-fetched");
+
+    // A restart reads the records before anything else does.
+    backend.branches!.held = false;
+    await boot();
+    assert.equal(backend.branches!.held, true);
+
+    await json(strut, "/branches/try", { method: "DELETE" });
+    assert.equal(backend.branches!.held, false);
+    assert.ok(plain(await ftsOf()), "dropped: as it was");
+  });
+
+  it("a branch counts as read by a list that reads the graph's own namespace, for a raw query, and against one that does not", async () => {
+    const strut = await boot();
+    await post(strut, "/branches", { name: "try" });
+    assert.ok((await backend.reader.listNamespaces()).includes("branch-try"), "the graph holds the branch's namespace");
+    assert.equal(await mayQueryRaw({ namespaces: ["default"] }, backend.reader, backend.namespace), true);
+    assert.equal(await mayQueryRaw({ namespaces: [backend.namespace] }, backend.reader, backend.namespace), true);
+    assert.equal(await mayQueryRaw({ namespaces: ["shared"] }, backend.reader, backend.namespace), false);
+    // The rule itself: a real namespace still counts, a branch only against a list without the own one.
+    const holding = (...ns: string[]) => ({ listNamespaces: async () => ns }) as unknown as GraphBackend["reader"];
+    assert.equal(await mayQueryRaw({ namespaces: ["default"] }, holding("branch-a", "branch-b"), "private"), true);
+    assert.equal(await mayQueryRaw({ namespaces: ["default"] }, holding("branch-a", "shared"), "private"), false);
+    assert.equal(await mayQueryRaw({ namespaces: ["shared", "branch-a"] }, holding("branch-a", "shared"), "private"), false);
+    assert.equal(await mayQueryRaw({ namespaces: ["default", "shared"] }, holding("branch-a", "shared"), "private"), true);
   });
 
   it("drop: refused while a run on it is in flight; removes its pages and its record; a run on it then fails", async () => {
