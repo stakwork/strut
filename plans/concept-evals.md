@@ -54,6 +54,30 @@ document with a .docx deliverable, or anything.
     conversation stays on the branch its first turn ran on; a branch does
     not cross to another strut.
 
+## Automatic by default (Evan, 2026-11-13)
+
+Said on #677: "This whole project is analogous to Claude Code memory
+system... in practice no one should need to review, it should be
+automatic. The review there is there for us at the beginning to deeply
+understand what got updated and why. The branches are there for us to be
+able to run sophisticated evals on our own Dream cycle or on other
+knowledge work (like the legal concept tree)."
+
+- **The dream updates the tree by itself** in normal use. Review (a person
+  accepting each change as a proposal, as `params.approve` gates the
+  dream's edits today) is a mode to turn on, not the design: for us now,
+  to learn what changed and why, and for anyone who wants it.
+- **Branches are for evals**: trying a change to the dream itself, or to a
+  tree like the legal one, and measuring it against main. Ruling 8's merge
+  may then be automatic too, not only a person's yes.
+- **What follows for (d):** a branch refuses claims and evidence today
+  (item b), and the dream writes both as it goes, so the dream cannot yet
+  be evaluated on a branch end to end. (d) lifts that first.
+- **Open:** whether everyday dreaming also runs on a branch per cycle
+  (merged at its end, the branch kept to inspect) or on main directly (the
+  history's commits, one `Run:` trailer per run, are what a person
+  inspects). Not decided.
+
 ## Build order
 
 Ruled: checks first. One PR each, against main.
