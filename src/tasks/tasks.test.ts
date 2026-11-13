@@ -570,12 +570,13 @@ describe("the task store in a strut", () => {
     async run(cfg, ctx?: StepContext<StrutCapabilities>) {
       const tasks = ctx!.services.tasks!;
       assert.ok(Object.isFrozen(tasks), "the capability is frozen");
+      assert.deepEqual(Object.keys(tasks), ["ensure"], "the human step's call alone (§9.2)");
       const { task, created } = await tasks.ensure({ type: cfg.type, workflow: workflowOf(ctx!), runId: ctx!.runId, path: ctx!.path, show: { hi: 1 } });
       return { id: task.id, created };
     },
   });
 
-  it("is ctx.services.tasks, and makes <dataDir>/tasks/tasks.db only once used", async () => {
+  it("is ctx.services.tasks (ensure alone), and makes <dataDir>/tasks/tasks.db only once used", async () => {
     const ws = join(dir, "ws");
     const strut = await createStrut({ workspace: new WorkspaceManager(ws), serveUi: false, scheduler: false, autoResume: false, registry: await createRegistry([ask]) });
     try {

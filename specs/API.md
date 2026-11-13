@@ -4673,7 +4673,10 @@ takes an actor, and a page cannot name another worker. Each step runs only
 as an app page's own call (`step_run` on `POST /mcp` or `POST
 /public/mcp`), never as a workflow's step or an agent's tool, and is never
 kept as a run (`worker: true` on the step's definition). The app must name
-the step in `grants.steps`.
+the step in `grants.steps`. The worker's calls of the task store reach that
+call alone: no other step, workflow, agent tool or proposal finds them on
+`ctx.services.tasks`, which carries the `human` step's `ensure` alone
+(`plans/human-steps.md` §9.2); the staff's calls are the routes below.
 
 | Step | Config | Answers |
 | --- | --- | --- |
