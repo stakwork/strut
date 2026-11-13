@@ -16,7 +16,7 @@
  *   reads: [score-board]            # the app's public reads (step types)
  *   runnable: [{ kind: workflow, name: ghost, dailyCapUsd: 5 }]
  *   concepts: [Moon Lander]         # Concept roots in the public view
- *   signIn: [key, lnurl, nostr]     # how a visitor signs in (default: none)
+ *   signIn: [key, lnurl, nostr]     # how a visitor signs in (default: [sphinx]; [] for none)
  *   visitorKey: domain              # a child key per domain (default: root)
  *   limits: { writesPerDay: 500 }   # per-visitor limits over strut's defaults
  *
@@ -51,7 +51,7 @@ import type { AppsCapability } from "../apps/apps.js";
 import type { ShellCapability } from "../capabilities.js";
 import { defaultKitDir, type KitLocation } from "../apps/kit.js";
 import { nameInPackage } from "../package-lookup.js";
-import { normalizeSurface, runnableShapeProblem, surfaceProblem, VISITOR_METHOD_NAMES, type PublicRunnable, type PublicSurface } from "../public-surface.js";
+import { DEFAULT_SIGN_IN, normalizeSurface, runnableShapeProblem, surfaceProblem, VISITOR_METHOD_NAMES, type PublicRunnable, type PublicSurface } from "../public-surface.js";
 import type { WorkspaceStore } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { bootPackageProblem } from "./boot.js";
@@ -194,15 +194,13 @@ export function planServe(file: ServeFile, info: Pick<PackageInfo, "manifest" | 
     concepts: file.concepts ?? [],
     apps: [{ name: app, ...(file.reads?.length ? { reads: file.reads.map((r) => nameInPackage(pkg, r, (n) => steps.has(n))) } : {}) }],
     runnable: (file.runnable ?? []).map((r) => ({ ...r, name: nameInPackage(pkg, r.name, (n) => (r.kind === "workflow" ? workflows : steps).has(n)) })),
-    ...(file.signIn?.length
-      ? {
-          visitors: {
-            signIn: file.signIn,
-            ...(file.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}),
-            ...(file.limits && Object.keys(file.limits).length ? { limits: file.limits } : {}),
-          },
-        }
-      : {}),
+    // No `signIn`: strut's default (normalizeSurface leaves it unwritten
+    // when nothing else is said); `signIn: []`: no sign-in.
+    visitors: {
+      signIn: file.signIn ?? DEFAULT_SIGN_IN,
+      ...(file.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}),
+      ...(file.limits && Object.keys(file.limits).length ? { limits: file.limits } : {}),
+    },
   };
   const bad = surfaceProblem(record);
   if (bad) throw new Error(`serve_invalid: ${SERVE_FILE}: ${bad}`);

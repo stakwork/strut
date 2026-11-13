@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, setSignIn, setVisitorKey, setVisitorLimit, SIGN_IN_METHODS, usd, visitorAppLink, VISITOR_DEFAULT_LIMITS } from "./public-view.js";
+import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, setSignIn, setVisitorKey, setVisitorLimit, shownNumber, DEFAULT_SIGN_IN, visitorsOf, SIGN_IN_METHODS, typedNumber, usd, visitorAppLink, VISITOR_DEFAULT_LIMITS } from "./public-view.js";
 import { DAILY_CAP_SHARE as SERVER_DAILY_CAP_SHARE } from "../../src/public-runnable.js";
-import { normalizeSurface, VISITOR_METHOD_NAMES } from "../../src/public-surface.js";
+import { DEFAULT_SIGN_IN as SERVER_DEFAULT_SIGN_IN, normalizeSurface, VISITOR_METHOD_NAMES } from "../../src/public-surface.js";
 import { DEFAULT_VISITOR_LIMITS } from "../../src/visitors.js";
 import type { PublicRunInfo, PublicViewNeeds } from "./api.js";
 
@@ -103,6 +103,25 @@ describe("a workflow or step row's three boxes", () => {
     assert.deepEqual(setBox(setBox(rec, wf, "run", false), wf, "run", true).runnable, [{ kind: "workflow", name: "cve/scan" }]);
   });
 
+  it("a price box keeps a decimal as it is typed", () => {
+    // Each keystroke of "0.05" in the Base box, as the box sees it.
+    let rec = setBox(emptyRecord(), wf, "run", true);
+    for (const text of ["0", "0.", "0.0", "0.05"]) {
+      rec = setPrice(rec, wf, "base", text);
+      assert.equal(shownNumber(text, rec.runnable[0].base), text);
+    }
+    assert.equal(rec.runnable[0].base, 0.05);
+    // A lone dot holds no number yet, and stays in the box.
+    assert.equal(typedNumber("."), undefined);
+    assert.equal(shownNumber(".", setPrice(rec, wf, "base", ".").runnable[0].base), ".");
+    // A value changed from outside the box is what it shows.
+    assert.equal(shownNumber("0.", 2.5), "2.5");
+    assert.equal(shownNumber("0.", undefined), "");
+    assert.equal(shownNumber("", 3), "3");
+    assert.equal(typedNumber(" "), undefined);
+    assert.equal(typedNumber("1e"), undefined);
+  });
+
   it("the reserve is base + markup × the per-run cap, to the micro-dollar", () => {
     assert.equal(reserveUsd({ ...wf }), 0);
     assert.equal(reserveUsd({ ...wf, markup: 1.5, capUsd: 5 }), 7.5);
@@ -145,32 +164,39 @@ describe("a workflow or step row's three boxes", () => {
 });
 
 describe("the Public view tab's sign-in (plans/app-repos.md §5)", () => {
-  it("offers the server's methods and says its default limits", () => {
+  it("offers the server's methods, Sphinx first and on by default, and says its default limits", () => {
     assert.deepEqual(SIGN_IN_METHODS.map((m) => m.method).sort(), [...VISITOR_METHOD_NAMES].sort());
+    assert.equal(SIGN_IN_METHODS[0].method, "sphinx");
+    assert.deepEqual(DEFAULT_SIGN_IN, SERVER_DEFAULT_SIGN_IN);
+    assert.deepEqual(visitorsOf(emptyRecord()), { signIn: ["sphinx"] }, "a record that says nothing offers Sphinx");
     assert.deepEqual(VISITOR_DEFAULT_LIMITS, DEFAULT_VISITOR_LIMITS);
   });
 
-  it("a method on makes the record's visitors, in the server's order; the last one off drops the key per domain and the limits", () => {
+  it("a method on makes the record's visitors, in the tab's order; the last one off is no sign-in, kept as such", () => {
     let rec = setSignIn(emptyRecord(), "nostr", true);
     rec = setSignIn(rec, "key", true);
-    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"] });
+    assert.deepEqual(rec.visitors, { signIn: ["sphinx", "key", "nostr"] }, "added beside the default");
     rec = setVisitorKey(rec, true);
     rec = setVisitorLimit(rec, "writesPerDay", "500");
-    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"], visitorKey: "domain", limits: { writesPerDay: 500 } });
+    assert.deepEqual(rec.visitors, { signIn: ["sphinx", "key", "nostr"], visitorKey: "domain", limits: { writesPerDay: 500 } });
     // What the tab sends is what the server keeps: Save leaves it unchanged.
     assert.deepEqual(normalizeSurface(rec), rec);
     rec = setVisitorLimit(rec, "writesPerDay", "");
-    assert.deepEqual(rec.visitors, { signIn: ["key", "nostr"], visitorKey: "domain" }, "an empty box is the default");
+    assert.deepEqual(rec.visitors, { signIn: ["sphinx", "key", "nostr"], visitorKey: "domain" }, "an empty box is the default");
     rec = setVisitorKey(rec, false);
     rec = setSignIn(setSignIn(rec, "key", false), "nostr", false);
-    assert.equal("visitors" in rec, false, "no method, no visitors");
+    assert.equal("visitors" in rec, false, "back to the default: nothing to say");
     assert.deepEqual(rec, emptyRecord());
+    rec = setSignIn(rec, "sphinx", false);
+    assert.deepEqual(rec.visitors, { signIn: [] }, "no method is said, since absent is the default");
+    assert.deepEqual(normalizeSurface(rec), rec);
+    assert.deepEqual(setSignIn(setVisitorKey(setSignIn(emptyRecord(), "key", true), true), "key", false).visitors, { signIn: ["sphinx"], visitorKey: "domain" });
   });
 
   it("the other edits keep the record's visitors", () => {
     const rec = setSignIn(emptyRecord(), "key", true);
     const row = { kind: "workflow" as const, name: "w" };
-    assert.deepEqual(setBox(rec, row, "definition", true).visitors, { signIn: ["key"] });
-    assert.deepEqual(removeRow(setBox(rec, row, "run", true), row).visitors, { signIn: ["key"] });
+    assert.deepEqual(setBox(rec, row, "definition", true).visitors, { signIn: ["sphinx", "key"] });
+    assert.deepEqual(removeRow(setBox(rec, row, "run", true), row).visitors, { signIn: ["sphinx", "key"] });
   });
 });

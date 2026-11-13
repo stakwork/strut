@@ -5814,6 +5814,12 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .public-need.is-sub { padding-left: var(--sp-4); }
 .public-need-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .public-need-text .package-name { overflow-wrap: anywhere; }
+/* Sign-in, folded to one line saying what is offered. */
+.public-sign-in > summary { list-style: none; display: flex; align-items: baseline; gap: var(--sp-2); cursor: pointer; margin-bottom: var(--sp-1); }
+.public-sign-in > summary::-webkit-details-marker { display: none; }
+.public-sign-in > summary .flyout-section-title { margin-bottom: 0; }
+.public-sign-in-chev { flex: none; align-self: center; color: var(--text-dim); transition: transform 140ms; }
+.public-sign-in[open] > summary .public-sign-in-chev { transform: rotate(90deg); }
 
 /* ── The store's live items (Store.tsx LivePage) ─────────────────────────── */
 .store-live-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }

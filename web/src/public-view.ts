@@ -153,10 +153,26 @@ export function setPrice(rec: PublicViewRecord, row: Row, field: PriceField, tex
   next.runnable = next.runnable.map((r) => {
     if (!isRow(row)(r)) return r;
     const { [field]: _old, ...rest } = r;
-    const n = text.trim() === "" ? undefined : Number(text);
-    return n === undefined || !Number.isFinite(n) ? rest : { ...rest, [field]: n };
+    const n = typedNumber(text);
+    return n === undefined ? rest : { ...rest, [field]: n };
   });
   return next;
+}
+
+/** A number as typed in a price or limit box: blank, or not a number yet
+ *  ("."), is none. */
+export function typedNumber(text: string): number | undefined {
+  if (text.trim() === "") return undefined;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** What a number box shows: the text as typed while it still reads as the
+ *  value the record holds, so "0." and "1.50" stay as typed; else the value
+ *  (a reload, a save). Shown from the record alone, the box turned "0." into
+ *  "0" on the keystroke that typed the dot, and no decimal could be typed. */
+export function shownNumber(text: string, value: number | undefined): string {
+  return typedNumber(text) === value ? text : value === undefined ? "" : String(value);
 }
 
 /** What a workflow's launcher reads: its output (the default), or the whole run. */
@@ -237,12 +253,12 @@ export type SignInMethod = PublicVisitors["signIn"][number];
 
 /** The sign-ins a server may offer, in the order the record keeps them,
  *  as the tab says them. */
-export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: string; note: string }> = [
-  { method: "key", label: "This browser's key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
-  { method: "lnurl", label: "A Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
-  { method: "nostr", label: "A Nostr extension", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
-  { method: "sphinx", label: "Their Sphinx account", note: "the wallet that holds it signs in — Peel today — as one visitor on every app, or a new identity for this one" },
-  { method: "ticket", label: "A host's ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
+export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: string; short: string; note: string }> = [
+  { method: "sphinx", label: "Their Sphinx account", short: "Sphinx", note: "the wallet that holds it signs in — Peel today — as one visitor on every app, or a new identity for this one" },
+  { method: "key", label: "This browser's key", short: "browser key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
+  { method: "lnurl", label: "A Lightning wallet", short: "Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
+  { method: "nostr", label: "A Nostr extension", short: "Nostr", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
+  { method: "ticket", label: "A host's ticket", short: "host ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
 ];
 
 /** What a visitor may do in a day when the record says nothing: the
@@ -251,44 +267,50 @@ export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: strin
 export const VISITOR_DEFAULT_LIMITS = { writesPerDay: 1000, launchesPerDay: 100 } as const;
 export type VisitorLimitField = keyof typeof VISITOR_DEFAULT_LIMITS;
 
-/** The record with `visitors` as given: dropped when it names no method,
- *  as the server keeps it — so a record that offers no sign-in compares
- *  equal to the saved one. */
-function withVisitors(rec: PublicViewRecord, v: PublicVisitors | undefined): PublicViewRecord {
+/** What a record that names no sign-in offers: the server's
+ *  `DEFAULT_SIGN_IN` (src/public-surface.ts), held equal by
+ *  public-view.test.ts. */
+export const DEFAULT_SIGN_IN: ReadonlyArray<SignInMethod> = ["sphinx"];
+
+/** What the record says about visitors, the default filled in. */
+export function visitorsOf(rec: PublicViewRecord): PublicVisitors {
+  return rec.visitors ?? { signIn: [...DEFAULT_SIGN_IN] };
+}
+
+/** The record with `visitors` as given, kept as the server keeps it: no
+ *  method is `{ signIn: [] }` (absent is the default now), and the default
+ *  itself is absent — so a record compares equal to the saved one. */
+function withVisitors(rec: PublicViewRecord, v: PublicVisitors): PublicViewRecord {
   const { visitors: _old, ...rest } = copyOf(rec);
-  if (!v || !v.signIn.length) return rest;
+  const signIn = SIGN_IN_METHODS.map((m) => m.method).filter((m) => v.signIn.includes(m));
+  if (!signIn.length) return { ...rest, visitors: { signIn } };
+  const domain = v.visitorKey === "domain";
   const limits = v.limits && Object.keys(v.limits).length ? v.limits : undefined;
-  return {
-    ...rest,
-    visitors: {
-      signIn: SIGN_IN_METHODS.map((m) => m.method).filter((m) => v.signIn.includes(m)),
-      ...(v.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}),
-      ...(limits ? { limits } : {}),
-    },
-  };
+  if (!domain && !limits && signIn.length === DEFAULT_SIGN_IN.length && DEFAULT_SIGN_IN.every((m) => signIn.includes(m))) return rest;
+  return { ...rest, visitors: { signIn, ...(domain ? { visitorKey: "domain" as const } : {}), ...(limits ? { limits } : {}) } };
 }
 
 /** The record with one sign-in offered or not. The last one off takes the
  *  key per domain and the limits with it: no sign-in, nothing to say. */
 export function setSignIn(rec: PublicViewRecord, method: SignInMethod, on: boolean): PublicViewRecord {
-  const v = rec.visitors ?? { signIn: [] };
+  const v = visitorsOf(rec);
   const signIn = on ? [...new Set([...v.signIn, method])] : v.signIn.filter((m) => m !== method);
   return withVisitors(rec, { ...v, signIn });
 }
 
 /** The record with a key per domain (`visitorKey: domain`) or the root key. */
 export function setVisitorKey(rec: PublicViewRecord, domain: boolean): PublicViewRecord {
-  const { visitorKey: _k, ...v } = rec.visitors ?? { signIn: [] };
+  const { visitorKey: _k, ...v } = visitorsOf(rec);
   return withVisitors(rec, domain ? { ...v, visitorKey: "domain" } : v);
 }
 
 /** The record with one daily limit typed: a whole number, or the server's
  *  default when the box is empty (the server checks the rest). */
 export function setVisitorLimit(rec: PublicViewRecord, field: VisitorLimitField, text: string): PublicViewRecord {
-  const v = rec.visitors ?? { signIn: [] };
+  const v = visitorsOf(rec);
   const limits = { ...(v.limits ?? {}) };
-  const n = Number(text);
-  if (text.trim() === "" || !Number.isFinite(n)) delete limits[field];
+  const n = typedNumber(text);
+  if (n === undefined) delete limits[field];
   else limits[field] = n;
   return withVisitors(rec, { ...v, limits });
 }

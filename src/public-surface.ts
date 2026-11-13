@@ -78,12 +78,40 @@ export const VISITOR_METHOD_NAMES = ["key", "ticket", "lnurl", "nostr", "sphinx"
  *  methods this server accepts, whose key signs, and the per-visitor
  *  limits over strut's defaults. A served box writes it from `serve.yaml`
  *  (`signIn`, `visitorKey`, `limits`); elsewhere a person's
- *  `PUT /public-view`. Absent: no sign-in, every visitor anonymous. */
+ *  `PUT /public-view`. Absent: `DEFAULT_SIGN_IN` with the root key and
+ *  strut's limits, once an app is public (`signInOf`). `signIn: []`: no
+ *  sign-in, every visitor anonymous. */
 export interface PublicVisitors {
   signIn: Array<(typeof VISITOR_METHOD_NAMES)[number]>;
   /** A child key per domain (LUD-05); absent: the root key. */
   visitorKey?: "domain";
   limits?: { writesPerDay?: number; launchesPerDay?: number };
+}
+
+/** What a public view offers when its record names no sign-in: a
+ *  visitor's Sphinx account, through the wallet that holds it (Peel). A
+ *  browser with no such wallet is offered nothing by it, so the page there
+ *  stays anonymous. */
+export const DEFAULT_SIGN_IN: PublicVisitors["signIn"] = ["sphinx"];
+
+/** The sign-ins a public view offers: its record's, else the default once
+ *  an app is public (before one, there is nothing to sign in to). An empty
+ *  list is none. */
+export function signInOf(surface: Pick<PublicSurface, "visitors" | "apps">): PublicVisitors["signIn"] {
+  if (surface.visitors) return surface.visitors.signIn;
+  return surface.apps.length ? DEFAULT_SIGN_IN : [];
+}
+
+/** `visitors` as kept: no duplicate method, an empty list kept (no sign-in,
+ *  which absent no longer says), and the default left out (absent says it). */
+function normalizeVisitors(v: PublicVisitors): PublicVisitors | undefined {
+  const signIn = unique([...v.signIn], (m) => m);
+  if (!signIn.length) return { signIn };
+  const domain = (v.visitorKey as string | undefined) === "domain";
+  const limits = v.limits && Object.keys(v.limits).length ? { ...v.limits } : undefined;
+  const isDefault = !domain && !limits && signIn.length === DEFAULT_SIGN_IN.length && DEFAULT_SIGN_IN.every((m) => signIn.includes(m));
+  if (isDefault) return undefined;
+  return { signIn, ...(domain ? { visitorKey: "domain" as const } : {}), ...(limits ? { limits } : {}) };
 }
 
 export interface PublicSurface {
@@ -251,15 +279,7 @@ export function normalizeSurface(v: unknown): PublicSurface {
       })),
       (x) => `${x.kind}:${x.name}`,
     ),
-    ...(r.visitors?.signIn?.length
-      ? {
-          visitors: {
-            signIn: unique([...r.visitors.signIn], (m) => m),
-            ...((r.visitors.visitorKey as string | undefined) === "domain" ? { visitorKey: "domain" as const } : {}),
-            ...(r.visitors.limits && Object.keys(r.visitors.limits).length ? { limits: { ...r.visitors.limits } } : {}),
-          },
-        }
-      : {}),
+    ...(r.visitors && normalizeVisitors(r.visitors) ? { visitors: normalizeVisitors(r.visitors) } : {}),
   };
 }
 

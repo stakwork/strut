@@ -5,6 +5,7 @@ import { CopyButton } from "./CopyButton";
 import { EarningsLine, useEarnings } from "./EarningsLine";
 import { ListingLines } from "./ListingLines";
 import { canWords } from "../store-links";
+import { ChevronRightIcon } from "../icons";
 import {
   boxesOf,
   checkedOf,
@@ -25,7 +26,10 @@ import {
   setSignIn,
   setVisitorKey,
   setVisitorLimit,
+  shownNumber,
   SIGN_IN_METHODS,
+  typedNumber,
+  visitorsOf,
   usd,
   visitorAppLink,
   VISITOR_DEFAULT_LIMITS,
@@ -107,6 +111,31 @@ function Cascade(props: { needs: api.PublicViewNeeds; onAdd: (checked: Set<strin
   );
 }
 
+/** A number box over a value the draft holds. It keeps the text typed
+ *  ("0.", "1.50") while that reads as the value; shown from the value alone,
+ *  the dot was gone the moment it was typed. */
+function NumberBox(props: { value: number | undefined; step: string; placeholder: string; onText: (text: string) => void }) {
+  const [text, setText] = useState(props.value === undefined ? "" : String(props.value));
+  // A value changed from outside (a reload, a save) is what the box types on from.
+  useEffect(() => {
+    if (typedNumber(text) !== props.value) setText(props.value === undefined ? "" : String(props.value));
+  }, [props.value]);
+  return (
+    <input
+      type="number"
+      min="0"
+      step={props.step}
+      value={shownNumber(text, props.value)}
+      placeholder={props.placeholder}
+      onInput={(e) => {
+        const typed = (e.target as HTMLInputElement).value;
+        setText(typed);
+        props.onText(typed);
+      }}
+    />
+  );
+}
+
 const PRICE_FIELDS: Array<{ field: PriceField; label: string; unit: string; step: string; title: string }> = [
   { field: "base", label: "Base", unit: "$ a run", step: "0.01", title: "Charged on every run, whatever it cost" },
   { field: "markup", label: "Markup", unit: "× cost", step: "0.1", title: "Times what the run cost: 1 charges exactly the cost" },
@@ -174,13 +203,11 @@ function ItemRow(props: {
             {PRICE_FIELDS.map((f) => (
               <label key={f.field} title={f.title}>
                 <span>{f.label} <span class="auto-hint">{f.unit}</span></span>
-                <input
-                  type="number"
-                  min="0"
+                <NumberBox
                   step={f.step}
-                  value={item[f.field] ?? ""}
+                  value={item[f.field]}
                   placeholder={f.field === "base" || f.field === "markup" ? "0" : "none"}
-                  onInput={(e) => props.edit((r) => setPrice(r, row, f.field, (e.target as HTMLInputElement).value))}
+                  onText={(text) => props.edit((r) => setPrice(r, row, f.field, text))}
                 />
               </label>
             ))}
@@ -222,15 +249,21 @@ const LIMIT_FIELDS: Array<{ field: VisitorLimitField; label: string; title: stri
   { field: "launchesPerDay", label: "Launches", title: "Runs started, per visitor per UTC day" },
 ];
 
-/** Who may sign in to the public apps, and what one visitor may do in a day. */
+/** Who may sign in to the public apps, and what one visitor may do in a
+ *  day: folded to one line that says what is offered, since it is set once. */
 function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.PublicViewRecord) => void }) {
   const { draft, setDraft } = props;
-  const v = draft.visitors;
-  const offered = new Set(v?.signIn ?? []);
-  const domain = v?.visitorKey === "domain";
+  const v = visitorsOf(draft);
+  const offered = new Set(v.signIn);
+  const domain = v.visitorKey === "domain";
+  const shown = SIGN_IN_METHODS.filter((m) => offered.has(m.method)).map((m) => m.short);
   return (
-    <div class="flyout-section public-sign-in">
-      <div class="flyout-section-title">Sign-in</div>
+    <details class="flyout-section public-sign-in">
+      <summary>
+        <ChevronRightIcon size={12} class="public-sign-in-chev" />
+        <span class="flyout-section-title">Sign-in</span>
+        <span class="auto-hint">{shown.length ? shown.join(", ") : "off: every visitor is anonymous"}</span>
+      </summary>
       <div class="auto-hint">
         Visitors of the public apps may sign in with a key they hold, and are then that key here: their own saved state, channels and rows.
         Nothing about them is kept but the key. With none ticked, every visitor is anonymous.
@@ -244,7 +277,7 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
           </span>
         </label>
       ))}
-      {v && (
+      {offered.size > 0 && (
         <>
           <label class="public-need">
             <input type="checkbox" checked={domain} onChange={() => setDraft(setVisitorKey(draft, !domain))} />
@@ -260,13 +293,11 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
             {LIMIT_FIELDS.map((f) => (
               <label key={f.field} title={f.title}>
                 <span>{f.label} <span class="auto-hint">a visitor a day</span></span>
-                <input
-                  type="number"
-                  min="0"
+                <NumberBox
                   step="1"
-                  value={v.limits?.[f.field] ?? ""}
+                  value={v.limits?.[f.field]}
                   placeholder={String(VISITOR_DEFAULT_LIMITS[f.field])}
-                  onInput={(e) => setDraft(setVisitorLimit(draft, f.field, (e.target as HTMLInputElement).value))}
+                  onText={(text) => setDraft(setVisitorLimit(draft, f.field, text))}
                 />
               </label>
             ))}
@@ -274,7 +305,7 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
           {draft.apps.length === 0 && <div class="auto-hint">No app is in the public view yet: a visitor signs in to one.</div>}
         </>
       )}
-    </div>
+    </details>
   );
 }
 
