@@ -1,7 +1,7 @@
 # Human steps: people as part of a workflow
 
 > **Status (2026-11-12): items 1 (stakwork/strut#654), 2a
-> (stakwork/strut#655) and 2b (stakwork/strut#PRNUM) built; the rest
+> (stakwork/strut#655) and 2b (stakwork/strut#656) built; the rest
 > proposed** — §12 has each item's state. Written against strut
 > `main` @a5663769. The rows under
 > "Rulings" are the owner's, from one conversation. Everything else is
@@ -262,7 +262,7 @@ A second form, `to:` a named person with an inline `message` and `answer`
 schema, is an approval inside a workflow. It uses the same store and the
 same park. It is a later item (§12, item 7).
 
-**Built differently (#PRNUM):**
+**Built differently (#656):**
 
 - **Refused where `ctx.park` would refuse, too.** Besides the trees
   createStrut marks `noRemoteSpend` (refused by the store's `refusal`, so
@@ -660,7 +660,7 @@ directory, so past one process the answer is another strut.
 - A parked run lets go of its job. On wake the journal replays `job/dir`
   and the hold is not taken again.
 - A run that fails with a task still open keeps it (§3, built differently
-  in #PRNUM): a worker may answer for a run nobody resumes, until the task
+  in #656): a worker may answer for a run nobody resumes, until the task
   expires.
 - A cancel that reaches a live run after its last checkpoint is lost when
   every branch that did not finish parked: the run ends `waiting`, not
@@ -683,7 +683,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | --- | --- | --- | --- |
 | 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing | **Built**: stakwork/strut#654. Differs in §2.3 |
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
-| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#PRNUM. Differs in §3 |
+| 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | Not started |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |
