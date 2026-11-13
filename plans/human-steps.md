@@ -300,6 +300,18 @@ file.
 Tests, standing and earnings add tables with their items (§7, §8).
 Earnings go in `ledger.db`, where the books check is.
 
+**Built differently (#655):** as above, plus what the rules need: a task
+keeps `seq` (creation order: oldest first, paging), `due` (its
+`withinHours` as a time), `root` (`run` or `job`) with the `job`, the
+worker who answered (`by`) and when it left `open`; a lease keeps when it
+closed and why (`reason`). A lease closed early, because its task expired
+or was cancelled or its worker was suspended, banned or lost the grant, is
+`expired` with a reason; there is no fifth lease status. A grant is one row
+per worker and type: granting again after a revoke makes the row live, so
+only the last revoke is kept. A worker row also keeps who changed it last
+and when. The two sides are two modules on one file
+(`src/tasks/task-store*.ts`, `src/tasks/worker-store*.ts`, `db.ts`).
+
 ### 4.3 The rules
 
 1. A task is created once per workflow, run and step path.
@@ -317,6 +329,24 @@ Earnings go in `ledger.db`, where the books check is.
 8. A sweep, every minute and at boot, reopens a task whose lease expired
    and settles as expired a task past its `withinHours`, which wakes its run.
 
+**Built differently (#655):**
+
+- **Rule 2.** The guarded statement (`take`) covers tasks and leases. The
+  grant is read from the worker side just before it and handed in as the
+  types the worker may take, since the two sides are two modules (§4.4). A
+  revoke that lands between the read and the statement leaves a lease the
+  worker can no longer answer (refused `not_granted`); it frees the task
+  when it expires.
+- **Rule 2, asked again.** `next` from a worker who holds a live lease
+  returns that lease when it is of a type asked for, and refuses
+  (`lease_held`) when it is not, so a page that reloads gets its task back.
+- **Rules 7 and 8.** The store does not wake runs: it tells `onSettle`
+  listeners which tasks left `open` (answered, expired, cancelled), and item
+  2b's `task` source wakes them. A lease past its expiry, and a task past
+  due, count as such before the sweep marks them, so the sweep is
+  bookkeeping and the wake's trigger, never what makes a rule hold. The
+  minute's sweep runs only where a store is open or on file.
+
 ### 4.4 The capability
 
 `ctx.services.tasks`, built by createStrut, frozen: `ensure` (the `human`
@@ -325,6 +355,15 @@ step's), `next`, `submit`, `skip`, `me` (the worker's), and the staff's
 Inside, the task tables and the worker tables are two modules: the task
 side asks "may this actor take this type?" and tells the worker side what
 happened. Ruling 5 may one day move the worker side.
+
+**Built differently (#655):** the worker's calls take the actor as their
+first argument (`next(actor, { type?, app? })`), filled by the caller from
+the session, never from a page's input. The staff side also has `task(id)`.
+What a source needs is on the service (`strut.tasks`), not the capability:
+`onSettle`, `settled(id)` (true when no longer open, or not on file),
+`cancel(id)`, `cancelRun(workflow, runId)`, `sweep`. The task side tells the
+worker side nothing yet: nothing there uses it before tests and earnings
+(items 4, 5a). `next { wait }` is item 3's (§5.1).
 
 ### 4.5 The answer's shape
 
@@ -345,6 +384,12 @@ A schema that uses anything else is refused when the task type is saved,
 so a type never promises a check strut does not make. A box on a photo is
 `{ type: array, items: { type: number }, minItems: 4, maxItems: 4 }`.
 
+**Built differently (#655):** `title` and `description` are accepted as
+labels and check nothing (a form needs them, and they promise no check).
+`type` is required on every schema and is one name, never a list. A
+keyword on a type it does not apply to (`minLength` on a number) is refused,
+and so is an `enum` option that the rest of the schema would refuse.
+
 ### 4.6 A worker's status
 
 | Status | Set by | May |
@@ -357,6 +402,12 @@ so a type never promises a check strut does not make. A box on a photo is
 Revoking a worker's last grant leaves them `active` with nothing to take.
 A change to `suspended` or `banned` expires the worker's open lease at
 once, and the task reopens.
+
+**Built differently (#655):** revoking a grant also expires a live lease of
+that type at once, since the worker can no longer answer it. Staff may set
+any status, a ban lifted included, and may set one before the worker's
+first call. A grant moves only `new` to `active`; a suspended or banned
+worker stays so. `me` lists the types a worker holds whatever their status.
 
 ## 5. The worker's door
 

@@ -54,6 +54,7 @@ import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
+import { createTasks, memoryTaskStores, openTaskStores, tasksPath, type TasksService } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -877,6 +878,13 @@ export interface Strut<TServices = unknown> {
    *  the file; closed by `close()`. What the launch and the charge write. */
   ledger(): Promise<LedgerStore>;
 
+  /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
+   *  a step of a workflow. `capability` is `ctx.services.tasks`; `onSettle`,
+   *  `settled`, `cancel` and `cancelRun` are what a parked run's source
+   *  needs. Opened on first use — `<dataDir>/tasks/tasks.db`, or memory
+   *  where the run store is — swept every minute, closed by `close()`. */
+  tasks: TasksService;
+
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
    *  peers' installed packages — what `/packages/indexes` and
@@ -1477,6 +1485,14 @@ export async function createStrut<TServices = unknown>(
     });
     return ledgerOpen;
   };
+  // The task store (plans/human-steps.md §4, src/tasks/): opened on first
+  // use, so a strut that never runs a `human` step makes no `tasks/tasks.db`;
+  // memory where the run store is, since its tasks are those runs' steps.
+  const tasks = createTasks({
+    open: () => (store instanceof MemoryRunStore ? Promise.resolve(memoryTaskStores()) : openTaskStores({ dataDir })),
+    exists: () => !(store instanceof MemoryRunStore) && existsSync(tasksPath(dataDir)),
+  });
+  if (!(services as Record<string, unknown>)["tasks"]) (services as Record<string, unknown>)["tasks"] = tasks.capability;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
   // caps a launch is admitted against, what a run in flight counts for, and
   // its charge when it ends. What is not yet charged is on file beside the
@@ -9695,6 +9711,7 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    tasks.stop();
     publicTools.close();
     withdrawals.stop();
     deposits.stop();
@@ -9721,6 +9738,8 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
+    // And the task store's.
+    await tasks.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -9831,6 +9850,10 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // The task store's sweep (plans/human-steps.md §4.3 rule 8): now and every
+  // minute, wherever a store is — dead leases let go, tasks past their time
+  // expired.
+  tasks.start();
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
@@ -9883,6 +9906,7 @@ export async function createStrut<TServices = unknown>(
     payments,
     remote,
     ledger,
+    tasks,
     claims,
     verifier,
     listen,

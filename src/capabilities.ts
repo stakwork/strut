@@ -40,6 +40,7 @@ import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js"
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
+import type { TasksCapability } from "./tasks/tasks.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
 
@@ -471,6 +472,12 @@ export interface StrutCapabilities {
    *  holds — injected, never handed out — and the door an ACCEPTED
    *  `remote/buy-credit` proposal pays through. The payer is not on it. */
   remote?: RemoteCapability;
+  /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
+   *  a step of a workflow — `ensure` (the `human` step's), the worker's
+   *  `next` / `submit` / `skip` / `me` for the actor the caller passes, and
+   *  the staff's types, workers, grants and lists. Set by the standard
+   *  server. */
+  tasks?: TasksCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
