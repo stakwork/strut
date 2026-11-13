@@ -16,7 +16,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { decodeBolt11, encodeBolt11 } from "./bolt11.js";
 import { LightningError, checkPaymentHash, type Invoice, type InvoiceLookup, type LightningProvider, type ReceivedPayment } from "./lightning.js";
-import { lspFeeFloorMsat, type PayRequest, type PayResult, type Payer } from "./payer.js";
+import { lspFeeFloorMsat, NO_KEYSEND, type KeysendRequest, type KeysendResult, type PayRequest, type PayResult, type Payer } from "./payer.js";
 
 /** One invoice as the fake keeps it. Times are epoch ms. */
 export interface FakeInvoice {
@@ -183,6 +183,13 @@ export type FakePayOutcome = "settled" | "pending" | "failed" | LightningError;
  * (settled by default), keeps a pending one until the test settles or fails
  * it, and, like the Sphinx daemon, answers a payment hash it already paid as
  * it stands, paying only a failed one again. It takes the daemon's fee floor.
+ *
+ * It keysends too, as the daemon's `POST /keysend` does (plans/human-steps.md
+ * §8.2): by the same queued outcomes, once per id — the same id again answers
+ * that payment as it stands, a failed one included — and reads one by id
+ * without sending (`keysendStatus`), an id it never took `failed`.
+ * `noKeysend` models a daemon without the route; `forget(id)` one that lost
+ * its ledger.
  */
 export class FakePayer implements Payer {
   readonly provider = "sphinx" as const;
@@ -195,7 +202,13 @@ export class FakePayer implements Payer {
   feeShare = 0.001;
   readonly #payments = new Map<string, PayResult & { msat: number; invoice: string }>();
   /** Every pay and status call, in order. */
-  readonly calls: Array<{ method: "pay" | "status"; paymentHash: string; maxFeeMsat: number }> = [];
+  readonly calls: Array<{ method: "pay" | "status" | "keysend" | "keysendStatus"; paymentHash: string; maxFeeMsat: number; address?: string; msat?: number }> = [];
+  /** A daemon without `POST /keysend`: every keysend is refused `no_keysend`. */
+  noKeysend = false;
+  /** The wallet it pays out of: each settled payment, fee included, comes
+   *  off its balance, as a real wallet's would. */
+  wallet?: FakeWallet;
+  readonly #keysends = new Map<string, KeysendResult & { msat: number; address: string }>();
 
   minFeeMsat(msat: number): number {
     return lspFeeFloorMsat(msat);
@@ -226,25 +239,86 @@ export class FakePayer implements Payer {
     return this.#answer(p);
   }
 
-  /** Settle a pending payment (by its payment hash). */
+  async keysend(req: KeysendRequest): Promise<KeysendResult> {
+    this.calls.push({ method: "keysend", paymentHash: req.id, maxFeeMsat: req.maxFeeMsat, address: req.address, msat: req.msat });
+    if (this.noKeysend) throw new LightningError("wallet_refused", "the fake daemon has no POST /keysend", NO_KEYSEND);
+    const had = this.#keysends.get(req.id);
+    if (had) return this.#keysendAnswer(had);
+    const outcome = this.outcomes.shift() ?? "settled";
+    if (outcome instanceof LightningError) throw outcome;
+    if (req.maxFeeMsat < this.minFeeMsat(req.msat)) {
+      throw new LightningError("wallet_refused", `max_fee_msat ${req.maxFeeMsat} is below the LSP's own fee limit for ${req.msat} msat, ${this.minFeeMsat(req.msat)}`, "max_fee_too_low");
+    }
+    const k: KeysendResult & { msat: number; address: string; maxFeeMsat?: number } = { id: req.id, msat: req.msat, address: req.address, state: outcome, feeMsat: 0, maxFeeMsat: req.maxFeeMsat };
+    this.#keysends.set(req.id, k);
+    if (outcome === "settled") this.#settleKeysend(k, req.maxFeeMsat);
+    if (outcome === "failed") k.error = "no route found";
+    return this.#keysendAnswer(k);
+  }
+
+  async keysendStatus(req: { id: string }): Promise<KeysendResult> {
+    this.calls.push({ method: "keysendStatus", paymentHash: req.id, maxFeeMsat: 0 });
+    if (this.noKeysend) throw new LightningError("wallet_refused", "the fake daemon has no GET /keysend/:id", NO_KEYSEND);
+    const k = this.#keysends.get(req.id);
+    if (!k) return { id: req.id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
+    return this.#keysendAnswer(k);
+  }
+
+  /** Forget a keysend, as a daemon that lost its ledger would. */
+  forget(id: string): void {
+    this.#keysends.delete(id);
+  }
+
+  /** The keysends it took, by id: address, amount, state and fee. */
+  keysends(): Array<{ id: string; address: string; msat: number; state: KeysendResult["state"]; feeMsat: number }> {
+    return [...this.#keysends.values()].map((k) => ({ id: k.id, address: k.address, msat: k.msat, state: k.state, feeMsat: k.feeMsat }));
+  }
+
+  #settleKeysend(k: KeysendResult & { msat: number; maxFeeMsat?: number }, maxFeeMsat: number): void {
+    k.state = "settled";
+    k.feeMsat = Math.min(maxFeeMsat, Math.ceil(k.msat * this.feeShare));
+    k.paymentHash = createHash("sha256").update(k.id).digest("hex");
+    delete k.error;
+    this.wallet?.credit(-(k.msat + k.feeMsat));
+  }
+
+  #keysendAnswer(k: KeysendResult): KeysendResult {
+    return { id: k.id, state: k.state, feeMsat: k.state === "settled" ? k.feeMsat : 0, ...(k.paymentHash ? { paymentHash: k.paymentHash } : {}), ...(k.error && k.state === "failed" ? { error: k.error } : {}) };
+  }
+
+  /** Settle a pending payment (by its payment hash, or a keysend's id). */
   settle(paymentHash: string, maxFeeMsat = Number.MAX_SAFE_INTEGER): void {
+    const k = this.#keysends.get(paymentHash);
+    if (k) {
+      if (k.state !== "pending") throw new Error(`fake payer: keysend ${paymentHash} is not pending`);
+      this.#settleKeysend(k, Math.min(maxFeeMsat, (k as { maxFeeMsat?: number }).maxFeeMsat ?? maxFeeMsat));
+      return;
+    }
     const p = this.#payments.get(paymentHash);
     if (!p || p.state !== "pending") throw new Error(`fake payer: ${paymentHash} is not pending`);
     this.#settle(p, maxFeeMsat);
   }
 
-  /** Fail a pending payment (by its payment hash). */
+  /** Fail a pending payment (by its payment hash, or a keysend's id). */
   fail(paymentHash: string, error = "no route found"): void {
+    const k = this.#keysends.get(paymentHash);
+    if (k) {
+      if (k.state !== "pending") throw new Error(`fake payer: keysend ${paymentHash} is not pending`);
+      k.state = "failed";
+      k.error = error;
+      return;
+    }
     const p = this.#payments.get(paymentHash);
     if (!p || p.state !== "pending") throw new Error(`fake payer: ${paymentHash} is not pending`);
     p.state = "failed";
     p.error = error;
   }
 
-  /** What it paid out, settled, fees included. */
+  /** What it paid out, settled, fees included: invoices and keysends. */
   paidMsat(): number {
     let msat = 0;
     for (const p of this.#payments.values()) if (p.state === "settled") msat += p.msat + p.feeMsat;
+    for (const k of this.#keysends.values()) if (k.state === "settled") msat += k.msat + k.feeMsat;
     return msat;
   }
 
@@ -253,6 +327,7 @@ export class FakePayer implements Payer {
     p.feeMsat = Math.min(maxFeeMsat, Math.ceil(p.msat * this.feeShare));
     p.preimage = undefined;
     delete p.error;
+    this.wallet?.credit(-(p.msat + p.feeMsat));
   }
 
   #answer(p: PayResult): PayResult {

@@ -28,6 +28,21 @@ import {
   EXPIRED_SUBJECT,
   RECENT_DAYS,
   ZERO_BALANCE,
+  DEFAULT_PAYOUT_SETTINGS,
+  payoutChargeMsat,
+  payoutRefusal,
+  payoutSettingsOf,
+  reserveInputOf,
+  type Payout,
+  type PayoutFailedInput,
+  type PayoutListQuery,
+  type PayoutSettings,
+  type PayoutSettingsInput,
+  type PayoutSettledInput,
+  type PayoutState,
+  type PayoutsToday,
+  type ReservePayoutInput,
+  type ReservePayoutResult,
   type ChargeInput,
   type ChargeResult,
   type DayRange,
@@ -197,6 +212,7 @@ create table if not exists payees (
   accepted integer not null default 0,
   taken_back integer not null default 0,
   withdrawn integer not null default 0,
+  out integer not null default 0,
   answers integer not null default 0,
   first_at integer not null,
   last_at integer not null
@@ -211,6 +227,49 @@ create table if not exists pay_daily (
   taken_back_msat integer not null default 0,
   primary key (day, type)
 ) strict, without rowid;
+
+-- Payouts (plans/human-steps.md §8.2): one row per payout key, out until it
+-- is paid or failed, once, and never deleted. One payout per worker on its
+-- way; the day's caps sum the payouts that did not fail.
+create table if not exists payouts (
+  key text primary key,
+  worker text not null,
+  address text not null,
+  msat integer not null check (msat > 0),
+  max_fee_msat integer not null check (max_fee_msat >= 0),
+  fee_msat integer,
+  payment_hash text,
+  state text not null check (state in ('out', 'paid', 'failed')),
+  at integer not null,
+  day text not null,
+  ended integer,
+  why text,
+  resolved_by text
+) strict;
+create unique index if not exists payouts_out_worker on payouts(worker) where state = 'out';
+create index if not exists payouts_worker_day on payouts(worker, day) where state != 'failed';
+create index if not exists payouts_day on payouts(day) where state != 'failed';
+create index if not exists payouts_by_worker on payouts(worker);
+create index if not exists payouts_by_state on payouts(state);
+create trigger if not exists payouts_end_once before update on payouts
+  when old.state is not 'out' or new.state not in ('paid', 'failed')
+    or new.key is not old.key or new.worker is not old.worker or new.address is not old.address
+    or new.msat is not old.msat or new.max_fee_msat is not old.max_fee_msat
+    or new.at is not old.at or new.day is not old.day
+  begin select raise(abort, 'a payout changes only from out to paid or failed, once'); end;
+create trigger if not exists payouts_kept before delete on payouts
+  begin select raise(abort, 'payouts are kept'); end;
+
+-- The payout settings: one row, read inside the reserve's own transaction.
+create table if not exists payout_settings (
+  id integer primary key check (id = 1),
+  is_on integer not null check (is_on in (0, 1)),
+  min_sats integer not null,
+  worker_day_sats integer not null,
+  server_day_sats integer not null,
+  changed_by text,
+  changed_at integer not null
+) strict;
 `;
 
 type Row = Record<string, unknown>;
@@ -248,6 +307,11 @@ export class SqliteLedgerStore implements LedgerStore {
       throw new Error(`${file}: ledger schema ${version} is newer than this strut's (${SCHEMA_VERSION})`);
     }
     db.exec(SCHEMA);
+    // §8.2: what a payout on its way holds back, on a payees table a strut
+    // from before made. A strut from before reads such a payout as still owed.
+    if (!(db.prepare("PRAGMA table_info(payees)").all() as Row[]).some((c) => c.name === "out")) {
+      db.exec("ALTER TABLE payees ADD COLUMN out integer not null default 0");
+    }
     if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     const p = (sql: string) => db.prepare(sql);
     this.s = {
@@ -375,10 +439,29 @@ export class SqliteLedgerStore implements LedgerStore {
       // than the balance (payeeBalanceOf's rule).
       owed: p(
         `select count(*) payees, coalesce(sum(total), 0) owed, coalesce(sum(min(total, held)), 0) held from (
-           select p.accepted - p.taken_back - p.withdrawn total,
+           select p.accepted - p.taken_back - p.withdrawn - p.out total,
                   coalesce((select sum(msat) from pay where worker = p.worker and taken_back is null and releases > ?), 0) held
              from payees p)
           where total > 0`,
+      ),
+      payoutOf: p("select rowid seq, * from payouts where key = ?"),
+      payoutOut: p("select rowid seq, * from payouts where worker = ? and state = 'out'"),
+      workerToday: p("select coalesce(sum(msat), 0) msat from payouts where worker = ? and day = ? and state != 'failed'"),
+      serverToday: p(
+        `select coalesce(sum(case when state = 'paid' then msat else 0 end), 0) paid,
+                coalesce(sum(case when state = 'out' then msat else 0 end), 0) out, count(*) n
+           from payouts where day = ? and state != 'failed'`,
+      ),
+      insertPayout: p("insert into payouts (key, worker, address, msat, max_fee_msat, state, at, day) values (?, ?, ?, ?, ?, 'out', ?, ?)"),
+      payoutPaid: p("update payouts set state = 'paid', fee_msat = ?, payment_hash = ?, ended = ?, resolved_by = ? where key = ? and state = 'out'"),
+      payoutFailed: p("update payouts set state = 'failed', why = ?, ended = ?, resolved_by = ? where key = ? and state = 'out'"),
+      payeeOut: p("update payees set out = out + ? where worker = ?"),
+      payeePaidOut: p("update payees set out = out - ?, withdrawn = withdrawn + ? where worker = ?"),
+      settings: p("select * from payout_settings where id = 1"),
+      saveSettings: p(
+        `insert into payout_settings (id, is_on, min_sats, worker_day_sats, server_day_sats, changed_by, changed_at) values (1, ?, ?, ?, ?, ?, ?)
+         on conflict (id) do update set is_on = excluded.is_on, min_sats = excluded.min_sats, worker_day_sats = excluded.worker_day_sats,
+           server_day_sats = excluded.server_day_sats, changed_by = excluded.changed_by, changed_at = excluded.changed_at`,
       ),
     };
   }
@@ -509,6 +592,7 @@ export class SqliteLedgerStore implements LedgerStore {
 
   async withdrawal(input: WithdrawalInput): Promise<LedgerEntry> {
     const at = input.at ?? Date.now();
+    if (input.purpose === "worker") throw new LedgerError("worker_send", "only a payout's settle writes a worker's withdrawal (payoutSettled)");
     positiveInt("msat", input.msat);
     need("paymentHash", input.paymentHash);
     if (input.feeMsat !== undefined) int("feeMsat", input.feeMsat);
@@ -762,6 +846,125 @@ export class SqliteLedgerStore implements LedgerStore {
     return { owedMsat, heldMsat, withdrawableMsat: owedMsat - heldMsat, payees: Number(r.payees ?? 0) };
   }
 
+  // ── payouts (plans/human-steps.md §8.2) ─────────────────────────────────
+
+  async reservePayout(input: ReservePayoutInput): Promise<ReservePayoutResult> {
+    const i = reserveInputOf(input);
+    const day = dayOf(i.at);
+    return this.tx<ReservePayoutResult>(() => {
+      // Read and checked inside the one transaction, with no await between:
+      // a switch turned off or a cap lowered holds at once, and a take-back
+      // (guarded on its own time) never meets a reserve halfway.
+      const settings = this.settingsNow();
+      const outRow = this.s.payoutOut.get(i.worker) as Row | undefined;
+      const p = this.s.payeeRow.get(i.worker) as Row | undefined;
+      const withdrawableMsat = p ? balanceRow(p, this.s.held.get(i.worker, i.at) as Row).withdrawableMsat : 0;
+      const workerTodayMsat = Number((this.s.workerToday.get(i.worker, day) as Row).msat ?? 0);
+      const today = this.s.serverToday.get(day) as Row;
+      const serverTodayMsat = Number(today.paid ?? 0) + Number(today.out ?? 0);
+      const out = outRow ? payoutRow(outRow) : undefined;
+      const r = payoutRefusal({ settings, msat: i.msat, maxFeeMsat: i.maxFeeMsat, out, withdrawableMsat, workerTodayMsat, serverTodayMsat });
+      if (r.reason) return { ok: false, reason: r.reason, maxMsat: r.maxMsat, ...(out ? { out } : {}), settings };
+      this.s.insertPayout.run(i.key, i.worker, i.address, i.msat, i.maxFeeMsat, i.at, day);
+      this.s.payeeOut.run(i.msat + i.maxFeeMsat, i.worker);
+      return { ok: true, payout: payoutRow(this.s.payoutOf.get(i.key) as Row) };
+    }, true);
+  }
+
+  async payoutSettled(input: PayoutSettledInput): Promise<{ payout: Payout; entry: LedgerEntry }> {
+    const at = input.at ?? Date.now();
+    need("key", input.key);
+    int("feeMsat", input.feeMsat);
+    if (input.usd !== undefined) int("usd", input.usd);
+    return this.tx(() => {
+      const row = this.s.payoutOf.get(input.key) as Row | undefined;
+      if (!row) throw new LedgerError("unknown_payout", `no payout ${input.key}`);
+      const p = payoutRow(row);
+      if (p.state === "paid") return { payout: p, entry: entryOf(this.s.withdrawalOf.get(p.key) as Row) };
+      if (p.state === "failed") throw new LedgerError("payout_failed", `payout ${p.key} failed (${p.why ?? "no reason"}): its reserve went back to the worker`);
+      const seq = this.entry(at, "withdrawal", { msat: p.msat, feeMsat: input.feeMsat, ref: p.key, actor: p.worker, usd: input.usd, subject: "worker" });
+      this.s.payoutPaid.run(input.feeMsat, input.paymentHash ?? null, at, input.by ?? null, p.key);
+      this.s.payeePaidOut.run(p.msat + p.maxFeeMsat, payoutChargeMsat(p, input.feeMsat), p.worker);
+      return { payout: payoutRow(this.s.payoutOf.get(p.key) as Row), entry: entryOf(this.s.entry.get(seq) as Row) };
+    }, true);
+  }
+
+  async payoutFailed(input: PayoutFailedInput): Promise<Payout> {
+    const at = input.at ?? Date.now();
+    need("key", input.key);
+    need("why", input.why);
+    return this.tx(() => {
+      const row = this.s.payoutOf.get(input.key) as Row | undefined;
+      if (!row) throw new LedgerError("unknown_payout", `no payout ${input.key}`);
+      const p = payoutRow(row);
+      if (p.state !== "out") return p;
+      this.s.payoutFailed.run(input.why, at, input.by ?? null, p.key);
+      this.s.payeeOut.run(-(p.msat + p.maxFeeMsat), p.worker);
+      return payoutRow(this.s.payoutOf.get(p.key) as Row);
+    }, true);
+  }
+
+  async payoutOf(key: string): Promise<Payout | undefined> {
+    const row = this.live().s.payoutOf.get(key) as Row | undefined;
+    return row ? payoutRow(row) : undefined;
+  }
+
+  async payouts(q: PayoutListQuery = {}): Promise<Payout[]> {
+    const where = ["rowid < ?"];
+    const args: Array<string | number> = [q.before ?? Number.MAX_SAFE_INTEGER];
+    if (q.state) {
+      where.push("state = ?");
+      args.push(q.state);
+    }
+    if (q.worker) {
+      where.push("worker = ?");
+      args.push(q.worker);
+    }
+    args.push(pageLimit(q.limit, ENTRIES_PAGE, ENTRIES_PAGE_MAX));
+    const rows = this.live().db.prepare(`select rowid seq, * from payouts where ${where.join(" and ")} order by rowid desc limit ?`).all(...args) as Row[];
+    return rows.map(payoutRow);
+  }
+
+  async payoutsToday(o: { now?: number; worker?: string } = {}): Promise<PayoutsToday> {
+    const s = this.live().s;
+    const day = dayOf(o.now ?? Date.now());
+    const r = s.serverToday.get(day) as Row;
+    return {
+      day,
+      paidMsat: Number(r.paid ?? 0),
+      outMsat: Number(r.out ?? 0),
+      count: Number(r.n ?? 0),
+      ...(o.worker !== undefined ? { workerMsat: Number((s.workerToday.get(o.worker, day) as Row).msat ?? 0) } : {}),
+    };
+  }
+
+  async payoutSettings(): Promise<PayoutSettings> {
+    return this.live().settingsNow();
+  }
+
+  async setPayoutSettings(input: PayoutSettingsInput): Promise<PayoutSettings> {
+    const s = payoutSettingsOf(input);
+    const at = input.at ?? Date.now();
+    int("at", at);
+    return this.tx(() => {
+      this.s.saveSettings.run(s.on ? 1 : 0, s.minSats, s.workerDaySats, s.serverDaySats, input.by ?? null, at);
+      return this.settingsNow();
+    }, true);
+  }
+
+  private settingsNow(): PayoutSettings {
+    const r = this.s.settings.get() as Row | undefined;
+    if (!r) return { ...DEFAULT_PAYOUT_SETTINGS };
+    return {
+      on: r.is_on === 1,
+      minSats: r.min_sats as number,
+      workerDaySats: r.worker_day_sats as number,
+      serverDaySats: r.server_day_sats as number,
+      ...(r.changed_by !== null && r.changed_by !== undefined ? { changedBy: r.changed_by as string } : {}),
+      changedAt: r.changed_at as number,
+    };
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -942,9 +1145,30 @@ function balanceRow(p: Row, h: Row | undefined): PayeeBalance {
     accepted: p.accepted as number,
     takenBack: p.taken_back as number,
     withdrawn: p.withdrawn as number,
+    out: Number(p.out ?? 0),
     held: Number(h?.held ?? 0),
     ...(next !== null && next !== undefined ? { nextReleaseAt: next as number } : {}),
   });
+}
+
+function payoutRow(r: Row): Payout {
+  const p: Payout = {
+    seq: Number(r.seq),
+    key: r.key as string,
+    worker: r.worker as string,
+    address: r.address as string,
+    msat: r.msat as number,
+    maxFeeMsat: r.max_fee_msat as number,
+    state: r.state as PayoutState,
+    at: r.at as number,
+    day: r.day as string,
+  };
+  if (r.fee_msat !== null && r.fee_msat !== undefined) p.feeMsat = r.fee_msat as number;
+  if (r.payment_hash !== null && r.payment_hash !== undefined) p.paymentHash = r.payment_hash as string;
+  if (r.ended !== null && r.ended !== undefined) p.ended = r.ended as number;
+  if (r.why !== null && r.why !== undefined) p.why = r.why as string;
+  if (r.resolved_by !== null && r.resolved_by !== undefined) p.by = r.resolved_by as string;
+  return p;
 }
 
 function rowOf(r: Row): EarningsRow {

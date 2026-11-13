@@ -4394,7 +4394,10 @@ is here too: a debt in SATS, beside the credit owed as service, which is in
 dollars. It is read from the ledger's `payees` and `pay_daily` tables, never
 from `daily`: worker pay is not what this server earned, and an item's
 margin stays its own. A server that never paid a worker answers zeros and
-makes no ledger file for them either.
+makes no ledger file for them either. What was PAID to workers — their own
+withdrawals, keysent to their Sphinx addresses (`plans/human-steps.md`
+§8.2, §22 "Withdraw") — is here beside it, apart from the admin's own
+Withdraw.
 
 FULL SCOPE only, reads included: the deployment key or an admin's session.
 A member's session, a peer and a person token are refused (`403`).
@@ -4434,7 +4437,9 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
     "accepted": { "answers": 4, "msat": 39000000, "days": [
       { "day": "2026-11-09", "answers": 3, "msat": 35000000, "takenBackAnswers": 1, "takenBackMsat": 20000000 },
       { "day": "2026-11-10", "answers": 1, "msat": 4000000, "takenBackAnswers": 0, "takenBackMsat": 0 }] },
-    "takenBack": { "answers": 1, "msat": 20000000 } },
+    "takenBack": { "answers": 1, "msat": 20000000 },
+    "outMsat": 2000000,
+    "paidOut": { "count": 3, "msat": 12000000, "feeMsat": 0, "days": [{ "day": "2026-11-10", "count": 3, "msat": 12000000, "feeMsat": 0 }] } },
   "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
   "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
   "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
@@ -4466,7 +4471,14 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   answers was taken back since (`takenBackAnswers`, `takenBackMsat`: a
   take-back counts on its answer's day, so a past day can still move within
   the hold); `takenBack` is the range's total of those. A day's net is
-  `msat − takenBackMsat`.
+  `msat − takenBackMsat`. `outMsat` is now: the workers' payouts on their
+  way (`plans/human-steps.md` §8.2), their amounts — no longer owed, not yet
+  paid. `paidOut` is ranged: the payouts paid, from the `withdrawal`
+  entries with subject `worker`, amounts and the fees the wallet was
+  charged, by UTC day. `withdrawn` stays the admin's own. The books check
+  needs nothing more: `expectedMsat` counts every send and every pending
+  one, a payout's included, and a payout leaves `coverMsat` as it was (the
+  worker pays the fee).
 - `received`, `deposited`, `withdrawn` and `purchases` are ranged; under a
   `prefix` or `package` they are empty (they are the wallet's, not a
   package's). `deposited` is sats an admin added by hand (Add sats, below):
@@ -4567,13 +4579,21 @@ Refusals answer `{ error, code, walletCode? }`:
 | `400` | `wallet_refused` | the wallet refused it before sending, as it came; `walletCode` is the wallet's own: `max_fee_too_low`, `own_invoice`, `expired`, `bad_request`, NWC's `INSUFFICIENT_BALANCE` |
 | `409` | `no_pay_credential` | the wallet has no pay credential (Withdraw is disabled, saying so) |
 | `409` | `other_wallet` | the invoice is out through another wallet than the one set now: set it back, or resolve it |
+| `409` | `short_of_workers` | paid, the amount and its whole fee cap would leave the wallet holding less than what workers are owed (ruling 7, below) |
+| `409` | `balance_unknown` | workers are owed and the wallet's balance cannot be read now |
 | `502` | `wallet_unauthorized`, `wallet_bad_answer` | the wallet refused strut's pay credential (a rotated pay token), or answered something strut cannot read: kept as pending, since it may have gone — never dropped |
 | `503` | `wallet_unavailable` | no answer: it may have gone, so it is kept as pending (`answered: false`) |
 
-**Short of what workers are owed.** The route pays whatever the person
-confirmed: the sats are the server's, even when some of them are owed to
-workers (`plans/human-steps.md` §8.1, ruling 7: 5a warns, a later item
-refuses). The two Withdraw dialogs warn first. They read the invoice with
+**Short of what workers are owed.** Some of the wallet's sats are workers'
+(`plans/human-steps.md` §8.1, ruling 7: 5a warned, 5b refuses, §8.2). The
+route refuses `409 short_of_workers` when the amount and its whole fee cap
+out would leave the wallet holding less than what workers are owed, held
+and withdrawable — the balance read at that moment — and `409
+balance_unknown` when workers are owed and the balance cannot be read. The
+check covers every send that is not a worker's: this route and an accepted
+`remote/buy-credit` (§20; ruled). A retry of a send already out only reads
+it and checks nothing; with nothing owed the balance is not asked. The two
+Withdraw dialogs warn first. They read the invoice with
 `readWithdrawInvoice` (`src/payments/withdraw-reading.ts`; the
 `earnings/read-invoice` step, §14.14) given the balance and
 `wallet.owedToWorkersMsat`, which answers `shortOfWorkers: { afterMsat,
@@ -4585,7 +4605,12 @@ No step, builder tool or app page reaches the payer: it is never on the
 services bag. The second door that calls it is an accepted
 `remote/buy-credit` proposal (§20), through the same service with
 `purpose: "purchase"`: its sends are pending, read and recorded the same
-way, and land in `purchases`.
+way, and land in `purchases`. The third is a worker's own `task/withdraw`
+(§22, "Withdraw"): a keysend to the worker's Sphinx address, purpose
+`worker`, pending, read and recorded the same way — its key is its
+`paymentHash` in `pending` and the routes below — landing in
+`workers.paidOut`. `POST /earnings/withdraw` never pays one
+(`400 worker_send` for `purpose: "worker"`).
 
 ### `POST /earnings/withdrawals/:paymentHash/read` and `…/resolve`
 
@@ -4599,7 +4624,11 @@ for a send the wallet will not say more about — a stale one, or one that
 went through a wallet no longer set. `paid` records it as one `withdrawal`
 entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
 0) and answers `{ action, entry }`; `drop` forgets it and records nothing.
-`409 reading` while a read of it is in flight; `404 not_pending`.
+`409 reading` while a read of it is in flight; `404 not_pending`. Both act
+on a worker's payout too, by its key, through the same hooks as `POST
+/tasks/payouts/:key/read` and `…/resolve` (§22): `paid` settles the payout,
+the worker charged the amount and the fee up to its cap; `drop` fails it and
+gives its reserve back to the worker.
 
 ### `POST /earnings/deposit` and `…/deposits/:paymentHash/read` — Add sats
 
@@ -4911,8 +4940,8 @@ and the staff run the task types and the workers through the `/tasks`
 routes below; the builder asks an admin for a type with `task/set-type`
 ("Asking for a task type" below). A task type may PAY: an accepted answer earns its worker
 sats, held a while before they can be withdrawn (`plans/human-steps.md`
-§8.1; "Pay" below). No sats leave the wallet yet: a withdrawal is a later
-item. A task type may also mix TESTS among its tasks — tasks whose answer
+§8.1; "Pay" below), and the worker WITHDRAWS what passed its hold to their
+own Sphinx address (§8.2; "Withdraw" below). A task type may also mix TESTS among its tasks — tasks whose answer
 staff know — to qualify and score its workers (`plans/human-steps.md` §7;
 "Tests, grading and standing" below) — and let a `human` step ask several
 workers, settling when enough agree ("Copies" below). Staff mark each
@@ -4939,7 +4968,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/submit` | `{ lease, answer }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? } }` |
+| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
   live grant for that THIS app draws (the type's `app` is the calling
@@ -4980,8 +5010,9 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
   `heldMsat` is still in its hold and `withdrawableMsat` past it;
   `nextReleaseAt` (epoch ms) when the next held earning releases. Zeros
-  with nothing earned. A worker's status touches no earning: a suspended
-  or banned worker still reads theirs.
+  with nothing earned; a payout on its way is already out of it. A worker's
+  status touches no earning: a suspended or banned worker still reads
+  theirs. `payout` says whether they may withdraw now ("Withdraw" below).
 - A `submit`, `skip` or `file` by a lease of a type another app draws is
   `wrong_app`.
 
@@ -4991,7 +5022,8 @@ enter here: only `task/me` answers), `not_granted` (a type they do not
 hold: invite-only, revoked, or a paid open type short of tests for a
 newcomer — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
 `lease_closed`, `lease_expired`, `task_closed`, `bad_answer`,
-`not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`.
+`not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`, and
+`task/withdraw`'s own ("Withdraw" below).
 
 **Who may call them.** A member's page (`POST /mcp`, a member's session or
 a person token) as that person. A SIGNED-IN visitor's page (`POST
@@ -5192,8 +5224,8 @@ server whose task store is its host's (which answers none of them).
 - **Owed in sats.** An accepted answer under a paid lease is booked in the
   ledger (`payments/ledger.db`, made by the first paid answer): its
   `releases` is when it was accepted plus the type's hold AS BOOKED. It is
-  HELD until then and withdrawable after, read on every call. No sats
-  move: nothing pays a worker yet.
+  HELD until then and withdrawable after, read on every call. What is
+  withdrawable the worker withdraws ("Withdraw" below).
 - **Taken back while held.** `POST /tasks/:id/take-back` (full scope; the
   service's alone, so no step reaches it) takes an earning back inside its
   hold, booking one not yet booked first; past its hold it is the
@@ -5210,6 +5242,89 @@ server whose task store is its host's (which answers none of them).
 - **A test's answer earns as a real one does** (below): the same stamp and
   the same booking, or the pay would tell. A `fail` graded inside the hold
   takes it back (`takenBackBy: "grading"`); an `error` does nothing.
+
+### Withdraw (`plans/human-steps.md` §8.2)
+
+A worker withdraws what passed its hold. The page asks for an AMOUNT
+(`task/withdraw { msat }`, what the worker receives), and strut keysends it
+to the Sphinx address the worker's SIGN-IN gave, through the payer's third
+door (§19), with nobody's yes per payment, inside the settings below and a
+solvency check. The page never names or sees an address: the door hands the
+step the one the visitor's session carries, and the step's config is `msat`
+alone (anything else is refused). One withdrawal is one payment.
+
+- **The address** is the session's: a `sphinx` sign-in's Sphinx address
+  (`<pubkey>_<lsp_pubkey>_<scid>`), kept when its pubkey is the key that
+  signed — the worker's root key, which alone can claim a keysend to it.
+  Strut checks again at the payout that its pubkey is the actor's key
+  (`secp:<x-only>`). A member's session has none. Until sign-in keeps the
+  address (`plans/human-steps.md` §8.2's PR 2), no session carries one and
+  every `task/withdraw` answers `no_address`.
+- **The checks, in order, before anything is reserved:** an address
+  (`no_address`); the switch, and a wallet that can keysend — a Sphinx
+  daemon with a pay token and the keysend route (`payouts_off`,
+  `no_pay_credential`, `no_keysend`; an NWC wallet cannot pay an address);
+  the wallet's balance holds what every worker is owed, this payout
+  included (`wallet_short`; a balance that cannot be read in 5 s,
+  `wallet_unavailable`; a short wallet refuses every worker alike); then the
+  ledger's RESERVE, one transaction: the minimum (`below_minimum`), one
+  payout on its way per worker (`payout_out`, naming it), the amount and its
+  fee cap within what is withdrawable now (`over_balance`), the worker's and
+  the server's UTC day (`over_worker_day`, `over_server_day`). A host's own
+  task store pays nobody (`not_here`). A refusal is the step's error,
+  `code: sentence`; where it helps the sentence says the most the worker may
+  ask now (`maxMsat …`), as `payout.maxMsat` does.
+- **The fee** is the worker's: at most the Sphinx LSP's own limit (0.5%, or
+  5 sats), `maxFeeMsat`, and they are charged the fee the wallet was charged
+  up to it. The page can say "you receive 5,000 sats; a fee of at most 25
+  sats comes off your balance".
+- **The answer:** `settled`; `pending` (on its way: `task/me` shows it as
+  `payout.out`, and the server reads it every minute); or `failed` (its
+  `error`, the reserve given back). `key` is the payout's: 64 hex. A payout
+  leaves the worker's balance when it is RESERVED.
+- **Any status:** a suspended or banned worker may withdraw what passed its
+  hold. The switch stops everyone; a mixer ban stops the payment reaching
+  them.
+- **Stale:** a payout still pending a day after it was sent is no longer
+  read; staff record it as paid or drop it (below). Only the worker's
+  wallet knows which.
+
+`task/me`'s `payout`:
+
+| Field | |
+| --- | --- |
+| `on` | withdrawing is open here now: the switch, a pay credential that can keysend, an address in the session, strut's own task store. The wallet's balance is asked only at a withdrawal |
+| `why` | when not `on`: `no_address` (sign in with Peel), `off`, `no_wallet`, `no_keysend`, `not_here` — in that order |
+| `minMsat` | the least one withdrawal may ask |
+| `dayLeftMsat` | this worker's day cap left |
+| `maxMsat` | the most one withdrawal may ask now: the least of the largest amount whose fee cap fits in what is withdrawable, the worker's day left and the server's; 0 under `minMsat`, while one is out, or when not `on` |
+| `out` | `{ key, msat, maxFeeMsat, at, stale }`: the payout on its way |
+
+**The staff's side** (full scope, routes beside the rest, which `strut/staff`
+reaches through `staff/payouts`, `staff/save-payouts`, `staff/payout-read`
+and `staff/payout-resolve`; nothing else reaches the settings — no step on
+the shared bag, no proposal, no YAML, not `task/set-type`):
+
+| Route | Answers |
+| --- | --- |
+| `GET /tasks/payouts?state=&worker=&before=&limit=` | `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat }, payouts }` newest first; `state` is `out`, `stale`, `paid` or `failed`; `before` a payout's `seq`. Each payout: `{ seq, key, worker, address, msat, maxFeeMsat, state, at, day, feeMsat?, paymentHash?, ended?, why?, by?, stale }`. With no ledger: the defaults and none |
+| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }` | `{ settings }` with `changedBy` and `changedAt`: the whole row. `minSats` at least 1, each cap at least `minSats`, whole sats; anything else `400 bad_request` |
+| `POST /tasks/payouts/:key/read` | `{ payout, state, paymentHash, msat, feeMsat, maxFeeMsat, error?, entry?, existing? }`: read it now through the wallet it went out through, as `POST /earnings/withdrawals/:paymentHash/read` (§19) |
+| `POST /tasks/payouts/:key/resolve { action: "paid" \| "drop", feeMsat? }` | `{ payout, action }`: `paid` settles it — the worker charged the amount and the fee given (else 0) up to its cap; `drop` fails it and gives its reserve back |
+
+The settings (one row in the ledger, read inside the reserve's own
+transaction, so a change holds at once): `on` false by default — off until
+an admin turns it on; `minSats` 1,000; `workerDaySats` 200,000;
+`serverDaySats` 2,000,000. The caps count amounts, not fees, of the payouts
+on their way and paid that UTC day; a failed one counts for nothing.
+Turning it off stops new payouts; one on its way goes on. `404
+unknown_payout`, `409 reading`, `404 not_pending` and the wallet's codes as
+§19's.
+
+The payout's KEY — 32 random bytes strut makes before it sends — is the
+treasury daemon's idempotency key (`POST /keysend { id, address, msat,
+max_fee_msat }`, `GET /keysend/:id`, specs/LIGHTNING.md), the pending send's
+key, and the `withdrawal` entry's `ref`.
 
 ### Tests, grading and standing (`plans/human-steps.md` §7)
 

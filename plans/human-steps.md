@@ -1833,6 +1833,32 @@ refusal carries the most the worker could ask now (`maxMsat`) where that
 helps (`over_balance`, the day's caps). `payout_out` carries the payout on
 its way, so a page that asked twice shows the first.
 
+**Built differently (#PR):**
+
+- **A refusal is the step's error, `code: sentence`,** as every worker
+  step's is: a step can hand a page an error's text and nothing else. The
+  sentence says the most the worker may ask now (`… at most 12,000 sats now
+  (maxMsat 12000000)`) and names the payout on its way; `PayoutError.detail`
+  carries both as numbers for server code; a page reads the numbers from
+  `task/me`'s `payout` (`maxMsat`, `out`), which `useWithdraw` refetches.
+- **The seam for the address.** The door hands it on the worker step's own
+  bag beside the worker's calls, under `WORKER_ADDRESS` (`workerAddress`);
+  `workerCall` reads it there and nowhere else. createStrut's
+  `sessionAddress(session)` answers none until PR 2, which fills that one
+  function (`session.address`). A member's door hands none.
+- **The step's input is `msat` alone, strict:** a page that names an
+  `address` is refused, not quietly ignored.
+- **A daemon without the keysend route is found at the send.** Check 2's
+  `no_keysend` refuses before the reserve for a payer with no keysend (NWC).
+  A Sphinx daemon without the route is known only when `POST /keysend`
+  answers `404 no route …`: that payout was reserved, fails at once with its
+  reserve back (a `failed` row says so), and the step refuses `no_keysend`.
+  Asking the daemon before every reserve would cost a round trip per
+  withdrawal for a case that is a deployment's, once.
+- **A send that may have gone answers `pending`, not an error:** a daemon
+  that did not answer in time, or answered what strut cannot read, leaves
+  the payout out and on file, and the minute's check reads it.
+
 #### A worker on a plain browser
 
 Nothing in v1, and no worker is left out by it. A worker app signs in only
@@ -1908,6 +1934,17 @@ do: `{ state, feeMsat, paymentHash?, preimage?, error? }`.
   - no YAML names them.
 
   This holds because §9.2 closed the shared bag.
+
+**Built differently (#PR):** `payouts.ts` is `createPayouts({ ledger,
+ledgerIfAny, withdrawals, payer, lightning, now })` → `pay`, `view` (`task/me`'s
+`payout`), `settings`, `saveSettings`, `list`, `read`, `resolve` and `sweep`.
+The task service is handed `pay` and `view` (`deps.payouts`); the
+`/tasks/payouts` routes the rest. `keysend` and `keysendStatus` are
+optional on `Payer`: the daemon's payer has them, NWC's has none. The
+daemon's routes were built against a stand-in (`payer.test.ts`, beside
+`POST /pay`'s, where the daemon's payer is tested; §8.2 named
+`sphinx-daemon.test.ts`, the receive provider's file). A `404 no route …`
+is `wallet_refused` with walletCode `no_keysend`.
 
 **The solvency check.** Before the reserve, strut reads two things: the
 wallet's balance (`lightning.balance()`, waiting at most 5 s), and what all
@@ -2055,6 +2092,28 @@ file from before opens and gains them:
 | `entries` | A `withdrawal`'s subject may be `worker`, and `SEND_PURPOSES` gains it. `withdrawal()` refuses `worker`: only a payout's settle writes one |
 | Reads | `payeeBalance`, `payeeBalances` and `owedToWorkers` subtract `out` (`payeeBalanceOf` gains it). New calls: `reservePayout`, `payoutSettled`, `payoutFailed`, `payoutOf`, `payouts(q)`, `payoutsToday({ now })`, `payoutSettings` and `setPayoutSettings`. Both stores, one suite |
 
+**Built differently (#PR):**
+
+- **A payout has a `seq`** (the row's order) for paging, `payouts({ state,
+  worker, before, limit })` newest first with `before` a `seq`; the person
+  who resolved one is `resolved_by` (`by` on the record); `payoutsToday({
+  now, worker? })` answers `{ day, paidMsat, outMsat, count, workerMsat? }`.
+  The settings' `on` is the column `is_on`.
+- **The reserve's checks are one pure function both stores call**
+  (`payoutRefusal`), with `payoutMaxMsat` for the most the worker could ask
+  now; the reserve refuses with it and, for `payout_out`, the one out.
+- **The wallet's payment hash is written when the payout is paid,** with
+  its fee: the trigger lets an `out` row change only to `paid` or `failed`,
+  so nothing is written to it while it is on its way.
+- **`owedToWorkers` keeps #666's shape;** the books' `workers.outMsat` is
+  summed from the payouts out (a page at a time).
+- **A refused send's hook order:** the ledger first (`payoutFailed`,
+  `payoutSettled`), then the pending list, so a ledger that fails leaves the
+  send on file for the next check.
+- **The orphan sweep** is `payouts.sweep()`, run first in every minute's
+  check (`withdrawals`' `sweep` dep), on the task store's clock, as the
+  payout's `at` is.
+
 #### The daemon's keysend (`specs/LIGHTNING.md`)
 
 Two routes on the pay token, beside `POST /pay`. The daemon pays an invoice
@@ -2165,6 +2224,20 @@ The staff door gets four steps: `staff/payouts`, `staff/save-payouts`,
 `staff/payout-read` and `staff/payout-resolve`. The `/earnings/withdrawals/…`
 routes act on a payout too, through the same hooks.
 
+**Built differently (#PR):**
+
+- **The routes' answers:** `GET /tasks/payouts` with no ledger answers the
+  defaults and none, makes no file; each payout carries `stale`; `today`
+  has its `day`. `…/read` answers `{ payout, …withdrawals' answer }` and
+  `…/resolve` `{ payout, action }`. A key that is not 64 lowercase hex is
+  `400`, one that is no payout `404 unknown_payout`; a settings body with
+  any field but the four is `400`.
+- **The four `staff/*` steps are not granted by `strut/staff` yet:** its
+  `app.yaml` grants them with the Payouts tab, in PR 3, so the page that
+  calls them and its grants land together.
+- **Ruling 7 with nothing owed** asks the wallet nothing: a strut that pays
+  no worker withdraws as before.
+
 **The Payouts tab** (§9.7) shows when `/tasks/payouts` answers. It has four
 parts:
 
@@ -2222,6 +2295,20 @@ and mark a payout in the pending list.
 | `src/payments/earnings.test.ts` | `workers.outMsat` and `paidOut`. A payout is in `expectedMsat` while pending and after. The cover does not move with a payout |
 | `kit/src/wallet/protocol.test.ts`, `web/src/native-pay.test.ts`, `kit/src/hooks.test.ts` | The `sign_in` vectors with an address, and the vector pinning address and key to one seed. strut's UI drops an address whose pubkey is not `key`. `useWithdraw`, and `useWorker`'s `payout` |
 | Live, once | The one-mixer check above, recorded in `docs/payments.md` |
+
+**Built differently (#PR):** PR 1's rows are proven over both ledgers where
+they touch the ledger. Until PR 2 no session carries an address, so the
+worker-door row is split: `worker-door.test.ts` takes `task/withdraw`
+through `/public/mcp` and a member's `/mcp` (an amount alone, `no_address`,
+a named address refused, `task/me`'s `payout`), and
+`src/tasks/payout-routes.test.ts` pays through the task service and the
+step with the address on the bag as the door will hand it (the session's
+address paid, two at once, a suspended and a banned worker, a host's own
+store `not_here`, the books beside the wallet, nothing on the shared bag).
+PR 2 adds the payment through the door. The `earnings.test.ts` row
+(`outMsat`, `paidOut`, `expectedMsat` while pending and after, the cover
+unmoved) is in `payouts.test.ts` and `payout-routes.test.ts`; the daemon's
+in `payer.test.ts`. The live one-mixer check waits for the daemon's routes.
 
 #### PRs
 
@@ -3030,7 +3117,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
-| 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
+| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#PR (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. PR 2 (sign-in keeps the address, the contracts, the kit) and PR 3 (the pages) not yet |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
