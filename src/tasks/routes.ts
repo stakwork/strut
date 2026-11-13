@@ -7,26 +7,46 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours? }`
- *   → `{ type }`: the whole type (a PUT: what is left out is the default)
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests? }`
+ *   → `{ type }`: the whole type (a PUT: what is left out is the default;
+ *   `tests` off)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
+ *   and its `standing` per type with tests
+ * - `GET /tasks/workers/:actor` → `{ worker }`, the same for one
  * - `PUT /tasks/workers/:actor { status?, note? }` → `{ worker }`
- * - `PUT /tasks/workers/:actor/grants/:type` → `{ worker }`
+ * - `PUT /tasks/workers/:actor/grants/:type [{ qualify?: false }]` →
+ *   `{ worker, notice? }`: a grant of a type with tests records its K
  * - `DELETE /tasks/workers/:actor/grants/:type[?why=]` → `{ worker }`
- * - `GET /tasks[?type=&status=&workflow=&runId=&before=&limit=]` → `{ tasks }`,
- *   newest first, each with its leases (an answer's `earning` with it)
+ * - `GET /tasks[?type=&status=&workflow=&runId=&test=&before=&limit=]` → `{ tasks }`,
+ *   newest first, each with its leases (an answer's `earning` with it);
+ *   `test=true` the test instances alone, `false` the real tasks
  * - `GET /tasks/:id` → `{ task }`
  * - `POST /tasks/:id/take-back { worker?, why }` → `{ task, earnings }`: the
  *   earnings the task's answers made (or `worker`'s) taken back while held
  *   (plans/human-steps.md §8.1); `409 released` when every one asked for is
  *   past its hold
+ *
+ * The TEST routes (plans/human-steps.md §7.1) — the only answers that hold
+ * a test's expected answer, or what its grader said:
+ *
+ * - `GET /tasks/tests[?type=&retired=]` → `{ tests }`, each with how often
+ *   it was served, passed, failed and graded `error`
+ * - `GET /tasks/tests/:id` → `{ test, instances }`
+ * - `POST /tasks/tests { type, show?, files?, expected, grade? }` → `{ test }`
+ * - `PUT /tasks/tests/:id/files/<path>` (the raw bytes) → `{ test }`
+ * - `POST /tasks/:id/test { expected?, grade? }` → `{ test }`: made from a
+ *   real task
+ * - `PUT /tasks/tests/:id { show?, expected?, grade? }` → `{ test }`; `409
+ *   in_use` once it was served
+ * - `DELETE /tasks/tests/:id` → `{ test }`, retired
  */
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, type TaskStatus } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
 import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
+import { TEST_FILE_MAX_BYTES } from "./test-files.js";
 
 export interface TaskRoutesDeps {
   isFull: (c: Context) => Promise<boolean>;
@@ -36,6 +56,9 @@ export interface TaskRoutesDeps {
   /** A person's take-back (§8.1): the service's, never on a capability.
    *  Absent (a host's own store): the route answers 501. */
   takeBack?: TasksService["takeBack"];
+  /** The staff's tests (§7.1): the service's, never on a capability.
+   *  Absent (a host's own store): the test routes answer 501. */
+  tests?: TasksService["tests"];
 }
 
 const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
@@ -44,6 +67,8 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   unknown_type: 404,
   unknown_worker: 404,
   unknown_task: 404,
+  unknown_test: 404,
+  not_listed: 404,
   in_use: 409,
 };
 
@@ -85,6 +110,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),
         ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
+        ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),
@@ -100,6 +126,18 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     }),
   );
 
+  app.get("/tasks/workers/:actor", async (c) => {
+    // A host's own store may predate the one-worker read.
+    if (typeof tasks.worker !== "function") {
+      return (await refuse(c)) ?? c.json({ error: "this server's task store is its host's: it has no one-worker read", code: "not_available" }, 501);
+    }
+    return answer(c, async () => {
+      const worker = await tasks.worker(c.req.param("actor"));
+      if (!worker) throw new TaskError("unknown_worker", `no worker ${c.req.param("actor")} here`);
+      return { worker };
+    });
+  });
+
   app.put("/tasks/workers/:actor", (c) =>
     answer(c, async () => {
       const b = await body(c);
@@ -113,7 +151,25 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
   );
 
   app.put("/tasks/workers/:actor/grants/:type", (c) =>
-    answer(c, async () => ({ worker: await tasks.grant(c.req.param("actor"), c.req.param("type"), (await by(c)).by) })),
+    answer(c, async () => {
+      // An empty body is a grant as it always was; `{ qualify: false }`
+      // starts it with no qualifying, for a worker staff know (§7.5).
+      const text = (await c.req.text()).trim();
+      let parsed: unknown = {};
+      if (text) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = undefined;
+        }
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TaskError("bad_request", "a grant's body is empty, or { qualify: false }");
+      for (const k of Object.keys(parsed)) if (k !== "qualify") throw new TaskError("bad_request", `a grant's body is { qualify }, not ${k}`);
+      const q = (parsed as { qualify?: unknown }).qualify;
+      if (q !== undefined && typeof q !== "boolean") throw new TaskError("bad_request", "qualify is true or false");
+      const { notice, ...worker } = await tasks.grant(c.req.param("actor"), c.req.param("type"), (await by(c)).by, q === undefined ? {} : { qualify: q });
+      return { worker, ...(notice ? { notice } : {}) };
+    }),
   );
 
   app.delete("/tasks/workers/:actor/grants/:type", (c) =>
@@ -136,8 +192,10 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       };
       const before = num("before");
       const limit = num("limit");
+      if (q["test"] && q["test"] !== "true" && q["test"] !== "false") throw new TaskError("bad_request", "test is true or false");
       return {
         tasks: await tasks.list({
+          ...(q["test"] ? { test: q["test"] === "true" } : {}),
           ...(q["type"] ? { type: q["type"] } : {}),
           ...(q["status"] ? { status: q["status"] as TaskStatus } : {}),
           ...(q["workflow"] ? { workflow: q["workflow"] } : {}),
@@ -145,6 +203,98 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
           ...(before !== undefined ? { before } : {}),
           ...(limit !== undefined ? { limit } : {}),
         }),
+      };
+    }),
+  );
+
+  // ── tests (§7.1): the service's, before `/tasks/:id` ────────────────
+  /** A test route's answer: 501 where the store is a host's. */
+  const testAnswer = (c: Context, fn: (t: NonNullable<TaskRoutesDeps["tests"]>) => Promise<Record<string, unknown>>) =>
+    deps.tests ? answer(c, () => fn(deps.tests!)) : refuse(c).then((r) => r ?? c.json({ error: "this server's task store is its host's: tests are not available here", code: "not_available" }, 501));
+  const only = (b: Record<string, unknown>, keys: string[], what: string) => {
+    for (const k of Object.keys(b)) if (!keys.includes(k)) throw new TaskError("bad_request", `${what} is ${keys.join(", ")}, not ${k}`);
+  };
+
+  app.get("/tasks/tests", (c) =>
+    testAnswer(c, async (t) => {
+      const retired = c.req.query("retired");
+      if (retired && retired !== "true" && retired !== "false") throw new TaskError("bad_request", "retired is true or false");
+      const type = c.req.query("type") || undefined;
+      return { tests: await t.list({ ...(type ? { type } : {}), ...(retired ? { retired: retired === "true" } : {}) }) };
+    }),
+  );
+
+  app.post("/tasks/tests", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["type", "show", "files", "expected", "grade"], "a test");
+      return {
+        test: await t.create(
+          {
+            type: b["type"] as string,
+            expected: b["expected"],
+            ...(b["show"] !== undefined ? { show: b["show"] } : {}),
+            ...(b["files"] !== undefined ? { files: b["files"] as string[] } : {}),
+            ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}),
+          },
+          (await by(c)).by,
+        ),
+      };
+    }),
+  );
+
+  app.get("/tasks/tests/:id", (c) =>
+    testAnswer(c, async (t) => {
+      const got = await t.get(c.req.param("id"));
+      if (!got) throw new TaskError("unknown_test", `no test ${c.req.param("id")}`);
+      return got;
+    }),
+  );
+
+  app.put("/tasks/tests/:id/files/*", (c) =>
+    testAnswer(c, async (t) => {
+      const id = c.req.param("id");
+      const marker = `/tasks/tests/${id}/files/`;
+      const at = c.req.path.indexOf(marker);
+      let path: string;
+      try {
+        path = c.req.path.slice(at + marker.length).split("/").map(decodeURIComponent).join("/");
+      } catch {
+        throw new TaskError("bad_request", "the file's path is not well encoded");
+      }
+      const length = Number(c.req.header("content-length") ?? "0");
+      if (length > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `a test's file is at most ${TEST_FILE_MAX_BYTES} bytes`);
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      return { test: await t.putFile(id, path, bytes) };
+    }),
+  );
+
+  app.put("/tasks/tests/:id", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["show", "expected", "grade"], "a test's change");
+      return {
+        test: await t.update(c.req.param("id"), {
+          ...(b["show"] !== undefined ? { show: b["show"] } : {}),
+          ...(b["expected"] !== undefined ? { expected: b["expected"] } : {}),
+          ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}),
+        }),
+      };
+    }),
+  );
+
+  app.delete("/tasks/tests/:id", (c) => testAnswer(c, async (t) => ({ test: await t.retire(c.req.param("id"), (await by(c)).by) })));
+
+  app.post("/tasks/:id/test", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["expected", "grade"], "a test from a task");
+      return {
+        test: await t.fromTask(
+          c.req.param("id"),
+          { ...(b["expected"] !== undefined ? { expected: b["expected"] } : {}), ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}) },
+          (await by(c)).by,
+        ),
       };
     }),
   );

@@ -4714,7 +4714,9 @@ and the staff run the task types and the workers through the `/tasks`
 routes below. A task type may PAY: an accepted answer earns its worker
 sats, held a while before they can be withdrawn (`plans/human-steps.md`
 §8.1; "Pay" below). No sats leave the wallet yet: a withdrawal is a later
-item.
+item. A task type may also mix TESTS among its tasks — tasks whose answer
+staff know — to qualify and score its workers (`plans/human-steps.md` §7;
+"Tests, grading and standing" below).
 
 ### The worker's steps — through an app's `step_run`
 
@@ -4734,7 +4736,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/submit` | `{ lease, answer }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? } }` |
+| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? } }` |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
   live grant for that THIS app draws (the type's `app` is the calling
@@ -4747,7 +4749,10 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   skipped, a grant changes, or the sweep frees one — then `{ none: true }`.
   `payMsat` is what an answer earns (msat, 1,000 to a sat; 0 unpaid): the
   type's pay when the lease was TAKEN, locked — a change of pay reaches the
-  next lease, never one in hand.
+  next lease, never one in hand. A type with tests may hand out a TEST in
+  place of a task, and only tests while the worker qualifies: the same
+  fields from the same code, answered, skipped and timed out the same way,
+  its files the test's own copies under the same paths.
 - **`task/submit`**: once per lease, before it expires, checked against
   the type's answer schema (`bad_answer`). It settles the task, and the
   waiting run goes on with `{ answer, by, task }`. An answer under a paid
@@ -4761,7 +4766,9 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   the run's artifacts).
 - **`task/me`**: the first call of an actor the store has not seen writes
   them as a `new` worker. `types` are those they hold that this app draws,
-  each with what an answer earns now (`payMsat`). `balance` is what they
+  each with what an answer earns now (`payMsat`) and whether they are
+  `qualifying` for it: every task they get of it is a test until they
+  qualify, so tasks arrive at once (a flag, never a score). `balance` is what they
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
   `heldMsat` is still in its hold and `withdrawableMsat` past it;
   `nextReleaseAt` (epoch ms) when the next held earning releases. Zeros
@@ -4795,20 +4802,23 @@ steps are not a signed-in visitor's daily writes, and the app monitor's
 FULL SCOPE only, reads included: the deployment key or an admin's session.
 A member's session, a peer and a person token are refused (`403`). A name
 with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
-A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
-`404` (`unknown_type`, `unknown_worker`, `unknown_task`), `409` (`in_use`,
-`released`).
+A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
+`bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
+`unknown_task`, `unknown_test`, `not_listed`), `409` (`in_use`,
+`released`); `501 not_available` for the take-back and the test routes on a
+server whose task store is its host's.
 
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold) |
-| `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked; its tasks on file keep its name |
-| `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold, no tests) |
+| `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
+| `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
+| `GET /tasks/workers/:actor` | `{ worker: WorkerRecord }`, the same for one worker; `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
-| `PUT /tasks/workers/:actor/grants/:type` | `{ worker }`: a `new` worker becomes `active` |
+| `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000) |
+| `GET /tasks?type=&status=&workflow=&runId=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `test=true` the test instances alone, `test=false` the real tasks |
 | `GET /tasks/:id` | `{ task: TaskView }` |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 
@@ -4821,6 +4831,10 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
   "leaseSeconds": 600, "withinHours": 72, "enabled": true,
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
   "holdHours": 72,                  // how long an earning waits before it can be withdrawn
+  "tests": {                        // absent: no tests (see "Tests, grading and standing")
+    "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
+    "window": 20, "minGraded": 10, "threshold": 0.8, "grade": "equal", "gradeCapUsd": 0.05
+  },
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts):
@@ -4831,8 +4845,13 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
 {
   "actor": "p256:02ab…", "status": "active",  // new | active | suspended | banned
   "firstSeen": 1762948800000, "changedAt": 1762948900000, "changedBy": "admin-1", "note": "…",
-  "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000 /*, "revokedAt", "revokedBy", "why" */ }],
-  "balance": { "totalMsat": 21000, "heldMsat": 21000, "withdrawableMsat": 0, "nextReleaseAt": 1763208000000 }
+  "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000, "qualify": 10
+               /*, "revokedAt", "revokedBy", "why" */ }],   // revokedBy "standing" when standing revoked it
+  "balance": { "totalMsat": 21000, "heldMsat": 21000, "withdrawableMsat": 0, "nextReleaseAt": 1763208000000 },
+  "standing": {                     // per live grant of a type with tests
+    "pet-match": { "qualifying": false, "qualify": 10, "window": 20, "graded": 14, "passed": 13,
+                   "errors": 1, "pending": 0, "minGraded": 10, "threshold": 0.8 }
+  }
 }
 
 // TaskView: the task with its leases
@@ -4840,7 +4859,10 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
   "id": "9f2c…", "seq": 41, "type": "pet-match",
   "workflow": "pets", "runId": "1762948800000", "path": "pets/each#3/review",
   "show": { "guess": "same dog" }, "files": ["found.jpg", "lost/a.jpg"],
-  "root": "run",                     // run | job (with "job")
+  "root": "run",                     // run | job (with "job") | test (a test instance)
+  // a test instance only: "test": "<test id>", "servedTo": "p256:…",
+  //   "grade": "pass" | "fail" | "error" (absent while pending), "gradedAt"; its workflow and path are ""
+
   "status": "settled",               // open | settled | expired | cancelled
   "created": 1762948800000, "due": 1763208000000, "settledAt": 1762949000000,
   "answer": { "same": true }, "by": "p256:02ab…",
@@ -4886,3 +4908,96 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
   against a workflow's `maxRunCostUsd` or the Mothership, which cap model
   calls at the gateway. With no rate the output has `msat` alone and no
   cost is marked.
+- **A test's answer earns as a real one does** (below): the same stamp and
+  the same booking, or the pay would tell. A `fail` graded inside the hold
+  takes it back (`takenBackBy: "grading"`); an `error` does nothing.
+
+### Tests, grading and standing (`plans/human-steps.md` §7)
+
+A TEST is a `show`, its files, the EXPECTED answer and how to grade it, for
+one task type. It is the staff's: it has no run, and its expected answer
+is read by the routes below and by its grader, nothing else — no step, no
+other route, no `task/*` answer, no run log.
+
+**Serving.** A type opts in with `tests` (above; §7.8's defaults fill what
+is left out, `null` or absent is off). What a worker is served is an
+INSTANCE: a task row (`root: "test"`, `workflow` and `path` empty) with one
+lease, through every call a real task goes through, so a page cannot tell
+them apart. Per type, by the worker's grant:
+
+- **Qualifying.** A grant records K (`qualify`). Until K of the type's
+  tests are answered since the grant, `task/next` serves only its tests,
+  oldest grant first, whenever asked; then nothing of the type until those
+  answers are graded. An answer graded `error` counts neither way, so
+  another test takes its place.
+- **Then** a test replaces a real task only when one could be taken: with
+  chance `rate`, or `newRate` while the worker has answered fewer than
+  `newTasks` real tasks of the type since the grant. The least-served
+  ready test the worker was never served, never one made from a task they
+  answered. An empty queue serves no test.
+- An instance lives as long as its lease: skipped, let go of or timed out,
+  it closes `expired` and is never handed out again. Answering one wakes no
+  run; it is GRADED.
+
+**Grading.** A test's `grade`, else its type's `tests.grade`:
+
+- `"equal"`: the answer equals `expected` as JSON (keys in any order,
+  arrays in order, numbers by value).
+- `{ step, config? }`: a SEALED registry step (a sealed namespace or
+  `sealed: true` on its definition), checked when the type or test is saved
+  (`400 bad_grader`) and again at each grading. It runs once, never kept as
+  a run, on `secrets` and `llmAuth` alone (no artifacts, shell, http, graph,
+  runs, tasks; nothing reaches `onRunEvent` or the events sink), with no
+  actor, billed to the GRADING PRINCIPAL — `STRUT_HOST_CONFIG`'s
+  `tasks.principal` (`createStrut({ tasks: { principal } })`), else the
+  admin who last saved the type — for at most 60 s and the type's
+  `gradeCapUsd`. Its config is `{ answer, expected, show, type }`, each
+  handed over as it is, with the grade's `config` over them; it answers in
+  the claims check contract, `{ supports, content }`.
+- A grader that throws, runs out of time, is no longer sealed, has nobody
+  to bill or gives no verdict grades `error`, which never moves standing.
+  An answer not yet graded is graded by the minute's sweep (a restart
+  included). 4 grade at once.
+
+**Standing.** A worker's graded tests of one type since their grant, the
+newest `window` of them. Once at least `minGraded` are graded (K, if
+smaller, at the end of qualifying), a share passed under `threshold`
+revokes the grant — `revokedBy: "standing"`, `why` such as `standing:
+passed 13 of the last 20 tests of pet-match, under 80%` (`qualifying: …`
+at the end of qualifying) — and expires the live lease of the type.
+Skipped and expired instances count for nothing. A grant made again after
+a revoke starts an empty window and qualifies again, unless `{ qualify:
+false }`.
+
+| Route | |
+| --- | --- |
+| `GET /tasks/tests?type=&retired=` | `{ tests: TestView[] }`, oldest first; `retired=true` the retired alone, `false` the live |
+| `GET /tasks/tests/:id` | `{ test: TestView, instances: TestInstance[] }`, newest first |
+| `POST /tasks/tests` | `{ type, show?, files?, expected, grade? }` → `{ test }`: `expected` checked against the type's answer schema (`400 bad_answer`); `files` the paths to come |
+| `PUT /tasks/tests/:id/files/<path>` | the file's raw bytes (at most 3,800,000: what `task/file` can hand a page) → `{ test }`; a path not listed is `404 not_listed`. The test is `ready`, and served, once every listed file is there |
+| `POST /tasks/:id/test` | `{ expected?, grade? }` → `{ test }`: a test made from a real task — its `show`, its files copied, and its accepted answer as `expected` unless one is given (a task with no accepted answer needs one). Its worker is never served it |
+| `PUT /tasks/tests/:id` | `{ show?, expected?, grade? }` (`grade: null`: the type's) → `{ test }`; `409 in_use` once it was served or retired — retire it and make it again |
+| `DELETE /tasks/tests/:id` | `{ test }`: retired, never served again, kept for the grades that name it |
+
+```jsonc
+// TestView
+{
+  "id": "5d1e…", "type": "pet-match",
+  "show": { "guess": "same dog" }, "files": ["found.jpg"],
+  "expected": { "same": true },
+  "grade": "equal",                  // absent: the type's
+  "fromTask": "9f2c…", "fromWorker": "p256:02ab…",  // made from a real task
+  "ready": true, "missing": ["…"],   // missing: listed files not there yet
+  "created": 1762948800000, "createdBy": "admin-1",
+  "retired": 1763000000000, "retiredBy": "admin-1",
+  "served": 31, "passed": 27, "failed": 3, "errors": 1
+}
+
+// TestInstance
+{ "task": "…", "lease": "…", "worker": "p256:02ab…", "status": "settled", "served": 1762948800000,
+  "answer": { "same": false }, "answeredAt": 1762949000000,
+  "grade": "fail", "gradedAt": 1762949001000, "note": "the answer differs from the expected one" }
+```
+
+The in-process service (`strut.tasks`) also tells `onGraded` listeners
+each grade: `{ lease, task, test, worker, type, result, answeredAt, at }`.

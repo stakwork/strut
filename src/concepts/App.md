@@ -507,7 +507,9 @@ The worker is always the page's signed-in viewer: the steps read it from
 the session, never from the page. `useWorker()` is who they are here —
 `status` (`new` until an admin grants them a type; `active` takes tasks;
 `suspended`, `banned`), the `types` they hold in this app (each with
-`payMsat`, what an answer earns) and their `balance` — `{ heldMsat,
+`payMsat`, what an answer earns, and `qualifying` — true while every task
+of that type they get is a test they qualify on: say so on the page, since
+those arrive at once and no score is shown) and their `balance` — `{ heldMsat,
 withdrawableMsat, totalMsat, nextReleaseAt? }`, in msat (1,000 to a sat):
 what they earned here, an earning held for the type's hold before it can
 be withdrawn. `useTask()`

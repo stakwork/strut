@@ -32,6 +32,10 @@ export interface Grant {
   revokedAt?: number;
   revokedBy?: string;
   why?: string;
+  /** K, the tests the worker answers before any real task of the type
+   *  (plans/human-steps.md §7.5), set when the grant was made: the type's
+   *  then, or 0 (too few ready tests, `qualify: false`, or no tests). */
+  qualify?: number;
 }
 
 export interface WorkerRecord {
@@ -61,9 +65,10 @@ export interface WorkerStore {
   /** Staff's change; makes the row when there is none (`new` unless a
    *  status is given). */
   set(actor: string, change: WorkerChange, by: string | undefined, now: number): Promise<WorkerRecord>;
-  /** Grants a type, live again if it was revoked; a worker with no row or
-   *  `new` becomes `active`, any other status stays. */
-  grant(actor: string, type: string, by: string | undefined, now: number): Promise<WorkerRecord>;
+  /** Grants a type, live again if it was revoked (its `at` and `qualify`
+   *  new); a live grant stays as it is. A worker with no row or `new`
+   *  becomes `active`, any other status stays. */
+  grant(actor: string, type: string, by: string | undefined, now: number, qualify?: number): Promise<WorkerRecord>;
   /** Revokes a live grant; the status stays. Undefined: no such worker. */
   revoke(actor: string, type: string, o: { by?: string; why?: string; now: number }): Promise<WorkerRecord | undefined>;
 }
@@ -106,13 +111,13 @@ export class MemoryWorkerStore implements WorkerStore {
     return this.record(actor)!;
   }
 
-  async grant(actor: string, type: string, by: string | undefined, now: number): Promise<WorkerRecord> {
+  async grant(actor: string, type: string, by: string | undefined, now: number, qualify = 0): Promise<WorkerRecord> {
     const row = this.rows.get(actor);
     if (!row) this.rows.set(actor, { actor, status: "active", firstSeen: now, changedAt: now, ...(by === undefined ? {} : { changedBy: by }) });
     else if (row.status === "new") Object.assign(row, { status: "active", changedAt: now, ...(by === undefined ? {} : { changedBy: by }) });
     const mine = this.grants.get(actor) ?? new Map<string, Grant>();
     const known = mine.get(type);
-    if (!known || known.revokedAt !== undefined) mine.set(type, { type, at: now, ...(by === undefined ? {} : { by }) });
+    if (!known || known.revokedAt !== undefined) mine.set(type, { type, at: now, ...(by === undefined ? {} : { by }), qualify });
     this.grants.set(actor, mine);
     return this.record(actor)!;
   }

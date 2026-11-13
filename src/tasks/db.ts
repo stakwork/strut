@@ -7,12 +7,17 @@
  * into the file. The two sides keep their own tables in it
  * (`task-store-sqlite.ts`, `worker-store-sqlite.ts`). Imported on first use
  * (`openTaskStores`, tasks.ts), never at boot.
+ *
+ * Schema version 2 (plans/human-steps.md §7.7): tests and copies. A file of
+ * version 1 (#655's tables, with or without #664's pay columns) is brought
+ * to 2 when it is opened, in ONE transaction (`migrate`), its rows kept.
  */
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
-const SCHEMA_VERSION = 1;
+/** The schema this strut writes: 2 since tests (plans/human-steps.md §7.7). */
+export const SCHEMA_VERSION = 2;
 const warned = new Set<string>();
 
 export type Row = Record<string, unknown>;
@@ -46,7 +51,21 @@ export class TaskDb {
       db.close();
       throw new Error(`${file}: task store schema ${version} is newer than this strut's (${SCHEMA_VERSION})`);
     }
-    if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    this.version = version;
+  }
+
+  /** The schema version the file was opened at: 0 for a new file. */
+  readonly version: number;
+
+  /** Brings the file to `SCHEMA_VERSION` in ONE transaction: `fn` makes the
+   *  tables a new file lacks and changes an older file's (each step safe to
+   *  run again), then `user_version` is written. A failure leaves the file as
+   *  it was. */
+  migrate(fn: (from: number) => void): void {
+    this.tx(() => {
+      fn(this.version);
+      if (this.version < SCHEMA_VERSION) this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    }, true);
   }
 
   exec(sql: string): void {

@@ -1,7 +1,8 @@
 /**
  * The worker side on the task store's file (`worker-store.ts`'s semantics;
  * its memory twin passes the same suite, tasks.test.ts): `workers` and
- * `grants`, every write one transaction.
+ * `grants`, every write one transaction. Schema version 2 adds
+ * `grants.qualify` (plans/human-steps.md §7.7), in `workerSchema`.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -26,15 +27,24 @@ create table if not exists grants (
   revoked_at integer,
   revoked_by text,
   revoked_why text,
+  qualify integer,
   primary key (actor, type)
 ) strict, without rowid;
 `;
 
+/** The worker side's tables brought to version 2, inside the file's one
+ *  migration transaction (`TaskDb.migrate`). Safe to run again. */
+export function workerSchema(db: TaskDb): void {
+  db.exec(SCHEMA);
+  const has = (db.prepare("pragma table_info(grants)").all() as Row[]).some((r) => r.name === "qualify");
+  if (!has) db.exec("alter table grants add column qualify integer");
+}
+
 export class SqliteWorkerStore implements WorkerStore {
   private readonly s: Record<string, StatementSync>;
 
+  /** On a file `workerSchema` brought to version 2. */
   constructor(private readonly db: TaskDb) {
-    db.exec(SCHEMA);
     const p = (sql: string) => db.prepare(sql);
     this.s = {
       worker: p("select * from workers where actor = ?"),
@@ -44,9 +54,9 @@ export class SqliteWorkerStore implements WorkerStore {
       update: p("update workers set status = ?, note = ?, changed_at = ?, changed_by = ? where actor = ?"),
       activate: p("update workers set status = 'active', changed_at = ?, changed_by = ? where actor = ? and status = 'new'"),
       grant: p(
-        `insert into grants (actor, type, granted_by, granted_at) values (?, ?, ?, ?)
+        `insert into grants (actor, type, granted_by, granted_at, qualify) values (?, ?, ?, ?, ?)
          on conflict (actor, type) do update set granted_by = excluded.granted_by, granted_at = excluded.granted_at,
-           revoked_at = null, revoked_by = null, revoked_why = null
+           revoked_at = null, revoked_by = null, revoked_why = null, qualify = excluded.qualify
          where grants.revoked_at is not null`,
       ),
       revoke: p("update grants set revoked_at = ?, revoked_by = ?, revoked_why = ? where actor = ? and type = ? and revoked_at is null"),
@@ -84,11 +94,11 @@ export class SqliteWorkerStore implements WorkerStore {
     });
   }
 
-  async grant(actor: string, type: string, by: string | undefined, now: number): Promise<WorkerRecord> {
+  async grant(actor: string, type: string, by: string | undefined, now: number, qualify = 0): Promise<WorkerRecord> {
     return this.db.tx(() => {
       if (!this.s.worker.get(actor)) this.s.insert.run(actor, "active", now, now, by ?? null, null);
       else this.s.activate.run(now, by ?? null, actor);
-      this.s.grant.run(actor, type, by ?? null, now);
+      this.s.grant.run(actor, type, by ?? null, now, qualify);
       return this.record(actor)!;
     });
   }
@@ -129,6 +139,7 @@ function grantOf(r: Row): Grant {
     ["revoked_at", "revokedAt"],
     ["revoked_by", "revokedBy"],
     ["revoked_why", "why"],
+    ["qualify", "qualify"],
   ];
   for (const [col, key] of fields) {
     const v = opt(r[col]);

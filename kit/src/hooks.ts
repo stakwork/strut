@@ -908,8 +908,10 @@ export interface WorkerInfo {
   /** `new`: not granted anything yet; only `active` takes tasks. */
   status: "new" | "active" | "suspended" | "banned";
   /** The task types they hold that this app draws: the app's menu, each
-   *  with what an answer earns now, msat (0: unpaid). */
-  types: Array<{ name: string; app: string; payMsat: number }>;
+   *  with what an answer earns now, msat (0: unpaid), and whether they are
+   *  qualifying for it — every task they get of it is a test until they
+   *  qualify, so tasks arrive at once. A flag, never a score. */
+  types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
   /** What they are owed here: zeros with nothing earned. */
   balance: WorkerBalance;
 }

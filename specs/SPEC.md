@@ -398,6 +398,13 @@ the task's id.
   (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
   app door, as the page's signed-in viewer; an admin makes the task types
   and grants them through the `/tasks` routes (specs/API.md §22).
+- Tests (plans/human-steps.md §7) change nothing here. A task type with
+  `tests` mixes TESTS — tasks whose answer staff know, kept apart from every
+  run — among its tasks, to qualify and score its workers; a worker under
+  the type's threshold loses the type. A test is served as an instance with
+  no run, so answering one wakes none, and the step's task is only ever
+  answered by a worker who holds the type (specs/API.md §22, "Tests,
+  grading and standing").
 
 ### 4.2 Lib Steps
 
