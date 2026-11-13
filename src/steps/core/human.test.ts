@@ -634,6 +634,140 @@ describe("the human step's pay (plans/human-steps.md §8.1)", () => {
   });
 });
 
+describe("the human step's copies (plans/human-steps.md §7.6)", () => {
+  const WORKERS = ["ann", "bob", "cat"];
+  /** The type with a copies rule, and three workers. */
+  async function copiesStaff(strut: Strut, copies: Record<string, unknown>) {
+    const t = strut.tasks.capability;
+    await t.setType(TYPE, { app: "workers", answer: MATCH, copies });
+    for (const w of WORKERS) await t.grant(w, TYPE);
+  }
+  async function answerAs(strut: Strut, worker: string, answer: unknown) {
+    const got = await strut.tasks.capability.next(worker, { type: TYPE });
+    assert.ok(!("none" in got), `${worker} gets a task`);
+    await strut.tasks.capability.submit(worker, { lease: got.lease, answer });
+  }
+  const reviewEnd = async (strut: Strut, wf: string, runId: string) =>
+    (await strut.store.getRunEvents(wf, runId)).filter((e) => e.type === "step.end" && e.path === `${wf}/review`).at(-1);
+
+  it("asks two workers and wakes once both answered: the agreed answer, its first worker, and every answer", async () => {
+    const { strut, workspace, dir } = await makeServer();
+    try {
+      await copiesStaff(strut, {});
+      await workspace.publishWorkflow("two", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE, copies: 2 } }] });
+      const runId = await launch(strut, "two");
+      await waiting(strut, "two", runId);
+      await answerAs(strut, "ann", { same: true });
+      await sleep(50);
+      assert.equal((await strut.store.getRunSummary("two", runId))!.status, "waiting", "one answer of two: still waiting");
+      await answerAs(strut, "bob", { same: true });
+      const done = await ended(strut, "two", runId);
+      assert.equal(done.status, "success", JSON.stringify(done.error));
+      const [task] = await tasksOf(strut, runId);
+      assert.deepEqual((await reviewEnd(strut, "two", runId))?.output, {
+        answer: { same: true },
+        by: "ann",
+        task: task!.id,
+        answers: [
+          { answer: { same: true }, by: "ann", agrees: true },
+          { answer: { same: true }, by: "bob", agrees: true },
+        ],
+      });
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers that never agree fail the step task_disputed:, and onError runs", async () => {
+    const { strut, workspace, dir } = await makeServer();
+    try {
+      await copiesStaff(strut, { max: 2 });
+      await workspace.publishWorkflow("split", "v1", {
+        steps: [
+          {
+            id: "review",
+            type: "human",
+            config: { task: TYPE, copies: 2 },
+            options: { onError: { id: "expert", type: "pack", config: { same: false, by: "expert", why: "{{ $error.message }}" } } },
+          },
+        ],
+      });
+      const runId = await launch(strut, "split");
+      await waiting(strut, "split", runId);
+      await answerAs(strut, "ann", { same: true });
+      await answerAs(strut, "bob", { same: false });
+      const done = await ended(strut, "split", runId);
+      assert.equal(done.status, "success", JSON.stringify(done.error));
+      const out = done.output as { by: string; why: string };
+      assert.equal(out.by, "expert");
+      assert.match(out.why, /^task_disputed: the 2 answers to task \w+ \(pet-match\) did not agree/);
+      assert.deepEqual((await tasksOf(strut, runId)).map((t) => t.status), ["disputed"]);
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("disagreement asks one more worker before it fails; without onError the run fails", async () => {
+    const { strut, workspace, dir } = await makeServer();
+    try {
+      await copiesStaff(strut, { max: 3 });
+      await workspace.publishWorkflow("three", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE, copies: 2 } }] });
+      const runId = await launch(strut, "three");
+      await waiting(strut, "three", runId);
+      await answerAs(strut, "ann", { same: true });
+      await answerAs(strut, "bob", { same: false });
+      await sleep(50);
+      assert.equal((await strut.store.getRunSummary("three", runId))!.status, "waiting", "a third worker is asked");
+      assert.equal((await tasksOf(strut, runId))[0]!.copies, 3);
+      await answerAs(strut, "cat", { same: false });
+      const done = await ended(strut, "three", runId);
+      assert.equal(done.status, "success", JSON.stringify(done.error));
+      const out = (await reviewEnd(strut, "three", runId))!.output as { answer: unknown; by: string; answers: Array<{ agrees: boolean }> };
+      assert.deepEqual([out.answer, out.by], [{ same: false }, "bob"], "the first answer of the agreeing two");
+      assert.deepEqual(out.answers.map((a) => a.agrees), [false, true, true]);
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("with copies: 1 the output is exactly as before, on a type with a copies rule too", async () => {
+    const { strut, workspace, dir } = await makeServer();
+    try {
+      await copiesStaff(strut, {});
+      await workspace.publishWorkflow("one", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE } }] });
+      const runId = await launch(strut, "one");
+      await waiting(strut, "one", runId);
+      await answerAs(strut, "ann", { same: true });
+      const done = await ended(strut, "one", runId);
+      const [task] = await tasksOf(strut, runId);
+      assert.deepEqual((await reviewEnd(strut, "one", runId))?.output, { answer: { same: true }, by: "ann", task: task!.id });
+      assert.deepEqual(done.output, { answer: { same: true }, by: "ann", task: task!.id });
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("asking more copies than the type allows fails before a task is made", async () => {
+    const { strut, workspace, dir } = await makeServer();
+    try {
+      await staff(strut);
+      await workspace.publishWorkflow("greedy", "v1", { steps: [{ id: "review", type: "human", config: { task: TYPE, copies: 2 } }] });
+      const runId = await launch(strut, "greedy");
+      const done = await ended(strut, "greedy", runId);
+      assert.equal(done.status, "error");
+      assert.match(done.error!.message, /^bad_request: copies: task type pet-match asks one worker a task/);
+      assert.deepEqual(await strut.tasks.capability.list(), []);
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the human step on a peer's launch", () => {
   const PEER = "human-peer-key";
   let saved: string | undefined;

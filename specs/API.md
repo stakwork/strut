@@ -4734,7 +4734,8 @@ sats, held a while before they can be withdrawn (`plans/human-steps.md`
 §8.1; "Pay" below). No sats leave the wallet yet: a withdrawal is a later
 item. A task type may also mix TESTS among its tasks — tasks whose answer
 staff know — to qualify and score its workers (`plans/human-steps.md` §7;
-"Tests, grading and standing" below).
+"Tests, grading and standing" below) — and let a `human` step ask several
+workers, settling when enough agree ("Copies" below).
 
 ### The worker's steps — through an app's `step_run`
 
@@ -4773,7 +4774,9 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   its files the test's own copies under the same paths.
 - **`task/submit`**: once per lease, before it expires, checked against
   the type's answer schema (`bad_answer`). It settles the task, and the
-  waiting run goes on with `{ answer, by, task }`. An answer under a paid
+  waiting run goes on with `{ answer, by, task }` — for a task asked of
+  several workers, once every answer is in and the type's rule decides
+  ("Copies" below). An answer under a paid
   lease is then owed to its worker: booked in the ledger (`pay`, one row
   per lease). A booking that fails never fails the answer: the store's
   sweep books it within a minute, once.
@@ -4829,14 +4832,14 @@ server whose task store is its host's.
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold, no tests) |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold, no tests, no copies) |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/workers/:actor` | `{ worker: WorkerRecord }`, the same for one worker; `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `test=true` the test instances alone, `test=false` the real tasks |
+| `GET /tasks?type=&status=&workflow=&runId=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView }` |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 
@@ -4852,6 +4855,9 @@ server whose task store is its host's.
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
     "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
     "window": 20, "minGraded": 10, "threshold": 0.8, "grade": "equal", "gradeCapUsd": 0.05
+  },
+  "copies": {                       // absent: a step asks one worker (see "Copies")
+    "max": 3, "agree": 2, "compare": "equal", "onDisagree": "more"
   },
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
@@ -4881,9 +4887,11 @@ server whose task store is its host's.
   // a test instance only: "test": "<test id>", "servedTo": "p256:…",
   //   "grade": "pass" | "fail" | "error" (absent while pending), "gradedAt"; its workflow and path are ""
 
-  "status": "settled",               // open | settled | expired | cancelled
+  "status": "settled",               // open | settled | expired | cancelled | disputed
   "created": 1762948800000, "due": 1763208000000, "settledAt": 1762949000000,
-  "answer": { "same": true }, "by": "p256:02ab…",
+  "answer": { "same": true }, "by": "p256:02ab…",   // with copies: the agreed answer, its first worker
+  "copies": 1,                       // the answers it wants
+  // a copies task's leases also carry "answer" and, once decided, "agrees"
   "leases": [{ "id": "…", "task": "9f2c…", "worker": "p256:02ab…", "type": "pet-match",
                "taken": 1762948950000, "expires": 1762949550000,
                "status": "submitted", "closed": 1762949000000 /*, "reason" */,
@@ -5019,3 +5027,40 @@ false }`.
 
 The in-process service (`strut.tasks`) also tells `onGraded` listeners
 each grade: `{ lease, task, test, worker, type, result, answeredAt, at }`.
+
+### Copies (`plans/human-steps.md` §7.6)
+
+A `human` step's `copies: N` asks N workers one task (specs/SPEC.md
+§4.1.9). How many a step may ask is the TYPE's `copies` (each copy is paid
+work): a type without it asks one, and a step asking more than `max` fails
+`bad_request: copies:` before a task is made.
+
+| `copies` | | Default |
+| --- | --- | --- |
+| `max` | The most copies a step may ask for, and the most `more` reaches; 1 to 10 | 3 |
+| `agree` | How many answers must match to settle; 1 to `max`, and at most the copies the task wants | 2 |
+| `compare` | `"equal"` (as a test's grade), or `{ step, config? }`: a SEALED step comparing two answers in a grader's contract — the later as `answer`, the earlier as `expected` — run, billed and capped as a grader is (`400 bad_grader` when not sealed) | `"equal"` |
+| `onDisagree` | `"more"`: ask one more worker, up to `max`; `"fail"`: dispute it | `"more"` |
+
+- **Taken** like any task, by a worker who never held it, while its live
+  and answered leases are fewer than the answers it wants; each answer stays
+  on its worker's lease.
+- **Decided** when the last answer asked for is in — a worker already at
+  it is never cut off. Each answer joins the first earlier answer it
+  matches; a group of `agree` (the larger, then the earlier, of two) settles
+  the task with that group's first answer and worker. Otherwise `more`
+  raises `copies` by one (the task is old, near the front of the queue),
+  and at `max`, or with `fail`, the task is `disputed`: its run's step fails
+  `task_disputed:`. `equal` decides in the last answer's own transaction; a
+  step decides afterwards, while no lease is handed out, and a decision a
+  restart or a failed comparison left is made by the minute's sweep (until
+  the task expires).
+- **Earned** by every copy as any answer is: booked when it is accepted,
+  and kept whether or not it agreed — nothing takes a disagreeing copy's
+  earning back. A test made from a copies task (`POST /tasks/:id/test`) is
+  never served to any worker who answered it; a disputed one needs its
+  `expected`.
+
+The in-process service also tells `onAgreed` listeners each decision of a
+copies task (not `more`): `{ task, type, agreed, answers: [{ lease,
+worker, agrees }], at }`, `agreed` false when it was disputed.

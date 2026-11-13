@@ -7,9 +7,9 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   `tests` off)
+ *   `tests` and `copies` off)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
@@ -20,8 +20,10 @@
  *   `{ worker, notice? }`: a grant of a type with tests records its K
  * - `DELETE /tasks/workers/:actor/grants/:type[?why=]` → `{ worker }`
  * - `GET /tasks[?type=&status=&workflow=&runId=&test=&before=&limit=]` → `{ tasks }`,
- *   newest first, each with its leases (an answer's `earning` with it);
- *   `test=true` the test instances alone, `false` the real tasks
+ *   newest first, each with its leases (an answer's `earning` with it; a
+ *   copies task's answers and whether each agreed on its leases);
+ *   `test=true` the test instances alone, `false` the real tasks;
+ *   `status=disputed` the copies tasks whose answers did not agree
  * - `GET /tasks/:id` → `{ task }`
  * - `POST /tasks/:id/take-back { worker?, why }` → `{ task, earnings }`: the
  *   earnings the task's answers made (or `worker`'s) taken back while held
@@ -111,6 +113,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
+        ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),

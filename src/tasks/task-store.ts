@@ -30,10 +30,19 @@
  * other: the same lease, answer and expiry. `take` never hands one out, and
  * one whose lease is no longer live closes as `expired` (skip, release, the
  * sweep). An answered instance waits for its GRADE (`pass`, `fail`, `error`).
+ *
+ * COPIES (plans/human-steps.md §7.6, item 4b): a task may want several
+ * answers (`copies`), each from another worker on its own lease, the
+ * answer kept on the lease. `take` hands one out while its live and
+ * submitted leases are fewer than `copies`. When the last answer asked for
+ * is in, the task is DECIDED (`CopiesDecision`): settled with the first
+ * answer of the agreeing group, one more copy asked for, or `disputed` — in
+ * `settle`'s own transaction when the service hands it a decider (`equal`),
+ * else later by `decide`, guarded, while no lease can be taken.
  */
 import type { AnswerSchema } from "./answer-schema.js";
 
-export const TASK_STATUSES = ["open", "settled", "expired", "cancelled"] as const;
+export const TASK_STATUSES = ["open", "settled", "expired", "cancelled", "disputed"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const LEASE_STATUSES = ["open", "submitted", "expired", "skipped"] as const;
 export type LeaseStatus = (typeof LEASE_STATUSES)[number];
@@ -70,6 +79,39 @@ export interface TestRules {
   gradeCapUsd: number;
 }
 
+/** A task type's copies rule (§7.6, §7.8): on when the type has it, saved
+ *  whole (`DEFAULT_COPIES_RULE`, task-copies.ts, fills what staff leave
+ *  out). Off, a step asks one worker. */
+export interface CopiesRule {
+  /** The most copies a step may ask for, and the most `more` may reach. */
+  max: number;
+  /** How many answers must match to settle; at most the copies a task wants. */
+  agree: number;
+  /** `equal`, or a SEALED step comparing two answers in the grader's
+   *  contract (the later as `answer`, the earlier as `expected`). */
+  compare: GradeRule;
+  /** `more`: ask one more worker, up to `max`; `fail`: the task is disputed. */
+  onDisagree: "more" | "fail";
+}
+
+/** What a copies task's answers decided (§7.6): settled with the answer at
+ *  `index` (in the order given), `agrees` saying which joined it; one more
+ *  copy; or disputed. */
+export type CopiesDecision = { outcome: "agreed"; index: number; agrees: boolean[] } | { outcome: "more" } | { outcome: "disputed" };
+
+/** What `settle` did with one answer. */
+export interface SettleResult {
+  /** The task after it: settled (one copy, or decided), disputed, or still
+   *  open (answers missing, more asked for, or a decision to make outside). */
+  task: TaskRecord;
+  /** A copies task's answers, in the order given, once the last asked for
+   *  is in. */
+  answers?: Lease[];
+  /** What was decided in the same transaction; absent with `answers`, the
+   *  decision is the caller's to make (`decide`). */
+  decision?: CopiesDecision;
+}
+
 /** §7.8's defaults, ruled. */
 export const DEFAULT_TEST_RULES: Readonly<TestRules> = Object.freeze({
   rate: 0.05,
@@ -103,6 +145,8 @@ export interface TaskType {
   holdHours: number;
   /** Its test rules (§7); absent: off, and the type works as without. */
   tests?: TestRules;
+  /** Its copies rule (§7.6); absent: off, a step asks one worker. */
+  copies?: CopiesRule;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;
@@ -130,9 +174,13 @@ export interface TaskRecord {
   due: number;
   /** When it left `open`. */
   settledAt?: number;
-  /** The accepted answer, and the worker who gave it. */
+  /** The accepted answer, and the worker who gave it: with copies, the
+   *  first answer of the group that agreed. */
   answer?: unknown;
   by?: string;
+  /** How many answers it wants (§7.6): 1, or the step's `copies`, raised
+   *  by one for each `more`. */
+  copies: number;
   /** A test INSTANCE (§7.1): the test, and the worker it was served to.
    *  Absent on a real task. Staff's to see; never on a worker's view. */
   test?: string;
@@ -163,6 +211,11 @@ export interface Lease {
   /** When its earning was booked in the ledger: a submitted lease with pay
    *  and none is booked by the next sweep. */
   bookedAt?: number;
+  /** A copies task's answer under it (§7.6), and once the task was decided
+   *  whether it agreed with the answer the task settled with (false on a
+   *  disputed task). A one-copy task's answer is the task's alone. */
+  answer?: unknown;
+  agrees?: boolean;
 }
 
 /** A task that left `open`: what its run's wake needs. */
@@ -186,6 +239,8 @@ export interface NewTask {
   job?: string;
   created: number;
   due: number;
+  /** How many answers it wants; 1 when left out. */
+  copies?: number;
 }
 
 export interface TaskListQuery {
@@ -321,8 +376,27 @@ export interface TaskStore {
   take(o: { worker: string; types: string[]; id: string; now: number }): Promise<Lease | undefined>;
   /** Rules 4 and 7, one guarded write: the lease, `worker`'s, live, becomes
    *  `submitted` and its task, open and not past due, `settled` with the
-   *  answer. Undefined when the guard failed: nothing was written. */
-  settle(o: { lease: string; worker: string; answer: unknown; now: number }): Promise<TaskRecord | undefined>;
+   *  answer. Undefined when the guard failed: nothing was written.
+   *
+   *  A copies task (§7.6) keeps the answer on the lease and stays open
+   *  until the last answer asked for; that one is decided in the same
+   *  transaction by `decide(answers, copies)` when it answers, and left to
+   *  the caller (`decide` below) when it answers undefined or is left out. */
+  settle(o: {
+    lease: string;
+    worker: string;
+    answer: unknown;
+    now: number;
+    decide?: (answers: unknown[], copies: number) => CopiesDecision | undefined;
+  }): Promise<SettleResult | undefined>;
+  /** §7.6, one guarded write: a copies task decided outside `settle` —
+   *  only while it is open, still wants `copies` answers and has them all.
+   *  The task after it, or undefined when the guard failed. */
+  decide(o: { task: string; copies: number; decision: CopiesDecision; now: number }): Promise<TaskRecord | undefined>;
+  /** Open copies tasks with every answer asked for and no decision, oldest
+   *  first, at most `limit`: what the sweep decides (a restart between the
+   *  last answer and a step comparator's decision). */
+  undecided(limit: number): Promise<TaskRecord[]>;
   /** The lease, `worker`'s and live, becomes `skipped`; its task stays open
    *  for someone else. False when the guard failed. */
   skip(o: { lease: string; worker: string; reason?: string; now: number }): Promise<boolean>;
@@ -374,6 +448,12 @@ export interface TaskStore {
   /** Answered instances with no grade yet, oldest answer first. */
   ungraded(limit: number): Promise<TaskRecord[]>;
   standings(q: StandingQuery[]): Promise<StandingRow[]>;
+}
+
+/** A copies task's answers, in the order given: its submitted leases by when
+ *  they were answered. */
+export function answersOf(leases: Lease[]): Lease[] {
+  return leases.filter((l) => l.status === "submitted").sort((a, b) => (a.closed ?? 0) - (b.closed ?? 0) || a.taken - b.taken);
 }
 
 export function settledOf(t: TaskRecord): TaskSettled {
@@ -447,6 +527,7 @@ export class MemoryTaskStore implements TaskStore {
       status: "open",
       created: t.created,
       due: t.due,
+      copies: t.copies ?? 1,
     };
     this.tasks.set(rec.id, rec);
     this.byKeys.set(key, rec.id);
@@ -500,7 +581,10 @@ export class MemoryTaskStore implements TaskStore {
     for (const t of this.tasks.values()) {
       if (t.test !== undefined || t.status !== "open" || t.due <= o.now || !types.has(t.type)) continue;
       if (!this.kinds.get(t.type)?.enabled) continue;
-      if (leases.some((l) => l.task === t.id && (l.worker === o.worker || live(l, o.now)))) continue;
+      const mine = leases.filter((l) => l.task === t.id);
+      if (mine.some((l) => l.worker === o.worker)) continue;
+      // Fewer live and submitted leases than the answers it wants (§7.6).
+      if (mine.filter((l) => l.status === "submitted" || live(l, o.now)).length >= t.copies) continue;
       return t;
     }
     return undefined;
@@ -529,14 +613,58 @@ export class MemoryTaskStore implements TaskStore {
     return lease;
   }
 
-  async settle(o: { lease: string; worker: string; answer: unknown; now: number }): Promise<TaskRecord | undefined> {
+  async settle(o: Parameters<TaskStore["settle"]>[0]): Promise<SettleResult | undefined> {
     const l = this.leases.get(o.lease);
     if (!l || l.worker !== o.worker || !live(l, o.now)) return undefined;
     const t = this.tasks.get(l.task);
     if (!t || t.status !== "open" || t.due <= o.now) return undefined;
-    Object.assign(l, { status: "submitted", closed: o.now });
-    Object.assign(t, { status: "settled", settledAt: o.now, answer: clone(o.answer), by: o.worker });
+    if (t.copies <= 1) {
+      Object.assign(l, { status: "submitted", closed: o.now });
+      Object.assign(t, { status: "settled", settledAt: o.now, answer: clone(o.answer), by: o.worker });
+      return { task: clone(t) };
+    }
+    // A copies task: the answer stays on its lease until the last is in.
+    Object.assign(l, { status: "submitted", closed: o.now, answer: clone(o.answer) });
+    const answers = answersOf([...this.leases.values()].filter((x) => x.task === t.id));
+    if (answers.length < t.copies) return { task: clone(t) };
+    const decision = o.decide?.(answers.map((x) => clone(x.answer)), t.copies);
+    if (!decision) return { task: clone(t), answers: answers.map(clone) };
+    this.apply(t, answers, decision, o.now);
+    return { task: clone(t), answers: answers.map(clone), decision };
+  }
+
+  async decide(o: { task: string; copies: number; decision: CopiesDecision; now: number }): Promise<TaskRecord | undefined> {
+    const t = this.tasks.get(o.task);
+    if (!t || t.status !== "open" || t.copies !== o.copies || t.test !== undefined) return undefined;
+    const answers = answersOf([...this.leases.values()].filter((x) => x.task === t.id));
+    if (answers.length !== t.copies) return undefined;
+    this.apply(t, answers, o.decision, o.now);
     return clone(t);
+  }
+
+  async undecided(limit: number): Promise<TaskRecord[]> {
+    const out: TaskRecord[] = [];
+    for (const t of this.tasks.values()) {
+      if (out.length >= limit) break;
+      if (t.status !== "open" || t.copies <= 1 || t.test !== undefined) continue;
+      if ([...this.leases.values()].filter((l) => l.task === t.id && l.status === "submitted").length >= t.copies) out.push(clone(t));
+    }
+    return out;
+  }
+
+  /** A copies task's decision written (§7.6). */
+  private apply(t: TaskRecord, answers: Lease[], d: CopiesDecision, now: number): void {
+    if (d.outcome === "more") {
+      t.copies += 1;
+      return;
+    }
+    if (d.outcome === "agreed") {
+      const won = answers[d.index]!;
+      Object.assign(t, { status: "settled", settledAt: now, answer: clone(won.answer), by: won.worker });
+    } else Object.assign(t, { status: "disputed", settledAt: now });
+    answers.forEach((a, i) => {
+      this.leases.get(a.id)!.agrees = d.outcome === "agreed" && d.agrees[i] === true;
+    });
   }
 
   async skip(o: { lease: string; worker: string; reason?: string; now: number }): Promise<boolean> {
@@ -602,7 +730,12 @@ export class MemoryTaskStore implements TaskStore {
     const kind = this.kinds.get(o.type);
     if (!kind?.enabled) return undefined;
     const served = new Set([...this.tasks.values()].filter((t) => t.servedTo === o.worker && t.test !== undefined).map((t) => t.test));
-    const open = [...this.testRows.values()].filter((x) => x.type === o.type && x.ready && x.retired === undefined && x.fromWorker !== o.worker && !served.has(x.id));
+    // Never one made from a task this worker answered: with copies, any of
+    // its answers (§7.6).
+    const answered = new Set([...this.leases.values()].filter((l) => l.worker === o.worker && l.status === "submitted").map((l) => l.task));
+    const open = [...this.testRows.values()].filter(
+      (x) => x.type === o.type && x.ready && x.retired === undefined && x.fromWorker !== o.worker && !(x.fromTask !== undefined && answered.has(x.fromTask)) && !served.has(x.id),
+    );
     if (!open.length) return undefined;
     const least = Math.min(...open.map((x) => x.served));
     const ties = open.filter((x) => x.served === least);
@@ -622,6 +755,7 @@ export class MemoryTaskStore implements TaskStore {
       created: o.now,
       // An instance lives as long as its one lease.
       due: expires,
+      copies: 1,
       test: test.id,
       servedTo: o.worker,
     };
