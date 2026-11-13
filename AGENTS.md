@@ -183,10 +183,8 @@ Each is explained in its area's doc; these hold in every change.
   delete key removes nodes/edges. `panMode="trackpad"` for
   Figma-style two-finger-scroll panning.
 
-- **`system-canvas` is a sibling library** at
-  `/Users/evanfeenstra/code/sphinx2/system-canvas` (its own repo,
-  published to npm in lockstep as `system-canvas` +
-  `system-canvas-react`). strut consumes the **published** version
+- **`system-canvas` is a sibling library** (its own repo, published to
+  npm in lockstep as `system-canvas` + `system-canvas-react`). strut consumes the **published** version
   (`web/package.json`). Features strut relies on: `node.ref` +
   `externalNavigation` (ref click fires `onNavigate` only, no
   internal drill), per-node/category `refCorner`, category `slots`.
