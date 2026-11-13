@@ -594,7 +594,13 @@ not lost.
   graph, or proposes them. This is what keeps a scored run's tree from
   moving under it, and where Concept and ontology evals start. Neo4j
   has no child file, so on a swarm a candidate graph needs another
-  answer first.
+  answer first. *Built otherwise (2026-11-13):* `plans/concept-evals.md`
+  items (b) and (c) — a Concept branch is a graph NAMESPACE holding a copy
+  of the pages (both engines, no child file) and a git branch of its name
+  in this repository, starting at main's commit, its commits holding main's
+  tree with `concepts/` the branch's pages; `history/read` takes a branch's
+  name and `branches` gives each one's fork point. Applying a branch
+  (merge as proposals) is item (e) there.
 
 ## Rulings
 

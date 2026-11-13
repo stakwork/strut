@@ -987,7 +987,8 @@ export const WORKSPACE_PACKAGE = { package: "strut/workspace", version: "snapsho
  *   steps/<name>.claims.yaml     its live claims beside it
  *   apps/<name>/…                every app's active version, its sources
  *   concepts/<key>.md            every live Concept in the backend's own namespace
- *   namespaces/<ns>/concepts/…   every live Concept in any other
+ *   namespaces/<ns>/concepts/…   every live Concept in any other but a Concept
+ *                                branch's (its own git branch holds those)
  *   graph/<Type>.yaml            every type in the ontology but strut's own,
  *                                with its rules (`allTypeFiles`)
  *   strut.yaml                   `WORKSPACE_PACKAGE`, pinning every installed package
@@ -1156,18 +1157,23 @@ async function underFiles(deps: WholeDeps, pkg: string): Promise<PackageFiles> {
  * nodes, and every live `PARENT_OF` into one with its parent's name — never
  * a read per node. A page in the backend's own namespace is
  * `concepts/<key>.md`, one in any other `namespaces/<ns>/concepts/<key>.md`.
- * The page is `conceptPageFile`'s, the writer a build uses.
+ * The page is `conceptPageFile`'s, the writer a build uses. With `only`, that
+ * namespace's pages alone, each `concepts/<key>.md`: a Concept branch's, as
+ * its git branch records them (src/history.ts).
  */
-async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise<Map<string, string>> {
+async function allConceptFiles(graph: GraphBackend, warnings: string[], only?: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const schema = await graph.schemas.schema("Concept");
   if (!schema) return out;
   const d = graph.dialect;
   const fields = [...new Set(["ref_id", "name", "docs", "namespace", ...Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a))])];
-  const nodes = await graph.query(`MATCH (n) WHERE ${d.isType("n", ["Concept"])} AND ${d.live("n")} RETURN ${d.project("n", fields)} AS p`);
+  const inNs = (v: string) => (only !== undefined ? ` AND ${v}.namespace = $ns` : "");
+  const params = only !== undefined ? { ns: only } : undefined;
+  const nodes = await graph.query(`MATCH (n) WHERE ${d.isType("n", ["Concept"])} AND ${d.live("n")}${inNs("n")} RETURN ${d.project("n", fields)} AS p`, params);
   const ups = await graph.query(
-    `MATCH (p)-[r:PARENT_OF]->(c) WHERE ${d.isType("c", ["Concept"])} AND ${d.live("c")} AND ${d.live("p")} AND ${d.edgeLive("r")}
+    `MATCH (p)-[r:PARENT_OF]->(c) WHERE ${d.isType("c", ["Concept"])} AND ${d.live("c")} AND ${d.live("p")} AND ${d.edgeLive("r")}${inNs("c")}
      RETURN c.ref_id AS child, p.name AS parent`,
+    params,
   );
   const parents = new Map<string, string[]>();
   for (const r of ups) {
@@ -1180,15 +1186,23 @@ async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise
     const props = row["p"] as Record<string, unknown>;
     const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
     // A Concept branch's copies are not the workspace's (src/branches.ts):
-    // its own git branch records them (plans/concept-evals.md item c).
-    if (isBranchNamespace(ns)) continue;
+    // its own git branch records them (`conceptFilesOf`).
+    if (only === undefined && isBranchNamespace(ns)) continue;
     const page = conceptPageFile(schema, props, parents.get(String(props["ref_id"])) ?? []);
     if (!page) continue;
-    const file = ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
+    const file = only !== undefined || ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
     if (out.has(file)) warnings.push(`two Concepts are ${file}: only one is in the snapshot`);
     else out.set(file, page.text);
   }
   return out;
+}
+
+/** One namespace's live Concepts as their pages, `concepts/<key>.md` each,
+ *  as a snapshot writes the graph's own: what a Concept branch's git branch
+ *  holds under `concepts/` (src/history.ts). */
+export async function conceptFilesOf(graph: GraphBackend, namespace: string): Promise<{ files: Map<string, string>; warnings: string[] }> {
+  const warnings: string[] = [];
+  return { files: await allConceptFiles(graph, warnings, namespace), warnings };
 }
 
 /** An app version's sources (what its version hash covers: never `dist/`

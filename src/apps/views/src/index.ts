@@ -30,8 +30,8 @@ export { SheetView, SHEETS_STEP, SHEET_INTERVAL_MS, type SheetViewProps } from "
 export { SpotCheck, type SpotCheckProps } from "./components/SpotCheck";
 export { ConceptDiff, PageDiff, PageView, CONCEPT_STATUS, type ConceptDiffProps } from "./components/ConceptDiff";
 export {
-  HISTORY_STEP, PROPOSAL_GET_STEP, NoHistoryError, readLog, readPage, readDiff, readEntry, readProposalEntry, commitReads, compareReads,
-  type HistoryCommit, type ProposalRecord,
+  HISTORY_STEP, PROPOSAL_GET_STEP, NoHistoryError, readLog, readPage, readDiff, readEntry, readProposalEntry, readBranches, commitReads, compareReads,
+  type HistoryCommit, type HistoryBranch, type ProposalRecord,
 } from "./lib/history";
 export {
   PROVENANCE_STEP, subjectLabel, momentPhrase, landmarks,

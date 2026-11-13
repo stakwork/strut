@@ -1085,6 +1085,8 @@ export async function createStrut<TServices = unknown>(
     workspace: baseWorkspace,
     claims: () => claimsAuthoring,
     apps: () => apps,
+    // Each Concept branch is a git branch too (plans/concept-evals.md item c).
+    branches: () => branchesCap,
   });
   // What the app door remembers of each app version (`apps.manifestOf`,
   // read on every call a page makes): forgotten when the app's record is
@@ -1158,9 +1160,10 @@ export async function createStrut<TServices = unknown>(
   // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
   // named copy of the Concept tree in a graph namespace of its own, which a
   // launch's `branch` points a run at. One is dropped only with no run on
-  // it in flight here.
+  // it in flight here. Each is a git branch of the same name in the history
+  // (item c): made from main's commit, kept aside when dropped.
   const branchesCap: BranchesCapability | undefined = graph
-    ? createBranches({ dataDir, graph, inFlight: (name) => [...controllers.values()].some((c) => c.branch === name) })
+    ? createBranches({ dataDir, graph, inFlight: (name) => [...controllers.values()].some((c) => c.branch === name), ...(history ? { history } : {}) })
     : undefined;
   // Before anything reads: a read on main leaves the branches out while there are any.
   await branchesCap?.load();

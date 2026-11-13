@@ -3,23 +3,30 @@ import { z } from "zod";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { parseConceptFile } from "../../../concept-seed.js";
 import { defineStep, type StepContext } from "../../../core.js";
+import { BRANCH_NAME } from "../../../branches.js";
 import { boundsOf, graphFor, readsNamespace } from "../../../graph/scope.js";
-import { HISTORY_BRANCH, type HistoryCapability } from "../../../history.js";
+import { DROPPED_REFS, EMPTY_TREE, HISTORY_BRANCH, type HistoryCapability } from "../../../history.js";
 import { parseTypeFile } from "../../../packages/graph-types.js";
 
 /**
  * Read the HISTORY (plans/concept-history.md §4; src/history.ts): the
  * workspace as a package directory in git, one commit each time strut heard
- * a write. Four actions, git's own shapes:
+ * a write. Five actions, git's own shapes:
  *
- *   log   { path?, run?, from?, to?, limit? }  commits, newest first
- *   show  { path, at }                        a file (or a folder's listing) then
- *   diff  { from, to, path?, patch? }         every path that differs
- *   sync  {}                                  a snapshot now, cause `sync`
+ *   log      { path?, run?, from?, to?, branch?, limit? }  commits, newest first
+ *   show     { path, at, branch? }                       a file (or a folder's listing) then
+ *   diff     { from, to, path?, patch?, branch? }        every path that differs
+ *   branches {}                                          main and each Concept branch: tip, fork point
+ *   sync     {}                                          a snapshot now, cause `sync`
  *
  * Wherever a commit is asked for, a time is too: the last commit at or
- * before it. Before reading, what the caller's run wrote is flushed and
- * committed (read-your-writes). Held to the caller's reader list
+ * before it, on `branch` (main by default) — and a branch's name, its last
+ * commit. A Concept branch (src/branches.ts, plans/concept-evals.md item c)
+ * is a git branch of its name: `diff { from: "main", to: "<branch>", path:
+ * "concepts" }` is the pages the two hold apart, `log { from: "main", to:
+ * "<branch>" }` the commits made on the branch, and `branches` gives each
+ * one's `base`, the commit it forked from main at. Before reading, what the
+ * caller's run wrote is flushed and committed (read-your-writes). Held to the caller's reader list
  * (`graphReaders`, src/graph/scope.ts): a namespace it cannot read — a
  * `namespaces/<ns>/` folder, or `concepts/` for the backend's own — is in
  * none of its answers. With no history here, a plain answer saying so.
@@ -29,7 +36,7 @@ import { parseTypeFile } from "../../../packages/graph-types.js";
 const commitOrTime = z
   .string()
   .min(1)
-  .describe("A commit id, or a time (ISO 8601, or epoch milliseconds): the last commit at or before it.");
+  .describe("A commit id, a branch (`main`, or a Concept branch's name: its last commit), or a time (ISO 8601, or epoch milliseconds): the last commit at or before it on `branch`.");
 
 export default defineStep({
   type: "history/read",
@@ -40,14 +47,17 @@ export default defineStep({
     "Actions: `log` { path?, run?, from?, to?, limit? } → commits newest first, each { id, time, author, subject, runs, changes: [{ path, status: added|modified|deleted|renamed, from? }] } (`run`: what that run changed; `from`/`to`: who changed things between two moments; `path` follows a file through renames). " +
     "`show` { path, at } → the file at that commit: { text, parsed? } (a page's or a type's fields), or a folder's entries. " +
     "`diff` { from, to, path?, patch? } → each path that differs with its status and `before` / `after` as `show` gives them (`patch: true` adds the unified diff). " +
-    "`sync` → a snapshot now. Wherever a commit is asked for, a time works too (ISO 8601 or epoch ms): the last commit at or before it — a run's start time gives the tree it read. Writes nothing in the graph.",
+    "`sync` → a snapshot now. Wherever a commit is asked for, a time works too (ISO 8601 or epoch ms): the last commit at or before it — a run's start time gives the tree it read. " +
+    "Each Concept branch is a git branch of its name, holding main's tree with `concepts/` its own pages: a branch's name works wherever a commit does (its last commit), and `branch` says which branch a time is read on (main by default). `diff { from: \"main\", to: \"<branch>\", path: \"concepts\" }` → the pages the two hold apart; `log { from: \"main\", to: \"<branch>\" }` → the commits made on the branch; " +
+    "`branches` → { branches: [{ name, head, time, base? }], dropped: [{ name, ref, head, time, base? }] }: main and each Concept branch, `base` the commit it forked from main at, and the git branches of dropped ones, kept. Writes nothing in the graph.",
   input: z.object({
-    action: z.enum(["log", "show", "diff", "sync"]).describe("log, show, diff, or sync."),
+    action: z.enum(["log", "show", "diff", "branches", "sync"]).describe("log, show, diff, branches, or sync."),
     path: z.string().optional().describe("A file or a folder in the package layout (show: required; log, diff: optional)."),
     run: z.string().optional().describe("log: only the commits carrying this run (`Run:` trailer)."),
-    from: commitOrTime.optional().describe("log: after this commit or time; diff: the older side (required)."),
-    to: commitOrTime.optional().describe("log: up to this commit or time (default: now); diff: the newer side (required)."),
-    at: commitOrTime.optional().describe("show: the commit or time to read the file at (required)."),
+    from: commitOrTime.optional().describe("log: after this commit, branch or time; diff: the older side (required)."),
+    to: commitOrTime.optional().describe("log: up to this commit, branch or time (default: `branch` now); diff: the newer side (required)."),
+    at: commitOrTime.optional().describe("show: the commit, branch or time to read the file at (required)."),
+    branch: z.string().optional().describe("The branch a time is read on, and log's default `to`: `main` (the default) or a Concept branch's name."),
     limit: z.number().int().min(1).max(500).default(50).describe("log: the most commits; diff: the most paths."),
     patch: z.boolean().default(false).describe("diff: add each path's unified diff."),
   }),
@@ -68,11 +78,13 @@ export default defineStep({
     await history.settle();
     const visible = visibility(ctx);
     const git = history.git.bind(history);
-    if (cfg.action === "log") return log(git, cfg, visible);
+    if (cfg.action === "branches") return branches(git, visible);
+    const on = await branchRef(git, cfg.branch, visible);
+    if (cfg.action === "log") return log(git, cfg, visible, on);
     if (cfg.action === "show") {
       if (cfg.path === undefined) throw new Error("history/read show: `path` is required");
       if (!cfg.at) throw new Error("history/read show: `at` (a commit or a time) is required");
-      const at = await commitOf(git, cfg.at);
+      const at = await commitOf(git, cfg.at, on);
       if (!at) throw new Error(`history/read: no commit at or before ${cfg.at}`);
       const path = cleanPath(cfg.path);
       const read = visible(path) ? await readAt(git, at.id, path, visible) : null;
@@ -80,7 +92,7 @@ export default defineStep({
       return { path, at: at.id, time: at.time, ...read };
     }
     if (!cfg.from || !cfg.to) throw new Error("history/read diff: `from` and `to` (commits or times) are required");
-    return diff(git, cfg, visible);
+    return diff(git, cfg, visible, on);
   },
 });
 
@@ -111,31 +123,86 @@ function cleanPath(path: string): string {
   return p;
 }
 
-/** A commit id or a time → the commit then: a time means the last commit
- *  at or before it. Null when there is none (before the first). */
-async function commitOf(git: Git, at: string): Promise<{ id: string; time: string } | null> {
-  const branch = `refs/heads/${HISTORY_BRANCH}`;
-  const describe = async (id: string) => ({ id, time: (await git(["log", "-1", "--format=%cI", id])).trim() });
-  const tryRev = async (rev: string) => {
-    try {
-      return (await git(["rev-parse", "--verify", "-q", `${rev}^{commit}`])).trim() || null;
-    } catch {
-      return null;
-    }
-  };
-  if (/^[0-9a-f]{7,40}$/i.test(at)) {
-    const id = await tryRev(at);
-    if (id) return describe(id);
+const MAIN_REF = `refs/heads/${HISTORY_BRANCH}`;
+
+const tryRev = async (git: Git, rev: string) => {
+  try {
+    return (await git(["rev-parse", "--verify", "-q", `${rev}^{commit}`])).trim() || null;
+  } catch {
+    return null;
   }
+};
+
+/** A Concept branch's git branch, by name, when the history holds it. */
+async function branchTip(git: Git, name: string): Promise<string | null> {
+  return BRANCH_NAME.test(name) ? tryRev(git, `refs/heads/${name}`) : null;
+}
+
+/** The ref `branch` names, which a time is read on: main's by default. A
+ *  Concept branch is a copy of the graph's own pages: a caller who cannot
+ *  read those cannot read it. */
+async function branchRef(git: Git, branch: string | undefined, visible: Visible): Promise<string> {
+  if (branch === undefined || branch === HISTORY_BRANCH) return MAIN_REF;
+  if (!visible("concepts") || !(await branchTip(git, branch))) throw new Error(`history/read: no branch "${branch}" in the history`);
+  return `refs/heads/${branch}`;
+}
+
+/** A commit id, a branch or a time → the commit then: a branch means its
+ *  last commit (a Concept branch's name before a commit id it also reads
+ *  as), a time the last commit at or before it on `on`. Null when there is
+ *  none (before the first). */
+async function commitOf(git: Git, at: string, on: string = MAIN_REF): Promise<{ id: string; time: string } | null> {
+  const describe = async (id: string) => ({ id, time: (await git(["log", "-1", "--format=%cI", id])).trim() });
   if (at === HISTORY_BRANCH || at === "HEAD") {
-    const id = await tryRev(branch);
+    const id = await tryRev(git, MAIN_REF);
     return id ? describe(id) : null;
   }
+  const tip = await branchTip(git, at);
+  if (tip) return describe(tip);
+  if (/^[0-9a-f]{7,40}$/i.test(at)) {
+    const id = await tryRev(git, at);
+    if (id) return describe(id);
+  }
   const ms = /^\d+$/.test(at) ? Number(at) : Date.parse(at);
-  if (!Number.isFinite(ms)) throw new Error(`history/read: ${at} is neither a commit nor a time`);
-  if (!(await tryRev(branch))) return null;
-  const id = (await git(["rev-list", "-1", `--before=@${Math.floor(ms / 1000)}`, branch])).trim();
+  if (!Number.isFinite(ms)) throw new Error(`history/read: ${at} is neither a commit, a branch nor a time`);
+  if (!(await tryRev(git, on))) return null;
+  const id = (await git(["rev-list", "-1", `--before=@${Math.floor(ms / 1000)}`, on])).trim();
   return id ? describe(id) : null;
+}
+
+/** Where `head` forked from main: their last common commit. */
+async function baseOf(git: Git, head: string): Promise<string | undefined> {
+  try {
+    return (await git(["merge-base", MAIN_REF, head])).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Main and each Concept branch's git branch: its last commit, when, and
+ *  the commit it forked from main at; and each dropped one's, kept. A
+ *  caller who cannot read the graph's own pages sees main alone. */
+async function branches(git: Git, visible: Visible) {
+  const rows = (await git(["for-each-ref", "--format=%(refname)%1f%(objectname)%1f%(committerdate:iso-strict)", "refs/heads", DROPPED_REFS.replace(/\/$/, "")]))
+    .split("\n")
+    .filter(Boolean)
+    .map((r) => {
+      const [ref, head, time] = r.split("\x1f");
+      return { ref: ref!, head: head!, time: time! };
+    });
+  const live: Array<{ name: string; head: string; time: string; base?: string }> = [];
+  const dropped: Array<{ name: string; ref: string; head: string; time: string; base?: string }> = [];
+  for (const r of rows) {
+    if (r.ref === MAIN_REF) {
+      live.unshift({ name: HISTORY_BRANCH, head: r.head, time: r.time });
+      continue;
+    }
+    if (!visible("concepts")) continue;
+    const base = await baseOf(git, r.head);
+    if (r.ref.startsWith("refs/heads/")) live.push({ name: r.ref.slice("refs/heads/".length), head: r.head, time: r.time, ...(base ? { base } : {}) });
+    else dropped.push({ name: r.ref.slice(DROPPED_REFS.length).replace(/\/[^/]*$/, ""), ref: r.ref, head: r.head, time: r.time, ...(base ? { base } : {}) });
+  }
+  return { branches: live, dropped };
 }
 
 /** git's statuses, as the layout's. */
@@ -161,19 +228,18 @@ function changes(lines: string[]): Change[] {
   return out;
 }
 
-async function log(git: Git, cfg: { path?: string; run?: string; from?: string; to?: string; limit: number }, visible: Visible) {
-  const branch = `refs/heads/${HISTORY_BRANCH}`;
+async function log(git: Git, cfg: { path?: string; run?: string; from?: string; to?: string; limit: number }, visible: Visible, on: string) {
   const path = cfg.path !== undefined ? cleanPath(cfg.path) : undefined;
   if (path !== undefined && path && !visible(path)) return { commits: [] };
-  const to = cfg.to ? await commitOf(git, cfg.to) : await commitOf(git, HISTORY_BRANCH);
+  const to = cfg.to ? await commitOf(git, cfg.to, on) : await commitOf(git, on.slice("refs/heads/".length), on);
   if (!to) return { commits: [] };
-  const from = cfg.from ? await commitOf(git, cfg.from) : null;
+  const from = cfg.from ? await commitOf(git, cfg.from, on) : null;
   const range = from ? `${from.id}..${to.id}` : to.id;
   let follow = false;
   if (path) {
     let kind = "";
     try {
-      kind = (await git(["cat-file", "-t", `${branch}:${path}`])).trim();
+      kind = (await git(["cat-file", "-t", `${to.id}:${path}`])).trim();
     } catch {
       // gone now: a file, if its last segment reads as one
       kind = /\.[^/]+$/.test(path) ? "blob" : "tree";
@@ -258,9 +324,9 @@ function fileOf(path: string, text: string): Record<string, unknown> {
   return { text };
 }
 
-async function diff(git: Git, cfg: { from?: string; to?: string; path?: string; patch: boolean; limit: number }, visible: Visible) {
-  const from = await commitOf(git, cfg.from!);
-  const to = await commitOf(git, cfg.to!);
+async function diff(git: Git, cfg: { from?: string; to?: string; path?: string; patch: boolean; limit: number }, visible: Visible, on: string) {
+  const from = await commitOf(git, cfg.from!, on);
+  const to = await commitOf(git, cfg.to!, on);
   if (!to) throw new Error(`history/read: no commit at or before ${cfg.to}`);
   // Before the first commit, the tree was empty.
   const fromRev = from?.id ?? EMPTY_TREE;
@@ -278,8 +344,5 @@ async function diff(git: Git, cfg: { from?: string; to?: string; path?: string; 
   }
   return { from: from?.id ?? null, to: to.id, entries, ...(all.length > cfg.limit ? { more: true } : {}) };
 }
-
-/** git's empty tree, which every repository has without holding it. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const strip = ({ kind: _kind, ...rest }: Record<string, unknown>) => rest;

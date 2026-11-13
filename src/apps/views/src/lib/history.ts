@@ -48,6 +48,21 @@ export async function readLog(client: StrutClient, opts: { path?: string; limit?
   return { commits: r.commits ?? [], more: !!r.more };
 }
 
+/** A branch of the history as `history/read branches` gives it: main, or a
+ *  Concept branch (its git branch, `base` the commit it forked from main at). */
+export interface HistoryBranch {
+  name: string;
+  head: string;
+  time: string;
+  base?: string;
+}
+
+/** The history's live branches, main first: a moment may name one. */
+export async function readBranches(client: StrutClient): Promise<HistoryBranch[]> {
+  const r = answered<{ branches?: HistoryBranch[] } | undefined>(await client.run(HISTORY_STEP, { action: "branches" }));
+  return r?.branches ?? [];
+}
+
 /** A page at a commit or time, parsed; undefined when it is not there. */
 export async function readPage(client: StrutClient, path: string, at: string): Promise<ConceptPage | undefined> {
   try {

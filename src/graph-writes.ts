@@ -32,7 +32,11 @@
  *     A write whose type is not known is one it records. A flush of
  *     instances alone tells it nothing: a snapshot reads every Concept,
  *     and an ingest run would make it read them all every few seconds for
- *     a commit that never comes.
+ *     a commit that never comes. On a Concept branch (a run's view bound
+ *     by `bindBranch`, src/branches.ts) a page or a `PARENT_OF` link is the
+ *     branch's and touches its git branch; a type, a claim or a check is the
+ *     live graph's (ruling 3) and touches main; one of unknown type, both
+ *     (`historySides`).
  *
  * Not heard: a write through raw Cypher (`graph.query`), a write by another
  * process (jarvis, an ingest, a host writing the database itself), and
@@ -44,7 +48,8 @@
 import type { HistoryCapability } from "./history.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { LiveFeed, type FeedRead } from "./live-feed.js";
-import { fullReaderOf } from "./graph/scope.js";
+import { branchOf, fullReaderOf } from "./graph/scope.js";
+import { BRANCH_NAMESPACE_PREFIX } from "./graph/search.js";
 
 /** One write, as the feed keeps it. */
 export interface GraphChange {
@@ -80,6 +85,19 @@ export const historyRecords = (c: Pick<GraphChange, "kind" | "node_type" | "edge
   c.kind === "node"
     ? !c.node_type || HISTORY_NODE_TYPES.has(c.node_type.toLowerCase())
     : !c.edge_type || HISTORY_EDGE_TYPES.has(c.edge_type.toUpperCase());
+
+/** Where the history records a write a run made: main, its Concept branch
+ *  (`onBranch`), both or neither. On a branch a page or a `PARENT_OF` link
+ *  is the branch's; anything else it records is the live graph's (ruling 3);
+ *  a write of unknown type may be either. */
+export const historySides = (c: Pick<GraphChange, "kind" | "node_type" | "edge_type">, onBranch: boolean): { main: boolean; branch: boolean } => {
+  if (!historyRecords(c)) return { main: false, branch: false };
+  if (!onBranch) return { main: true, branch: false };
+  const type = c.kind === "node" ? c.node_type : c.edge_type;
+  if (!type) return { main: true, branch: true };
+  const page = c.kind === "node" ? type.toLowerCase() === "concept" : type.toUpperCase() === "PARENT_OF";
+  return { main: !page, branch: page };
+};
 
 /** The writes the deployment's feed keeps. */
 export const GRAPH_FEED_MAX = 5_000;
@@ -168,6 +186,8 @@ export function graphReporter(o: {
    *  records (and by whom). */
   history?: Pick<HistoryCapability, "waiting" | "touch" | "skipped">;
   actor?: string;
+  /** The Concept branch the writes are on (src/branches.ts). */
+  branch?: string;
   debounceMs?: number;
   maxDelayMs?: number;
 }): GraphReporter {
@@ -192,15 +212,25 @@ export function graphReporter(o: {
     if (batch.length === 0) return;
     // Decided once every write is typed; a send that fails before then
     // touches, so the history never misses one.
-    let recorded = false;
+    const recorded = { main: false, branch: false };
     let typed = false;
+    const note = (c: Pick<GraphChange, "kind" | "node_type" | "edge_type">) => {
+      if (recorded.main && (recorded.branch || !o.branch)) return;
+      const sides = historySides(c, !!o.branch);
+      recorded.main ||= sides.main;
+      recorded.branch ||= sides.branch;
+    };
     const tellHistory = () => {
       const h = o.history;
       if (!h) return;
-      if (recorded || !typed) {
+      const main = recorded.main || !typed;
+      const branch = !!o.branch && (recorded.branch || !typed);
+      if (main || branch) {
         const proposal = o.id?.startsWith("proposal:") ? o.id.slice("proposal:".length) : undefined;
         const cause = o.runId ? `run ${o.runId}` : proposal ? `proposal ${proposal}` : (o.id ?? "graph");
-        h.touch({ cause, ...(o.actor ? { actor: o.actor } : {}), ...(o.runId ? { run: o.runId } : {}) }, flush);
+        const t = { cause, ...(o.actor ? { actor: o.actor } : {}), ...(o.runId ? { run: o.runId } : {}) };
+        if (main) h.touch(t, flush);
+        if (branch) h.touch({ ...t, branch: o.branch! }, flush);
       } else h.skipped(flush);
       // A write noted while this batch was being typed is still waiting.
       if (pending.length > 0) h.waiting(flush);
@@ -220,11 +250,11 @@ export function graphReporter(o: {
       for (const c of batch) {
         if (c.kind === "node") {
           const node_type = c.node_type ?? (await resolve(c.ref_id));
-          if (!recorded && historyRecords({ kind: "node", node_type })) recorded = true;
+          note({ kind: "node", node_type });
           if (isQuietType(node_type)) continue;
           out.push(node_type ? { ...c, node_type } : c);
         } else {
-          if (!recorded && historyRecords(c)) recorded = true;
+          note(c);
           const ends = [await resolve(c.source), await resolve(c.target)];
           if (ends.some(isQuietType)) continue;
           const known = ends.filter((t): t is string => !!t);
@@ -460,6 +490,9 @@ export function bindGraph<TServices>(
   };
   const graph = bag.graph;
   if (!graph || (!graph.nodes && !graph.edges)) return { services };
+  // A view on a Concept branch (`bindBranch`): its pages are recorded on the branch's git branch.
+  const ns = branchOf(graph);
+  const branch = ns ? ns.slice(BRANCH_NAMESPACE_PREFIX.length) : undefined;
   const notify = bag.jobs?.notify ? (job: string, update: JobUpdateInput) => bag.jobs!.notify!(job, update) : undefined;
   if (!bag.graphChanges && !bag.history && !(o.job && notify)) return { services };
   // The change feed's types come from the whole graph, whoever wrote
@@ -474,6 +507,7 @@ export function bindGraph<TServices>(
     ...(typeReader ? { reader: typeReader } : {}),
     ...(bag.history ? { history: bag.history } : {}),
     ...(o.actor ? { actor: o.actor } : {}),
+    ...(branch ? { branch } : {}),
     ...(o.debounceMs !== undefined ? { debounceMs: o.debounceMs } : {}),
     ...(o.maxDelayMs !== undefined ? { maxDelayMs: o.maxDelayMs } : {}),
   });

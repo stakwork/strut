@@ -254,4 +254,24 @@ describe("graph writes, told to the history (plans/concept-history.md §3)", () 
     assert.deepEqual(h.touches, [{ cause: "run r1", run: "r1" }]);
     assert.equal(h.views.size, 0);
   });
+
+  // A run on a Concept branch (plans/concept-evals.md item c): a page is the branch's, a type the live graph's.
+  for (const [what, changes, touches] of [
+    ["a Concept", [{ kind: "node", op: "updated", ref_id: "c1", node_type: "Concept" }], ["try"]],
+    ["a PARENT_OF edge", [{ kind: "edge", op: "created", ref_id: "e1", edge_type: "PARENT_OF", source: "q1", target: "o1" }], ["try"]],
+    ["a type", [{ kind: "node", op: "updated", ref_id: "schema:Option", node_type: "Schema" }], ["main"]],
+    ["a Concept and a type", [{ kind: "node", op: "updated", ref_id: "c1", node_type: "Concept" }, { kind: "node", op: "updated", ref_id: "schema:Option", node_type: "Schema" }], ["main", "try"]],
+    ["a node no read could type", [{ kind: "node", op: "updated", ref_id: "gone" }], ["main", "try"]],
+    ["instances alone", [{ kind: "node", op: "created", ref_id: "a", node_type: "Option" }], []],
+  ] as const) {
+    it(`on a branch, a flush with ${what} touches ${touches.join(" and ") || "nothing"}`, async () => {
+      const h = fakeHistory();
+      const r = graphReporter({ runId: "r1", history: h, reader, debounceMs: 60_000, branch: "try" });
+      for (const c of changes) r.note(c);
+      await r.flush();
+      assert.deepEqual(h.touches.map((t) => (t as { branch?: string }).branch ?? "main").sort(), [...touches]);
+      assert.ok(h.touches.every((t) => (t as { cause: string }).cause === "run r1"));
+      assert.equal(h.views.size, 0);
+    });
+  }
 });
