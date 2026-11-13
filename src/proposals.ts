@@ -8,6 +8,7 @@ import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { bindGraph } from "./graph-writes.js";
+import { bindBranch, type BranchesCapability } from "./branches.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
 
@@ -66,7 +67,7 @@ export interface Proposal {
    *  which decides where the proposal shows (`visibleTo`): the session the
    *  root run's launch named, or, for a job's run, the session of the turn
    *  that started it (`startedBy`). Records from before it have none. */
-  by: { workflow: string; runId: string; path: string; job?: string; session?: string; conversation?: string; actor?: string; principal?: string };
+  by: { workflow: string; runId: string; path: string; job?: string; session?: string; conversation?: string; actor?: string; principal?: string; branch?: string };
   decision?: { action: ProposalAction; by?: string; at: string; input?: unknown; reason?: string };
   result?: { output?: unknown; error?: string; cost?: number; nodes?: unknown[]; at: string };
   /** When the proposing session was told of the decision (§5). */
@@ -518,6 +519,8 @@ export async function proposeCall(
       runId: ctx.runId,
       path: ctx.path,
       ...(ctx.job ? { job: ctx.job } : {}),
+      // A proposal made on a Concept branch applies on it (src/branches.ts).
+      ...(ctx.branch ? { branch: ctx.branch } : {}),
       ...(opts.session ? { session: opts.session } : {}),
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
@@ -685,7 +688,12 @@ export async function decideProposal(root: string, id: string, decision: Decisio
 /** The step run once, outside any run: the bag (secrets bound to the
  *  proposing run's principal), the registry, the job, the decider as actor. */
 async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: string | undefined, deps: DecideDeps): Promise<unknown> {
-  const bag = (deps.services ?? {}) as Record<string, unknown>;
+  const all = (deps.services ?? {}) as Record<string, unknown>;
+  // Made on a Concept branch: applied on it, while it exists (src/branches.ts).
+  if (p.by.branch && !(await (all["branches"] as BranchesCapability | undefined)?.get(p.by.branch))) {
+    throw new Error(`no_branch: this proposal was made on Concept branch "${p.by.branch}", which is gone — nothing applied`);
+  }
+  const bag = p.by.branch ? bindBranch(all, p.by.branch) : all;
   const secrets = bag["secrets"] as { forPrincipal?: (principal: string) => unknown } | undefined;
   // Its graph writes are heard like a run's (plans/live-feeds.md §2): the
   // proposing job's host reads the canvas again when a person's yes lands.
@@ -703,6 +711,7 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
     services: bound,
     registry: deps.registry,
     ...(p.by.job ? { job: p.by.job } : {}),
+    ...(p.by.branch ? { branch: p.by.branch } : {}),
     ...(by ? { actor: by } : {}),
     ...(p.by.principal ? { principal: p.by.principal } : {}),
     ...(mcp?.length ? { mcp } : {}),

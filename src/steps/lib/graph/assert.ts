@@ -152,6 +152,9 @@ export default defineStep({
           }
         }
       }
+      // On a Concept branch, a fact links no live page, and a branch page to nothing off the branch.
+      const { assertBranchLink } = await import("../../../graph/branch.js");
+      for (const f of facts) await assertBranchLink(b, [f.source_ref_id ?? "", f.target_ref_id ?? ""]);
       for (const f of facts) if (f.create_schema_if_missing || f.volatility) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
       // A kind of fact's check, made the first time it is given (plans/memory-checks.md).
       if (facts.some((f) => f.check)) {

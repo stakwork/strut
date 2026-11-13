@@ -290,6 +290,9 @@ export interface WakeLaunch {
   callback?: string;
   jobCallback?: string;
   wake: WakeMark;
+  /** The Concept branch the conversation is on: its first turn's
+   *  (src/branches.ts). Absent: main. */
+  branch?: string;
 }
 
 export interface WakeDeps {
@@ -417,6 +420,9 @@ export function createWakes(deps: WakeDeps): Wakes {
       // Who asked for the job; an end from another strut names nobody here,
       // so the person's latest turn's.
       const who: { actor?: string; principal?: string } = first.actor ? first : (anchor.start ?? {});
+      // The turn runs on the conversation's Concept branch: its first
+      // turn's, else (none committed yet) the job's starting turn's.
+      const branch = anchor.turns.length ? anchor.turns[0]!.branch : launching?.branch;
       const runId = deps.launch(flow, {
         input: { prompt: wakePrompt(template, ends), session, context: wakeContext(ctx, now()) },
         ...(typeof model === "string" && model ? { params: { model } } : {}),
@@ -424,6 +430,7 @@ export function createWakes(deps: WakeDeps): Wakes {
         ...(who.principal ? { principal: who.principal } : {}),
         ...(anchor.callback ? { callback: anchor.callback } : {}),
         ...(anchor.jobCallback ? { jobCallback: anchor.jobCallback } : {}),
+        ...(branch ? { branch } : {}),
         wake: wakeMarkOf(ends),
       });
       f.turn = { workflow: flow.name, runId, ends };

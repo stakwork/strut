@@ -79,7 +79,11 @@ import {
   type SearchParams,
   type SearchResult,
 } from "../search.js";
+import { BRANCH_NAMESPACE_PREFIX, branchedNamespace, type BranchesHeld } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
+
+/** The type a branch's namespace holds (`ReadScope.concepts`). */
+const CONCEPT = "Concept";
 import { ALT_NAMES } from "../node-writer.js";
 import { corrections, cuedPredicates, predicateWords, textQuery, words, type TextQuery } from "../text-match.js";
 import { namespaceName } from "./namespaces.js";
@@ -95,6 +99,8 @@ import { temporalEdgeTypes } from "./temporal.js";
 export interface LadybugReaderOptions {
   /** The semantic half; without it search is keyword-only. */
   embedder?: Embedder;
+  /** Whether the file holds a Concept branch now (`GraphBackendBase.branches`). */
+  branches?: BranchesHeld;
 }
 
 type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: LadybugCatalog; readonly schemaSource: LadybugSchemas };
@@ -221,10 +227,14 @@ export class LadybugReader implements GraphReader {
       ? (await this.engine.schemaSource.ontology()).schemas.filter((s) => domains.has(String(s.props["domain"] ?? "").toLowerCase())).map((s) => s.type)
       : [];
     const ns = this.scope.namespaces;
+    const concepts = this.scope.concepts;
+    // On a branch: a node is a Concept exactly when it is in the branch's namespace.
+    const branch = (a: string) =>
+      concepts ? ` AND ((${a}.node_type = '${CONCEPT}' AND ${a}.namespace = $scope_concepts) OR (${a}.node_type <> '${CONCEPT}' AND ${a}.namespace <> $scope_concepts))` : "";
     return {
-      node: (a) => `${ns ? ` AND ${a}.namespace IN $scope_ns` : ""}${hidden.length ? ` AND NOT ${a}.node_type IN $scope_hidden` : ""}`,
+      node: (a) => `${ns ? ` AND ${a}.namespace IN $scope_ns` : ""}${hidden.length ? ` AND NOT ${a}.node_type IN $scope_hidden` : ""}${branch(a)}`,
       edge: (a) => (ns ? ` AND ${a}.namespace IN $scope_ns` : ""),
-      params: { ...(ns ? { scope_ns: ns } : {}), ...(hidden.length ? { scope_hidden: hidden } : {}) },
+      params: { ...(ns ? { scope_ns: ns } : {}), ...(hidden.length ? { scope_hidden: hidden } : {}), ...(concepts ? { scope_concepts: concepts } : {}) },
     };
   }
 
@@ -298,7 +308,7 @@ export class LadybugReader implements GraphReader {
     const sc = await this.sql();
     const rows = await this.engine.query(
       `MATCH (n:Node {node_type: $type, namespace: $ns, key: $key}) WHERE ${LIVE("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
-      { type: canonical, key, ns: await this.resolveNamespace(namespace), ...sc.params },
+      { type: canonical, key, ns: await this.resolveNamespace(branchedNamespace(this.scope, canonical, namespace, this.engine.namespace)), ...sc.params },
     );
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
@@ -307,7 +317,7 @@ export class LadybugReader implements GraphReader {
     const frag = qstr.trim().toLowerCase();
     const schema = frag ? await this.engine.schemaSource.schemaRow(type, { live: true }) : null;
     if (!frag || !schema) return [];
-    const ns = await this.resolveNamespace(namespace);
+    const ns = await this.resolveNamespace(branchedNamespace(this.scope, schema.type, namespace, this.engine.namespace));
     const cap = Math.min(50, Math.max(1, Math.floor(Number(limit) || 8)));
     const sc = await this.sql();
     const rows = await this.engine.query(
@@ -481,6 +491,23 @@ export class LadybugReader implements GraphReader {
 
   // ── search ──────────────────────────────────────────────────────────────
 
+  /** A search's namespace clause: the one asked for (on a branch, with the
+   *  branch's, where its Concepts are); none asked reads every namespace
+   *  but a Concept branch's while the file holds one (`branches.held`) —
+   *  main never sees a branch's copies, and a file with none reads as it
+   *  always did — or, on a branch, every one, `sql` keeping that branch's
+   *  Concepts alone. Sets `$namespace` / `$branch_prefix` in `base`; null
+   *  when nothing to add. */
+  private branchClause(alias: string, asked: string | undefined, base: Params): string | null {
+    if (asked !== undefined) {
+      base["namespace"] = namespaceName(asked, this.engine.namespace) ?? asked;
+      return this.scope?.concepts ? `(${alias}.namespace = $namespace OR ${alias}.namespace = $scope_concepts)` : `${alias}.namespace = $namespace`;
+    }
+    if (this.scope?.concepts || !this.opts.branches?.held) return null;
+    base["branch_prefix"] = BRANCH_NAMESPACE_PREFIX;
+    return `NOT ${alias}.namespace STARTS WITH $branch_prefix`;
+  }
+
   async search(p: SearchParams): Promise<SearchResult> {
     const qstr = (p.q ?? "").trim();
     const fieldQuery = Boolean(p.input_q?.trim() || p.output_q?.trim());
@@ -507,14 +534,13 @@ export class LadybugReader implements GraphReader {
     const links = await Promise.all(parseLinks(p.linked ?? []).map(async (l) => ({ ...l, type: await this.canonical(l.type) })));
 
     // A Schema row has no search text, so no index returns it; said anyway.
-    // A namespace asked for narrows the reader's scope; none reads them all.
+    // A namespace asked for narrows the reader's scope; none reads them all
+    // but a Concept branch's (`branchClause`).
     const sc = await this.sql();
     const clauses = [live("node", p.include_deleted), DATA("node") + sc.node("node")];
     const base: Params = { ...sc.params };
-    if (p.namespace !== undefined) {
-      clauses.push("node.namespace = $namespace");
-      base["namespace"] = namespace;
-    }
+    const notBranch = this.branchClause("node", p.namespace, base);
+    if (notBranch) clauses.push(notBranch);
     if (types) {
       clauses.push("node.node_type IN $node_types");
       base["node_types"] = types;
@@ -528,7 +554,7 @@ export class LadybugReader implements GraphReader {
     if (linked) clauses.push(linked);
     // Every filter is a WHERE after the index's top-k (one index, no
     // routing), so any filter widens both halves.
-    const widen = Boolean(types || excludeRe || linked || this.scope || p.namespace !== undefined);
+    const widen = Boolean(types || excludeRe || linked || this.scope || notBranch);
     const filter = clauses.join(" AND ");
     const cap = fetchLimit(limit, skip);
     const warnings: string[] = [];
@@ -759,10 +785,9 @@ export class LadybugReader implements GraphReader {
   private async factQuery(p: SearchParams & { limit: number; skip: number }, sc: ScopeSql, timeRow: string, time: Params): Promise<FactQuery> {
     const where = [`node.node_type = '${EDGE_TEXT_TYPE}'`, live("node", p.include_deleted) + sc.node("node"), timeRow];
     const base: Params = { ...sc.params, ...time };
-    if (p.namespace !== undefined) {
-      where.push("node.namespace = $namespace");
-      base["namespace"] = await this.resolveNamespace(p.namespace);
-    }
+    const notBranch = this.branchClause("node", p.namespace, base);
+    if (notBranch) where.push(notBranch);
+    if (p.namespace !== undefined) base["namespace"] = await this.resolveNamespace(p.namespace);
     const filter = where.join(" AND ");
     const cap = fetchLimit(p.limit, p.skip);
     // The row's text and clocks ride along for the keyword ranking.

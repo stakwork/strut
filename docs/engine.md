@@ -490,7 +490,7 @@ the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.i
 
 ### `src/runner.ts`
 
-execution engine: DAG (topological), retry, onError, control flow, journal replay; each run's view of the services bag (`bindPrincipal`, `bindPeer`, `bindApp`, and `bindGraph` from graph-writes.ts, flushed at the run's end)
+execution engine: DAG (topological), retry, onError, control flow, journal replay; each run's view of the services bag (`bindPrincipal`, `bindPeer`, `bindApp`, `bindBranch` from branches.ts, and `bindGraph` from graph-writes.ts, flushed at the run's end). A run's Concept BRANCH (`RunOptions.branch`, src/branches.ts): the launch's, else the branch of the bag it was launched with (a step's `ctx.services`, already on one — naming another is `branch_fixed:`); a branch that does not exist (`services.branches`) fails the run at its start (`no_branch:`, like an input that does not parse); recorded on `run.start` and every summary, handed to every step as `ctx.branch`
 
 ### `src/output-cap.ts`
 

@@ -43,7 +43,7 @@ namespace `src/steps/lib/x/`.
 | The AI workflow builder (chat and `builder` job) | [docs/builder.md](docs/builder.md) | `ai/`, `chat-store.ts`, `chat-view.ts`, `compaction.ts`, `builder-seed.ts`, `meta/*` |
 | Jobs, conversations, wakes, live feeds, proposals, seeded workflows | [docs/jobs.md](docs/jobs.md) | `jobs.ts`, `job-*.ts`, `wake.ts`, `conversations.ts`, `live-feed.ts`, `proposals.ts`, `proposal-feed.ts`, `artifact-refs.ts`, `orchestrator-seed.ts`, `system-workflows.ts`, `workflows/`, `job/*`, `conversation/*`, `proposal/*` |
 | Automations (schedules) | [docs/automations.md](docs/automations.md) | `automations.ts`, `scheduler.ts`, `automations-routes.ts`, `automation/*` |
-| Claims, sealing, Concepts, the dream, history | [docs/knowledge.md](docs/knowledge.md) | `claims-*.ts`, `verify.ts`, `work.ts`, `ledger.ts`, `sealed.ts`, `knowledge.ts`, `history.ts`, `concept-seed.ts`, `concepts/`, `graph/claims*.ts`, `knowledge/*`, `dream/*`, `history/*`, `context/*` |
+| Claims, sealing, Concepts, the dream, history | [docs/knowledge.md](docs/knowledge.md) | `claims-*.ts`, `verify.ts`, `work.ts`, `branches.ts`, `ledger.ts`, `sealed.ts`, `knowledge.ts`, `history.ts`, `concept-seed.ts`, `concepts/`, `graph/claims*.ts`, `knowledge/*`, `dream/*`, `history/*`, `context/*` |
 | The graph layer: Neo4j and LadybugDB | [docs/graph.md](docs/graph.md) | `graph/`, `graph-writes.ts`, `graph/*`, `memory/*` |
 | Apps, the kit, channels | [docs/apps.md](docs/apps.md) | `apps/`, `channels.ts`, `channels-peer.ts`, `brand.ts`, `app/*`, `channel/*`; `kit/` at the root |
 | Packages, indexes, the store, serve mode | [docs/packages.md](docs/packages.md) | `packages/`, `package-lookup.ts`, `tar.ts`, `package/*` |

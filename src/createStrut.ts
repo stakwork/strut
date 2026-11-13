@@ -160,6 +160,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
@@ -982,6 +983,9 @@ export interface StrutRunOptions<TServices = unknown> {
    *  (src/mcp-servers.ts), handed to the run's steps as `ctx.mcp`. Not
    *  validated here, as the route's is. */
   mcp?: McpServer[];
+  /** The Concept branch to run on — the twin of `POST …/run { branch }`
+   *  (src/branches.ts). With `parentRunId`, the parent's branch, and no other. */
+  branch?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -1151,6 +1155,15 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
+  // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
+  // named copy of the Concept tree in a graph namespace of its own, which a
+  // launch's `branch` points a run at. One is dropped only with no run on
+  // it in flight here.
+  const branchesCap: BranchesCapability | undefined = graph
+    ? createBranches({ dataDir, graph, inFlight: (name) => [...controllers.values()].some((c) => c.branch === name) })
+    : undefined;
+  // Before anything reads: a read on main leaves the branches out while there are any.
+  await branchesCap?.load();
   // Parked runs (src/park.ts, plans/human-steps.md §2): a run that waits
   // leaves memory as `waiting`; a source wakes it, and the wake is the
   // durable resume (§5) marked `woken`. The waiting runs are kept beside the
@@ -1231,9 +1244,14 @@ export async function createStrut<TServices = unknown>(
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
    *  untrack fn belongs in the launcher's finally. `job` is the launch's
    *  job and title, shown on the run's row until its summary is written. */
-  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }) => {
+  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }, branch?: string) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
+    // A run on a Concept branch starts every run on it (src/branches.ts):
+    // its child inherits it and names no other.
+    if (parent?.branch && branch && branch !== parent.branch) {
+      throw new Error(`branch_fixed: run ${parent.runId} is on Concept branch "${parent.branch}", and so is every run it starts — it cannot start one on "${branch}"`);
+    }
     // While draining (src/drain.ts) nothing new starts: every launch path
     // registers here, so this is where a new ROOT run is refused. A run a
     // run in flight launches is part of that run's work and still starts.
@@ -1241,6 +1259,7 @@ export async function createStrut<TServices = unknown>(
     if (draining) throw new DrainingError(draining);
     const controller = new RunController(runId, workflow, parent);
     if (job) controller.job = job;
+    if (parent?.branch ?? branch) controller.branch = (parent?.branch ?? branch)!;
     controllers.set(key, controller);
     controllersByRunId.set(runId, controller);
     const untrack = () => {
@@ -1447,6 +1466,8 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // The Concept branches a run may be on (the runner checks its launch's).
+    ...(branchesCap ? { branches: branchesCap } : {}),
     // The history `history/read` reads and a run's graph view tells
     // (src/history.ts): its reads and its touches, never `hold` or `close`.
     ...(history
@@ -2926,6 +2947,8 @@ export async function createStrut<TServices = unknown>(
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
         ...(p.runStart.job ? { job: p.runStart.job } : {}),
+        // A run stays on its Concept branch (src/branches.ts).
+        ...(p.runStart.branch ? { branch: p.runStart.branch } : {}),
         ...(p.runStart.conversation ? { conversation: p.runStart.conversation } : {}),
         ...(p.runStart.wakeAsked ? { wake: true } : {}),
       },
@@ -7045,6 +7068,12 @@ export async function createStrut<TServices = unknown>(
      *  artifacts when it starts, put on each `agent` step's prompt. The
      *  bytes never reach the log. */
     attachments?: unknown;
+    /** The Concept BRANCH the run is on (src/branches.ts, ruling 10): a
+     *  launch-level field like `job`, never in `input`. Its Concepts are the
+     *  branch's, the rest of the graph live; every run it starts is on it.
+     *  Full scope only; a peer's launch is refused it. Recorded on
+     *  `run.start` and the summary. */
+    branch?: string;
   }
 
   /**
@@ -7151,6 +7180,7 @@ export async function createStrut<TServices = unknown>(
       runId,
       undefined,
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
+      body.branch,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
     detachedEnds.set(`${flow.name}/${runId}`, false);
@@ -7250,6 +7280,7 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
+        ...(body.branch ? { branch: body.branch } : {}),
         ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(body.conversation ? { conversation: body.conversation } : {}),
         ...(body.wake === true ? { wakeAsked: true } : {}),
@@ -7364,7 +7395,7 @@ export async function createStrut<TServices = unknown>(
     launch: (flow, run) =>
       launchDetached(
         flow,
-        { input: run.input, ...(run.params ? { params: run.params } : {}) },
+        { input: run.input, ...(run.params ? { params: run.params } : {}), ...(run.branch ? { branch: run.branch } : {}) },
         {
           ...(run.actor ? { actor: run.actor } : {}),
           ...(run.principal ? { principal: run.principal } : {}),
@@ -7608,7 +7639,9 @@ export async function createStrut<TServices = unknown>(
       if (running) {
         throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then`);
       }
-      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}) }, {
+      // The launching run's Concept branch: a job a run on a branch starts is on it (src/branches.ts).
+      const branch = controllersByRunId.get(from)?.branch;
+      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}), ...(branch ? { branch } : {}) }, {
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
         ...(startedBy ? { startedBy } : {}),
@@ -7671,6 +7704,22 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`conversation "${String(body.conversation)}" ${problem}`);
     return body.conversation;
   };
+  /** Why a run body's `branch` (src/branches.ts) is refused, or null: set
+   *  by whoever launches the root with the deployment's rights alone (a
+   *  peer's launch is refused it before this, `peerLaunchBody`), and only a
+   *  branch that exists. Absent or `null` = main. */
+  const runBranchRefusal = async (body: RunBody, scope: Scope): Promise<{ status: 400 | 403 | 404; error: string } | null> => {
+    if (body.branch == null) {
+      delete body.branch;
+      return null;
+    }
+    if (scope !== "full") return { status: 403, error: "forbidden: a launch on a Concept branch is the deployment's (its key, or an admin's session)" };
+    const problem = branchNameProblem(body.branch);
+    if (problem) return { status: 400, error: `branch: ${problem}` };
+    if (!branchesCap) return { status: 400, error: "branch: this strut server keeps no Concept branches (a graph workspace does)" };
+    if (!(await branchesCap.get(body.branch))) return { status: 404, error: `branch: no Concept branch "${body.branch}" — POST /branches makes one` };
+    return null;
+  };
   /** A run body's `wake`: `true` or absent (`false` / `null` = not asked). */
   const runWakeOf = (body: RunBody): void => {
     if (body.wake != null && typeof body.wake !== "boolean") throw new Error("wake must be true or false");
@@ -7724,7 +7773,8 @@ export async function createStrut<TServices = unknown>(
    *  why not. Which workflows a peer may launch is their YAML's `peer:`
    *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
-    const set = (["params", "paramOverrides", "runId", "settings", "conversation"] as const).filter((k) => body[k] != null);
+    // A branch does not cross to another strut (src/branches.ts): it runs on its own tree.
+    const set = (["params", "paramOverrides", "runId", "settings", "conversation", "branch"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
     // A peer's turn is a relay, never woken here (src/wake.ts): its `wake`
     // is dropped, not refused, so a relay that passes one through works.
@@ -7975,6 +8025,8 @@ export async function createStrut<TServices = unknown>(
           // A first-party page's turn is the person's (plans/jamie-app.md
           // §3): strut is its host, so strut wakes it when its jobs end.
           ...(isFirstParty(by.app) ? { wake: true } : {}),
+          // Launched from a run on a Concept branch: on it (src/branches.ts).
+          ...(by.branch ? { branch: by.branch } : {}),
         },
         {
           ...(by.actor ? { actor: by.actor } : {}),
@@ -8241,6 +8293,45 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // ── Concept branches (src/branches.ts, plans/concept-evals.md item b) ──
+  // A person with the deployment's rights makes one (a copy of the live
+  // tree, or empty), lists them, and drops one; a launch's `branch` runs on it.
+  const branchRoute = async (c: Context): Promise<Response | null> => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: Concept branches are the deployment's (its key, or an admin's session)" }, 403);
+    if (!branchesCap) return c.json({ error: "this strut server keeps no Concept branches: they need a graph workspace" }, 404);
+    return null;
+  };
+  const branchError = (c: Context, err: unknown) =>
+    err instanceof BranchError ? c.json({ error: err.message }, err.status) : c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  app.get("/branches", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    return c.json({ branches: await branchesCap!.list() });
+  });
+  app.post("/branches", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body["name"] !== "string" || (body["from"] !== undefined && body["from"] !== "main" && body["from"] !== "empty")) {
+      return c.json({ error: 'body must be { name, from?: "main" | "empty" }' }, 400);
+    }
+    try {
+      const by = await resolveActor(c);
+      return c.json(await branchesCap!.create({ name: body["name"], ...(body["from"] ? { from: body["from"] as "main" | "empty" } : {}), ...(by ? { by } : {}) }), 201);
+    } catch (err) {
+      return branchError(c, err);
+    }
+  });
+  app.delete("/branches/:name", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    try {
+      return c.json(await branchesCap!.drop(c.req.param("name")));
+    } catch (err) {
+      return branchError(c, err);
+    }
+  });
+
   // `callback: { url }` asks for the result to be POSTed there when the run
   // settles (postRunCallback): validated BEFORE anything launches, and the
   // 202 carries `callback: true` — the host's proof this server honors it.
@@ -8271,6 +8362,8 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    const branchRefused = await runBranchRefusal(body, scope);
+    if (branchRefused) return c.json({ error: branchRefused.error }, branchRefused.status);
     let flow;
     try {
       flow = await workspace.getWorkflow(name);
@@ -8337,6 +8430,8 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    const branchRefused = await runBranchRefusal(body, scope);
+    if (branchRefused) return c.json({ error: branchRefused.error }, branchRefused.status);
     let flow;
     try {
       flow = await workspace.getWorkflowVersion(name, version);
@@ -9889,6 +9984,7 @@ export async function createStrut<TServices = unknown>(
       runId,
       runOpts?.parentRunId,
       runOpts?.job ? { id: runOpts.job, ...(runOpts.title ? { title: runOpts.title } : {}) } : undefined,
+      runOpts?.branch,
     );
     try {
       const workflowHash =
@@ -9913,6 +10009,7 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.job ? { job: runOpts.job } : {}),
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
         ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
+        ...(controller.branch ? { branch: controller.branch } : {}),
       });
     } finally {
       untrack();

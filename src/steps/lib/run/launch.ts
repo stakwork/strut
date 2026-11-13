@@ -35,6 +35,8 @@ export default defineStep({
       ...(ctx.principal ? { principal: ctx.principal } : {}),
       ...(ctx.app ? { app: ctx.app } : {}),
       ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
+      // A run on a Concept branch launches on it (src/branches.ts).
+      ...(ctx.branch ? { branch: ctx.branch } : {}),
     });
   },
 });

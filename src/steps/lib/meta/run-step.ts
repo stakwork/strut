@@ -33,6 +33,8 @@ export default defineStep({
       cassette: cfg.cassette,
       cassetteName: cfg.cassetteName,
       keep: cfg.keep,
+      // A run on a Concept branch runs the step on it (src/branches.ts).
+      ...(ctx.branch ? { branch: ctx.branch } : {}),
     });
   },
 });

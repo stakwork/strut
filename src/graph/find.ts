@@ -28,7 +28,7 @@ import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
 import { namespaceName } from "./ladybug/namespaces.js";
 import { HIDDEN_TYPES } from "./ladybug/registry.js";
-import { boundsOf, hidesType, readsNamespace } from "./scope.js";
+import { boundsOf, branchedNamespaceOf, hidesType, onBranchSide, readsNamespace } from "./scope.js";
 import { storedName } from "./neo4j-engine.js";
 import { stampKey, toEpochSeconds } from "./node-writer.js";
 import { nodeTitle } from "./title.js";
@@ -127,8 +127,10 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   // On a ladybug file `default` is the backend's own namespace.
   const ns = b.kind === "ladybug" ? namespaceName(input.namespace, b.namespace) : input.namespace ?? b.namespace ?? DEFAULT_NAMESPACE;
   if (ns === null) throw new FindError(`namespace ${String(input.namespace)} is not a namespace name`);
-  if (bounds && !readsNamespace(bounds.list, ns, b.namespace)) return { node_type: type, nodes: [], returned: 0, ...(input.count ? { total: 0 } : {}) };
-  const params: Record<string, unknown> = { ns, default_ns: DEFAULT_NAMESPACE };
+  // A run on a Concept branch reads the branch's Concepts, and nothing else there.
+  const at = branchedNamespaceOf(b, type, ns);
+  if ((bounds && !readsNamespace(bounds.list, ns, b.namespace)) || !onBranchSide(b, type, at)) return { node_type: type, nodes: [], returned: 0, ...(input.count ? { total: 0 } : {}) };
+  const params: Record<string, unknown> = { ns: at, default_ns: DEFAULT_NAMESPACE };
   let p = 0;
   const param = (name: string, value: unknown): string => {
     const base = baseOf(fields[name]!);

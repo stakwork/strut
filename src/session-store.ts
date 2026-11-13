@@ -147,6 +147,9 @@ export interface NewTurn {
    *  turn was made under, so a thread is found from its job whatever its
    *  id (plans/job-index.md §4). Records, ties nothing. */
   job?: string;
+  /** The Concept branch the run was on (src/branches.ts): a conversation
+   *  stays on its first turn's (`bindBranch`). Absent: main. */
+  branch?: string;
   /** The files this turn's prompt carried (`ctx.attachments`), saved under
    *  `runId`'s artifacts: what a later turn's tools may hand on (job/start).
    *  Absent when it carried none. */

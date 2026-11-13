@@ -45,7 +45,7 @@ import { namespaceName } from "./ladybug/namespaces.js";
 import { mergedInto } from "./ladybug/merge.js";
 import { HIDDEN_TYPES } from "./ladybug/registry.js";
 import { ALT_NAMES, GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
-import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } from "./scope.js";
+import { ALL_NAMESPACES, boundsOf, branchedNamespaceOf, hidesType, onBranchSide, readsNamespace, type ReaderList } from "./scope.js";
 import type { NodeSchema } from "./schema-resolver.js";
 import { GraphReadError } from "./search.js";
 import { composeTitle } from "./title.js";
@@ -121,7 +121,8 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   // The ontology's Schema rows and the edges' search rows are not data nodes.
   if (HIDDEN_TYPES.includes(schema.type)) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
   if (schema.type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", THING_TYPE, THING_REFUSED);
-  const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
+  // A run on a Concept branch resolves the branch's Concepts, and nothing else there.
+  const namespaces = [...new Set(scope(input.namespaces, b.namespace, bounds?.list).map((ns) => branchedNamespaceOf(b, schema.type, ns)))].filter((ns) => onBranchSide(b, schema.type, ns));
   if (!namespaces.length) return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: [] };
   const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);
   const limit = Math.min(CANDIDATES_MAX, Math.max(1, Math.floor(Number(input.limit) || CANDIDATES_DEFAULT)));

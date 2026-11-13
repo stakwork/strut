@@ -30,6 +30,7 @@ import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import { appSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
+import { bindBranch, branchOfServices, type BranchesCapability } from "./branches.js";
 import { outputTooBig } from "./output-cap.js";
 import { guardEscapes } from "./escaped-errors.js";
 import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkingCapability } from "./park.js";
@@ -133,6 +134,14 @@ export interface RunOptions<TServices = unknown> {
    *  the run is already on the list. */
   job?: string;
   title?: string;
+  /** The Concept BRANCH the run is on (src/branches.ts, ruling 10): a
+   *  launch-level field beside `job`, recorded on `run.start` and the
+   *  summary, handed to every step as `ctx.branch`, read back by a resume.
+   *  Its Concepts are the branch's, the rest of the graph live (`bindBranch`).
+   *  A run launched with a bag already on a branch (a step's `ctx.services`)
+   *  is on that one, and may name no other. It must exist
+   *  (`services.branches`), or the run fails at its start. */
+  branch?: string;
   /** A job run: the TURN that started it (`RunEvent.startedBy`) — recorded
    *  on `run.start` and on the job's record; the job launcher is the one
    *  site that sets it. */
@@ -328,6 +337,8 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  /** The run's Concept branch (`StepContext.branch`). */
+  branch?: string;
   app?: AppRef;
   automation?: { id: string };
   wake?: WakeMark;
@@ -431,6 +442,7 @@ export function summaryFromLog(
     ...(start?.actor ? { actor: start.actor } : {}),
     ...(start?.principal ? { principal: start.principal } : {}),
     ...(start?.job ? { job: start.job } : {}),
+    ...(start?.branch ? { branch: start.branch } : {}),
     ...(start?.origin ? { origin: start.origin } : {}),
     ...(start?.app ? { app: start.app } : {}),
     ...(start?.visitor ? { visitor: start.visitor } : {}),
@@ -480,12 +492,18 @@ async function executeRun<TServices = unknown>(
   const store = opts.store;
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
+  // The Concept branch: the bag's it was launched with (a step's
+  // `ctx.services`, already on one), else the launch's. A launch naming
+  // another than its bag's fails below (`branch_fixed:`).
+  const onBag = branchOfServices(opts?.services);
+  const branch = onBag ?? opts?.branch;
   // On every summary this run can write (see `RunSummary.automation`).
   const summaryStamp = {
     ...(opts?.automation ? { automation: opts.automation } : {}),
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
     ...(opts?.job ? { job: opts.job } : {}),
+    ...(branch ? { branch } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(opts?.app ? { app: opts.app } : {}),
     ...(opts?.origin === "public" && opts.visitor ? { visitor: opts.visitor } : {}),
@@ -499,18 +517,23 @@ async function executeRun<TServices = unknown>(
   // peer's run gets its own session namespace the same way (bindPeer). Its
   // graph writes are heard (bindGraph, plans/live-feeds.md §2): told to the
   // run's job and kept in the deployment's change feed.
+  // On a Concept branch its Concepts are the branch's (bindBranch); on any
+  // run, a conversation stays on its first turn's branch.
   const { services, reporter: graphReports } = bindGraph(
-    bindApp(
-      bindPeer(
-        bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId),
-        opts?.origin,
-        opts?.peerPerson ? opts.actor : undefined,
+    bindBranch(
+      bindApp(
+        bindPeer(
+          bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId),
+          opts?.origin,
+          opts?.peerPerson ? opts.actor : undefined,
+          opts?.continues,
+        ),
+        opts?.app,
+        opts?.actor,
+        opts?.job,
         opts?.continues,
       ),
-      opts?.app,
-      opts?.actor,
-      opts?.job,
-      opts?.continues,
+      branch,
     ),
     { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
   );
@@ -547,13 +570,22 @@ async function executeRun<TServices = unknown>(
     await onEvent?.(full);
   };
 
-  // Validate input
+  // Validate input, and the branch the run is on.
   let parsedInput: unknown;
   try {
+    if (opts?.branch && onBag && opts.branch !== onBag) {
+      throw new Error(`branch_fixed: this run is started from one on Concept branch "${onBag}", and stays on it — it cannot run on "${opts.branch}"`);
+    }
+    if (branch) {
+      const branches = (opts?.services as { branches?: BranchesCapability } | undefined)?.branches;
+      if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (a graph workspace does) — the run cannot be on "${branch}"`);
+      if (!(await branches.get(branch))) throw new Error(`no_branch: there is no Concept branch "${branch}" here (it was dropped, or never made) — GET /branches lists them`);
+    }
     parsedInput = workflow.input.parse(input);
   } catch (err) {
+    const branchErr = err instanceof Error && /^(branch_fixed|no_branch):/.test(err.message);
     const error = {
-      message: `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: branchErr ? (err as Error).message : `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
       stack: err instanceof Error ? err.stack : undefined,
     };
     await emit({ type: "run.error", path: wfName, error });
@@ -607,6 +639,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
+      ...(branch ? { branch } : {}),
       ...(opts?.app ? { app: opts.app } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
@@ -664,6 +697,7 @@ async function executeRun<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    ...(branch ? { branch } : {}),
     app: opts?.app,
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
@@ -1224,6 +1258,7 @@ async function dispatchStep(
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
         ...(exec.job ? { job: exec.job } : {}),
+        ...(exec.branch ? { branch: exec.branch } : {}),
         ...(exec.app ? { app: exec.app } : {}),
         ...(exec.automation ? { automation: exec.automation } : {}),
         ...(exec.wake ? { wake: exec.wake } : {}),

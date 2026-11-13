@@ -472,6 +472,9 @@ export interface RunStepArgs {
   cassetteName?: string;
   /** Persist the run under `step:<type>` even when the step has no claims. */
   keep?: boolean;
+  /** The calling run's Concept branch (`ctx.branch`, src/branches.ts): the
+   *  step runs on it. */
+  branch?: string;
 }
 
 /**
@@ -548,7 +551,7 @@ export interface AuthoringCapability {
      *  `job/dir` and `workdir` resolve to the directory the parent holds,
      *  which it shares (`holdJob`). `mcp`: the launching run's caller's MCP
      *  servers (`ctx.mcp`), so the child's agents reach the same caller. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[] },
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[]; branch?: string },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -625,6 +628,9 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     parentRunId?: string,
     job?: { id: string; title?: string },
+    /** The Concept branch the run is on (src/branches.ts): the parent's,
+     *  when there is one, and no other. */
+    branch?: string,
   ) => { controller?: import("./run-control.js").RunController; untrack: () => void };
   /** The claims layer (plans/claims.md), built once by `createStrut` where
    *  it is on (a graph workspace, `StrutOptions.claims` not false). Null /
@@ -815,6 +821,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
           workspace,
           keep: args.keep === true,
+          ...(args.branch ? { branch: args.branch } : {}),
           ...(deps.reach ? { aiAuthored: true } : {}),
           ...(args.cassette
             ? {
@@ -950,7 +957,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // (src/drain.ts); a child of a run in flight still starts.
       let tracked: ReturnType<NonNullable<typeof deps.trackRun>> | undefined;
       try {
-        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined, opts?.branch);
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
@@ -969,6 +976,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.principal ? { principal: opts.principal } : {}),
           ...(opts?.job ? { job: opts.job } : {}),
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
+          // The parent's Concept branch, or the one it named from main (trackRun).
+          ...((tracked?.controller?.branch ?? opts?.branch) ? { branch: (tracked?.controller?.branch ?? opts?.branch)! } : {}),
         });
         // The graph nodes the child run touched, off its log — what its
         // steps and agents' tool calls reported (`step.end.nodes`), so the

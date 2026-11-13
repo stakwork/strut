@@ -209,6 +209,40 @@ index. A change in this area updates this file, not AGENTS.md.
   app, a chat with the tender, sources other than conversations, moving a
   page, retiring a claim.
 
+- **Concept branches — a copy of the tree a run can be pointed at**
+  (`src/branches.ts`, plans/concept-evals.md item b; rulings 2, 3 and 10).
+  A branch is a named copy of the Concept pages in a graph namespace of its
+  own, `branch-<name>` (the namespace half of ruling 2; the git half is
+  item c). `POST /branches { name, from: "main" | "empty" }` copies every
+  live Concept of the graph's own namespace and the `PARENT_OF` edges among
+  them (a copy carries no `unique_source_id`, so nothing reads it as a seeded
+  or a package's page), `GET /branches` lists them, `DELETE /branches/:name`
+  removes the pages and the record, refused while a run on it is in flight;
+  the record is `<dataDir>/branches/<name>.json`. A launch's `branch` (a
+  launch-level field beside `job`, full scope only, never a peer's) puts a
+  run on it: recorded on `run.start` and the summary, `ctx.branch`, kept by
+  a resume, inherited by every run it starts (job/start, job/continue,
+  meta/run-workflow, meta/run-step, run/launch, a proposal it made, the wake
+  turn that reports on its job — the conversation's), never changed by
+  them; a run on main may start one on a branch through meta/run-workflow's
+  `branch`. A conversation stays on the branch its first turn ran on (a
+  turn line carries `branch`; the agent step's session refuses another,
+  `session_branch:`). In a run on a branch the CONCEPTS are the branch's and
+  the rest of the graph is live (`bindBranch`, the run's view of the bag):
+  a Concept by name (graph-get, context/concept, knowledge/page), the
+  Concept hits of search, find and resolve, and a Concept write all go to
+  the branch; a write to a live Concept, anything else written into the
+  branch's namespace, and an edge between a branch page and anything off it
+  are refused; raw queries are off; automations are not scheduled from it.
+  Main never sees a branch: while one exists, a Ladybug search that names
+  no namespace leaves `branch-*` out (with none it reads as it always did),
+  and the history snapshot (`packageFiles(…, EVERYTHING)`)
+  records no branch page. Claims stay shared and are not on branches yet
+  (item d): a run on a branch opens the branch's pages, which no claim is
+  about, so the verify pass records nothing about them, and the Knowledge
+  door adds no claim or evidence from a branch. Not built: the git branch
+  (c), the compare read (d), merge (e), a per-branch type list.
+
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any
   custom step, whoever published it (ruled 2026-11-10: there is no
@@ -289,6 +323,10 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 ### `src/knowledge.ts`
 
 the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. Changing a Concept is not here: the workflow's `approve:` makes it a proposal
+
+### `src/branches.ts`
+
+CONCEPT BRANCHES (plans/concept-evals.md item b): `createBranches({ dataDir, graph, inFlight })` → `ctx.services.branches` (`list`, `get`, `create`, `drop`), set by createStrut on a graph workspace; a branch's namespace is `branch-<name>` (`BRANCH_NAME`: lowercase letters, digits, `-`, `_`, a letter first, at most 56). `load()` (createStrut, at boot) sets the backend's `branches.held` from the records, what a Ladybug read on main leaves `branch-*` out by; a create sets it before it writes, a drop or a failed create reads it again. Create registers the namespace (Neo4j searches registered ones only), clears what a cut-off create left there, copies the live tree in batches of 200 (`writeMany` upsert, `embed: "later"`; every declared attribute but `unique_source_id`) and its `PARENT_OF` edges, then writes the record; a copy that fails is cleared. Drop removes the record first (a run that starts from then on finds no branch), then every node in the namespace (`DETACH DELETE`), and on Neo4j unregisters the namespace. `bindBranch(services, branch)`: the run's view of the bag (the runner, beside `bindPrincipal` / `bindGraph`; an accepted proposal made on a branch too) — `graph` held to the branch (`onBranch`, src/graph/branch.ts), `knowledge` reading the branch's pages and adding no claim or evidence (`KnowledgeCapability.onBranch`), the automation steps' `create`/`update`/`fire` refused; on EVERY run, `sessions` refusing a conversation whose first turn ran on another branch and stamping each committed turn with the run's. `branchOfServices`: the branch a bag is already on — a run launched with a step's `ctx.services` is on it (runner.ts). Tested on both engines in graph/branches.test.ts
 
 ### `src/ledger.ts`
 

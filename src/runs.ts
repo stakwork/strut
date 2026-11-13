@@ -95,6 +95,9 @@ export interface RunLaunchBy extends RunCaller {
   principal?: string;
   /** The caller's MCP servers, handed on (`ctx.mcp`). */
   mcp?: McpServer[];
+  /** The launching run's Concept branch (`ctx.branch`): the run it
+   *  launches is on it too (src/branches.ts). */
+  branch?: string;
 }
 
 export interface RunLaunchResult {

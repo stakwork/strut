@@ -170,7 +170,7 @@ by the gate.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, settings?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments?, conversation?, wake? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true, wake?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, settings?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments?, conversation?, wake?, branch? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true, wake?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
 | POST   | `/conversations/wake`           | `{ session, source, end }` | 200 `{ wake: "launched" \| "capped" \| "none" }` |
 
@@ -188,6 +188,7 @@ by the gate.
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
 | `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`; a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — this message's, or one an earlier turn of its session carried (the turn log records them, `/sessions?id=`); not to a builder job on a peer |
 | `conversation`   | a session id (§9; a bad one is a 400) — the conversation this run belongs to, for a job turn you launch yourself: when it ends, strut WAKES that conversation as it does for a job a turn started (`CALLBACKS.md` §9, `src/wake.ts`). Recorded on `run.start`; read wherever `startedBy.session` is (a proposal's conversation). The deployment's only: a peer's launch carrying it is a 403 |
+| `branch`         | a Concept BRANCH's name (§5.7) — the run's Concepts are that branch's, the rest of the graph is live. A launch-level field like `job`, never in `input`: recorded on `run.start` and the summary, handed to steps as `ctx.branch`, kept by a durable resume, and every run this run starts is on it (`job/start`, `job/continue`, `meta/run-workflow`, `meta/run-step`, `run/launch`, the wake turn reporting on its job) and can name no other. A conversation stays on the branch its first turn ran on: an `agent` step's session whose first turn ran on another branch (or on main) fails the turn `session_branch:`. The deployment's only: 403 for any other scope, and a peer's launch carrying it is a 403 (a branch does not cross to another strut); a malformed name is a 400, a branch that does not exist a 404, and nothing launches. A run that names one dropped since (a resume, a wake) ends at once `no_branch:` |
 | `wake`           | `true`: ASK strut to wake this run's conversation when a job ends — on a person's turn (`input.session`), the jobs it starts; on a job turn you launch naming a `conversation`, that job (`CALLBACKS.md` §9, `src/wake.ts`). Opt-in: a launch that does not ask is never woken, so a host that wakes on its own never gets two. `true` or `false` (else a 400); recorded on `run.start` as `wakeAsked`. A peer's is dropped (its turns are relays) |
 
 **The wake.** A launch that asks (`wake: true`, with the deployment's
@@ -208,7 +209,7 @@ go-ahead to `@<source>`'s assistant. The deployment's only (403 to a peer).
 **A peer's launch** (the peer key, Auth) is narrower. The workflow — the
 version launched, for `/:version/run` — must say `peer: true` at the top
 of its YAML, else `403` (`workflow "x" is not open to peers`). It runs as
-published: `params`, `paramOverrides`, `runId` or `settings` in the body is a `403`
+published: `params`, `paramOverrides`, `runId`, `settings`, `conversation` or `branch` in the body is a `403`
 (`a peer launches a workflow as published — drop params`). And it runs in
 a namespace of its own: its `job` is kept as `peer/<job>` (what
 `run.start.job`, `ctx.job` and `GET /jobs/:id` say), and every agent
@@ -354,6 +355,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | `actor`, `principal` | who launched it and who is billed, when known |
 | `automation`   | `{ id }` when a schedule fired it |
 | `job`          | the job it was launched under (§3), when one was given |
+| `branch`       | the Concept branch it ran on (§3, §5.7); absent on main |
 | `origin`       | who launched it when it was not a person or an API call: `schedule`, `peer`, `app` (as on `run.start`) |
 | `app`          | `{ name, version }` — the app it was launched for, with `origin: "app"` (§14.1) |
 
@@ -583,6 +585,43 @@ claim tools and the `meta/*` claim steps do not take the kind, and are
 refused on every write to such a claim (the claim, its checks, attaching
 and detaching). Runs launched from those doors are still checked against
 these claims.
+
+### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` item b)
+
+A BRANCH is a named copy of the Concept pages, in a graph namespace of its
+own (`branch-<name>`), that a run is pointed at with the launch's `branch`
+(§3). In a run on a branch the Concepts are the branch's — a Concept by
+name (`graph/graph-get`, `context/concept`, `knowledge/page`), the Concept
+hits of `graph/graph-search`, `graph/find` and `graph/resolve`, and a
+Concept written — and everything else is the live graph. A write to a live
+Concept, anything else written into the branch's namespace, and an edge
+between a branch page and anything off the branch are refused; raw queries
+(`graph/query`) are off; the `automation/*` steps do not schedule. Main never
+sees a branch: no read that names no namespace returns its pages, and the
+history records none. The deployment's only: every route here is a 403 for
+any other scope, and a 404 on a strut with no graph workspace.
+
+| Method | Path               | Body | Response |
+| ------ | ------------------ | ---- | -------- |
+| GET    | `/branches`        | — | 200 `{ branches: ConceptBranch[] }`, by name |
+| POST   | `/branches`        | `{ name, from?: "main" \| "empty" }` | 201 `ConceptBranch` |
+| DELETE | `/branches/:name`  | — | 200 `{ name, pages }` |
+
+`ConceptBranch` is `{ name, namespace, createdAt, createdBy?, from, pages,
+links }`: `from: "main"` (the default) copies every live Concept of the
+graph's own namespace and the `PARENT_OF` edges among them — `pages` and
+`links` count them — and `"empty"` copies nothing. A copy carries the
+page's attributes and docs, never its source stamp (`unique_source_id`):
+nothing reads it as a seeded or a package's page. `name` is lowercase
+letters, digits, `-` and `_`, a letter first, at most 56 (400 otherwise);
+a name in use is a 409. `DELETE` removes the branch's pages and its record
+(`pages`: how many); 409 while a run on it is in flight here, 404 for no
+such branch. A parked run on a dropped branch ends `no_branch:` when it is
+woken.
+
+Claims are not on branches yet: a run on a branch opens the branch's
+pages, which no claim (§5.6) is about, so nothing is recorded about them,
+and `knowledge/add-claim` / `knowledge/add-evidence` refuse in such a run.
 
 ## 6. Control a run
 

@@ -59,6 +59,9 @@ export class RunController implements RunControl {
    *  (`POST …/run { job, title }`) — what a listing shows of a run that has
    *  no summary yet. Set by `trackRun`; control never reads it. */
   job?: { id: string; title?: string };
+  /** The Concept branch the run is on (src/branches.ts): set when it is
+   *  tracked; what a branch's drop and the runs it starts read. */
+  branch?: string;
 
   /** OWN state — the effective state additionally inherits the strictest
    *  ancestor (any ancestor cancelling → cancelling; else any ancestor
