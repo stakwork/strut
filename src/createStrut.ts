@@ -36,7 +36,7 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
-import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
+import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
 import { PAYMENTS_FILE } from "./payments/settings.js";
@@ -1621,10 +1621,10 @@ export async function createStrut<TServices = unknown>(
    *  pays (§8.2), handed by the door, never sent by the page. */
   const workerServicesOf = (address: string | undefined) => (workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}) } } : {});
   /** The Sphinx address a visitor's session carries (plans/human-steps.md
-   *  §8.2). The sign-in keeps none yet: item 5b's PR 2 adds it to the
-   *  session's signed claims and reads it here, the one seam. Until then a
-   *  worker has no address, and `task/withdraw` answers `no_address`. */
-  const sessionAddress = (_session: { actor?: string } | undefined): string | undefined => undefined;
+   *  §8.2): kept by `POST /visitors/session` in the session's signed claims
+   *  when it is the signing key's own. With none, `task/withdraw` answers
+   *  `no_address`. */
+  const sessionAddress = (session: { sphinxAddress?: string } | undefined): string | undefined => session?.sphinxAddress;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
   // caps a launch is admitted against, what a run in flight counts for, and
   // its charge when it ends. What is not yet charged is on file beside the
@@ -4488,8 +4488,8 @@ export async function createStrut<TServices = unknown>(
   };
   const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
   /** Sign `actor` in: the visitor's cookie, and the token beside it. */
-  const signVisitorIn = (c: Context, actor: string) => {
-    const started = startVisitorSession(actor)!;
+  const signVisitorIn = (c: Context, actor: string, sphinxAddress?: string) => {
+    const started = startVisitorSession(actor, sphinxAddress)!;
     c.header("set-cookie", visitorSessionCookie(started.token, started.session.exp, isSecureRequest(c)));
     c.header("cache-control", "no-store");
     return c.json({ actor, token: started.token, exp: started.session.exp });
@@ -4569,6 +4569,7 @@ export async function createStrut<TServices = unknown>(
       return refuse(`"${method}" is not a sign-in this server offers${claims.visitorKey === "domain" && METHOD_INFO[method].rootOnly ? " where its app asks for a key per domain" : ""}`);
     }
     let actor: string | null = null;
+    let sphinxAddress: string | undefined;
     if (method === "key") {
       const key = fromHex(body["key"]);
       const sig = fromHex(body["sig"]);
@@ -4583,6 +4584,10 @@ export async function createStrut<TServices = unknown>(
       if (!key || !sig) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
       actor = await VERIFIERS["ln-message"]!(new TextEncoder().encode(challenge), key, sig);
       if (!actor) return refuse("the signature does not hold for this challenge and key");
+      // The account's own address, for a payout (plans/human-steps.md §8.2):
+      // kept in the session only when its pubkey is the key that signed;
+      // else dropped, and the sign-in holds (an older Peel sends none).
+      sphinxAddress = keptSphinxAddress(method, key, body["address"]);
     } else if (method === "nostr") {
       const signer = await nostrSigner(c.req.header("authorization"), { url: `${publicUrlOf(c)}${new URL(c.req.url).pathname}`, method: "POST", body: raw }, Date.now(), (u) => {
         try {
@@ -4603,7 +4608,7 @@ export async function createStrut<TServices = unknown>(
       const { k1, exp } = lnurlLogins.register(challenge, host);
       return c.json({ pending: true, k1, exp, ...lnurlLogin(publicUrlOf(c), k1) }, 202);
     }
-    return signVisitorIn(c, actor!);
+    return signVisitorIn(c, actor!, sphinxAddress);
   });
 
   app.delete(VISITOR_SESSION_PATH, (c) => {

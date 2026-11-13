@@ -856,6 +856,7 @@ export const TASK_STEPS = {
   skip: "task/skip",
   file: "task/file",
   me: "task/me",
+  withdraw: "task/withdraw",
 } as const;
 
 /** `useWorker()`'s query: what `useTask().submit` reads again. */
@@ -889,6 +890,33 @@ export interface WorkerTask {
   payMsat: number;
 }
 
+/** A worker's payout on its way (`task/me`'s `payout.out`). */
+export interface WorkerPayoutOut {
+  key: string;
+  /** What the worker receives. */
+  msat: number;
+  /** The most the routing fee may come to: it comes off the balance. */
+  maxFeeMsat: number;
+  /** When it was asked, epoch ms. */
+  at: number;
+  /** Still unanswered a day on: staff settle it. */
+  stale: boolean;
+}
+
+/** Whether the viewer may withdraw here, and how much (`task/me`). */
+export interface WorkerPayout {
+  /** Withdrawing is open here now. */
+  on: boolean;
+  /** Why not. `no_address`: sign in with Peel, which sends the account's address. */
+  why?: "off" | "no_wallet" | "no_keysend" | "no_address" | "not_here";
+  minMsat: number;
+  /** This worker's cap left today. */
+  dayLeftMsat: number;
+  /** The most one withdrawal may ask now; 0 when under `minMsat`. */
+  maxMsat: number;
+  out?: WorkerPayoutOut;
+}
+
 /** What a worker is owed here, in msat (`task/me`). An earning waits in its
  *  hold (the task type's) before it can be withdrawn. */
 export interface WorkerBalance {
@@ -914,6 +942,8 @@ export interface WorkerInfo {
   types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
   /** What they are owed here: zeros with nothing earned. */
   balance: WorkerBalance;
+  /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
+  payout?: WorkerPayout;
 }
 
 /** The refusal code a task call's error begins with (`not_active`,
@@ -1072,6 +1102,70 @@ export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<Work
     queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, {}),
     enabled: opts.enabled ?? true,
   });
+}
+
+/** How often `useWithdraw` reads `useWorker()` again while a payout is on its way. */
+const PAYOUT_POLL_MS = 5_000;
+
+/** What `task/withdraw` answers: `settled`, `pending` (on its way, and
+ *  `useWorker().data.payout.out` shows it) or `failed` (the reserve is back),
+ *  with the fee. */
+export interface WithdrawResult {
+  state: "settled" | "pending" | "failed";
+  /** The payout's key: `payout.out.key` while it is on its way. */
+  key: string;
+  msat: number;
+  feeMsat: number;
+  maxFeeMsat: number;
+  /** A failed payout's words. */
+  error?: string;
+}
+
+export interface UseWithdraw {
+  /** Withdraw `msat` to the viewer's own Sphinx account (`task/withdraw`):
+   *  `msat` is what they receive, and a fee of at most `maxFeeMsat` comes off
+   *  their balance. Throws the refusal (`below_minimum`, `over_balance`,
+   *  `payout_out`, `no_address`, …). The server picks the address, never the page. */
+  withdraw(msat: number): Promise<WithdrawResult>;
+  status: "idle" | "sending" | "error";
+  error: Error | null;
+}
+
+/** Withdraw what passed its hold. Grant `task/withdraw` (and `task/me`) in
+ *  app.yaml. Reads `useWorker()` again when a withdrawal answers, then every
+ *  5 s while its `payout.out` is there. */
+export function useWithdraw(): UseWithdraw {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const me = useWorker();
+  const [status, setStatus] = useState<UseWithdraw["status"]>("idle");
+  const [error, setError] = useState<Error | null>(null);
+  const out = me.data?.payout?.out;
+  useEffect(() => {
+    if (!out) return;
+    const timer = setInterval(() => void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY }), PAYOUT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [out?.key, qc]);
+  const withdraw = useCallback(
+    async (msat: number) => {
+      setStatus("sending");
+      try {
+        const r = await client.run<WithdrawResult>(TASK_STEPS.withdraw, { msat });
+        setError(null);
+        setStatus("idle");
+        return r;
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus("error");
+        throw err;
+      } finally {
+        void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
+      }
+    },
+    [client, qc],
+  );
+  return { withdraw, status, error };
 }
 
 /** `task/file`: one file the task in hand names (`task.files`), read

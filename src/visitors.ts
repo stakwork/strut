@@ -118,6 +118,19 @@ export const VERIFIERS: Readonly<Partial<Record<VerifierName, Verifier>>> = {
   },
 };
 
+/** The Sphinx address a `sphinx` sign-in may keep (plans/human-steps.md
+ *  §8.2): the posted `address` (NOT the client address of the budgets) when
+ *  it parses and its pubkey is the compressed `key` that signed — never a
+ *  domain's child key's, a payout is encrypted to the address's own key.
+ *  Lower-case, or undefined: dropped, and the sign-in still holds. */
+export function keptSphinxAddress(method: VisitorMethod, key: Uint8Array, sphinxAddress: unknown): string | undefined {
+  if (method !== "sphinx" || typeof sphinxAddress !== "string") return undefined;
+  // The kit's `parseSphinxAddress` shape (engine code cannot import the kit).
+  const address = sphinxAddress.trim().toLowerCase();
+  const m = /^(0[23][0-9a-f]{64})_0[23][0-9a-f]{64}_\d+$/.exec(address);
+  return m && m[1] === hexOf(key) ? address : undefined;
+}
+
 // ── Methods ──────────────────────────────────────────────────────────────
 
 /** The sign-ins a box may name in its public view (§5.3). */

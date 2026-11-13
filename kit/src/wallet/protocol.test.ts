@@ -20,7 +20,8 @@ type Vectors = {
   credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
   credit_replies: Array<{ name: string; payment_hash: string; reply: unknown; outcome: "paid" | "pending" | "fallback"; preimage?: string; code?: string }>;
   sign_in_requests: Array<{ name: string; now: number; request: unknown; valid: boolean }>;
-  sign_in_replies: Array<{ name: string; reply: unknown; outcome: "signed" | "refused"; key?: string; sig?: string; code?: string }>;
+  sign_in_replies: Array<{ name: string; reply: unknown; outcome: "signed" | "refused"; key?: string; sig?: string; address?: string; code?: string }>;
+  sign_in_addresses: Array<{ name: string; signer: { seed: string; idx: number; network: string }; key: string; address: string }>;
   sign_in_signatures: Array<{ name: string; signer?: { seed: string; idx: number; network: string }; message: string; key: string; sig: string; actor: string | null }>;
   scenarios: Array<{
     name: string;
@@ -145,11 +146,21 @@ describe("wallet vectors: sign-in replies (what the host does with sign_in's ans
     it(v.name, () => {
       const r = readSignInReply(v.reply);
       assert.equal(r.outcome, v.outcome);
-      if (r.outcome === "signed") assert.deepEqual({ key: r.key, sig: r.sig }, { key: v.key, sig: v.sig });
+      if (r.outcome === "signed") assert.deepEqual({ key: r.key, sig: r.sig, address: r.address }, { key: v.key, sig: v.sig, address: v.address });
       else {
         assert.equal(r.code, v.code);
         assert.ok(r.message.length > 0);
       }
+    });
+  }
+});
+
+describe("wallet vectors: a seed's Sphinx address and its sign-in key agree", () => {
+  for (const v of vectors.sign_in_addresses) {
+    it(v.name, () => {
+      assert.equal(parseSphinxAddress(v.address)?.pubkey, v.key);
+      const signed = vectors.sign_in_signatures.find((s) => s.signer && s.signer.seed === v.signer.seed && s.signer.idx === v.signer.idx);
+      assert.equal(signed?.key, v.key);
     });
   }
 });

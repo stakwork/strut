@@ -1,5 +1,5 @@
 import { teardownDom, useActEnvironment } from "./test-dom.js";
-import { after, describe, it } from "node:test";
+import { after, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,7 +13,7 @@ import {
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
-  useTask, useWorker, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
+  useTask, useWorker, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -794,6 +794,47 @@ describe("a worker's page (plans/human-steps.md §5.3)", () => {
     await act(async () => { await h.result().t.submit({ same: true }); });
     await until(() => h.result().me.data?.balance.heldMsat === 21_000, "the balance read again");
     assert.equal(calls.filter((c) => c.type === "task/me").length, 2);
+    await h.unmount();
+  });
+
+  it("useWithdraw asks task/withdraw for an amount, reads useWorker again, then every 5 s while a payout is on its way", async () => {
+    let out: Record<string, unknown> | undefined;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({
+        actor: "secp:ab", status: "active", types: [], balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 },
+        payout: { on: true, minMsat: 1_000_000, dayLeftMsat: 9e9, maxMsat: 5_000_000, ...(out ? { out } : {}) },
+      }),
+      [TASK_STEPS.withdraw]: (c) => {
+        if (c.config?.msat === 1) throw new Error("below_minimum: the least is 1000 sats");
+        out = { key: "k1", msat: c.config?.msat, maxFeeMsat: 25_000, at: 1, stale: false };
+        return { state: "pending", msat: c.config?.msat, feeMsat: 0, maxFeeMsat: 25_000 };
+      },
+    });
+    const h = await renderHook(() => ({ w: useWithdraw(), me: useWorker() }), { client });
+    await until(() => h.result().me.data?.payout?.on === true, "the worker's payout");
+    assert.equal(h.result().me.data!.payout!.out, undefined);
+    await assert.rejects(async () => { await act(async () => { await h.result().w.withdraw(1); }); }, /below_minimum/);
+    await until(() => h.result().w.status === "error", "the refusal");
+    assert.match(h.result().w.error!.message, /below_minimum/);
+    mock.timers.enable({ apis: ["setInterval"] });
+    try {
+      await act(async () => { await h.result().w.withdraw(2_000_000); });
+      assert.deepEqual(calls.filter((c) => c.type === TASK_STEPS.withdraw).at(-1)!.config, { msat: 2_000_000 });
+      assert.equal(h.result().w.status, "idle");
+      await until(() => h.result().me.data?.payout?.out !== undefined, "the payout on its way, read again");
+      const reads = calls.filter((c) => c.type === TASK_STEPS.me).length;
+      await act(async () => { mock.timers.tick(5_000); });
+      await until(() => calls.filter((c) => c.type === TASK_STEPS.me).length > reads, "read again after 5 s");
+      out = undefined;
+      await act(async () => { mock.timers.tick(5_000); });
+      await until(() => h.result().me.data?.payout?.out === undefined, "the payout settled");
+      const done = calls.filter((c) => c.type === TASK_STEPS.me).length;
+      await act(async () => { mock.timers.tick(20_000); });
+      await sleep(20);
+      assert.equal(calls.filter((c) => c.type === TASK_STEPS.me).length, done, "no more reads once nothing is on its way");
+    } finally {
+      mock.timers.reset();
+    }
     await h.unmount();
   });
 

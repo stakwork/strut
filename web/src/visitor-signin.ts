@@ -186,7 +186,7 @@ export async function signInWithSphinx(ask: SignInAsk, from?: string): Promise<S
   const c = await challenge(from);
   const r = await ask.sign(c);
   if (r.outcome !== "signed") return r;
-  const session = (await postSession(JSON.stringify({ challenge: c, method: "sphinx", key: r.key, sig: r.sig }), {}, from)) as VisitorSession;
+  const session = (await postSession(JSON.stringify({ challenge: c, method: "sphinx", key: r.key, sig: r.sig, ...(r.address ? { address: r.address } : {}) }), {}, from)) as VisitorSession;
   return { outcome: "signed", session };
 }
 

@@ -157,7 +157,11 @@ container in the compose (strut and any service that registers steps).
   (`strut_visitor`: never the operator's on the same origin), lives 30 days,
   and its token is also accepted as `Authorization: Bearer` (a page framed
   by another site, where the browser drops the cookie — ruled 4) or
-  `x-strut-visitor` (beside a credit token on `/public/mcp`). A visitor is
+  `x-strut-visitor` (beside a credit token on `/public/mcp`). A `sphinx`
+  sign-in may carry the account's Sphinx `address`: kept in the session's
+  signed claims (`Session.sphinxAddress`, claim `address`, refreshed by each
+  sign-in) only when its pubkey is the `key` that signed (`keptSphinxAddress`,
+  src/visitors.ts); else dropped, and the sign-in holds. A visitor is
   NOT a member: past what is open to anyone (the public apps' pages and
   files, `POST /public/mcp`, `/visitors/*`) the gate passes `GET
   /auth/session` and its public app's `POST /apps/:name/channel-ticket`, and
