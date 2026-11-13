@@ -1,5 +1,5 @@
 /**
- * A data folder moved from another host (AGENTS.md, "Moving a data
+ * A data folder moved from another host (docs/moving.md, "Moving a data
  * folder"). Whoever
  * copies a stopped strut's folder to a new host — Peel moving the brain to
  * a home server, the server's setup service sending it back — leaves a

@@ -1,4 +1,4 @@
-// `strut move serve` (AGENTS.md, "Moving strut to another host"): the
+// `strut move serve` (docs/moving.md, "Moving strut to another host"): the
 // receiving end of a move on an empty host, and the sending end of a move
 // back. Plain HTTP, meant for a home network only while a move is under way:
 // everything that crosses it is sealed with the code.

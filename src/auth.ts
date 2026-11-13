@@ -18,7 +18,7 @@ import { bootEnv } from "./env.js";
  *
  * The same secret authenticates first-party services in both directions
  * within a deployment: mcp uses it to register steps with strut, and strut's
- * uploaded step files use it to call back to mcp. See AGENTS.md.
+ * uploaded step files use it to call back to mcp. See docs/security.md "Auth".
  *
  * A second, narrower key, `STRUT_PEER_KEY`, is what ANOTHER strut holds for
  * this one (plans/federation.md §3): it authenticates like the deployment

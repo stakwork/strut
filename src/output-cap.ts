@@ -7,7 +7,7 @@
  * hundreds of megabytes fills the heap of the serving process (swarm38,
  * 2026-10-30: 100–245 MB run logs, GC storms, then a crash loop through
  * boot-time auto-resume). Over the cap a step FAILS, as a normal step
- * error (retry and onError apply), with the convention AGENTS.md's
+ * error (retry and onError apply), with the convention docs/engine.md's
  * "Artifacts" section states: large data goes in a file under
  * `ctx.services.artifacts`, its RELATIVE path in the output. The same cap
  * holds for a loop or foreach iteration's output and for what an agent's

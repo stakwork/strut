@@ -16,7 +16,7 @@
 #
 # Provider keys: put ANTHROPIC_API_KEY=… (or OPENAI_API_KEY, GOOGLE_API_KEY,
 # OPENROUTER_API_KEY, XAI_API_KEY) in ./.env, or paste them under Secrets in
-# the UI once it's up. See AGENTS.md "Environment" for every variable.
+# the UI once it's up. See docs/environment.md for every variable.
 #
 # Filesystem backend instead (no Neo4j; `docker compose up -d browser` first
 # for the browser steps):
@@ -102,7 +102,7 @@ services:
       BROWSER_WS_URL: ws://browser:3000
       BROWSER_WS_PATH: "${BROWSER_WS_PATH:-strut-browser}"
       # STRUT_API_KEY: change-me     # shared secret for the API — unset, EVERY endpoint is open; set before exposing the port
-      # STRUT_SECRET_KEY: …          # encrypts the secret store; see AGENTS.md "Secrets"
+      # STRUT_SECRET_KEY: …          # encrypts the secret store; see docs/security.md "Secrets"
     volumes:
       - strut-workspace:/data/workspace   # runs, artifacts, chats, secrets, materialized custom steps
       - strut-models:/data/models         # MiniLM (~90MB, fetched on first boot) + STT models

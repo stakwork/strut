@@ -7,7 +7,7 @@ import { MemoryRunStore } from "../store.js";
 import { BUILDER_PROCEDURE, CHAT_TOOLS, JOB_TOOLS, SYSTEM, buildSystem, builderRules, type AiDeps } from "./prompts.js";
 
 // The builder chat's system prompt heads every chat's cached prefix
-// (AGENTS.md, "History is append-only"): rendering it from the one source
+// (docs/builder.md, "History is append-only"): rendering it from the one source
 // the builder job shares (plans/builder-job.md §1) must not move a byte.
 // The fixtures are buildSystem's output as it was before the factoring, up
 // to the steps listing — which follows the lib/ tree on disk, not this text.
