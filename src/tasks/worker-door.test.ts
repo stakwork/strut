@@ -27,6 +27,8 @@ const KEY = "worker-door-key";
 const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
 const json = { "content-type": "application/json" };
 const TYPE = "pet-match";
+/** A worker's balance with nothing earned (§8.1). */
+const NOTHING = { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 };
 const MATCH = {
   type: "object",
   properties: { same: { type: "boolean" }, note: { type: "string", maxLength: 200 } },
@@ -73,6 +75,16 @@ steps:
 `;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const HOUR = 60 * 60 * 1000;
+
+/** A paid type's workflow (plans/human-steps.md §8.1). */
+const PAID = `name: paid
+steps:
+  - id: review
+    type: human
+    config:
+      task: paid-match
+`;
 
 describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   let root: string;
@@ -82,6 +94,8 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   let otherIdentity: string;
   let ungranted: string;
   let version: string;
+  /** The task store's clock, ahead of the wall's by this much. */
+  let ahead = 0;
 
   const req = (path: string, init: RequestInit = {}) => strut.app.request(`http://workers.test${path}`, init);
   /** A visitor signs in with a new key: its token and actor. */
@@ -142,10 +156,14 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     strut = await createStrut({
       workspace, kit, registry: await createRegistry([writeFiles]),
       scheduler: false, serveUi: false, autoResume: false, wakeDelayMs: 0,
+      // $100,000 a bitcoin: a sat is $0.001.
+      payments: { rate: async () => ({ usdPerBtc: 100_000, at: new Date().toISOString(), source: "test" }) },
+      tasks: { now: () => Date.now() + ahead },
       views: false, jamie: false, knowledge: false, job: false, orchestrator: false, builder: false,
       browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     await workspace.publishWorkflowByContent("pets", PETS);
+    await workspace.publishWorkflowByContent("paid", PAID);
     const apps: Array<[string, string]> = [
       ["workers", "steps: [task/next, task/submit, task/skip, task/file, task/me]"],
       ["other", "steps: [\"task/*\"]"],
@@ -187,12 +205,12 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   it("end to end: a run parks on human, a signed-in worker's page answers through /public/mcp, and the run finishes", async () => {
     const worker = await signIn();
     // First sight: a new worker, whom staff then grant the type.
-    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "new", types: [] } });
+    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "new", types: [], balance: NOTHING } });
     const workers = (await (await staff("GET", "/tasks/workers?status=new")).json()) as { workers: Array<{ actor: string }> };
     assert.ok(workers.workers.some((w) => w.actor === worker.actor), "staff see the new worker");
     const granted = await staff("PUT", `/tasks/workers/${encodeURIComponent(worker.actor)}/grants/${TYPE}`);
     assert.equal(granted.status, 200, await granted.clone().text());
-    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "active", types: [{ name: TYPE, app: "workers" }] } });
+    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "active", types: [{ name: TYPE, app: "workers", payMsat: 0 }], balance: NOTHING } });
 
     const { runId, task } = await parked({ guess: "same dog" });
     const next = await call(worker.token, "task/next", { wait: 1 });
@@ -210,6 +228,88 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     assert.deepEqual(done.output, { same: true, by: worker.actor });
     const view = (await (await staff("GET", `/tasks/${task.id}`)).json()) as { task: { status: string; by: string; leases: Array<{ status: string }> } };
     assert.deepEqual([view.task.status, view.task.by, view.task.leases.map((l) => l.status)], ["settled", worker.actor, ["submitted"]]);
+  });
+
+  it("pay end to end: the answer earns, the run's totals count it, task/me shows it held then withdrawable, and only staff take it back", async () => {
+    const typeOf = async (res: Response) => ((await res.json()) as { type: { paySats?: number; holdHours: number } }).type;
+    for (const bad of [{ paySats: -1 }, { paySats: 100_001 }, { paySats: 0.0001 }, { holdHours: 0 }, { holdHours: 721 }]) {
+      assert.equal((await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, ...bad })).status, 400, JSON.stringify(bad));
+    }
+    const put = await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, paySats: 21, holdHours: 1 });
+    assert.equal(put.status, 200, await put.clone().text());
+    const saved = await typeOf(put);
+    assert.deepEqual([saved.paySats, saved.holdHours], [21, 1]);
+    const worker = await signIn();
+    await staff("PUT", `/tasks/workers/${encodeURIComponent(worker.actor)}/grants/paid-match`);
+    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "active", types: [{ name: "paid-match", app: "workers", payMsat: 21_000 }], balance: NOTHING } });
+
+    /** A paid run, answered: its task and the run as it ended. */
+    const answered = async () => {
+      const res = await req("/workflows/paid/run", { method: "POST", headers: auth, body: JSON.stringify({ input: {} }) });
+      const { runId } = (await res.json()) as { runId: string };
+      const deadline = Date.now() + 8000;
+      while ((await strut.store.getRunSummary("paid", runId))?.status !== "waiting") {
+        if (Date.now() > deadline) throw new Error("never waited");
+        await sleep(10);
+      }
+      const got = (await call(worker.token, "task/next", { wait: 1 })).result as { lease: string; payMsat: number };
+      assert.equal(got.payMsat, 21_000, "what this answer earns, before it is given");
+      assert.deepEqual(await call(worker.token, "task/submit", { lease: got.lease, answer: { same: true } }), { result: { ok: true } });
+      let done: RunSummary | null = null;
+      while ((done = await strut.store.getRunSummary("paid", runId))?.status !== "success") {
+        if (Date.now() > deadline) throw new Error(`never finished: ${JSON.stringify(done?.status)}`);
+        await sleep(10);
+      }
+      const [task] = await strut.tasks.capability.list({ runId });
+      return { task: task!, done: done!, lease: got.lease };
+    };
+    try {
+      const one = await answered();
+      assert.equal(one.done.totals?.cost, 0.021, "the run's cost counts its human work");
+      assert.equal(one.done.totals?.modelCalls, 0);
+      const me = (await call(worker.token, "task/me")).result as { balance: { totalMsat: number; heldMsat: number; withdrawableMsat: number; nextReleaseAt?: number } };
+      assert.deepEqual([me.balance.totalMsat, me.balance.heldMsat, me.balance.withdrawableMsat], [21_000, 21_000, 0], "held");
+      assert.ok(me.balance.nextReleaseAt! > Date.now() + HOUR - 60_000);
+
+      // Staff see it: the worker's balance and the answer's pay.
+      const workers = (await (await staff("GET", "/tasks/workers")).json()) as { workers: Array<{ actor: string; balance: { totalMsat: number } }> };
+      assert.equal(workers.workers.find((w) => w.actor === worker.actor)!.balance.totalMsat, 21_000);
+      const view = (await (await staff("GET", `/tasks/${one.task.id}`)).json()) as { task: { leases: Array<{ payMsat: number; bookedAt: number; earning: { msat: number; releases: number } }> } };
+      assert.deepEqual([view.task.leases[0]!.payMsat, view.task.leases[0]!.earning.msat], [21_000, 21_000]);
+
+      // No one but staff takes pay back: the visitor's own session, a member's page, a peer.
+      const takeBack = (headers: Record<string, string>, task = one.task.id, body: unknown = { why: "bad" }) =>
+        req(`/tasks/${task}/take-back`, { method: "POST", headers: { ...json, ...headers }, body: JSON.stringify(body) });
+      assert.equal((await takeBack({ authorization: `Bearer ${worker.token}` })).status, 403);
+      process.env["STRUT_PEER_KEY"] = "worker-door-peer";
+      try {
+        assert.equal((await takeBack({ authorization: "Bearer worker-door-peer" })).status, 403);
+      } finally {
+        delete process.env["STRUT_PEER_KEY"];
+      }
+      assert.ok(!("takeBack" in strut.tasks.worker) && !("takeBack" in strut.tasks.capability), "no capability, so no step, reaches it");
+      assert.equal((await takeBack({ authorization: `Bearer ${KEY}` }, one.task.id, { nope: 1 })).status, 400);
+      assert.equal((await takeBack({ authorization: `Bearer ${KEY}` }, one.task.id, {})).status, 400, "a take-back says why");
+      assert.equal((await takeBack({ authorization: `Bearer ${KEY}` }, "nope")).status, 404);
+
+      // Inside the hold, staff take a second answer's pay back.
+      const two = await answered();
+      const res = await takeBack({ authorization: `Bearer ${KEY}` }, two.task.id, { why: "the wrong dog", worker: worker.actor });
+      assert.equal(res.status, 200, await res.clone().text());
+      const body = (await res.json()) as { earnings: Array<{ result: string; worker: string; earning: { takenBackWhy: string } }> };
+      assert.deepEqual(body.earnings.map((e) => [e.worker, e.result, e.earning.takenBackWhy]), [[worker.actor, "taken", "the wrong dog"]]);
+      assert.equal(((await call(worker.token, "task/me")).result as { balance: { totalMsat: number } }).balance.totalMsat, 21_000, "the first answer's alone");
+
+      // The clock passes the hold: the first answer's pay is withdrawable, and the worker's.
+      ahead = HOUR + 60_000;
+      const later = (await call(worker.token, "task/me")).result as { balance: unknown };
+      assert.deepEqual(later.balance, { totalMsat: 21_000, heldMsat: 0, withdrawableMsat: 21_000 });
+      const late = await takeBack({ authorization: `Bearer ${KEY}` });
+      assert.equal(late.status, 409);
+      assert.equal(((await late.json()) as { code: string }).code, "released");
+    } finally {
+      ahead = 0;
+    }
   });
 
   it("a visitor without a grant gets nothing; an anonymous one, nothing at all; an app that does not grant the steps, nothing", async () => {
@@ -233,7 +333,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     assert.equal(res.status, 200, await res.clone().text());
     assert.match((await call(worker.token, "task/next")).error ?? "", /not_active: you are suspended/);
     assert.match((await call(worker.token, "task/submit", { lease: got.lease, answer: { same: true } })).error ?? "", /not_active/);
-    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "suspended", types: [{ name: TYPE, app: "workers" }] } });
+    assert.deepEqual(await call(worker.token, "task/me"), { result: { actor: worker.actor, status: "suspended", types: [{ name: TYPE, app: "workers", payMsat: 0 }], balance: NOTHING } });
   });
 
   it("a page cannot name another worker: the worker is the session's actor, whatever the config says", async () => {
@@ -255,7 +355,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}/grants/${TYPE}`);
     assert.match((await call(w.token, "task/next", { type: TYPE }, otherIdentity)).error ?? "", /wrong_app/);
     assert.deepEqual(await call(w.token, "task/next", {}, otherIdentity), { result: { none: true } });
-    assert.deepEqual(await call(w.token, "task/me", {}, otherIdentity), { result: { actor: w.actor, status: "active", types: [] } });
+    assert.deepEqual(await call(w.token, "task/me", {}, otherIdentity), { result: { actor: w.actor, status: "active", types: [], balance: NOTHING } });
     const got = (await call(w.token, "task/next")).result as { lease: string };
     assert.match((await call(w.token, "task/submit", { lease: got.lease, answer: { same: true } }, otherIdentity)).error ?? "", /wrong_app/);
     assert.match((await call(w.token, "task/file", { lease: got.lease, path: "found.jpg" }, otherIdentity)).error ?? "", /wrong_app/);
@@ -299,7 +399,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await strut.tasks.capability.ensure({ type: "ballot", workflow: "ballots", runId: "b1", path: "ballots/check", show: { n: 1 } });
     const got = (await call(w.token, "task/next")).result as { type: string; show: unknown; lease: string };
     assert.deepEqual([got.type, got.show], ["ballot", { n: 1 }]);
-    assert.deepEqual(await call(w.token, "task/me"), { result: { actor: w.actor, status: "active", types: [{ name: "ballot", app: "workers" }] } });
+    assert.deepEqual(await call(w.token, "task/me"), { result: { actor: w.actor, status: "active", types: [{ name: "ballot", app: "workers", payMsat: 0 }], balance: NOTHING } });
     await call(w.token, "task/submit", { lease: got.lease, answer: { same: true } });
   });
 
@@ -311,7 +411,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     const cookie = traded.headers.get("set-cookie")!.split(";")[0]!;
     const member = { cookie, "x-strut-ui": "1" };
     const page = appIdentity("workers", version);
-    assert.deepEqual(await mcp("/mcp", "task/me", {}, member, page), { result: { actor: "ada-1", status: "new", types: [] } });
+    assert.deepEqual(await mcp("/mcp", "task/me", {}, member, page), { result: { actor: "ada-1", status: "new", types: [], balance: NOTHING } });
     await staff("PUT", `/tasks/workers/ada-1/grants/${TYPE}`);
     // Clear the queue of open pets tasks first, so the held call waits.
     for (;;) {

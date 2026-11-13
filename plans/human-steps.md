@@ -1109,6 +1109,19 @@ added with `ALTER TABLE … ADD COLUMN` when `table_info` lacks it, and
 before still opens one that has them: it reads past them and writes them
 null.
 
+**Built differently (#664):**
+
+- **The type's record says `paySats` and `holdHours`**, as `PUT` takes
+  them, so a staff page reads a type and writes it back whole. `paySats`
+  is left out when the type is unpaid (0 is saved as unpaid);
+  `holdHours` is always there (72 for a row an older strut wrote null).
+- **On the worker's side pay is always a number:** `WorkerTask.payMsat`
+  and each of `task/me`'s types' `payMsat` are 0 when unpaid, so a page
+  never meets a missing field.
+- **A test clock:** `createStrut({ tasks: { now } })`, the task store's
+  clock (leases, dues and when an earning releases), so a test can pass a
+  hold without waiting. Nothing else reads it.
+
 #### The earning
 
 **In `ledger.db`,** where the books check is and where 5b's payout will be
@@ -1179,6 +1192,32 @@ A worker's status touches no earning (ruled). A suspension or a ban stops
 new work; what was earned stays owed until it is taken back. Whether a
 banned worker may withdraw is 5b's.
 
+**Built differently (#664):**
+
+- **`pay_daily` counts a take-back on its answer's day,** not the day it
+  was taken back: `taken_back_answers` and `taken_back_msat` are, of that
+  day's answers, those taken back since. §8.1 left it open; the column
+  names read as a part of the same row's `answers`. A past day's row can
+  therefore still move, within the hold. PR 2's Workers column by day is
+  "accepted that day, less what of it was taken back".
+- **What `takeBack` answers:** a list, one entry per answer of the task
+  (or of `worker`), `{ lease, worker, result, earning? }`. An earning
+  taken back before answers `taken` again, its first take-back's time,
+  reason and author unchanged on `earning`. A task with no answer (or none
+  by `worker`) answers `[]`; a task not on file is `unknown_task`. `why`
+  is required and not blank.
+- **The route** answers `{ task, earnings }`, and `409 released` (with
+  `earnings`) only when nothing was taken, now or before, and something
+  was past its hold. It is `501` on a strut whose task store is its
+  host's: the take-back is strut's service's, and a host's store has none.
+- **A `pay` row is never deleted either:** a second trigger refuses a
+  delete, beside the one that refuses any update but the take-back.
+- **The sweep books at most 500** unbooked answers a minute and stops at
+  the first booking that fails, so a ledger that is down is one log line
+  a minute, not one per answer.
+- **`me` reads the balance on every call** and fails with the ledger: a
+  ledger that cannot be read is a refusal of `task/me`, not a zero.
+
 #### The balance
 
 `task/me` answers one more field, and each type it lists carries its
@@ -1239,6 +1278,13 @@ here" on the `human` step itself reads the same answer and marks its pay
 again: the run's totals count it twice while the ledger counts it once. A
 known limit, as for any step run again.
 
+**Built differently (#664):** the dollars are rounded to the
+micro-dollar, as the ledger keeps money, and a pay that rounds to nothing
+marks nothing. Ruling 4 needed no code: strut enforces no run cap itself,
+only the gateway does, from the macaroon's run link, which never reads
+what a run spent; a test shows a run whose pay passes its workflow's
+`maxRunCostUsd` finishing.
+
 #### The books
 
 What is owed to workers is a debt in sats, beside the credit owed as
@@ -1269,6 +1315,15 @@ the balance less what workers are owed, below 0 when the wallet is short.
 
 Worker pay never enters `daily`. There "earned" is what this server sold
 (paid-runs.md §8), and an item's margin stays its own.
+
+**Built differently (#664):** the two `/tasks` rows of the table above
+are built in PR 1, with the rest of §22: `GET /tasks/workers` carries each
+worker's `balance` (one grouped read, `payeeBalances`), and `GET /tasks`
+and `GET /tasks/:id` carry an answered lease's `earning` (`msat`, `at`,
+`releases`, and the take-back's `takenBack`, `takenBackWhy`,
+`takenBackBy`). PR 2 is left `readEarnings`, the earnings fold, the
+Earnings tab, `strut/earnings` and the Withdraw warning; the ledger's
+`payDaily` read is there for it.
 
 **The solvency 5b will need.**
 
@@ -1826,7 +1881,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
-| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **PR 1 (the earning) built**: stakwork/strut#664. Differs in §8.1. PR 2 (the books) not started |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |

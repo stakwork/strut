@@ -329,7 +329,7 @@ child env is scrubbed, `secretsEnv` names are injected and masked.
 
 #### 4.1.9 `human`
 
-Config: `{ task, show?, files?, withinHours? }`. Output: `{ answer, by, task }`.
+Config: `{ task, show?, files?, withinHours? }`. Output: `{ answer, by, task, pay? }`.
 
 A person as a step of a workflow (plans/human-steps.md §3). The step makes a
 TASK of the task type `task` in the task store (`ctx.services.tasks.ensure`,
@@ -359,8 +359,8 @@ the task's id.
 ```
 
 - `task`: the task type's name. It must exist and be enabled (`unknown_type:`,
-  `type_disabled:` otherwise). The answer's shape, the app and the lease are
-  the type's, an admin's: the workflow cannot set them.
+  `type_disabled:` otherwise). The answer's shape, the app, the lease and the
+  pay are the type's, an admin's: the workflow cannot set them.
 - `show`: any JSON, at most 256 KB. Files are named, not inlined.
 - `files`: paths under the run's files — the job's directory on a job run,
   else the run's artifacts, where `run/files` reads — kept with the task with
@@ -383,6 +383,17 @@ the task's id.
   (`refused:`).
 - A run cancelled — while it waits or while it runs — cancels the tasks it
   left open. A run that fails keeps them, so a resume finds them.
+- `pay` (plans/human-steps.md §8.1): when the type pays, `{ msat, usd? }` —
+  what the answer earned, the type's pay when the worker took the task, and
+  its dollars at the rate (`GET /rate`) when the step returns. The step's
+  `step.end` then carries those dollars as `cost` with `modelCalls: 0`, so
+  the run's `totals.cost` counts its human work beside its model calls (a
+  journal replay counts nothing again). Never against a workflow's
+  `maxRunCostUsd` or the Mothership: they cap model calls at the gateway,
+  and a run stopped after a worker answered still owes the worker. With no
+  rate the output has `msat` alone and no cost is marked. What is OWED is
+  the ledger's record, written when the answer was accepted, held for the
+  type's `holdHours` (specs/API.md §22, "Pay"), never this output.
 - A worker answers in the task type's app, through the `task/*` steps
   (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
   app door, as the page's signed-in viewer; an admin makes the task types

@@ -4664,7 +4664,10 @@ makes a TASK of a task type in the task store (`src/tasks/`) and the run
 waits, out of memory, until a WORKER answers it. A worker answers in a
 WORKER APP — an ordinary app — through the `task/*` steps on the app door,
 and the staff run the task types and the workers through the `/tasks`
-routes below.
+routes below. A task type may PAY: an accepted answer earns its worker
+sats, held a while before they can be withdrawn (`plans/human-steps.md`
+§8.1; "Pay" below). No sats leave the wallet yet: a withdrawal is a later
+item.
 
 ### The worker's steps — through an app's `step_run`
 
@@ -4680,11 +4683,11 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer }` or `{ none: true }` |
+| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer, payMsat }` or `{ none: true }` |
 | `task/submit` | `{ lease, answer }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{}` | `{ actor, status, types: [{ name, app }] }` |
+| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? } }` |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
   live grant for that THIS app draws (the type's `app` is the calling
@@ -4695,16 +4698,28 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   schema; `files` the paths the `human` step named. `wait` (seconds, 0 to
   25) holds the call until a task appears — woken when one is made or
   skipped, a grant changes, or the sweep frees one — then `{ none: true }`.
+  `payMsat` is what an answer earns (msat, 1,000 to a sat; 0 unpaid): the
+  type's pay when the lease was TAKEN, locked — a change of pay reaches the
+  next lease, never one in hand.
 - **`task/submit`**: once per lease, before it expires, checked against
   the type's answer schema (`bad_answer`). It settles the task, and the
-  waiting run goes on with `{ answer, by, task }`.
+  waiting run goes on with `{ answer, by, task }`. An answer under a paid
+  lease is then owed to its worker: booked in the ledger (`pay`, one row
+  per lease). A booking that fails never fails the answer: the store's
+  sweep books it within a minute, once.
 - **`task/skip`**: the task reopens for another worker, never this one.
 - **`task/file`**: only a path on the task's `files` (`not_listed`
   whatever else the run holds), only through the caller's own live lease;
   read where the run's files are (the job's directory on a job run, else
   the run's artifacts).
 - **`task/me`**: the first call of an actor the store has not seen writes
-  them as a `new` worker. `types` are those they hold that this app draws.
+  them as a `new` worker. `types` are those they hold that this app draws,
+  each with what an answer earns now (`payMsat`). `balance` is what they
+  are owed here, in msat: `totalMsat` (earned, less taken back), of which
+  `heldMsat` is still in its hold and `withdrawableMsat` past it;
+  `nextReleaseAt` (epoch ms) when the next held earning releases. Zeros
+  with nothing earned. A worker's status touches no earning: a suspended
+  or banned worker still reads theirs.
 - A `submit`, `skip` or `file` by a lease of a type another app draws is
   `wrong_app`.
 
@@ -4734,19 +4749,21 @@ FULL SCOPE only, reads included: the deployment key or an admin's session.
 A member's session, a peer and a person token are refused (`403`). A name
 with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
-`404` (`unknown_type`, `unknown_worker`, `unknown_task`), `409` (`in_use`).
+`404` (`unknown_type`, `unknown_worker`, `unknown_task`), `409` (`in_use`,
+`released`).
 
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled) |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, unpaid, a 72-hour hold) |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked; its tasks on file keep its name |
-| `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first |
+| `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` | `{ worker }`: a `new` worker becomes `active` |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
 | `GET /tasks?type=&status=&workflow=&runId=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000) |
 | `GET /tasks/:id` | `{ task: TaskView }` |
+| `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 
 ```jsonc
 // TaskType
@@ -4755,6 +4772,8 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
   "app": "workers",                 // the app that draws it
   "answer": { "type": "object", "properties": { "same": { "type": "boolean" } }, "required": ["same"] },
   "leaseSeconds": 600, "withinHours": 72, "enabled": true,
+  "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
+  "holdHours": 72,                  // how long an earning waits before it can be withdrawn
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts):
@@ -4765,7 +4784,8 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
 {
   "actor": "p256:02ab…", "status": "active",  // new | active | suspended | banned
   "firstSeen": 1762948800000, "changedAt": 1762948900000, "changedBy": "admin-1", "note": "…",
-  "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000 /*, "revokedAt", "revokedBy", "why" */ }]
+  "grants": [{ "type": "pet-match", "by": "admin-1", "at": 1762948900000 /*, "revokedAt", "revokedBy", "why" */ }],
+  "balance": { "totalMsat": 21000, "heldMsat": 21000, "withdrawableMsat": 0, "nextReleaseAt": 1763208000000 }
 }
 
 // TaskView: the task with its leases
@@ -4779,6 +4799,43 @@ A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`),
   "answer": { "same": true }, "by": "p256:02ab…",
   "leases": [{ "id": "…", "task": "9f2c…", "worker": "p256:02ab…", "type": "pet-match",
                "taken": 1762948950000, "expires": 1762949550000,
-               "status": "submitted", "closed": 1762949000000 /*, "reason" */ }]
+               "status": "submitted", "closed": 1762949000000 /*, "reason" */,
+               "payMsat": 21000,                 // the type's pay when it was taken
+               "bookedAt": 1762949000000,        // when its earning reached the ledger
+               "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000
+                            /*, "takenBack", "takenBackWhy", "takenBackBy" */ } }]
 }
+
+// TakeBackOutcome: one answer's earning
+{ "lease": "…", "worker": "p256:02ab…",
+  "result": "taken",                 // taken (now, or already) | released (past its hold) | none (it earned nothing)
+  "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000,
+               "takenBack": 1762952600000, "takenBackWhy": "the wrong dog", "takenBackBy": "admin-1" } }
 ```
+
+### Pay (`plans/human-steps.md` §8.1)
+
+- **The admin's, never the workflow's.** A task type's `paySats` (sats to
+  the msat, at most 100,000 an answer; 0 or absent: unpaid) and `holdHours`
+  (1 to 720, 72 by default; never 0: earnings wait) are set by `PUT
+  /tasks/types/:name` alone. A workflow names a type and cannot set its
+  pay; no step a page or a model reaches writes it.
+- **Locked when the task is taken.** `task/next` stamps the type's pay on
+  the lease (`payMsat`) and the answer earns exactly that. A lease taken
+  before the type was paid earns nothing.
+- **Owed in sats.** An accepted answer under a paid lease is booked in the
+  ledger (`payments/ledger.db`, made by the first paid answer): its
+  `releases` is when it was accepted plus the type's hold AS BOOKED. It is
+  HELD until then and withdrawable after, read on every call. No sats
+  move: nothing pays a worker yet.
+- **Taken back while held.** `POST /tasks/:id/take-back` (full scope; the
+  service's alone, so no step reaches it) takes an earning back inside its
+  hold, booking one not yet booked first; past its hold it is the
+  worker's (`409 released`). Once, with `why` and who did it.
+- **The run's cost.** The `human` step's output gains `pay: { msat, usd? }`
+  for a paid answer, `usd` at the rate (`GET /rate`) when the step
+  returns, and the step's `step.end` carries those dollars as `cost` with
+  `modelCalls: 0`: a run's `totals.cost` counts its human work. Never
+  against a workflow's `maxRunCostUsd` or the Mothership, which cap model
+  calls at the gateway. With no rate the output has `msat` alone and no
+  cost is marked.

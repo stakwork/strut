@@ -27,6 +27,16 @@
  * (`create table if not exists`), so a ledger file from before it opens
  * unchanged and a strut from before it still opens a file that has it.
  *
+ * And WORKER PAY (plans/human-steps.md §8.1), three tables of their own
+ * added the same way: what an accepted answer of a paid task type earned
+ * its worker, in SATS (msat), never dollars. `pay` is one row per answer
+ * (its lease), written once and changed only by a take-back, once; `payees`
+ * one row per worker, what they were credited, taken back and withdrawn;
+ * `pay_daily` one row per UTC day and task type, what every read of pay
+ * over time sums. An earning is HELD until its `releases` and withdrawable
+ * from then — computed on every read, never swept. Worker pay never enters
+ * `daily`: there "earned" is what this server sold.
+ *
  * A SUBJECT is `workflow:<name>`, `step:<type>`, or `expired` (credit that
  * reached its year unused, earned by the seller). A package's earnings are
  * the subjects under its prefix.
@@ -369,6 +379,92 @@ export interface SweepResult {
   expired: Micros;
 }
 
+/** One accepted answer's earning (plans/human-steps.md §8.1), as booked:
+ *  `pay(…)` writes it once per lease. */
+export interface PayInput {
+  /** The lease the answer was given under: the key. */
+  lease: string;
+  task: string;
+  worker: string;
+  /** The task type. */
+  type: string;
+  /** What the answer earns, the lease's stamp: whole msat > 0. */
+  msat: number;
+  /** When the answer was accepted, epoch ms. */
+  at: number;
+  /** When it can be withdrawn: `at` plus the type's hold. */
+  releases: number;
+  /** The run that asked; empty for a task with none (item 4's tests). */
+  workflow?: string;
+  runId?: string;
+  path?: string;
+}
+
+export interface Earning {
+  lease: string;
+  task: string;
+  worker: string;
+  type: string;
+  msat: number;
+  at: number;
+  releases: number;
+  workflow: string;
+  runId: string;
+  path: string;
+  /** When it was taken back, why and by whom; it no longer counts. */
+  takenBack?: number;
+  takenBackWhy?: string;
+  takenBackBy?: string;
+}
+
+export interface PayResult {
+  earning: Earning;
+  /** false: the lease was booked already; nothing was written. */
+  existing: boolean;
+}
+
+export interface TakeBackInput {
+  lease: string;
+  why: string;
+  by?: string;
+  at?: number;
+}
+
+/** A take-back's outcome for one earning: `taken` (now, or already — the
+ *  earning says when), `released` (past its hold: the worker's) or `none`
+ *  (the lease earned nothing here). */
+export interface TakeBackResult {
+  lease: string;
+  result: "taken" | "released" | "none";
+  earning?: Earning;
+}
+
+/** What a worker is owed here (plans/human-steps.md §8.1, "The balance"). */
+export interface PayeeBalance {
+  /** Earned, less taken back, less withdrawn. */
+  totalMsat: number;
+  /** Of which still in its hold. */
+  heldMsat: number;
+  /** total − held: what a withdrawal (item 5b) may take. */
+  withdrawableMsat: number;
+  /** The soonest a held earning releases, epoch ms. */
+  nextReleaseAt?: number;
+}
+
+export const ZERO_BALANCE: Readonly<PayeeBalance> = Object.freeze({ totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
+
+/** `pay_daily`: one UTC day and task type. A take-back counts on the row
+ *  of the day its answer was accepted: of that day's answers, those taken
+ *  back since. */
+export interface PayDailyRow {
+  day: string;
+  type: string;
+  answers: number;
+  msat: number;
+  takenBackAnswers: number;
+  takenBackMsat: number;
+}
+
 export interface LedgerStore {
   /** Writes the token and its payment in one transaction, committed with
    *  `synchronous=full`; inherits from `carryFrom`. A token already here
@@ -422,6 +518,28 @@ export interface LedgerStore {
   /** Every entry in order, a page at a time: for an audit or an export.
    *  Nothing on a request path reads it. */
   scan(o?: { after?: number; limit?: number }): Promise<LedgerEntry[]>;
+
+  // Worker pay (plans/human-steps.md §8.1).
+  /** Books an accepted answer's earning: the `pay` row, the payee's and the
+   *  day's, in one transaction committed with `synchronous=full`. The same
+   *  lease again writes nothing and answers the first row. */
+  pay(input: PayInput): Promise<PayResult>;
+  /** The earning a lease booked, if any. */
+  payOf(lease: string): Promise<Earning | undefined>;
+  /** The earnings these tasks' answers booked, by task then worker. */
+  payFor(tasks: readonly string[]): Promise<Earning[]>;
+  /** Takes an earning back while it is held: one guarded statement, with
+   *  the payee's and the day's rows, committed with `synchronous=full`. One
+   *  past its hold is `released` (the worker's); one taken back already is
+   *  `taken` and changes nothing. */
+  takeBack(input: TakeBackInput): Promise<TakeBackResult>;
+  /** What one worker is owed, held and withdrawable at `now`. */
+  payeeBalance(worker: string, o?: { now?: number }): Promise<PayeeBalance>;
+  /** The same for several workers in one grouped read; a worker with
+   *  nothing earned is left out. */
+  payeeBalances(workers: readonly string[], o?: { now?: number }): Promise<Record<string, PayeeBalance>>;
+  /** `pay_daily` by day and task type. */
+  payDaily(range?: DayRange): Promise<PayDailyRow[]>;
   /** Folds the WAL into the file. */
   close(): Promise<void>;
 }
@@ -513,6 +631,36 @@ export function rollUp(rows: Array<EarningsRow & { day: string; subject: string 
   }
   if (q.by === "total" && !out.size) return [{ key: "total", calls: 0, failed: 0, earned: 0, cost: 0 }];
   return [...out.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** A `pay(…)` input checked, as the row it writes. */
+export function earningOf(input: PayInput): Earning {
+  for (const k of ["lease", "task", "worker", "type"] as const) {
+    if (typeof input[k] !== "string" || !input[k]) throw new RangeError(`${k} is required`);
+  }
+  positiveInt("msat", input.msat);
+  int("at", input.at);
+  int("releases", input.releases);
+  if (input.releases <= input.at) throw new RangeError(`releases must come after at: ${input.releases} ≤ ${input.at}`);
+  return {
+    lease: input.lease,
+    task: input.task,
+    worker: input.worker,
+    type: input.type,
+    msat: input.msat,
+    at: input.at,
+    releases: input.releases,
+    workflow: input.workflow ?? "",
+    runId: input.runId ?? "",
+    path: input.path ?? "",
+  };
+}
+
+/** A payee's balance from its totals and what of it is held. */
+export function payeeBalanceOf(o: { accepted: number; takenBack: number; withdrawn: number; held: number; nextReleaseAt?: number }): PayeeBalance {
+  const totalMsat = Math.max(0, o.accepted - o.takenBack - o.withdrawn);
+  const heldMsat = Math.min(totalMsat, Math.max(0, o.held));
+  return { totalMsat, heldMsat, withdrawableMsat: totalMsat - heldMsat, ...(o.nextReleaseAt !== undefined ? { nextReleaseAt: o.nextReleaseAt } : {}) };
 }
 
 export function int(name: string, v: number): number {

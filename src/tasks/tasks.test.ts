@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
@@ -14,8 +15,11 @@ import {
   type TaskErrorCode,
   type TasksService,
   type TaskSettled,
+  type TaskStores,
   type WorkerTask,
 } from "./tasks.js";
+import { ledgerPath, openLedger, type LedgerStore } from "../payments/ledger.js";
+import { MemoryLedgerStore } from "../payments/ledger-memory.js";
 import { createStrut } from "../createStrut.js";
 import { createRegistry } from "../steps/registry.js";
 import { defineStep, workflowOf, type StepContext } from "../core.js";
@@ -36,6 +40,8 @@ const HOUR = 60 * MIN;
 
 const BOX = { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 };
 const MATCH = { type: "object", properties: { same: { type: "boolean" } }, required: ["same"] };
+/** A worker's balance with nothing earned (§8.1). */
+const NOTHING = { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 };
 
 interface Impl {
   name: string;
@@ -105,8 +111,8 @@ for (const impl of impls) {
       const t = await tasks().setType("acme/pet-match", { app: "workers", answer: BOX }, "staff");
       assert.deepEqual(
         { ...t, changedAt: 0 },
-        { name: "acme/pet-match", app: "workers", answer: BOX, leaseSeconds: 600, withinHours: 72, enabled: true, changedAt: 0, changedBy: "staff" },
-        "the defaults are §4.2's",
+        { name: "acme/pet-match", app: "workers", answer: BOX, leaseSeconds: 600, withinHours: 72, enabled: true, holdHours: 72, changedAt: 0, changedBy: "staff" },
+        "the defaults are §4.2's, unpaid with §8.1's hold",
       );
       assert.deepEqual((await tasks().types()).map((x) => x.name), ["acme/pet-match"]);
     });
@@ -154,10 +160,10 @@ for (const impl of impls) {
 
     it("a worker is new on their first call, active at the first grant, and stays active when the last is revoked", async () => {
       await tasks().setType("t", { app: "a", answer: BOX });
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "new", types: [] });
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "new", types: [], balance: NOTHING });
       await assert.rejects(tasks().next("ann"), refused("not_active", /no task types yet/));
       await tasks().grant("ann", "t", "staff");
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a" }] });
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a", payMsat: 0 }], balance: NOTHING });
       await tasks().revoke("ann", "t", { by: "staff", why: "quality" });
       const w = (await tasks().workers()).find((x) => x.actor === "ann")!;
       assert.equal(w.status, "active");
@@ -204,7 +210,7 @@ for (const impl of impls) {
       await tasks().grant("ann", "ballots");
       await tasks().ensure({ type: "pets", workflow: "w", runId: "r", path: "w/p", show: "pet" });
       await tasks().ensure({ type: "ballots", workflow: "w", runId: "r", path: "w/b", show: "ballot" });
-      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app" }]);
+      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app", payMsat: 0 }]);
       await assert.rejects(tasks().next("ann", { type: "pets", app: "ballot-app" }), refused("wrong_app"));
       await assert.rejects(tasks().next("bob", { type: "pets" }), refused("not_active"));
       await tasks().grant("bob", "ballots");
@@ -326,7 +332,7 @@ for (const impl of impls) {
       await tasks().setWorker("ann", { status: "suspended", note: "check quality" }, "staff");
       await assert.rejects(tasks().submit("ann", { lease: l.lease, answer: [1, 2, 3, 4] }), refused("not_active", /suspended/));
       await assert.rejects(tasks().next("ann"), refused("not_active"));
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers" }] }, "me still answers");
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers", payMsat: 0 }], balance: NOTHING }, "me still answers");
       const view = (await tasks().task(t.id))!;
       assert.equal(view.leases[0].status, "expired");
       assert.equal(view.leases[0].reason, "worker suspended");
@@ -553,6 +559,318 @@ for (const impl of impls) {
     }
   });
 }
+
+// ── earnings (plans/human-steps.md §8.1) ──────────────────────────────────
+
+const RATE = 100_000; // dollars per bitcoin: 1,000 msat (a sat) is $0.001
+
+interface EarningsImpl {
+  name: string;
+  stores(dir: string): Promise<TaskStores>;
+  exists?(dir: string): boolean;
+  ledger(dir: string): Promise<LedgerStore>;
+  /** Whether the ledger made a file. */
+  ledgerFile?(dir: string): boolean;
+}
+
+const earningsImpls: EarningsImpl[] = [
+  {
+    name: "SQLite",
+    stores: (dir) => openTaskStores({ dataDir: dir }),
+    exists: (dir) => existsSync(tasksPath(dir)),
+    ledger: (dir) => openLedger({ dataDir: dir }),
+    ledgerFile: (dir) => existsSync(ledgerPath(dir)),
+  },
+  { name: "memory", stores: async () => memoryTaskStores(), ledger: async () => new MemoryLedgerStore() },
+];
+
+for (const impl of earningsImpls) {
+  describe(`earnings: ${impl.name}`, () => {
+    let dir: string;
+    let clock: number;
+    let svc: TasksService;
+    let heard: TaskSettled[];
+    let ledgerOpen: Promise<LedgerStore> | undefined;
+    /** While above 0, the ledger's `pay` throws (and counts down). */
+    let failPay: number;
+    const now = () => clock;
+    const tasks = () => svc.capability;
+    const ledger = async (): Promise<LedgerStore> => {
+      ledgerOpen ??= impl.ledger(dir);
+      const l = await ledgerOpen;
+      return new Proxy(l, {
+        get(target, key) {
+          if (key === "pay" && failPay > 0) {
+            return async () => {
+              failPay--;
+              throw new Error("the disk is full");
+            };
+          }
+          const v = Reflect.get(target, key, target) as unknown;
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    };
+    const make = () =>
+      createTasks({
+        open: () => impl.stores(dir),
+        ...(impl.exists ? { exists: () => impl.exists!(dir) } : {}),
+        ledger,
+        ledgerIfAny: async () => (ledgerOpen || impl.ledgerFile?.(dir) ? ledger() : null),
+        usdPerBtc: async () => RATE,
+        now,
+      });
+
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), "strut-task-pay-"));
+      clock = T0;
+      failPay = 0;
+      ledgerOpen = undefined;
+      svc = make();
+      heard = [];
+      svc.onSettle((s) => heard.push(...s));
+    });
+    afterEach(async () => {
+      await svc.close();
+      await (await ledgerOpen?.catch(() => undefined))?.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    /** A paid type, its workers, and one task of one run per path. */
+    const paid = async (o: { paySats?: number; holdHours?: number; workers?: string[]; paths?: string[] } = {}) => {
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH, paySats: o.paySats ?? 21, ...(o.holdHours === undefined ? {} : { holdHours: o.holdHours }) }, "staff");
+      for (const w of o.workers ?? ["ann", "bob"]) await tasks().grant(w, "pet-match", "staff");
+      const made = [];
+      for (const path of o.paths ?? ["pets/review"]) made.push((await tasks().ensure({ type: "pet-match", workflow: "pets", runId: "r1", path })).task);
+      return made;
+    };
+    const take = async (actor: string) => {
+      const got = await tasks().next(actor);
+      assert.ok(!("none" in got), `${actor} got no task`);
+      return got as WorkerTask;
+    };
+
+    it("a type's pay and hold: sats to the msat, at most 100,000; a hold from 1 to 720 hours, 72 by default", async () => {
+      const bad = async (input: Record<string, unknown>) => assert.rejects(tasks().setType("t", { app: "a", answer: MATCH, ...input }), refused("bad_request"));
+      await bad({ paySats: -1 });
+      await bad({ paySats: 100_001 });
+      await bad({ paySats: 1.0005 });
+      await bad({ paySats: "21" });
+      await bad({ holdHours: 0 });
+      await bad({ holdHours: 0.5 });
+      await bad({ holdHours: 721 });
+      const t = await tasks().setType("t", { app: "a", answer: MATCH, paySats: 1.234, holdHours: 24 });
+      assert.deepEqual([t.paySats, t.holdHours], [1.234, 24]);
+      assert.deepEqual([(await tasks().types())[0]!.paySats, (await tasks().types())[0]!.holdHours], [1.234, 24], "as saved");
+      const unpaid = await tasks().setType("t", { app: "a", answer: MATCH, paySats: 0 });
+      assert.deepEqual([unpaid.paySats, unpaid.holdHours], [undefined, 72], "a PUT: what is left out is the default");
+      assert.equal(ledgerOpen, undefined, "saving a type opens no ledger");
+    });
+
+    it("next stamps the type's pay on the lease and hands it out; a change of pay after the take leaves the lease's", async () => {
+      const [a, b] = await paid({ paySats: 21, paths: ["pets/a", "pets/b"] });
+      const ann = await take("ann");
+      assert.equal(ann.payMsat, 21_000);
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH, paySats: 50 }, "staff");
+      const bob = await take("bob");
+      assert.equal(bob.payMsat, 50_000, "the next lease gets the new pay");
+      assert.equal((await take("ann")).payMsat, 21_000, "the lease in hand keeps its own");
+      assert.equal((await tasks().task(a!.id))!.leases[0]!.payMsat, 21_000);
+      assert.equal((await tasks().task(b!.id))!.leases[0]!.payMsat, 50_000);
+      assert.deepEqual((await tasks().me("ann")).types, [{ name: "pet-match", app: "workers", payMsat: 50_000 }], "what the type pays now");
+      await tasks().submit("ann", { lease: ann.lease, answer: { same: true } });
+      assert.equal((await svc.capability.me("ann")).balance.totalMsat, 21_000, "earns what its lease was stamped with");
+    });
+
+    it("a lease taken before the type was paid earns nothing", async () => {
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH }, "staff");
+      await tasks().grant("ann", "pet-match");
+      await tasks().ensure({ type: "pet-match", workflow: "pets", runId: "r1", path: "pets/review" });
+      const l = await take("ann");
+      assert.equal(l.payMsat, 0);
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH, paySats: 21 }, "staff");
+      await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
+      assert.equal(ledgerOpen, undefined, "nothing was booked");
+      assert.equal((await svc.sweep()).booked, 0);
+    });
+
+    it("a paid answer books once, with the type's hold; an unpaid one books nothing and makes no ledger file", async () => {
+      // Unpaid first: nothing reaches the ledger.
+      await tasks().setType("free", { app: "workers", answer: MATCH }, "staff");
+      await tasks().grant("ann", "free");
+      await tasks().ensure({ type: "free", workflow: "pets", runId: "r0", path: "pets/free" });
+      const f = await take("ann");
+      await tasks().submit("ann", { lease: f.lease, answer: { same: true } });
+      assert.equal(ledgerOpen, undefined, "the ledger was never opened");
+      if (impl.ledgerFile) assert.equal(impl.ledgerFile(dir), false, "no ledger file");
+      assert.deepEqual((await tasks().me("ann")).balance, NOTHING);
+      if (impl.ledgerFile) assert.equal(impl.ledgerFile(dir), false, "a balance read makes none either");
+
+      const [t] = await paid({ paySats: 21, holdHours: 24 });
+      const l = await take("ann");
+      clock += 5 * MIN;
+      const answeredAt = clock;
+      assert.deepEqual(await tasks().submit("ann", { lease: l.lease, answer: { same: true } }), { ok: true });
+      const view = (await tasks().task(t!.id))!;
+      assert.equal(view.leases[0]!.bookedAt, answeredAt);
+      assert.deepEqual(view.leases[0]!.earning, { msat: 21_000, at: answeredAt, releases: answeredAt + 24 * HOUR });
+      const earning = (await (await ledger()).payOf(l.lease))!;
+      assert.deepEqual([earning.task, earning.worker, earning.type, earning.workflow, earning.runId, earning.path], [t!.id, "ann", "pet-match", "pets", "r1", "pets/review"]);
+      // The hold as the type had it when booked: a later change reaches only later earnings.
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH, paySats: 21, holdHours: 720 }, "staff");
+      assert.equal((await svc.sweep()).booked, 0, "nothing left to book");
+      assert.equal((await (await ledger()).payOf(l.lease))!.releases, answeredAt + 24 * HOUR);
+      assert.deepEqual((await tasks().me("ann")).balance, { totalMsat: 21_000, heldMsat: 21_000, withdrawableMsat: 0, nextReleaseAt: answeredAt + 24 * HOUR }, "counted once");
+      if (impl.ledgerFile) assert.equal(impl.ledgerFile(dir), true, "the first paid answer made the ledger");
+    });
+
+    it("a ledger that throws inside submit: the answer is accepted and heard, and the next sweep books it, once", async () => {
+      const [t] = await paid();
+      const l = await take("ann");
+      failPay = 1;
+      assert.deepEqual(await tasks().submit("ann", { lease: l.lease, answer: { same: false } }), { ok: true }, "never the worker's");
+      assert.deepEqual(heard.map((h) => [h.id, h.status]), [[t!.id, "settled"]], "the run is woken");
+      assert.equal(await (await ledger()).payOf(l.lease), undefined, "not booked");
+      assert.equal((await tasks().task(t!.id))!.leases[0]!.bookedAt, undefined);
+      assert.deepEqual((await tasks().me("ann")).balance, NOTHING);
+      assert.equal((await svc.sweep()).booked, 1);
+      assert.equal((await svc.sweep()).booked, 0, "once");
+      assert.equal((await (await ledger()).payOf(l.lease))!.msat, 21_000);
+      assert.equal((await tasks().me("ann")).balance.totalMsat, 21_000);
+    });
+
+    it("me answers held, withdrawable and total as the clock passes the hold", async () => {
+      await paid({ paySats: 10, holdHours: 1, paths: ["pets/a", "pets/b"] });
+      const a = await take("ann");
+      await tasks().submit("ann", { lease: a.lease, answer: { same: true } });
+      const first = clock;
+      clock += 30 * MIN;
+      const b = await take("ann");
+      await tasks().submit("ann", { lease: b.lease, answer: { same: true } });
+      const second = clock;
+      assert.deepEqual((await tasks().me("ann")).balance, { totalMsat: 20_000, heldMsat: 20_000, withdrawableMsat: 0, nextReleaseAt: first + HOUR });
+      clock = first + HOUR - 1;
+      assert.equal((await tasks().me("ann")).balance.heldMsat, 20_000, "held one millisecond before");
+      clock = first + HOUR;
+      assert.deepEqual((await tasks().me("ann")).balance, { totalMsat: 20_000, heldMsat: 10_000, withdrawableMsat: 10_000, nextReleaseAt: second + HOUR });
+      clock = second + HOUR;
+      assert.deepEqual((await tasks().me("ann")).balance, { totalMsat: 20_000, heldMsat: 0, withdrawableMsat: 20_000 });
+      // A worker's status touches no earning.
+      await tasks().setWorker("ann", { status: "banned" }, "staff");
+      assert.equal((await tasks().me("ann")).balance.totalMsat, 20_000);
+      // Staff read every worker's balance in one read.
+      const workers = await tasks().workers();
+      assert.deepEqual(Object.fromEntries(workers.map((w) => [w.actor, w.balance.totalMsat])), { ann: 20_000, bob: 0 });
+    });
+
+    it("takeBack: inside the hold the earning goes; past it, it is the worker's; again changes nothing", async () => {
+      const [a, b, c] = await paid({ paySats: 21, holdHours: 2, paths: ["pets/a", "pets/b", "pets/c"] });
+      const la = await take("ann");
+      await tasks().submit("ann", { lease: la.lease, answer: { same: true } });
+      const lb = await take("bob");
+      await tasks().submit("bob", { lease: lb.lease, answer: { same: true } });
+      clock += HOUR;
+      const taken = await svc.takeBack({ task: a!.id, why: "the wrong dog", by: "admin-1" });
+      assert.deepEqual(taken, [{ lease: la.lease, worker: "ann", result: "taken", earning: { msat: 21_000, at: T0, releases: T0 + 2 * HOUR, takenBack: clock, takenBackWhy: "the wrong dog", takenBackBy: "admin-1" } }]);
+      assert.deepEqual((await tasks().me("ann")).balance, NOTHING);
+      assert.deepEqual((await tasks().task(a!.id))!.leases[0]!.earning?.takenBackWhy, "the wrong dog", "staff see it on the task");
+      const again = await svc.takeBack({ task: a!.id, why: "twice", by: "admin-2" });
+      assert.deepEqual([again[0]!.result, again[0]!.earning?.takenBackBy], ["taken", "admin-1"], "the first stands");
+      assert.deepEqual(await svc.takeBack({ task: b!.id, worker: "ann", why: "not hers" }), [], "only that worker's answers");
+      clock = T0 + 2 * HOUR;
+      const late = await svc.takeBack({ task: b!.id, why: "too late" });
+      assert.deepEqual([late[0]!.worker, late[0]!.result], ["bob", "released"]);
+      assert.equal((await tasks().me("bob")).balance.withdrawableMsat, 21_000);
+      assert.deepEqual(await svc.takeBack({ task: c!.id, why: "nobody answered" }), [], "no answer, nothing earned");
+      await assert.rejects(svc.takeBack({ task: "nope", why: "x" }), refused("unknown_task"));
+      await assert.rejects(svc.takeBack({ task: a!.id, why: "  " }), refused("bad_request"));
+    });
+
+    it("takeBack books an answer not yet booked first, so it never loses a race with the sweep", async () => {
+      const [t] = await paid();
+      const l = await take("ann");
+      failPay = 1;
+      await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
+      assert.equal(await (await ledger()).payOf(l.lease), undefined);
+      const out = await svc.takeBack({ task: t!.id, why: "a bad answer" });
+      assert.equal(out[0]!.result, "taken");
+      assert.equal((await (await ledger()).payOf(l.lease))!.takenBackWhy, "a bad answer");
+      assert.notEqual((await tasks().task(t!.id))!.leases[0]!.bookedAt, undefined);
+      assert.equal((await svc.sweep()).booked, 0, "the sweep finds nothing left");
+      assert.deepEqual((await tasks().me("ann")).balance, NOTHING);
+    });
+
+    it("an unpaid answer has nothing to take back", async () => {
+      await tasks().setType("free", { app: "workers", answer: MATCH }, "staff");
+      await tasks().grant("ann", "free");
+      const { task } = await tasks().ensure({ type: "free", workflow: "w", runId: "r", path: "w/free" });
+      const l = await take("ann");
+      await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
+      assert.deepEqual(await svc.takeBack({ task: task.id, why: "x" }), [{ lease: l.lease, worker: "ann", result: "none" }]);
+    });
+
+    it("ensure answers a settled task with its pay: the lease's stamp and the dollars at the rate now", async () => {
+      const [t] = await paid({ paySats: 21 });
+      const key = { type: "pet-match", workflow: "pets", runId: "r1", path: "pets/review" };
+      assert.equal((await tasks().ensure(key)).pay, undefined, "open: nothing earned yet");
+      const l = await take("ann");
+      await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
+      const got = await tasks().ensure(key);
+      assert.equal(got.task.id, t!.id);
+      assert.deepEqual(got.pay, { msat: 21_000, usd: 0.021 });
+    });
+
+    if (impl.exists) {
+      it("a tasks.db made by #655's schema opens, gains the columns and keeps its rows", async () => {
+        await svc.close();
+        const file = tasksPath(dir);
+        await mkdir(join(dir, "tasks"), { recursive: true });
+        const db = new DatabaseSync(file);
+        db.exec(SCHEMA_655);
+        db.exec("PRAGMA user_version = 1");
+        db.prepare("insert into task_types values ('pet-match', 'workers', ?, 600, 48, 1, ?, 'staff')").run(JSON.stringify(MATCH), T0);
+        db.prepare(
+          `insert into tasks (id, type, workflow, run_id, path, show, files, root, status, created, due)
+           values ('t1', 'pet-match', 'pets', 'r1', 'pets/review', '{}', '[]', 'run', 'open', ?, ?)`,
+        ).run(T0, T0 + 48 * HOUR);
+        db.prepare("insert into leases (id, task, worker, type, taken, expires, status) values ('l1', 't1', 'ann', 'pet-match', ?, ?, 'open')").run(T0, T0 + 10 * MIN);
+        db.close();
+
+        svc = make();
+        const types = await tasks().types();
+        assert.deepEqual([types[0]!.name, types[0]!.paySats, types[0]!.holdHours], ["pet-match", undefined, 72], "an old type is unpaid, with the default hold");
+        const view = (await tasks().task("t1"))!;
+        assert.deepEqual([view.status, view.leases[0]!.id, view.leases[0]!.payMsat], ["open", "l1", undefined], "its rows kept; the old lease earns nothing");
+        await svc.close();
+        const after = new DatabaseSync(file);
+        try {
+          const cols = (table: string) => (after.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+          for (const c of ["pay_msat", "hold_hours"]) assert.ok(cols("task_types").includes(c), c);
+          for (const c of ["pay_msat", "booked_at"]) assert.ok(cols("leases").includes(c), c);
+          assert.equal((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 1, "still schema 1");
+        } finally {
+          after.close();
+        }
+        svc = make();
+        await tasks().setType("pet-match", { app: "workers", answer: MATCH, paySats: 5 }, "staff");
+        assert.equal((await tasks().types())[0]!.paySats, 5, "and takes pay now");
+      });
+    }
+  });
+}
+
+/** The task side's tables as #655 made them, before pay (§8.1). */
+const SCHEMA_655 = `
+create table task_types (name text primary key, app text not null, answer text not null, lease_seconds integer not null,
+  within_hours real not null, enabled integer not null, changed_at integer not null, changed_by text) strict;
+create table tasks (seq integer primary key autoincrement, id text not null unique, type text not null, workflow text not null,
+  run_id text not null, path text not null, show text not null, files text not null, root text not null check (root in ('run', 'job')),
+  job text, status text not null check (status in ('open', 'settled', 'expired', 'cancelled')), created integer not null,
+  due integer not null, settled_at integer, answer text, by text, unique (workflow, run_id, path)) strict;
+create table leases (id text primary key, task text not null, worker text not null, type text not null, taken integer not null,
+  expires integer not null, status text not null check (status in ('open', 'submitted', 'expired', 'skipped')), closed integer,
+  reason text, unique (task, worker)) strict;
+`;
 
 describe("the task store in a strut", () => {
   let dir: string;

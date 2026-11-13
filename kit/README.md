@@ -119,9 +119,13 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   signed-in viewer: `useTask(type?)` → `{ task, submit(answer), skip(reason?),
   status, error }` (`task/next { wait }` held on the server one at a time
   and none while the page is hidden; `task` is `{ lease, type, show, files,
-  expires, answer }`, `answer` the type's schema; dropped when its lease
-  runs out or the server says it is gone, and the next asked for),
-  `useWorker()` (`task/me`: `status` and the `types` held in this app) and
+  expires, answer, payMsat }`, `answer` the type's schema, `payMsat` what
+  the answer earns, locked when it was taken; dropped when its lease runs
+  out or the server says it is gone, and the next asked for; `submit` reads
+  `useWorker()` again), `useWorker()` (`task/me`: `status`, the `types`
+  held in this app, each with its `payMsat`, and `balance` — `{ heldMsat,
+  withdrawableMsat, totalMsat, nextReleaseAt? }`, what the worker is owed
+  here, `WorkerBalance`) and
   `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
   `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
   `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation

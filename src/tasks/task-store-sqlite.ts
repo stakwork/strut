@@ -3,12 +3,20 @@
  * memory twin passes the same suite, tasks.test.ts): `task_types`, `tasks`
  * and `leases`. `take` is ONE guarded statement (rule 2), `settle` two
  * guarded updates in one transaction committed with `synchronous=full`.
+ *
+ * Pay (plans/human-steps.md §8.1) added four nullable columns —
+ * `task_types.pay_msat`, `task_types.hold_hours`, `leases.pay_msat`,
+ * `leases.booked_at` — each added with `ALTER TABLE … ADD COLUMN` when the
+ * file lacks it, `user_version` still 1: a file from before opens as it is,
+ * and a strut from before reads past them and writes them null.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
 import type { AnswerSchema } from "./answer-schema.js";
 import {
+  DEFAULT_HOLD_HOURS,
   pageLimit,
+  payMsatOf,
   type Lease,
   type LeaseStatus,
   type NewTask,
@@ -29,7 +37,9 @@ create table if not exists task_types (
   within_hours real not null,
   enabled integer not null,
   changed_at integer not null,
-  changed_by text
+  changed_by text,
+  pay_msat integer,
+  hold_hours real
 ) strict;
 
 create table if not exists tasks (
@@ -66,6 +76,8 @@ create table if not exists leases (
   status text not null check (status in ('open', 'submitted', 'expired', 'skipped')),
   closed integer,
   reason text,
+  pay_msat integer,
+  booked_at integer,
   unique (task, worker)
 ) strict;
 create index if not exists leases_open_task on leases(task) where status = 'open';
@@ -73,20 +85,46 @@ create index if not exists leases_open_worker on leases(worker) where status = '
 create index if not exists leases_open_expires on leases(expires) where status = 'open';
 `;
 
+/** The columns pay added (§8.1), for a file made before them. */
+const ADDED: Array<[table: string, column: string, type: string]> = [
+  ["task_types", "pay_msat", "integer"],
+  ["task_types", "hold_hours", "real"],
+  ["leases", "pay_msat", "integer"],
+  ["leases", "booked_at", "integer"],
+];
+
+/** Indexes on the added columns: made once they are there. */
+const AFTER = `
+create index if not exists leases_unbooked on leases(closed) where status = 'submitted' and pay_msat is not null and booked_at is null;
+`;
+
+/** Adds what `ADDED` lists that the file lacks, in one transaction. */
+function addColumns(db: TaskDb): void {
+  db.tx(() => {
+    for (const [table, column, type] of ADDED) {
+      const has = (db.prepare(`pragma table_info(${table})`).all() as Row[]).some((r) => r.name === column);
+      if (!has) db.exec(`alter table ${table} add column ${column} ${type}`);
+    }
+  });
+}
+
 export class SqliteTaskStore implements TaskStore {
   private readonly s: Record<string, StatementSync>;
 
   constructor(private readonly db: TaskDb) {
     db.exec(SCHEMA);
+    addColumns(db);
+    db.exec(AFTER);
     const p = (sql: string) => db.prepare(sql);
     this.s = {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by)
-         values (?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
-           within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by`,
+           within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
+           pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -101,10 +139,12 @@ export class SqliteTaskStore implements TaskStore {
       heldBy: p("select * from leases where worker = ? and status = 'open' and expires > ? order by taken limit 1"),
       // Rule 2 in one statement: the oldest open task not past due, of a
       // type asked for and enabled, that this worker never held and nobody
-      // holds now — while this worker holds nothing live.
+      // holds now — while this worker holds nothing live. The type's pay is
+      // stamped on the lease (§8.1): what the answer earns, whatever the
+      // type's pay becomes after.
       take: p(
-        `insert into leases (id, task, worker, type, taken, expires, status)
-         select ?1, t.id, ?2, t.type, ?3, ?3 + ty.lease_seconds * 1000, 'open'
+        `insert into leases (id, task, worker, type, taken, expires, status, pay_msat)
+         select ?1, t.id, ?2, t.type, ?3, ?3 + ty.lease_seconds * 1000, 'open', case when ty.pay_msat > 0 then ty.pay_msat end
            from tasks t join task_types ty on ty.name = t.type
           where t.status = 'open' and t.due > ?3 and ty.enabled = 1
             and t.type in (select value from json_each(?4))
@@ -128,6 +168,8 @@ export class SqliteTaskStore implements TaskStore {
       closeLeases: p("update leases set status = 'expired', closed = ?, reason = ? where task = ? and status = 'open'"),
       staleLeases: p("update leases set status = 'expired', closed = ?1 where status = 'open' and expires <= ?1"),
       leasesOf: p("select * from leases where task in (select value from json_each(?)) order by taken, rowid"),
+      booked: p("update leases set booked_at = ? where id = ? and booked_at is null"),
+      unbooked: p("select * from leases where status = 'submitted' and pay_msat is not null and booked_at is null order by closed limit ?"),
     };
   }
 
@@ -142,7 +184,18 @@ export class SqliteTaskStore implements TaskStore {
 
   async putType(t: TaskType): Promise<TaskType> {
     return this.db.tx(() => {
-      this.s.putType.run(t.name, t.app, JSON.stringify(t.answer), t.leaseSeconds, t.withinHours, t.enabled ? 1 : 0, t.changedAt, t.changedBy ?? null);
+      this.s.putType.run(
+        t.name,
+        t.app,
+        JSON.stringify(t.answer),
+        t.leaseSeconds,
+        t.withinHours,
+        t.enabled ? 1 : 0,
+        t.changedAt,
+        t.changedBy ?? null,
+        payMsatOf(t) ?? null,
+        t.holdHours,
+      );
       return typeOf(this.s.type.get(t.name) as Row);
     });
   }
@@ -268,6 +321,14 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
 
+  async booked(lease: string, at: number): Promise<void> {
+    this.db.tx(() => this.s.booked.run(at, lease));
+  }
+
+  async unbooked(limit: number): Promise<Lease[]> {
+    return (this.s.unbooked.all(Math.max(0, Math.floor(limit))) as Row[]).map(leaseOf);
+  }
+
   /** Inside a transaction: a task leaves `open`, its open leases expire. */
   private close(r: Row, status: "expired" | "cancelled", now: number): TaskSettled {
     this.s.close.run(status, now, r.id as string);
@@ -286,8 +347,11 @@ function typeOf(r: Row): TaskType {
     leaseSeconds: r.lease_seconds as number,
     withinHours: r.within_hours as number,
     enabled: r.enabled === 1,
+    holdHours: opt<number>(r.hold_hours) ?? DEFAULT_HOLD_HOURS,
     changedAt: r.changed_at as number,
   };
+  const pay = opt<number>(r.pay_msat);
+  if (pay !== undefined && pay > 0) t.paySats = pay / 1000;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;
@@ -333,5 +397,9 @@ function leaseOf(r: Row): Lease {
   if (closed !== undefined) l.closed = closed;
   const reason = opt<string>(r.reason);
   if (reason !== undefined) l.reason = reason;
+  const pay = opt<number>(r.pay_msat);
+  if (pay !== undefined && pay > 0) l.payMsat = pay;
+  const booked = opt<number>(r.booked_at);
+  if (booked !== undefined) l.bookedAt = booked;
   return l;
 }

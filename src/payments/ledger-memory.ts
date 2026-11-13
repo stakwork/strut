@@ -8,16 +8,19 @@ import {
   chargeFor,
   creditFor,
   dayOf,
+  earningOf,
   int,
   LedgerError,
   msRange,
   pageLimit,
   positiveInt,
+  payeeBalanceOf,
   rollUp,
   ENTRIES_PAGE,
   ENTRIES_PAGE_MAX,
   EXPIRED_SUBJECT,
   RECENT_DAYS,
+  ZERO_BALANCE,
   type ChargeInput,
   type ChargeResult,
   type DayRange,
@@ -25,6 +28,7 @@ import {
   type DepositedRow,
   type DepositInput,
   type EarningsQuery,
+  type Earning,
   type EarningsRow,
   type EntryKind,
   type EntryListQuery,
@@ -37,9 +41,15 @@ import {
   type Micros,
   type OpenHold,
   type Outstanding,
+  type PayDailyRow,
+  type PayeeBalance,
+  type PayInput,
+  type PayResult,
   type ReceivedRow,
   type Recent,
   type SweepResult,
+  type TakeBackInput,
+  type TakeBackResult,
   type TokenBalance,
   type WithdrawalInput,
   type WithdrawnRow,
@@ -63,6 +73,11 @@ export class MemoryLedgerStore implements LedgerStore {
   private readonly chargeByRun = new Map<string, LedgerEntry>();
   private readonly deposits = new Map<string, Deposit>();
   private readonly days = new Map<string, DailyRow>();
+  /** Worker pay: by lease, by task + worker, by worker, by day + type. */
+  private readonly pays = new Map<string, Earning>();
+  private readonly payByTaskWorker = new Map<string, string>();
+  private readonly payeeRows = new Map<string, { accepted: number; takenBack: number; withdrawn: number; answers: number; firstAt: number; lastAt: number }>();
+  private readonly payDays = new Map<string, PayDailyRow>();
 
   // ── writes ────────────────────────────────────────────────────────────
 
@@ -371,6 +386,109 @@ export class MemoryLedgerStore implements LedgerStore {
     const after = o.after ?? 0;
     const limit = pageLimit(o.limit, 1000, 10_000);
     return this.log.slice(after, after + limit).map((e) => ({ ...e }));
+  }
+
+  // ── worker pay (plans/human-steps.md §8.1) ──────────────────────────
+
+  async pay(input: PayInput): Promise<PayResult> {
+    const e = earningOf(input);
+    const known = this.pays.get(e.lease);
+    if (known) return { earning: { ...known }, existing: true };
+    const tw = k(e.task, e.worker);
+    if (this.payByTaskWorker.has(tw)) throw new Error(`UNIQUE constraint failed: pay.task, pay.worker (${e.task}, ${e.worker})`);
+    this.pays.set(e.lease, e);
+    this.payByTaskWorker.set(tw, e.lease);
+    const p = this.payeeRows.get(e.worker);
+    if (p) {
+      p.accepted += e.msat;
+      p.answers += 1;
+      p.firstAt = Math.min(p.firstAt, e.at);
+      p.lastAt = Math.max(p.lastAt, e.at);
+    } else {
+      this.payeeRows.set(e.worker, { accepted: e.msat, takenBack: 0, withdrawn: 0, answers: 1, firstAt: e.at, lastAt: e.at });
+    }
+    const day = this.payDay(e);
+    day.answers += 1;
+    day.msat += e.msat;
+    return { earning: { ...e }, existing: false };
+  }
+
+  async payOf(lease: string): Promise<Earning | undefined> {
+    const e = this.pays.get(lease);
+    return e ? { ...e } : undefined;
+  }
+
+  async payFor(tasks: readonly string[]): Promise<Earning[]> {
+    const ids = new Set(tasks);
+    return [...this.pays.values()]
+      .filter((e) => ids.has(e.task))
+      .sort((a, b) => (a.task < b.task ? -1 : a.task > b.task ? 1 : a.worker < b.worker ? -1 : a.worker > b.worker ? 1 : 0))
+      .map((e) => ({ ...e }));
+  }
+
+  async takeBack(input: TakeBackInput): Promise<TakeBackResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    need("why", input.why);
+    int("at", at);
+    const e = this.pays.get(input.lease);
+    if (!e) return { lease: input.lease, result: "none" };
+    if (e.takenBack === undefined && e.releases > at) {
+      Object.assign(e, { takenBack: at, takenBackWhy: input.why, ...(input.by !== undefined ? { takenBackBy: input.by } : {}) });
+      this.payeeRows.get(e.worker)!.takenBack += e.msat;
+      const day = this.payDay(e);
+      day.takenBackAnswers += 1;
+      day.takenBackMsat += e.msat;
+      return { lease: input.lease, result: "taken", earning: { ...e } };
+    }
+    return { lease: input.lease, result: e.takenBack !== undefined ? "taken" : "released", earning: { ...e } };
+  }
+
+  async payeeBalance(worker: string, o: { now?: number } = {}): Promise<PayeeBalance> {
+    return this.balanceOf(worker, o.now ?? Date.now()) ?? { ...ZERO_BALANCE };
+  }
+
+  async payeeBalances(workers: readonly string[], o: { now?: number } = {}): Promise<Record<string, PayeeBalance>> {
+    const now = o.now ?? Date.now();
+    const out: Record<string, PayeeBalance> = {};
+    for (const w of workers) {
+      const b = this.balanceOf(w, now);
+      if (b) out[w] = b;
+    }
+    return out;
+  }
+
+  async payDaily(range: DayRange = {}): Promise<PayDailyRow[]> {
+    const from = range.from ?? "0000-00-00";
+    const to = range.to ?? "9999-99-99";
+    return [...this.payDays.values()]
+      .filter((r) => r.day >= from && r.day <= to)
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.type < b.type ? -1 : a.type > b.type ? 1 : 0))
+      .map((r) => ({ ...r }));
+  }
+
+  private payDay(e: Earning): PayDailyRow {
+    const day = dayOf(e.at);
+    const key = k(day, e.type);
+    let r = this.payDays.get(key);
+    if (!r) {
+      r = { day, type: e.type, answers: 0, msat: 0, takenBackAnswers: 0, takenBackMsat: 0 };
+      this.payDays.set(key, r);
+    }
+    return r;
+  }
+
+  private balanceOf(worker: string, now: number): PayeeBalance | undefined {
+    const p = this.payeeRows.get(worker);
+    if (!p) return undefined;
+    let held = 0;
+    let next: number | undefined;
+    for (const e of this.pays.values()) {
+      if (e.worker !== worker || e.takenBack !== undefined || e.releases <= now) continue;
+      held += e.msat;
+      next = next === undefined ? e.releases : Math.min(next, e.releases);
+    }
+    return payeeBalanceOf({ accepted: p.accepted, takenBack: p.takenBack, withdrawn: p.withdrawn, held, ...(next !== undefined ? { nextReleaseAt: next } : {}) });
   }
 
   async close(): Promise<void> {}

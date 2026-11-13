@@ -35,6 +35,15 @@
  * counts once); and the service knows from memory who is an ACTIVE worker,
  * which the public routes count a request under (`isActiveWorker`).
  *
+ * EARNINGS (§8.1, item 5a): a task type may pay (`paySats`), stamped on a
+ * lease when it is taken. An accepted answer under a paid lease is BOOKED in
+ * the ledger (src/payments/ledger.ts: `pay`, one row per lease) right after
+ * it settles here, and the lease is marked `bookedAt`; a booking that fails
+ * is logged, never the worker's, and the minute's sweep books what is left.
+ * An earning is held the type's `holdHours` and withdrawable after; staff
+ * take one back inside its hold (`takeBack`, the service's alone). No sats
+ * move: the wallet pays nobody until item 5b.
+ *
  * Nothing is made until something is asked of it: no file on a strut that
  * never runs a `human` step, and a staff READ on such a strut answers empty.
  */
@@ -42,12 +51,25 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
 import type { RunFile } from "../runs.js";
+import { ZERO_BALANCE, type Earning, type LedgerStore, type PayeeBalance } from "../payments/ledger.js";
 import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
-import { MemoryTaskStore, type Lease, type TaskListQuery, type TaskRecord, type TaskSettled, type TaskStore, type TaskType } from "./task-store.js";
+import {
+  DEFAULT_HOLD_HOURS,
+  MemoryTaskStore,
+  payMsatOf,
+  type Lease,
+  type TaskListQuery,
+  type TaskRecord,
+  type TaskSettled,
+  type TaskStore,
+  type TaskType,
+} from "./task-store.js";
 import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { Lease, TaskRecord, TaskSettled, TaskStatus, TaskType } from "./task-store.js";
+export type { PayeeBalance } from "../payments/ledger.js";
+export { DEFAULT_HOLD_HOURS } from "./task-store.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 
 /** §4.2's defaults. */
@@ -55,6 +77,14 @@ export const DEFAULT_LEASE_SECONDS = 600;
 export const DEFAULT_WITHIN_HOURS = 72;
 export const LEASE_SECONDS_MAX = 24 * 60 * 60;
 export const WITHIN_HOURS_MAX = 365 * 24;
+/** §8.1: the most one answer may earn — a guard against a slip, not a
+ *  policy — and the bounds of a type's hold, in hours (never 0: earnings
+ *  wait). */
+export const PAY_SATS_MAX = 100_000;
+export const HOLD_HOURS_MIN = 1;
+export const HOLD_HOURS_MAX = 720;
+/** §8.1: how many unbooked answers one sweep books at most. */
+export const BOOK_BATCH = 500;
 /** §3: what a task may show, and how many files it may name. */
 export const SHOW_MAX_BYTES = 256 * 1024;
 export const FILES_MAX = 200;
@@ -128,6 +158,7 @@ export type TaskErrorCode =
   | "task_closed"
   | "bad_answer"
   | "unknown_worker"
+  | "unknown_task"
   | "too_many"
   | "not_listed"
   | "no_file"
@@ -185,6 +216,19 @@ export interface TaskTypeInput {
   leaseSeconds?: number;
   withinHours?: number;
   enabled?: boolean;
+  /** What one accepted answer earns, in sats to the msat (§8.1), at most
+   *  `PAY_SATS_MAX`; absent or 0: unpaid. */
+  paySats?: number;
+  /** How long an earning waits before it can be withdrawn: hours from 1 to
+   *  720, 72 by default. */
+  holdHours?: number;
+}
+
+/** What a settled task's answer earned (§8.1): the lease's stamp, and the
+ *  dollars at the rate when it was read — left out when no rate could be. */
+export interface TaskPay {
+  msat: number;
+  usd?: number;
 }
 
 /** One task as its worker sees it: what to show, and the lease to answer by. */
@@ -197,6 +241,9 @@ export interface WorkerTask {
   expires: number;
   /** The task type's answer schema (§4.5): what a form draws (`TaskForm`). */
   answer: AnswerSchema;
+  /** What an answer earns, msat: the type's pay when the lease was taken,
+   *  locked (§8.1). 0: unpaid. */
+  payMsat: number;
 }
 
 /** A worker as they see themselves (`task/me`). */
@@ -204,16 +251,35 @@ export interface WorkerView {
   actor: string;
   status: WorkerStatus;
   /** The enabled types they hold a live grant for (of the app asked about,
-   *  when given); what they may take while `active`. */
-  types: Array<{ name: string; app: string }>;
+   *  when given); what they may take while `active` — each with what an
+   *  answer earns now, msat (0: unpaid). */
+  types: Array<{ name: string; app: string; payMsat: number }>;
+  /** What they are owed here (§8.1): zeros with nothing earned. */
+  balance: PayeeBalance;
 }
 
-export type TaskView = TaskRecord & { leases: Lease[] };
+/** An answer's earning as staff read it (§8.1): booked in the ledger. */
+export type LeaseEarning = Pick<Earning, "msat" | "at" | "releases" | "takenBack" | "takenBackWhy" | "takenBackBy">;
+export type LeaseView = Lease & { earning?: LeaseEarning };
+export type TaskView = TaskRecord & { leases: LeaseView[] };
+/** A worker as staff read them: with what they are owed here (§8.1). */
+export type StaffWorker = WorkerRecord & { balance: PayeeBalance };
+
+/** What a take-back did to one answer's earning (§8.1). */
+export interface TakeBackOutcome {
+  lease: string;
+  worker: string;
+  /** `taken` (now, or already: `earning.takenBack` says when), `released`
+   *  (past its hold: it is the worker's), `none` (it earned nothing). */
+  result: "taken" | "released" | "none";
+  earning?: LeaseEarning;
+}
 
 export interface TasksCapability {
   /** The `human` step's: the task keyed by workflow, run and path, made
-   *  when there is none (rule 1). */
-  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean }>;
+   *  when there is none (rule 1). A settled task comes with what its answer
+   *  earned (`pay`, §8.1), when it earned anything. */
+  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay }>;
 
   // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
   // app's name, when the call comes from one: a lease of a type another app
@@ -232,25 +298,29 @@ export interface TasksCapability {
    *  (§5.5): only a path on the task's list, only through the caller's own
    *  live lease, whether or not another path exists. */
   file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
-  /** Who the worker is here, and what they may take; the first call writes
-   *  them as `new`. */
+  /** Who the worker is here, what they may take, and what they are owed;
+   *  the first call writes them as `new`. */
   me(actor: string, o?: { app?: string }): Promise<WorkerView>;
 
   // Staff's.
   types(): Promise<TaskType[]>;
-  /** Saves the whole type (a PUT: what is left out is the default). */
+  /** Saves the whole type (a PUT: what is left out is the default — unpaid,
+   *  a 72-hour hold). A change of pay reaches the next lease taken, never one
+   *  in hand (§8.1). */
   setType(name: string, input: TaskTypeInput, by?: string): Promise<TaskType>;
   /** Removes a type no open task is of (`in_use` otherwise: turn it off
    *  and let them settle), and revokes its live grants. Its tasks on file
    *  keep its name. */
   deleteType(name: string, by?: string): Promise<{ name: string; revoked: number }>;
-  workers(q?: { status?: WorkerStatus }): Promise<WorkerRecord[]>;
+  /** Each with what they are owed here, in one grouped read (§8.1). */
+  workers(q?: { status?: WorkerStatus }): Promise<StaffWorker[]>;
   /** `suspended` or `banned` expires the worker's live lease at once. */
   setWorker(actor: string, change: { status?: WorkerStatus; note?: string | null }, by?: string): Promise<WorkerRecord>;
   grant(actor: string, type: string, by?: string): Promise<WorkerRecord>;
   /** Expires the worker's live lease of that type at once; the status stays. */
   revoke(actor: string, type: string, o?: { by?: string; why?: string }): Promise<WorkerRecord>;
-  /** Tasks newest first, with their leases. */
+  /** Tasks newest first, with their leases — each answer's earning with it
+   *  (§8.1). */
   list(q?: TaskListQuery): Promise<TaskView[]>;
   task(id: string): Promise<TaskView | undefined>;
 }
@@ -281,8 +351,14 @@ export interface TasksService {
    *  leases closed. */
   cancel(id: string): Promise<TaskSettled[]>;
   cancelRun(workflow: string, runId: string): Promise<TaskSettled[]>;
-  /** Rule 8, now. Opens the store. */
-  sweep(): Promise<{ leases: number; expired: TaskSettled[] }>;
+  /** §8.1: takes back the earnings a task's answers made — or `worker`'s
+   *  alone — while they are held, booking one not booked yet first. A
+   *  person's act (`POST /tasks/:id/take-back`, full scope) and item 4's;
+   *  never on a capability, so no step reaches it. */
+  takeBack(o: { task: string; worker?: string; why: string; by?: string }): Promise<TakeBackOutcome[]>;
+  /** Rule 8, now, and §8.1's backstop: books every answer whose earning is
+   *  not booked. Opens the store. */
+  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number }>;
   /** The sweep at once and every minute, while a store is open or on file. */
   start(): void;
   stop(): void;
@@ -310,6 +386,15 @@ export interface TasksDeps {
   /** Whether a store is on file already, so a read or the timer opens one
    *  only then. Left out: never (memory). */
   exists?(): boolean;
+  /** §8.1: the ledger an earning is booked in, made on the first paid
+   *  answer. Left out: nothing is booked. */
+  ledger?(): Promise<LedgerStore>;
+  /** The ledger when there is one, without making it: what a balance reads
+   *  (a worker with nothing earned reads zeros, and no file is made). */
+  ledgerIfAny?(): Promise<LedgerStore | null>;
+  /** Dollars per bitcoin now: a settled task's pay in dollars, for the run's
+   *  cost (§8.1). Left out, or failing: the pay has no dollars. */
+  usdPerBtc?(): Promise<number>;
   now?(): number;
   sweepEveryMs?: number;
 }
@@ -476,12 +561,77 @@ export function createTasks(deps: TasksDeps): TasksService {
 
   const workerTask = async (s: TaskStores, l: Lease): Promise<WorkerTask> => {
     const [t, kind] = await Promise.all([s.tasks.task(l.task), s.tasks.type(l.type)]);
-    return { lease: l.id, type: l.type, show: t!.show, files: t!.files, expires: l.expires, answer: kind?.answer ?? ({ type: "object", properties: {} } as AnswerSchema) };
+    return {
+      lease: l.id,
+      type: l.type,
+      show: t!.show,
+      files: t!.files,
+      expires: l.expires,
+      answer: kind?.answer ?? ({ type: "object", properties: {} } as AnswerSchema),
+      payMsat: l.payMsat ?? 0,
+    };
   };
 
   const views = async (s: TaskStores, tasks: TaskRecord[]): Promise<TaskView[]> => {
-    const leases = await s.tasks.leasesOf(tasks.map((t) => t.id));
+    const leases: LeaseView[] = await s.tasks.leasesOf(tasks.map((t) => t.id));
+    // Each answer's earning, from the ledger — read only where one is, and
+    // only when an answer on the page was paid.
+    if (leases.some((l) => l.payMsat !== undefined && l.status === "submitted")) {
+      const ledger = await deps.ledgerIfAny?.();
+      const earned = ledger ? new Map((await ledger.payFor(tasks.map((t) => t.id))).map((e) => [e.lease, e])) : undefined;
+      for (const l of leases) {
+        const e = earned?.get(l.id);
+        if (e) l.earning = leaseEarning(e);
+      }
+    }
     return tasks.map((t) => ({ ...t, leases: leases.filter((l) => l.task === t.id) }));
+  };
+
+  // ── earnings (§8.1) ───────────────────────────────────────────────────
+  /** Books a submitted, paid lease's earning in the ledger, then marks the
+   *  lease booked here. The ledger answers the first row for a lease it
+   *  holds already, so a crash between the two books nothing twice. */
+  const book = async (s: TaskStores, leaseId: string): Promise<boolean> => {
+    const l = await s.tasks.lease(leaseId);
+    if (!l || l.status !== "submitted" || !l.payMsat || l.bookedAt !== undefined || !deps.ledger) return false;
+    const [t, kind] = await Promise.all([s.tasks.task(l.task), s.tasks.type(l.type)]);
+    const at = l.closed ?? now();
+    const ledger = await deps.ledger();
+    await ledger.pay({
+      lease: l.id,
+      task: l.task,
+      worker: l.worker,
+      type: l.type,
+      msat: l.payMsat,
+      at,
+      // The hold as the type has it when the earning is booked: a change to
+      // the hold reaches only later earnings.
+      releases: at + Math.round((kind?.holdHours ?? DEFAULT_HOLD_HOURS) * HOUR_MS),
+      workflow: t?.workflow ?? "",
+      runId: t?.runId ?? "",
+      path: t?.path ?? "",
+    });
+    await s.tasks.booked(l.id, now());
+    return true;
+  };
+  /** What a settled task's answer earned: the submitted lease's stamp, and
+   *  the dollars at the rate now. */
+  const payOf = async (s: TaskStores, t: TaskRecord): Promise<TaskPay | undefined> => {
+    if (t.status !== "settled") return undefined;
+    const l = (await s.tasks.leasesOf([t.id])).find((x) => x.status === "submitted" && x.worker === t.by);
+    if (!l?.payMsat) return undefined;
+    let usd: number | undefined;
+    try {
+      const rate = await deps.usdPerBtc?.();
+      if (typeof rate === "number" && Number.isFinite(rate) && rate > 0) usd = Math.round(((l.payMsat * rate) / 1e11) * 1e6) / 1e6;
+    } catch (err) {
+      console.warn(`[tasks] no rate for task ${t.id}'s pay in dollars: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { msat: l.payMsat, ...(usd !== undefined && usd > 0 ? { usd } : {}) };
+  };
+  const balanceOf = async (actor: string): Promise<PayeeBalance> => {
+    const ledger = await deps.ledgerIfAny?.();
+    return ledger ? ledger.payeeBalance(actor, { now: now() }) : { ...ZERO_BALANCE };
   };
 
   const capability: TasksCapability = {
@@ -502,7 +652,10 @@ export function createTasks(deps: TasksDeps): TasksService {
       const s = await stores();
       // A task already made is the step's, whatever its type became since.
       const known = await s.tasks.byKey(workflow, runId, path);
-      if (known) return { task: known, created: false };
+      if (known) {
+        const pay = await payOf(s, known);
+        return { task: known, created: false, ...(pay ? { pay } : {}) };
+      }
       const kind = await s.tasks.type(type);
       if (!kind) throw new TaskError("unknown_type", `no task type ${type} here; an admin adds it`);
       if (!kind.enabled) throw new TaskError("type_disabled", `task type ${type} is turned off`);
@@ -579,6 +732,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (problem) throw new TaskError("bad_answer", problem);
       const settled = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now() });
       if (!settled) return whyNot(s, w, l.id);
+      // The answer is accepted: what it earns is owed (§8.1). A booking that
+      // fails is never the worker's — the sweep books it.
+      if (l.payMsat) {
+        await book(s, l.id).catch((err) => console.error(`[tasks] booking lease ${l.id}'s earning failed; the next sweep books it:`, err));
+      }
       tell([{ id: settled.id, type: settled.type, workflow: settled.workflow, runId: settled.runId, path: settled.path, status: "settled" }]);
       return { ok: true };
     },
@@ -620,8 +778,10 @@ export function createTasks(deps: TasksDeps): TasksService {
       const types = liveGrants(w)
         .map((name) => kinds.get(name))
         .filter((k): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app))
-        .map((k) => ({ name: k.name, app: k.app }));
-      return { actor: w.actor, status: w.status, types };
+        .map((k) => ({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0 }));
+      // A worker's status touches no earning (§8.1): a suspended worker
+      // still sees what they are owed.
+      return { actor: w.actor, status: w.status, types, balance: await balanceOf(w.actor) };
     },
 
     async types() {
@@ -642,6 +802,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
       const withinHours = hours(input.withinHours ?? DEFAULT_WITHIN_HOURS);
       if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new TaskError("bad_request", "enabled is true or false");
+      const paySats = payOk(input.paySats);
+      const holdHours = holdOk(input.holdHours);
       const s = await stores();
       const saved = await s.tasks.putType({
         name,
@@ -650,6 +812,8 @@ export function createTasks(deps: TasksDeps): TasksService {
         leaseSeconds,
         withinHours,
         enabled: input.enabled ?? true,
+        ...(paySats ? { paySats } : {}),
+        holdHours,
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
@@ -679,7 +843,11 @@ export function createTasks(deps: TasksDeps): TasksService {
     async workers(q = {}) {
       if (q.status !== undefined && !WORKER_STATUSES.includes(q.status)) throw new TaskError("bad_request", `status is one of ${WORKER_STATUSES.join(", ")}`);
       const s = await storesIfAny();
-      return s ? s.workers.list(q) : [];
+      if (!s) return [];
+      const list = await s.workers.list(q);
+      const ledger = list.length ? await deps.ledgerIfAny?.() : null;
+      const owed = ledger ? await ledger.payeeBalances(list.map((w) => w.actor), { now: now() }) : {};
+      return list.map((w) => ({ ...w, balance: owed[w.actor] ?? { ...ZERO_BALANCE } }));
     },
 
     async setWorker(actor, change = {}, by) {
@@ -739,7 +907,20 @@ export function createTasks(deps: TasksDeps): TasksService {
     tell(swept.expired);
     // Dead leases let go of: their tasks are free, of types not known here.
     if (swept.leases) wakeAll();
-    return swept;
+    // §8.1's backstop: an accepted answer whose booking failed (or whose
+    // process died between the answer and the booking) is booked now, once.
+    let booked = 0;
+    if (deps.ledger) {
+      for (const l of await s.tasks.unbooked(BOOK_BATCH)) {
+        try {
+          if (await book(s, l.id)) booked++;
+        } catch (err) {
+          console.error(`[tasks] booking lease ${l.id}'s earning failed; the next sweep tries again:`, err);
+          break;
+        }
+      }
+    }
+    return { ...swept, booked };
   };
 
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -748,6 +929,7 @@ export function createTasks(deps: TasksDeps): TasksService {
     try {
       const swept = await sweep();
       if (swept.expired.length) console.log(`[tasks] ${swept.expired.length} task(s) past their time expired`);
+      if (swept.booked) console.log(`[tasks] booked ${swept.booked} answer(s)' earnings the answers themselves did not`);
     } catch (err) {
       console.error(`[tasks] the sweep failed:`, err);
     }
@@ -780,6 +962,27 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (!s) return [];
       const out = await s.tasks.cancel({ workflow, runId }, now());
       tell(out);
+      return out;
+    },
+    async takeBack(o) {
+      const why = text("why", o?.why);
+      if (!why.trim()) throw new TaskError("bad_request", "a take-back says why");
+      if (o.worker !== undefined) actorOk(o.worker);
+      const s = await storesIfAny();
+      const t = s && typeof o.task === "string" ? await s.tasks.task(o.task) : undefined;
+      if (!s || !t) throw new TaskError("unknown_task", `no task ${o?.task}`);
+      const answered = (await s.tasks.leasesOf([t.id])).filter((l) => l.status === "submitted" && (o.worker === undefined || l.worker === o.worker));
+      const out: TakeBackOutcome[] = [];
+      for (const l of answered) {
+        if (!l.payMsat || !deps.ledger) {
+          out.push({ lease: l.id, worker: l.worker, result: "none" });
+          continue;
+        }
+        // Booked first, so a take-back never loses a race with the sweep.
+        await book(s, l.id);
+        const r = await (await deps.ledger()).takeBack({ lease: l.id, why, ...(o.by === undefined ? {} : { by: o.by }), at: now() });
+        out.push({ lease: l.id, worker: l.worker, result: r.result, ...(r.earning ? { earning: leaseEarning(r.earning) } : {}) });
+      }
       return out;
     },
     sweep,
@@ -832,6 +1035,37 @@ function hours(v: unknown): number {
     throw new TaskError("bad_request", `withinHours is a number of hours above 0, at most ${WITHIN_HOURS_MAX}`);
   }
   return v;
+}
+
+const HOUR_MS = 3_600_000;
+
+/** A type's pay: sats to the msat, 0 to `PAY_SATS_MAX`; 0 (or none) is unpaid. */
+function payOk(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > PAY_SATS_MAX || Math.abs(v * 1000 - Math.round(v * 1000)) > 1e-6) {
+    throw new TaskError("bad_request", `paySats is a number of sats from 0 to ${PAY_SATS_MAX}, to the msat (at most three decimals)`);
+  }
+  return v > 0 ? Math.round(v * 1000) / 1000 : undefined;
+}
+
+/** A type's hold: hours from `HOLD_HOURS_MIN` to `HOLD_HOURS_MAX`, never 0. */
+function holdOk(v: unknown): number {
+  if (v === undefined || v === null) return DEFAULT_HOLD_HOURS;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < HOLD_HOURS_MIN || v > HOLD_HOURS_MAX) {
+    throw new TaskError("bad_request", `holdHours is a number of hours from ${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}: earnings wait before they can be withdrawn`);
+  }
+  return v;
+}
+
+function leaseEarning(e: Earning): LeaseEarning {
+  return {
+    msat: e.msat,
+    at: e.at,
+    releases: e.releases,
+    ...(e.takenBack !== undefined ? { takenBack: e.takenBack } : {}),
+    ...(e.takenBackWhy !== undefined ? { takenBackWhy: e.takenBackWhy } : {}),
+    ...(e.takenBackBy !== undefined ? { takenBackBy: e.takenBackBy } : {}),
+  };
 }
 
 function jsonBytes(v: unknown): number | undefined {

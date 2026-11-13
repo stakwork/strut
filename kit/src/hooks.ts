@@ -858,6 +858,9 @@ export const TASK_STEPS = {
   me: "task/me",
 } as const;
 
+/** `useWorker()`'s query: what `useTask().submit` reads again. */
+const WORKER_QUERY_KEY = ["strut", "task", "me"] as const;
+
 /** How long `useTask` holds one `task/next`: the server's most. */
 export const TASK_WAIT_S = 25;
 /** After a refused or failed `task/next`, the next waits this long; a worker
@@ -880,6 +883,23 @@ export interface WorkerTask {
   /** The task type's answer schema: what `submit` must fit, and what
    *  strut/views' `TaskForm` draws. */
   answer: unknown;
+  /** What an answer earns, in msat (1,000 to a sat): the task type's pay
+   *  when this task was taken, locked — a later change of pay never reaches
+   *  it. 0: unpaid. */
+  payMsat: number;
+}
+
+/** What a worker is owed here, in msat (`task/me`). An earning waits in its
+ *  hold (the task type's) before it can be withdrawn. */
+export interface WorkerBalance {
+  /** Earned, less what was taken back and withdrawn. */
+  totalMsat: number;
+  /** Of which still in its hold. */
+  heldMsat: number;
+  /** Past its hold: what a withdrawal may take. */
+  withdrawableMsat: number;
+  /** When the next held earning releases, epoch ms. */
+  nextReleaseAt?: number;
 }
 
 /** Who the viewer is as a worker here (`task/me`). */
@@ -887,8 +907,11 @@ export interface WorkerInfo {
   actor: string;
   /** `new`: not granted anything yet; only `active` takes tasks. */
   status: "new" | "active" | "suspended" | "banned";
-  /** The task types they hold that this app draws: the app's menu. */
-  types: Array<{ name: string; app: string }>;
+  /** The task types they hold that this app draws: the app's menu, each
+   *  with what an answer earns now, msat (0: unpaid). */
+  types: Array<{ name: string; app: string; payMsat: number }>;
+  /** What they are owed here: zeros with nothing earned. */
+  balance: WorkerBalance;
 }
 
 /** The refusal code a task call's error begins with (`not_active`,
@@ -911,7 +934,8 @@ export type TaskHookStatus = "waiting" | "working" | "sending" | "inactive" | "e
 export interface UseTask {
   /** The task in hand, or null. */
   task: WorkerTask | null;
-  /** Answer it: in the task type's answer schema. Then the next one is asked for. */
+  /** Answer it: in the task type's answer schema. Then the next one is asked
+   *  for, and `useWorker()` is read again, so its balance moves. */
   submit: (answer: unknown) => Promise<void>;
   /** Pass on it: it goes to someone else, never back to this worker. */
   skip: (reason?: string) => Promise<void>;
@@ -933,6 +957,7 @@ export interface UseTaskOptions {
  */
 export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
   const client = useStrutClient();
+  const qc = useQueryClient();
   const [task, setTask] = useState<WorkerTask | null>(null);
   const [status, setStatus] = useState<TaskHookStatus>("waiting");
   const [error, setError] = useState<Error | null>(null);
@@ -1023,7 +1048,14 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
     },
     [client, drop],
   );
-  const submit = useCallback((answer: unknown) => send(TASK_STEPS.submit, { answer }), [send]);
+  const submit = useCallback(
+    async (answer: unknown) => {
+      await send(TASK_STEPS.submit, { answer });
+      // The answer earned: the balance `useWorker()` shows moved.
+      void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
+    },
+    [send, qc],
+  );
   const skip = useCallback((reason?: string) => send(TASK_STEPS.skip, compact({ reason })), [send]);
   return { task, submit, skip, status, error };
 }
@@ -1034,7 +1066,7 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
 export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<WorkerInfo> {
   const client = useStrutClient();
   return useQuery({
-    queryKey: ["strut", "task", "me"],
+    queryKey: WORKER_QUERY_KEY,
     queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, {}),
     enabled: opts.enabled ?? true,
   });

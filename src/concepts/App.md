@@ -506,12 +506,19 @@ grants:
 The worker is always the page's signed-in viewer: the steps read it from
 the session, never from the page. `useWorker()` is who they are here —
 `status` (`new` until an admin grants them a type; `active` takes tasks;
-`suspended`, `banned`) and the `types` they hold in this app. `useTask()`
+`suspended`, `banned`), the `types` they hold in this app (each with
+`payMsat`, what an answer earns) and their `balance` — `{ heldMsat,
+withdrawableMsat, totalMsat, nextReleaseAt? }`, in msat (1,000 to a sat):
+what they earned here, an earning held for the type's hold before it can
+be withdrawn. `useTask()`
 holds one `task/next` on the server at a time (none while the page is
 hidden) and hands back `task` — `{ lease, type, show, files, expires,
-answer }`, `type` saying which view to draw, `show` what the workflow put
-there — then `submit(answer)` (it must fit the type's `answer` schema) and
-`skip()` let it go and the next is asked for. `useTask("pet-match")` asks
+answer, payMsat }`, `type` saying which view to draw, `show` what the
+workflow put there, `payMsat` what this answer earns, fixed when the task
+was taken — then `submit(answer)` (it must fit the type's `answer` schema)
+and `skip()` let it go and the next is asked for; `submit` reads
+`useWorker()` again, so a balance on the page moves as the answer goes in.
+Pay is the task type's, an admin's: no step sets it. `useTask("pet-match")` asks
 for one type alone. `useTaskFileUrl(task, path)` is one of `task.files`
 as a `blob:` URL for an `<img>`; nothing off that list opens. A type whose
 answer is plain fields (text, numbers, yes or no, a pick from a list) needs

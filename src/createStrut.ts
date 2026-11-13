@@ -398,6 +398,9 @@ export interface StrutOptions<TServices = unknown> {
    *  src/public-runs.ts): a launch past it is a 429. `STRUT_HOST_CONFIG`'s
    *  `publicRuns` sets `principal`. */
   publicRuns?: { principal?: string; maxInFlight?: number };
+  /** The task store (plans/human-steps.md §4, src/tasks/). `now`: its clock,
+   *  for a test — when a lease runs out, a task is due, an earning releases. */
+  tasks?: { now?: () => number };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -1491,6 +1494,12 @@ export async function createStrut<TServices = unknown>(
     });
     return ledgerOpen;
   };
+  // Earnings (plans/paid-runs.md §8) and a worker's balance
+  // (plans/human-steps.md §8.1): a READ opens the ledger only where one
+  // already is, so looking at an empty Earnings tab, or a worker with
+  // nothing earned asking `task/me`, never makes the file.
+  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
+    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
   // The task store (plans/human-steps.md §4, src/tasks/): opened on first
   // use, so a strut that never runs a `human` step makes no `tasks/tasks.db`;
   // memory where the run store is, since its tasks are those runs' steps.
@@ -1518,6 +1527,15 @@ export async function createStrut<TServices = unknown>(
         throw err;
       }
     },
+    // Earnings (plans/human-steps.md §8.1): a paid answer is booked in the
+    // ledger, beside the withdrawals 5b will write; the first paid answer
+    // makes `payments/ledger.db`, a balance read makes none. A settled
+    // task's pay in dollars, for its run's cost, is at the rate this strut
+    // trusts.
+    ledger,
+    ledgerIfAny,
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
   });
   // On the shared bag, the `human` step's `ensure` alone (plans/human-steps.md
   // §9.2): any step reaches the bag, a custom step the builder wrote
@@ -1562,10 +1580,6 @@ export async function createStrut<TServices = unknown>(
     rate: payments.rate,
     lightning: () => payments.lightning(),
   });
-  // Earnings (plans/paid-runs.md §8): a READ opens the ledger only where one
-  // already is, so looking at an empty Earnings tab never makes the file.
-  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
-    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
   // Withdraw (§8, src/payments/withdrawals.ts): pays through the payer —
   // `payments.payer()`, never on the services bag — and keeps a payment the
   // wallet answered `pending` on file beside the ledger until it settles
@@ -6158,6 +6172,9 @@ export async function createStrut<TServices = unknown>(
     // The whole store, held here and nowhere on a bag (plans/human-steps.md
     // §9.2): strut's own, or a host's own `services.tasks`.
     tasks: hostTasks ?? tasks.capability,
+    // A person's take-back of an earning in its hold (§8.1): the service's,
+    // never a capability's. None with a host's own store.
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack }),
   });
 
   // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and

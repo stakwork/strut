@@ -9,6 +9,8 @@ import { workerCall } from "./_shared.js";
  * for — leased to them until `expires`. The worker's own live lease comes
  * back as it is, so a page that reloads gets its task again. `wait` holds up
  * to 25 s for a task to appear (the kit's `useTask` asks again as one ends).
+ * `payMsat` is what an answer earns, the type's pay when the lease was taken
+ * (plans/human-steps.md §8.1): a later change of pay never reaches it.
  */
 export default defineStep({
   type: "task/next",
@@ -16,7 +18,7 @@ export default defineStep({
   worker: true,
   description:
     "A WORKER's page takes the next task (the kit's useTask): the oldest open task of a type the signed-in viewer holds that this app draws (or of `type`), leased to them — " +
-    "{ lease, type, show, files, expires } — or { none: true }. `wait` (seconds, at most 25) holds for a task to appear. Their own live lease comes back as it is. " +
+    "{ lease, type, show, files, expires, answer, payMsat } — payMsat what an answer earns, locked when the task was taken — or { none: true }. `wait` (seconds, at most 25) holds for a task to appear. Their own live lease comes back as it is. " +
     "Only an app page's own call, as its viewer; never a workflow step or an agent's tool.",
   input: z.object({
     type: z.string().min(1).optional().describe("One task type, drawn by this app; any type the worker holds here when left out."),
