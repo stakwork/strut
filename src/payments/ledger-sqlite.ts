@@ -50,6 +50,7 @@ import {
   type Outstanding,
   type PayDailyRow,
   type PayeeBalance,
+  type WorkersOwed,
   type PayInput,
   type PayResult,
   type ReceivedRow,
@@ -335,6 +336,16 @@ export class SqliteLedgerStore implements LedgerStore {
           group by worker`,
       ),
       payDaily: p("select * from pay_daily where day >= ? and day <= ? order by day, type"),
+      // Every payee with a balance, each with what of it is held: the payee's
+      // row, and its held range on `pay_held_worker`. Held is never more
+      // than the balance (payeeBalanceOf's rule).
+      owed: p(
+        `select count(*) payees, coalesce(sum(total), 0) owed, coalesce(sum(min(total, held)), 0) held from (
+           select p.accepted - p.taken_back - p.withdrawn total,
+                  coalesce((select sum(msat) from pay where worker = p.worker and taken_back is null and releases > ?), 0) held
+             from payees p)
+          where total > 0`,
+      ),
     };
   }
 
@@ -680,6 +691,13 @@ export class SqliteLedgerStore implements LedgerStore {
       takenBackAnswers: r.taken_back_answers as number,
       takenBackMsat: r.taken_back_msat as number,
     }));
+  }
+
+  async owedToWorkers(o: { now?: number } = {}): Promise<WorkersOwed> {
+    const r = this.live().s.owed.get(o.now ?? Date.now()) as Row;
+    const owedMsat = Number(r.owed ?? 0);
+    const heldMsat = Number(r.held ?? 0);
+    return { owedMsat, heldMsat, withdrawableMsat: owedMsat - heldMsat, payees: Number(r.payees ?? 0) };
   }
 
   async close(): Promise<void> {

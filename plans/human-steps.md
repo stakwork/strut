@@ -1326,6 +1326,34 @@ and `GET /tasks/:id` carry an answered lease's `earning` (`msat`, `at`,
 Earnings tab, `strut/earnings` and the Withdraw warning; the ledger's
 `payDaily` read is there for it.
 
+**Built differently (#666):**
+
+- **One more ledger read, `owedToWorkers({ now })`,** both stores:
+  `owedMsat`, `heldMsat`, `withdrawableMsat` and `payees` in one
+  statement, each payee's row with its held range on `pay_held_worker`,
+  held never more than a payee's balance (`payeeBalanceOf`'s rule). It
+  is held by the task store's clock (`createStrut({ tasks: { now } })`),
+  so the Earnings tab and `task/me` agree.
+- **`accepted.days` are UTC days, every task type summed,** each
+  `{ day, answers, msat, takenBackAnswers, takenBackMsat }`, so the
+  Workers column is `msat − takenBackMsat` (#664's rule above). No
+  breakdown by type.
+- **`workers` is in every unscoped answer, zeros included;** with no
+  ledger it is zeros, read from no file. The pages show it only once any
+  worker was paid (`showsWorkers`: something owed, or answers in the
+  range), so a strut that never paid one reads as it did.
+- **`wallet.owedToWorkersMsat` is there whenever the wallet is,** a
+  scoped view's too (the wallet is the whole wallet's), and
+  `wallet.coverMsat` only when the balance was read.
+- **Withdraw's warning is the server's reader's:** `readWithdrawInvoice`
+  (and the `earnings/read-invoice` step `strut/earnings` calls) takes
+  `owedToWorkersMsat` and answers `shortOfWorkers: { afterMsat,
+  owedMsat, shortMsat }` when the amount and its whole fee cap out would
+  leave less than what is owed, so both dialogs warn alike. The confirm
+  line repeats it; the route is unchanged.
+- **A line under the tiles** says how many answers the range accepted,
+  what they earned, and what of it was taken back.
+
 **The solvency 5b will need.**
 
 - The wallet must hold what workers are owed, held and withdrawable both:
@@ -1882,7 +1910,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
-| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **PR 1 (the earning) built**: stakwork/strut#664. Differs in §8.1. PR 2 (the books) not started |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |

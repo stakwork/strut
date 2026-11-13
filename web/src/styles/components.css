@@ -5940,6 +5940,13 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .earnings-blocked { white-space: normal; text-align: right; color: var(--warning); }
 .earnings-wallet-info .earnings-blocked, .earnings-wallet-info .auto-hint { text-align: left; }
 .earnings-check { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+/* What workers are owed (plans/human-steps.md §8.1): a third figure beside the
+   credit owed as service, and under the balance whether it covers it. */
+.earnings-wallet-figures.has-workers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.earnings-wallet-figures.has-workers .earnings-withdraw { grid-column: 1 / -1; max-width: none; }
+.earnings-cover, .earnings-wrap { white-space: normal; }
+.earnings-cover { margin-top: 2px; }
+.earnings-cover.is-short { color: var(--danger); }
 .earnings-pending { border-top: 1px solid var(--border); padding-top: var(--sp-2); display: flex; flex-direction: column; gap: 2px; }
 .earnings-pending-row { display: grid; grid-template-columns: 110px 1fr auto; gap: var(--sp-2); font-size: 12px; align-items: baseline; font-variant-numeric: tabular-nums; }
 .earnings-range { display: flex; gap: 2px; background: var(--surface-2); border-radius: var(--r-md); padding: 2px; align-self: flex-start; }
@@ -5969,6 +5976,8 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .withdraw-dialog .dialog-field { margin-bottom: 0; }
 .withdraw-dialog .dialog-actions { margin-top: 0; align-items: center; flex-wrap: wrap; }
 .withdraw-books { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); background: var(--surface-2); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); }
+.withdraw-books.has-workers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.withdraw-short { font-size: 12px; color: var(--danger); line-height: 1.5; }
 .withdraw-figure { font-size: 18px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
 .withdraw-invoice { font-family: var(--font-mono, ui-monospace, monospace) !important; font-size: 11px !important; resize: vertical; word-break: break-all; }
 .withdraw-ask { display: flex; flex-direction: column; gap: var(--sp-1); border-left: 2px solid var(--accent); padding-left: var(--sp-3); }
@@ -5994,7 +6003,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .buying-table td { vertical-align: top; }
 .buying-table td.buying-left { white-space: normal; }
 @media (max-width: 640px) {
-  .earnings-wallet-figures { grid-template-columns: 1fr 1fr; }
+  .earnings-wallet-figures, .earnings-wallet-figures.has-workers { grid-template-columns: 1fr 1fr; }
   .earnings-withdraw { grid-column: 1 / -1; align-items: stretch; max-width: none; }
   .earnings-blocked { text-align: left; }
   .earnings-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }

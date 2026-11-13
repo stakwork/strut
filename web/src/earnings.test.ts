@@ -1,7 +1,27 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { encodeBolt11 } from "../../src/payments/bolt11.js";
-import { byEarned, maxWithdrawMsat, fmtExpiresIn, fmtSats, fmtUsd, priceLine, rangeFrom, readWithdrawInvoice, subjectLabel, withdrawBlocked, withdrawRefusal } from "./earnings.js";
+import {
+  byEarned,
+  coverLine,
+  maxWithdrawMsat,
+  fmtExpiresIn,
+  fmtSats,
+  fmtUsd,
+  priceLine,
+  rangeFrom,
+  readWithdrawInvoice,
+  shortOfWorkers,
+  shortOfWorkersWarning,
+  showsWorkers,
+  subjectLabel,
+  withdrawBlocked,
+  withdrawRefusal,
+  workersAcceptedLine,
+  workersDayMsat,
+  workersOwedSub,
+  type WorkersView,
+} from "./earnings.js";
 
 const HASH = "ab".repeat(32);
 const NOW = Date.parse("2026-11-10T12:00:00Z");
@@ -42,6 +62,45 @@ describe("earnings: the words", () => {
   });
 });
 
+describe("what workers are owed (plans/human-steps.md §8.1)", () => {
+  const none: WorkersView = { owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0, accepted: { answers: 0, msat: 0, days: [] }, takenBack: { answers: 0, msat: 0 } };
+  const owed: WorkersView = {
+    owedMsat: 19_000_000,
+    heldMsat: 9_000_000,
+    withdrawableMsat: 10_000_000,
+    payees: 2,
+    accepted: { answers: 4, msat: 39_000_000, days: [{ day: "2026-11-03", answers: 3, msat: 35_000_000, takenBackAnswers: 1, takenBackMsat: 20_000_000 }] },
+    takenBack: { answers: 1, msat: 20_000_000 },
+  };
+
+  it("a strut that never paid a worker shows none of it", () => {
+    assert.equal(showsWorkers(undefined), false, "a scoped view has none");
+    assert.equal(showsWorkers(none), false);
+    assert.equal(showsWorkers(owed), true);
+    assert.equal(showsWorkers({ ...none, accepted: { answers: 1, msat: 1000, days: [] }, takenBack: { answers: 1, msat: 1000 } }), true, "every answer in range taken back: still shown");
+  });
+
+  it("owed, held and withdrawable in a line; the range's answers; a day's cell", () => {
+    assert.equal(workersOwedSub(owed, 100_000), "≈ $19.00 · 9,000 sats held, 10,000 sats withdrawable · 2 workers");
+    assert.equal(workersOwedSub({ ...owed, heldMsat: 0, withdrawableMsat: 19_000_000, payees: 1 }), "all withdrawable · 1 worker");
+    assert.equal(workersOwedSub({ ...owed, heldMsat: 19_000_000, withdrawableMsat: 0 }, 100_000), "≈ $19.00 · all held · 2 workers");
+    assert.equal(workersOwedSub(none), "0 workers", "everything taken back: nothing owed");
+    assert.equal(workersAcceptedLine(owed), "4 answers accepted from workers, earning 39,000 sats; 1 of them taken back (20,000 sats).");
+    assert.equal(workersAcceptedLine({ ...owed, takenBack: { answers: 0, msat: 0 } }), "4 answers accepted from workers, earning 39,000 sats.");
+    assert.equal(workersDayMsat(owed.accepted.days[0]!), 15_000_000, "accepted that day, less what of it was taken back");
+  });
+
+  it("the wallet's cover: none without a balance or a debt; red when short", () => {
+    assert.equal(coverLine(undefined), null);
+    assert.equal(coverLine({ owedToWorkersMsat: 0, coverMsat: 50_000_000 }), null, "nothing owed: nothing to say");
+    assert.equal(coverLine({ owedToWorkersMsat: 19_000_000 }), null, "the balance was not read");
+    assert.deepEqual(coverLine({ owedToWorkersMsat: 19_000_000, coverMsat: 31_000_000 }), { short: false, text: "Covers the 19,000 sats workers are owed, with 31,000 sats to spare." });
+    const short = coverLine({ owedToWorkersMsat: 59_000_000, coverMsat: -9_000_000 })!;
+    assert.equal(short.short, true);
+    assert.match(short.text, /^Short of what workers are owed by 9,000 sats/);
+  });
+});
+
 describe("the Withdraw dialog's reading of an invoice", () => {
   const nowS = Math.floor(NOW / 1000);
   it("the amount it asks, its cap and its expiry, beside the balance", () => {
@@ -62,6 +121,29 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     assert.ok(nwc.ok && nwc.overBalance, "the fee must fit beside it");
     const over = readWithdrawInvoice(inv, { balanceMsat: 9_999_000, nowMs: NOW, provider: "sphinx" });
     assert.ok(over.ok && over.overBalance);
+  });
+
+  it("warns when paying would leave the wallet short of what workers are owed — the amount and its whole fee cap out — and never refuses", () => {
+    const inv = encodeBolt11({ msat: 10_000_000, paymentHash: HASH, timestamp: nowS - 60, expirySecs: 600 });
+    // 50,000 sats held, 30,000 owed: 10,000 + a 50-sat cap out leaves 39,950.
+    const fine = readWithdrawInvoice(inv, { balanceMsat: 50_000_000, owedToWorkersMsat: 30_000_000, nowMs: NOW, provider: "sphinx" });
+    assert.ok(fine.ok && fine.shortOfWorkers === undefined);
+    const short = readWithdrawInvoice(inv, { balanceMsat: 50_000_000, owedToWorkersMsat: 45_000_000, nowMs: NOW, provider: "sphinx" });
+    assert.ok(short.ok);
+    assert.deepEqual(short.shortOfWorkers, { afterMsat: 39_950_000, owedMsat: 45_000_000, shortMsat: 5_050_000 });
+    assert.equal(short.overBalance, false, "a warning: it can still be paid");
+    assert.equal(
+      shortOfWorkersWarning(short.shortOfWorkers!),
+      "Paid, this leaves the wallet as little as 39,950 sats, 5,050 sats short of the 45,000 sats workers are owed for accepted answers. Their pay comes out of this wallet.",
+    );
+    // Nothing owed, or no balance read: nothing to warn of.
+    for (const o of [{ balanceMsat: 50_000_000 }, { owedToWorkersMsat: 45_000_000 }, { balanceMsat: 50_000_000, owedToWorkersMsat: 0 }]) {
+      const r = readWithdrawInvoice(inv, { ...o, nowMs: NOW });
+      assert.ok(r.ok && r.shortOfWorkers === undefined, JSON.stringify(o));
+    }
+    // A wallet already short: any withdrawal leaves it short; one past the balance leaves nothing.
+    assert.deepEqual(shortOfWorkers({ balanceMsat: 5_000_000, msat: 10_000_000, maxFeeMsat: 50_000, owedMsat: 1_000 }), { afterMsat: 0, owedMsat: 1_000, shortMsat: 1_000 });
+    assert.equal(shortOfWorkers({ balanceMsat: 5_000_000, msat: 1_000, maxFeeMsat: 5_000, owedMsat: 4_994_000 }), undefined, "exactly covered");
   });
 
   it("refuses what it cannot pay as confirmed, before anything is sent", () => {

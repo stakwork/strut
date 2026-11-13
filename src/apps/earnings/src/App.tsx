@@ -3,7 +3,9 @@
 // an ADMIN — strut's own Earnings tab as an app a host frames (Stadeum's org
 // admin pages) without anyone opening strut's UI. On top the wallet: its
 // balance at the rate of the moment, Add sats and Withdraw, the credit still
-// owed as service, the books' check and the sends still on their way. Then
+// owed as service, once any worker was paid what workers are owed for
+// accepted answers and whether the balance covers it (plans/human-steps.md
+// §8.1), the books' check and the sends still on their way. Then
 // earned, cost and margin over a range, by item and by day; the credit this
 // server bought at other strut servers; which wallet is set. Every call is
 // an `earnings/*` step, which answers only strut's own page shown to an admin.
@@ -11,7 +13,22 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Loader2, RefreshCw, Wallet } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
-import { RANGES, byEarned, fmtSats, fmtUsd, priceLine, rangeFrom, subjectLabel, type RangeId } from "@strut/kit/folds";
+import {
+  RANGES,
+  byEarned,
+  coverLine,
+  fmtSats,
+  fmtUsd,
+  priceLine,
+  rangeFrom,
+  showsWorkers,
+  subjectLabel,
+  workersAcceptedLine,
+  workersDayMsat,
+  workersOwedSub,
+  type RangeId,
+  type WorkersView,
+} from "@strut/kit/folds";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -47,6 +64,9 @@ export default function App() {
   const blocked = withdrawBlocked(wallet);
   const noAdd = addBlocked(wallet);
   const error = byItem.error ?? byDay.error;
+  // Shown once any worker was paid: a strut that never paid one reads as it did.
+  const workers = showsWorkers(view?.workers) ? view?.workers : undefined;
+  const cover = coverLine(wallet);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 bg-background p-4 text-foreground sm:p-6">
@@ -73,11 +93,12 @@ export default function App() {
 
       {view && (
         <>
-          <section className="grid gap-4 rounded-lg border p-4 sm:grid-cols-[1fr_1fr_auto]">
+          <section className={cn("grid gap-4 rounded-lg border p-4", workers ? "sm:grid-cols-[1fr_1fr_1fr_auto]" : "sm:grid-cols-[1fr_1fr_auto]")}>
             <Figure
               label="Wallet"
               value={wallet?.balance ? fmtSats(wallet.balance.msat) : "—"}
               sub={wallet?.balance?.usd !== undefined && wallet.rate ? `≈ ${fmtUsd(wallet.balance.usd)} at ${fmtUsd(wallet.rate)} per bitcoin` : (wallet?.error ?? "")}
+              note={cover ? <span className={cn(cover.short && "text-destructive")}>{cover.text}</span> : undefined}
             />
             <Figure
               label="Owed as service"
@@ -85,6 +106,14 @@ export default function App() {
               value={fmtUsd(view.outstanding.usd)}
               sub={`${view.outstanding.tokens} credit token${view.outstanding.tokens === 1 ? "" : "s"}${view.outstanding.held > 0 ? ` · ${fmtUsd(view.outstanding.held)} held for runs in flight` : ""}`}
             />
+            {workers && (
+              <Figure
+                label="Owed to workers"
+                title="Earned by workers for accepted answers, less what was taken back: sats this wallet must hold for them. Held earnings wait out their task type's hold before they can be withdrawn."
+                value={fmtSats(workers.owedMsat)}
+                sub={workersOwedSub(workers, wallet?.rate)}
+              />
+            )}
             <div className="flex flex-col gap-2 sm:items-end">
               <div className="flex gap-2">
                 <Button variant="outline" disabled={!!noAdd} title={noAdd ?? "An invoice into this wallet, to pay from your own"} onClick={() => setAdding(true)}>
@@ -97,7 +126,7 @@ export default function App() {
               {blocked && <span className="text-xs text-muted-foreground">{blocked}</span>}
             </div>
             {wallet && (wallet.balance || wallet.expectedMsat !== 0) && (
-              <p className="text-sm text-muted-foreground sm:col-span-3">
+              <p className={cn("text-sm text-muted-foreground", workers ? "sm:col-span-4" : "sm:col-span-3")}>
                 The books say it should hold {fmtSats(Math.max(0, wallet.expectedMsat))}: everything received and added, less everything sent and its fees
                 {wallet.pendingMsat > 0 ? `, and less the ${fmtSats(wallet.pendingMsat)} still on its way` : ""}.
                 {wallet.differenceMsat !== undefined && wallet.differenceMsat !== 0 && (
@@ -110,7 +139,7 @@ export default function App() {
               </p>
             )}
             {view.pending.length > 0 && (
-              <div className="flex flex-col gap-2 sm:col-span-3">
+              <div className={cn("flex flex-col gap-2", workers ? "sm:col-span-4" : "sm:col-span-3")}>
                 <Label>On their way</Label>
                 {view.pending.map((p) => (
                   <PendingRow key={p.paymentHash} p={p} onChanged={reload} />
@@ -141,6 +170,9 @@ export default function App() {
             <p className="text-sm text-muted-foreground">
               Also paid out: {fmtSats(view.purchases.msat)} for credit bought from other servers ({view.purchases.count}, fees {fmtSats(view.purchases.feeMsat)}).
             </p>
+          )}
+          {workers && workers.accepted.answers > 0 && (
+            <p className="text-sm text-muted-foreground">In this range, {workersAcceptedLine(workers)} Worker pay is owed in sats, apart from what this server earned.</p>
           )}
 
           <Section title="By item">
@@ -175,7 +207,7 @@ export default function App() {
           </Section>
 
           <Section title="By day">
-            <ByDay view={view} days={byDay.data} />
+            <ByDay view={view} days={byDay.data} {...(workers ? { workers } : {})} />
           </Section>
 
           <Buying />
@@ -208,6 +240,7 @@ export default function App() {
         <WithdrawDialog
           wallet={wallet}
           outstandingUsd={view.outstanding.usd}
+          {...(workers ? { workers } : {})}
           onClose={() => {
             setWithdrawing(false);
             reload();
@@ -218,13 +251,14 @@ export default function App() {
   );
 }
 
-function ByDay(props: { view: EarningsView; days: EarningsView | undefined }) {
-  const { view } = props;
+function ByDay(props: { view: EarningsView; days: EarningsView | undefined; workers?: WorkersView }) {
+  const { view, workers } = props;
   const rows = new Map((props.days?.rows ?? []).map((d) => [d.key, d]));
   const received = new Map(view.received.days.map((d) => [d.day, d]));
   const withdrawn = new Map(view.withdrawn.days.map((d) => [d.day, d]));
   const deposited = new Map(view.deposited.days.map((d) => [d.day, d]));
-  const days = [...new Set([...rows.keys(), ...received.keys(), ...withdrawn.keys(), ...deposited.keys()])].sort().reverse();
+  const paid = new Map(workers?.accepted.days.map((d) => [d.day, d]) ?? []);
+  const days = [...new Set([...rows.keys(), ...received.keys(), ...withdrawn.keys(), ...deposited.keys(), ...paid.keys()])].sort().reverse();
   if (!days.length) return <p className="text-sm text-muted-foreground">Nothing in this range.</p>;
   return (
     <Table>
@@ -233,12 +267,18 @@ function ByDay(props: { view: EarningsView; days: EarningsView | undefined }) {
           <TableHead>Day (UTC)</TableHead><TableHead className="text-right">Runs</TableHead><TableHead className="text-right">Earned</TableHead><TableHead className="text-right">Cost</TableHead>
           <TableHead className="text-right">Margin</TableHead><TableHead className="text-right">Received</TableHead>{deposited.size > 0 && <TableHead className="text-right">Added</TableHead>}
           <TableHead className="text-right">Withdrawn</TableHead>
+          {workers && (
+            <TableHead className="text-right" title="Sats that day's accepted answers earned workers, less what of them was taken back">
+              Workers
+            </TableHead>
+          )}
         </TableRow>
       </TableHeader>
       <TableBody>
         {days.map((day) => {
           const d = rows.get(day);
           const add = deposited.get(day);
+          const pay = paid.get(day);
           return (
             <TableRow key={day}>
               <TableCell>{day}</TableCell>
@@ -249,6 +289,11 @@ function ByDay(props: { view: EarningsView; days: EarningsView | undefined }) {
               <TableCell className="text-right">{received.has(day) ? fmtSats(received.get(day)!.msat) : ""}</TableCell>
               {deposited.size > 0 && <TableCell className="text-right">{add ? fmtSats(add.msat) : ""}</TableCell>}
               <TableCell className="text-right">{withdrawn.has(day) ? fmtSats(withdrawn.get(day)!.msat) : ""}</TableCell>
+              {workers && (
+                <TableCell className="text-right" title={pay ? `${pay.answers} answer${pay.answers === 1 ? "" : "s"}${pay.takenBackAnswers ? `, ${pay.takenBackAnswers} taken back` : ""}` : undefined}>
+                  {pay ? fmtSats(workersDayMsat(pay)) : ""}
+                </TableCell>
+              )}
             </TableRow>
           );
         })}
@@ -257,12 +302,13 @@ function ByDay(props: { view: EarningsView; days: EarningsView | undefined }) {
   );
 }
 
-function Figure(props: { label: string; value: string; sub: string; title?: string }) {
+function Figure(props: { label: string; value: string; sub: string; title?: string; note?: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1" title={props.title}>
       <Label>{props.label}</Label>
       <div className="text-2xl font-semibold tabular-nums">{props.value}</div>
       <div className="text-xs text-muted-foreground">{props.sub}</div>
+      {props.note && <div className="text-xs text-muted-foreground">{props.note}</div>}
     </div>
   );
 }

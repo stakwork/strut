@@ -1,14 +1,34 @@
 // ── Earnings: the pure parts of what the four places show ──────────────────
 //
 // plans/paid-runs.md §8. Dollars for earned, cost and margin (decision 27),
-// sats for what the wallet holds. The words are the kit's
+// sats for what the wallet holds and for what workers are owed
+// (plans/human-steps.md §8.1). The words are the kit's
 // (kit/src/folds/earnings.ts), which the `strut/earnings` app writes with
 // too; the Withdraw dialog reads an invoice with the server's own reader
 // (src/payments/withdraw-reading.ts over bolt11.ts and fee.ts: browser-safe),
 // so what the person confirms is what `POST /earnings/withdraw` checks.
 
-export { RANGES, byEarned, fmtExpiresIn, fmtSats, fmtUsd, priceLine, rangeFrom, subjectLabel, usdOfMsat, withdrawRefusal, type RangeId } from "@strut/kit/folds";
-export { maxWithdrawMsat, readWithdrawInvoice, type WithdrawReading } from "../../src/payments/withdraw-reading.js";
+export {
+  RANGES,
+  byEarned,
+  coverLine,
+  fmtExpiresIn,
+  fmtSats,
+  fmtUsd,
+  priceLine,
+  rangeFrom,
+  shortOfWorkersWarning,
+  showsWorkers,
+  subjectLabel,
+  usdOfMsat,
+  withdrawRefusal,
+  workersAcceptedLine,
+  workersDayMsat,
+  workersOwedSub,
+  type RangeId,
+  type WorkersView,
+} from "@strut/kit/folds";
+export { maxWithdrawMsat, readWithdrawInvoice, shortOfWorkers, type WithdrawReading } from "../../src/payments/withdraw-reading.js";
 
 /** Why Withdraw is off, or null when it may be pressed. */
 export function withdrawBlocked(wallet: { provider: string | null; receive: boolean; pay: boolean } | undefined): string | null {

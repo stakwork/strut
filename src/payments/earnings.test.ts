@@ -152,6 +152,75 @@ describe("earnings and withdraw on a server", () => {
     }
   });
 
+  it("what workers are owed: held, withdrawable and by day, from the ledger; the wallet's cover, below 0 when short; a scoped view leaves workers out", async () => {
+    process.env["STRUT_API_KEY"] = KEY;
+    const HOUR = 3_600_000;
+    let now = T0 + HOUR;
+    const wallet = new FakeWallet({ startMsat: 50_000_000 });
+    const strut = await boot({ services: { lightning: lightningCapability(wallet) } as never, tasks: { now: () => now } });
+    try {
+      const ledger = await strut.ledger();
+      const pay = (lease: string, worker: string, msat: number, at: number, holdHours = 72, type = "pet-match") =>
+        ledger.pay({ lease, task: `t-${lease}`, worker, type, msat, at, releases: at + holdHours * HOUR, workflow: "pets", runId: "r1", path: `pets/${lease}` });
+      await pay("a", "ann", 10_000_000, T0, 1);
+      await pay("b", "ann", 5_000_000, T0 + 1);
+      await pay("c", "bob", 20_000_000, T0 + 2, 72, "ballot");
+      await pay("d", "bob", 4_000_000, T0 + DAY);
+      await ledger.takeBack({ lease: "c", why: "a wrong box", at: T0 + HOUR });
+
+      const view = await get(strut, `/earnings?from=${dayOf(T0)}`);
+      assert.deepEqual(view.workers, {
+        owedMsat: 19_000_000,
+        heldMsat: 9_000_000,
+        withdrawableMsat: 10_000_000,
+        payees: 2,
+        accepted: {
+          answers: 4,
+          msat: 39_000_000,
+          days: [
+            { day: dayOf(T0), answers: 3, msat: 35_000_000, takenBackAnswers: 1, takenBackMsat: 20_000_000 },
+            { day: dayOf(T0 + DAY), answers: 1, msat: 4_000_000, takenBackAnswers: 0, takenBackMsat: 0 },
+          ],
+        },
+        takenBack: { answers: 1, msat: 20_000_000 },
+      });
+      // The range keeps the days; what is owed is now, whatever the range.
+      const later = await get(strut, `/earnings?from=${dayOf(T0 + DAY)}`);
+      assert.deepEqual([later.workers!.owedMsat, later.workers!.accepted.answers, later.workers!.takenBack.answers], [19_000_000, 1, 0]);
+      // Worker pay is not what this server sold: the earnings rows know nothing of it.
+      assert.deepEqual(view.totals, { calls: 0, failed: 0, earned: 0, cost: 0, margin: 0 });
+      // Past every hold, all of it may be withdrawn.
+      now = T0 + DAY + 72 * HOUR;
+      const released = await get(strut, "/earnings");
+      assert.deepEqual([released.workers!.heldMsat, released.workers!.withdrawableMsat], [0, 19_000_000]);
+
+      // The wallet's cover: its balance less what workers are owed. The books
+      // check is unchanged: no sats moved.
+      const covered = await get(strut, "/earnings?by=total&wallet=1");
+      assert.equal(covered.wallet!.owedToWorkersMsat, 19_000_000);
+      assert.equal(covered.wallet!.coverMsat, 50_000_000 - 19_000_000);
+      assert.equal(covered.wallet!.expectedMsat, 0);
+      await pay("e", "eve", 40_000_000, now);
+      const short = await get(strut, "/earnings?by=total&wallet=1");
+      assert.equal(short.wallet!.owedToWorkersMsat, 59_000_000);
+      assert.equal(short.wallet!.coverMsat, -9_000_000, "short of what workers are owed");
+      // A wallet that does not answer has no cover, and still says what is owed.
+      wallet.down();
+      const down = await get(strut, "/earnings?by=total&wallet=1");
+      assert.equal(down.wallet!.coverMsat, undefined);
+      assert.equal(down.wallet!.owedToWorkersMsat, 59_000_000);
+      wallet.down(false);
+
+      // A view scoped to a package is the package's, not the wallet's: no
+      // workers. Its wallet still covers the workers.
+      const scoped = await get(strut, "/earnings?prefix=acme/voxel&wallet=1");
+      assert.equal(scoped.workers, undefined);
+      assert.equal(scoped.wallet!.owedToWorkersMsat, 59_000_000);
+    } finally {
+      await strut.close();
+    }
+  });
+
   it("a strut that never sold reads zeros and makes no ledger file", async () => {
     const { FileRunStore } = await import("../store.js");
     const strut = await createStrut({
@@ -166,6 +235,14 @@ describe("earnings and withdraw on a server", () => {
       assert.deepEqual(view.totals, { calls: 0, failed: 0, earned: 0, cost: 0, margin: 0 });
       assert.equal(view.wallet!.provider, null);
       assert.equal(view.wallet!.error, "no wallet is set");
+      // No worker was ever paid: zeros, read from no file.
+      assert.deepEqual(view.workers, {
+        owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0,
+        accepted: { answers: 0, msat: 0, days: [] },
+        takenBack: { answers: 0, msat: 0 },
+      });
+      assert.equal(view.wallet!.owedToWorkersMsat, 0);
+      assert.equal(view.wallet!.coverMsat, undefined, "no balance, no cover");
       await assert.rejects(readFile(join(dir, "ws", "payments", "ledger.db")), "no file");
     } finally {
       await strut.close();

@@ -74,6 +74,9 @@ describe("strut/earnings: the steps outside its page", () => {
     const inv = encodeBolt11({ msat: 10_000_000, paymentHash: "ab".repeat(32), timestamp: nowS, expirySecs: 600, description: "to cold storage" });
     const r = (await readInvoiceStep.run({ invoice: inv, balanceMsat: 20_000_000, usdPerBtc: RATE }, {} as never)) as { ok: boolean; msat: number; maxFeeMsat: number; usd: number };
     assert.deepEqual([r.ok, r.msat, r.maxFeeMsat, r.usd], [true, 10_000_000, 50_000, 10]);
+    // Given what workers are owed, it says when the amount would leave the wallet short of it.
+    const short = (await readInvoiceStep.run({ invoice: inv, balanceMsat: 20_000_000, owedToWorkersMsat: 15_000_000 }, {} as never)) as { ok: boolean; shortOfWorkers?: unknown };
+    assert.deepEqual([short.ok, short.shortOfWorkers], [true, { afterMsat: 9_950_000, owedMsat: 15_000_000, shortMsat: 5_050_000 }]);
   });
 
   it("an admin door step refuses a workflow, a model-written page, a member's view of strut's own, and a call with no door", async () => {

@@ -453,6 +453,21 @@ export interface PayeeBalance {
 
 export const ZERO_BALANCE: Readonly<PayeeBalance> = Object.freeze({ totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
 
+/** What every worker is owed together (plans/human-steps.md §8.1, "The
+ *  books"): the sum of each payee's balance at `now`. */
+export interface WorkersOwed {
+  /** Earned, less taken back, less withdrawn, over every worker. */
+  owedMsat: number;
+  /** Of which still in its hold. */
+  heldMsat: number;
+  /** owed − held. */
+  withdrawableMsat: number;
+  /** Workers with a balance (owed > 0). */
+  payees: number;
+}
+
+export const ZERO_OWED: Readonly<WorkersOwed> = Object.freeze({ owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0 });
+
 /** `pay_daily`: one UTC day and task type. A take-back counts on the row
  *  of the day its answer was accepted: of that day's answers, those taken
  *  back since. */
@@ -540,6 +555,9 @@ export interface LedgerStore {
   payeeBalances(workers: readonly string[], o?: { now?: number }): Promise<Record<string, PayeeBalance>>;
   /** `pay_daily` by day and task type. */
   payDaily(range?: DayRange): Promise<PayDailyRow[]>;
+  /** What every worker is owed at `now`, held and withdrawable: one row per
+   *  payee and the held range of each on its index. */
+  owedToWorkers(o?: { now?: number }): Promise<WorkersOwed>;
   /** Folds the WAL into the file. */
   close(): Promise<void>;
 }
