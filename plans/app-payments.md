@@ -920,7 +920,7 @@ Open questions:
 10. **A visitor's page pays through the connection (R8).** What item 9's tip
     needs: a public app's page, this server's or another's, holds a wallet
     connection keyed by its seller.
-    - **strut:** *this PR.*
+    - **strut:** *stakwork/strut#690.*
       - `GET /public/apps/:name` (and so another server's read, through
         `from`) carries the version's `wallet` from its `dist/build.json`;
       - `NativeWalletApp.seller`, always present, checked by
