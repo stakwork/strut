@@ -14,6 +14,7 @@ import { defineStep, type RunEvent, type RunSummary, type StepRegistry } from ".
 import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { buildRegistryTools } from "./steps/core/agent.js";
+import jobDir from "./steps/lib/job/dir.js";
 import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkSource, type ParkWaker } from "./park.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -423,6 +424,58 @@ describe("parked runs", () => {
     }
   });
 
+  /** `ask` parks while `slow`, a branch of its own, is past its checkpoint:
+   *  the cancel (if any) comes after the last checkpoint of every branch. */
+  async function parkedBesideGate(cancel: boolean) {
+    const src = testSource();
+    const calls: string[] = [];
+    const gate = gateStep();
+    const { strut, workspace, dir } = await makeServer({ steps: { "wait-for": waitStep(src.answers, calls), gate: gate.def }, register: src.source });
+    try {
+      await workspace.publishWorkflow("late-cancel", "v1", {
+        steps: [
+          { id: "ask", type: "wait-for", config: { key: "k10" }, depends: [] },
+          { id: "slow", type: "gate", config: {}, depends: [] },
+        ],
+      });
+      const runId = await launch(strut, "late-cancel");
+      const deadline = Date.now() + 2000;
+      while (!(await events(strut, "late-cancel", runId)).some((e) => e.type === "step.parked") || !gate.started()) {
+        if (Date.now() > deadline) throw new Error("the step never parked");
+        await sleep(10);
+      }
+      if (cancel) assert.equal((await strut.app.request(`/workflows/late-cancel/runs/${runId}/cancel`, { method: "POST" })).status, 202);
+      // `slow` ends as a success: the only branch left unfinished parked.
+      gate.release();
+      const s = await summaryWhen(strut, "late-cancel", runId, () => true);
+      await released(strut, "late-cancel", runId);
+      return { s, log: await events(strut, "late-cancel", runId), src, parking: await readdir(join(dir, "parking")).catch(() => []) };
+    } finally {
+      gate.release();
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a cancel after the last checkpoint, with every open branch parked: the run ends cancelled, not waiting, and the source is told", async () => {
+    const { s, log, src, parking } = await parkedBesideGate(true);
+    assert.equal(s.status, "cancelled");
+    assert.equal(s.waitingOn, undefined);
+    assert.equal(log.at(-1)?.type, "run.cancelled");
+    assert.ok(!log.some((e) => e.type === "run.waiting"));
+    assert.deepEqual(src.cancelled, ["ans:k10"]);
+    assert.deepEqual(parking, [], "not kept as a waiting run");
+  });
+
+  it("the same run with no cancel still ends waiting", async () => {
+    const { s, log, src, parking } = await parkedBesideGate(false);
+    assert.equal(s.status, "waiting");
+    assert.deepEqual(s.waitingOn, ["ans:k10"]);
+    assert.equal(log.at(-1)?.type, "run.waiting");
+    assert.deepEqual(src.cancelled, []);
+    assert.equal(parking.length, 1);
+  });
+
   it("no run.end callback while the run waits; it goes at the real end", async () => {
     const posts: Array<{ event: string; status: string }> = [];
     const server = createServer((req, res) => {
@@ -588,6 +641,189 @@ describe("parked runs", () => {
       assert.throws(() => strut.parking.register("once", { settled: async () => false }), /registered already/);
       assert.throws(() => strut.parking.register("Two", { settled: async () => false }), /lowercase letters/);
     } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a parked run and its job (job/dir's hold)", () => {
+  /** One-shot gates by name: a `gate` step blocks on its own until released. */
+  function gates() {
+    const all = new Map<string, { open: Promise<void>; release: () => void; started: boolean }>();
+    const get = (name: string) => {
+      let g = all.get(name);
+      if (!g) {
+        let release!: () => void;
+        const open = new Promise<void>((r) => (release = r));
+        g = { open, release: () => release(), started: false };
+        all.set(name, g);
+      }
+      return g;
+    };
+    const def = defineStep({
+      type: "gate",
+      input: z.object({ name: z.string() }),
+      output: z.any(),
+      async run(cfg) {
+        const g = get(cfg.name);
+        g.started = true;
+        await g.open;
+        return cfg.name;
+      },
+    });
+    return { def, get, releaseAll: () => all.forEach((g) => g.release()) };
+  }
+
+  async function jobServer() {
+    const src = testSource();
+    const calls: string[] = [];
+    const g = gates();
+    const boom = { on: false };
+    const flaky = defineStep({ type: "flaky", input: z.object({}).passthrough(), output: z.any(), run: async () => { if (boom.on) throw new Error("boom"); return "ok"; } });
+    const server = await makeServer({ steps: { "wait-for": waitStep(src.answers, calls), count: countStep(calls), gate: g.def, flaky, "job/dir": jobDir }, register: src.source });
+    const { workspace } = server;
+    await workspace.publishWorkflow("jobbed", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "ask", type: "wait-for", config: { key: "{{ input.key }}" } },
+        { id: "slow", type: "gate", config: { name: "{{ input.gate }}" } },
+        { id: "after", type: "count", config: { name: "after" } },
+      ],
+    });
+    await workspace.publishWorkflow("touch", "v1", { steps: [{ id: "dir", type: "job/dir", config: {} }] });
+    await workspace.publishWorkflow("holder", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "hold", type: "gate", config: { name: "{{ input.gate }}" } },
+      ],
+    });
+    await workspace.publishWorkflow("fails-once", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "flaky", type: "flaky", config: {} },
+        { id: "slow", type: "gate", config: { name: "{{ input.gate }}" } },
+      ],
+    });
+    return { ...server, src, calls, g, boom };
+  }
+
+  /** A run of `touch` under `job`: what it ended with. */
+  async function touch(strut: Strut, job: string): Promise<RunSummary> {
+    const runId = await launch(strut, "touch", { job });
+    return ended(strut, "touch", runId);
+  }
+
+  it("a parked run lets go of its job; after its wake it holds it again, and a second run of the job is refused job_busy: while it is live", async () => {
+    const { strut, dir, waker, src, g, calls } = await jobServer();
+    try {
+      const runId = await launch(strut, "jobbed", { job: "j-wake", input: { key: "w1", gate: "w1" } });
+      await waiting(strut, "jobbed", runId);
+      // While it waits the job is free.
+      assert.equal((await touch(strut, "j-wake")).status, "success");
+
+      src.answers.set("ans:w1", "yes");
+      waker!.wake("jobbed", runId);
+      const deadline = Date.now() + 3000;
+      while (!g.get("w1").started) {
+        if (Date.now() > deadline) throw new Error("the woken run never reached its gate");
+        await sleep(10);
+      }
+      const busy = await touch(strut, "j-wake");
+      assert.equal(busy.status, "error");
+      assert.match(busy.error!.message, /^job_busy: job "j-wake" is in use by run /);
+
+      g.get("w1").release();
+      const done = await ended(strut, "jobbed", runId);
+      assert.equal(done.status, "success");
+      assert.deepEqual(calls.filter((c) => c === "after"), ["after"]);
+      // The run's end lets it go.
+      assert.equal((await touch(strut, "j-wake")).status, "success");
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a wake while another run holds the job: the woken run waits for it, live, and goes on once it lets go", async () => {
+    const { strut, dir, waker, src, g, calls } = await jobServer();
+    try {
+      const runId = await launch(strut, "jobbed", { job: "j-queue", input: { key: "q1", gate: "q-own" } });
+      await waiting(strut, "jobbed", runId);
+      const holder = await launch(strut, "holder", { job: "j-queue", input: { gate: "q-holder" } });
+      for (let i = 0; i < 300 && !g.get("q-holder").started; i++) await sleep(10);
+      assert.ok(g.get("q-holder").started);
+
+      g.get("q-own").release(); // the woken run's own gate never blocks: only the job holds it back
+      src.answers.set("ans:q1", "yes");
+      waker!.wake("jobbed", runId);
+      for (let i = 0; i < 300 && !(await events(strut, "jobbed", runId)).some((e) => e.type === "run.resumed"); i++) await sleep(10);
+      await sleep(400);
+      // Live, held back at the job: not failed, not waiting, nothing after it run.
+      assert.equal(await strut.store.getRunSummary("jobbed", runId), null);
+      const active = (await (await strut.app.request("/runs/active")).json()) as Array<{ runId: string }>;
+      assert.ok(active.some((r) => r.runId === runId), "the woken run is live");
+      const log = await events(strut, "jobbed", runId);
+      assert.ok(!log.some((e) => e.type === "step.error"));
+      assert.ok(!log.some((e) => e.type === "step.replayed" && e.path === "jobbed/dir"), "the job's step has not gone by");
+      assert.equal(calls.filter((c) => c === "ans:q1").length, 1, "the parked step has not run again");
+
+      g.get("q-holder").release();
+      assert.equal((await ended(strut, "holder", holder)).status, "success");
+      const done = await ended(strut, "jobbed", runId);
+      assert.equal(done.status, "success");
+      assert.deepEqual(calls.filter((c) => c === "after"), ["after"]);
+    } finally {
+      g.releaseAll();
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a woken run waiting for its job can be cancelled", async () => {
+    const { strut, dir, waker, src, g } = await jobServer();
+    try {
+      const runId = await launch(strut, "jobbed", { job: "j-stop", input: { key: "s1", gate: "s-own" } });
+      await waiting(strut, "jobbed", runId);
+      const holder = await launch(strut, "holder", { job: "j-stop", input: { gate: "s-holder" } });
+      for (let i = 0; i < 300 && !g.get("s-holder").started; i++) await sleep(10);
+      src.answers.set("ans:s1", "yes");
+      waker!.wake("jobbed", runId);
+      for (let i = 0; i < 300 && !(await events(strut, "jobbed", runId)).some((e) => e.type === "run.resumed"); i++) await sleep(10);
+      assert.equal((await strut.app.request(`/workflows/jobbed/runs/${runId}/cancel`, { method: "POST" })).status, 202);
+      const done = await ended(strut, "jobbed", runId);
+      assert.equal(done.status, "cancelled");
+      // The holder never noticed.
+      g.get("s-holder").release();
+      assert.equal((await ended(strut, "holder", holder)).status, "success");
+    } finally {
+      g.releaseAll();
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("any durable resume holds the job again: a person's resume of a failed run", async () => {
+    const { strut, dir, g, boom } = await jobServer();
+    try {
+      boom.on = true;
+      const runId = await launch(strut, "fails-once", { job: "j-resume", input: { gate: "r1" } });
+      assert.equal((await ended(strut, "fails-once", runId)).status, "error");
+      assert.equal((await touch(strut, "j-resume")).status, "success", "a failed run holds nothing");
+
+      boom.on = false;
+      const res = await strut.app.request(`/workflows/fails-once/runs/${runId}/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      assert.ok(res.status < 300, await res.clone().text());
+      for (let i = 0; i < 300 && !g.get("r1").started; i++) await sleep(10);
+      assert.ok(g.get("r1").started);
+      const log = await events(strut, "fails-once", runId);
+      assert.ok(log.some((e) => e.type === "step.replayed" && e.path === "fails-once/dir"));
+      assert.match((await touch(strut, "j-resume")).error?.message ?? "", /^job_busy:/);
+
+      g.get("r1").release();
+      assert.equal((await ended(strut, "fails-once", runId)).status, "success");
+    } finally {
+      g.releaseAll();
       await strut.close();
       await rm(dir, { recursive: true, force: true });
     }

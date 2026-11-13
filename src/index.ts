@@ -343,6 +343,7 @@ export {
   readJobRecord,
   touchJob,
   holdJob,
+  reholdJob,
   jobHolder,
   jobTtlMs,
   jobsCapability,

@@ -239,7 +239,8 @@ resume(workflow, runId):
 Execution proceeds normally, except `executeStep` consults the journal
 first: a step whose `path` has a journaled output **replays** it (emit
 `step.replayed` with the output; resolve the DAG promise; zero cost, no
-side effects re-executed) instead of executing. The first path NOT in
+side effects re-executed — only what the step held in memory is put back,
+its `onReplay`, §6) instead of executing. The first path NOT in
 the journal executes live, and everything downstream follows. Scope,
 templates, and skip/gate logic are reconstructed naturally because they
 only ever consume step outputs.
@@ -531,6 +532,17 @@ summary with `status: "waiting"` and `waitingOn`, and returns `{ runId,
 status: "waiting", waitingOn }`. Teardown runs with `RunEndInfo.parked`:
 per-run resources go as at any end.
 
+**A cancel beats a park.** A parked branch has no next checkpoint, so a
+cancel that reaches a live run after the last checkpoint of every branch
+still open — the woken run cancelled while its parked steps run again is
+one way — would otherwise end it `waiting`. `runWorkflow` reads the run's
+controller on a parked outcome: cancelling, the run finalizes `cancelled`
+(`run.cancelled`, never `run.waiting`), and its teardown carries what the
+parked branches waited on (`RunEndInfo { status: "cancelled", waitingOn }`)
+so each target's source is told (`cancelled(on)`), as for a cancel of a
+waiting run: the `task` source closes the run's open tasks. (A cancel after
+every branch FINISHED still ends `success`: the work was done.)
+
 **Where a park fails the step instead** (`park_refused:`, an ordinary
 error) — wherever nothing could wake the run: a prefix no source
 registered, a single-step run (`runSingleStep`'s `noPark`), a public run,
@@ -581,8 +593,18 @@ on the run's own version, its `run.resumed` marked `woken: true`:
 checkout in the run's directory): what later steps need lives in step
 outputs, artifacts or a job. The log is read whole at each wake, so the
 64 MB resume cap holds; a run past it stays `waiting` and the wake says
-why. A parked run lets go of its job's hold; a wake replays `job/dir` and
-does not take it again (open, plans/human-steps.md §11).
+why.
+
+**The job's hold.** A parked run lets go of its job's hold (`job/dir`, a
+kept `git/checkout`; src/jobs.ts), like every per-run resource, so the job
+is free for other runs while it waits. Every durable resume — a wake, a
+restart's, a person's — takes it again where the step that took it
+replays (`onReplay`, §6), before the steps after it run. If another run
+holds the job then (launched while this one waited), the resumed run
+WAITS for it to let go: it is live, its cancel and pause are looked at
+every 250 ms, and it is told at once when the hold goes (`reholdJob`). It
+never fails `job_busy:`, which stays a fresh launch's answer: a resume is
+the same run going on.
 
 ## 6. Step-author contract (additions)
 
@@ -598,6 +620,12 @@ does not take it again (open, plans/human-steps.md §11).
 - `ctx.park?(on)` — wait for something outside the run (§5.6). The step
   runs again from the top on the wake: find what you started by
   `ctx.runId` + `ctx.path` rather than start it twice.
+- `onReplay?(cfg, ctx, output)` on the step's definition — called when a
+  durable resume REPLAYS the step instead of running it, with its config
+  resolved as for `run`: put back what `run` held in this process's memory
+  and a park or a dead process let go. `job/dir` and a kept `git/checkout`
+  take the job's hold again there (§5.6). A throw fails the step. Leave it
+  out and a replay stays free.
 
 ## 7. Invariants
 

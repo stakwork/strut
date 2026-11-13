@@ -5,7 +5,7 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { idProblem } from "../../../session-store.js";
-import { holdJob, jobRoot, jobTtlMs, readJobRecord, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
+import { holdJob, jobRoot, jobTtlMs, readJobRecord, reholdJob, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
 import {
   cachePath,
   cancelSignal,
@@ -178,5 +178,12 @@ export default defineStep({
     } finally {
       cancel.stop();
     }
+  },
+  // A resume replays a kept checkout (a wake after a park, a restart): the
+  // job's hold went with the park or the process, and is taken again here,
+  // after any run that took the job meanwhile (as job/dir's).
+  async onReplay(cfg, ctx: GitCtx) {
+    if (cfg.workdir === undefined) return;
+    await reholdJob(ctx, jobRoot(dataDirOf(ctx), cfg.workdir), cfg.workdir);
   },
 });

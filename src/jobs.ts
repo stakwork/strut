@@ -604,8 +604,53 @@ export function holdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd" | "
   if (!ctx.onRunEnd) return;
   held.set(root, ctx.runId);
   ctx.onRunEnd(() => {
-    if (held.get(root) === ctx.runId) held.delete(root);
+    if (held.get(root) !== ctx.runId) return;
+    held.delete(root);
+    const waiting = letGo.get(root);
+    letGo.delete(root);
+    for (const told of waiting ?? []) told();
   });
+}
+
+/** Who waits for a job's hold to go (`reholdJob`): told the moment it does. */
+const letGo = new Map<string, Set<() => void>>();
+/** How often a run waiting for a job's hold looks at its own cancel and pause. */
+const REHOLD_CHECK_MS = 250;
+
+/** `holdJob` for a run a durable resume carries past the step that took the
+ *  hold (`StepDef.onReplay`: a wake, a restart, a person's resume). A park
+ *  or the dead process let the hold go, so it is taken again before the
+ *  steps it guards. When another run took the job in between, the resumed
+ *  run WAITS for that one to let go — live, its cancel and pause looked at
+ *  every quarter second, told at once when the hold goes — and never fails
+ *  `job_busy:`, which is a fresh launch's answer: a resume is the same run
+ *  going on, and a run that waited days for a person must not be lost to a
+ *  turn that happened to be running. */
+export async function reholdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd" | "control">, root: string, name: string): Promise<void> {
+  if (!ctx.onRunEnd) return;
+  let said = false;
+  for (;;) {
+    const by = held.get(root);
+    if (by === undefined || by === ctx.runId || isAncestorRun(ctx.control, by)) return holdJob(ctx, root, name);
+    if (!said) {
+      console.log(`[jobs] run ${ctx.runId} waits for run ${by} to let go of job "${name}" before it goes on`);
+      said = true;
+    }
+    await new Promise<void>((resolve) => {
+      const waiting = letGo.get(root) ?? new Set<() => void>();
+      letGo.set(root, waiting);
+      const done = () => {
+        clearTimeout(timer);
+        waiting.delete(done);
+        if (!waiting.size && letGo.get(root) === waiting) letGo.delete(root);
+        resolve();
+      };
+      const timer = setTimeout(done, REHOLD_CHECK_MS);
+      waiting.add(done);
+    });
+    // Throws when the run is being cancelled; blocks while it is paused.
+    await ctx.control?.checkpoint();
+  }
 }
 
 /** The run holding a job's directory, if any. */
