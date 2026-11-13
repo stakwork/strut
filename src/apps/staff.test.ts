@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  inputOf, leaseOutcome, owedLine, placeOf, queueWarnings, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  fmtWhen, inputOf, leaseOutcome, owedLine, placeOf, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -183,7 +183,13 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.deepEqual(placeOf({ type: "pets" }), { tab: "types", type: "pets" });
     assert.deepEqual(placeOf({ tab: "tests", type: "pets" }), { tab: "tests", type: "pets" });
     assert.deepEqual(placeOf({ tab: "nope" }), { tab: "queue" });
-    for (const p of [{ tab: "queue" }, { tab: "workers" }, { tab: "types", type: "a/b" }, { tab: "tasks", task: "x" }, { tab: "tests", test: "y" }, { tab: "tasks", by: "w" }, { tab: "tasks", run: "wf/r" }] as const) {
+    assert.deepEqual(placeOf({ review: "none" }), { tab: "tasks", review: "none" }, "the review queue (§9.6)");
+    assert.deepEqual(placeOf({ review: "rejected", by: "w" }), { tab: "tasks", review: "rejected", by: "w" }, "one worker's rejected answers");
+    assert.deepEqual(placeOf({ review: "maybe" }), { tab: "queue" });
+    for (const p of [
+      { tab: "queue" }, { tab: "workers" }, { tab: "types", type: "a/b" }, { tab: "tasks", task: "x" }, { tab: "tests", test: "y" }, { tab: "tasks", by: "w" }, { tab: "tasks", run: "wf/r" },
+      { tab: "tasks", review: "none" }, { tab: "tasks", review: "ok", by: "w" },
+    ] as const) {
       assert.deepEqual(placeOf(inputOf(p)), p);
     }
   });
@@ -192,13 +198,13 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     const plain: TaskType = { name: "a", app: "w", answer: { type: "boolean" } as never, leaseSeconds: 600, withinHours: 72, enabled: true, changedAt: 0 };
     const worker: Worker = { actor: "w1", status: "active", firstSeen: 0, changedAt: 0, grants: [] };
     // A host's own store: no test routes, no pay on its types, no balance or standing on its workers.
-    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false });
+    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false });
     // This strut, before anything is tested or paid: the sections, not the empty columns.
     const here = shownOf({ types: [{ ...plain, holdHours: 72 }], workers: [{ ...worker, balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false });
+    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true });
     // A tested, paid type: the columns too.
     const busy = shownOf({ types: [{ ...plain, holdHours: 72, paySats: 5, tests: { qualify: 1 } as never }], workers: [{ ...worker, balance: { totalMsat: 5000, heldMsat: 5000, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true });
+    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true });
     assert.equal(testsAnswerOf({ error: new Error("step_run: not_available: this server's task store is its host's") }), "no");
     assert.equal(testsAnswerOf({ error: new Error("network") }), "unknown");
     assert.equal(testsAnswerOf({ data: { tests: [] } }), "yes");
@@ -226,6 +232,24 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
       ["answered", "ran out", "ended early: worker suspended"],
     );
     assert.deepEqual(workersInOrder([{ status: "active" as const, a: 1 }, { status: "new" as const, a: 2 }]).map((w) => w.a), [2, 1]);
+  });
+
+  it("a task's verdicts in a cell and one verdict in words (§9.6)", () => {
+    const lease = (worker: string, review?: { verdict: "ok" | "rejected" }) => ({
+      id: worker, task: "t", worker, type: "pets", taken: 0, expires: 0, status: "submitted" as const,
+      ...(review ? { review: { ...review, at: 0, until: 1, final: false } } : {}),
+    });
+    assert.equal(reviewSummary({ leases: [lease("a")] }), "to review");
+    assert.equal(reviewSummary({ leases: [lease("a", { verdict: "rejected" })] }), "rejected");
+    assert.equal(reviewSummary({ leases: [lease("a", { verdict: "ok" }), lease("b")] }), "1 ok, 1 to review");
+    assert.equal(reviewSummary({ test: "x", leases: [lease("a")] }), "", "a test is graded, not reviewed");
+    assert.equal(reviewSummary({ leases: [{ ...lease("a"), status: "expired" }] }), "", "no answer, nothing to review");
+    const at = Date.parse("2026-11-13T12:00:00");
+    assert.equal(
+      reviewText({ verdict: "rejected", why: "a cat", by: "ada", at, until: at + 3_600_000, final: false }, at),
+      `rejected: a cat · by ada, ${fmtWhen(at, at)} · changeable until ${fmtWhen(at + 3_600_000, at)}`,
+    );
+    assert.equal(reviewText({ verdict: "ok", at, until: at, final: true }, at), `ok · ${fmtWhen(at, at)} · final`);
   });
 });
 
@@ -434,25 +458,50 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const back = await admin("staff/take-back", { task: id, worker: "w1", why: "the wrong pet" });
     assert.equal(back.error, undefined, back.error);
     assert.equal(back.result.earnings[0].result, "taken");
+
+    // §9.6: a verdict through the door, in the admin's name; a mark that
+    // leaves the finished run as it was.
+    const events = (await strut.store.getRunEvents("pets", runId)).length;
+    const summary = await strut.store.getRunSummary("pets", runId);
+    assert.deepEqual((await admin("staff/tasks", { review: "none" })).result.tasks.map((t: { id: string }) => t.id), [id], "the review queue");
+    const rv = await admin("staff/review", { task: id, verdict: "rejected", why: "the wrong pet" });
+    assert.equal(rv.error, undefined, rv.error);
+    assert.deepEqual([rv.result.worker, rv.result.review.verdict, rv.result.review.by], ["w1", "rejected", "ada"]);
+    assert.equal((await admin("staff/task", { id })).result.task.leases[0].review.why, "the wrong pet");
+    assert.deepEqual((await admin("staff/tasks", { review: "rejected", by: "w1" })).result.tasks.map((t: { id: string }) => t.id), [id]);
+    assert.equal((await admin("staff/worker", { actor: "w1" })).result.recent[0].lease.review.verdict, "rejected", "the worker's page shows it");
+    assert.match((await admin("staff/review", { task: id, verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
+    assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
+    assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
   });
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {
     const member = page(signIn("bo", "member"));
-    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant"]) {
-      const r = await member(type, type === "staff/grant" ? { actor: "x", type: "pets" } : type === "staff/save-type" ? { name: "x", app: "workers", answer: MATCH } : {});
+    const configs: Record<string, Record<string, unknown>> = { "staff/grant": { actor: "x", type: "pets" }, "staff/save-type": { name: "x", app: "workers", answer: MATCH }, "staff/review": { task: "t1", verdict: "ok" } };
+    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review"]) {
+      const r = await member(type, configs[type] ?? {});
       assert.ok(r.error, type);
       assert.match(r.error, /admin/, type);
     }
     // A visitor: strut/staff is not in the public view (and its steps are an admin's).
     const visitor = await door("/public/mcp", {}, "staff/stats");
     assert.ok(visitor.error, "a visitor gets nothing");
+    assert.ok((await door("/public/mcp", {}, "staff/review", { task: "t1", verdict: "ok" })).error, "nor a verdict");
     // A peer: its key holds no full scope here.
     const p = await door("/mcp", peer, "staff/stats");
     assert.ok(p.error, "a peer gets nothing");
-    for (const path of ["/tasks/stats", "/tasks/types", "/tasks/workers/w1", "/tasks?by=w1"]) {
+    assert.ok((await door("/mcp", peer, "staff/review", { task: "t1", verdict: "ok" })).error, "nor a verdict");
+    for (const path of ["/tasks/stats", "/tasks/types", "/tasks/workers/w1", "/tasks?by=w1", "/tasks?review=none"]) {
       assert.equal((await strut.app.request(path, { headers: peer })).status, 403, path);
       assert.equal((await strut.app.request(path, { headers: { cookie: await signIn("bo", "member") } })).status, 403, path);
     }
+    // The route itself: full scope only (§9.12, 3).
+    const put = { method: "PUT", body: JSON.stringify({ verdict: "ok" }) };
+    for (const headers of [peer, { cookie: await signIn("bo", "member"), "x-strut-ui": "1" }]) {
+      assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { ...headers, "content-type": "application/json" } })).status, 403, JSON.stringify(Object.keys(headers)));
+    }
+    assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { "content-type": "application/json" } })).status, 401, "no key");
+    assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { ...auth, "content-type": "application/json" } })).status, 404, "the key reaches it: no task t1");
   });
 
   it("an expected answer and a grader's note never reach a run, an event or the monitor", async () => {

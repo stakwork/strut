@@ -108,6 +108,8 @@ export interface Standing {
   window: number;
   graded: number;
   passed: number;
+  /** §9.6: of `graded`, answers rejected in review (each a fail). */
+  rejected?: number;
   errors: number;
   pending: number;
   minGraded: number;
@@ -144,6 +146,19 @@ export interface Earning {
   takenBackBy?: string;
 }
 
+export type Verdict = "ok" | "rejected";
+
+/** A verdict on one answer (plans/human-steps.md §9.6): `until` is when it
+ *  can no longer change, `final` whether that has passed. */
+export interface Review {
+  verdict: Verdict;
+  why?: string;
+  by?: string;
+  at: number;
+  until: number;
+  final: boolean;
+}
+
 export interface Lease {
   id: string;
   task: string;
@@ -158,6 +173,7 @@ export interface Lease {
   answer?: unknown;
   agrees?: boolean;
   earning?: Earning;
+  review?: Review;
 }
 
 export interface Task {

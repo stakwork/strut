@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtWhen, leaseOutcome, liveTypes, shortActor, standingLow, standingText, STATUS_WORDS, whoOf, workersInOrder, type Place, type Shown,
+  balanceCells, fmtWhen, leaseOutcome, liveTypes, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoOf, workersInOrder, type Place, type Shown,
 } from "../lib/view";
 import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
@@ -353,7 +353,21 @@ function WorkerDetail(props: Props & { actor: string }) {
         )}
       </Section>
 
-      <Section title="Newest leases">
+      <Section
+        title="Newest leases"
+        aside={
+          props.shown.review ? (
+            <span className="flex flex-wrap gap-2 text-xs">
+              <button type="button" className="underline underline-offset-2" onClick={() => props.go({ tab: "tasks", by: w.actor, review: "none" })}>
+                Their answers to review
+              </button>
+              <button type="button" className="underline underline-offset-2" onClick={() => props.go({ tab: "tasks", by: w.actor, review: "rejected" })}>
+                Rejected
+              </button>
+            </span>
+          ) : undefined
+        }
+      >
         {recent?.length ? (
           <ul className="flex flex-col gap-1">
             {recent.map(({ lease: l, task: t }) => (
@@ -364,6 +378,7 @@ function WorkerDetail(props: Props & { actor: string }) {
                   {t.test && <Badge variant="outline">test</Badge>}
                   <span>{leaseOutcome(l)}</span>
                   <span className="text-xs text-muted-foreground">task {STATUS_WORDS[t.status]}</span>
+                  {l.review && <span className={cn("text-xs", l.review.verdict === "rejected" && "text-destructive")}>{reviewText(l.review)}</span>}
                 </button>
               </li>
             ))}

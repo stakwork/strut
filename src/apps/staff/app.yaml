@@ -24,6 +24,7 @@ grants:
     - staff/task
     - staff/file
     - staff/take-back
+    - staff/review
     - staff/tests
     - staff/test
     - staff/save-test

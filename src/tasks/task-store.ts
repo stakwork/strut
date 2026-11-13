@@ -253,6 +253,10 @@ export interface TaskListQuery {
   /** Tasks this actor answered (a submitted lease of theirs: with copies,
    *  any of the answers, not only the task's `by`). */
   by?: string;
+  /** §9.6: real tasks with an answer no verdict was given on (`none`), or
+   *  with an answer marked `ok` or `rejected`. With `by`, that actor's
+   *  answer. */
+  review?: "none" | Verdict;
   /** A `seq`: tasks made before it. */
   before?: number;
   limit?: number;
@@ -365,6 +369,24 @@ export interface TestInstance {
   note?: string;
 }
 
+/** A person's verdict on an answer (plans/human-steps.md §9.6). */
+export const VERDICTS = ["ok", "rejected"] as const;
+export type Verdict = (typeof VERDICTS)[number];
+
+/** The verdict on one ANSWER: the task and the worker who gave it, so a
+ *  copies task's answers are reviewed apart (§9.6, built per answer). A
+ *  mark: it changes nothing in the run. */
+export interface ReviewRecord {
+  task: string;
+  worker: string;
+  verdict: Verdict;
+  /** Why; a rejection always says. */
+  why?: string;
+  /** Who gave it, and when it was given or last changed, epoch ms. */
+  by?: string;
+  at: number;
+}
+
 /** One worker's tests of one type since their grant (§7.5): what standing
  *  and qualifying read. */
 export interface StandingQuery {
@@ -379,10 +401,14 @@ export interface StandingRow {
   worker: string;
   type: string;
   /** Of the newest `window` graded (pass or fail) instances, how many, and
-   *  how many passed. */
+   *  how many passed. An answer to a real task rejected in review (§9.6) is
+   *  among them as a fail, by when it was answered. */
   graded: number;
   passed: number;
-  /** Every pass and fail since the grant. */
+  /** Of those `graded`, the rejected answers. */
+  rejected: number;
+  /** Every test's pass and fail since the grant (what qualifying counts);
+   *  no rejection. */
   gradedAll: number;
   /** Answered and graded `error`, or not graded yet. */
   errors: number;
@@ -514,6 +540,11 @@ export interface TaskStore {
   /** Answered instances with no grade yet, oldest answer first. */
   ungraded(limit: number): Promise<TaskRecord[]>;
   standings(q: StandingQuery[]): Promise<StandingRow[]>;
+  /** §9.6: the verdict on one answer (its task and worker), written or
+   *  replaced whole. */
+  putReview(r: ReviewRecord): Promise<ReviewRecord>;
+  /** §9.6: the verdicts on these tasks' answers. */
+  reviewsOf(taskIds: string[]): Promise<ReviewRecord[]>;
 }
 
 /** A copies task's answers, in the order given: its submitted leases by when
@@ -540,6 +571,7 @@ export function pageLimit(limit: number | undefined): number {
 // ── memory ────────────────────────────────────────────────────────────────
 
 const keyOf = (workflow: string, runId: string, path: string) => `${workflow}\0${runId}\0${path}`;
+const reviewKey = (task: string, worker: string) => `${task}\0${worker}`;
 const live = (l: Lease, now: number) => l.status === "open" && l.expires > now;
 /** A lease that ran out (§9.4): swept as `expired` with no reason (one closed
  *  early has one), or open past its expiry before the sweep. */
@@ -556,6 +588,8 @@ export class MemoryTaskStore implements TaskStore {
   private readonly testRows = new Map<string, TestRecord>();
   /** What each instance's grader said. */
   private readonly notes = new Map<string, string>();
+  /** The verdicts (§9.6), by task and worker. */
+  private readonly reviewRows = new Map<string, ReviewRecord>();
   private seq = 0;
 
   async types(): Promise<TaskType[]> {
@@ -623,6 +657,11 @@ export class MemoryTaskStore implements TaskStore {
       if (q.runId && t.runId !== q.runId) continue;
       if (q.test !== undefined && (t.test !== undefined) !== q.test) continue;
       if (q.by && ![...this.leases.values()].some((l) => l.task === t.id && l.worker === q.by && l.status === "submitted")) continue;
+      if (q.review !== undefined) {
+        const answers = [...this.leases.values()].filter((l) => l.task === t.id && l.status === "submitted" && (!q.by || l.worker === q.by));
+        const verdicts = answers.map((l) => this.reviewRows.get(reviewKey(l.task, l.worker))?.verdict ?? "none");
+        if (t.test !== undefined || !verdicts.includes(q.review)) continue;
+      }
       out.push(clone(t));
       if (out.length >= limit) break;
     }
@@ -1025,7 +1064,17 @@ export class MemoryTaskStore implements TaskStore {
         .filter((t) => t.test !== undefined && t.servedTo === p.worker && t.type === p.type && t.status === "settled" && t.settledAt! >= p.since)
         .sort((a, b) => b.settledAt! - a.settledAt! || b.seq - a.seq);
       const graded = mine.filter((t) => t.grade === "pass" || t.grade === "fail");
-      const window = graded.slice(0, Math.max(0, p.window));
+      // §9.6: an answer to a real task rejected in review counts as a fail,
+      // by when it was answered.
+      const rejected = [...this.reviewRows.values()].flatMap((r) => {
+        if (r.verdict !== "rejected" || r.worker !== p.worker) return [];
+        const l = [...this.leases.values()].find((x) => x.task === r.task && x.worker === r.worker && x.status === "submitted");
+        const t = this.tasks.get(r.task);
+        return l && t && t.test === undefined && l.type === p.type && (l.closed ?? 0) >= p.since ? [{ at: l.closed!, seq: t.seq, grade: "fail" as const, review: true }] : [];
+      });
+      const window = [...graded.map((t) => ({ at: t.settledAt!, seq: t.seq, grade: t.grade, review: false })), ...rejected]
+        .sort((a, b) => b.at - a.at || b.seq - a.seq)
+        .slice(0, Math.max(0, p.window));
       const real = [...this.leases.values()].filter(
         (l) => l.worker === p.worker && l.type === p.type && l.status === "submitted" && (l.closed ?? 0) >= p.since && this.tasks.get(l.task)?.test === undefined,
       ).length;
@@ -1034,12 +1083,24 @@ export class MemoryTaskStore implements TaskStore {
         type: p.type,
         graded: window.length,
         passed: window.filter((t) => t.grade === "pass").length,
+        rejected: window.filter((t) => t.review).length,
         gradedAll: graded.length,
         errors: mine.filter((t) => t.grade === "error").length,
         pending: mine.filter((t) => t.grade === undefined).length,
         real,
       };
     });
+  }
+
+  async putReview(r: ReviewRecord): Promise<ReviewRecord> {
+    const row = clone(r);
+    this.reviewRows.set(reviewKey(r.task, r.worker), row);
+    return clone(row);
+  }
+
+  async reviewsOf(taskIds: string[]): Promise<ReviewRecord[]> {
+    const ids = new Set(taskIds);
+    return [...this.reviewRows.values()].filter((r) => ids.has(r.task)).map(clone);
   }
 
   /** An open instance whose lease is no longer live closes as `expired`

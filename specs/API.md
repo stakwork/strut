@@ -2328,7 +2328,8 @@ seeds nothing. The page is only a face: the routes decide.
 
 Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
 workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
-`test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`. Each move goes back to
+`test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`, `review=none|ok|rejected`
+(the review queue; with `by`, that worker's). Each move goes back to
 the host as `ui/open-link`, so its address bar follows.
 
 - **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
@@ -2344,25 +2345,32 @@ the host as `ui/open-link`, so its address bar follows.
   Revoke and Grant.
 - **Workers**: `new` first, several granted at once; each with their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
-  `standing` too), the week, their newest leases, standing, and what they
-  earned, hold and may withdraw.
-- **Tasks**: filtered by type, status, run and who answered; a task with what
-  it showed and its files, its leases (a copy's answer, each earning with
-  Take back), the answer in its type's form read only, its run now, and
+  `standing` too), the week, their newest leases with each answer's
+  verdict and links to their answers to review and their rejected ones,
+  standing (with how many of its window are rejected answers), and what
+  they earned, hold and may withdraw.
+- **Tasks**: filtered by type, status, run, who answered and review (the
+  review queue: not reviewed, marked ok, rejected), with a Review column;
+  a task with what it showed and its files, its leases (a copy's answer,
+  each earning with Take back), the answer in its type's form read only,
+  a **Review** section — each answer's verdict, by whom, when and until
+  when it can change, with Mark ok and Reject (the reason on a line in the
+  page: an app frame has no `prompt`) while it can — its run now, and
   "make a test of it".
 - **Tests**: a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
 
-A part of items 4 (tests, standing, copies) and 5a (pay, earnings) shows
-only when the server answers for it: a host's own task store answers no
-test route, so the page shows no Tests tab.
+A part of items 4 (tests, standing, copies), 5a (pay, earnings) and the
+verdict shows only when the server answers for it: a host's own task store
+answers no test route and no review, so the page shows no Tests tab and no
+Review section or filter.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
 (`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` route — no
 other path — in process and in the admin's name (`inProcessRequest`), so a
-grant's `by`, a type's `changedBy` and a take-back's `takenBackBy` name the
-admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
+grant's `by`, a type's `changedBy`, a take-back's `takenBackBy` and a
+verdict's `by` name the admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
 the `earnings/*` steps share: only strut's own page shown to an admin of
 this server, never a workflow, an agent's tool, a model-written page or a
 member's. A route's refusal is the step's error, its `code` first. None is
@@ -2383,10 +2391,11 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
 | `staff/grant { actor, type, qualify? }` | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
 | `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
-| `staff/tasks { type?, status?, workflow?, runId?, by?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
+| `staff/tasks { type?, status?, workflow?, runId?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
 | `staff/task { id }` | `GET /tasks/:id` | `{ task, run }` |
 | `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
+| `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
 | `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
 | `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
@@ -4822,7 +4831,8 @@ sats, held a while before they can be withdrawn (`plans/human-steps.md`
 item. A task type may also mix TESTS among its tasks — tasks whose answer
 staff know — to qualify and score its workers (`plans/human-steps.md` §7;
 "Tests, grading and standing" below) — and let a `human` step ask several
-workers, settling when enough agree ("Copies" below).
+workers, settling when enough agree ("Copies" below). Staff mark each
+answer `ok` or `rejected` after the fact ("Review" below).
 
 ### The worker's steps — through an app's `step_run`
 
@@ -4912,10 +4922,10 @@ A member's session, a peer and a person token are refused (`403`). A name
 with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
 `bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
-`unknown_task`, `unknown_test`, `not_listed`, `no_file`), `409` (`in_use`,
-`released`); `501 not_available` for the take-back, the test routes, the
-queue and a task's file on a server whose task store is its host's (which
-answers none of them).
+`unknown_task`, `unknown_test`, `not_listed`, `no_file`, `no_answer`),
+`409` (`in_use`, `released`, `final`); `501 not_available` for the
+take-back, the review, the test routes, the queue and a task's file on a
+server whose task store is its host's (which answers none of them).
 
 | Route | |
 | --- | --- |
@@ -4924,14 +4934,15 @@ answers none of them).
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
-| `GET /tasks/workers/:actor` | `{ worker: WorkerRecord, holding?, week, recent }`: the same for one worker, with their live lease (`{ lease, task, type, expires }`), what they did of the leases taken in the last 7 days by type (`{ [type]: { answered, skipped, lost } }`, `lost` a lease that ran out) and their newest 50 leases (`[{ lease: Lease, task: { id, type, workflow, runId, status, test? } }]`); `404 unknown_worker` |
+| `GET /tasks/workers/:actor` | `{ worker: WorkerRecord, holding?, week, recent }`: the same for one worker, with their live lease (`{ lease, task, type, expires }`), what they did of the leases taken in the last 7 days by type (`{ [type]: { answered, skipped, lost } }`, `lost` a lease that ran out) and their newest 50 leases (`[{ lease: Lease, task: { id, type, workflow, runId, status, test? } }]`, an answer's lease with its `review`); `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&by=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
+| `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
 | `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list only, `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
+| `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
 
 ```jsonc
 // TaskType
@@ -4965,6 +4976,7 @@ answers none of them).
   "balance": { "totalMsat": 21000, "heldMsat": 21000, "withdrawableMsat": 0, "nextReleaseAt": 1763208000000 },
   "standing": {                     // per live grant of a type with tests
     "pet-match": { "qualifying": false, "qualify": 10, "window": 20, "graded": 14, "passed": 13,
+                   "rejected": 1,   // of graded: answers rejected in review, each a fail ("Review")
                    "errors": 1, "pending": 0, "minGraded": 10, "threshold": 0.8 }
   },
   "week": 12,                       // answers in the last 7 days
@@ -4991,7 +5003,11 @@ answers none of them).
                "payMsat": 21000,                 // the type's pay when it was taken
                "bookedAt": 1762949000000,        // when its earning reached the ledger
                "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000
-                            /*, "takenBack", "takenBackWhy", "takenBackBy" */ } }]
+                            /*, "takenBack", "takenBackWhy", "takenBackBy" */ },
+               "review": { "verdict": "rejected", "why": "the wrong dog",   // an answer's verdict, when given
+                           "by": "admin-1", "at": 1762952600000,
+                           "until": 1763208200000,     // when it can no longer change: the hold's end
+                           "final": false } }]
 }
 
 // TaskStats: the queue (GET /tasks/stats). Test instances are not the queue: none is counted
@@ -5201,6 +5217,35 @@ work): a type without it asks one, and a step asking more than `max` fails
 The in-process service also tells `onAgreed` listeners each decision of a
 copies task (not `more`): `{ task, type, agreed, answers: [{ lease,
 worker, agrees }], at }`, `agreed` false when it was disputed.
+
+### Review (`plans/human-steps.md` §9.6)
+
+A settled answer has woken its run, and the run has gone on. So a review
+is a MARK on the answer, never an undo: `PUT /tasks/:id/review` (full
+scope; the service's alone, so no step but the staff app's
+`staff/review` reaches it) changes nothing in the run — its step's output,
+its events, the task and what a `human` step reads stay as they were, and
+no run is woken. Checking before the run goes on is the workflow's (a
+second `human` step of a review type, or copies).
+
+- **Per answer.** A verdict is keyed to the ANSWER — the task and the
+  worker who gave it — so each of a copies task's answers is reviewed
+  apart (`worker` names which). One row an answer, replaced when it
+  changes (`reviews` in `tasks.db`). Only a real task's answer: a test's is
+  graded.
+- **`ok` or `rejected`.** A rejection says `why`; `ok` may. Both keep who
+  gave it (`by`) and when (`at`).
+- **Changeable until the hold ends, then final.** `until` is the answer's
+  earning's `releases`, or for an unpaid answer the type's `holdHours`
+  from when it was answered. A first verdict may come later, final at once;
+  any change after `until` is `409 final`.
+- **Standing.** A rejection counts against the worker's standing in the
+  type as a failed test does: a `fail` in the window, at the time the
+  answer was given, for answers given since the grant (`standing.rejected`
+  says how many of the window are rejections), and the standing check runs
+  after it, so it can revoke (`why` says how many of the window were
+  rejected answers). `ok` takes it out of the window; it is not a pass, and
+  a revoke it caused stays. A type with no tests has no standing to move.
 
 ### Asking for a task type — `task/set-type` (`plans/human-steps.md` §9.8)
 

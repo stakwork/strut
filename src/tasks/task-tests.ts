@@ -110,10 +110,12 @@ export interface Standing {
   /** The grant's K (0: no qualifying). */
   qualify: number;
   /** Of the newest `window` graded tests since the grant: how many, and how
-   *  many passed. */
+   *  many passed. An answer rejected in review (§9.6) is among them as a
+   *  fail: `rejected` says how many. */
   window: number;
   graded: number;
   passed: number;
+  rejected: number;
   /** Since the grant: grader errors (counted neither way) and answers not
    *  graded yet. */
   errors: number;
@@ -129,6 +131,7 @@ export function standingOf(row: StandingRow, grant: Pick<Grant, "qualify">, rule
     window: rules.window,
     graded: row.graded,
     passed: row.passed,
+    rejected: row.rejected,
     errors: row.errors,
     pending: row.pending,
     minGraded: rules.minGraded,
@@ -145,7 +148,10 @@ export function revokeWhy(row: StandingRow, grant: Pick<Grant, "qualify">, rules
   const need = k > 0 ? Math.min(rules.minGraded, k) : rules.minGraded;
   if (row.graded < need || row.passed / row.graded >= rules.threshold) return undefined;
   const pct = `${Math.round(rules.threshold * 1000) / 10}%`;
-  return k > 0 && row.gradedAll <= k
-    ? `qualifying: passed ${row.passed} of ${row.graded} tests of ${type}, under ${pct}`
-    : `standing: passed ${row.passed} of the last ${row.graded} tests of ${type}, under ${pct}`;
+  // §9.6: a rejected answer counts as a failed test, and the sentence says so.
+  const rejected = row.rejected ? ` (${row.rejected} of them answers rejected in review)` : "";
+  // The end of qualifying is a decision on tests alone: real answers come after it.
+  return k > 0 && row.gradedAll <= k && !row.rejected
+    ? `qualifying: passed ${row.passed} of ${row.graded} tests of ${type}${rejected}, under ${pct}`
+    : `standing: passed ${row.passed} of the last ${row.graded} tests of ${type}${rejected}, under ${pct}`;
 }
