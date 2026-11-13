@@ -14,7 +14,7 @@ export default defineStep({
     "Written at once, with its check: strut has a model judge each later run that opened the page against the sentence, once per version of the page, and a run the sentence is not about is left unjudged. " +
     "Write the rule itself, as narrow as what was said, never the event (\"the person said…\"). " +
     "A claim that a page GETS OPENED when it applies belongs on the page that LISTS it (its parent): a run that skipped a page is never checked against that page's claims. " +
-    "The same sentence already on the page returns that claim (`existing: true`). Returns { ok, id } or { error }. Changing the Concept itself is a separate proposal.",
+    "The same sentence already on the page returns that claim (`existing: true`). Returns { ok, id } or { error }. Changing the Concept itself is a separate call.",
   input: z.object({
     concept: z.string().describe("The Concept the claim is about, by its exact name."),
     text: z.string().describe("ONE plain sentence that should hold from now on, saying where it applies when it is not general."),

@@ -23,13 +23,20 @@
  *     tender never writes a check's config: what it reads (conversations)
  *     is untrusted text, and a check is something strut runs;
  *   - `addEvidence`: what a person SAID about a run's work, as their word
- *     against (or for) a claim — only about a run that opened the page.
+ *     against (or for) a claim — only about a run that opened the page;
+ *   - `cycles`: what the dream did, afterwards — its recent runs that read
+ *     something, each with its lessons (what a person said, the claim, the
+ *     change). Read off the run store, so it quotes the conversations the
+ *     dream read: its step (`knowledge/cycles`) answers strut's own page
+ *     shown to an admin and no one else.
  *
- * Changing a Concept is not here: a tender proposes it with the ordinary
- * graph steps under its workflow's `approve:`, and a person decides.
+ * Changing a Concept is not here: a tender changes it with the ordinary
+ * graph steps, and where its tree is reviewed they are under its workflow's
+ * `approve:`, so a person decides each change first.
  */
 import { toSubjectRef, type ClaimActor, type ClaimListing, type ClaimsAuthoring } from "./claims-authoring.js";
 import type { GraphBackend } from "./graph/backend.js";
+import type { RunStatus, RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
 import { conceptsOpenedIn, type Verifier } from "./verify.js";
 
@@ -42,6 +49,14 @@ export const KNOWLEDGE_DOCS_MAX = 6000;
 /** The most claims one run may add: each is a paid check on every later
  *  version of its page. A runaway tender stops here. */
 export const KNOWLEDGE_CLAIMS_PER_RUN = 10;
+
+/** The workflow that tends the tree (src/workflows/system/dream/): its runs
+ *  are the cycles `cycles` lists. */
+export const DREAM_WORKFLOW = "dream";
+
+/** The most of the dream's runs one `cycles` read looks through, newest
+ *  first: a quiet dream (nothing new to read) is skipped, not counted. */
+export const DREAM_CYCLES_SCAN = 200;
 
 const CONCEPT = "Concept";
 const PARENT_OF = "PARENT_OF";
@@ -81,6 +96,83 @@ export interface KnowledgeClaimed {
   claims: KnowledgeClaim[];
 }
 
+/** One lesson as the dream answers it: what a person said, the claim it
+ *  wrote on a page, and the change it made to the tree. */
+export interface DreamLesson {
+  session: string;
+  turn: number;
+  said: string;
+  concept: string;
+  claim: string;
+  claim_id?: string;
+  recorded?: boolean;
+  /** The change, in a line (`proposed` before review became a switch). */
+  change?: string;
+}
+
+/** One dream that read something: when, which tree, whether a person
+ *  reviewed its changes, and what it learned. What it CHANGED is the
+ *  history's (`history/read log { run }`). */
+export interface DreamCycle {
+  run: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string;
+  /** The root of the tree it tended. */
+  tree: string;
+  source?: string;
+  /** Its changes waited for a person (proposals), not made at once. */
+  review: boolean;
+  /** The turns it read; 0 when it failed before reading them. */
+  turns: number;
+  /** It stopped at its limit: the rest wait for the next dream. */
+  more?: true;
+  lessons: DreamLesson[];
+  stuck: string[];
+  error?: string;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** A run of the dream as a cycle, or null: parked, or quiet
+ *  (it ended with nothing new to read). */
+export function cycleOf(s: RunSummary): DreamCycle | null {
+  if (s.status === "waiting") return null;
+  const input = isRecord(s.input) ? s.input : {};
+  const out = isRecord(s.output) ? s.output : {};
+  const turns = typeof out["turns"] === "number" ? out["turns"] : 0;
+  if (s.status === "success" && turns === 0) return null;
+  const tree = text(out["root"]) ?? text(input["root"]) ?? "";
+  const source = text(input["source"]);
+  const lessons = (Array.isArray(out["lessons"]) ? out["lessons"] : []).filter(isRecord).map((l): DreamLesson => {
+    const change = text(l["change"]) ?? text(l["proposed"]);
+    return {
+      session: String(l["session"] ?? ""),
+      turn: typeof l["turn"] === "number" ? l["turn"] : 0,
+      said: String(l["said"] ?? ""),
+      concept: String(l["concept"] ?? ""),
+      claim: String(l["claim"] ?? ""),
+      ...(text(l["claim_id"]) ? { claim_id: String(l["claim_id"]) } : {}),
+      ...(typeof l["recorded"] === "boolean" ? { recorded: l["recorded"] } : {}),
+      ...(change ? { change } : {}),
+    };
+  });
+  return {
+    run: s.runId,
+    status: s.status,
+    startedAt: s.startedAt,
+    finishedAt: s.finishedAt,
+    tree,
+    ...(source ? { source } : {}),
+    review: (out["review"] ?? input["review"]) === true,
+    turns,
+    ...(out["more"] === true ? { more: true as const } : {}),
+    lessons,
+    stuck: (Array.isArray(out["stuck"]) ? out["stuck"] : []).filter((x): x is string => typeof x === "string"),
+    ...(s.error?.message ? { error: s.error.message } : {}),
+  };
+}
+
 export interface KnowledgeCapability {
   /** One Concept, by its exact name; null when there is none. */
   page(name: string): Promise<KnowledgePage | null>;
@@ -90,6 +182,9 @@ export interface KnowledgeCapability {
   opened(workflow: string, runId: string): Promise<string[] | null>;
   addClaim(input: { concept: string; text: string }, by?: { runId?: string }): Promise<{ ok: true; id: string; existing?: true } | { error: string }>;
   addEvidence(input: { claim: string; workflow: string; runId: string; supports: boolean; said: string; by?: string }): Promise<{ ok: true; evidence: string; concept: string } | { error: string }>;
+  /** The dream's recent cycles, newest first: its runs that read something
+   *  (`cycleOf`), at most `limit`, only one tree's when `tree` is given. */
+  cycles(opts?: { limit?: number; tree?: string }): Promise<DreamCycle[]>;
   /** The door as a run on a Concept branch has it (src/branches.ts): pages
    *  are the branch's (`namespace`); claims are shared and read as they
    *  are, and none is added or evidenced from a branch yet (item d). */
@@ -100,7 +195,7 @@ export interface KnowledgeDeps {
   graph: Pick<GraphBackend, "query" | "namespace" | "dialect">;
   claims: ClaimsAuthoring;
   verifier: Pick<Verifier, "addEvidence">;
-  store: Pick<RunStore, "getRunEvents">;
+  store: Pick<RunStore, "getRunEvents" | "listRuns" | "getRunSummary">;
 }
 
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
@@ -237,6 +332,19 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
 
     async opened(workflow, runId) {
       return conceptsOpenedIn(await deps.store.getRunEvents(workflow, runId).catch(() => []));
+    },
+
+    async cycles(opts = {}) {
+      const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
+      const out: DreamCycle[] = [];
+      for (const id of (await deps.store.listRuns(DREAM_WORKFLOW)).slice(0, DREAM_CYCLES_SCAN)) {
+        const summary = await deps.store.getRunSummary(DREAM_WORKFLOW, id).catch(() => null);
+        const cycle = summary ? cycleOf(summary) : null;
+        if (!cycle || (opts.tree && cycle.tree !== opts.tree)) continue;
+        out.push(cycle);
+        if (out.length >= limit) break;
+      }
+      return out;
     },
 
     async addClaim(input, by = {}) {

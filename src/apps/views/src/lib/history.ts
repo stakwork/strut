@@ -39,11 +39,19 @@ function answered<T>(r: unknown): T {
 }
 
 /** A path's commits, newest first, with one more than `limit` read: the
- *  commit before the oldest shown, so its change can be drawn too. */
-export async function readLog(client: StrutClient, opts: { path?: string; limit?: number; from?: string; to?: string }): Promise<{ commits: HistoryCommit[]; more: boolean }> {
+ *  commit before the oldest shown, so its change can be drawn too. `run`:
+ *  only the commits carrying that run (its `Run:` trailer). */
+export async function readLog(client: StrutClient, opts: { path?: string; limit?: number; from?: string; to?: string; run?: string }): Promise<{ commits: HistoryCommit[]; more: boolean }> {
   const limit = opts.limit ?? 20;
   const r = answered<{ commits: HistoryCommit[]; more?: boolean }>(
-    await client.run(HISTORY_STEP, { action: "log", limit: limit + 1, ...(opts.path ? { path: opts.path } : {}), ...(opts.from ? { from: opts.from } : {}), ...(opts.to ? { to: opts.to } : {}) }),
+    await client.run(HISTORY_STEP, {
+      action: "log",
+      limit: limit + 1,
+      ...(opts.path ? { path: opts.path } : {}),
+      ...(opts.from ? { from: opts.from } : {}),
+      ...(opts.to ? { to: opts.to } : {}),
+      ...(opts.run ? { run: opts.run } : {}),
+    }),
   );
   return { commits: r.commits ?? [], more: !!r.more };
 }

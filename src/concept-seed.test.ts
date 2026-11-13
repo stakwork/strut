@@ -158,13 +158,16 @@ describe("concept files (pure)", () => {
     assert.deepEqual(dream.parents, [], "a root: the dream's own tree");
     assert.ok(dream.description && dream.docs?.includes("PARENT_OF"), "says its children are the sources");
     // What holds for any source: the posture, what a lesson is, the three things, where a lesson goes.
-    for (const must of ["You tend a tree of Concepts", "## What is a lesson", "THE CLAIM.", "WHAT WAS SAID.", "THE EDIT.", "## Where a lesson goes", "stuck", "Never\nrewrite a page"]) assert.ok(dream.docs!.includes(must), must);
+    for (const must of ["You tend a tree of Concepts", "## What is a lesson", "THE CLAIM.", "WHAT WAS SAID.", "THE CHANGE.", "## Where a lesson goes", "stuck", "Never\nrewrite a page"]) assert.ok(dream.docs!.includes(must), must);
     // A root is never edited, only the pages under it (ruled 2026-11-13): a lesson for almost every turn is a page
     // directly under the root, whose description the assistant always sees in the root's list.
     assert.ok(dream.docs!.includes("never the root itself") && dream.docs!.includes("a page directly under the\n  root"), dream.docs);
     assert.doesNotMatch(dream.docs!, /docs of the tree's\s+root/);
-    // The page such a lesson goes on does not exist until a person accepts it: its claim is written now, on the
-    // page the new one will sit under (a real model held it back otherwise).
+    // The dream changes the tree itself; review is the tree's switch, said by the tool's answer (ruled 2026-11-13).
+    assert.match(dream.docs!, /Make the smallest change[^]*make it now/);
+    assert.doesNotMatch(dream.docs!, /nothing changes until|A person decides each one/);
+    // The page such a lesson goes on may not exist yet (made later in the run, or waiting on a person): its claim is
+    // written now, on the page the new one will sit under (a real model held it back otherwise).
     assert.match(dream.docs!, /does not exist yet, write the claim on the page the new one\s+will sit under/);
     // The first source: the conversations dream/turns hands over.
     const convs = await read("Assistant Conversations.md");

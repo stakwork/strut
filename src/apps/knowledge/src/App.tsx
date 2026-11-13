@@ -8,12 +8,12 @@
 // every pick is reported back so the host's address bar follows it. Narrow
 // (a phone, a side panel), the sidebar and the graph take the page in turn.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowLeft, ChevronRight, History, Loader2, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronRight, History, Loader2, Moon, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
 import { NodeGraph } from "strut/views";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useChanges, useClaimed, useConceptTree, useOntology, useSearch } from "./lib/read";
+import { useChanges, useClaimed, useConceptTree, useCycles, useOntology, useSearch } from "./lib/read";
 import { changesByConcept, waitingAcross } from "./lib/learning";
 import { opening, pathToRoot, rowKey, TREE_TYPE } from "./lib/tree";
 import { typePlural } from "./lib/ontology";
@@ -22,6 +22,7 @@ import { TypeList } from "./components/TypeList";
 import { TypesMenu } from "./components/TypesMenu";
 import { NodeDetail } from "./components/NodeDetail";
 import { Changes } from "./components/Changes";
+import { CyclesView } from "./components/Cycles";
 import { WaitingMenu } from "./components/WaitingMenu";
 import { Dot, NodeRow, type Picked } from "./components/bits";
 
@@ -86,6 +87,8 @@ export default function App() {
   // The learning loop: the dream's changes waiting on a person, and the claims not held.
   const proposed = useChanges();
   const claimed = useClaimed();
+  // What the dream learned, cycle by cycle: an admin's read (refused to anyone else, who sees no button).
+  const cycles = useCycles();
   const proposedFor = useMemo(() => changesByConcept(proposed.data ?? [], tree), [proposed.data, tree]);
   const waiting = useMemo(() => (tree ? waitingAcross(tree, proposedFor, claimed.data ?? []) : []), [tree, proposedFor, claimed.data]);
   const input = useToolInput<{ node?: string; concept?: string }>();
@@ -118,6 +121,8 @@ export default function App() {
   const [card, setCard] = useState(false);
   /** The changes view in place of the graph: the tree between two moments, from the history. */
   const [changes, setChanges] = useState(false);
+  /** What the dream learned in place of the graph: its recent cycles, each with its lessons and its diff. */
+  const [dreams, setDreams] = useState(false);
   /** The type open in the sidebar. */
   const [openType, setOpenType] = useState<string | null>(TREE_TYPE);
   /** The open tree rows, remembered per viewer; null until the viewer first folds or opens one. */
@@ -142,6 +147,7 @@ export default function App() {
     (n: Picked, opts: { from?: "graph" | "link"; quiet?: boolean } = {}) => {
       setSel(n);
       setChanges(false);
+      setDreams(false);
       if (!opts.quiet) setCard(true);
       if (opts.from !== "graph") setCentre(n.ref_id);
       setTrail((t) => (t[t.length - 1]?.ref_id === n.ref_id ? t : [...t.filter((x) => x.ref_id !== n.ref_id), n].slice(-TRAIL)));
@@ -276,6 +282,8 @@ export default function App() {
   let canvas: React.ReactNode;
   if (changes) {
     canvas = <Changes tree={tree} narrow={narrow} onClose={() => setChanges(false)} lead={showRail} />;
+  } else if (dreams) {
+    canvas = <CyclesView tree={tree} onClose={() => setDreams(false)} lead={showRail} />;
   } else if (q.isPending) {
     canvas = (
       <Centered>
@@ -314,7 +322,7 @@ export default function App() {
           <main ref={graphRef} className="relative min-h-0 min-w-0 flex-1" data-testid="graph-pane">
             {canvas}
 
-            {!changes && (
+            {!changes && !dreams && (
               <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
                 {showRail}
                 {types.length > 1 && centre && <TypesMenu types={types} hidden={hidden} onHidden={setHidden} />}
@@ -329,10 +337,22 @@ export default function App() {
                   <History className="size-4" />
                   Changes
                 </button>
+                {cycles.data && (
+                  <button
+                    type="button"
+                    onClick={() => setDreams(true)}
+                    className="flex h-9 items-center gap-1.5 rounded-md border bg-background/95 px-2.5 text-sm text-muted-foreground shadow hover:text-foreground"
+                    title="What the dream learned, cycle by cycle: what people said, the claims, and what changed"
+                    data-testid="open-cycles"
+                  >
+                    <Moon className="size-4" />
+                    Learned
+                  </button>
+                )}
               </div>
             )}
 
-            {!changes && trail.length > 1 && (
+            {!changes && !dreams && trail.length > 1 && (
               <div className="absolute bottom-3 left-1/2 z-10 flex max-w-[70%] -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 px-2 py-1.5 text-xs shadow-lg backdrop-blur" data-testid="trail">
                 <button
                   type="button"
@@ -361,7 +381,7 @@ export default function App() {
               </div>
             )}
 
-            {!changes && sel && card && (
+            {!changes && !dreams && sel && card && (
               <section
                 className={cn(
                   "absolute z-30 flex flex-col overflow-hidden bg-background",

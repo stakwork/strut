@@ -19,12 +19,13 @@ import type { KitLocation } from "./kit.js";
 import { STEP_RUN_TOOL, buildAppTools } from "./tools.js";
 import { KNOWLEDGE_APP, KNOWLEDGE_DIR, seedKnowledgeApp } from "./knowledge-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { buildTree, conceptOf, hasDocs, opening, pathToRoot, reach, rowKey, visibleRows, type Concept } from "./knowledge/src/lib/tree.js";
+import { buildTree, conceptOf, hasDocs, opening, parentsByName, pathToRoot, reach, rowKey, visibleRows, type Concept } from "./knowledge/src/lib/tree.js";
 import { groupLinks, isSystemType, linkLabel, orderTypes, textOf, typeDescription, typePlural } from "./knowledge/src/lib/ontology.js";
 import { momentOf } from "./knowledge/src/lib/moments.js";
 import {
   byStatus, changesByConcept, claimsUnavailable, conceptOfChange, evidenceLine, waitingAcross, waitingWords, DREAM, type PageClaim, type PendingChange,
 } from "./knowledge/src/lib/learning.js";
+import { cycleSpan, cycleWords, cyclesFor, cyclesUnavailable, runsOf, CYCLES_STEP, type DreamCycle } from "./knowledge/src/lib/cycles.js";
 import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
 
@@ -219,6 +220,50 @@ describe("strut/knowledge: claims and the changes waiting on a person", () => {
   });
 });
 
+describe("strut/knowledge: what the dream learned, cycle by cycle", () => {
+  const lesson = (concept: string, change?: string) => ({ session: "c-1", turn: 1, said: "too long", concept, claim: "Summaries are short", ...(change ? { change } : {}) });
+  const cycle = (run: string, over: Partial<DreamCycle> = {}): DreamCycle => ({
+    run, status: "success", startedAt: "2026-11-13T04:00:00Z", finishedAt: "2026-11-13T04:01:00Z", tree: "Personal", review: false, turns: 3, lessons: [], stuck: [], ...over,
+  });
+
+  it("the cycles about one Concept: a lesson's claim is on it, or its run changed the page; newest first as read", () => {
+    const list = [cycle("3", { lessons: [lesson("Personal", "a Summaries page")] }), cycle("2"), cycle("1", { lessons: [lesson("Writing")] })];
+    assert.deepEqual(cyclesFor(list, "Personal").map((c) => c.run), ["3"]);
+    // The page the change made names no lesson, but its history carries the run that made it.
+    const changed = runsOf([{ runs: ["3"] }, { runs: [] }, { runs: ["2", "9"] }]);
+    assert.deepEqual([...changed].sort(), ["2", "3", "9"]);
+    assert.deepEqual(cyclesFor(list, "Summaries", changed).map((c) => c.run), ["3", "2"]);
+    assert.deepEqual(cyclesFor(list, "Nowhere"), []);
+  });
+
+  it("what a cycle changed, as two moments: from the commit before its first to its last; none when no commit carries its run", () => {
+    const commits = [{ id: "c3", time: "2026-11-13T04:00:09Z" }, { id: "c2", time: "2026-11-13T04:00:03Z" }];
+    assert.deepEqual(cycleSpan(commits, { id: "c1" }), { from: "c1", to: "c3" });
+    assert.deepEqual(cycleSpan(commits, null), { from: "2026-11-13T04:00:02.000Z", to: "c3" }, "the history's first: a second before");
+    assert.equal(cycleSpan([], { id: "c1" }), null);
+  });
+
+  it("a cycle in a line; why the cycles are not shown, from the step's refusal (nothing for a member)", () => {
+    assert.equal(cycleWords(cycle("1", { lessons: [lesson("A"), lesson("B")], turns: 14 })), "2 lessons · 14 turns read");
+    assert.equal(cycleWords(cycle("1", { turns: 1, more: true })), "nothing learned · 1 turn read, more waiting");
+    assert.equal(cycleWords(cycle("1", { status: "error", turns: 0 })), "it did not finish");
+    assert.equal(cyclesUnavailable("knowledge/cycles is an admin's: only strut's own page, shown to an admin of this server, reads what the dream learned"), null);
+    assert.equal(
+      cyclesUnavailable('knowledge/cycles: this caller may not read "private", where the Concept tree is kept'),
+      "What the dream learned isn't shown here: this page may not read where the tree is kept.",
+    );
+    assert.equal(cyclesUnavailable("knowledge/cycles needs the claims layer (ctx.services.knowledge)"), "This server keeps no claims, so there is no dream.");
+    assert.equal(cyclesUnavailable("boom"), "Couldn't read what the dream learned: boom");
+  });
+
+  it("each Concept's parents by name, for the diff to climb to its root", () => {
+    const tree = buildTree([c("a", "Alpha"), c("b", "Beta"), c("x", "Hive"), c("z", "Zeta")], [edge("a", "b"), edge("x", "b")]);
+    const of = parentsByName(tree);
+    assert.deepEqual([of("Beta"), of("Alpha"), of("Nope")], [["Hive", "Alpha"].sort((p, q) => p.localeCompare(q)), [], undefined]);
+    assert.equal(parentsByName(undefined)("Beta"), undefined);
+  });
+});
+
 describe("strut/knowledge — seeded at boot beside strut/views", () => {
   let kit: KitLocation;
   const dirs: string[] = [];
@@ -246,8 +291,8 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.deepEqual(app.manifest.grants.workflows, []);
     assert.deepEqual(app.manifest.grants.steps, [
       "graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search", "history/read",
-      // The learning loop: a Concept's claims, and the dream's changes a person decides here.
-      "knowledge/page", "knowledge/claims", "proposal/list", "proposal/get", "proposal/decide",
+      // The learning loop: a Concept's claims, what the dream learned (an admin's), and its changes a person decides here.
+      "knowledge/page", "knowledge/claims", "knowledge/cycles", "proposal/list", "proposal/get", "proposal/decide",
     ]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
@@ -399,6 +444,8 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     const history = (await readLog(client, { path: "concepts/concept-apps.md" })).commits;
     assert.ok(history.length >= 2, "the edit is a commit of its own");
     assert.equal((await readPage(client, "concepts/concept-apps.md", first.id))!.attributes["description"], "About Apps");
+    // Only the commits carrying a run: a run that changed nothing here has none.
+    assert.deepEqual((await readLog(client, { path: "concepts", run: "1700000000000" })).commits, []);
     const d = foldConceptDiff((await readDiff(client, { from: first.id, to: "main" })).entries);
     assert.deepEqual(d.pages.map((p) => `${p.name}:${p.status}`), ["Apps:edited"]);
     assert.deepEqual(d.pages[0]!.attributes, [{ name: "description", before: "About Apps", after: "The apps strut ships." }]);
@@ -452,5 +499,10 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     // No claims layer on this server: the card says so in one line.
     const claims = await ada("knowledge/page", { name: "Apps" });
     assert.equal(claimsUnavailable(claims.error!), "This server keeps no claims.");
+
+    // What the dream learned: granted, and an admin's alone (its lessons quote what people said); a member's page
+    // is refused before anything is read, and sees no button. With no claims layer there is no dream to read.
+    assert.equal(cyclesUnavailable((await mo(CYCLES_STEP, {})).error!), null);
+    assert.equal(cyclesUnavailable((await ada(CYCLES_STEP, {})).error!), "This server keeps no claims, so there is no dream.");
   });
 });

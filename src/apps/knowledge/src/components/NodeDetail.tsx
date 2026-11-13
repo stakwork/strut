@@ -5,7 +5,8 @@
 // where it came from. A Concept's HISTORY: every commit that changed its
 // page, and what each did (strut/views' ConceptDiff over `history/read`).
 // A Concept's CLAIMS — what its readers are held to — and the changes to it
-// waiting on a person, decided here (./Learning).
+// waiting on a person, decided here (./Learning); and, for an admin, what the
+// dream learned about it, cycle by cycle (./Cycles).
 import { useState } from "react";
 import { ArrowLeft, History, Maximize2, Minimize2, X } from "lucide-react";
 import { ConceptDiff, DocumentView, useNode } from "strut/views";
@@ -17,6 +18,7 @@ import { TREE_TYPE, type ConceptTree } from "../lib/tree";
 import type { PendingChange } from "../lib/learning";
 import { Chip, Dot, SectionLabel, type Picked } from "./bits";
 import { ChangesSection, ClaimsSection } from "./Learning";
+import { ConceptCycles } from "./Cycles";
 
 export interface NodeDetailProps {
   id: string;
@@ -97,6 +99,8 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
         {!history && <ChangesSection changes={changes} wide={wide} onWide={onWide} />}
 
         {!history && n.node_type === TREE_TYPE && n.name && <ClaimsSection id={id} name={n.name} />}
+
+        {!history && n.node_type === TREE_TYPE && n.name && <ConceptCycles name={n.name} tree={tree} />}
 
         {wide && !history && (
           <section className="space-y-2">

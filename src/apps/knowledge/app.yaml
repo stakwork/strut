@@ -4,9 +4,11 @@ description: >-
   type's nodes (Concepts as the tree), one search over all of them, and the
   graph round whatever is picked, filtered by type; a Concept's history and
   the tree between two moments, from the history (plans/concept-history.md);
-  a Concept's claims, and the changes to it the dream proposed, which a
-  person accepts or rejects here — the one write it makes. Strut ships it
-  and seeds it on every server; it acts as its viewer.
+  a Concept's claims, and the changes to it the dream proposed where its
+  tree is reviewed, which a person accepts or rejects here — the one write
+  it makes; and, for an admin, what the dream learned, cycle by cycle: what
+  people said, the claims, and what each cycle's run changed. Strut ships
+  it and seeds it on every server; it acts as its viewer.
 icon: network
 grants:
   workflows: []
@@ -20,6 +22,7 @@ grants:
     - history/read
     - knowledge/page
     - knowledge/claims
+    - knowledge/cycles
     - proposal/list
     - proposal/get
     - proposal/decide
