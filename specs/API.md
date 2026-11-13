@@ -1238,7 +1238,7 @@ list. A repeat decide is still `409` with the record.
 **Only an admin accepts some** (`approver: "admin"`, plans/member-rights.md).
 A step may say that only an ADMIN of this strut accepts a proposal of it
 (`StepDef.approver`; `package/install` says it: installing a package is an
-admin's act). The record and its brief carry `approver: "admin"`, copied
+admin's act; so do `package/commit`, `remote/buy-credit` and `task/set-type`, §22). The record and its brief carry `approver: "admin"`, copied
 from the step at proposal time. An admin is a decider with full scope: the
 deployment key, a key login, an admin's session (a ticket with `role:
 "admin"`), a host's server holding the key (Hive decides with the swarm
@@ -4815,7 +4815,8 @@ makes a TASK of a task type in the task store (`src/tasks/`) and the run
 waits, out of memory, until a WORKER answers it. A worker answers in a
 WORKER APP — an ordinary app — through the `task/*` steps on the app door,
 and the staff run the task types and the workers through the `/tasks`
-routes below. A task type may PAY: an accepted answer earns its worker
+routes below; the builder asks an admin for a type with `task/set-type`
+("Asking for a task type" below). A task type may PAY: an accepted answer earns its worker
 sats, held a while before they can be withdrawn (`plans/human-steps.md`
 §8.1; "Pay" below). No sats leave the wallet yet: a withdrawal is a later
 item. A task type may also mix TESTS among its tasks — tasks whose answer
@@ -5032,8 +5033,10 @@ answers none of them).
 - **The admin's, never the workflow's.** A task type's `paySats` (sats to
   the msat, at most 1,000,000 an answer; 0 or absent: unpaid) and `holdHours`
   (1 to 720, 72 by default; never 0: earnings wait) are set by `PUT
-  /tasks/types/:name` alone. A workflow names a type and cannot set its
-  pay; no step a page or a model reaches writes it.
+  /tasks/types/:name`, or by a `task/set-type` proposal an admin accepted
+  ("Asking for a task type" below). A workflow names a type and cannot set
+  its pay; no step a page or a model reaches writes it without an admin's
+  yes.
 - **Locked when the task is taken.** `task/next` stamps the type's pay on
   the lease (`payMsat`) and the answer earns exactly that. A lease taken
   before the type was paid earns nothing.
@@ -5198,3 +5201,53 @@ work): a type without it asks one, and a step asking more than `max` fails
 The in-process service also tells `onAgreed` listeners each decision of a
 copies task (not `more`): `{ task, type, agreed, answers: [{ lease,
 worker, agrees }], at }`, `agreed` false when it was disputed.
+
+### Asking for a task type — `task/set-type` (`plans/human-steps.md` §9.8)
+
+The BUILDER writes a workflow with a `human` step and its worker app, so it
+is the one that knows a task type is needed. It may ASK for one; an ADMIN
+says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
+
+| Step | Config | Answers |
+| --- | --- | --- |
+| `task/types` | `{}` | `{ types: [TaskType less changedBy, plus open?, workers?, answeredWeek?] }`: each type, its open tasks (`open`), how many workers hold it (`workers`, a count: who is the staff's to read) and its answers in the last 7 days (`answeredWeek`). The three counts are absent on a server whose task store is its host's and answers no queue |
+| `task/set-type` | `{ name, app, answer?, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+
+- **Only as a proposal an admin accepted** (`approver: "admin"`, as
+  `package/install`): a direct call, a workflow's step, `meta/run-step`
+  and a subflow are refused. The door behind it (`taskTypes.save`) opens
+  only for the ACCEPTED `task/set-type` record on disk for that name and
+  that input, the admin's edits included (`set_type_needs_admin:`
+  otherwise), so a forged `ctx.proposal` saves nothing. The type's
+  `changedBy` is the admin who accepted. A member's accept is `403
+  admin_required:`.
+- **Checked before it is proposed.** Each field is held to what `PUT
+  /tasks/types/:name` takes: the answer's shape to the subset strut
+  checks, `tests` and `copies` to their rules, the name, the bounds and the
+  pay to the msat. A shape strut cannot check is the model's error, and no
+  proposal is made. A grader step is checked when the type is saved.
+- **Merged over the type.** A field left out keeps its value, never the
+  default; `tests` and `copies` objects merge over the type's own rules (or
+  the defaults), and `null` turns them off. A new type needs `answer`
+  (`bad_request:` on accept otherwise; the card says so first).
+- **What it cannot do.** It grants no worker, deletes no type and changes
+  no worker: those are an admin's, in `strut/staff` (§14.15).
+- **Seeds.** Only the `builder` workflow grants `task/types` and
+  `task/set-type`, and lists `task/set-type` in `approve:`. The `job` and
+  `orchestrator` seeds do not, nor the builder chat, which has no
+  proposals.
+
+**The card** (`describe`, §12), actions "Save type" and "Don't". Its title
+is "New task type <name>", "Change task type <name>" or "Turn off task type
+<name>". Its fields: **Drawn by** (the app; a danger when it is not here or
+does not grant `task/next` and `task/submit`, the queue's `appProblem`),
+**The answer** (one line per field — `same ("The same pet?"): yes or no,
+required` — or "needs the app's own view" with the schema, when it is not a
+form `TaskForm` draws), **Lease**, **Expires after**, **On**; for a change,
+**What changes** (each field before and after) and **Open tasks** (with a
+new shape, that their answers are checked against it); **Workers** (how
+many hold it); **Pay** (sats and dollars at the rate, held how long, and
+what the last week's answers would have cost; a RISE is a danger);
+**Tests** and **Copies** (their settings; a merge the save would refuse is
+a danger). It reads a type's rules, never a test: no expected answer is on
+it.

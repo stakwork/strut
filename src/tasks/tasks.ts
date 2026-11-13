@@ -163,8 +163,9 @@ export const STANDING_ACTOR = "standing";
  *  workers behind one address is not one budget. */
 export const TASK_REQUESTS_PER_MINUTE = 240;
 
-const TYPE_NAME_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$/;
-const NAME_MAX = 128;
+/** A task type's name (§4.2): lowercase segments joined by "/". */
+export const TYPE_NAME_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$/;
+export const TYPE_NAME_MAX = 128;
 const ACTOR_MAX = 512;
 const TEXT_MAX = 2000;
 
@@ -1199,8 +1200,8 @@ export function createTasks(deps: TasksDeps): TasksService {
     },
 
     async setType(name, input, by) {
-      if (typeof name !== "string" || name.length > NAME_MAX || !TYPE_NAME_RE.test(name)) {
-        throw new TaskError("bad_request", `a task type's name is lowercase letters, digits, ".", "_" and "-", segments joined by "/", at most ${NAME_MAX} characters (got ${JSON.stringify(name)})`);
+      if (typeof name !== "string" || name.length > TYPE_NAME_MAX || !TYPE_NAME_RE.test(name)) {
+        throw new TaskError("bad_request", `a task type's name is lowercase letters, digits, ".", "_" and "-", segments joined by "/", at most ${TYPE_NAME_MAX} characters (got ${JSON.stringify(name)})`);
       }
       const app = need("app", input?.app);
       const problem = answerSchemaProblem(input.answer);

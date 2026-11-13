@@ -135,7 +135,7 @@ describe("the builder workflow strut ships", () => {
     const p = paramsOf(plain);
     const d = docOf(delta);
     assert.deepEqual(d.params.tools, [...p.tools, "pod/*"]);
-    assert.deepEqual((d.params as { approve?: string[] }).approve, ["package/install", "package/commit", "remote/buy-credit", "meta/publish-workflow"], "strut's own gate first, the host's after");
+    assert.deepEqual((d.params as { approve?: string[] }).approve, ["package/install", "package/commit", "remote/buy-credit", "task/set-type", "meta/publish-workflow"], "strut's own gate first, the host's after");
     assert.equal(d.params.system, `${p.system.trimEnd()}\n\nThis strut builds for acme.\n`);
     assert.equal(d.peer, true, "the delta leaves the key");
     assert.notEqual(contentHash(plain), contentHash(delta));
@@ -198,19 +198,20 @@ describe("the builder workflow strut ships", () => {
       const authoring = (strut.services as { authoring: AuthoringCapability }).authoring;
       for (const approve of [[], ["package/install", "meta/create-step"]]) {
         const res = (await authoring.runWorkflow(BUILDER_WORKFLOW, { prompt: "publish x" }, { approve })) as { error?: string; runId?: string };
-        assert.match(res.error ?? "", /"(package\/(install|commit)|remote\/buy-credit|meta\/(publish-workflow|create-step))" taken out of approval \(params\.approve: approve may only grow\)/);
+        assert.match(res.error ?? "", /"(package\/(install|commit)|remote\/buy-credit|task\/set-type|meta\/(publish-workflow|create-step))" taken out of approval \(params\.approve: approve may only grow\)/);
         assert.equal(res.runId, undefined, "nothing ran");
       }
       // More approvals, or none overridden, pass the gate (checked off the seeded YAML itself).
       const { grantWidenedBy } = await import("./closure.js");
       const flow = await strut.workspace.getWorkflow(BUILDER_WORKFLOW);
-      assert.equal(grantWidenedBy(flow, { approve: ["package/install", "package/commit", "remote/buy-credit", "meta/publish-workflow", "meta/create-step", "meta/edit-step"] }, strut.getRegistry()), null);
+      assert.equal(grantWidenedBy(flow, { approve: ["package/install", "package/commit", "remote/buy-credit", "task/set-type", "meta/publish-workflow", "meta/create-step", "meta/edit-step"] }, strut.getRegistry()), null);
       assert.equal(grantWidenedBy(flow, { system: "a knob" }, strut.getRegistry()), null);
 
       // A host with no approvals (Hive's builder today): strut's own gates,
-      // package/install, package/commit and remote/buy-credit, are all there is to keep — and an override may not drop them.
+      // package/install, package/commit, remote/buy-credit and task/set-type, are all there is to keep — and an override may not drop them.
       const hive = await createStrut({ workspace: new WorkspaceManager(join(dir, "hive")), ...quiet() });
-      assert.equal(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: ["package/install", "package/commit", "remote/buy-credit"] }, hive.getRegistry()), null);
+      assert.equal(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: ["package/install", "package/commit", "remote/buy-credit", "task/set-type"] }, hive.getRegistry()), null);
+      assert.match(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: ["package/install", "package/commit", "remote/buy-credit"] }, hive.getRegistry()) ?? "", /"task\/set-type" taken out of approval/);
       assert.match(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: ["package/install", "package/commit"] }, hive.getRegistry()) ?? "", /"remote\/buy-credit" taken out of approval/);
       assert.match(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: [] }, hive.getRegistry()) ?? "", /"package\/install" taken out of approval/);
     } finally {

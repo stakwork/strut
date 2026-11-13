@@ -41,6 +41,7 @@ import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { HumanTasksCapability } from "./tasks/tasks.js";
+import type { TaskTypesCapability } from "./tasks/set-type.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
 
@@ -481,6 +482,13 @@ export interface StrutCapabilities {
    *  routes alone. Set by the standard server; a host's own is kept as it
    *  is. */
   tasks?: HumanTasksCapability;
+  /** The TASK TYPES (plans/human-steps.md §9.2, §9.8, src/tasks/set-type.ts):
+   *  `list()` — each type with its open tasks, how many workers hold it and
+   *  its answers in the last week — the card's reads, and `save`, which
+   *  opens only for an ACCEPTED `task/set-type` proposal on disk (an admin's)
+   *  for that name and input. Nothing on it grants a worker, deletes a type
+   *  or changes a worker. Set by the standard server; a host's own wins. */
+  taskTypes?: TaskTypesCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
