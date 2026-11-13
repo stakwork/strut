@@ -656,12 +656,17 @@ pattern). It comes with the staff app (§9).
 
 ## 8. Earnings and withdraw (items 5a and 5b)
 
-Ruled: a balance per Stadeum, earnings wait, a withdraw section. The rest
-is proposed.
+Ruled: a balance per Stadeum, earnings wait, a withdraw section (the
+Rulings table), and the seven questions at the end of 8.1 (2026-11-12).
+The rest is proposed.
 
 ### 8.1 Earnings recorded and shown (item 5a)
 
-All of 8.1 is proposed. An accepted answer is owed to its worker. 5a
+Evan ruled on 8.1's questions on 2026-11-12, agreeing with every
+recommendation. They are listed at its end, and where the text below rests
+on one it says so. The rest of 8.1 is proposed.
+
+An accepted answer is owed to its worker. 5a
 writes what is owed, holds it, shows it to the worker and to the admin,
 and marks the run with it. No sats move: the wallet pays nobody until 5b.
 
@@ -670,17 +675,17 @@ and marks the run with it. No sats move: the wallet pays nobody until 5b.
 | On the task type | Unit | Meaning |
 | --- | --- | --- |
 | `paySats` | sats, to the msat | What one accepted answer earns. Absent or 0: the type is unpaid, and its answers write nothing to the ledger |
-| `holdHours` | hours | How long an earning waits before it can be withdrawn. Proposed: 72 by default, from 1 to 720. Ruling 3 says earnings wait, so never 0 |
+| `holdHours` | hours | How long an earning waits before it can be withdrawn. Ruled: 72 by default, from 1 to 720, never 0, since earnings wait (the Rulings table's 3) |
 
 - **The admin's, never the workflow's** (§6). Set by `PUT
   /tasks/types/:name` (full scope) and, with item 6, by `task/set-type`
   behind an admin's yes. The YAML names a type and cannot set its pay, and
   no step a page or a model reaches writes it. Proposed: at most 100,000
   sats an answer, a guard against a slip, not a policy.
-- **Sats, not dollars.** The wallet holds sats and pays sats. Owed in sats,
+- **Sats, not dollars.** Ruled. The wallet holds sats and pays sats. Owed in sats,
   the sum the wallet must hold does not move with the price of bitcoin.
   Pay in dollars would leave the wallet owing a number of sats that does.
-- **Locked when the task is taken.** `next` stamps the type's pay on the
+- **Locked when the task is taken.** Ruled. `next` stamps the type's pay on the
   lease and hands it to the page (`WorkerTask.payMsat`). A worker sees what
   an answer earns before doing it, and the answer earns exactly that. A
   change to the type's pay reaches the next lease, never one in hand. A
@@ -759,11 +764,13 @@ it one hook:
 - It is on the service (`TasksService`), never the capability: no step
   reaches it.
 - A person reaches it as `POST /tasks/:id/take-back { worker?, why }`, full
-  scope, `409 released` past the hold. So an answer an admin finds bad
-  inside the hold loses its pay before item 4 exists.
+  scope, `409 released` past the hold. Ruled: the route ships in 5a, so an
+  answer an admin finds bad inside the hold loses its pay before item 4
+  exists.
 
-A worker's status touches no earning. A suspension or a ban stops new
-work; what was earned stays owed until it is taken back (open, below).
+A worker's status touches no earning (ruled). A suspension or a ban stops
+new work; what was earned stays owed until it is taken back. Whether a
+banned worker may withdraw is 5b's.
 
 #### The balance
 
@@ -812,7 +819,7 @@ be read leaves `usd` out and marks nothing, and the step still returns.
 | The verify budget | Nothing: a check cannot park |
 | The ledger | Not from here. What is owed is the `pay` row, written when the answer was accepted |
 
-**Worker pay should not count against the model caps.** They are the
+**Worker pay does not count against the model caps** (ruled). They are the
 gateway's brake on a model that loops, and the gateway never sees pay.
 Counting pay would need a cap strut enforces between steps, and a run
 stopped after a worker answered still owes the worker. Pay's brake is the
@@ -849,7 +856,7 @@ the balance less what workers are owed, below 0 when the wallet is short.
 | Where | Shows |
 | --- | --- |
 | The Earnings tab and `strut/earnings` (one fold, `kit/src/folds/earnings.ts`) | **Owed to workers** beside **Outstanding credit**: sats, at the rate of the moment, held and withdrawable. A **Workers** column by day: sats accepted, less taken back. Under the balance, whether it covers what workers are owed, in red when short |
-| The admin's Withdraw dialog | What workers are owed beside the balance, and a warning when the amount would leave the wallet short of it |
+| The admin's Withdraw dialog | What workers are owed beside the balance, and a warning when the amount would leave the wallet short of it. Ruled: 5a warns, 5b refuses |
 | `GET /tasks/workers` | Each worker's balance, in one grouped read |
 | `GET /tasks/:id` | Each answer's pay: sats, held until when, taken back |
 
@@ -866,9 +873,9 @@ Worker pay never enters `daily`. There "earned" is what this server sold
 - A send in flight is already out of the balance (a wallet keeps the
   debit). So a payout counts as gone from the moment it is sent, and must
   leave the payee's balance at that moment too.
-- 5b decides whether a worker's withdrawal is refused while the wallet is
-  short, and whether the admin's own Withdraw may go below what is owed
-  (open, below).
+- Ruled: 5b refuses an admin's withdrawal that would leave the wallet
+  short of what workers are owed. Whether a worker's withdrawal is refused
+  while the wallet is short is 5b's to design.
 
 #### Tests that prove it
 
@@ -893,36 +900,36 @@ Two, against `main`. The second branches after the first has merged.
    the Earnings tab, `strut/earnings` and the Withdraw dialog's warning.
    `specs/API.md` §19. Checked in the browser.
 
-#### Open for ruling
+#### Ruled (2026-11-12)
 
-1. **Pay's unit.** Recommended: sats. The wallet holds and pays sats, so
-   what is owed never moves with the price. The other way is dollars,
-   converted once when the answer is accepted and owed in sats from then;
-   that needs the rate on the worker's `submit`.
-2. **When pay is locked.** Recommended: when the lease is taken. The worker
-   is shown it before doing the work, and an admin who raises pay reaches
-   the queue at once. Locking at task creation would leave a backlog at the
-   old pay; locking at the answer could pay less than was shown.
-3. **The hold.** Recommended: per type, 72 hours by default, from 1 to 720.
-   Long enough for item 4 to grade a test and an admin to look; never 0,
-   since ruling 3 says earnings wait.
-4. **Worker pay and the caps.** Recommended: counted in the run's totals,
-   never against `maxRunCostUsd` or the Mothership. Those brake model
-   loops at the gateway, and a stopped run still owes the worker.
-5. **A person's take-back in 5a.** Recommended: yes, the route above.
+Evan agreed with every recommendation.
+
+1. **Pay is in sats.** The wallet holds and pays sats, so what is owed
+   never moves with the price.
+2. **Pay is locked when the lease is taken.** The worker sees it before
+   doing the work, and an admin who raises pay reaches the queue at once.
+3. **The hold is per type: 72 hours by default, from 1 to 720, never 0.**
+   Long enough for item 4 to grade a test and an admin to look, and
+   earnings wait (the Rulings table's 3).
+4. **Worker pay counts in the run's totals, never against
+   `maxRunCostUsd` or the Mothership.** Those brake model loops at the
+   gateway, and a stopped run still owes the worker.
+5. **A person's take-back ships in 5a,** as `POST /tasks/:id/take-back`.
    Until item 4, a person is the only one who catches a bad answer, and
    that is what the hold is for.
-6. **A ban and what was earned.** Recommended: a ban touches no earning;
-   staff take back what was bad. Pay for accepted work is owed, and a ban
-   is often for later conduct. Whether a banned worker may withdraw is 5b's.
-7. **The admin's Withdraw and what workers are owed.** Recommended: 5a
-   warns, and 5b refuses an admin's withdrawal that would leave the wallet
-   short of it. paid-runs.md §8 says Withdraw is not limited, because the
-   sats are the seller's; once workers are owed, some of them are not.
+6. **A ban touches no earning;** staff take back what was bad. Pay for
+   accepted work is owed, and a ban is often for later conduct. Whether a
+   banned worker may withdraw is 5b's.
+7. **5a warns, and 5b refuses, an admin's withdrawal that would leave the
+   wallet short of what workers are owed.** paid-runs.md §8 lets Withdraw
+   take any sats because they are the seller's; once workers are owed,
+   some of them are not.
 
 ### 8.2 Withdraw (item 5b)
 
-Needs its own design and a ruling. 5a hands it:
+Needs its own design and a ruling, the payer's third door first. One thing
+is ruled already (8.1's ruling 7): 5b refuses an admin's withdrawal that
+would leave the wallet short of what workers are owed. 5a hands it:
 
 - `payees.withdrawn`, which a payout adds to in the same transaction as
   its `withdrawal` entry (purpose `worker`, actor the worker).
