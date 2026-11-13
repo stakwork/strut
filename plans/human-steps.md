@@ -684,15 +684,397 @@ is proposed.
 
 ## 9. The staff app (item 6)
 
-A first-party, admin-only app, as `strut/earnings` is: `admin: true` in
-its `app.yaml`, so it is listed to full scope alone, and its steps reach
-the staff routes of §6 through the admin door (`AppToolDeps.adminServices`,
-`src/apps/tools.ts`), which is handed only to a first-party page whose
-connection holds full scope. It shows task types, queue depth and
-throughput, workers with their standing and grants, answers to review,
-test tasks and payouts. The page is only a face: the routes decide. A
-client's own dashboard built by Jamie would need read steps a person
-grants it, and is not in this item. Money settings stay behind a proposal.
+The staff are the client's admins. They make task types, let workers in,
+watch the queue and read what was answered. Today they can only do that
+with `curl` against the `/tasks` routes (§6). The staff app is those
+routes as a page, the way `strut/earnings` is the `/earnings` routes as a
+page. The page is only a face: the routes decide. A client's own
+dashboard built by Jamie would need read steps a person grants it, and is
+not in this item.
+
+Everything below is proposed unless it says built.
+
+### 9.1 What it is
+
+| | |
+| --- | --- |
+| Name | `strut/staff`, title "Tasks and workers", icon `users`. **Proposed**; the name is open (§9.12) |
+| Sources | `src/apps/staff/` (`app.yaml`, `src/App.tsx`, `src/lib/`, `src/components/`), checked by `npx tsc -p kit/tsconfig.staff.json`, excluded from the root tsc, as `strut/earnings` |
+| Seed | `src/apps/staff-seed.ts`, a copy of `earnings-seed.ts`: `seedBundledApp` by tree hash at boot, after `strut/views` (it imports `TaskForm`). Seeded on every server, a served box too, as `strut/earnings` is |
+| Opt-out | `createStrut({ staff: false })` and `STRUT_HOST_CONFIG`'s `"staff": false` (`hostConfigFromEnv`, `src/server.ts`) seed nothing |
+| Who sees it | `admin: true` in its `app.yaml`: listed to full scope alone, its files `403` to anyone else (specs/API.md §14.14). First-party, so its door needs a viewer with an actor: an admin's session, or the key with `x-strut-actor` |
+| Grants | the `staff/*` door steps (§9.3), `app/list` and `app/get` for the type editor's app picker. No workflows: it launches nothing |
+
+**Framed for an admin.**
+
+- **Strut's own UI.** The sidebar's Apps section lists it to an admin, as
+  it lists `strut/earnings`. A waiting run links to it: the run overview's
+  "Waiting on" line (`RunOverview.tsx`) and a parked step's flyout turn
+  `task:<id>` into `?app=strut/staff&input=task%3D<id>`. With the bare
+  key and no actor its calls are refused, as `strut/earnings`'s are (a
+  first-party page needs a viewer), and the page says to sign in with a
+  name.
+- **A host (Stadeum).** It frames `?app=strut/staff&solo=1` for a person
+  it signed in with `POST /auth/ticket { actor, role: "admin" }`, beside
+  `strut/earnings`. Strut's UI never shows.
+- **Deep links.** `input` takes one of `tab=queue|types|workers|tasks`,
+  `type=<name>`, `worker=<actor>`, `task=<id>`, `run=<workflow>/<runId>`.
+  Each move in the page is sent back as `ui/open-link` to the app, so a
+  host's address bar follows, as `strut/knowledge` does.
+
+### 9.2 First: the task store off the shared bag
+
+`ctx.services.tasks` is the whole capability today (#655, #657): `ensure`,
+the worker's calls that take any actor, and the staff's calls. Any step on
+the shared bag can reach all of it, a custom step the builder wrote
+included. Such a step can grant itself a task type, list tasks with their
+live lease ids and answer as another worker, or rewrite a type. Before
+money (item 5a) that spoils answers; after, it also pays someone. "Money
+settings stay behind a proposal" holds only once this is closed.
+
+| Who | Gets |
+| --- | --- |
+| The shared bag, every step | `tasks: { ensure }`, the `human` step's, and `taskTypes` (§9.8): the types read, and a save that opens only for an accepted proposal |
+| A `worker: true` step on the app door | the worker's calls (`TasksService.worker`), on that one call's bag. The signed-in visitor's bag already does this; the member's door (`POST /mcp`) does it the same way in `dispatch` (`src/apps/tools.ts`) |
+| The staff | the routes alone, which hold `strut.tasks` itself. The staff app reaches them through its door (§9.3) |
+
+`worker-door.test.ts` must pass unchanged. A host that brings its own
+`services.tasks` keeps it as it is.
+
+### 9.3 The door
+
+`src/steps/lib/staff/`, in the `earnings/*` pattern:
+
+- `_door.ts` refuses unless `ctx.app` is first-party and `admin`, as
+  `earnings/_door.ts` does. The check moves into one helper both import.
+- The door is `staffAdmin` in createStrut: one request to a `/tasks…`
+  route, in process, in the viewer's name (`inProcessRequest`), and to no
+  other path. The app door hands it beside `earningsAdmin` in
+  `adminServices`, so a grant's `by` and a type's `changedBy` name the
+  admin who did it.
+- A route's refusal is the step's error, its `code` first
+  (`bodyOrThrow`).
+
+| Step | Route | Answers |
+| --- | --- | --- |
+| `staff/stats { type? }` | `GET /tasks/stats` (new, §9.4) | the queue |
+| `staff/types` | `GET /tasks/types` | `{ types }` |
+| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
+| `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
+| `staff/worker { actor }` | `GET /tasks/workers/:actor` (new) | one worker and what they did |
+| `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
+| `staff/grant { actor, type }` | `PUT /tasks/workers/:actor/grants/:type` | `{ worker }` |
+| `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
+| `staff/tasks { type?, status?, workflow?, runId?, by?, before?, limit? }` | `GET /tasks` (`by` new) | `{ tasks }` |
+| `staff/task { id }` | `GET /tasks/:id` (`run` new) | `{ task }` |
+| `staff/file { task, path }` | `GET /tasks/:id/files/<path>` (new) | one file, as `run/files` answers |
+
+`staff/save-type` is not `task/set-type`: the first is an admin's own act
+in the page; the second is the builder's ask (§9.8). Neither is a worker's
+`task/*` step.
+
+### 9.4 Reads the routes lack
+
+What the routes answer today: the types, the workers by status, a page of
+tasks by type, status, workflow or run, and one task with its leases. What
+the screens need beside that:
+
+| Route | Answers | How |
+| --- | --- | --- |
+| `GET /tasks/stats[?type=]` | per type: `waiting` (open, no live lease), `working` (open with a live lease), `oldest` (the oldest waiting task's age), `dueSoon` (open tasks due within 24 h), `granted` (live grants), `app` (§9.5's problems with its app); per window (last hour, day, week): `answered`, `expired`, `cancelled`, `skipped`, `leasesLost` (leases that ran out), `toAnswer` and `work` (p50 and p90 in ms). Across types: workers by status, `holding` (a live lease now), `asking` (a held `task/next` now) | Computed on read, never stored. Counts by index; medians over the newest 1,000 answers in the window. `asking` is the service's in-memory list of held waits |
+| `GET /tasks?by=<actor>` | the tasks an actor answered, newest first | a filter beside `type`, `status`, `workflow`, `runId` |
+| `GET /tasks/workers/:actor` | `{ worker, holding?, week: { [type]: { answered, skipped, lost } }, recent: [{ lease, task: { id, type, workflow, runId, status } }] }`, the newest 50 leases | the worker record and their leases |
+| `GET /tasks/:id` | adds `run: { status, waitingOn? } \| null` | the run store's summary for the task's run |
+| `GET /tasks/:id/files/<path>` | one file on the task's list, as `run/files` answers one (`fileResult`); `404 not_listed` for any other path | the same read `task/file` uses (`deps.file`), without a lease |
+
+All full scope only, like the rest of §6. `/tasks/stats` is mounted before
+`/tasks/:id`. Four new indexes, each `create if not exists`: a task's type
+and `settled_at`, a task's `by`, a lease's type and `closed`, and a lease's
+worker and `taken`. The memory store answers the same. **Proposed:** the
+page reads the stats every 10 s while it is shown, none while hidden.
+
+### 9.5 Screens
+
+Four tabs, deep-linkable. On a phone each list opens to its detail and
+back.
+
+**Queue** (the tab it opens on). One row a type:
+
+| Column | From `staff/stats` |
+| --- | --- |
+| Type, its app, on or off | the type |
+| Waiting, being worked | `waiting`, `working` |
+| Oldest waiting | `oldest` |
+| Due within a day | `dueSoon` |
+| Answered: hour, day, week | `answered` per window |
+| Time to answer (made → answered) and work time (taken → answered) | `toAnswer`, `work`, last day |
+| Skipped, leases lost, expired | last day; expired over the week |
+| Workers: granted, holding a lease, asking now | `granted`, `holding`, `asking` |
+
+Above the table, one line each for what needs a person: a type with tasks
+waiting and nobody granted it; tasks that expire unanswered within the
+hour; a type turned off that still has open tasks; a type whose app is
+missing or does not grant `task/next` and `task/submit`; workers who are
+`new` and wait for a grant (a link to them). A row opens the type.
+
+**Types.** A list (name, app, on, waiting, workers granted), **New type**,
+and the editor:
+
+- **Name** on a new type only, held to the store's rule (lowercase
+  letters, digits, `.`, `_`, `-`, segments joined by `/`). A saved name is
+  fixed: a type under another name is a new type, and the old one keeps
+  its grants and tasks.
+- **App**, picked from this server's apps (`app/list`). Beside it what is
+  wrong with it, read with `app/get`: not here, or its grants lack
+  `task/next` or `task/submit`. The same check sits in `/tasks/stats`
+  (`app`) and on `task/set-type`'s card, one function.
+- **Lease** in minutes (`leaseSeconds`) and **Expires unanswered after**
+  in hours (`withinHours`), with the store's bounds.
+- **On or off.** Turning it off says what it does: a `human` step can
+  make no new task of it, and its open tasks are not handed out and
+  expire when due.
+- **The answer's shape**, below.
+- **Save** is `staff/save-type`, the whole type. A save that changes the
+  answer's shape of a type with open tasks says how many first: their
+  answers are checked against the new shape when submitted.
+- **Delete** is offered only when no task of the type is open, and says
+  how many workers lose the grant. Otherwise the page says to turn it off
+  and let them settle (`409 in_use`).
+- **Workers** who hold the type, with Revoke, and Grant (a picker over the
+  workers here).
+
+**The answer's shape.** The editor writes only what
+`src/tasks/answer-schema.ts` checks, so it never offers to save what the
+route refuses.
+
+- The check moves to `kit/src/folds/answer-schema.ts`, pure, and the
+  store imports it from there (`Buffer.byteLength` becomes `TextEncoder`).
+  The page runs `answerSchemaProblem` on every change.
+- **The answer is** a form of fields, or one value of a kind (a box on a
+  photo is one value: four numbers).
+- A field has a key, a label (`title`), help (`description`), whether it
+  is required, and a kind:
+
+  | Kind | Writes |
+  | --- | --- |
+  | Text | `string`, with `minLength`, `maxLength` |
+  | Number, whole number | `number`, `integer`, with `minimum`, `maximum` |
+  | Yes or no | `boolean` |
+  | Pick one | `enum` of strings or of numbers |
+  | Pick several | `array` of an `enum`, with `minItems`, `maxItems` |
+  | Numbers | `array` of `number`, with `minItems`, `maxItems` |
+  | Group | `object` with fields of its own, to the subset's eight levels |
+
+- **JSON** shows the schema and takes edits. A schema the subset takes but
+  the kinds above cannot draw (an `enum` on an object, an array of groups,
+  `null`) stays in JSON, with a line saying so.
+- **Preview** draws `TaskForm` (`strut/views`) from the schema: what a
+  worker sees when the app has no view of its own. When `formProblem`
+  answers, the preview shows its sentence instead: the app must draw this
+  type itself.
+
+**Workers.** A list, `new` first: the people who signed in and wait.
+Columns: who, status, first seen, the types they hold, answers this week,
+holding a lease now.
+
+- **Who** is the actor shortened (`secp:3fa2…91c`), with the note's first
+  line as a name when there is one. **Proposed:** the store keeps no name
+  of its own; the note is the staff's label.
+- **A worker** shows their status with Activate, Suspend, Ban and Lift.
+  Ban asks first. Suspend and Ban say that a lease they hold ends now.
+- **The note**, edited in place (`staff/set-worker { note }`).
+- **Grants**: each live grant with Revoke (a reason asked, kept as `why`),
+  Grant from the types here, and revoked grants below with when, who and
+  why. Granting a `new` worker makes them `active`, and the page says so.
+- **What they did** (`staff/worker`): the week by type, and their newest
+  leases (answered, skipped, ran out), each opening its task.
+- **Several at once**: tick `new` workers and grant one type to each. One
+  door call per worker; the page says which failed.
+
+**Tasks.** Filters: type, status, workflow, run, answered by. Newest
+first, a page at a time (`before`). A row: made, type, status, the run,
+due, who answered, leases. **A task** shows:
+
+- What the worker was shown: `show` as a JSON tree, and its files, each
+  opened through `staff/file` (an image drawn, text shown, anything else
+  downloaded).
+- Its leases in order: who, taken, how it closed (answered, skipped,
+  ran out, ended early) and why.
+- The answer and who gave it. When the type's schema draws as a form, the
+  answer is shown in that form, read only (`TaskForm` gains a read-only
+  mode).
+- **The run**: the workflow, the run id, the step's path and the run's
+  status now (`run`). **Open the run** sends the strut deep link
+  `?wf=<workflow>&run=<runId>` as `ui/open-link`. Strut's own UI opens it.
+  A host that never shows strut's UI does what it chooses; the status is
+  on the page either way.
+
+### 9.6 Answers to review
+
+A settled answer has woken its run, and the run has gone on: written a
+node, told an owner, finished. Nothing in this app can take that back.
+So review is a mark on the answer, never an undo of the run.
+
+- **In item 6:** the Tasks tab with `status: settled`, by type and by
+  worker, is the review queue. Staff act on the worker (note, suspend,
+  revoke), not on the answer.
+- **The verdict (proposed, after a ruling):** a person marks a settled
+  answer `ok` or `rejected`, with a reason. A table of its own,
+  `reviews` (task, verdict, why, by, at), one row a task. `PUT
+  /tasks/:id/review`, `staff/review`, and a `review=none|ok|rejected`
+  filter on `GET /tasks`. It changes nothing in the run.
+- **What a rejection does later:** with item 4 it counts against the
+  worker's standing as a failed test does (§7 decides how). With item 5a
+  a rejection inside the earning's hold takes the earning back, as a
+  failed test inside the hold does (§8); after the hold it changes no
+  money.
+- **Checking before the run goes on** is the workflow's: a second `human`
+  step of a review type after the first, or copies (§7).
+
+### 9.7 Places for later items
+
+Each later item adds its part here. The page shows a tab or a column only
+when the server answers for it, never an empty "coming soon".
+
+| Item | Where it shows | What the staff app adds |
+| --- | --- | --- |
+| 4, tests and standing (§7) | A **Tests** section in the type editor; a **Tests** tab; a **Standing** column on Workers and on a type's workers | The type's test settings, its test tasks (add, edit, retire; their answers and how they are graded), each worker's standing per type and their test history, and an automatic revoke shown in the grant history with its reason. Test tasks are read through new `staff/*` steps only: the sealed table never reaches a run or a worker |
+| 5a, earnings (§8) | A **Pay** section in the type editor; **Earned**, **Held** and **Withdrawable** columns on Workers; a line on Queue | The type's pay and hold; what each worker earned and is owed. Queue says what is owed to all workers beside what the wallet holds. The total owed also shows in `strut/earnings` beside the credit owed as service (§8, "Books") |
+| 5b, payouts | A **Payouts** tab | Withdrawals by workers (on their way, paid, failed), the caps per worker and per day, and a switch that stops every worker's withdrawals at once |
+
+### 9.8 `task/set-type`
+
+The builder writes the workflow with the `human` step and the worker app,
+so it is the one that knows a type is needed. It may ask for one. It may
+not make one.
+
+The builder calls it as a tool, which records a proposal (its seed lists
+it in `approve:`):
+
+```jsonc
+{ "name": "pet-match", "app": "workers", "withinHours": 48,
+  "answer": { "type": "object", "properties": { "same": { "type": "boolean" } }, "required": ["same"] },
+  "rationale": "The pets workflow sends low-confidence matches to a person." }
+```
+
+- **The step.** `src/steps/lib/task/set-type.ts`, `effect: "write"`,
+  `approver: "admin"`, no `worker` flag. It runs only as a proposal an
+  admin accepted (`ctx.proposal`), as `package/install` and
+  `remote/buy-credit` do. A direct tool call, a workflow's step,
+  `meta/run-step` and a subflow are refused.
+- **Input.** `{ name, app, answer?, leaseSeconds?, withinHours?, enabled? }`,
+  later the pay and test fields of items 4 and 5a. It is merged over the
+  type when there is one, so a field left out is kept as it is, not reset
+  to the default. A new type needs `answer`. The input schema runs
+  `answerSchemaProblem`, so a shape strut cannot check is refused to the
+  model before any proposal is made.
+- **The door.** `ctx.services.taskTypes` (§9.2) is `list()` (each type
+  with its open tasks and the workers who hold it) and `save(name, input,
+  { proposal, actor })`. `save` reads the proposal's record on disk: an
+  `accepted` `task/set-type` record for that name and that input, the
+  person's edits included, as `package/install`'s door does. A forged
+  `ctx.proposal` opens nothing. The type's `changedBy` is the admin who
+  accepted.
+- **What it cannot do.** It grants no worker, deletes no type and changes
+  no worker. Those stay a person's, in this app.
+- **Its read twin.** `task/types` (`effect: "read"`, over `list()`): the
+  types here, each with its app, answer shape, on or off, open tasks and
+  workers. The builder needs the names before it writes a `human` step.
+- **Seeds.** The `builder` seed grants `task/types` and `task/set-type`,
+  and lists `task/set-type` in `approve:`. Not `job` or `orchestrator`: a
+  task type comes with a workflow, and workflows are the builder's. Not
+  the builder chat, which has no proposals: there the person uses this
+  app. The `Workflow Builder` page says when to ask for a type and that
+  the worker app must grant the `task/*` steps.
+
+**The card** (`describe`), read at proposal time:
+
+| Field | Shows |
+| --- | --- |
+| Title | "New task type pet-match", "Change task type pet-match" or "Turn off task type pet-match" |
+| Drawn by | the app, marked as a danger when it is missing or does not grant `task/next` and `task/submit` (§9.5's check) |
+| The answer | one line per field ("same: yes or no, required"), or "needs the app's own view" with the schema when `formProblem` answers |
+| Lease, expires after, on | in minutes, hours, on or off |
+| What changes | for a change, each field before and after |
+| Open tasks | how many; for a new answer shape, that their answers are checked against it |
+| Workers | how many hold it |
+| Pay (item 5a) | in sats and in dollars at the rate, and what it would have cost over the last week's answers. A rise is marked as a danger |
+
+Actions: "Save type", "Don't".
+
+### 9.9 Money settings
+
+A type's pay and hold (item 5a) and the payout caps and switch (item 5b)
+are money settings.
+
+- An admin sets them in this app directly: the admin is the person whose
+  yes a proposal would ask for.
+- An agent sets a type's pay and hold only through `task/set-type`, which
+  an admin accepts. Nothing grants an agent the payout caps.
+- A workflow's YAML never sets them (§6), and a member never reaches them:
+  the routes are full scope.
+- They hold only once §9.2 has closed the shared bag.
+
+### 9.10 Building it
+
+Item 6 needs only item 3. It lands as two PRs against `main`, the second
+branched after the first merged:
+
+1. **The app.** §9.2's split (unless it landed on its own, §9.12), the
+   reads of §9.4, the moved answer-schema check, the door and its steps,
+   `strut/staff` with Queue, Types, Workers and Tasks, its seed and
+   opt-out, and the run overview's link to a waiting run's task.
+2. **`task/set-type`.** The step, `task/types`, `taskTypes.save` and its
+   check of the record, the card, the `builder` seed's grants, and the
+   `Workflow Builder` page. Until it lands, the shared bag's `taskTypes`
+   is `list()` alone.
+
+Each updates `AGENTS.md` and specs/API.md (§22's new reads, a `strut/staff`
+part beside §14.14). The verdict (§9.6) waits for its ruling and comes
+after. The places of §9.7 come with items 4, 5a and 5b.
+
+### 9.11 Tests
+
+| What | Proves it |
+| --- | --- |
+| The bag | A custom step's `ctx.services.tasks` has `ensure` alone, and its `taskTypes.save` refuses without an accepted record. A member's worker page and a signed-in visitor's still take and answer: `worker-door.test.ts` unchanged |
+| The door | Each `staff/*` step refuses a member's session on the same page, a model-written app that grants it, a workflow's step and an agent's tool. The door reaches `/tasks…` alone. A grant made through it records the admin as `by` |
+| The app's listing | `GET /apps` lists `strut/staff` to full scope only; its files are `403` to a member. `staff: false` and `"staff": false` in `STRUT_HOST_CONFIG` seed nothing |
+| The stats | On both stores, with a fixed clock: waiting and being worked, a lease past its expiry counted as waiting before the sweep marks it, each window's edges, the medians, `asking` while a `task/next` is held |
+| The reads | `GET /tasks?by=`; one worker's week and leases; a task's file, and `404 not_listed` for a path not on its list; a task's run status |
+| `task/set-type` | A direct call is refused. The builder's call records a proposal with the card's fields. A shape strut cannot check is refused before any proposal. A member's accept is `admin_required:`; an admin's saves the type with `changedBy` set to them. A forged `ctx.proposal` with no accepted record is refused. The person's edits are merged and checked again. A field left out keeps its value |
+| The page | Its pure parts in `src/apps/staff.test.ts`: the editor's model to schema and back, every schema it writes passing `answerSchemaProblem`, a schema it cannot draw opening in JSON, the Queue's warnings, the deep-link input. `npx tsc -p kit/tsconfig.staff.json` |
+
+### 9.12 Open for ruling
+
+1. **The name.** `strut/staff`, with door steps `staff/*` and the option
+   `staff: false`, or `strut/tasks` with `tasks/*`. I recommend
+   `strut/staff`: it is this plan's word, `tasks/*` would sit one letter
+   from the worker's `task/*`, and `createStrut({ tasks: false })` reads
+   as turning off the task store.
+2. **The shared bag (§9.2) now, on its own.** I recommend a small PR
+   before item 6, and before item 5a at the latest: today a step the
+   builder writes can grant itself a type or answer as another worker.
+   That spoils answers now, and pays someone once answers earn money.
+3. **Staff are admins.** Only full scope reaches the routes and this app.
+   I recommend admins only for now. A reviewer role (reads and marks
+   answers, changes nothing else) can come when a client asks for one.
+4. **Review is a mark (§9.6).** A verdict changes nothing in its run; it
+   counts against standing (item 4) and takes back an earning still in
+   its hold (item 5a). I recommend it: the run has already acted on the
+   answer, and checking before the run goes on is the workflow's to model.
+5. **A verdict may be changed** until the earning's hold ends, then it is
+   final. I recommend it, so a mistaken rejection does not cost a worker
+   pay, and paid money never moves back.
+6. **`task/set-type` is the builder's alone,** merges over the type, and
+   has no twin for grants, deletes or workers. I recommend it: letting
+   workers in and deleting a type are a person's acts, and a merge keeps
+   a model from resetting what it left out.
+7. **Cancelling one task** (`POST /tasks/:id/cancel`, which wakes its run
+   with `task_cancelled:` so `onError` runs). I recommend leaving it out
+   of item 6: a task nobody can answer expires, and the run's own cancel
+   exists.
 
 ## 10. Scale
 
