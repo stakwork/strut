@@ -332,8 +332,8 @@ child env is scrubbed, `secretsEnv` names are injected and masked.
 Config: `{ task, show?, files?, withinHours? }`. Output: `{ answer, by, task }`.
 
 A person as a step of a workflow (plans/human-steps.md §3). The step makes a
-TASK of the task type `task` in the task store (`ctx.services.tasks`,
-`src/tasks/`) and the run PARKS on it (`ctx.park("task:<id>")`,
+TASK of the task type `task` in the task store (`ctx.services.tasks.ensure`,
+the one call of the store a step finds on its bag; `src/tasks/`) and the run PARKS on it (`ctx.park("task:<id>")`,
 RUN_CONTROL_SPEC §5.6): it leaves memory with `status: "waiting"`. A worker
 signed in to the type's app takes the task, answers it in the shape the type
 says, and the answer settles the task; the store, registered as the `task`

@@ -55,7 +55,7 @@ import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
-import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -882,10 +882,13 @@ export interface Strut<TServices = unknown> {
   ledger(): Promise<LedgerStore>;
 
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
-   *  a step of a workflow. `capability` is `ctx.services.tasks`; `onSettle`,
-   *  `settled`, `cancel` and `cancelRun` are what a parked run's source
-   *  needs. Opened on first use — `<dataDir>/tasks/tasks.db`, or memory
-   *  where the run store is — swept every minute, closed by `close()`. */
+   *  a step of a workflow. `capability` is the whole store, which the staff
+   *  routes hold; every step's `ctx.services.tasks` is `human` (`ensure`
+   *  alone), and a worker's step on an app door gets `worker` on its own
+   *  call's bag (§9.2). `onSettle`, `settled`, `cancel` and `cancelRun` are
+   *  what a parked run's source needs. Opened on first use —
+   *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
+   *  every minute, closed by `close()`. */
   tasks: TasksService;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
@@ -1516,7 +1519,22 @@ export async function createStrut<TServices = unknown>(
       }
     },
   });
-  if (!(services as Record<string, unknown>)["tasks"]) (services as Record<string, unknown>)["tasks"] = tasks.capability;
+  // On the shared bag, the `human` step's `ensure` alone (plans/human-steps.md
+  // §9.2): any step reaches the bag, a custom step the builder wrote
+  // included, so neither the worker's calls (which take any actor) nor the
+  // staff's are on it. A worker's step gets the worker's calls on its own
+  // call's bag on an app door (`workerTasks`, below); the staff routes hold
+  // the whole store. A host's own `services.tasks` is kept as it is.
+  const hostTasks = (services as Record<string, unknown>)["tasks"] as TasksCapability | undefined;
+  if (!hostTasks) (services as Record<string, unknown>)["tasks"] = tasks.human;
+  /** The worker's calls of the bag's task store — strut's own, or a host's
+   *  bound — for a `worker: true` step's own call on an app door (`step_run`
+   *  on `POST /mcp` and `POST /public/mcp`, §5.2), never the shared bag. */
+  const workerTasks: WorkerTasksCapability | undefined = !hostTasks
+    ? tasks.worker
+    : (["next", "submit", "skip", "file", "me"] as const).every((k) => typeof hostTasks[k] === "function")
+      ? Object.freeze({ next: hostTasks.next.bind(hostTasks), submit: hostTasks.submit.bind(hostTasks), skip: hostTasks.skip.bind(hostTasks), file: hostTasks.file.bind(hostTasks), me: hostTasks.me.bind(hostTasks) })
+      : undefined;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
   // caps a launch is admitted against, what a run in flight counts for, and
   // its charge when it ends. What is not yet charged is on file beside the
@@ -6137,7 +6155,9 @@ export async function createStrut<TServices = unknown>(
   taskRoutes(app, {
     isFull: async (c) => (await scopeOf(c)) === "full",
     actorOf: async (c) => (await resolveActor(c)) ?? undefined,
-    tasks: ((services as Record<string, unknown>)["tasks"] as TasksCapability | undefined) ?? tasks.capability,
+    // The whole store, held here and nowhere on a bag (plans/human-steps.md
+    // §9.2): strut's own, or a host's own `services.tasks`.
+    tasks: hostTasks ?? tasks.capability,
   });
 
   // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and
@@ -9327,6 +9347,9 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         admin: scope === "full",
         ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor } } : {}),
+        // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
+        // calls of the task store on that call's bag alone.
+        ...(workerTasks ? { workerServices: { tasks: workerTasks } } : {}),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
       });
@@ -9416,14 +9439,6 @@ export async function createStrut<TServices = unknown>(
         query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
       });
       const reader = publicSurface.reader();
-      // The worker's calls of the bag's task store (strut's own, or a host's).
-      const hostTasks = bag["tasks"] as TasksCapability | undefined;
-      const workerTasks =
-        hostTasks === tasks.capability
-          ? tasks.worker
-          : hostTasks
-            ? Object.freeze({ next: hostTasks.next.bind(hostTasks), submit: hostTasks.submit.bind(hostTasks), skip: hostTasks.skip.bind(hostTasks), file: hostTasks.file.bind(hostTasks), me: hostTasks.me.bind(hostTasks) })
-            : undefined;
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
@@ -9442,9 +9457,6 @@ export async function createStrut<TServices = unknown>(
           ...visitorBag,
           dataDir,
           ...(graph && widened ? { graph: writable ? Object.create(graph, { reader: { value: widened } }) : graphView(widened) } : {}),
-          // A worker's step (plans/human-steps.md §5.2): the worker's calls
-          // of the task store alone, never the staff's.
-          ...(registry[type]?.worker === true && workerTasks ? { tasks: workerTasks } : {}),
         };
       };
       const tools = buildAppTools({
@@ -9452,6 +9464,9 @@ export async function createStrut<TServices = unknown>(
         registry,
         services: visitorBag,
         ...(signedIn ? { actor: signedIn } : {}),
+        // A worker's step (plans/human-steps.md §5.2): a signed-in visitor's
+        // alone (the refusal below), the worker's calls on that call's bag.
+        ...(workerTasks ? { workerServices: { tasks: workerTasks } } : {}),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
         visitor: {
@@ -9995,7 +10010,7 @@ export async function createStrut<TServices = unknown>(
   // registered here, at the end, since that wake resumes through what is
   // defined above. Only when the bag's tasks are this store's: a host's
   // own has no source here.
-  if ((services as Record<string, unknown>)["tasks"] === tasks.capability) {
+  if (!hostTasks) {
     const taskOf = (on: string) => on.slice(TASK_PARK_PREFIX.length + 1);
     const taskWaker = parking.register(TASK_PARK_PREFIX, {
       settled: (on) => tasks.settled(taskOf(on)),

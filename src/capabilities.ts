@@ -40,7 +40,7 @@ import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js"
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
-import type { TasksCapability } from "./tasks/tasks.js";
+import type { HumanTasksCapability } from "./tasks/tasks.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
 
@@ -473,12 +473,14 @@ export interface StrutCapabilities {
    *  `remote/buy-credit` proposal pays through. The payer is not on it. */
   remote?: RemoteCapability;
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
-   *  a step of a workflow — `ensure` (the `human` step's), the worker's
-   *  `next` / `submit` / `skip` / `file` / `me` for the actor the caller
-   *  passes (the `task/*` steps, §5), and the staff's types, workers,
-   *  grants and lists. Set by the standard server; a signed-in visitor's
-   *  bag carries the worker's calls alone. */
-  tasks?: TasksCapability;
+   *  a step of a workflow. On the shared bag, `ensure` alone — the `human`
+   *  step's call (§9.2): no step, workflow or agent tool reaches the
+   *  worker's calls or the staff's. A `worker: true` step's own call on an
+   *  app door (`step_run`) gets the worker's calls in its place (§5.2,
+   *  `TasksService.worker`); the staff reach the store through the `/tasks`
+   *  routes alone. Set by the standard server; a host's own is kept as it
+   *  is. */
+  tasks?: HumanTasksCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

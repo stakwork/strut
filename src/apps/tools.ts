@@ -25,6 +25,9 @@
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
  * not, and a WORKER's step (`worker: true`, the `task/*` steps of
  * plans/human-steps.md §5) never is: its lease and answer are the record.
+ * A worker's step is also the only call whose bag carries the worker's
+ * calls of the task store (`workerServices`, §9.2): the shared bag holds
+ * the `human` step's `ensure` alone.
  * Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap. Every call of a known app — refused, failed
  * or run — is counted by the monitor (./monitor.ts): what an app costs the
@@ -294,6 +297,13 @@ export interface AppToolDeps {
    *  which pays out of the wallet. Never on the shared bag, so no workflow,
    *  agent or other page's step reaches it. */
   adminServices?: Record<string, unknown>;
+  /** Services added to the bag for a WORKER's step (`worker: true`, the
+   *  `task/*` steps) and no other: the worker's calls of the task store
+   *  (plans/human-steps.md §5.2, §9.2), `{ tasks }`. Never on the shared
+   *  bag, so no workflow step, agent tool, proposal or other page's step
+   *  reaches them; the step itself takes the worker from the call's
+   *  viewer. */
+  workerServices?: Record<string, unknown>;
   /** The graph's reader, for the node reads a write check needs. Default:
    *  the bag's `graph`, when the server wired one. */
   reader?: Pick<GraphReader, "getNode">;
@@ -369,11 +379,16 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     if (refused) return refuse(`step_run refused: ${refused}`);
     const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg, manifest) : null;
     if (closed) return refuse(`step_run refused: ${closed}`);
-    const bag = deps.visitor?.services
+    const shared = deps.visitor?.services
       ? deps.visitor.services(app, manifest, base)
       : app.firstParty && app.admin && deps.adminServices
         ? { ...(deps.services as Record<string, unknown>), ...deps.adminServices }
         : deps.services;
+    // A worker's call leaves nothing behind but its lease and answer: no
+    // claims read, so nothing makes it a kept run. Its bag alone carries
+    // the worker's calls of the task store.
+    const worker = deps.registry[base]?.worker === true;
+    const bag = worker && deps.workerServices ? { ...(shared as Record<string, unknown>), ...deps.workerServices } : shared;
     if (GRAPH_WRITES.has(base)) {
       // A per-call bag's own reader: what this caller may see of the graph.
       const own = deps.visitor?.services ? (bag as { graph?: GraphBackend } | undefined)?.graph?.reader : undefined;
@@ -381,9 +396,6 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       if (bad) return refuse(`step_run refused: ${bad}`);
     }
     if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
-    // A worker's call leaves nothing behind but its lease and answer: no
-    // claims read, so nothing makes it a kept run.
-    const worker = deps.registry[base]?.worker === true;
     const result = await runStep(
       type,
       deps.registry,

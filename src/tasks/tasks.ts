@@ -256,10 +256,15 @@ export interface TasksCapability {
 }
 
 export interface TasksService {
-  /** Frozen: what `ctx.services.tasks` is. */
+  /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
+   *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
-  /** Frozen: the worker's calls alone — what a signed-in visitor's bag
-   *  carries (plans/human-steps.md §5.2), never the staff's. */
+  /** Frozen: `ensure` alone, the `human` step's — what every step's
+   *  `ctx.services.tasks` is on the shared bag (§9.2). */
+  human: HumanTasksCapability;
+  /** Frozen: the worker's calls alone — what a `worker: true` step's own
+   *  call bag carries on an app door (`step_run` on `POST /mcp` and `POST
+   *  /public/mcp`, §5.2, §9.2), never the staff's. */
   worker: WorkerTasksCapability;
   /** Whether `actor` is an ACTIVE worker here, from memory (the store's
    *  active workers, loaded when it opens and kept by every write): what
@@ -286,6 +291,9 @@ export interface TasksService {
 
 /** The worker's calls of the capability (§5.1). */
 export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "skip" | "file" | "me">;
+
+/** What the shared services bag carries (§9.2): the `human` step's call. */
+export type HumanTasksCapability = Pick<TasksCapability, "ensure">;
 
 export interface TasksDeps {
   /** The stores, opened on first use. */
@@ -748,6 +756,7 @@ export function createTasks(deps: TasksDeps): TasksService {
   const frozen = Object.freeze(capability);
   return {
     capability: frozen,
+    human: Object.freeze({ ensure: frozen.ensure }),
     worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me }),
     isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {
