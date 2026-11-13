@@ -163,7 +163,7 @@ for (const impl of impls) {
       assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "new", types: [], balance: NOTHING });
       await assert.rejects(tasks().next("ann"), refused("not_active", /no task types yet/));
       await tasks().grant("ann", "t", "staff");
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a", payMsat: 0 }], balance: NOTHING });
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a", payMsat: 0, qualifying: false }], balance: NOTHING });
       await tasks().revoke("ann", "t", { by: "staff", why: "quality" });
       const w = (await tasks().workers()).find((x) => x.actor === "ann")!;
       assert.equal(w.status, "active");
@@ -210,7 +210,7 @@ for (const impl of impls) {
       await tasks().grant("ann", "ballots");
       await tasks().ensure({ type: "pets", workflow: "w", runId: "r", path: "w/p", show: "pet" });
       await tasks().ensure({ type: "ballots", workflow: "w", runId: "r", path: "w/b", show: "ballot" });
-      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app", payMsat: 0 }]);
+      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app", payMsat: 0, qualifying: false }]);
       await assert.rejects(tasks().next("ann", { type: "pets", app: "ballot-app" }), refused("wrong_app"));
       await assert.rejects(tasks().next("bob", { type: "pets" }), refused("not_active"));
       await tasks().grant("bob", "ballots");
@@ -332,7 +332,7 @@ for (const impl of impls) {
       await tasks().setWorker("ann", { status: "suspended", note: "check quality" }, "staff");
       await assert.rejects(tasks().submit("ann", { lease: l.lease, answer: [1, 2, 3, 4] }), refused("not_active", /suspended/));
       await assert.rejects(tasks().next("ann"), refused("not_active"));
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers", payMsat: 0 }], balance: NOTHING }, "me still answers");
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers", payMsat: 0, qualifying: false }], balance: NOTHING }, "me still answers");
       const view = (await tasks().task(t.id))!;
       assert.equal(view.leases[0].status, "expired");
       assert.equal(view.leases[0].reason, "worker suspended");
@@ -678,7 +678,7 @@ for (const impl of earningsImpls) {
       assert.equal((await take("ann")).payMsat, 21_000, "the lease in hand keeps its own");
       assert.equal((await tasks().task(a!.id))!.leases[0]!.payMsat, 21_000);
       assert.equal((await tasks().task(b!.id))!.leases[0]!.payMsat, 50_000);
-      assert.deepEqual((await tasks().me("ann")).types, [{ name: "pet-match", app: "workers", payMsat: 50_000 }], "what the type pays now");
+      assert.deepEqual((await tasks().me("ann")).types, [{ name: "pet-match", app: "workers", payMsat: 50_000, qualifying: false }], "what the type pays now");
       await tasks().submit("ann", { lease: ann.lease, answer: { same: true } });
       assert.equal((await svc.capability.me("ann")).balance.totalMsat, 21_000, "earns what its lease was stamped with");
     });
@@ -848,7 +848,7 @@ for (const impl of earningsImpls) {
           const cols = (table: string) => (after.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
           for (const c of ["pay_msat", "hold_hours"]) assert.ok(cols("task_types").includes(c), c);
           for (const c of ["pay_msat", "booked_at"]) assert.ok(cols("leases").includes(c), c);
-          assert.equal((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 1, "still schema 1");
+          assert.equal((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 2, "brought to schema 2 (plans/human-steps.md §7.7)");
         } finally {
           after.close();
         }

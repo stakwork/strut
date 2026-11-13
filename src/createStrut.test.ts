@@ -1475,8 +1475,9 @@ describe("the API key gate", () => {
     // Earnings too (§8): the books are an admin's, like the wallet. And the
     // credit this strut bought at other struts (§10), and a served box's
     // state (plans/app-repos.md §4.4). And the task store's staff reads
-    // (plans/human-steps.md §6): types, workers, tasks.
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks", "GET /tasks/x"];
+    // (plans/human-steps.md §6): types, workers, tasks, and the tests, which
+    // hold the expected answers (§7.1).
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

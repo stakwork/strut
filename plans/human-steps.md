@@ -646,6 +646,10 @@ pattern). It comes with the staff app (§9).
 > every recommendation in §7.12, the defaults of §7.8 included. Two things
 > are still proposed and marked so: the graders strut ships (PR 4c) and the
 > name of item 5a's accepted-answer hook, which is §8's to choose.
+>
+> **4a built (stakwork/strut#671):** tests, grading, standing and
+> qualifying. Where it differs, the subsection says **Built differently
+> (#671)**. Copies (4b) and the shipped graders (4c) are not built.
 
 Item 4 adds three things to the task store and nothing to the runner:
 
@@ -713,6 +717,29 @@ worker who is qualifying. Deleting a task type retires its tests.
 The meta surface gets no door here, and the staff app (item 6) must not
 add one that keeps a run (§7.9).
 
+**Built differently (#671):**
+
+- **One more route, `GET /tasks/tests/:id`:** the test with each instance
+  served (`{ task, lease, worker, status, served, answer?, answeredAt?,
+  grade?, gradedAt?, note? }`). What a grader said (`note`, the verdict's
+  `content`) is kept on the instance but answered only here, never on
+  `GET /tasks` or `GET /tasks/:id`: a step grader's content may quote the
+  expected answer. Those routes show an instance's `test`, `servedTo`,
+  `grade` and `gradedAt`.
+- **Authoring is the service's** (`strut.tasks.tests`: `list`, `get`,
+  `create`, `fromTask`, `update`, `putFile`, `retire`), held by the routes
+  as `takeBack` is, never on the capability; the test routes answer `501`
+  on a strut whose task store is its host's.
+- **Files:** at most 3,800,000 bytes each (`TEST_FILE_MAX_BYTES`). `PUT
+  …/files/<path>` is refused (`409 in_use`) once the test was served, as
+  its other edits are. A test made from a task copies the files still
+  there; one already gone is listed as `missing` and the test is not ready
+  until staff put it. A copy over the limit refuses the test. Where the
+  task store is memory, so are its tests' files.
+- **An instance's `due` is its lease's expiry.** A worker meets
+  `lease_expired` first, as on a real task.
+- `DELETE /tasks/tests/:id` answers `{ test }`, retired.
+
 ### 7.2 How `next` mixes them in
 
 A type opts in with `tests` on its record (`PUT /tasks/types/:name`).
@@ -763,12 +790,32 @@ suggests that answer was a failed test; a take-back of an earning (§8)
 says so after the fact; workers can share the answers to tests. Staff
 retire tests served too often (the served count is on the record).
 
+**Built differently (#671):**
+
+- **Step 2 counts an answer graded `error` for nothing**, so another test
+  takes its place: a worker serves tests while their answers that are
+  graded `pass` or `fail`, or not graded yet, are fewer than K. Otherwise
+  one grader outage during qualifying would leave the worker waiting for
+  ever.
+- **Step 3's "real tasks answered since the grant"** is the worker's
+  submitted leases of real tasks of T closed at or after the grant's `at`.
+- **The draw** reads the type `take` would hand out with `peek`, the same
+  guarded query read only, and draws only when that type has tests: one
+  `random()` for the chance and, when a test is taken, one for the tie.
+
 ### 7.3 Answering a test
 
 `submit` on an instance settles it as it settles a real task, the answer
 on the instance. It does not tell `onSettle`: an instance has no run, so
 nothing wakes. The service queues it for grading instead. The worker has
 `{ ok: true }` before grading starts.
+
+**Built differently (#671): the earning.** 5a books an earning inside
+`submit` (§8.1), so there is no accepted-answer hook: `takeTest` stamps
+the type's pay on the instance's lease as `take` does, and `submit` books
+it exactly as a real answer's, before the instance is queued for grading.
+Nothing marks it a test on the way, so the balance shows it as a real
+earning until it is graded.
 
 ### 7.4 Grading
 
@@ -815,6 +862,31 @@ so a provider outage cannot revoke a room of workers. Staff see each
 type's errors; three in a row are logged once. A test answered and not yet
 graded (`pending`) is graded by the sweep, which covers a restart.
 
+**Built differently (#671):**
+
+- **A step grader's config** is the four inputs, each as a sole
+  expression (`answer: '{{ input["answer"] }}'`, handed over
+  unevaluated), with the grade's own `config` over them. A grader step reads
+  `answer` and `expected` from its config as any step reads its input, and
+  a grade's `config` adds what it needs (`min`, a rubric) without restating
+  them. 4c's graders are written to this.
+- **Who it is billed to:** `createStrut({ tasks: { principal } })`, or
+  `STRUT_HOST_CONFIG`'s `tasks: { principal }`, else the type's
+  `changedBy`. With neither, every step grader records `error` ("nobody to
+  bill"), whether or not it calls a model: strut cannot tell.
+- **`createStrut` hands the service `deps.grade` and `deps.graderProblem`**
+  (`src/tasks/grade-step.ts`): a registry step, sealed by `isSealedStep`.
+  The grader's run passes no `origin`, so nothing marks it public or a
+  check.
+- **`equal`'s notes** are "the answer equals the expected one" and "the
+  answer differs from the expected one": never the value.
+- **Staff see errors** per test (`errors` beside `passed` and `failed` on
+  `GET /tasks/tests`) and per worker (`standing.errors`), not on the type.
+  "Three in a row" is per type, in memory.
+- **The queue** is in memory, 4 at a time; `strut.tasks.grading()` resolves
+  once it is empty, and the sweep (at most 100 a minute) answers how many
+  it queued (`grading`).
+
 ### 7.5 Standing and qualifying
 
 **Standing** is a worker's graded tests of one type since their grant,
@@ -851,6 +923,27 @@ stay on their instances for staff and count for nothing (ruled, §7.12,
 Staff read standing at a new `GET /tasks/workers/:actor` (the worker, and
 per type the window, passed, graded, errors and whether qualifying), and
 as a score per grant in `GET /tasks/workers`.
+
+**Built differently (#671):**
+
+- **`GET /tasks/workers/:actor` answers `{ worker }`**, the worker as a row
+  of `GET /tasks/workers` is: with its `balance` and `standing`, a map by
+  type of `{ qualifying, qualify, window, graded, passed, errors, pending,
+  minGraded, threshold }` for each live grant of a type with tests. Item 6
+  adds its own fields beside `worker` (§9.4).
+- **When the rule reads:** once `minGraded` are graded, or, for a grant
+  with K, once K are: qualifying decides at K even when `minGraded` is
+  more. A type's `qualify` and `minGraded` are at most its `window`.
+- **Both revokes are `revokedBy: "standing"`**; the `why` begins
+  `qualifying:` when the decision is at the end of qualifying, `standing:`
+  after.
+- **A re-grant is a grant after a revoke.** A `PUT` on a grant already live
+  changes nothing, `{ qualify: false }` included (as built: only a revoked
+  grant's `at` moves); to drop a live worker's qualifying, staff revoke and
+  grant again with it. A grant of a type with fewer ready tests than K
+  records 0 and answers a `notice` saying so.
+- **`task/me`'s `qualifying` is always there**, `false` when not, as
+  `payMsat` always is.
 
 ### 7.6 Copies
 
@@ -927,6 +1020,15 @@ opened, in one transaction:
 Copies and tests both change `tasks`' CHECKs, so the first PR rebuilds it
 once for both (§7.11).
 
+**Built differently (#671):** the migration is `TaskDb.migrate`, one
+transaction at `synchronous=full` over both sides (`taskSchema`,
+`workerSchema`), run at every open and a no-op at 2. The rebuild is
+decided by the table's own CHECK (`sqlite_master`), not the version, and
+keeps `seq`; a failure leaves the file at 1. `tasks` and `tests` gain
+indexes for standing, pending grades, open instances and the least-served
+draw. `TASK_STATUSES` (what `?status=` takes) gains `disputed` with 4b;
+until then only the CHECK knows it.
+
 New on the service, beside `onSettle`: `onGraded` and `onAgreed` (§7.9).
 The capability gains nothing that reaches a test: authoring is the
 routes', grading the service's.
@@ -973,6 +1075,13 @@ as a real one's until it is graded. And a take-back is visible, so it says
 after the fact that one answer was a failed test. An automatic revoke
 takes back nothing by itself.
 
+**Built differently (#671):** no accepted-answer hook (§7.3). `onGraded` is
+built as above, and the `fail` rule is the service's own, not a listener's:
+a `fail` takes back that lease's earning through `takeBack` (`by:
+"grading"`, `why: "the answer to a test was graded fail"`), which does
+nothing past the hold (`released`) or for an unpaid answer; `pass` and
+`error` take nothing. `onAgreed` is 4b's.
+
 **The staff app (§9).** It shows the tests with their served and pass
 counts, each type's grader errors, standing per worker, and disputed
 tasks. Its steps reach the routes above through the admin door. A step
@@ -1007,6 +1116,13 @@ proposal an admin accepts.
   `error`. A pending grade survives a restart and is graded by the sweep.
 - A type or test naming an unsealed grader is refused when saved.
 - Both stores, one suite, as built.
+
+**Built differently (#671):** in `src/tasks/task-tests.test.ts`, with a
+version 1 file (#655's tables and #664's columns) migrated and one whose
+migration fails left at 1. No step authors a test in 4a (the staff app is
+item 6), so "a test-authoring step lists `expected` in `redact`" is a
+guard over the registry: any step whose input takes `expected` must
+redact it.
 
 **Copies:**
 
@@ -1909,7 +2025,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
-| 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
+| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. 4b (copies) and 4c (graders) not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |

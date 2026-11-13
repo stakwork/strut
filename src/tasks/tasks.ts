@@ -44,6 +44,19 @@
  * take one back inside its hold (`takeBack`, the service's alone). No sats
  * move: the wallet pays nobody until item 5b.
  *
+ * TESTS (§7, item 4): a task type may mix TESTS — tasks whose answer staff
+ * know, in a sealed `tests` table — among its real tasks (`tests` on the
+ * type). A worker granted it first QUALIFIES on K tests, then is served one
+ * in place of a real task at the type's rate; what they are served is an
+ * INSTANCE that goes through every call a real task does, so a page cannot
+ * tell them apart. Answering one wakes no run: it is GRADED (`equal`, or a
+ * sealed step through `deps.grade`), and a worker's standing — the newest
+ * graded tests since the grant — under the type's threshold revokes the
+ * grant. A `fail` inside its hold takes back what the answer earned; an
+ * `error` counts for nothing. Authoring is the staff's routes'
+ * (`TasksService.tests`); no capability method, step or other route holds an
+ * expected answer.
+ *
  * Nothing is made until something is asked of it: no file on a strut that
  * never runs a `human` step, and a staff READ on such a strut answers empty.
  */
@@ -55,21 +68,33 @@ import { ZERO_BALANCE, type Earning, type LedgerStore, type PayeeBalance } from 
 import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
 import {
   DEFAULT_HOLD_HOURS,
+  DEFAULT_TEST_RULES,
   MemoryTaskStore,
   payMsatOf,
+  type GradeResult,
+  type GradeRule,
   type Lease,
+  type StandingRow,
   type TaskListQuery,
   type TaskRecord,
   type TaskSettled,
   type TaskStore,
   type TaskType,
+  type TestChange,
+  type TestCounts,
+  type TestInstance,
+  type TestRecord,
+  type TestRules,
 } from "./task-store.js";
-import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
+import { gradeRuleOf, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
+import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
+import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
-export type { Lease, TaskRecord, TaskSettled, TaskStatus, TaskType } from "./task-store.js";
+export type { GradeResult, GradeRule, Lease, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
-export { DEFAULT_HOLD_HOURS } from "./task-store.js";
+export type { Standing } from "./task-tests.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES } from "./task-store.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 
 /** §4.2's defaults. */
@@ -100,6 +125,16 @@ export const NEXT_WAIT_MAX_S = 25;
  *  `skip`, `file`, `me`) one worker may make in a minute. A held `next
  *  { wait }` counts once. */
 export const TASK_CALLS_PER_MINUTE = 120;
+/** §7.4, §7.8: a step grader's time, then force-cancelled; how many grade
+ *  at once in the process; how many ungraded answers one sweep queues; how
+ *  many errors in a row of one type are logged (once). */
+export const GRADE_TIMEOUT_MS = 60_000;
+export const GRADE_CONCURRENCY = 4;
+export const UNGRADED_BATCH = 100;
+export const GRADE_ERRORS_LOGGED = 3;
+/** Who a grade's take-back and a standing revoke are by. */
+export const GRADING_ACTOR = "grading";
+export const STANDING_ACTOR = "standing";
 /** §5.2: requests to `/public/*` a minute counted under an ACTIVE worker
  *  (`isActiveWorker`) in place of their address's budget, so a room of
  *  workers behind one address is not one budget. */
@@ -127,12 +162,23 @@ export function tasksPath(dataDir: string): string {
 /** Both sides on one file, its folder owner-only. `node:sqlite` is imported
  *  here, on first use, never at boot. */
 export async function openTaskStores(o: { dataDir: string } | { file: string }): Promise<TaskStores> {
-  const [{ TaskDb }, { SqliteTaskStore }, { SqliteWorkerStore }] = await Promise.all([
+  const [{ TaskDb }, { SqliteTaskStore, taskSchema }, { SqliteWorkerStore, workerSchema }] = await Promise.all([
     import("./db.js"),
     import("./task-store-sqlite.js"),
     import("./worker-store-sqlite.js"),
   ]);
   const db = TaskDb.open("file" in o ? o.file : tasksPath(o.dataDir));
+  // Both sides' tables made, or an older file's brought to version 2, in
+  // one transaction (plans/human-steps.md §7.7).
+  try {
+    db.migrate(() => {
+      taskSchema(db);
+      workerSchema(db);
+    });
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
 }
 
@@ -162,7 +208,9 @@ export type TaskErrorCode =
   | "too_many"
   | "not_listed"
   | "no_file"
-  | "in_use";
+  | "in_use"
+  | "unknown_test"
+  | "bad_grader";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -222,6 +270,9 @@ export interface TaskTypeInput {
   /** How long an earning waits before it can be withdrawn: hours from 1 to
    *  720, 72 by default. */
   holdHours?: number;
+  /** Its test rules (§7.2, §7.5): §7.8's defaults with these over them;
+   *  absent or null: off. */
+  tests?: Partial<TestRules> | null;
 }
 
 /** What a settled task's answer earned (§8.1): the lease's stamp, and the
@@ -252,8 +303,10 @@ export interface WorkerView {
   status: WorkerStatus;
   /** The enabled types they hold a live grant for (of the app asked about,
    *  when given); what they may take while `active` — each with what an
-   *  answer earns now, msat (0: unpaid). */
-  types: Array<{ name: string; app: string; payMsat: number }>;
+   *  answer earns now, msat (0: unpaid), and whether they are qualifying
+   *  for it (§7.5, ruling 3): served only tests until they qualify. No
+   *  score is shown. */
+  types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
   /** What they are owed here (§8.1): zeros with nothing earned. */
   balance: PayeeBalance;
 }
@@ -262,8 +315,74 @@ export interface WorkerView {
 export type LeaseEarning = Pick<Earning, "msat" | "at" | "releases" | "takenBack" | "takenBackWhy" | "takenBackBy">;
 export type LeaseView = Lease & { earning?: LeaseEarning };
 export type TaskView = TaskRecord & { leases: LeaseView[] };
-/** A worker as staff read them: with what they are owed here (§8.1). */
-export type StaffWorker = WorkerRecord & { balance: PayeeBalance };
+/** A worker as staff read them: with what they are owed here (§8.1), and
+ *  their standing in each type with tests they hold (§7.5). */
+export type StaffWorker = WorkerRecord & { balance: PayeeBalance; standing: Record<string, Standing> };
+
+/** A test as staff read it (§7.1): with how its instances were graded, and
+ *  the listed files not there yet (absent once it is ready). */
+export type TestView = TestRecord & TestCounts & { missing?: string[] };
+
+/** What staff write to make a test. */
+export interface TestInput {
+  type: string;
+  show?: unknown;
+  /** The paths to come (`PUT /tasks/tests/:id/files/<path>`). */
+  files?: string[];
+  /** Checked against the type's answer schema. */
+  expected: unknown;
+  grade?: GradeRule;
+}
+
+/** The staff's authoring of tests (§7.1): the test routes', never a
+ *  capability's — the one place, with the grader, an expected answer is
+ *  read. */
+export interface TestAuthoring {
+  list(q?: { type?: string; retired?: boolean }): Promise<TestView[]>;
+  /** The test with each instance served: who, the answer, the grade and
+   *  what the grader said. */
+  get(id: string): Promise<{ test: TestView; instances: TestInstance[] } | undefined>;
+  create(input: TestInput, by?: string): Promise<TestView>;
+  /** From a real task: its `show`, its files copied, and its accepted
+   *  answer as `expected` unless one is given. Its worker is never served
+   *  it. */
+  fromTask(task: string, o?: { expected?: unknown; grade?: GradeRule }, by?: string): Promise<TestView>;
+  /** Only before it is first served (`in_use` after, ruling 8). */
+  update(id: string, change: TestChange): Promise<TestView>;
+  /** One listed file's bytes; the test is ready once every one is there. */
+  putFile(id: string, path: string, bytes: Uint8Array): Promise<TestView>;
+  /** Never served again; kept for the grades that name it. */
+  retire(id: string, by?: string): Promise<TestView>;
+}
+
+/** A test instance graded (§7.9): what item 5a's take-back and the staff's
+ *  pages hear. */
+export interface GradedTest {
+  lease: string;
+  task: string;
+  test: string;
+  worker: string;
+  type: string;
+  result: GradeResult;
+  answeredAt: number;
+  at: number;
+}
+
+/** What a step grader is handed (§7.4). */
+export interface GradeCall {
+  step: string;
+  config?: Record<string, unknown>;
+  input: { answer: unknown; expected: unknown; show: unknown; type: string };
+  principal: string;
+  maxCostUsd: number;
+  timeoutMs: number;
+}
+
+/** A step grader's verdict, in the claims check contract. */
+export interface GradeVerdict {
+  supports: boolean;
+  content: string;
+}
 
 /** What a take-back did to one answer's earning (§8.1). */
 export interface TakeBackOutcome {
@@ -316,13 +435,18 @@ export interface TasksCapability {
   workers(q?: { status?: WorkerStatus }): Promise<StaffWorker[]>;
   /** `suspended` or `banned` expires the worker's live lease at once. */
   setWorker(actor: string, change: { status?: WorkerStatus; note?: string | null }, by?: string): Promise<WorkerRecord>;
-  grant(actor: string, type: string, by?: string): Promise<WorkerRecord>;
+  /** A grant of a type with tests records its K (`qualify`, §7.5): the
+   *  type's, or 0 with `qualify: false` or too few ready tests (`notice`
+   *  says so). A grant already live stays as it is. */
+  grant(actor: string, type: string, by?: string, o?: { qualify?: boolean }): Promise<WorkerRecord & { notice?: string }>;
   /** Expires the worker's live lease of that type at once; the status stays. */
   revoke(actor: string, type: string, o?: { by?: string; why?: string }): Promise<WorkerRecord>;
   /** Tasks newest first, with their leases — each answer's earning with it
    *  (§8.1). */
   list(q?: TaskListQuery): Promise<TaskView[]>;
   task(id: string): Promise<TaskView | undefined>;
+  /** One worker as staff read them, with their standing (§7.5). */
+  worker(actor: string): Promise<StaffWorker | undefined>;
 }
 
 export interface TasksService {
@@ -353,12 +477,19 @@ export interface TasksService {
   cancelRun(workflow: string, runId: string): Promise<TaskSettled[]>;
   /** §8.1: takes back the earnings a task's answers made — or `worker`'s
    *  alone — while they are held, booking one not booked yet first. A
-   *  person's act (`POST /tasks/:id/take-back`, full scope) and item 4's;
-   *  never on a capability, so no step reaches it. */
+   *  person's act (`POST /tasks/:id/take-back`, full scope) and item 4's
+   *  (a test graded `fail`); never on a capability, so no step reaches it. */
   takeBack(o: { task: string; worker?: string; why: string; by?: string }): Promise<TakeBackOutcome[]>;
+  /** §7.1: the staff's tests, for the test routes alone. */
+  tests: TestAuthoring;
+  /** §7.9: every test instance graded. Returns the unsubscribe. */
+  onGraded(listener: (graded: GradedTest) => void): () => void;
+  /** Resolves once no answer waits in the grading queue (a test's wait). */
+  grading(): Promise<void>;
   /** Rule 8, now, and §8.1's backstop: books every answer whose earning is
-   *  not booked. Opens the store. */
-  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number }>;
+   *  not booked, and queues every answered test not graded (§7.4: after a
+   *  restart). Opens the store. */
+  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number; grading: number }>;
   /** The sweep at once and every minute, while a store is open or on file. */
   start(): void;
   stop(): void;
@@ -395,12 +526,33 @@ export interface TasksDeps {
   /** Dollars per bitcoin now: a settled task's pay in dollars, for the run's
    *  cost (§8.1). Left out, or failing: the pay has no dollars. */
   usdPerBtc?(): Promise<number>;
+  /** §7.1: tests' files. `file` reads an instance's (`root: "test"`) from
+   *  here, as it reads a real task's from its run, so both come back alike.
+   *  Left out: a test may list no files. */
+  testFiles?: TestFiles;
+  /** One of a real task's files' bytes, for a test made from it. */
+  bytes?(task: TaskRecord, path: string): Promise<Uint8Array | null>;
+  /** §7.4: why a step may not grade (not sealed, not here), else
+   *  undefined. Asked when a type or test is saved and at each grading.
+   *  Left out: only `equal` grades. */
+  graderProblem?(step: string): string | undefined;
+  /** §7.4: a step grader's one run (`grade-step.ts`); throws when it cannot
+   *  give a verdict. */
+  grade?(call: GradeCall): Promise<GradeVerdict>;
+  /** §7.12, 1: who a step grader is billed to; else the admin who last
+   *  saved the type; else nobody, and it cannot run. */
+  principal?: string;
+  /** §7.2's draws, and the tie between least-served tests: [0, 1). */
+  random?(): number;
+  gradeTimeoutMs?: number;
   now?(): number;
   sweepEveryMs?: number;
 }
 
 export function createTasks(deps: TasksDeps): TasksService {
   const now = deps.now ?? Date.now;
+  const random = deps.random ?? Math.random;
+  const pick = (n: number) => Math.floor(random() * n);
   /** The ACTIVE workers, by actor: loaded when the store opens, kept by
    *  every write of a worker row (`note`). */
   const active = new Set<string>();
@@ -525,11 +677,58 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (types.includes(live.type)) return { got: await workerTask(s, live), types };
       throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
     }
-    const taken = await s.tasks.take({ worker: actor, types, id: randomId(), now: at });
-    if (taken) return { got: await workerTask(s, taken), types };
+    // §7.2: a type with tests serves the worker by where they are with it —
+    // a qualifying one only tests, oldest grant first; one waiting for its
+    // qualifying grades nothing; a qualified one real tasks, a test drawn in
+    // place of one at the type's rate.
+    const { qualifying, open, rows } = await phases(s, w, types.map((n) => kinds.get(n)!));
+    for (const type of qualifying) {
+      const got = await s.tasks.takeTest({ worker: actor, type, lease: randomId(), task: randomId(), now: at, pick });
+      if (got) return { got: await workerTask(s, got), types };
+    }
+    if (open.length) {
+      // A test only ever replaces a real task: drawn only when `take` would
+      // hand one out now, and of that task's type.
+      const kind = open.some((n) => kinds.get(n)?.tests) ? kinds.get((await s.tasks.peek({ worker: actor, types: open, now: at })) ?? "") : undefined;
+      if (kind?.tests) {
+        const answered = rows.get(kind.name)?.real ?? 0;
+        if (random() < (answered < kind.tests.newTasks ? kind.tests.newRate : kind.tests.rate)) {
+          const got = await s.tasks.takeTest({ worker: actor, type: kind.name, lease: randomId(), task: randomId(), now: at, pick });
+          if (got) return { got: await workerTask(s, got), types };
+        }
+      }
+      const taken = await s.tasks.take({ worker: actor, types: open, id: randomId(), now: at });
+      if (taken) return { got: await workerTask(s, taken), types };
+    }
     // Another call of the same worker may have taken one meanwhile.
     const raced = await s.tasks.heldBy(actor, at);
     return raced && types.includes(raced.type) ? { got: await workerTask(s, raced), types } : { types };
+  };
+  /** §7.2 step 2, §7.5: the types `w` may be served now — `qualifying` (tests
+   *  alone, oldest grant first) and `open` (real tasks) — with the standing
+   *  rows of those that have tests. A type waiting for its qualifying grades
+   *  is in neither. A type without tests is open, as built. */
+  const phases = async (s: TaskStores, w: WorkerRecord, kinds: TaskType[]) => {
+    const grants = grantsOf(w);
+    const rows = await standingRows(s, w.actor, kinds, grants);
+    const qualifying: string[] = [];
+    const open: string[] = [];
+    for (const k of kinds) {
+      const row = rows.get(k.name);
+      const phase = k.tests && row ? phaseOf(row, grants.get(k.name)!) : "qualified";
+      if (phase === "qualifying") qualifying.push(k.name);
+      else if (phase === "qualified") open.push(k.name);
+    }
+    qualifying.sort((a, b) => grants.get(a)!.at - grants.get(b)!.at);
+    return { qualifying, open, rows };
+  };
+  /** One worker's standing rows, by type, for the types with tests among
+   *  `kinds` that they hold live. */
+  const standingRows = async (s: TaskStores, actor: string, kinds: TaskType[], grants: Map<string, Grant>): Promise<Map<string, StandingRow>> => {
+    const tested = kinds.filter((k) => k.tests && grants.has(k.name));
+    if (!tested.length) return new Map();
+    const rows = await s.tasks.standings(tested.map((k) => ({ worker: actor, type: k.name, since: grants.get(k.name)!.at, window: k.tests!.window })));
+    return new Map(rows.map((r) => [r.type, r]));
   };
   const mayWork = (w: WorkerRecord) => {
     if (w.status !== "active") {
@@ -634,6 +833,39 @@ export function createTasks(deps: TasksDeps): TasksService {
     return ledger ? ledger.payeeBalance(actor, { now: now() }) : { ...ZERO_BALANCE };
   };
 
+  // ── tests and standing (§7) ───────────────────────────────────────────
+  const graderProblem = (step: string): string | undefined =>
+    deps.graderProblem ? deps.graderProblem(step) : `this server grades by "equal" alone: no step grader (${step})`;
+  /** A rule's problem as a refusal. */
+  const ruled = <T>(fn: () => T): T => {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof RuleProblem) throw new TaskError(err.code, err.message);
+      throw err;
+    }
+  };
+  /** Workers as staff read them: each with what they are owed (one grouped
+   *  read) and their standing in each type with tests they hold live. */
+  const staffWorkers = async (s: TaskStores, list: WorkerRecord[]): Promise<StaffWorker[]> => {
+    const ledger = list.length ? await deps.ledgerIfAny?.() : null;
+    const owed = ledger ? await ledger.payeeBalances(list.map((w) => w.actor), { now: now() }) : {};
+    const tested = new Map((await s.tasks.types()).filter((k) => k.tests).map((k) => [k.name, k]));
+    const pairs = list.flatMap((w) =>
+      w.grants.filter((g) => g.revokedAt === undefined && tested.has(g.type)).map((g) => ({ worker: w.actor, type: g.type, since: g.at, window: tested.get(g.type)!.tests!.window })),
+    );
+    const rows = pairs.length ? await s.tasks.standings(pairs) : [];
+    return list.map((w) => {
+      const standing: Record<string, Standing> = {};
+      for (const r of rows) {
+        if (r.worker !== w.actor) continue;
+        const g = w.grants.find((x) => x.type === r.type)!;
+        standing[r.type] = standingOf(r, g, tested.get(r.type)!.tests!);
+      }
+      return { ...w, balance: owed[w.actor] ?? { ...ZERO_BALANCE }, standing };
+    });
+  };
+
   const capability: TasksCapability = {
     async ensure(input, o = {}) {
       const refused = deps.refusal?.(o.control);
@@ -732,12 +964,16 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (problem) throw new TaskError("bad_answer", problem);
       const settled = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now() });
       if (!settled) return whyNot(s, w, l.id);
-      // The answer is accepted: what it earns is owed (§8.1). A booking that
-      // fails is never the worker's — the sweep books it.
+      // The answer is accepted: what it earns is owed (§8.1), a test's as a
+      // real task's (§7.9), or the pay would tell. A booking that fails is
+      // never the worker's — the sweep books it.
       if (l.payMsat) {
         await book(s, l.id).catch((err) => console.error(`[tasks] booking lease ${l.id}'s earning failed; the next sweep books it:`, err));
       }
-      tell([{ id: settled.id, type: settled.type, workflow: settled.workflow, runId: settled.runId, path: settled.path, status: "settled" }]);
+      // §7.3: no run waits on a test instance, so nothing is woken: it is
+      // graded, out of sight. The worker hears `ok` either way.
+      if (settled.test !== undefined) queueGrade(settled.id);
+      else tell([{ id: settled.id, type: settled.type, workflow: settled.workflow, runId: settled.runId, path: settled.path, status: "settled" }]);
       return { ok: true };
     },
 
@@ -775,10 +1011,16 @@ export function createTasks(deps: TasksDeps): TasksService {
       count(actor);
       const { s, w } = await worker(actor);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
-      const types = liveGrants(w)
+      const held = liveGrants(w)
         .map((name) => kinds.get(name))
-        .filter((k): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app))
-        .map((k) => ({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0 }));
+        .filter((k): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app));
+      // Ruling 3: a qualifying type is marked, with no score.
+      const grants = grantsOf(w);
+      const rows = await standingRows(s, w.actor, held, grants);
+      const types = held.map((k) => {
+        const row = rows.get(k.name);
+        return { name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying: !!(k.tests && row) && phaseOf(row!, grants.get(k.name)!) !== "qualified" };
+      });
       // A worker's status touches no earning (§8.1): a suspended worker
       // still sees what they are owed.
       return { actor: w.actor, status: w.status, types, balance: await balanceOf(w.actor) };
@@ -804,6 +1046,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new TaskError("bad_request", "enabled is true or false");
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
+      const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const s = await stores();
       const saved = await s.tasks.putType({
         name,
@@ -814,6 +1057,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         enabled: input.enabled ?? true,
         ...(paySats ? { paySats } : {}),
         holdHours,
+        ...(tests ? { tests } : {}),
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
@@ -828,8 +1072,10 @@ export function createTasks(deps: TasksDeps): TasksService {
       const out = s ? await s.tasks.deleteType(name) : "missing";
       if (out === "missing") throw new TaskError("unknown_type", `no task type ${name} here`);
       if (out === "in_use") throw new TaskError("in_use", `task type ${name} has open tasks: turn it off (enabled: false) and let them settle or expire, or cancel their runs, then delete it`);
-      // A type made again under this name later starts with no workers.
+      // A type made again under this name later starts with no workers, and
+      // its tests are never served again (§7.1).
       const at = now();
+      await s!.tasks.retireTestsOf(name, by, at);
       let revoked = 0;
       for (const w of await s!.workers.list()) {
         if (!liveGrants(w).includes(name)) continue;
@@ -844,10 +1090,14 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (q.status !== undefined && !WORKER_STATUSES.includes(q.status)) throw new TaskError("bad_request", `status is one of ${WORKER_STATUSES.join(", ")}`);
       const s = await storesIfAny();
       if (!s) return [];
-      const list = await s.workers.list(q);
-      const ledger = list.length ? await deps.ledgerIfAny?.() : null;
-      const owed = ledger ? await ledger.payeeBalances(list.map((w) => w.actor), { now: now() }) : {};
-      return list.map((w) => ({ ...w, balance: owed[w.actor] ?? { ...ZERO_BALANCE } }));
+      return staffWorkers(s, await s.workers.list(q));
+    },
+
+    async worker(actor) {
+      actorOk(actor);
+      const s = await storesIfAny();
+      const w = s && (await s.workers.get(actor));
+      return w ? (await staffWorkers(s, [w]))[0] : undefined;
     },
 
     async setWorker(actor, change = {}, by) {
@@ -867,13 +1117,22 @@ export function createTasks(deps: TasksDeps): TasksService {
       return w;
     },
 
-    async grant(actor, type, by) {
+    async grant(actor, type, by, o = {}) {
       actorOk(actor);
+      if (o.qualify !== undefined && typeof o.qualify !== "boolean") throw new TaskError("bad_request", "qualify is true or false");
       const s = await stores();
-      if (!(await s.tasks.type(type))) throw new TaskError("unknown_type", `no task type ${type} here`);
-      const w = note(await s.workers.grant(actor, type, by, now()));
+      const kind = await s.tasks.type(type);
+      if (!kind) throw new TaskError("unknown_type", `no task type ${type} here`);
+      // §7.5: the type's K when it has that many ready tests, unless staff
+      // know the worker (`qualify: false`, ruling 2).
+      const k = kind.tests && o.qualify !== false ? kind.tests.qualify : 0;
+      const ready = k > 0 ? await s.tasks.readyTests(type) : 0;
+      const w = note(await s.workers.grant(actor, type, by, now(), ready >= k ? k : 0));
       wakeAll(actor);
-      return w;
+      const made = w.grants.find((g) => g.type === type);
+      return k > 0 && ready < k && made?.qualify === 0
+        ? { ...w, notice: `task type ${type} has ${ready} ready test${ready === 1 ? "" : "s"}, fewer than the ${k} a worker qualifies on: this grant starts with no qualifying` }
+        : w;
     },
 
     async revoke(actor, type, o = {}) {
@@ -901,6 +1160,289 @@ export function createTasks(deps: TasksDeps): TasksService {
     },
   };
 
+  // ── take-back (§8.1) ──────────────────────────────────────────────────
+  const takeBack: TasksService["takeBack"] = async (o) => {
+    const why = text("why", o?.why);
+    if (!why.trim()) throw new TaskError("bad_request", "a take-back says why");
+    if (o.worker !== undefined) actorOk(o.worker);
+    const s = await storesIfAny();
+    const t = s && typeof o.task === "string" ? await s.tasks.task(o.task) : undefined;
+    if (!s || !t) throw new TaskError("unknown_task", `no task ${o?.task}`);
+    const answered = (await s.tasks.leasesOf([t.id])).filter((l) => l.status === "submitted" && (o.worker === undefined || l.worker === o.worker));
+    const out: TakeBackOutcome[] = [];
+    for (const l of answered) {
+      if (!l.payMsat || !deps.ledger) {
+        out.push({ lease: l.id, worker: l.worker, result: "none" });
+        continue;
+      }
+      // Booked first, so a take-back never loses a race with the sweep.
+      await book(s, l.id);
+      const r = await (await deps.ledger()).takeBack({ lease: l.id, why, ...(o.by === undefined ? {} : { by: o.by }), at: now() });
+      out.push({ lease: l.id, worker: l.worker, result: r.result, ...(r.earning ? { earning: leaseEarning(r.earning) } : {}) });
+    }
+    return out;
+  };
+
+  // ── grading (§7.4) ────────────────────────────────────────────────────
+  // A queue fed by `submit` and by the sweep, `GRADE_CONCURRENCY` at a time
+  // in the process. Each answered instance is graded once: the store's write
+  // is guarded (`grade is null`), and one queued twice is graded once.
+  const gradedListeners = new Set<(g: GradedTest) => void>();
+  const gradeQueue: string[] = [];
+  const queued = new Set<string>();
+  const drained: Array<() => void> = [];
+  let gradingNow = 0;
+  /** Errors in a row, by type: three are logged, once. */
+  const errorsInARow = new Map<string, number>();
+  const queueGrade = (id: string) => {
+    if (closing || queued.has(id)) return;
+    queued.add(id);
+    gradeQueue.push(id);
+    pump();
+  };
+  const pump = () => {
+    while (gradingNow < GRADE_CONCURRENCY && gradeQueue.length) {
+      const id = gradeQueue.shift()!;
+      gradingNow++;
+      void gradeOne(id)
+        .catch((err) => console.error(`[tasks] grading test answer ${id} failed; the next sweep tries again:`, err))
+        .finally(() => {
+          gradingNow--;
+          queued.delete(id);
+          pump();
+          if (gradingNow === 0 && !gradeQueue.length) for (const resolve of drained.splice(0)) resolve();
+        });
+    }
+  };
+  /** The verdict on an answered instance: `equal` here, a step through
+   *  `deps.grade`. A grader that cannot run, or gives no verdict, is
+   *  `error`, which never moves standing (§7.4). */
+  const verdictOf = async (t: TaskRecord, test: TestRecord | undefined, kind: TaskType | undefined): Promise<{ result: GradeResult; note: string }> => {
+    if (!test) return { result: "error", note: `test ${t.test} is gone` };
+    const rule = test.grade ?? kind?.tests?.grade ?? DEFAULT_TEST_RULES.grade;
+    if (rule === "equal") {
+      return sameJson(t.answer, test.expected) ? { result: "pass", note: "the answer equals the expected one" } : { result: "fail", note: "the answer differs from the expected one" };
+    }
+    // Asked again at each grading: the registry changes (§7.4).
+    const problem = graderProblem(rule.step);
+    if (problem) return { result: "error", note: problem };
+    if (!deps.grade) return { result: "error", note: `this server runs no step grader (${rule.step})` };
+    const principal = deps.principal ?? kind?.changedBy;
+    if (!principal) {
+      return { result: "error", note: `nobody to bill ${rule.step} to: set the deployment's grading principal (tasks.principal), or save the type as an admin (plans/human-steps.md §7.12)` };
+    }
+    try {
+      const v = await deps.grade({
+        step: rule.step,
+        ...(rule.config ? { config: rule.config } : {}),
+        input: { answer: t.answer, expected: test.expected, show: t.show, type: t.type },
+        principal,
+        maxCostUsd: kind?.tests?.gradeCapUsd ?? DEFAULT_TEST_RULES.gradeCapUsd,
+        timeoutMs: deps.gradeTimeoutMs ?? GRADE_TIMEOUT_MS,
+      });
+      if (!v || typeof v.supports !== "boolean") return { result: "error", note: `${rule.step} returned no verdict` };
+      return { result: v.supports ? "pass" : "fail", note: String(v.content ?? "") };
+    } catch (err) {
+      return { result: "error", note: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  const gradeOne = async (id: string) => {
+    const s = await stores();
+    const t = await s.tasks.task(id);
+    if (!t || t.test === undefined || t.status !== "settled" || t.grade !== undefined) return;
+    const [test, kind] = await Promise.all([s.tasks.test(t.test), s.tasks.type(t.type)]);
+    const v = await verdictOf(t, test, kind);
+    if (closing) return;
+    const at = now();
+    if (!(await s.tasks.grade({ task: id, grade: v.result, note: v.note, at }))) return;
+    const worker = t.servedTo!;
+    if (v.result === "error") {
+      const n = (errorsInARow.get(t.type) ?? 0) + 1;
+      errorsInARow.set(t.type, n);
+      if (n === GRADE_ERRORS_LOGGED) console.warn(`[tasks] the last ${n} grades of task type ${t.type}'s tests were errors (they count for nothing); the last: ${v.note}`);
+    } else errorsInARow.delete(t.type);
+    // §7.9: a `fail` inside the hold takes back what the answer earned; an
+    // `error` does nothing.
+    if (v.result === "fail") {
+      await takeBack({ task: id, worker, why: "the answer to a test was graded fail", by: GRADING_ACTOR }).catch((err) =>
+        console.error(`[tasks] taking back the earning of failed test answer ${id}:`, err),
+      );
+    }
+    // §7.5: standing read after each grade; under the threshold, the grant goes.
+    if (v.result !== "error" && kind?.tests) await standingCheck(s, worker, kind);
+    const lease = (await s.tasks.leasesOf([id])).find((l) => l.worker === worker && l.status === "submitted");
+    const graded: GradedTest = { lease: lease?.id ?? "", task: id, test: t.test, worker, type: t.type, result: v.result, answeredAt: t.settledAt ?? at, at };
+    for (const fn of gradedListeners) {
+      try {
+        fn(graded);
+      } catch (err) {
+        console.error(`[tasks] a graded listener threw:`, err);
+      }
+    }
+    // Qualifying may be over (or a grant gone): the worker's held wait hears it.
+    wakeAll(worker);
+  };
+  const standingCheck = async (s: TaskStores, actor: string, kind: TaskType) => {
+    const w = await s.workers.get(actor);
+    const grant = w?.grants.find((g) => g.type === kind.name && g.revokedAt === undefined);
+    if (!grant || !kind.tests) return;
+    const [row] = await s.tasks.standings([{ worker: actor, type: kind.name, since: grant.at, window: kind.tests.window }]);
+    const why = row && revokeWhy(row, grant, kind.tests, kind.name);
+    if (!why) return;
+    await capability.revoke(actor, kind.name, { by: STANDING_ACTOR, why });
+    console.log(`[tasks] ${actor} lost task type ${kind.name}: ${why}`);
+  };
+
+  // ── authoring tests (§7.1): the test routes' alone ────────────────────
+  const testViews = async (s: TaskStores, list: TestRecord[]): Promise<TestView[]> => {
+    const counts = await s.tasks.testCounts(list.map((x) => x.id));
+    return Promise.all(
+      list.map(async (x) => {
+        const missing = x.ready ? [] : await missingFiles(x);
+        return { ...x, ...(counts[x.id] ?? { passed: 0, failed: 0, errors: 0 }), ...(missing.length ? { missing } : {}) };
+      }),
+    );
+  };
+  const missingFiles = async (x: Pick<TestRecord, "id" | "files">): Promise<string[]> => {
+    const out: string[] = [];
+    for (const p of x.files) if (!deps.testFiles || !(await deps.testFiles.has(x.id, p))) out.push(p);
+    return out;
+  };
+  const showOk = (show: unknown) => {
+    const bytes = jsonBytes(show);
+    if (bytes === undefined) throw new TaskError("bad_request", "show must be JSON");
+    if (bytes > SHOW_MAX_BYTES) throw new TaskError("bad_request", `show is ${bytes} bytes as JSON; at most ${SHOW_MAX_BYTES}`);
+    return show;
+  };
+  const expectedOk = (kind: TaskType, expected: unknown) => {
+    if (expected === undefined) throw new TaskError("bad_request", "expected is required: the answer the test expects");
+    const problem = answerProblem(kind.answer, expected);
+    if (problem) throw new TaskError("bad_answer", `expected: ${problem}`);
+    return expected;
+  };
+  const fileOk = (bytes: Uint8Array, path: string) => {
+    if (bytes.byteLength > TEST_FILE_MAX_BYTES) {
+      throw new TaskError("bad_request", `${JSON.stringify(path)} is ${bytes.byteLength} bytes; a test's file is at most ${TEST_FILE_MAX_BYTES}, what task/file can hand a page`);
+    }
+  };
+  const testOf = async (s: TaskStores, id: string): Promise<TestRecord> => {
+    const x = typeof id === "string" && id ? await s.tasks.test(id) : undefined;
+    if (!x) throw new TaskError("unknown_test", `no test ${id}`);
+    return x;
+  };
+  const tests: TestAuthoring = {
+    async list(q = {}) {
+      const s = await storesIfAny();
+      return s ? testViews(s, await s.tasks.tests(q)) : [];
+    },
+    async get(id) {
+      const s = await storesIfAny();
+      const x = s && typeof id === "string" ? await s.tasks.test(id) : undefined;
+      return x ? { test: (await testViews(s!, [x]))[0]!, instances: await s!.tasks.testInstances(id) } : undefined;
+    },
+    async create(input, by) {
+      const type = need("type", input?.type);
+      const files = filesOf(input.files);
+      if (files.length && !deps.testFiles) throw new TaskError("bad_request", "this server keeps no test files: a test here lists none");
+      const show = showOk(input.show ?? null);
+      const grade = input.grade === undefined ? undefined : ruled(() => gradeRuleOf(input.grade, graderProblem));
+      const s = await stores();
+      const kind = await s.tasks.type(type);
+      if (!kind) throw new TaskError("unknown_type", `no task type ${type} here`);
+      const expected = expectedOk(kind, input.expected);
+      const x = await s.tasks.putTest({
+        id: randomId(),
+        type,
+        show,
+        files,
+        expected,
+        ...(grade ? { grade } : {}),
+        ready: files.length === 0,
+        created: now(),
+        ...(by === undefined ? {} : { createdBy: by }),
+      });
+      // A ready test may be what a qualifying worker waits for.
+      if (x.ready) wakeFor(type);
+      return (await testViews(s, [x]))[0]!;
+    },
+    async fromTask(taskId, o = {}, by) {
+      const s = await stores();
+      const t = typeof taskId === "string" && taskId ? await s.tasks.task(taskId) : undefined;
+      if (!t) throw new TaskError("unknown_task", `no task ${taskId}`);
+      if (t.test !== undefined) throw new TaskError("bad_request", `task ${t.id} is a test's instance, not a real task`);
+      const kind = await s.tasks.type(t.type);
+      if (!kind) throw new TaskError("unknown_type", `task type ${t.type} is gone`);
+      if (o.expected === undefined && t.status !== "settled") {
+        throw new TaskError("bad_request", `task ${t.id} was ${t.status}, with no accepted answer: say what is expected`);
+      }
+      const expected = expectedOk(kind, o.expected === undefined ? t.answer : o.expected);
+      const grade = o.grade === undefined ? undefined : ruled(() => gradeRuleOf(o.grade, graderProblem));
+      if (t.files.length && (!deps.testFiles || !deps.bytes)) throw new TaskError("bad_request", "this server keeps no test files: a task with files cannot become a test here");
+      const id = randomId();
+      // The task's files copied: the run's may be removed later, and a
+      // missing file would be a tell (§7.1). One gone already is left for
+      // staff to put.
+      for (const p of t.files) {
+        const bytes = await deps.bytes!(t, p);
+        if (!bytes) continue;
+        fileOk(bytes, p);
+        await deps.testFiles!.put(id, p, bytes);
+      }
+      const ready = (await missingFiles({ id, files: t.files })).length === 0;
+      const x = await s.tasks.putTest({
+        id,
+        type: t.type,
+        show: t.show,
+        files: t.files,
+        expected,
+        ...(grade ? { grade } : {}),
+        fromTask: t.id,
+        ...(t.by !== undefined ? { fromWorker: t.by } : {}),
+        ready,
+        created: now(),
+        ...(by === undefined ? {} : { createdBy: by }),
+      });
+      if (x.ready) wakeFor(x.type);
+      return (await testViews(s, [x]))[0]!;
+    },
+    async update(id, change = {}) {
+      const s = await stores();
+      const x = await testOf(s, id);
+      const kind = await s.tasks.type(x.type);
+      const next: TestChange = {};
+      if (change.show !== undefined) next.show = showOk(change.show);
+      if (change.expected !== undefined) {
+        if (!kind) throw new TaskError("unknown_type", `task type ${x.type} is gone`);
+        next.expected = expectedOk(kind, change.expected);
+      }
+      if (change.grade === null) next.grade = null;
+      else if (change.grade !== undefined) next.grade = ruled(() => gradeRuleOf(change.grade, graderProblem));
+      const out = await s.tasks.editTest(x.id, next);
+      if (out === "missing") throw new TaskError("unknown_test", `no test ${id}`);
+      if (out === "in_use") {
+        throw new TaskError("in_use", `test ${id} was served or retired: a served test is never edited, so every grade was against what its worker saw — retire it and make it again`);
+      }
+      return (await testViews(s, [(await s.tasks.test(x.id))!]))[0]!;
+    },
+    async putFile(id, path, bytes) {
+      const s = await stores();
+      const x = await testOf(s, id);
+      if (x.served > 0 || x.retired !== undefined) throw new TaskError("in_use", `test ${id} was served or retired: its files are as they were`);
+      if (!x.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of test ${id}'s files`);
+      if (!deps.testFiles) throw new TaskError("bad_request", "this server keeps no test files");
+      fileOk(bytes, path);
+      await deps.testFiles.put(x.id, path, bytes);
+      if (!x.ready && !(await missingFiles(x)).length && (await s.tasks.readyTest(x.id))) wakeFor(x.type);
+      return (await testViews(s, [(await s.tasks.test(x.id))!]))[0]!;
+    },
+    async retire(id, by) {
+      const s = await stores();
+      await testOf(s, id);
+      const x = (await s.tasks.retireTest(id, by, now()))!;
+      return (await testViews(s, [x]))[0]!;
+    },
+  };
+
   const sweep = async () => {
     const s = await stores();
     const swept = await s.tasks.sweep(now());
@@ -920,7 +1462,11 @@ export function createTasks(deps: TasksDeps): TasksService {
         }
       }
     }
-    return { ...swept, booked };
+    // §7.4: an answered test not yet graded — its process died, or its
+    // grading failed outright — is queued again.
+    const ungraded = await s.tasks.ungraded(UNGRADED_BATCH);
+    for (const t of ungraded) queueGrade(t.id);
+    return { ...swept, booked, grading: ungraded.length };
   };
 
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -964,27 +1510,13 @@ export function createTasks(deps: TasksDeps): TasksService {
       tell(out);
       return out;
     },
-    async takeBack(o) {
-      const why = text("why", o?.why);
-      if (!why.trim()) throw new TaskError("bad_request", "a take-back says why");
-      if (o.worker !== undefined) actorOk(o.worker);
-      const s = await storesIfAny();
-      const t = s && typeof o.task === "string" ? await s.tasks.task(o.task) : undefined;
-      if (!s || !t) throw new TaskError("unknown_task", `no task ${o?.task}`);
-      const answered = (await s.tasks.leasesOf([t.id])).filter((l) => l.status === "submitted" && (o.worker === undefined || l.worker === o.worker));
-      const out: TakeBackOutcome[] = [];
-      for (const l of answered) {
-        if (!l.payMsat || !deps.ledger) {
-          out.push({ lease: l.id, worker: l.worker, result: "none" });
-          continue;
-        }
-        // Booked first, so a take-back never loses a race with the sweep.
-        await book(s, l.id);
-        const r = await (await deps.ledger()).takeBack({ lease: l.id, why, ...(o.by === undefined ? {} : { by: o.by }), at: now() });
-        out.push({ lease: l.id, worker: l.worker, result: r.result, ...(r.earning ? { earning: leaseEarning(r.earning) } : {}) });
-      }
-      return out;
+    takeBack,
+    tests,
+    onGraded(listener) {
+      gradedListeners.add(listener);
+      return () => void gradedListeners.delete(listener);
     },
+    grading: () => (gradingNow === 0 && !gradeQueue.length ? Promise.resolve() : new Promise<void>((resolve) => drained.push(resolve))),
     sweep,
     start() {
       if (timer) return;
@@ -999,8 +1531,10 @@ export function createTasks(deps: TasksDeps): TasksService {
     async close() {
       if (timer) clearInterval(timer);
       timer = undefined;
-      // Every held wait answers "none" now, before the store goes.
+      // Every held wait answers "none" now, before the store goes; nothing
+      // more is graded (the next boot's sweep grades what is left).
       closing = true;
+      gradeQueue.length = 0;
       wakeAll();
       const open = opening;
       opening = undefined;
@@ -1010,6 +1544,11 @@ export function createTasks(deps: TasksDeps): TasksService {
 }
 
 // ── checks ──────────────────────────────────────────────────────────────────
+
+/** A worker's live grants, by type. */
+function grantsOf(w: WorkerRecord): Map<string, Grant> {
+  return new Map(w.grants.filter((g) => g.revokedAt === undefined).map((g) => [g.type, g]));
+}
 
 function randomId(): string {
   return randomBytes(16).toString("hex");

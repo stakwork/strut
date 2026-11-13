@@ -48,11 +48,13 @@ let strutInstance: Strut | null = null;
  *  the Concept pages seeded (`StrutOptions.concepts`), and `assistant?: false
  *  | { title? }`, strut's own assistant app (`StrutOptions.assistant`), and
  *  `publicRuns?: { principal? }`, who pays for a stranger's run
- *  (`StrutOptions.publicRuns`, plans/paid-runs.md §6).
+ *  (`StrutOptions.publicRuns`, plans/paid-runs.md §6), and `tasks?: {
+ *  principal? }`, who a step grader of test answers is billed to
+ *  (`StrutOptions.tasks`, plans/human-steps.md §7.12).
  *  Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns" | "tasks"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -61,7 +63,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns" | "tasks"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -113,6 +115,16 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       (principal !== undefined && (typeof principal !== "string" || !principal.trim()))
     ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "publicRuns" must be { principal?: string }`);
     out.publicRuns = principal !== undefined ? { principal: principal as string } : {};
+  }
+  const tasks = (raw as Record<string, unknown> | null)?.["tasks"];
+  if (tasks !== undefined) {
+    const principal = (tasks as { principal?: unknown } | null)?.principal;
+    if (
+      !tasks || typeof tasks !== "object" || Array.isArray(tasks) ||
+      Object.keys(tasks).some((k) => k !== "principal") ||
+      (principal !== undefined && (typeof principal !== "string" || !principal.trim()))
+    ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "tasks" must be { principal?: string }`);
+    out.tasks = principal !== undefined ? { principal: principal as string } : {};
   }
   const knowledge = (raw as Record<string, unknown> | null)?.["knowledge"];
   if (knowledge !== undefined && knowledge !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "knowledge" must be false`);

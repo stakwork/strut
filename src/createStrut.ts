@@ -46,6 +46,8 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
+import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
+import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
@@ -399,8 +401,11 @@ export interface StrutOptions<TServices = unknown> {
    *  `publicRuns` sets `principal`. */
   publicRuns?: { principal?: string; maxInFlight?: number };
   /** The task store (plans/human-steps.md §4, src/tasks/). `now`: its clock,
-   *  for a test — when a lease runs out, a task is due, an earning releases. */
-  tasks?: { now?: () => number };
+   *  for a test — when a lease runs out, a task is due, an earning releases.
+   *  `principal`: who a step grader of test answers is billed to
+   *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
+   *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
+  tasks?: { now?: () => number; principal?: string };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -1503,6 +1508,21 @@ export async function createStrut<TServices = unknown>(
   // The task store (plans/human-steps.md §4, src/tasks/): opened on first
   // use, so a strut that never runs a `human` step makes no `tasks/tasks.db`;
   // memory where the run store is, since its tasks are those runs' steps.
+  // A test's files (§7.1) beside it, `<dataDir>/tasks/tests/<id>/`.
+  const testFiles = store instanceof MemoryRunStore ? memoryTestFiles() : dirTestFiles(testFilesRoot(dataDir));
+  /** One of a task's files' bytes, where its root keeps them — the job's
+   *  directory on a job run, a test instance's test's folder, else the run's
+   *  artifacts — or null. Each guard keeps the path inside. */
+  const taskBytes = async (t: { root: string; job?: string; runId: string; test?: string }, path: string): Promise<Uint8Array | null> => {
+    try {
+      if (t.root === "test") return t.test ? await testFiles.read(t.test, path) : null;
+      if (t.root === "job" && t.job) return new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, t.job), path)));
+      return artifacts ? await artifacts.read(t.runId, path) : null;
+    } catch (err: any) {
+      if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
+      throw err;
+    }
+  };
   const tasks = createTasks({
     open: () => (store instanceof MemoryRunStore ? Promise.resolve(memoryTaskStores()) : openTaskStores({ dataDir })),
     exists: () => !(store instanceof MemoryRunStore) && existsSync(tasksPath(dataDir)),
@@ -1515,18 +1535,22 @@ export async function createStrut<TServices = unknown>(
         ? "a stranger's public run, a run another strut launched without a person's credential, or a run either started cannot ask a person (plans/human-steps.md §3)"
         : undefined,
     // `task/file` (plans/human-steps.md §5.5): one of a task's files, read
-    // where its run's files are — the job's directory on a job run, else the
-    // run's artifacts — as `run/files` reads a run's. The service checked
-    // the lease and the task's list first; each guard keeps the path inside.
+    // where its run's files are, as `run/files` reads a run's — a test
+    // instance's from its test's copy, through the same `fileResult`, so a
+    // page cannot tell them apart (§7.1). The service checked the lease and
+    // the task's list first.
     file: async (t, path) => {
-      try {
-        const bytes = t.root === "job" && t.job ? new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, t.job), path))) : artifacts ? await artifacts.read(t.runId, path) : null;
-        return bytes ? fileResult(path, bytes) : null;
-      } catch (err: any) {
-        if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
-        throw err;
-      }
+      const bytes = await taskBytes(t, path);
+      return bytes ? fileResult(path, bytes) : null;
     },
+    // Tests (plans/human-steps.md §7): their files; a real task's, copied
+    // into a test made from it; a step grader — sealed, on an allowlist bag,
+    // never kept (src/tasks/grade-step.ts) — billed to the grading principal.
+    testFiles,
+    bytes: taskBytes,
+    graderProblem: graderProblem(() => registry),
+    grade: stepGrader({ registry: () => registry, services: () => services as Record<string, unknown> }),
+    ...(opts.tasks?.principal ? { principal: opts.tasks.principal } : {}),
     // Earnings (plans/human-steps.md §8.1): a paid answer is booked in the
     // ledger, beside the withdrawals 5b will write; the first paid answer
     // makes `payments/ledger.db`, a balance read makes none. A settled
@@ -6176,9 +6200,10 @@ export async function createStrut<TServices = unknown>(
     // The whole store, held here and nowhere on a bag (plans/human-steps.md
     // §9.2): strut's own, or a host's own `services.tasks`.
     tasks: hostTasks ?? tasks.capability,
-    // A person's take-back of an earning in its hold (§8.1): the service's,
-    // never a capability's. None with a host's own store.
-    ...(hostTasks ? {} : { takeBack: tasks.takeBack }),
+    // A person's take-back of an earning in its hold (§8.1), and the tests
+    // (§7.1): the service's, never a capability's. None with a host's own
+    // store.
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack, tests: tasks.tests }),
   });
 
   // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and
