@@ -495,7 +495,8 @@ A workflow asks a PERSON with a `human` step: it makes a TASK of a task
 type and waits, out of memory, until a worker answers it. A WORKER APP is
 the page they answer in. The task type — the app that draws it and the
 answer's schema — is an admin's (the server's `/tasks` routes); a workflow
-names a type, never its shape. One app usually draws several types, a view
+names a type, never its shape, and you ask an admin for a new one with
+`task/set-type` (the `Workflow Builder` page). One app usually draws several types, a view
 each. Grant the worker's steps:
 
 ```yaml

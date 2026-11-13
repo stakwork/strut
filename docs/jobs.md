@@ -194,7 +194,7 @@ index. A change in this area updates this file, not AGENTS.md.
   job's files, plans/proposal-links.md; the plain `peer` none); the
   `proposal/list` + `proposal/get` steps are the agent's reads; `proposal/decide` is strut's own app's door (first-party only). **Only an
   ADMIN accepts some** (plans/member-rights.md): a step with `approver:
-  "admin"` (`StepDef.approver`; `package/install` today) is accepted only
+  "admin"` (`StepDef.approver`; `package/install`, `package/commit`, `remote/buy-credit`, `task/set-type`) is accepted only
   by full scope — the key, an admin's session, a host's server with the
   key; a member's session (Jamie's `proposal/decide`) or a person token
   gets `403 admin_required:` and may still reject (`acceptRefusal`). The

@@ -2095,6 +2095,45 @@ it in `approve:`):
 
 Actions: "Save type", "Don't".
 
+**Built differently (#PRNUM):**
+
+- **The pay, test and copies fields came in this PR.** Items 4 and 5a
+  were built first, so the input is `PUT /tasks/types/:name`'s whole body
+  beside the name: `paySats`, `holdHours`, `tests` and `copies` too. The
+  input schema (`typeChangeInput`, `src/tasks/set-type.ts`) holds each
+  field to the store's check: `answerSchemaProblem`, the tests and copies
+  rules' own checks on their shape, the bounds, pay to the msat. A grader
+  step is checked when the type is saved, since a schema has no registry.
+- **The merge goes one level into `tests` and `copies`.** An object is
+  merged over the type's own rules (or §7.8's defaults), so `{ rate: 0.1 }`
+  keeps the rest; `null` turns them off.
+- **A new type with no `answer` is refused at the save, not before the
+  proposal.** The schema cannot know whether the type exists. The card
+  says so as a danger and that accepting fails; the apply fails
+  `bad_request:`. A merge the save would refuse (a `tests.window` under
+  the type's own `qualify`) is shown the same way.
+- **`list()` counts the workers, never names them, and leaves out
+  `changedBy`.** It is on the shared bag, which every step reaches, and who
+  holds a type is the staff's to read (the routes are full scope). Each type
+  has `open` (waiting and being worked), `workers` (live grants) and
+  `answeredWeek` (for the card's cost line), read from `stats()`; a host's
+  own store that answers no queue leaves them out.
+- **The door has the card's two reads beside `list` and `save`:**
+  `appProblem(app)` (§9.5's `taskAppProblem`) and `usdPerBtc()`. `save`
+  also wants the record's `approver: "admin"`, and refuses
+  `set_type_needs_admin:`.
+- **The card.** Open tasks shows for a change only (a new type has none).
+  Workers on a new type says it is granted to nobody. Tests and Copies
+  are fields of their own. A rise in pay from nothing (a new paid type) is a
+  rise. The answer's form check is `formProblem`, a copy of the kit's
+  (the engine's build cannot import the kit), held to the same verdict by
+  `set-type.test.ts`.
+- **A member's accept** goes through strut's own app (`proposal/decide`)
+  and is refused `admin_required:`; a member's session reaches no
+  `/proposals` route at all.
+- **The `App` Concept page** also points at `task/set-type` where it says
+  a task type is an admin's.
+
 ### 9.9 Money settings
 
 A type's pay and hold (item 5a) and the payout caps and switch (item 5b)
@@ -2129,6 +2168,8 @@ part beside §14.14). The verdict (§9.6) is ruled and comes after them.
 holds only rules since #668. The `strut/staff` part is specs/API.md §14.15.
 Cancelling one task is not in item 6 (ruled). The places of §9.7 come
 with items 4, 5a and 5b.
+**Built differently (#PRNUM):** PR 1 put no `taskTypes` on the bag, so its
+`list()` and `save` came together in PR 2.
 
 ### 9.11 Tests
 
@@ -2154,7 +2195,12 @@ with items 4, 5a and 5b.
 - `web/src/waiting.test.ts`: the waiting run's link.
 - The answer schema's two copies, in `answer-schema.test.ts`.
 
-The `task/set-type` row is PR 2's.
+The `task/set-type` row is PR 2's. **Built differently (#PRNUM):** PR 2's
+tests are `src/tasks/set-type.test.ts`, every part of the row. It also covers
+a custom step calling `taskTypes.save` with no accepted record, a
+`meta/run-step` and a subflow, the card's dangers, that no test's expected
+answer reaches the record, `task/types`, and the seeds. `builder-seed.test.ts`'s
+approve lists gain `task/set-type`.
 
 ### 9.12 Ruled (2026-11-12)
 
@@ -2251,7 +2297,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **PR 1 built**: stakwork/strut#678 (the app, with §9.7's places for items 4 and 5a). Differs in §9.1, §9.3–§9.5, §9.7, §9.10, §9.11. PR 2 (`task/set-type`) not started |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#PRNUM (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has

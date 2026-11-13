@@ -414,7 +414,9 @@ the task's id.
 - A worker answers in the task type's app, through the `task/*` steps
   (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
   app door, as the page's signed-in viewer; an admin makes the task types
-  and grants them through the `/tasks` routes (specs/API.md §22).
+  and grants them through the `/tasks` routes, or accepts the builder's
+  `task/set-type` proposal for a type, which grants it to nobody
+  (specs/API.md §22).
 - Tests (plans/human-steps.md §7) change nothing here. A task type with
   `tests` mixes TESTS — tasks whose answer staff know, kept apart from every
   run — among its tasks, to qualify and score its workers; a worker under

@@ -215,18 +215,27 @@ params:
     - remote/run-workflow
     - remote/call
     - remote/buy-credit
+    # Task types (plans/human-steps.md §9.8): a workflow with a `human` step
+    # names one, and the builder writes that workflow and its worker app, so
+    # it reads the types here and ASKS for a new one or a change — an
+    # admin's yes (task/set-type is a proposal, below). The builder's alone:
+    # a task type comes with a workflow. It grants no worker: a person does.
+    - task/types
+    - task/set-type
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
   # (someone's code into this strut), package/commit (this workspace pushed
-  # to a repo with a person's credential) and remote/buy-credit (this server's
-  # sats to another strut). A deployment that wants a hand on
+  # to a repo with a person's credential), remote/buy-credit (this server's
+  # sats to another strut) and task/set-type (a task type: what workers are
+  # shown and paid). A deployment that wants a hand on
   # every publish names meta/publish-workflow, meta/create-step and
   # meta/edit-step here through its delta.
   approve:
     - package/install
     - package/commit
     - remote/buy-credit
+    - task/set-type
   # The agent's system prompt. What is the JOB's — who the agent is,
   # claims, the kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):

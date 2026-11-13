@@ -59,6 +59,7 @@ import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
+import { createTaskTypes } from "./tasks/set-type.js";
 import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -6237,6 +6238,26 @@ export async function createStrut<TServices = unknown>(
     deposits,
   });
 
+  /** What is wrong with the app a task type names (§9.5's check): the
+   *  queue's, and `task/set-type`'s card. */
+  const typeAppProblem = async (name: string) => taskAppProblem(name, (await apps.manifestOf(name).catch(() => null))?.manifest ?? null);
+  // The TASK TYPES on the shared bag (plans/human-steps.md §9.2, §9.8;
+  // src/tasks/set-type.ts): the types read with their open tasks and how
+  // many workers hold each, and a save that opens only for an ACCEPTED
+  // `task/set-type` proposal on disk (an admin's), for that name and input —
+  // the record is the proof, as for package/install. Over the store the
+  // staff routes hold. A host's own `taskTypes` wins.
+  if (!(services as Record<string, unknown>)["taskTypes"]) {
+    (services as Record<string, unknown>)["taskTypes"] = Object.freeze(
+      createTaskTypes({
+        tasks: hostTasks ?? tasks.capability,
+        proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+        appProblem: typeAppProblem,
+        usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+      }),
+    );
+  }
+
   // ── The task store's staff routes (plans/human-steps.md §6; src/tasks/routes.ts) ──
   // Task types, workers and their grants, the tasks and their leases: full
   // scope only, reads included, like the earnings. The worker's own door is
@@ -6252,7 +6273,7 @@ export async function createStrut<TServices = unknown>(
     // store.
     ...(hostTasks ? {} : { takeBack: tasks.takeBack, tests: tasks.tests }),
     // The queue's check of each type's app, and a task's run now (§9.4).
-    appProblem: async (name) => taskAppProblem(name, (await apps.manifestOf(name).catch(() => null))?.manifest ?? null),
+    appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {
       // The summary first: a run that parks writes it before its controller
       // goes, and a resume drops it first thing (`launchDetached`).
