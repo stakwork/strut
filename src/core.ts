@@ -115,6 +115,12 @@ export interface ProposalDescription {
   actions?: { accept: string; reject: string };
   /** False when `fields` leave part of what will run out. */
   full?: boolean;
+  /** The input to KEEP on the record in place of the one asked: the same
+   *  input with a default the step read now filled in (`app/make-public`
+   *  names the app's version live when asked), so the yes applies what the
+   *  card showed and not what is there by then. Parsed by the step's schema;
+   *  one that does not parse is ignored. */
+  input?: unknown;
 }
 
 /** One line of a proposal's card (`ProposalCard.fields`). */

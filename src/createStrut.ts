@@ -219,7 +219,7 @@ import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedPr
 const LLMS_TXT_CACHE_MS = 30_000;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
-import { publicViewNeeds } from "./public-view.js";
+import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -3919,20 +3919,38 @@ export async function createStrut<TServices = unknown>(
     const s = await publicSurface.get();
     return c.json({ surface: s, missing: await publicViewMissing(s) });
   });
-  app.put("/public-view", async (c) => {
+  /** `PUT /public-view`'s save, the ONE function the route and
+   *  `app/make-public`'s door (src/public-view.ts) write the record through,
+   *  so the two cannot drift: its checks, the record, the hold. `holdAt`
+   *  (the door's) holds an app at that version before anything is written,
+   *  and a hold that fails refuses the whole save. */
+  const savePublicView: PublicViewSave = async (body, o) => {
     // A served box's public view is its package's (plans/app-repos.md §2.1):
     // written from `serve.yaml` at every deploy, never by hand.
     if (serveRef) {
-      return c.json({ error: `serve_owned: this strut server serves ${serveRef.ref}, whose ${SERVE_FILE} writes the public view at every deploy — change ${SERVE_FILE} in the package and deploy it` }, 409);
+      return { status: 409, body: { error: `serve_owned: this strut server serves ${serveRef.ref}, whose ${SERVE_FILE} writes the public view at every deploy — change ${SERVE_FILE} in the package and deploy it` } };
     }
-    const body: unknown = await c.req.json().catch(() => undefined);
     const problem = surfaceProblem(body);
-    if (problem) return c.json({ error: problem }, 400);
+    if (problem) return { status: 400, body: { error: problem } };
     // What anyone may run is checked whole at every save (plans/paid-runs.md
     // §2): each refusal names its item, and nothing is written.
     const normalized = normalizeSurface(body);
     const problems = await runnableProblems(normalized, runnableDeps);
-    if (problems.length) return c.json({ error: problems.join("; "), problems }, 400);
+    if (problems.length) return { status: 400, body: { error: problems.join("; "), problems } };
+    const by = o.actor ? { by: o.actor } : {};
+    const held: Array<{ app: string; version?: string; release?: string; error?: string }> = [];
+    // The door's hold, at the version the admin accepted: before the record
+    // says the app is public, so a failure writes nothing.
+    for (const [name, version] of Object.entries(o.holdAt ?? {})) {
+      try {
+        const rel = await apps.releases(name);
+        if (rel && rel.live !== "latest" && rel.releases.find((r) => r.id === rel.live)?.version === version) continue;
+        const release = await apps.promote(name, version, by);
+        held.push({ app: name, version, release: release.id });
+      } catch (err) {
+        return { status: 409, body: { error: `hold_failed: ${name} cannot be held at ${version}: ${err instanceof Error ? err.message : String(err)}` } };
+      }
+    }
     // The first priced item mints the credit tokens' root (§4.2), before the
     // record says anything is for sale.
     if (normalized.runnable.some(isPriced)) await payments.settings.ensureL402Root();
@@ -3941,23 +3959,27 @@ export async function createStrut<TServices = unknown>(
     // An app added to the public view is HELD at the version it shows
     // (plans/public-surface.md §2, as pinning holds, plans/app-releases.md):
     // a builder's later publish is a draft until a person moves the release.
-    const actor = await resolveActor(c);
-    const held: Array<{ app: string; version?: string; release?: string; error?: string }> = [];
     for (const a of next.apps) {
-      if (before.has(a.name)) continue;
+      if (before.has(a.name) || o.holdAt?.[a.name]) continue;
       try {
         const rel = await apps.releases(a.name);
         if (!rel || rel.live !== "latest") continue;
         const dir = await apps.versionDir(a.name);
         if (!dir) continue;
-        const release = await apps.promote(a.name, dir.version, actor ? { by: actor } : {});
+        const release = await apps.promote(a.name, dir.version, by);
         held.push({ app: a.name, version: dir.version, release: release.id });
       } catch (err) {
         held.push({ app: a.name, error: err instanceof Error ? err.message : String(err) });
       }
     }
     viewChanged();
-    return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
+    return { status: 200, body: { surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) } };
+  };
+  app.put("/public-view", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const actor = await resolveActor(c);
+    const out = await savePublicView(body, actor ? { actor } : {});
+    return c.json(out.body, out.status as 200 | 400 | 409);
   });
   // What the dialog's third box ("anyone can run it") shows for a workflow
   // or a step (plans/paid-runs.md §2): what its closure can do, what its
@@ -3985,25 +4007,47 @@ export async function createStrut<TServices = unknown>(
     });
   });
   // What adding an app or a workflow brings along, for the dialog to
-  // pre-check (src/public-view.ts): every line with what it exposes.
+  // pre-check (src/public-view.ts): every line with what it exposes. The
+  // same reads `app/make-public`'s card lists.
+  const publicViewDeps: PublicViewDeps = {
+    workspace,
+    registry: () => registry,
+    stepSources: () => stepSources,
+    app: async (name, version) => {
+      const view = await apps.get(name, version).catch(() => null);
+      return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
+    },
+    walk: (roots) => publicSurface.walk(roots),
+  };
   app.get("/public-view/needs", async (c) => {
     const appName = c.req.query("app");
+    const version = c.req.query("version");
     const wf = c.req.query("workflow");
-    const out = await publicViewNeeds(
-      {
-        workspace,
-        registry: () => registry,
-        stepSources: () => stepSources,
-        app: async (name) => {
-          const view = await apps.get(name).catch(() => null);
-          return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
-        },
-        walk: (roots) => publicSurface.walk(roots),
-      },
-      { ...(appName ? { app: appName } : {}), ...(wf ? { workflow: wf } : {}) },
-    );
+    const out = await publicViewNeeds(publicViewDeps, { ...(appName ? { app: appName } : {}), ...(appName && version ? { version } : {}), ...(wf ? { workflow: wf } : {}) });
     return "error" in out ? c.json(out, 404) : c.json(out);
   });
+  // `app/make-public`'s door on the shared bag (src/public-view.ts;
+  // plans/public-surface.md §2 "The door", ruled 2026-11-13): the card's
+  // reads, and an add that opens only for an ACCEPTED proposal of that step
+  // on disk (an admin's) for the app and version — the record is the proof,
+  // as for package/install and task/set-type — written through the route's
+  // own save. A host's own `publicView` wins.
+  if (!(services as Record<string, unknown>)["publicView"]) {
+    (services as Record<string, unknown>)["publicView"] = Object.freeze(
+      createPublicViewDoor({
+        needs: async (name, version) => publicViewNeeds(publicViewDeps, { app: name, ...(version ? { version } : {}) }),
+        view: () => publicSurface.get(),
+        app: async (name, version) => {
+          const rec = await workspace.getApp(name).catch(() => null);
+          if (!rec) return null;
+          return { version: rec.version, held: !!rec.live, seeded: rec.versions[version ?? rec.version]?.source === "seed" };
+        },
+        served: () => serveRef?.ref,
+        proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+        save: savePublicView,
+      }),
+    );
+  }
 
   // ── Apps (plans/apps.md §7.2) ────────────────────────────────────────────
   // A workspace app's pointers and its version directories. The files are

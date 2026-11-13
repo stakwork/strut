@@ -128,6 +128,7 @@ ideas":
 | 19 | The name: the PUBLIC VIEW (the **Public view** tab), never "publish" or "make public", which are the copy side's (a version, a package release, the Packages tab's **Make public**). | **ruled**; 2026-11-04: the topbar's **Packages** and **Public view** are one **Publish** button, a dialog with those two tabs — the umbrella is the topbar's way out of the server, and the thing keeps its name |
 | 20 | Adding an item to the public view cascades in the dialog, explicitly: an app pre-checks its granted workflows with runs, their custom steps, its reads and the Concept roots its workflows read (`context/concept`); the record lists everything. | *agreed* ("yes that right") |
 | 21 | In the public view, a control a visitor cannot use is DISABLED, never hidden ("we dont need to hide stuff... buttons should be disabled"). | **ruled** |
+| 22 | The door, clarified: a PERSON decides what is public; the builder or the orchestrator may ASK to add an app through `app/make-public`, a proposal only an ADMIN accepts, as `app/grant` is. Its card is the dialog's cascade (each pre-checked line with what it exposes, who can sign in, the hold); the yes adds exactly that, held at the version the card showed, through `PUT /public-view`'s own save — nothing removed, no visibility beyond what the cascade pre-checks, the sign-in untouched. The motivating case: a worker app for a `human` step (`human-steps.md` §5.4), where the dialog was too much to ask of the person. | **ruled** 2026-11-13 |
 
 ## Design in one paragraph
 
@@ -209,7 +210,13 @@ secret): `<dataDir>/public.json`, beside `packages/indexes.json`.
   moves the release. `reads` is §5's list. `domains` is §9's.
 - **The door**: `GET`/`PUT /public-view` (full scope only; a person, never the
   builder or a `meta/*` step: the surface is the owner's decision as a
-  sealed grant is, `src/apps/grants.ts`). In the UI, the **Public view**
+  sealed grant is, `src/apps/grants.ts`). A person decides; the builder or
+  the orchestrator may ASK, through `app/make-public`, a proposal only an
+  ADMIN accepts, as `app/grant` is (ruled 2026-11-13, decision 22): the
+  card lists the app, its version and every line the dialog would
+  pre-check with what it exposes, and the yes adds those lines and holds
+  the app at that version through `PUT`'s own save, removing nothing and
+  leaving the sign-in as it is. In the UI, the **Public view**
   tab of the topbar's **Publish** dialog, beside **Packages**: what this server shows anyone, each item
   with its options, and an add box per kind. Each item's own flyout shows a
   "Public view" badge that opens the dialog on it.

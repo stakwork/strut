@@ -20,7 +20,9 @@ export function visitorAppLink(name: string, here: string): string {
 export const sameRecord = (a: PublicViewRecord, b: PublicViewRecord) => JSON.stringify(a) === JSON.stringify(b);
 export const emptyRecord = (): PublicViewRecord => ({ concepts: [], workflows: [], steps: [], types: [], apps: [], runnable: [] });
 
-/** The record with the cascade's checked lines merged in. */
+/** The record with the cascade's checked lines merged in. With nothing
+ *  unticked it is what an admin's yes to `app/make-public` adds: the
+ *  server's `withNeeds` (src/public-view.ts), held equal by the test. */
 export function mergeNeeds(rec: PublicViewRecord, needs: PublicViewNeeds, checked: Set<string>): PublicViewRecord {
   const next: PublicViewRecord = JSON.parse(JSON.stringify(rec));
   const on = (key: string) => checked.has(key);

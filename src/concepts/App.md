@@ -402,8 +402,8 @@ a click and never on a render:
 ## The public view
 
 A person may put an app in the server's PUBLIC VIEW (the Public view
-dialog): anyone can then open it with no account, and the store can frame
-it. There `useHost().public` is true, and the server refuses whatever the
+dialog, or an admin's yes to your `app/make-public`): anyone can then open
+it with no account, and the store can frame it. There `useHost().public` is true, and the server refuses whatever the
 page tries beyond reading — cancelling a run, saving state (`useAppState`
 lasts the visit, until the visitor signs in: see "Signed-in visitors"),
 uploads, writes — and beyond starting what a person made
@@ -544,11 +544,15 @@ return (
 ```
 
 Workers are signed-in visitors of the public view (or the server's own
-members): ask the person to put the app in the public view with `sphinx`
-as its sign-in and `visitorKey: root`, so a worker is one person on every
+members). Once the app is published and draws its task types, ask for it
+with `app/make-public` (the version `app/publish` answered): an ADMIN
+approves a card that says what anyone will see and who can sign in, and
+strut adds the app, held at that version. A view that names no sign-in
+offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
-writes.
+writes. Say in your reply that later publishes are drafts until someone
+makes them live.
 
 ## The assistant
 

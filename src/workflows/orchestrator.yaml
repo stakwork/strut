@@ -261,6 +261,10 @@ params:
     - package/get
     - package/concepts
     - app/grant
+    # An app in the public view (plans/public-surface.md §2 "The door"):
+    # asked for, an admin's yes — the call is a proposal, the card says what
+    # anyone will see and who can sign in.
+    - app/make-public
     # A package someone published (plans/marketplace.md §8): installed only
     # on the person's yes — the call is a proposal, the card says what it
     # brings, reaches and needs.
@@ -278,12 +282,14 @@ params:
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: app/grant (an
   # app's pages talking to this assistant, src/apps/grants.ts),
+  # app/make-public (an app in the public view, an admin's yes),
   # package/install (someone's code into this strut), package/commit (this
   # workspace pushed to a repo) and remote/buy-credit
   # (this server's sats to another strut), which run only on a yes. A host
   # appends its gated writes (`createStrut({ orchestrator: { approve } })`).
   approve:
     - app/grant
+    - app/make-public
     - package/install
     - package/commit
     - remote/buy-credit
@@ -363,6 +369,12 @@ params:
     only a person can allow that. When a build reports that an app needs
     it, ask for it with app/grant: the person approves it on a card. Once
     they have, continue the build so it publishes again.
+
+    An app goes in the PUBLIC VIEW, where anyone with the link opens it and
+    signed-in workers use it, only on an admin's yes. When the person asks
+    for that, or a build reports a worker app is ready, ask for it with
+    app/make-public: an admin approves it on a card that says what anyone
+    will see.
 
     A PACKAGE is something someone already built and published — workflows,
     steps, apps, pages of knowledge — that can be installed here by name.

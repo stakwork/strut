@@ -4,6 +4,7 @@ import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, 
 import { DAILY_CAP_SHARE as SERVER_DAILY_CAP_SHARE } from "../../src/public-runnable.js";
 import { DEFAULT_SIGN_IN as SERVER_DEFAULT_SIGN_IN, normalizeSurface, VISITOR_METHOD_NAMES } from "../../src/public-surface.js";
 import { DEFAULT_VISITOR_LIMITS } from "../../src/visitors.js";
+import { withNeeds as serverWithNeeds } from "../../src/public-view.js";
 import type { PublicRunInfo, PublicViewNeeds } from "./api.js";
 
 const needs: PublicViewNeeds = {
@@ -48,6 +49,15 @@ describe("the Public view tab's cascade", () => {
   it("a workflow added alone, with nothing else ticked, is its definition", () => {
     const wf: PublicViewNeeds = { workflow: "solo", workflows: [{ name: "solo", runs: false, checked: true, note: "" }], steps: [], reads: [], concepts: [], perRun: [] };
     assert.deepEqual(mergeNeeds(emptyRecord(), wf, checkedOf(wf)).workflows, [{ name: "solo" }]);
+  });
+
+  it("nothing unticked is what app/make-public's yes adds: the server's withNeeds", () => {
+    const wf: PublicViewNeeds = { workflow: "solo", workflows: [{ name: "solo", runs: false, checked: true, note: "" }], steps: [], reads: [], concepts: [], perRun: [] };
+    const records = [
+      emptyRecord(),
+      { ...emptyRecord(), concepts: ["Law", "Codebase"], workflows: [{ name: "score-wf" }, { name: "other", runs: true }], steps: ["acme/x"], apps: [{ name: "bench", reads: ["acme/y"] }, { name: "store" }], visitors: { signIn: ["lnurl" as const] } },
+    ];
+    for (const rec of records) for (const n of [needs, wf]) assert.deepEqual(mergeNeeds(rec, n, checkedOf(n)), serverWithNeeds(rec, n));
   });
 
   it("a visitor's link is the page alone, under the same mount", () => {

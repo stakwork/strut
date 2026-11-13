@@ -46,7 +46,7 @@ import { bootEnv } from "../env.js";
 // The agent step's own plumbing, reused whole (plans/apps.md §8): the
 // registry-steps-as-tools builder that hands the builder the app/* steps by
 // name, and the text editor's pure handler.
-import { buildRegistryTools, textEdit, type TextEditInput } from "../steps/core/agent.js";
+import { buildRegistryTools, expandAgentTools, textEdit, type TextEditInput } from "../steps/core/agent.js";
 
 /** The builder's fixed registry grants: the app/* steps as named tools
  *  (plans/apps.md §8) — app_list, app_get, app_init, app_checkout,
@@ -56,6 +56,11 @@ import { buildRegistryTools, textEdit, type TextEditInput } from "../steps/core/
  *  `buildRegistryTools`, no wrapper. By name, never `package/*`: a later
  *  write in that namespace (an install) is a person's, not the builder's. */
 export const BUILDER_REGISTRY_TOOLS: readonly string[] = ["app/*", "package/search", "package/get", "package/concepts"];
+
+/** The app/* steps that run only as an accepted proposal (`app/grant`,
+ *  `app/make-public`): the chat has no proposals, so it never gets them —
+ *  the builder JOB and the assistant ask for them. */
+const PROPOSAL_ONLY_APP_STEPS = new Set(["app/grant", "app/make-public"]);
 
 /** The step behind the builder's `graph_get` tool. */
 const GRAPH_GET_STEP = "graph/graph-get";
@@ -1290,7 +1295,7 @@ export function buildTools(deps: AiDeps): ToolSet {
     // same steps are a job agent's through agentTools and anyone's through
     // run_step: one implementation, three doors.
     ...buildRegistryTools(
-      [...BUILDER_REGISTRY_TOOLS],
+      deps.registry ? expandAgentTools([...BUILDER_REGISTRY_TOOLS], deps.registry).filter((t) => !PROPOSAL_ONLY_APP_STEPS.has(t)) : [],
       deps.registry,
       {
         runId: "",

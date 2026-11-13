@@ -189,7 +189,9 @@ params:
     - job/read
     # Apps are a builder job's kind of work (plans/apps.md §8): scaffold,
     # build and publish a front-end project over workflows — the editor
-    # writes its files in the job's directory.
+    # writes its files in the job's directory. app/make-public among them
+    # ASKS to put an app in the public view — an admin's yes (a proposal,
+    # below).
     - app/*
     # Code to learn from — a UI to port, a client to copy: a repository
     # checked out INTO the job's directory (`workdir` = the job id, which
@@ -227,8 +229,9 @@ params:
   # step, and strut runs it when they accept. Strut's own: package/install
   # (someone's code into this strut), package/commit (this workspace pushed
   # to a repo with a person's credential), remote/buy-credit (this server's
-  # sats to another strut) and task/set-type (a task type: what workers are
-  # shown and paid). A deployment that wants a hand on
+  # sats to another strut), task/set-type (a task type: what workers are
+  # shown and paid) and app/make-public (an app in the public view: what
+  # anyone sees). A deployment that wants a hand on
   # every publish names meta/publish-workflow, meta/create-step and
   # meta/edit-step here through its delta.
   approve:
@@ -236,6 +239,7 @@ params:
     - package/commit
     - remote/buy-credit
     - task/set-type
+    - app/make-public
   # The agent's system prompt. What is the JOB's — who the agent is,
   # claims, the kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):
