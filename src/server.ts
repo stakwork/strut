@@ -54,7 +54,7 @@ let strutInstance: Strut | null = null;
  *  Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns" | "tasks"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "staff" | "publicRuns" | "tasks"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -63,7 +63,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "publicRuns" | "tasks"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "earnings" | "staff" | "publicRuns" | "tasks"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -132,6 +132,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   const earnings = (raw as Record<string, unknown> | null)?.["earnings"];
   if (earnings !== undefined && earnings !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "earnings" must be false`);
   if (earnings === false) out.earnings = false;
+  const staff = (raw as Record<string, unknown> | null)?.["staff"];
+  if (staff !== undefined && staff !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "staff" must be false`);
+  if (staff === false) out.staff = false;
   const automation = (raw as Record<string, unknown> | null)?.["automation"];
   if (automation !== undefined) {
     const { workflow, approve, grants } = (automation ?? {}) as { workflow?: unknown; approve?: unknown; grants?: unknown };

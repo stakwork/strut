@@ -50,6 +50,7 @@ import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files
 import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
+import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -57,6 +58,7 @@ import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
+import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -118,6 +120,7 @@ import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
+import { seedStaffApp } from "./apps/staff-seed.js";
 import { createKnowledge } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -561,6 +564,11 @@ export interface StrutOptions<TServices = unknown> {
    *  bought elsewhere — as a first-party, ADMIN-ONLY app a host frames for
    *  an admin. `false` seeds nothing. */
   earnings?: false;
+  /** `strut/staff` (`src/apps/staff-seed.ts`, plans/human-steps.md §9):
+   *  task types, workers, the queue and what was answered, as a
+   *  first-party, ADMIN-ONLY app — the `/tasks` routes as a page. Seeded
+   *  after `strut/views` (it imports `TaskForm`). `false` seeds nothing. */
+  staff?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1955,6 +1963,17 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[earnings] seeded app: strut/earnings @ ${r.version}`);
     } catch (err) {
       console.warn(`[earnings] could not seed strut/earnings:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/staff` (src/apps/staff-seed.ts, plans/human-steps.md §9): the
+  // task store's staff routes as an admin-only first-party app, after
+  // strut/views (it imports TaskForm). A served box too, as strut/earnings.
+  if (opts.staff !== false) {
+    try {
+      const r = await seedStaffApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[staff] seeded app: strut/staff @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[staff] could not seed strut/staff:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
@@ -4012,6 +4031,9 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps/:name/usage", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
+    // An admin's app (strut/earnings, strut/staff): its calls are an admin's too.
+    const admin = await adminAppRefusal(c, at.name);
+    if (admin) return admin;
     if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
     return c.json(appMonitor.report(at.name));
   });
@@ -6229,26 +6251,30 @@ export async function createStrut<TServices = unknown>(
     // (§7.1): the service's, never a capability's. None with a host's own
     // store.
     ...(hostTasks ? {} : { takeBack: tasks.takeBack, tests: tasks.tests }),
-  });
-
-  // The ADMIN DOOR (src/steps/lib/earnings/_door.ts): the routes above and
-  // below as an in-process request, the viewer's own, for the `earnings/*`
-  // steps strut's own Earnings app calls (`strut/earnings`). Handed to the
-  // app door's bag for a first-party page shown to an admin, never to the
-  // shared one (src/apps/tools.ts `adminServices`). Its paths are these
-  // routes' alone.
-  const earningsAdminDoor: EarningsAdminDoor = Object.freeze({
-    call: async (method: string, path: string, body?: unknown, actor?: string) => {
-      if (!/^\/(earnings|remote\/credit|remote\/purchases)(\/|\?|$)/.test(path)) throw new Error(`the admin door reaches /earnings and /remote/credit alone, not ${path}`);
-      const req = new Request(`http://strut.invalid${path}`, {
-        method,
-        headers: { "content-type": "application/json", "x-strut-ui": "1" },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
-      const res = await app.fetch(inProcessRequest(req, actor));
-      return { ok: res.ok, status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+    // The queue's check of each type's app, and a task's run now (§9.4).
+    appProblem: async (name) => taskAppProblem(name, (await apps.manifestOf(name).catch(() => null))?.manifest ?? null),
+    runOf: async (workflow, runId) => {
+      // The summary first: a run that parks writes it before its controller
+      // goes, and a resume drops it first thing (`launchDetached`).
+      const summary = await store.getRunSummary(workflow, runId);
+      if (summary) return { status: summary.status, ...(summary.waitingOn?.length ? { waitingOn: summary.waitingOn } : {}) };
+      if (controllers.has(`${workflow}/${runId}`)) return { status: "running" };
+      // Started and never finalized, and not live here: resumable (§5).
+      return (await store.getRunStart(workflow, runId)) ? { status: "stale" } : null;
     },
   });
+
+  // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
+  // in-process request, the viewer's own, for the steps strut's own admin
+  // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks alone).
+  // Handed to the app door's bag for a first-party page shown to an admin,
+  // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
+  // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
+  // file, `PUT /tasks/tests/:id/files/<path>`).
+  const sendInProcess = (req: Request, actor?: string) => Promise.resolve(app.fetch(inProcessRequest(req, actor)));
+  const earningsAdminDoor: EarningsAdminDoor = inProcessDoor(sendInProcess, EARNINGS_ROUTES, "admin");
+  const staffAdminDoor: AdminDoor = inProcessDoor(sendInProcess, STAFF_ROUTES, "staff");
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
   // What this strut bought where, and what is still being paid: an admin's
@@ -9423,7 +9449,7 @@ export async function createStrut<TServices = unknown>(
         services,
         ...(actor ? { actor } : {}),
         admin: scope === "full",
-        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor } } : {}),
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
         // calls of the task store on that call's bag alone.
         ...(workerTasks ? { workerServices: { tasks: workerTasks } } : {}),

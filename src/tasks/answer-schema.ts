@@ -15,6 +15,14 @@
  * and in an answer; an answer is at most 256 KB as JSON.
  *
  * A box on a photo: `{ type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }`.
+ *
+ * ONE FILE IN TWO PLACES (plans/human-steps.md §9.5): `kit/src/folds/answer-schema.ts`,
+ * which the staff app's type editor runs on every change, and
+ * `src/tasks/answer-schema.ts`, which the task store runs when a type is
+ * saved and an answer submitted — so the page never offers to save what the
+ * route refuses. The engine's build cannot import the kit (its root is
+ * `src/`), so the two are kept the same, byte for byte, by
+ * `src/tasks/answer-schema.test.ts`. Change both. Nothing here may import.
  */
 
 export const ANSWER_MAX_BYTES = 256 * 1024;
@@ -77,7 +85,7 @@ export function answerProblem(schema: AnswerSchema, answer: unknown): string | u
     return "the answer is not JSON";
   }
   if (json === undefined) return "the answer is not JSON";
-  const bytes = Buffer.byteLength(json);
+  const bytes = new TextEncoder().encode(json).length;
   if (bytes > ANSWER_MAX_BYTES) return `the answer is ${bytes} bytes as JSON; at most ${ANSWER_MAX_BYTES}`;
   if (depthOver(answer, ANSWER_MAX_DEPTH)) return `the answer nests deeper than ${ANSWER_MAX_DEPTH} levels`;
   try {
@@ -238,4 +246,24 @@ function sameJson(a: unknown, b: unknown): boolean {
   const ka = Object.keys(a);
   const kb = Object.keys(b);
   return ka.length === kb.length && ka.every((k) => Object.hasOwn(b, k) && sameJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+// ── the app that draws a type (§9.5) ─────────────────────────────────────
+
+/** The steps a worker app must grant for its page to take and answer a
+ *  type's tasks (plans/human-steps.md §5.1). */
+export const WORKER_APP_STEPS = ["task/next", "task/submit"] as const;
+
+/** What is wrong with the app a task type names, or undefined: not on this
+ *  server, or its grants (types and globs, as an app's `grants.steps` takes
+ *  them) do not reach `task/next` and `task/submit`. One function for the
+ *  staff app's type editor, the Queue (`GET /tasks/stats`'s `app`) and
+ *  `task/set-type`'s card. `app` is the app's manifest, or null when none
+ *  is listed under `name`. */
+export function taskAppProblem(name: string, app: { grants?: { steps?: readonly string[] } } | null | undefined): string | undefined {
+  if (!app) return `no app ${name} on this server`;
+  const steps = app.grants?.steps ?? [];
+  const reaches = (type: string) => steps.some((g) => (g.includes("*") ? new RegExp(`^${g.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(type) : g === type));
+  const missing = WORKER_APP_STEPS.filter((s) => !reaches(s));
+  return missing.length ? `app ${name} does not grant ${missing.join(" and ")}: its page cannot ${missing.length === 2 ? "take or answer" : missing[0] === "task/next" ? "take" : "answer"} this type's tasks` : undefined;
 }

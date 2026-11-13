@@ -361,7 +361,15 @@ edit step (id / type / config / depends / options)
 
 ### `web/src/components/StepRunFlyout.tsx`
 
-view a step's run I/O (leaf: input/output; container: aggregate summary)
+view a step's run I/O (leaf: input/output; container: aggregate summary); a parked step's "Waiting on" through WaitingOn, as the run overview's
+
+### `web/src/components/WaitingOn.tsx`
+
+what a waiting run (RunOverview's "Waiting on") or a parked step (StepRunFlyout) waits on: each `task:<id>` a button opening `strut/staff` on that task (`selectApp("strut/staff", "task=<id>")`, plans/human-steps.md §9.1) for a viewer it is listed to — `staffListed`, app.tsx's `GET /apps` holding it, so an admin; anyone else, or any other source, reads the text
+
+### `web/src/waiting.ts`
+
+WaitingOn's pure part (tested, waiting.test.ts): `waitingParts(on, staffListed)` — each part, and for a `task:<id>` with the app listed the app and its input (`task=<id>`); `STAFF_APP`
 
 ### `web/src/components/WalkView.tsx`
 

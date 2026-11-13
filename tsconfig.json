@@ -15,5 +15,5 @@
     "paths": { "@strut/kit/folds": ["./kit/src/folds/index.ts"], "@strut/kit/wallet": ["./kit/src/wallet/index.ts"], "@strut/kit/channels": ["./kit/src/channels/index.ts"], "@strut/kit/visitor": ["./kit/src/visitor/index.ts"] }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "build", "**/*.test.ts", "src/apps/__fixtures__/**", "src/graph/__fixtures__/**", "src/apps/templates/**", "src/apps/views/**", "src/apps/jamie/**", "src/apps/knowledge/**", "src/apps/earnings/**"]
+  "exclude": ["node_modules", "build", "**/*.test.ts", "src/apps/__fixtures__/**", "src/graph/__fixtures__/**", "src/apps/templates/**", "src/apps/views/**", "src/apps/jamie/**", "src/apps/knowledge/**", "src/apps/earnings/**", "src/apps/staff/**"]
 }

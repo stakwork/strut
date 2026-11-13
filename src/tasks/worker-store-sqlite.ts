@@ -6,7 +6,7 @@
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
-import type { Grant, WorkerChange, WorkerRecord, WorkerStatus, WorkerStore } from "./worker-store.js";
+import { noStatuses, type Grant, type WorkerChange, type WorkerCounts, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 const SCHEMA = `
 create table if not exists workers (
@@ -62,7 +62,17 @@ export class SqliteWorkerStore implements WorkerStore {
       revoke: p("update grants set revoked_at = ?, revoked_by = ?, revoked_why = ? where actor = ? and type = ? and revoked_at is null"),
       all: p("select * from workers order by first_seen desc, rowid desc"),
       byStatus: p("select * from workers where status = ? order by first_seen desc, rowid desc"),
+      statusCounts: p("select status, count(*) n from workers group by status"),
+      grantCounts: p("select type, count(*) n from grants where revoked_at is null group by type"),
     };
+  }
+
+  async counts(): Promise<WorkerCounts> {
+    const statuses = noStatuses();
+    for (const r of this.s.statusCounts.all() as Row[]) statuses[r.status as WorkerStatus] = Number(r.n);
+    const granted: Record<string, number> = {};
+    for (const r of this.s.grantCounts.all() as Row[]) granted[r.type as string] = Number(r.n);
+    return { statuses, granted };
   }
 
   async seen(actor: string, now: number): Promise<WorkerRecord> {

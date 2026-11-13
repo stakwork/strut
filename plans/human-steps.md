@@ -22,7 +22,7 @@
 > **Keeping this plan current.** Each session that builds an item edits
 > this file in that item's PR: its row in §12 says it is built and names
 > the PR, and wherever a section says something other than what was built,
-> it is marked **Built differently (#PR):** with what was built and why. The
+> it is marked **Built differently (#678):** with what was built and why. The
 > Rulings table changes only on Evan's word.
 
 ## Rulings (2026-11-12)
@@ -644,12 +644,13 @@ pattern). It comes with the staff app (§9).
 > **Design pass (2026-11-12),** written against `main` @f3634e97 with
 > items 1, 2a, 2b and 3 built. **Ruled the same day:** Evan agreed with
 > every recommendation in §7.12, the defaults of §7.8 included. Two things
-> are still proposed and marked so: the graders strut ships (PR 4c) and the
-> name of item 5a's accepted-answer hook, which is §8's to choose.
+> were left proposed: the graders strut ships (PR 4c, built since in #676)
+> and the name of item 5a's accepted-answer hook (none was built: §7.3).
 >
-> **4a built (stakwork/strut#671):** tests, grading, standing and
-> qualifying. Where it differs, the subsection says **Built differently
-> (#671)**. Copies (4b) and the shipped graders (4c) are not built.
+> **Built:** 4a (stakwork/strut#671: tests, grading, standing and
+> qualifying), 4b (stakwork/strut#675: copies) and 4c (stakwork/strut#676:
+> the shipped graders). Where one differs, the subsection says **Built
+> differently (#PR)**.
 
 Item 4 adds three things to the task store and nothing to the runner:
 
@@ -1233,9 +1234,9 @@ redact it.
 
 | PR | What | After |
 | --- | --- | --- |
-| 4a | Schema version 2 whole (copies' columns and CHECKs too, unused until 4b), the `tests` table and routes, `takeTest` and the draw, the grading queue with `equal` and step graders, standing, qualifying, `onGraded`, `task/me`'s flag, `GET /tasks/workers/:actor`, the specs | 3 |
-| 4b | Copies: the step's and the type's fields, the take and settle changes, deciding, `disputed`, `answers`, `onAgreed`, the specs. No migration of its own | 4a merged |
-| 4c | *Optional:* the shipped graders, `grade/overlap` and `grade/judge`, sealed, each tested against the check contract | 4a merged |
+| 4a | Schema version 2 whole (copies' columns and CHECKs too, unused until 4b), the `tests` table and routes, `takeTest` and the draw, the grading queue with `equal` and step graders, standing, qualifying, `onGraded`, `task/me`'s flag, `GET /tasks/workers/:actor`, the specs. **Built: #671** | 3 |
+| 4b | Copies: the step's and the type's fields, the take and settle changes, deciding, `disputed`, `answers`, `onAgreed`, the specs. No migration of its own. **Built: #675** | 4a merged |
+| 4c | The shipped graders, `grade/overlap` and `grade/judge`, sealed, each tested against the check contract. **Built: #676** | 4a merged |
 
 Never stacked: 4b and 4c branch from `main` after 4a has merged.
 
@@ -1699,6 +1700,18 @@ still open.
   Each move in the page is sent back as `ui/open-link` to the app, so a
   host's address bar follows, as `strut/knowledge` does.
 
+**Built differently (#678):**
+
+- **Its grants** are the `staff/*` steps, `app/list` and `earnings/read`.
+  `app/list` already carries each app's grants, so the type editor's check
+  needs no `app/get`. `earnings/read` (an admin's read in a first-party page)
+  gives the Queue its line on what workers are owed.
+- **Five tabs.** The Tests tab of §9.7 sits beside the four. The deep links
+  also take `test=<id>` and `by=<actor>` (the tasks one worker answered).
+- **A waiting run's link** shows only to a viewer `GET /apps` lists the app
+  to, which means an admin (`web/src/waiting.ts`, `WaitingOn.tsx`). A member
+  reads the text as before.
+
 ### 9.2 First: the task store off the shared bag
 
 `ctx.services.tasks` is the whole capability today (#655, #657): `ensure`,
@@ -1751,6 +1764,31 @@ settings stay behind a proposal" holds only once this is closed.
 in the page; the second is the builder's ask (§9.8). Neither is a worker's
 `task/*` step.
 
+**Built differently (#678):**
+
+- **One shared door.** `src/steps/lib/_admin-door.ts` holds the check
+  (`adminDoorOf`), `bodyOrThrow` and the in-process door (`inProcessDoor`,
+  the routes it reaches as a pattern: `STAFF_ROUTES`). `earnings/_door.ts`
+  is now a thin layer over it. A `Uint8Array` body goes as raw bytes, for a
+  test's file.
+- **More steps.** Items 4 and 5a were built first, so their steps are here
+  too. `staff/take-back { task, worker?, why }` is `POST
+  /tasks/:id/take-back`. Item 4's are `staff/tests`, `staff/test`,
+  `staff/save-test` (a new test, or with `id` a change before it is first
+  served), `staff/test-file` (base64), `staff/test-from-task` and
+  `staff/retire-test`. `staff/grant` takes `qualify`, and `staff/tasks`
+  takes `test`.
+- **What the steps carry stays behind the routes.** A call through an admin
+  door runs on `adminBag` (src/apps/tools.ts): the doors beside the shared
+  bag, but without the deployment's `onRunEvent`. A host's own listener is
+  handed every event in full, and a `staff/tests` read's `step.end` holds the
+  expected answers; this is how a grader's run is handled already. The
+  events sink only ever sent envelopes, and it loses these page reads. The
+  steps that write an expected answer list it in `redact`. The app monitor
+  keeps a failing call's config as an example, so it now redacts a step's
+  `redact` fields first (`redactedConfig`). `GET /apps/:name/usage` refuses
+  anyone but an admin for an admin-only app, as its versions do.
+
 ### 9.4 Reads the routes lack
 
 What the routes answer today: the types, the workers by status, a page of
@@ -1770,6 +1808,39 @@ All full scope only, like the rest of §6. `/tasks/stats` is mounted before
 and `settled_at`, a task's `by`, a lease's type and `closed`, and a lease's
 worker and `taken`. The memory store answers the same. **Proposed:** the
 page reads the stats every 10 s while it is shown, none while hidden.
+
+**Built differently (#678):** none of §9.4 was on the routes after #671 and
+#675. #671's `GET /tasks/workers/:actor` answered `{ worker }` alone.
+
+- **`/tasks/stats`.** What is wrong with a type's app is `appProblem`; the
+  row's `app` is the type's app name, beside `enabled`. The Queue's
+  "expires within the hour" needs `dueHour` beside `dueSoon`. The Queue
+  table shows `holding` and `asking` per type, so they are per type as well
+  as across. Each window counts `disputed` too. Test instances are not the
+  queue, so none is counted. A task past due is counted as expired at its
+  due, before the sweep marks it, as a dead lease is waiting and lost.
+  `answered` counts answers, every copy's. The newest 1,000 times of the
+  week are read once and serve all three windows, since the newest of a
+  day are among them.
+- **`?by=`** is any answer the actor gave, a copy's included, not only the
+  task's `by`: a disputed task has no `by`. It reads the existing
+  `leases_answered` index, so three indexes are new, not four:
+  `tasks_settled (type, settled_at) where test is null`,
+  `leases_type_closed (type, closed)` and `leases_worker_taken (worker,
+  taken)`.
+- **`GET /tasks/workers` rows gain `week`** (answers in 7 days) and
+  **`holding`** (the type of their live lease), in one grouped read
+  (`workersNow`). §9.5's Workers list shows both. A worker's own `week`
+  counts the leases taken in the last 7 days.
+- **`run`** is `running` (live in this process), the summary's status with
+  `waitingOn`, `stale` (started, never finished, not live), or null. A test
+  instance's is null.
+- **A task's file** also answers `404 no_file` when it is gone. An
+  instance's files are its test's.
+- **A host's own store** answers `501 not_available` on each new route its
+  capability lacks.
+- **The 10 s read** is built as proposed: React Query's interval, which does
+  not run while the page is hidden.
 
 ### 9.5 Screens
 
@@ -1887,6 +1958,29 @@ due, who answered, leases. **A task** shows:
   A host that never shows strut's UI does what it chooses; the status is
   on the page either way.
 
+**Built differently (#678):**
+
+- **The answer-schema check is one file in two places, not moved.** The
+  engine's `tsc` has `rootDir: src`, so the store cannot import
+  `kit/src/folds/answer-schema.ts`. `src/tasks/answer-schema.ts` and the
+  kit's copy are kept the same byte for byte by a test in
+  `answer-schema.test.ts`. Neither imports anything, and both count bytes
+  with `TextEncoder`. `taskAppProblem` (§9.5's check of a type's app) is in
+  the same file, so the Queue's `appProblem` and the type editor give the
+  same sentence.
+- **A save sends the whole type**, every part of it. A part the page does not
+  show (pay on a server that answers none) is sent back as it was, so a PUT
+  never drops it.
+- **A one-value shape** has its own kind picker beside "The answer is".
+- **Revoke and Take back ask why on a line in the page.** A framed app is
+  sandboxed without modals, so `window.prompt` returns nothing.
+- **Items 4 and 5a are in the screens** (§9.7). Tasks also shows each
+  answer's earning with Take back while held, a copies task's answers and
+  whether each agreed, and "make a test of it" for an answered or disputed
+  task.
+- **TaskForm's read-only mode** is `readOnly` with `value`. Without
+  `onSubmit` or `onSkip` it draws no buttons.
+
 ### 9.6 Answers to review
 
 A settled answer has woken its run, and the run has gone on: written a
@@ -1920,6 +2014,25 @@ when the server answers for it, never an empty "coming soon".
 | 4, tests and standing (§7) | A **Tests** section in the type editor; a **Tests** tab; a **Standing** column on Workers and on a type's workers | The type's test settings, its test tasks (add, edit, retire; their answers and how they are graded), each worker's standing per type and their test history, and an automatic revoke shown in the grant history with its reason. Test tasks are read through new `staff/*` steps only: the sealed table never reaches a run or a worker |
 | 5a, earnings (§8) | A **Pay** section in the type editor; **Earned**, **Held** and **Withdrawable** columns on Workers; a line on Queue | The type's pay and hold; what each worker earned and is owed. Queue says what is owed to all workers beside what the wallet holds. The total owed also shows in `strut/earnings` beside the credit owed as service (§8, "Books") |
 | 5b, payouts | A **Payouts** tab | Withdrawals by workers (on their way, paid, failed), the caps per worker and per day, and a switch that stops every worker's withdrawals at once |
+
+**Built differently (#678): the places of items 4 and 5a came with PR 1.**
+§9.10 assumed item 6 would come first; items 4 and 5a were built before
+it, and their routes answer. What shows is decided in the page
+(`shownOf`, `src/apps/staff/src/lib/view.ts`), never as an empty "coming
+soon":
+
+- The **Tests** tab and a type's Tests and Copies sections show when the
+  test routes answer. A host's own task store answers `not_available`.
+- **Standing** shows when the workers carry it and some type has tests.
+- The **Pay** section shows when the types carry `holdHours`.
+- **Earned, Held and Withdrawable** show when the workers carry a balance
+  and some type is paid or someone is owed.
+- The **Queue's line** shows when `earnings/read` says any worker was ever
+  paid (`showsWorkers`' rule).
+
+An automatic revoke shows in a worker's grant history as "by standing
+(automatic)" with its `why`. Tests are read and written only through the
+`staff/*` steps. 5b has no place yet.
 
 ### 9.8 `task/set-type`
 
@@ -2011,6 +2124,9 @@ branched after the one before merged:
 
 Each updates `AGENTS.md` and specs/API.md (§22's new reads, a `strut/staff`
 part beside §14.14). The verdict (§9.6) is ruled and comes after them.
+**Built differently (#678):** PR 1 updates the area docs (`docs/tasks.md`,
+`docs/apps.md`, `docs/web.md`, `docs/payments.md`), not `AGENTS.md`, which
+holds only rules since #668. The `strut/staff` part is specs/API.md §14.15.
 Cancelling one task is not in item 6 (ruled). The places of §9.7 come
 with items 4, 5a and 5b.
 
@@ -2025,6 +2141,20 @@ with items 4, 5a and 5b.
 | The reads | `GET /tasks?by=`; one worker's week and leases; a task's file, and `404 not_listed` for a path not on its list; a task's run status |
 | `task/set-type` | A direct call is refused. The builder's call records a proposal with the card's fields. A shape strut cannot check is refused before any proposal. A member's accept is `admin_required:`; an admin's saves the type with `changedBy` set to them. A forged `ctx.proposal` with no accepted record is refused. The person's edits are merged and checked again. A field left out keeps its value |
 | The page | Its pure parts in `src/apps/staff.test.ts`: the editor's model to schema and back, every schema it writes passing `answerSchemaProblem`, a schema it cannot draw opening in JSON, the Queue's warnings, the deep-link input. `npx tsc -p kit/tsconfig.staff.json` |
+
+**Built differently (#678):** "The bag" row was #663's. PR 1's tests are:
+
+- `src/tasks/staff-reads.test.ts`: the stats and the reads over both
+  stores, with a fixed clock.
+- `src/apps/staff.test.ts`: the page's pure parts, the draft, the door, the
+  seed and listing, and the page's calls as an admin, a member, a visitor
+  and a peer. It also shows that items 4 and 5a show only when the server
+  answers for them, and that no expected answer reaches a run, an event a
+  listener hears, the monitor or a file on disk.
+- `web/src/waiting.test.ts`: the waiting run's link.
+- The answer schema's two copies, in `answer-schema.test.ts`.
+
+The `task/set-type` row is PR 2's.
 
 ### 9.12 Ruled (2026-11-12)
 
@@ -2121,7 +2251,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **PR 1 built**: stakwork/strut#678 (the app, with §9.7's places for items 4 and 5a). Differs in §9.1, §9.3–§9.5, §9.7, §9.10, §9.11. PR 2 (`task/set-type`) not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
