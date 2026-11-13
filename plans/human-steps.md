@@ -610,7 +610,7 @@ public app. Anyone with the link can load the page; it shows a sign-in
 and nothing else. An app in the public view is held at a release, so the
 builder's edits are drafts until someone makes them live.
 
-**Built differently (#PR):** the builder does not ask the person to open
+**Built differently (#684):** the builder does not ask the person to open
 the Public view dialog. Once the worker app draws its types it calls
 `app/make-public { name, version }`, a proposal only an ADMIN accepts
 (plans/public-surface.md decision 22, ruled 2026-11-13). The card lists
