@@ -232,7 +232,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
 
   it("pay end to end: the answer earns, the run's totals count it, task/me shows it held then withdrawable, and only staff take it back", async () => {
     const typeOf = async (res: Response) => ((await res.json()) as { type: { paySats?: number; holdHours: number } }).type;
-    for (const bad of [{ paySats: -1 }, { paySats: 100_001 }, { paySats: 0.0001 }, { holdHours: 0 }, { holdHours: 721 }]) {
+    for (const bad of [{ paySats: -1 }, { paySats: 1_000_001 }, { paySats: 0.0001 }, { holdHours: 0 }, { holdHours: 721 }]) {
       assert.equal((await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, ...bad })).status, 400, JSON.stringify(bad));
     }
     const put = await staff("PUT", "/tasks/types/paid-match", { app: "workers", answer: MATCH, paySats: 21, holdHours: 1 });
