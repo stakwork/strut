@@ -143,18 +143,39 @@ index. A change in this area updates this file, not AGENTS.md.
   the tree changes until a person accepts. The loop closes in the claims
   layer with nothing of the dream's own: an accepted edit moves the page's
   version, the claim reads `stale`, and the next run that opens the page is
-  judged. A claim that a page gets OPENED sits on the page that lists it;
-  the prompt says so, and says what belongs in the root's docs (what
-  applies on almost every turn) and what to list as `stuck` (the page
-  already says it and it went wrong again: the tree may not be able to fix
-  it, a person should look). `dream/done` moves the marks only after the
-  agent finished, so a dream that failed reads the same turns again; with
-  no new turns no model is called. The workflow is `sealed` (its run log
-  holds the conversations it read), and so are its writing steps and
-  `dream/turns`: the meta surface cannot run them, read the dream's runs or
-  publish a workflow that reaches them. Its own runs open no page (a tender
-  reads through `knowledge/page`), so they are never checked against the
-  claims. A person keeps it in the Knowledge app (strut/knowledge, above):
+  judged. **Its rules are Concept pages, not its prompt** (ruling 7 of
+  2026-11-12): the YAML keeps the mechanics — the steps, how each tool is
+  called, that the material is data, the answer's shape — and the
+  judgment is in the dream's OWN tree, which strut seeds like `Job`
+  (`src/concepts/Dream.md`): `Dream` holds what is true for any source —
+  the posture, what a lesson is, the three things, and where a lesson goes
+  (the page it belongs on; reworded and put first when the work opened the
+  page and still went wrong; the description when the page was never
+  opened; the root's docs when it applies on almost every turn; `stuck`,
+  for a person, when the page already says it plainly) — and one page
+  under it per KIND of source holds what that source is, what to look for
+  in it and which run a person's words there are about; the first,
+  `Assistant Conversations`, is the material `dream/turns` hands over.
+  `context/concept` reads `params.concept` (`Dream`) and `input.source`
+  (`Assistant Conversations` by default) into the agent's system prompt,
+  after the mechanics, only when there are turns. The two shipped pages
+  are the FIXED BASE, the same on every strut and put back at every boot
+  like `Job` and `Workflow Builder`; what evolves is the pages a workspace
+  adds AROUND them (under `Dream`, under a source's page), which the
+  rendered sections list and the agent opens with `graph/graph-get` when
+  they bear on what it reads. Every page of its own guidance the dream
+  reads is opened (graph-get records the version), so the rules are
+  MEASURED: a claim on one judges the dream's runs, and a branch can vary
+  the pages around the base. The tree it TENDS it reads only through
+  `knowledge/page`, so it is never checked against that tree's claims, and
+  a quiet dream opens nothing at all. A second kind of source is its page
+  under `Dream` and the step that hands over its material. `dream/done`
+  moves the marks only after the agent finished, so a dream that failed
+  reads the same turns again; with no new turns no model is called. The
+  workflow is `sealed` (its run log holds the conversations it read), and
+  so are its writing steps and `dream/turns`: the meta surface cannot run
+  them, read the dream's runs or publish a workflow that reaches them. A
+  person keeps it in the Knowledge app (strut/knowledge, above):
   a Concept's claims with their status, the dream's changes to it drawn
   over the page and accepted or rejected there by an ADMIN (a proposal made
   in no conversation shows on strut's own pages to an admin, `pageSees`),
@@ -257,7 +278,7 @@ Concept files → `Concept` nodes on either engine: seedConcepts(graph, sets) �
 
 ### `src/concepts/`
 
-the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow Builder` (what the builder's prompt reads; byte-identical to the page the stakgraph lab seeded first, whose stamps `lab/builder/concepts/` + `lab/job/concepts/` count as strut's) and `Job` (what the job workflow puts in its agent's prompt, `context/concept`) — roots, workspace-general; each deployment grows the tree under them — ONE TREE PER AGENT: `Job` is the job agent's and `Workflow Builder` the builder's, and the orchestrator reads the kinds under BOTH (`docs: false`) as its two lists, so a kind the builder builds is listed under `Workflow Builder`, never under `Job` (`Workflow Build`, the builder's entry under `Job` while the orchestrator read `Job` alone, is `retired` in `STRUT_CONCEPTS` and soft-deleted at boot; `Job`'s own docs tell a job agent that meets a workflow or an app that lives in a workspace to run `builder` through meta/run-workflow) — and `App` UNDER `Workflow Builder`: the builders' manual (layout, kit, hooks, grants, routines; hand a published app over BY NAME, `{ kind: "app", app }`), and `Game` UNDER `App`: a game as an app — the `game` starter, the loop, input, assets as imports, physics, scores, the look with `window.__debug`). `Job App`, the job side of an app, is `retired` too (2026-10-22): a page over a job's own results is an HTML file in its directory, an app is the builder's, and `Job`'s docs say to pass the builder's app deliverable on
+the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow Builder` (what the builder's prompt reads; byte-identical to the page the stakgraph lab seeded first, whose stamps `lab/builder/concepts/` + `lab/job/concepts/` count as strut's) and `Job` (what the job workflow puts in its agent's prompt, `context/concept`) — roots, workspace-general; each deployment grows the tree under them — ONE TREE PER AGENT: `Job` is the job agent's and `Workflow Builder` the builder's, and the orchestrator reads the kinds under BOTH (`docs: false`) as its two lists, so a kind the builder builds is listed under `Workflow Builder`, never under `Job` (`Workflow Build`, the builder's entry under `Job` while the orchestrator read `Job` alone, is `retired` in `STRUT_CONCEPTS` and soft-deleted at boot; `Job`'s own docs tell a job agent that meets a workflow or an app that lives in a workspace to run `builder` through meta/run-workflow) — and `App` UNDER `Workflow Builder`: the builders' manual (layout, kit, hooks, grants, routines; hand a published app over BY NAME, `{ kind: "app", app }`), and `Game` UNDER `App`: a game as an app — the `game` starter, the loop, input, assets as imports, physics, scores, the look with `window.__debug`) — and `Dream`, the dream's own tree (a root; what holds for any source: the posture, what a lesson is, where it goes) with one page per KIND of source under it, `Assistant Conversations` the first (what `dream/turns` hands over: what to look for in it, which run a person's words are about): the dream's rules, read by the `dream` workflow, not its prompt. Like every page here they are the fixed base every strut ships (`Job` → a kind, `Workflow Builder` → `App`, `Dream` → `Assistant Conversations`); what a workspace learns grows in the pages around them. `Job App`, the job side of an app, is `retired` too (2026-10-22): a page over a job's own results is an HTML file in its directory, an app is the builder's, and `Job`'s docs say to pass the builder's app deliverable on
 
 ### `src/steps/lib/context/`
 
