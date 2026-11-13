@@ -1004,7 +1004,7 @@ source wakes the run as for the other three.
 Copies and tests stay apart: copies settle real tasks, tests score
 workers. Scoring a worker by agreement with other workers is later.
 
-**Built differently (#PRNUM):**
+**Built differently (#675):**
 
 - **A type without a `copies` rule asks one worker** (§7.7's "null is
   off"): a step asking more fails `bad_request: copies:` before a task is
@@ -1079,7 +1079,7 @@ New on the service, beside `onSettle`: `onGraded` and `onAgreed` (§7.9).
 The capability gains nothing that reaches a test: authoring is the
 routes', grading the service's.
 
-**Built differently (#PRNUM, 4b):** one more nullable column,
+**Built differently (#675, 4b):** one more nullable column,
 `leases.agrees` (1 or 0 once a copies task is decided; §7.6 says why),
 added as #664 added pay's (`ADD COLUMN` when the file lacks it,
 `user_version` still 2), and an index, `tasks_open_copies`, for the
@@ -2079,7 +2079,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
-| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#PRNUM (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). 4c (graders) not built |
+| 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). 4c (graders) not built |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
