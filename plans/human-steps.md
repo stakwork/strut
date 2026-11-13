@@ -2,7 +2,7 @@
 
 > **Status (2026-11-12): items 1 (stakwork/strut#654), 2a
 > (stakwork/strut#655), 2b (stakwork/strut#656) and 3
-> (stakwork/strut#PRNUM) built; the rest proposed** — §12 has each item's
+> (stakwork/strut#657) built; the rest proposed** — §12 has each item's
 > state. Written against strut
 > `main` @a5663769. The rows under
 > "Rulings" are the owner's, from one conversation. Everything else is
@@ -471,7 +471,7 @@ oldest first, and the result's `type` tells the app which view to show.
 With a `type` it gives only that type's. `task/me` lists the types the
 worker holds in this app, so the app can show a menu.
 
-**Built differently (#PRNUM):**
+**Built differently (#657):**
 
 - **`task/next` hands out more:** `{ lease, type, show, files, expires,
   answer }`. `files` is the task's list (§5.5) and `answer` the type's
@@ -516,7 +516,7 @@ worker holds in this app, so the app can show a menu.
 The first call by an actor the store has not seen writes a `workers` row
 with status `new`. Staff see it and grant task types (§6).
 
-**Built differently (#PRNUM):**
+**Built differently (#657):**
 
 - **The signed-in bag** carries the worker's calls of the store alone
   (`next`, `submit`, `skip`, `file`, `me`: `TasksService.worker`), never the
@@ -559,7 +559,7 @@ with status `new`. Staff see it and grant task types (§6).
 - The `App` Concept page gets a section on worker apps, so the builder
   knows the hooks and the grants.
 
-**Built differently (#PRNUM):**
+**Built differently (#657):**
 
 - **`useTaskFile(task, path)`**, not `useTaskFile(path)`: a hook has no
   current lease of its own, so the page passes `useTask().task`. Beside it
@@ -623,7 +623,7 @@ Routes, full scope only (specs/API.md gets a section):
 | `PUT /tasks/workers/:actor/grants/:type`, `DELETE …` | Grant and revoke a task type |
 | `GET /tasks`, `GET /tasks/:id` | Tasks by type, status or run, with their leases |
 
-**Built differently (#PRNUM):** `src/tasks/routes.ts`, specs/API.md §22.
+**Built differently (#657):** `src/tasks/routes.ts`, specs/API.md §22.
 `DELETE /tasks/types/:name` is refused (`409 in_use`) while a task of the
 type is open, and revokes the type's live grants, so a type made again
 under the name starts with no workers; its tasks on file keep the name.
@@ -756,7 +756,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing | **Built**: stakwork/strut#654. Differs in §2.3 |
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
-| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#PRNUM. Differs in §5.1–§5.3, §6 |
+| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6 |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
