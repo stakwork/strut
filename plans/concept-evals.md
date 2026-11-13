@@ -1,8 +1,9 @@
 # Concept evals — trying a change to the Concept tree safely
 
 > **Status (2026-11-12):** the primitives below were ruled by Evan on
-> 2026-11-12, in a design conversation that Paul joined. Work item (a) is
-> built (this file's first PR). The rest are not started. Everything marked
+> 2026-11-12; Paul's remarks reached the conversation through Evan, and the
+> discussion with Paul and Tom is ongoing. Work item (a) is built (this
+> file's first PR). The rest are not started. Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
 > `job-claims.md`, `concept-history.md` (the history in git), and
