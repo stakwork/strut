@@ -10,12 +10,13 @@ export default defineStep({
   type: "earnings/read-invoice",
   effect: "read",
   description:
-    "Read a BOLT11 invoice for a withdrawal, paying nothing: { ok: true, msat, maxFeeMsat, expiresIn (s), usd?, overBalance, network?, invoice: { description?, … } } or { ok: false, error }. Give the wallet's balance, provider and the rate to judge it against.",
+    "Read a BOLT11 invoice for a withdrawal, paying nothing: { ok: true, msat, maxFeeMsat, expiresIn (s), usd?, overBalance, network?, shortOfWorkers?: { afterMsat, owedMsat, shortMsat }, invoice: { description?, … } } or { ok: false, error }. Give the wallet's balance, provider and the rate to judge it against, and what workers are owed: `shortOfWorkers` says the payment would leave the wallet short of it.",
   input: z.object({
     invoice: z.string(),
     balanceMsat: z.number().nonnegative().optional(),
     usdPerBtc: z.number().positive().optional(),
     provider: z.string().nullable().optional(),
+    owedToWorkersMsat: z.number().nonnegative().optional(),
   }),
   output: z.any(),
   async run(cfg) {
@@ -23,6 +24,7 @@ export default defineStep({
       ...(cfg.balanceMsat !== undefined ? { balanceMsat: cfg.balanceMsat } : {}),
       ...(cfg.usdPerBtc !== undefined ? { usdPerBtc: cfg.usdPerBtc } : {}),
       ...(cfg.provider !== undefined ? { provider: cfg.provider } : {}),
+      ...(cfg.owedToWorkersMsat !== undefined ? { owedToWorkersMsat: cfg.owedToWorkersMsat } : {}),
     });
   },
 });

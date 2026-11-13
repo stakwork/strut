@@ -1,5 +1,5 @@
 import type { ConnectionRequest } from "@strut/kit/wallet";
-import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
+import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage, type WorkersView } from "@strut/kit/folds";
 import { takeTicket } from "./ticket";
 import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
 import { setVisitorSession } from "./visitor-signin";
@@ -3241,6 +3241,7 @@ export async function liveClaim(base: string, macaroon: string): Promise<ClaimAn
 // and margin; msat for what the wallet holds and pays.
 
 export type EarningsBy = "item" | "day" | "package" | "total";
+export type { WorkersView };
 export interface EarningsRow {
   /** `workflow:<name>`, `step:<type>`, `expired`, a day, a package, or `total`. */
   key: string;
@@ -3295,6 +3296,9 @@ export interface EarningsView {
   totals: Omit<EarningsRow, "key" | "price">;
   rows: EarningsRow[];
   outstanding: { tokens: number; usd: number; held: number };
+  /** What workers are owed for accepted answers (plans/human-steps.md §8.1),
+   *  in sats; not in a view scoped to a package. */
+  workers?: WorkersView;
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   /** Credit this strut bought from other struts (item 9). */
@@ -3309,6 +3313,10 @@ export interface EarningsView {
     expectedMsat: number;
     pendingMsat: number;
     differenceMsat?: number;
+    /** What workers are owed now, held and withdrawable both. */
+    owedToWorkersMsat: number;
+    /** balance − owed to workers, when the balance was read: below 0, short. */
+    coverMsat?: number;
   };
 }
 export interface LedgerEntryView {

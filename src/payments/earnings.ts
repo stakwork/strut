@@ -15,11 +15,18 @@
  * items carry their bare local names (plans/packages-ux.md), so it is the sum
  * over the subjects its newest release holds; for one INSTALLED here, the
  * subjects under its prefix (`deps.packageSubjects` decides which).
+ *
+ * What WORKERS are owed (plans/human-steps.md §8.1, "The books"): a debt in
+ * sats beside the credit owed as service, which is in dollars. Read from the
+ * ledger's `payees` and `pay_daily`, in the unscoped view only. With the
+ * wallet, its COVER: the balance less what workers are owed, below 0 when
+ * the wallet is short. No sats move for it, so the books check
+ * (`expectedMsat`) does not change.
  */
 
 import type { LightningCapability } from "./lightning.js";
-import type { LedgerStore, Micros } from "./ledger.js";
-import { microsToUsd } from "./ledger.js";
+import type { LedgerStore, Micros, PayDailyRow } from "./ledger.js";
+import { microsToUsd, ZERO_OWED } from "./ledger.js";
 import type { WalletInfo } from "./settings.js";
 import type { PendingView } from "./withdrawals.js";
 
@@ -79,6 +86,31 @@ export interface WalletView extends WalletInfo {
   pendingMsat: number;
   /** balance − expected, when the balance was read. */
   differenceMsat?: number;
+  /** What workers are owed now, held and withdrawable both
+   *  (plans/human-steps.md §8.1): sats this wallet must hold for them. */
+  owedToWorkersMsat: number;
+  /** balance − owed to workers, when the balance was read: below 0, the
+   *  wallet is short of what workers are owed. */
+  coverMsat?: number;
+}
+
+/** What workers are owed for accepted answers (plans/human-steps.md §8.1):
+ *  sats, never dollars. */
+export interface WorkersView {
+  /** Now, not ranged: earned, less taken back, less withdrawn. */
+  owedMsat: number;
+  /** Of which still in its hold. */
+  heldMsat: number;
+  /** owed − held: what workers may withdraw (item 5b). */
+  withdrawableMsat: number;
+  /** Workers with a balance. */
+  payees: number;
+  /** Answers accepted in the range, and the sats they earned — a later
+   *  take-back included — by UTC day, each day with what of it was taken
+   *  back since. */
+  accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> };
+  /** Of the range's answers, those taken back. */
+  takenBack: { answers: number; msat: number };
 }
 
 export interface EarningsView {
@@ -93,6 +125,9 @@ export interface EarningsView {
   rows: EarningsRowView[];
   /** Paid for and not yet charged: still owed as service. Now, not ranged. */
   outstanding: { tokens: number; usd: number; held: number };
+  /** What workers are owed (plans/human-steps.md §8.1). Not in a view
+   *  scoped to a package or a prefix: it is the wallet's, not a package's. */
+  workers?: WorkersView;
   /** Sats paid in, in the range, with the dollars they were credited as. */
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
   /** Sats an admin added to the wallet by hand (Add sats), in the range:
@@ -127,6 +162,8 @@ export interface EarningsDeps {
   settleDeposits?: () => Promise<unknown>;
   /** How long the balance is waited on. */
   balanceMs?: number;
+  /** The clock a worker's earning is held by: the task store's. */
+  now?: () => number;
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -210,7 +247,8 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
   const scoped = !!(prefix || subjects);
   const filter = { ...(prefix ? { prefix } : {}), ...(subjects ? { subjects } : {}) };
   if (q.wallet && deps.settleDeposits) await deps.settleDeposits().catch(() => {});
-  const [rows, total, outstanding, received, sends, runnable, pending, deposited] = await Promise.all([
+  const now = deps.now?.() ?? Date.now();
+  const [rows, total, outstanding, received, sends, runnable, pending, deposited, payDays, owed] = await Promise.all([
     ledger ? ledger.earnings({ by, ...range, ...filter }) : Promise.resolve([]),
     ledger ? ledger.earnings({ by: "total", ...range, ...filter }) : Promise.resolve([]),
     ledger ? ledger.outstanding() : Promise.resolve({ tokens: 0, usd: 0, held: 0 }),
@@ -219,6 +257,10 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
     deps.runnable ? deps.runnable().catch(() => []) : Promise.resolve([]),
     deps.pending && !scoped ? deps.pending() : Promise.resolve([]),
     ledger && !scoped ? ledger.deposited(range) : Promise.resolve([]),
+    ledger && !scoped ? ledger.payDaily(range) : Promise.resolve([]),
+    // What workers are owed is the whole wallet's: read for the unscoped
+    // view, and for the wallet's cover whatever the scope.
+    ledger && (!scoped || q.wallet) ? ledger.owedToWorkers({ now }) : Promise.resolve({ ...ZERO_OWED }),
   ]);
   const withdrawn = sends.filter((r) => r.purpose === "withdrawal");
   const purchased = sends.filter((r) => r.purpose === "purchase");
@@ -246,6 +288,7 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
       };
     }),
     outstanding: { tokens: outstanding.tokens, usd: usd(outstanding.usd), held: usd(outstanding.held) },
+    ...(scoped ? {} : { workers: workersView(owed, payDays) }),
     received: {
       count: received.reduce((n, r) => n + r.count, 0),
       msat: received.reduce((n, r) => n + r.msat, 0),
@@ -286,10 +329,35 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
   const pendingMsat = allPending.reduce((n, p) => n + p.msat, 0);
   const expectedMsat =
     lifeIn.reduce((n, r) => n + r.msat, 0) + lifeAdded.reduce((n, r) => n + r.msat, 0) - lifeOut.reduce((n, r) => n + r.msat + r.feeMsat, 0) - pendingMsat;
-  const wallet: WalletView = { ...info, expectedMsat, pendingMsat, ...(rate ? { rate } : {}) };
+  const wallet: WalletView = { ...info, expectedMsat, pendingMsat, ...(rate ? { rate } : {}), owedToWorkersMsat: owed.owedMsat };
   if ("msat" in balance) {
     wallet.balance = { msat: balance.msat, sats: Math.floor(balance.msat / 1000), ...(rate ? { usd: Math.round((balance.msat / 1000 / 100_000_000) * rate * 100) / 100 } : {}) };
     wallet.differenceMsat = balance.msat - expectedMsat;
+    wallet.coverMsat = balance.msat - owed.owedMsat;
   } else wallet.error = balance.error;
   return { ...out, wallet };
+}
+
+/** `pay_daily`'s rows in the range, by day (every task type summed), and
+ *  what workers are owed now. */
+function workersView(owed: { owedMsat: number; heldMsat: number; withdrawableMsat: number; payees: number }, rows: PayDailyRow[]): WorkersView {
+  const days = new Map<string, WorkersView["accepted"]["days"][number]>();
+  for (const r of rows) {
+    const d = days.get(r.day) ?? { day: r.day, answers: 0, msat: 0, takenBackAnswers: 0, takenBackMsat: 0 };
+    d.answers += r.answers;
+    d.msat += r.msat;
+    d.takenBackAnswers += r.takenBackAnswers;
+    d.takenBackMsat += r.takenBackMsat;
+    days.set(r.day, d);
+  }
+  const list = [...days.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  const sum = (k: "answers" | "msat" | "takenBackAnswers" | "takenBackMsat") => list.reduce((n, d) => n + d[k], 0);
+  return {
+    owedMsat: owed.owedMsat,
+    heldMsat: owed.heldMsat,
+    withdrawableMsat: owed.withdrawableMsat,
+    payees: owed.payees,
+    accepted: { answers: sum("answers"), msat: sum("msat"), days: list },
+    takenBack: { answers: sum("takenBackAnswers"), msat: sum("takenBackMsat") },
+  };
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useStrutClient } from "@strut/kit";
-import { fmtExpiresIn, fmtSats, fmtUsd, withdrawRefusal } from "@strut/kit/folds";
+import { fmtExpiresIn, fmtSats, fmtUsd, shortOfWorkersWarning, withdrawRefusal, type WorkersView } from "@strut/kit/folds";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,8 +11,11 @@ type Wallet = NonNullable<EarningsView["wallet"]>;
 /** Withdraw: a BOLT11 invoice pasted and read by the server's own reader
  *  (`earnings/read-invoice`, what strut's own dialog reads it with), the
  *  amount it asks and its fee cap confirmed, then paid — what the person
- *  confirmed is what the route checks. It cannot be taken back. */
-export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; onClose: () => void }) {
+ *  confirmed is what the route checks. It cannot be taken back. Once
+ *  workers are owed for accepted answers (plans/human-steps.md §8.1), the
+ *  reader says when the amount would leave the wallet short of it: a
+ *  warning, never a refusal. */
+export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; workers?: WorkersView; onClose: () => void }) {
   const { wallet } = props;
   const client = useStrutClient();
   const [text, setText] = useState("");
@@ -31,6 +34,7 @@ export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; 
           provider: wallet.provider,
           ...(wallet.balance ? { balanceMsat: wallet.balance.msat } : {}),
           ...(wallet.rate ? { usdPerBtc: wallet.rate } : {}),
+          ...(wallet.owedToWorkersMsat ? { owedToWorkersMsat: wallet.owedToWorkersMsat } : {}),
         })
         .then((r) => alive && setReading(r), (err) => alive && setReading({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     }, 250);
@@ -62,7 +66,8 @@ export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; 
           <DialogTitle>Withdraw</DialogTitle>
           <DialogDescription>
             Pay a Lightning invoice out of this wallet. It holds {wallet.balance ? fmtSats(wallet.balance.msat) : "an amount the wallet did not say"}
-            {props.outstandingUsd > 0 ? `; buyers are still owed ${fmtUsd(props.outstandingUsd)} as service` : ""}.
+            {props.outstandingUsd > 0 ? `; buyers are still owed ${fmtUsd(props.outstandingUsd)} as service` : ""}
+            {props.workers && props.workers.owedMsat > 0 ? `; workers are owed ${fmtSats(props.workers.owedMsat)} for accepted answers` : ""}.
           </DialogDescription>
         </DialogHeader>
         {stage === "paste" && (
@@ -75,6 +80,7 @@ export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; 
                 {reading.invoice.description && <div>“{reading.invoice.description}”</div>}
                 <div className="text-muted-foreground">Ends {fmtExpiresIn(reading.expiresIn)} · routing fee at most {fmtSats(reading.maxFeeMsat)}</div>
                 {reading.network && <div className="text-muted-foreground">A {reading.network} invoice: the wallet decides whether it pays one.</div>}
+                {reading.shortOfWorkers && <div className="text-destructive">{shortOfWorkersWarning(reading.shortOfWorkers)}</div>}
                 {reading.overBalance && <div className="text-destructive">More than this wallet can send.</div>}
               </div>
             )}
@@ -87,7 +93,8 @@ export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; 
         {stage === "confirm" && reading?.ok && (
           <div className="flex flex-col gap-3">
             <div className="text-sm">
-              Pay {fmtSats(reading.msat)} out of this wallet, with a routing fee of at most {fmtSats(reading.maxFeeMsat)}? It cannot be taken back.
+              Pay {fmtSats(reading.msat)} out of this wallet, with a routing fee of at most {fmtSats(reading.maxFeeMsat)}?
+              {reading.shortOfWorkers ? ` It leaves the wallet ${fmtSats(reading.shortOfWorkers.shortMsat)} short of what workers are owed.` : ""} It cannot be taken back.
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setStage("paste")}>Back</Button>

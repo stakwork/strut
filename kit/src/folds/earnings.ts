@@ -1,7 +1,9 @@
 /** EARNINGS (plans/paid-runs.md §8): the words and figures every place
  *  that shows what a server earned writes them with — strut's own Earnings
  *  tab (`web/src/earnings.ts` re-exports them) and the `strut/earnings` app.
- *  Dollars for earned, cost and margin; sats for what a wallet holds. Pure. */
+ *  Dollars for earned, cost and margin; sats for what a wallet holds, and for
+ *  what workers are owed for accepted answers (plans/human-steps.md §8.1),
+ *  beside the wallet's cover of it. Pure. */
 
 /** Dollars, the way the Earnings tab writes them: cents, but a sub-cent
  *  amount keeps four places (a single run is often a fraction of a cent). */
@@ -96,4 +98,71 @@ export function fmtExpiresIn(secs: number): string {
 /** Rows sorted for a table: most earned first, then by name. */
 export function byEarned<T extends { key: string; earned: number }>(rows: T[]): T[] {
   return [...rows].sort((a, b) => b.earned - a.earned || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+// ── What workers are owed (plans/human-steps.md §8.1, "The books") ─────────
+//
+// A debt in SATS for accepted answers, beside the credit owed as service,
+// which is in dollars. The wallet must hold it, held and withdrawable both:
+// its COVER is the balance less what workers are owed. A strut that never
+// paid a worker shows none of it.
+
+/** `GET /earnings`' `workers`. */
+export interface WorkersView {
+  owedMsat: number;
+  heldMsat: number;
+  withdrawableMsat: number;
+  payees: number;
+  accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> };
+  takenBack: { answers: number; msat: number };
+}
+
+/** Whether a page shows what workers are owed: once any worker was paid
+ *  (something is owed, or answers earned in the range). A strut that never
+ *  paid one reads as it did before workers were paid. */
+export function showsWorkers(w: WorkersView | undefined): w is WorkersView {
+  return !!w && (w.owedMsat > 0 || w.payees > 0 || w.accepted.answers > 0 || w.takenBack.answers > 0);
+}
+
+/** The line under "Owed to workers": `≈ $19.00 · 9,000 sats held, 10,000
+ *  sats withdrawable · 2 workers` (or `all held`, `all withdrawable`).
+ *  Dollars at the rate of the moment. */
+export function workersOwedSub(w: WorkersView, usdPerBtc?: number): string {
+  const parts: string[] = [];
+  if (usdPerBtc && w.owedMsat > 0) parts.push(`≈ ${fmtUsd(usdOfMsat(w.owedMsat, usdPerBtc))}`);
+  if (w.owedMsat > 0) {
+    parts.push(
+      w.withdrawableMsat <= 0 ? "all held" : w.heldMsat <= 0 ? "all withdrawable" : `${fmtSats(w.heldMsat)} held, ${fmtSats(w.withdrawableMsat)} withdrawable`,
+    );
+  }
+  parts.push(`${w.payees} worker${w.payees === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+/** The answers the range accepted, in a line: `12 answers accepted, 30,000
+ *  sats; 1 taken back (2,000 sats).` */
+export function workersAcceptedLine(w: WorkersView): string {
+  const a = w.accepted;
+  const head = `${a.answers} answer${a.answers === 1 ? "" : "s"} accepted from workers, earning ${fmtSats(a.msat)}`;
+  return w.takenBack.answers > 0 ? `${head}; ${w.takenBack.answers} of them taken back (${fmtSats(w.takenBack.msat)}).` : `${head}.`;
+}
+
+/** A day's Workers cell: the sats that day's answers earned, less what of
+ *  them was taken back since. */
+export const workersDayMsat = (d: { msat: number; takenBackMsat: number }): number => d.msat - d.takenBackMsat;
+
+/** Whether the wallet covers what workers are owed, in a line; `short` when
+ *  it does not. Null when nothing is owed or the balance was not read. */
+export function coverLine(wallet: { coverMsat?: number; owedToWorkersMsat?: number } | undefined): { text: string; short: boolean } | null {
+  const owed = wallet?.owedToWorkersMsat ?? 0;
+  if (!wallet || owed <= 0 || wallet.coverMsat === undefined) return null;
+  if (wallet.coverMsat >= 0) return { short: false, text: `Covers the ${fmtSats(owed)} workers are owed, with ${fmtSats(wallet.coverMsat)} to spare.` };
+  return { short: true, text: `Short of what workers are owed by ${fmtSats(-wallet.coverMsat)}: they are owed ${fmtSats(owed)}. Add sats to cover it.` };
+}
+
+/** Withdraw's warning when paying would leave the wallet short of what
+ *  workers are owed (plans/human-steps.md §8.1, ruling 7): a warning, never
+ *  a refusal — the payment can still be made. */
+export function shortOfWorkersWarning(s: { afterMsat: number; owedMsat: number; shortMsat: number }): string {
+  return `Paid, this leaves the wallet as little as ${fmtSats(s.afterMsat)}, ${fmtSats(s.shortMsat)} short of the ${fmtSats(s.owedMsat)} workers are owed for accepted answers. Their pay comes out of this wallet.`;
 }

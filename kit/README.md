@@ -230,7 +230,13 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `missingRequired`, `contentToSubmit`, `answerOf` — the form's content as
   the answer, numbers read and a pick mapped back to the schema's value —
   and `formProblem`, why a schema is no form; strut's UI draws the
-  builder's questions with it, `strut/views`' TaskForm a task's answer), and
+  builder's questions with it, `strut/views`' TaskForm a task's answer),
+  `earnings.ts` (the words and figures of a server's earnings, which strut's
+  Earnings tab and `strut/earnings` both write with: dollars, sats, prices,
+  ranges, a withdrawal's refusal; and what workers are owed for accepted
+  answers — `showsWorkers`, none on a strut that never paid one,
+  `workersOwedSub`, `workersDayMsat`, `coverLine`, whether the wallet covers
+  it, and `shortOfWorkersWarning`, Withdraw's warning), and
   `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is

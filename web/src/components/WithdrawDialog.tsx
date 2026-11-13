@@ -1,6 +1,6 @@
 import { useMemo, useState } from "preact/hooks";
 import * as api from "../api";
-import { fmtExpiresIn, fmtSats, fmtUsd, maxWithdrawMsat, readWithdrawInvoice, usdOfMsat, withdrawRefusal } from "../earnings";
+import { fmtExpiresIn, fmtSats, fmtUsd, maxWithdrawMsat, readWithdrawInvoice, shortOfWorkersWarning, usdOfMsat, withdrawRefusal, workersOwedSub, type WorkersView } from "../earnings";
 
 // ── Withdraw (plans/paid-runs.md §8, decision 19) ──────────────────────────
 //
@@ -11,6 +11,9 @@ import { fmtExpiresIn, fmtSats, fmtUsd, maxWithdrawMsat, readWithdrawInvoice, us
 // an invoice for any other amount is refused by the server. The answer is
 // the payment's state and fee, or the wallet's refusal as it came; a
 // pending one is read again by asking again (the server never pays twice).
+// Once workers are owed for accepted answers (plans/human-steps.md §8.1), it
+// shows that beside the balance and warns when the amount would leave the
+// wallet short of it: a warning, never a refusal (5a warns, 5b refuses).
 
 type Stage =
   | { at: "edit" }
@@ -22,6 +25,8 @@ type Stage =
 export function WithdrawDialog(props: {
   wallet: NonNullable<api.EarningsView["wallet"]>;
   outstanding: api.EarningsView["outstanding"];
+  /** What workers are owed, once any was paid. */
+  workers?: WorkersView;
   onClose: () => void;
   /** A payment settled or went out: the tab reads its numbers again. */
   onPaid: () => void;
@@ -31,7 +36,11 @@ export function WithdrawDialog(props: {
   const balance = props.wallet.balance?.msat;
   const rate = props.wallet.rate;
   const provider = props.wallet.provider;
-  const reading = useMemo(() => readWithdrawInvoice(text, { balanceMsat: balance, usdPerBtc: rate, provider }), [text, balance, rate, provider]);
+  const owed = props.wallet.owedToWorkersMsat;
+  const reading = useMemo(
+    () => readWithdrawInvoice(text, { balanceMsat: balance, usdPerBtc: rate, provider, owedToWorkersMsat: owed }),
+    [text, balance, rate, provider, owed],
+  );
   const capsFee = provider !== "nwc";
   const most = balance !== undefined ? maxWithdrawMsat(provider, balance) : undefined;
 
@@ -55,7 +64,7 @@ export function WithdrawDialog(props: {
       <div class="dialog withdraw-dialog" role="dialog" aria-label="Withdraw">
         <div class="dialog-title">Withdraw</div>
 
-        <div class="withdraw-books">
+        <div class={`withdraw-books${props.workers ? " has-workers" : ""}`}>
           <div>
             <div class="ov-tile-label">In the wallet</div>
             <div class="withdraw-figure">{balance !== undefined ? fmtSats(balance) : "—"}</div>
@@ -71,6 +80,13 @@ export function WithdrawDialog(props: {
             <div class="withdraw-figure">{fmtUsd(props.outstanding.usd)}</div>
             <div class="ov-tile-sub">{props.outstanding.tokens} credit token{props.outstanding.tokens === 1 ? "" : "s"}</div>
           </div>
+          {props.workers && (
+            <div title="Earned by workers for accepted answers: sats this wallet must hold for them.">
+              <div class="ov-tile-label">Owed to workers</div>
+              <div class="withdraw-figure">{fmtSats(props.workers.owedMsat)}</div>
+              <div class="ov-tile-sub earnings-wrap">{workersOwedSub(props.workers, rate)}</div>
+            </div>
+          )}
         </div>
 
         {(stage.at === "edit" || stage.at === "confirm" || stage.at === "paying") && (
@@ -103,6 +119,7 @@ export function WithdrawDialog(props: {
                   Expires {fmtExpiresIn(reading.expiresIn)}.
                 </div>
                 {reading.network && <div class="auto-hint">A {reading.network} invoice: the wallet pays it only if it is on that network.</div>}
+                {reading.shortOfWorkers && <div class="withdraw-short">{shortOfWorkersWarning(reading.shortOfWorkers)}</div>}
                 {reading.overBalance && most !== undefined && (
                   <div class="public-run-hint">
                     This asks for more than can be withdrawn: at most {fmtSats(most)}{capsFee ? "" : ", with the wallet's fee beside it"}. The wallet will refuse it.
@@ -156,7 +173,10 @@ export function WithdrawDialog(props: {
           )}
           {(stage.at === "confirm" || stage.at === "paying") && reading.ok && (
             <>
-              <span class="withdraw-confirm">Pay {fmtSats(reading.msat)}{capsFee ? ` (+ at most ${fmtSats(reading.maxFeeMsat)} fee)` : " (+ the wallet's fee)"} out of this wallet? It cannot be taken back.</span>
+              <span class="withdraw-confirm">
+                Pay {fmtSats(reading.msat)}{capsFee ? ` (+ at most ${fmtSats(reading.maxFeeMsat)} fee)` : " (+ the wallet's fee)"} out of this wallet?
+                {reading.shortOfWorkers ? ` It leaves the wallet ${fmtSats(reading.shortOfWorkers.shortMsat)} short of what workers are owed.` : ""} It cannot be taken back.
+              </span>
               <button class="btn" disabled={busy} onClick={() => setStage({ at: "edit" })}>Back</button>
               <button class="btn btn-primary" disabled={busy} onClick={() => void pay()}>{busy ? "Paying…" : `Pay ${fmtSats(reading.msat)}`}</button>
             </>

@@ -6129,6 +6129,9 @@ export async function createStrut<TServices = unknown>(
     lightning: () => payments.lightning(),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
     settleDeposits: () => deposits.check(),
+    // What workers are owed is held by the task store's clock
+    // (plans/human-steps.md §8.1), so the Earnings tab and `task/me` agree.
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
     // A package published HERE: its items carry their bare local names
     // (plans/packages-ux.md), so its subjects come from its newest release —
     // each item by its name inside the package, and by the prefixed name

@@ -1,4 +1,5 @@
 // What the `earnings/*` steps answer (specs/API.md §18–§19), as this page reads it.
+import type { WorkersView } from "@strut/kit/folds";
 import type { PendingSend, WalletInfo } from "./view";
 
 export interface EarningsRow {
@@ -15,6 +16,8 @@ export interface EarningsView {
   totals: Omit<EarningsRow, "key" | "price">;
   rows: EarningsRow[];
   outstanding: { tokens: number; usd: number; held: number };
+  /** What workers are owed for accepted answers (plans/human-steps.md §8.1). */
+  workers?: WorkersView;
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   purchases: { count: number; msat: number; feeMsat: number };
@@ -27,6 +30,8 @@ export interface EarningsView {
     expectedMsat: number;
     pendingMsat: number;
     differenceMsat?: number;
+    owedToWorkersMsat: number;
+    coverMsat?: number;
   };
 }
 
@@ -49,7 +54,17 @@ export interface DepositAnswer {
 
 /** `earnings/read-invoice`. */
 export type InvoiceReading =
-  | { ok: true; msat: number; maxFeeMsat: number; expiresIn: number; usd?: number; overBalance: boolean; network?: string; invoice: { description?: string } }
+  | {
+      ok: true;
+      msat: number;
+      maxFeeMsat: number;
+      expiresIn: number;
+      usd?: number;
+      overBalance: boolean;
+      network?: string;
+      shortOfWorkers?: { afterMsat: number; owedMsat: number; shortMsat: number };
+      invoice: { description?: string };
+    }
   | { ok: false; error: string };
 
 /** `earnings/remote-credit { balance: true }`, one seller. */

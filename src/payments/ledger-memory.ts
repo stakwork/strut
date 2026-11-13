@@ -21,6 +21,7 @@ import {
   EXPIRED_SUBJECT,
   RECENT_DAYS,
   ZERO_BALANCE,
+  ZERO_OWED,
   type ChargeInput,
   type ChargeResult,
   type DayRange,
@@ -43,6 +44,7 @@ import {
   type Outstanding,
   type PayDailyRow,
   type PayeeBalance,
+  type WorkersOwed,
   type PayInput,
   type PayResult,
   type ReceivedRow,
@@ -465,6 +467,20 @@ export class MemoryLedgerStore implements LedgerStore {
       .filter((r) => r.day >= from && r.day <= to)
       .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.type < b.type ? -1 : a.type > b.type ? 1 : 0))
       .map((r) => ({ ...r }));
+  }
+
+  async owedToWorkers(o: { now?: number } = {}): Promise<WorkersOwed> {
+    const now = o.now ?? Date.now();
+    const out = { ...ZERO_OWED };
+    for (const worker of this.payeeRows.keys()) {
+      const b = this.balanceOf(worker, now)!;
+      if (b.totalMsat <= 0) continue;
+      out.payees += 1;
+      out.owedMsat += b.totalMsat;
+      out.heldMsat += b.heldMsat;
+      out.withdrawableMsat += b.withdrawableMsat;
+    }
+    return out;
   }
 
   private payDay(e: Earning): PayDailyRow {

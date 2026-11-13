@@ -708,6 +708,24 @@ for (const impl of impls) {
       await assert.rejects(earn("z", { worker: "ann", task: "t1" }), "one earning per task and worker");
     });
 
+    it("what every worker is owed: the sum of their balances, held and withdrawable; a taken-back earning owes nothing", async () => {
+      assert.deepEqual(await store.owedToWorkers({ now: T0 }), { owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0 }, "nothing earned");
+      await earn("a", { worker: "ann", task: "t1", msat: 1_000, hold: HOUR });
+      await earn("b", { worker: "bob", task: "t1", msat: 2_000 });
+      await earn("c", { worker: "bob", task: "t2", msat: 4_000, hold: 2 * HOUR });
+      await earn("d", { worker: "eve", task: "t3", msat: 8_000 });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 }), { owedMsat: 15_000, heldMsat: 15_000, withdrawableMsat: 0, payees: 3 });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + HOUR }), { owedMsat: 15_000, heldMsat: 14_000, withdrawableMsat: 1_000, payees: 3 }, "ann's released at its hold");
+      await store.takeBack({ lease: "d", why: "bad", at: T0 + HOUR });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + HOUR }), { owedMsat: 7_000, heldMsat: 6_000, withdrawableMsat: 1_000, payees: 2 }, "eve is owed nothing now");
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + 72 * HOUR }), { owedMsat: 7_000, heldMsat: 0, withdrawableMsat: 7_000, payees: 2 });
+      // It agrees with the workers' own balances, one by one.
+      const each = await store.payeeBalances(["ann", "bob", "eve"], { now: T0 + 2 * HOUR });
+      const sum = (k: "totalMsat" | "heldMsat") => Object.values(each).reduce((n, b) => n + b[k], 0);
+      const all = await store.owedToWorkers({ now: T0 + 2 * HOUR });
+      assert.deepEqual([all.owedMsat, all.heldMsat], [sum("totalMsat"), sum("heldMsat")]);
+    });
+
     it("open holds: every hold no charge has freed", async () => {
       await buy(store, 10, { id: "a" });
       await buy(store, 10, { id: "b" });

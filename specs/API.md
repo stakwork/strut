@@ -2240,8 +2240,11 @@ frames apps for an admin — Stadeum's org admin pages — and never shows
 strut's own UI. On top the wallet: its balance in sats and at the rate,
 **Add sats** (an invoice as a QR code, paid from the admin's own wallet,
 read until it settles) and **Withdraw** (a BOLT11 invoice pasted, read,
-confirmed at its amount and fee cap, paid), the credit still owed as
-service, the books' check, and the sends still on their way (Read it now;
+confirmed at its amount and fee cap, paid — warning when it would leave the
+wallet short of what workers are owed), the credit still owed as service,
+once any worker was paid what workers are owed for accepted answers and
+whether the balance covers it (§19, `plans/human-steps.md` §8.1), the
+books' check, and the sends still on their way (Read it now;
 Record as paid or Drop once stale). Then earned, cost, margin, received and
 withdrawn over 7 / 30 / 90 days or all time, by item and by day; the credit
 this server BOUGHT at other strut servers (what is left there, a purchase
@@ -2281,7 +2284,7 @@ page or member's page reaches it, and each step refuses without both.
 | `earnings/entries { kind?, runId?, before?, limit? }` | `GET /earnings/entries` | `{ entries }` |
 | `earnings/deposit { sats }` | `POST /earnings/deposit` | the deposit, plus `qr`: the invoice (`LIGHTNING:` and upper case) as an SVG `data:` URL, since a page has no QR library |
 | `earnings/deposit-read { paymentHash }` | `POST /earnings/deposits/:hash/read` | the deposit |
-| `earnings/read-invoice { invoice, balanceMsat?, usdPerBtc?, provider? }` | none: `src/payments/withdraw-reading.ts`, the reader strut's own Withdraw dialog uses | `{ ok: true, msat, maxFeeMsat, expiresIn, usd?, overBalance, network?, invoice } \| { ok: false, error }`; pure, needs no door |
+| `earnings/read-invoice { invoice, balanceMsat?, usdPerBtc?, provider?, owedToWorkersMsat? }` | none: `src/payments/withdraw-reading.ts`, the reader strut's own Withdraw dialog uses | `{ ok: true, msat, maxFeeMsat, expiresIn, usd?, overBalance, network?, shortOfWorkers?, invoice } \| { ok: false, error }` (`shortOfWorkers` as §19's Withdraw says); pure, needs no door |
 | `earnings/withdraw { invoice, msat, maxFeeMsat? }` | `POST /earnings/withdraw` | `{ ok: true, state, paymentHash, msat, feeMsat, … }`, or the refusal as an answer, `{ ok: false, status, error, code?, walletCode? }` |
 | `earnings/withdrawal-read { paymentHash }` | `POST /earnings/withdrawals/:hash/read` | as `earnings/withdraw` |
 | `earnings/withdrawal-resolve { paymentHash, action, feeMsat? }` | `POST /earnings/withdrawals/:hash/resolve` | `{ action, entry? }` |
@@ -4186,6 +4189,13 @@ from the ledger's rollups (`daily`, and the payment and withdrawal entries
 through their partial indexes), never by scanning entries. A server that
 never sold anything answers zeros and makes no ledger file.
 
+What WORKERS are owed for accepted answers (`plans/human-steps.md` §8.1)
+is here too: a debt in SATS, beside the credit owed as service, which is in
+dollars. It is read from the ledger's `payees` and `pay_daily` tables, never
+from `daily`: worker pay is not what this server earned, and an item's
+margin stays its own. A server that never paid a worker answers zeros and
+makes no ledger file for them either.
+
 FULL SCOPE only, reads included: the deployment key or an admin's session.
 A member's session, a peer and a person token are refused (`403`).
 
@@ -4220,6 +4230,11 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
       "price": { "base": 0.25, "markup": 2, "capUsd": 1, "dailyCapUsd": 20 } }
   ],
   "outstanding": { "tokens": 14, "usd": 151.825, "held": 0 },
+  "workers": { "owedMsat": 19000000, "heldMsat": 9000000, "withdrawableMsat": 10000000, "payees": 2,
+    "accepted": { "answers": 4, "msat": 39000000, "days": [
+      { "day": "2026-11-09", "answers": 3, "msat": 35000000, "takenBackAnswers": 1, "takenBackMsat": 20000000 },
+      { "day": "2026-11-10", "answers": 1, "msat": 4000000, "takenBackAnswers": 0, "takenBackMsat": 0 }] },
+    "takenBack": { "answers": 1, "msat": 20000000 } },
   "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
   "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
   "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
@@ -4228,7 +4243,8 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
     "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
   "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
     "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
-    "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
+    "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000,
+    "owedToWorkersMsat": 19000000, "coverMsat": 285532000 }
 }
 ```
 
@@ -4239,6 +4255,18 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   Public view record.
 - `outstanding` is now, not ranged: credit paid for and not yet charged,
   still owed as service; `held` is set aside for runs in flight.
+- `workers`: what workers are owed for accepted answers, in msat. Only in
+  the unscoped view (left out under a `prefix` or `package`: it is the
+  wallet's, not a package's). `owedMsat` is now, not ranged: every worker's
+  earnings less what was taken back and withdrawn; `heldMsat` the part
+  still in its task type's hold, `withdrawableMsat` the rest; `payees` the
+  workers with a balance. The earning is held by the task store's clock.
+  `accepted` is ranged: the answers accepted in the range and the sats they
+  earned, by UTC day (every task type summed), each day with what of its
+  answers was taken back since (`takenBackAnswers`, `takenBackMsat`: a
+  take-back counts on its answer's day, so a past day can still move within
+  the hold); `takenBack` is the range's total of those. A day's net is
+  `msat − takenBackMsat`.
 - `received`, `deposited`, `withdrawn` and `purchases` are ranged; under a
   `prefix` or `package` they are empty (they are the wallet's, not a
   package's). `deposited` is sats an admin added by hand (Add sats, below):
@@ -4263,7 +4291,12 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   read are recorded first);
   `differenceMsat` is balance − expected (more: money that came some other
   way, or a paid invoice whose credit was never used; less: money that left
-  some other way).
+  some other way). `owedToWorkersMsat` is `workers.owedMsat`, also under a
+  `prefix` or `package`, and `coverMsat`, when the balance was read, is
+  balance − owed to workers: below 0, the wallet is short of what workers
+  are owed. No sats move for what is owed, so `expectedMsat` does not count
+  it. The credit owed as service is not added in: it is owed as runs, not as
+  sats.
 
 `400` for a day that is not `YYYY-MM-DD`, `from` after `to`, a `by` not in
 the list, a `prefix` or `package` that is not `publisher/name`, or both.
@@ -4336,6 +4369,17 @@ Refusals answer `{ error, code, walletCode? }`:
 | `409` | `other_wallet` | the invoice is out through another wallet than the one set now: set it back, or resolve it |
 | `502` | `wallet_unauthorized`, `wallet_bad_answer` | the wallet refused strut's pay credential (a rotated pay token), or answered something strut cannot read: kept as pending, since it may have gone — never dropped |
 | `503` | `wallet_unavailable` | no answer: it may have gone, so it is kept as pending (`answered: false`) |
+
+**Short of what workers are owed.** The route pays whatever the person
+confirmed: the sats are the server's, even when some of them are owed to
+workers (`plans/human-steps.md` §8.1, ruling 7: 5a warns, a later item
+refuses). The two Withdraw dialogs warn first. They read the invoice with
+`readWithdrawInvoice` (`src/payments/withdraw-reading.ts`; the
+`earnings/read-invoice` step, §14.14) given the balance and
+`wallet.owedToWorkersMsat`, which answers `shortOfWorkers: { afterMsat,
+owedMsat, shortMsat }` when the amount and its whole fee cap out would
+leave less than what workers are owed (`afterMsat` the least it leaves,
+never below 0).
 
 No step, builder tool or app page reaches the payer: it is never on the
 services bag. The second door that calls it is an accepted
