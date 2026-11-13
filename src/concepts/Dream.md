@@ -33,7 +33,9 @@ itself, as narrow as what they said, on the page it belongs to. When that
 page already carries a claim that says the same thing, use that one
 rather than writing another. A rule that a page gets OPENED when it
 applies belongs on the page that lists it, because work that skipped a
-page is never checked against that page's claims.
+page is never checked against that page's claims. When the page it
+belongs to does not exist yet, write the claim on the page the new one
+will sit under: write it now, not once the page exists.
 
 WHAT WAS SAID. Record their words against the claim, about the piece of
 work they were talking about, when that work opened the claim's page:

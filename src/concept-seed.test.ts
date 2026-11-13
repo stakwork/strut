@@ -163,6 +163,9 @@ describe("concept files (pure)", () => {
     // directly under the root, whose description the assistant always sees in the root's list.
     assert.ok(dream.docs!.includes("never the root itself") && dream.docs!.includes("a page directly under the\n  root"), dream.docs);
     assert.doesNotMatch(dream.docs!, /docs of the tree's\s+root/);
+    // The page such a lesson goes on does not exist until a person accepts it: its claim is written now, on the
+    // page the new one will sit under (a real model held it back otherwise).
+    assert.match(dream.docs!, /does not exist yet, write the claim on the page the new one\s+will sit under/);
     // The first source: the conversations dream/turns hands over.
     const convs = await read("Assistant Conversations.md");
     assert.deepEqual(convs.parents, ["Dream"]);
