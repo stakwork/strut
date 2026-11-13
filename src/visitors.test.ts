@@ -338,6 +338,23 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     assert.equal(me.actor, got.actor);
   });
 
+  it("a public view that names no sign-in offers a visitor's Sphinx account; `signIn: []` offers none", async () => {
+    try {
+      await putView(undefined as unknown as Record<string, unknown>);
+      assert.deepEqual(await (await req("/visitors")).json(), { methods: ["sphinx"], visitorKey: "root" });
+      assert.equal((await req("/visitors/challenge")).status, 200);
+      const key = await p256Key();
+      const refused = await signIn(key);
+      assert.equal(refused.res.status, 401, "this browser's key is not offered by the default");
+      assert.match(refused.got.error!, /"key" is not a sign-in this server offers/);
+      await putView({ signIn: [] });
+      assert.deepEqual(await (await req("/visitors")).json(), { methods: [], visitorKey: "root" });
+      assert.equal((await req("/visitors/challenge")).status, 404);
+    } finally {
+      await putView({ signIn: ["key", "lnurl", "nostr"], limits: { writesPerDay: 4, launchesPerDay: 3 } });
+    }
+  });
+
   it("two keys sign in as two actors, each with its own app/state; an anonymous visitor keeps none", async () => {
     const a = await signIn(await p256Key());
     const b = await signIn(await p256Key());

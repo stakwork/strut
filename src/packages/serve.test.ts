@@ -17,6 +17,7 @@ import { STEP_RUN_TOOL } from "../apps/tools.js";
 import type { KitLocation } from "../apps/kit.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { lucideIconSvg, parseServeFile, planServe, serveRefOf, servedHtml, type ServeStatus } from "./serve.js";
+import { signInOf } from "../public-surface.js";
 
 const HELLO = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "__fixtures__", "hello");
 const KEY = "serve-api-key";
@@ -102,7 +103,12 @@ describe("serve.yaml", () => {
   it("signIn, visitorKey and limits become the record's visitors (plans/app-repos.md §5)", () => {
     const plan = planServe(parseServeFile("app: game\nsignIn: [key, nostr]\nvisitorKey: domain\nlimits: { writesPerDay: 500 }\n"), info);
     assert.deepEqual(plan.surface.visitors, { signIn: ["key", "nostr"], visitorKey: "domain", limits: { writesPerDay: 500 } });
-    assert.equal(planServe(parseServeFile("app: game\nvisitorKey: root\n"), info).surface.visitors, undefined, "no signIn: no sign-in");
+    const quiet = planServe(parseServeFile("app: game\nvisitorKey: root\n"), info).surface;
+    assert.equal(quiet.visitors, undefined, "no signIn: strut's default, unwritten");
+    assert.deepEqual(signInOf(quiet), ["sphinx"], "the default: a visitor's Sphinx account");
+    assert.deepEqual(planServe(parseServeFile("app: game\nvisitorKey: domain\n"), info).surface.visitors, { signIn: ["sphinx"], visitorKey: "domain" });
+    assert.deepEqual(planServe(parseServeFile("app: game\nsignIn: []\n"), info).surface.visitors, { signIn: [] }, "signIn: [] is no sign-in");
+    assert.deepEqual(signInOf(planServe(parseServeFile("app: game\nsignIn: []\n"), info).surface), []);
     assert.deepEqual(planServe(parseServeFile("app: game\nsignIn: [key]\nvisitorKey: root\n"), info).surface.visitors, { signIn: ["key"] });
   });
 

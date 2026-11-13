@@ -1404,8 +1404,9 @@ own site.
 key and are then that key's actor on this server. Strut keeps no key and no
 account — it checks a signature and keeps a session. The server's public
 view says how one signs in (`visitors`, §17: on a served box,
-`serve.yaml`'s `signIn`, `visitorKey`, `limits`); with no method named,
-nobody does.
+`serve.yaml`'s `signIn`, `visitorKey`, `limits`). A record that names no
+method offers `sphinx` once an app is in the public view; `signIn: []` is
+none, and nobody signs in.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -3244,7 +3245,9 @@ Every list is optional; the body REPLACES the record. `visitors: {
 signIn, visitorKey?, limits? }` (optional) is who may SIGN IN to the public
 apps (§13.2): the methods (`key`, `ticket`, `lnurl`, `nostr`, `sphinx`), `domain` for
 a child key per domain, and `{ writesPerDay?, launchesPerDay? }` over
-strut's defaults. `runs: true` makes a
+strut's defaults. Absent, the methods are `[sphinx]` once an app is public;
+`signIn: []` is no sign-in (kept as written, since absent is the default),
+and a record that says exactly the default is kept as absent. `runs: true` makes a
 workflow's runs public whole: their input, outputs, agents' transcripts
 and files. An app's `reads` are the granted steps its page may call beyond
 runs and the graph (§17.3). A peer's request is a `403`, a malformed body
@@ -4595,7 +4598,7 @@ reads: [score-board]            # the app's public reads (§17.3): step types
 runnable:                       # §17.1's runnable items
   - { kind: workflow, name: ghost, base: 0.002, markup: 1.3, capUsd: 0.05, dailyCapUsd: 5 }
 concepts: [Moon Lander]         # Concept roots in the public view
-signIn: [key, lnurl, nostr]     # how a visitor signs in (§13.2): key, ticket, lnurl, nostr, sphinx; default none
+signIn: [key, lnurl, nostr]     # how a visitor signs in (§13.2): key, ticket, lnurl, nostr, sphinx; default [sphinx], [] for none
 visitorKey: domain              # a child key per domain (§13.2); default root
 limits: { writesPerDay: 500 }   # per-visitor daily limits over strut's (writesPerDay, launchesPerDay)
 ```
@@ -4606,7 +4609,7 @@ written) and written whole into the record; `app` must be one of the
 package's apps. Any other field is refused, so a newer strut's file fails
 the deploy whole. The record it writes:
 `{ apps: [{ name: <app>, reads }], runnable, concepts, visitors? }` —
-`visitors: { signIn, visitorKey?, limits? }` when `signIn` names a method —
+`visitors: { signIn, visitorKey?, limits? }` unless the file says only strut's default (no `signIn`, or `[sphinx]`, with nothing else) —
 every other list empty.
 
 **`/` is the app.** Every page the UI serves on a served box — `GET /`,

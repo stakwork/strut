@@ -147,7 +147,8 @@ container in the compose (strut and any service that registers steps).
   specs/WALLET.md §1.2's `sign_in`, which signs only a strut challenge
   for the seller's host. The methods a server takes are
   its public view's `visitors.signIn` (on a served box, `serve.yaml`'s
-  `signIn`); none named, no sign-in. `GET /visitors/challenge` → `{
+  `signIn`); none named, `sphinx` once an app is public, and `signIn: []`
+  none. `GET /visitors/challenge` → `{
   challenge, methods, visitorKey }` (`strut-visitor.<claims>.<hmac>`, a
   minute, good once, bound to the host), `POST /visitors/session {
   challenge, method, … }` → the visitor's cookie and `{ actor, token, exp }`,

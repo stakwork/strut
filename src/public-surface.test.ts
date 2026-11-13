@@ -28,6 +28,7 @@ import {
   publicReader,
   readSurface,
   relativeImports,
+  signInOf,
   stepHelpers,
   surfaceProblem,
 } from "./public-surface.js";
@@ -64,6 +65,19 @@ describe("the surface record", () => {
       apps: [],
       runnable: [],
     });
+  });
+
+  it("sign-in: Sphinx by default once an app is public; `signIn: []` is none, and the default is left unwritten", () => {
+    const empty = normalizeSurface({});
+    const withApp = normalizeSurface({ apps: [{ name: "game" }] });
+    assert.deepEqual(signInOf(empty), [], "nothing public, nothing to sign in to");
+    assert.deepEqual(signInOf(withApp), ["sphinx"]);
+    const none = normalizeSurface({ apps: [{ name: "game" }], visitors: { signIn: [], visitorKey: "domain", limits: { writesPerDay: 5 } } });
+    assert.deepEqual(none.visitors, { signIn: [] }, "no method: the key per domain and the limits go");
+    assert.deepEqual(signInOf(none), []);
+    assert.equal(normalizeSurface({ apps: [{ name: "game" }], visitors: { signIn: ["sphinx", "sphinx"] } }).visitors, undefined, "the default is absent");
+    assert.deepEqual(normalizeSurface({ visitors: { signIn: ["sphinx"], visitorKey: "domain" } }).visitors, { signIn: ["sphinx"], visitorKey: "domain" });
+    assert.deepEqual(signInOf(normalizeSurface({ visitors: { signIn: ["key"] } })), ["key"], "a record's own methods, app or not");
   });
 
   it("an absent file is the empty surface; a broken one throws", async () => {

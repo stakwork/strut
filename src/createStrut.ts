@@ -203,7 +203,7 @@ import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
 import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
@@ -4299,9 +4299,9 @@ export async function createStrut<TServices = unknown>(
   const visitorBudget = createVisitorBudget();
   /** The methods offered here, and whose key signs. */
   const visitorConfig = async (): Promise<{ methods: string[]; visitorKey: VisitorKeyMode }> => {
-    const v = (await publicSurface.get()).visitors;
-    const visitorKey: VisitorKeyMode = v?.visitorKey === "domain" ? "domain" : "root";
-    return { methods: offeredMethods(v?.signIn ?? [], visitorKey), visitorKey };
+    const surface = await publicSurface.get();
+    const visitorKey: VisitorKeyMode = surface.visitors?.visitorKey === "domain" ? "domain" : "root";
+    return { methods: offeredMethods(signInOf(surface), visitorKey), visitorKey };
   };
   const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
   /** Sign `actor` in: the visitor's cookie, and the token beside it. */
@@ -4382,7 +4382,7 @@ export async function createStrut<TServices = unknown>(
     }
     if (!claims) return refuse("this challenge has expired or is not this server's — ask GET /visitors/challenge for another");
     if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`);
-    if (!offeredMethods((await publicSurface.get()).visitors?.signIn ?? [], claims.visitorKey).includes(method)) {
+    if (!offeredMethods(signInOf(await publicSurface.get()), claims.visitorKey).includes(method)) {
       return refuse(`"${method}" is not a sign-in this server offers${claims.visitorKey === "domain" && METHOD_INFO[method].rootOnly ? " where its app asks for a key per domain" : ""}`);
     }
     let actor: string | null = null;
