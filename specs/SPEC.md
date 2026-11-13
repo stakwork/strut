@@ -38,6 +38,7 @@ src/
       log.ts
       llm.ts
       wait.ts
+      human.ts          # a person answers: the run waits for them
     lib/                # built-in domain integrations (dynamically imported)
       github/
         fetch-pr.ts
@@ -326,6 +327,63 @@ child env is scrubbed, `secretsEnv` names are injected and masked.
     args: ["-y", "-ss", "{{ input.start }}", "-t", "30", "-i", "video.mp4", "clip.mp4"]
 ```
 
+#### 4.1.9 `human`
+
+Config: `{ task, show?, files?, withinHours? }`. Output: `{ answer, by, task }`.
+
+A person as a step of a workflow (plans/human-steps.md §3). The step makes a
+TASK of the task type `task` in the task store (`ctx.services.tasks`,
+`src/tasks/`) and the run PARKS on it (`ctx.park("task:<id>")`,
+RUN_CONTROL_SPEC §5.6): it leaves memory with `status: "waiting"`. A worker
+signed in to the type's app takes the task, answers it in the shape the type
+says, and the answer settles the task; the store, registered as the `task`
+park source, wakes the run, whose journal replays and whose `human` step runs
+again from the top and returns the answer. `by` is the worker's actor, `task`
+the task's id.
+
+```yaml
+- id: review
+  type: human
+  config:
+    task: pet-match          # the task type: an admin made it, with its app and answer shape
+    show:                    # what the worker's app is handed
+      lost: "{{ input.lost }}"
+      guess: "{{ match.object }}"
+    files: ["found.jpg", "lost/*.jpg"]
+    withinHours: 48
+  options:
+    onError:                 # nobody answered in time: keep the model's guess
+      id: guess
+      type: pack
+      config: { answer: "{{ match.object }}", by: model }
+```
+
+- `task`: the task type's name. It must exist and be enabled (`unknown_type:`,
+  `type_disabled:` otherwise). The answer's shape, the app and the lease are
+  the type's, an admin's: the workflow cannot set them.
+- `show`: any JSON, at most 256 KB. Files are named, not inlined.
+- `files`: paths under the run's files — the job's directory on a job run,
+  else the run's artifacts, where `run/files` reads — kept with the task with
+  where they are rooted. `*` and `?` match within one folder (a name starting
+  with `.` only when the pattern's segment does), expanded when the task is
+  MADE, so its list is fixed; a file written later does not join it. A path
+  that is not a file, or a pattern that matches none, fails the step
+  (`task_file_missing:`) and makes no task. At most 200 files.
+- `withinHours`: how long the task may stay unanswered (fractions allowed);
+  the type's default otherwise. Past it the store's sweep expires the task,
+  which wakes the run, and the step fails `task_expired:`, so `onError`
+  applies. A task the run's cancel closed fails it `task_cancelled:`.
+- One task per workflow, run id and step path, whatever wakes the run: the
+  step finds the task it made. So `retry` reads the same closed task and fails
+  again; `onError` is how a workflow goes on without the answer.
+- Refused before any task is made where nothing could wake the run (a
+  single-step run, a public run, an agent's tool call: `park_refused:`) and
+  in a run that may not ask a person — a stranger's public run, a run another
+  strut launched with no person's credential, and the runs either started
+  (`refused:`).
+- A run cancelled — while it waits or while it runs — cancels the tasks it
+  left open. A run that fails keeps them, so a resume finds them.
+
 ### 4.2 Lib Steps
 
 Lib steps live in `src/steps/lib/<namespace>/` inside the engine itself. They are reusable domain-specific integrations (GitHub, Neo4j, Slack, …) that ship with strut but are kept out of the static dependency graph. Each file is a `defineStep(...)` export, same as core steps.
@@ -502,7 +560,7 @@ Sketch:
 import http from "./core/http.js";
 // …other core imports
 
-const CORE_STEPS = { http, if: ifStep, loop, subflow, log, llm, wait };
+const CORE_STEPS = { http, if: ifStep, loop, subflow, log, llm, wait, human };
 const LIB_DIR = join(dirname(fileURLToPath(import.meta.url)), "lib");
 
 export async function buildRegistry(customDir?: string): Promise<StepRegistry> {

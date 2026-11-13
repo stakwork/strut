@@ -294,6 +294,12 @@ export interface StepContext<TServices = unknown> {
    *  the run: no source for the prefix, a single-step run, a public run, an
    *  agent's tool call. Absent outside the runner. */
   park?: (on: string) => never;
+  /** Why `ctx.park` would fail the step here for a target of `prefix` (a
+   *  single-step run, a public run, an agent's tool call, no source for the
+   *  prefix), or undefined when it would park. For a step that must not
+   *  START what it would wait on where nothing could wake the run: the
+   *  `human` step asks before it makes a task. Absent outside the runner. */
+  parkRefusal?: (prefix: string) => string | undefined;
 }
 
 /** What a run's teardown hooks (`ctx.onRunEnd`, `services.onRunEnd`) are told
@@ -308,6 +314,8 @@ export interface RunEndInfo {
   parked?: true;
   /** With `parked`: what it waits on. */
   waitingOn?: string[];
+  /** How the run ended, when it did (not `parked`). */
+  status?: "success" | "error" | "cancelled";
 }
 
 /** Error handling options for a step. */

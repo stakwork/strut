@@ -33,6 +33,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import type { RunControl } from "../run-control.js";
 import { answerProblem, answerSchemaProblem } from "./answer-schema.js";
 import { MemoryTaskStore, type Lease, type TaskListQuery, type TaskRecord, type TaskSettled, type TaskStore, type TaskType } from "./task-store.js";
 import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
@@ -49,6 +50,9 @@ export const WITHIN_HOURS_MAX = 365 * 24;
 /** §3: what a task may show, and how many files it may name. */
 export const SHOW_MAX_BYTES = 256 * 1024;
 export const FILES_MAX = 200;
+/** What a `human` step parks on (src/park.ts): `task:<id>`. The store is
+ *  that prefix's source, registered by createStrut. */
+export const TASK_PARK_PREFIX = "task";
 /** Rule 8: how often the sweep runs. */
 export const SWEEP_EVERY_MS = 60_000;
 
@@ -90,6 +94,7 @@ export function memoryTaskStores(): TaskStores {
 // ── errors ──────────────────────────────────────────────────────────────────
 
 export type TaskErrorCode =
+  | "refused"
   | "bad_request"
   | "bad_schema"
   | "unknown_type"
@@ -119,7 +124,7 @@ export class TaskError extends Error {
 
 // ── the capability ──────────────────────────────────────────────────────────
 
-/** What a `human` step asks for (§3; item 2b resolves `files` first). */
+/** What a `human` step asks for (§3). */
 export interface EnsureInput {
   /** The task type's name. It must exist and be enabled to make a task. */
   type: string;
@@ -130,11 +135,24 @@ export interface EnsureInput {
   /** Any JSON, at most 256 KB. */
   show?: unknown;
   /** Paths under the run's files: the job's directory when `job` is set,
-   *  else the run's artifacts. At most 200. */
+   *  else the run's artifacts. At most 200. With `resolveFiles`, the
+   *  entries as the step wrote them (a pattern among them). */
   files?: string[];
   job?: string;
   /** Overrides the type's. */
   withinHours?: number;
+}
+
+/** What only the `human` step hands `ensure` beside its input. */
+export interface EnsureOptions {
+  /** The run asking: refused where the deps' `refusal` says (a run that
+   *  may not ask a person, plans/human-steps.md §3). */
+  control?: RunControl;
+  /** Called once, and only when the task is MADE: the `files` entries as
+   *  the task keeps them — each pattern expanded, each path checked on disk
+   *  (src/tasks/files.ts). A task made already keeps the list it was made
+   *  with, so a file written or removed later changes nothing. */
+  resolveFiles?: (files: string[]) => Promise<string[]>;
 }
 
 export interface TaskTypeInput {
@@ -170,7 +188,7 @@ export type TaskView = TaskRecord & { leases: Lease[] };
 export interface TasksCapability {
   /** The `human` step's: the task keyed by workflow, run and path, made
    *  when there is none (rule 1). */
-  ensure(input: EnsureInput): Promise<{ task: TaskRecord; created: boolean }>;
+  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean }>;
 
   // The worker's. `actor` is the caller's own (rule 5).
   /** The worker's live lease when it is of a type asked for, else a new one
@@ -223,6 +241,9 @@ export interface TasksService {
 export interface TasksDeps {
   /** The stores, opened on first use. */
   open(): Promise<TaskStores>;
+  /** Why the run `control` belongs to may not ask a person, else
+   *  undefined: `ensure` refuses before anything is made. */
+  refusal?(control: RunControl | undefined): string | undefined;
   /** Whether a store is on file already, so a read or the timer opens one
    *  only then. Left out: never (memory). */
   exists?(): boolean;
@@ -300,12 +321,14 @@ export function createTasks(deps: TasksDeps): TasksService {
   };
 
   const capability: TasksCapability = {
-    async ensure(input) {
+    async ensure(input, o = {}) {
+      const refused = deps.refusal?.(o.control);
+      if (refused) throw new TaskError("refused", refused);
       const type = need("type", input?.type);
       const workflow = need("workflow", input.workflow);
       const runId = need("runId", input.runId);
       const path = need("path", input.path);
-      const files = filesOf(input.files);
+      let files = filesOf(input.files);
       const show = input.show ?? null;
       const showBytes = jsonBytes(show);
       if (showBytes === undefined) throw new TaskError("bad_request", "show must be JSON");
@@ -319,6 +342,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const kind = await s.tasks.type(type);
       if (!kind) throw new TaskError("unknown_type", `no task type ${type} here; an admin adds it`);
       if (!kind.enabled) throw new TaskError("type_disabled", `task type ${type} is turned off`);
+      if (o.resolveFiles) files = filesOf(await o.resolveFiles(files));
       const at = now();
       return s.tasks.ensure({
         id: randomId(),

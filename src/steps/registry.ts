@@ -109,6 +109,7 @@ import llm from "./core/llm.js";
 import agent from "./core/agent.js";
 import image from "./core/image.js";
 import wait from "./core/wait.js";
+import human from "./core/human.js";
 import pack from "./core/pack.js";
 import exec from "./core/exec.js";
 
@@ -123,6 +124,7 @@ const CORE_STEPS: StepRegistry = {
   agent,
   image,
   wait,
+  human,
   pack,
   exec,
 };

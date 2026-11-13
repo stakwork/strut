@@ -54,7 +54,7 @@ import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
-import { createTasks, memoryTaskStores, openTaskStores, tasksPath, type TasksService } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, type TasksService } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -1491,6 +1491,14 @@ export async function createStrut<TServices = unknown>(
   const tasks = createTasks({
     open: () => (store instanceof MemoryRunStore ? Promise.resolve(memoryTaskStores()) : openTaskStores({ dataDir })),
     exists: () => !(store instanceof MemoryRunStore) && existsSync(tasksPath(dataDir)),
+    // A run that may not ask a person (plans/human-steps.md §3): the trees
+    // that never spend credit bought here either — a stranger's public run,
+    // a run a peer launched with no person's credential, the runs either
+    // started. A task is work someone is paid for.
+    refusal: (control) =>
+      runLineage(control).some((c) => noRemoteSpend.has(c))
+        ? "a stranger's public run, a run another strut launched without a person's credential, or a run either started cannot ask a person (plans/human-steps.md §3)"
+        : undefined,
   });
   if (!(services as Record<string, unknown>)["tasks"]) (services as Record<string, unknown>)["tasks"] = tasks.capability;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
@@ -1618,6 +1626,13 @@ export async function createStrut<TServices = unknown>(
           await (info.parked ? parking.parked(info.workflow, runId, info.waitingOn ?? []) : parking.ended(info.workflow, runId)).catch((err) =>
             console.error(`[parking] ${info.workflow}/${runId}:`, err),
           );
+          // A run cancelled while live leaves no task open behind it: a
+          // worker would answer for nothing (a waiting run's cancel told the
+          // task source already). A run that failed keeps its tasks: a
+          // resume finds them, answered or not.
+          if (info.status === "cancelled") {
+            await tasks.cancelRun(info.workflow, runId).catch((err) => console.error(`[tasks] closing the tasks of cancelled run ${info.workflow}/${runId}:`, err));
+          }
         }
       }
     };
@@ -3091,7 +3106,7 @@ export async function createStrut<TServices = unknown>(
       await parking.cancelled(name, runId, summary.waitingOn ?? []);
       const origin = events.find((e) => e.type === "run.start")?.origin;
       try {
-        await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown }).onRunEnd?.(runId, { workflow: name, ...(origin ? { origin } : {}) });
+        await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown }).onRunEnd?.(runId, { workflow: name, status: "cancelled", ...(origin ? { origin } : {}) });
       } catch (err) {
         console.error(`[parking] the end hooks of cancelled run ${name}/${runId} failed:`, err);
       }
@@ -9850,6 +9865,27 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // The task store is the `task` SOURCE of parked runs (plans/human-steps.md
+  // §2.3, §3): a `human` step parks on `task:<id>`; a task that leaves
+  // `open` — answered, expired, cancelled — wakes its run, whose step runs
+  // again and finds it; a cancel of a waiting run cancels its tasks.
+  // Registering asks the store about every run already waiting on a task,
+  // so a settle no process woke for (a restart in between) wakes now —
+  // registered here, at the end, since that wake resumes through what is
+  // defined above. Only when the bag's tasks are this store's: a host's
+  // own has no source here.
+  if ((services as Record<string, unknown>)["tasks"] === tasks.capability) {
+    const taskOf = (on: string) => on.slice(TASK_PARK_PREFIX.length + 1);
+    const taskWaker = parking.register(TASK_PARK_PREFIX, {
+      settled: (on) => tasks.settled(taskOf(on)),
+      cancelled: async (on) => {
+        await tasks.cancel(taskOf(on));
+      },
+    });
+    tasks.onSettle((settled) => {
+      for (const t of settled) taskWaker.wake(t.workflow, t.runId);
+    });
+  }
   // The task store's sweep (plans/human-steps.md §4.3 rule 8): now and every
   // minute, wherever a store is — dead leases let go, tasks past their time
   // expired.
