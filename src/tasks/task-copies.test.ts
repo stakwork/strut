@@ -86,7 +86,7 @@ for (const impl of IMPLS) {
 
     /** The type with a copies rule (§7.8's defaults under `copies`), and its workers. */
     const typeWith = async (copies: Record<string, unknown> | null, o: { paySats?: number; workers?: string[] } = {}) => {
-      await tasks().setType(TYPE, { app: "workers", answer: LABEL, leaseSeconds: 600, withinHours: 48, copies, ...(o.paySats ? { paySats: o.paySats } : {}) }, "staff");
+      await tasks().setType(TYPE, { app: "workers", answer: LABEL, leaseSeconds: 600, withinHours: 48, copies, ...(o.paySats ? { open: false, paySats: o.paySats } : {}) }, "staff");
       for (const w of o.workers ?? ["ann", "bob", "cat", "dan"]) await tasks().grant(w, TYPE, "staff");
     };
     let n = 0;

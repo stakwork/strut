@@ -138,6 +138,11 @@ export interface TaskType {
   /** How long a task may stay unanswered, unless its step says otherwise. */
   withinHours: number;
   enabled: boolean;
+  /** Open to any signed-in worker who is not suspended or banned, with no
+   *  grant from staff (ruling 9): their first ask records one, by
+   *  `OPEN_GRANT_BY`. False: invite-only, a worker takes it only with a
+   *  staff grant. A type saved before the field existed is open. */
+  open: boolean;
   /** What one accepted answer earns, in sats to the msat (§8.1); absent:
    *  unpaid. Stamped on a lease when it is taken. */
   paySats?: number;

@@ -30,6 +30,8 @@ export interface Draft {
   leaseMinutes: string;
   withinHours: string;
   enabled: boolean;
+  /** Ruling 9: open to any signed-in worker, or invite-only. */
+  open: boolean;
   /** The answer's shape: the fields (`model`), or JSON when they cannot draw it. */
   model: AnswerModel | null;
   json: string;
@@ -59,6 +61,7 @@ export function draftOf(t?: TaskType): Draft {
     leaseMinutes: s((t?.leaseSeconds ?? DEFAULTS.leaseSeconds) / 60),
     withinHours: s(t?.withinHours ?? DEFAULTS.withinHours),
     enabled: t?.enabled ?? true,
+    open: t?.open ?? true,
     model: modelOf(answer),
     json: JSON.stringify(answer, null, 2),
     paySats: s(t?.paySats),
@@ -107,7 +110,7 @@ export function gradeOf(g: GradeDraft, what: string): GradeRule | { problem: str
 
 /** What `staff/save-type` sends for the draft, or why not yet. The numbers'
  *  bounds are the store's to check: a refusal comes back in its words. */
-export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: boolean }, was?: TaskType): { input: Record<string, unknown> } | { problem: string } {
+export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: boolean; open?: boolean }, was?: TaskType): { input: Record<string, unknown> } | { problem: string } {
   const answer = answerOfDraft(d);
   if ("problem" in answer) return answer;
   if (!d.app) return { problem: "pick the app that draws this type" };
@@ -120,6 +123,8 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
   const within = num(d.withinHours, "expires after");
   if (typeof within !== "number") return within;
   const input: Record<string, unknown> = { name: d.name, app: d.app, answer: answer.schema, leaseSeconds: Math.round(lease * 60), withinHours: within, enabled: d.enabled };
+  if (shown.open) input["open"] = d.open;
+  else if (was?.open !== undefined) input["open"] = was.open;
   if (shown.pay) {
     if (d.paySats.trim() !== "") {
       const pay = num(d.paySats, "pay");

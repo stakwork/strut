@@ -1,6 +1,7 @@
 // Workers (plans/human-steps.md §9.5): `new` first — the people who signed
 // in and wait — then the rest. Several new ones may be granted a type at
-// once (one door call each; the page says which failed). A worker shows
+// once (one door call each; the page says which failed); an open type's
+// worker took it up themselves (ruling 9), and their grant says so. A worker shows
 // their status with its acts, their note, their grants (revoked ones with
 // when, who and why: an automatic revoke by `standing` too, §9.7), what they
 // did this week and their newest leases, and, when the server answers for
@@ -16,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtWhen, leaseOutcome, liveTypes, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoOf, workersInOrder, type Place, type Shown,
+  balanceCells, fmtWhen, grantedBy, leaseOutcome, liveTypesText, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoOf, workersInOrder, type Place, type Shown,
 } from "../lib/view";
 import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
@@ -67,7 +68,7 @@ function WorkerList(props: Props & { workers: Worker[] }) {
   return (
     <Section title="Workers" aside={<Note>{fresh.length ? `${fresh.length} new, waiting for a grant` : `${list.length} here`}</Note>}>
       {list.length === 0 ? (
-        <Empty>No worker has signed in yet. A worker is anyone who signed in to a worker app and asked for a task; they appear here as new, and a grant lets them in.</Empty>
+        <Empty>No worker has signed in yet. A worker is anyone who signed in to a worker app and asked for a task; they appear here as new. An open type lets them in on their first ask; an invite-only one, a grant.</Empty>
       ) : (
         <>
           {fresh.length > 0 && (
@@ -125,7 +126,7 @@ function WorkerList(props: Props & { workers: Worker[] }) {
                         <StatusBadge status={w.status} />
                       </TableCell>
                       <TableCell className="whitespace-nowrap">{fmtWhen(w.firstSeen)}</TableCell>
-                      <TableCell>{liveTypes(w).join(", ") || "—"}</TableCell>
+                      <TableCell>{liveTypesText(w) || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums">{w.week ?? "—"}</TableCell>
                       <TableCell>{w.holding ?? "—"}</TableCell>
                       {props.shown.standing && (
@@ -266,7 +267,7 @@ function WorkerDetail(props: Props & { actor: string }) {
                 </button>
                 <span className="text-xs text-muted-foreground">
                   since {fmtWhen(g.at)}
-                  {g.by ? ` by ${g.by}` : ""}
+                  {g.by ? ` ${grantedBy(g)}` : ""}
                 </span>
                 {props.shown.standing && s && <span className={cn("text-xs", standingLow(s) && "text-destructive")}>{standingText(s)}{s.errors ? ` · ${s.errors} grader error${s.errors === 1 ? "" : "s"}` : ""}</span>}
                 <span className="ml-auto">
@@ -316,6 +317,7 @@ function WorkerDetail(props: Props & { actor: string }) {
                 <span className="text-muted-foreground">
                   {fmtWhen(g.revokedAt!)} by {g.revokedBy === "standing" ? "standing (automatic)" : (g.revokedBy ?? "someone")}
                   {g.why ? `: ${g.why}` : ""}
+                  {g.by === OPEN_GRANT_BY ? " · an open type: only a grant lets them back" : ""}
                 </span>
               </div>
             ))}

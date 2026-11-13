@@ -8,8 +8,10 @@
  *
  * A worker's status:
  * - `new`: written by the worker's first call. May only ask who they are.
- * - `active`: set by the first grant. Takes tasks of the types granted.
- *   Revoking the last grant leaves them `active` with nothing to take.
+ * - `active`: set by the first grant — staff's, or the one an open type
+ *   records on the worker's first ask (`grantOpen`). Takes tasks of the
+ *   types granted. Revoking the last grant leaves them `active` with
+ *   nothing to take.
  * - `suspended`, `banned`: set by staff. May only ask who they are. What
  *   that does to a lease held is the service's (`tasks.ts`).
  *
@@ -19,13 +21,18 @@
  */
 
 export const WORKER_STATUSES = ["new", "active", "suspended", "banned"] as const;
+
+/** Who an open type's grant is by (plans/human-steps.md ruling 9): the one
+ *  `grantOpen` records, never an actor. */
+export const OPEN_GRANT_BY = "open";
 export type WorkerStatus = (typeof WORKER_STATUSES)[number];
 
 /** A grant of one task type to one worker. One row per worker and type: a
  *  grant after a revoke makes it live again. */
 export interface Grant {
   type: string;
-  /** Who granted it, and when (epoch ms). */
+  /** Who granted it, and when (epoch ms). `OPEN_GRANT_BY` for the grant an
+   *  open type recorded on the worker's first ask. */
   by?: string;
   at: number;
   /** Set while revoked. */
@@ -69,6 +76,11 @@ export interface WorkerStore {
    *  new); a live grant stays as it is. A worker with no row or `new`
    *  becomes `active`, any other status stays. */
   grant(actor: string, type: string, by: string | undefined, now: number, qualify?: number): Promise<WorkerRecord>;
+  /** An open type's grant (ruling 9), by `OPEN_GRANT_BY`: made only when the
+   *  worker has no row of the type at all, so a revoked grant stays revoked
+   *  ("open" never grants again); `new` becomes `active` as with any grant.
+   *  The worker as they are after. */
+  grantOpen(actor: string, type: string, now: number, qualify: number): Promise<WorkerRecord>;
   /** Revokes a live grant; the status stays. Undefined: no such worker. */
   revoke(actor: string, type: string, o: { by?: string; why?: string; now: number }): Promise<WorkerRecord | undefined>;
   /** The queue's counts (plans/human-steps.md §9.4): workers by status, and
@@ -133,6 +145,11 @@ export class MemoryWorkerStore implements WorkerStore {
     if (!known || known.revokedAt !== undefined) mine.set(type, { type, at: now, ...(by === undefined ? {} : { by }), qualify });
     this.grants.set(actor, mine);
     return this.record(actor)!;
+  }
+
+  async grantOpen(actor: string, type: string, now: number, qualify: number): Promise<WorkerRecord> {
+    if (this.rows.has(actor) && this.grants.get(actor)?.has(type)) return this.record(actor)!;
+    return this.grant(actor, type, OPEN_GRANT_BY, now, qualify);
   }
 
   async revoke(actor: string, type: string, o: { by?: string; why?: string; now: number }): Promise<WorkerRecord | undefined> {

@@ -59,6 +59,22 @@ export function testRulesOf(raw: unknown, graderProblem: (step: string) => strin
   return { ...r, grade: gradeRuleOf(r.grade, graderProblem) };
 }
 
+/** Ruling 9: why a type cannot be saved PAID and OPEN with `ready` ready
+ *  tests, or undefined. A stranger may take an open type with no grant, and
+ *  signing in proves nothing about a person (ruling 6), so a paid one
+ *  qualifies every newcomer first: its tests on, K (`qualify`) at least 1,
+ *  and at least K of them ready. An unpaid type, or one invite-only, needs
+ *  none. The message names the shortfall and the way out. */
+export function openPayProblem(t: { name: string; open: boolean; paySats?: number; tests?: Pick<TestRules, "qualify"> }, ready: number): string | undefined {
+  if (!t.open || !(t.paySats && t.paySats > 0)) return undefined;
+  const lead = `task type ${t.name} is paid and open to any signed-in worker, so a newcomer qualifies on its tests before any real task`;
+  const way = "save it invite-only (open: false) or unpaid until they are ready, then open it";
+  if (!t.tests) return `${lead}: turn its tests on (qualify ${DEFAULT_TEST_RULES.qualify} by default) and make that many ready tests, or ${way}`;
+  if (t.tests.qualify < 1) return `${lead}: its tests qualify nobody (qualify 0); set qualify to 1 or more, or ${way}`;
+  if (ready < t.tests.qualify) return `${lead}: it needs ${t.tests.qualify} ready tests and has ${ready}, ${t.tests.qualify - ready} short; ${way}`;
+  return undefined;
+}
+
 /** A grade rule as saved (§7.4, ruling 5): `equal`, or a registry step that
  *  may grade — sealed — with an optional config object. */
 export function gradeRuleOf(raw: unknown, graderProblem: (step: string) => string | undefined): GradeRule {

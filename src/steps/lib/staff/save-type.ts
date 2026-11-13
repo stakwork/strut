@@ -6,7 +6,7 @@ import { staffCall, seg } from "./_door.js";
 export default defineStep({
   type: "staff/save-type",
   effect: "write",
-  description: "Save a task type whole (PUT /tasks/types/:name): what is left out is the default (unpaid, a 72-hour hold, no tests, no copies). Answers { type }. Only strut's own staff app, shown to an admin: the type's changedBy is that admin.",
+  description: "Save a task type whole (PUT /tasks/types/:name): what is left out is the default (open to any signed-in worker, unpaid, a 72-hour hold, no tests, no copies; a paid open type needs its K ready tests, needs_tests). Answers { type }. Only strut's own staff app, shown to an admin: the type's changedBy is that admin.",
   input: z.object({
     name: z.string().min(1),
     app: z.string().min(1),
@@ -14,6 +14,7 @@ export default defineStep({
     leaseSeconds: z.number().optional(),
     withinHours: z.number().optional(),
     enabled: z.boolean().optional(),
+    open: z.boolean().optional(),
     paySats: z.number().optional(),
     holdHours: z.number().optional(),
     tests: z.record(z.string(), z.any()).nullable().optional(),

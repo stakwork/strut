@@ -67,7 +67,7 @@ for (const impl of IMPLS) {
     });
 
     const typeWith = async (o: { paySats?: number; holdHours?: number; copies?: Record<string, unknown>; tests?: Record<string, unknown> } = {}, workers = ["ann", "bob", "cat"]) => {
-      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, ...o }, "staff");
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, open: false, ...o }, "staff");
       for (const w of workers) await tasks().grant(w, TYPE, "staff");
     };
     let n = 0;

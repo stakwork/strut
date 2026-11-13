@@ -6,7 +6,7 @@
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
-import { noStatuses, type Grant, type WorkerChange, type WorkerCounts, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
+import { noStatuses, OPEN_GRANT_BY, type Grant, type WorkerChange, type WorkerCounts, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 const SCHEMA = `
 create table if not exists workers (
@@ -59,6 +59,7 @@ export class SqliteWorkerStore implements WorkerStore {
            revoked_at = null, revoked_by = null, revoked_why = null, qualify = excluded.qualify
          where grants.revoked_at is not null`,
       ),
+      grantNew: p("insert into grants (actor, type, granted_by, granted_at, qualify) values (?, ?, ?, ?, ?) on conflict (actor, type) do nothing"),
       revoke: p("update grants set revoked_at = ?, revoked_by = ?, revoked_why = ? where actor = ? and type = ? and revoked_at is null"),
       all: p("select * from workers order by first_seen desc, rowid desc"),
       byStatus: p("select * from workers where status = ? order by first_seen desc, rowid desc"),
@@ -109,6 +110,14 @@ export class SqliteWorkerStore implements WorkerStore {
       if (!this.s.worker.get(actor)) this.s.insert.run(actor, "active", now, now, by ?? null, null);
       else this.s.activate.run(now, by ?? null, actor);
       this.s.grant.run(actor, type, by ?? null, now, qualify);
+      return this.record(actor)!;
+    });
+  }
+
+  async grantOpen(actor: string, type: string, now: number, qualify: number): Promise<WorkerRecord> {
+    return this.db.tx(() => {
+      if (!this.s.worker.get(actor)) this.s.insert.run(actor, "new", now, now, null, null);
+      if (Number(this.s.grantNew.run(actor, type, OPEN_GRANT_BY, now, qualify).changes) > 0) this.s.activate.run(now, OPEN_GRANT_BY, actor);
       return this.record(actor)!;
     });
   }

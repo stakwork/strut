@@ -37,6 +37,7 @@
 | 6 | The Stadeum checking a worker's mixer account | **Deferred** (§11) |
 | 7 | Order | **`human` and the task store first** |
 | 8 | Items 4, 5a and 6: the questions their design passes left open | **All as recommended** (2026-11-12): §7.12 (#662), §8's ruled list (#660), §9.12 (#661) |
+| 9 | Who may take a task type's tasks | **Task types are open to any signed-in worker by default; a paid open type needs at least K ready tests** (ruled 2026-11-13). Staff can still make a type invite-only, and then grants work as before. An unpaid open type needs no tests |
 
 ## Problem
 
@@ -565,6 +566,15 @@ with status `new`. Staff see it and grant task types (§6).
   address can be. `visitorWrite` needed no change: it never counted the
   worker steps.
 
+**Built differently (#685):** task types are open by default (ruling 9).
+A signed-in visitor who is not suspended or banned takes an OPEN type's
+tasks with no grant from staff: their first `task/next` that reaches one
+(by name, or any of the calling app's with no `type`) records a grant,
+`by: "open"`, which makes a `new` worker `active`, so from then on their
+requests count per worker. Staff grant only invite-only types (`open:
+false`), and grant again after a revoke. `task/me` lists the app's open
+types a worker may enter beside the ones they hold.
+
 ### 5.3 The kit
 
 - `useTask(type)` gives `{ task, submit, skip, status }`. It holds one
@@ -672,6 +682,19 @@ AI-written workflow from setting its own pay and lets test tasks share
 one shape. For the builder, `task/set-type` is a step that runs only as a
 proposal an admin accepted (`approver: "admin"`, the `package/install`
 pattern). It comes with the staff app (§9).
+
+**Built differently (#685):** a type has `open` (ruling 9), on `PUT
+/tasks/types/:name`, `staff/save-type` and `task/set-type` (merged, kept
+when left out): true by default, a type saved before it existed included.
+A PAID open type is refused (`409 needs_tests`, the message naming the
+shortfall) unless its tests are on with K (`qualify`) at least 1 and K
+ready, so a new paid type is saved invite-only, its tests made, then
+opened; `task/set-type`'s card marks it first ("Who takes it", a danger).
+`task/types`' count of open tasks is renamed `openTasks` (the type's own
+`open` now says open or invite-only) and gains `readyTests`, as `GET
+/tasks/stats` does per type. In `strut/staff` the Types editor has Open /
+Invite-only with the paid shortfall as its hint; Workers marks an open
+grant.
 
 ## 7. Tests, copies and standing (item 4)
 
@@ -1018,6 +1041,17 @@ as a score per grant in `GET /tasks/workers`.
   records 0 and answers a `notice` saying so.
 - **`task/me`'s `qualifying` is always there**, `false` when not, as
   `payMsat` always is.
+
+**Built differently (#685):** open types (ruling 9) grant through this
+section unchanged. A worker's first ask of an open type records the grant
+(`by: "open"`) with K as a staff grant records it: the type's K when it
+has K ready tests, else 0 — only possible on an UNPAID type, since a paid
+open type short of K ready tests takes no newcomer until its tests are
+back (told why; a worker already in keeps their grant). Qualifying,
+standing, the review's rejections and the automatic revoke then run as
+above. A revoked grant — by standing, by staff, or by the type's deletion
+— is never made live by "open": only a staff grant, which qualifies again
+as a re-grant does.
 
 ### 7.6 Copies
 
@@ -2834,7 +2868,7 @@ directory, so past one process the answer is another strut.
 **Later**
 
 - Lease-scoped file links, and uploads from a worker's page.
-- Invitation codes and open enrolment behind the qualifying tests.
+- Invitation codes behind the qualifying tests.
 - A default worker app for task types that need only `TaskForm`.
 - Other things that park: a timer, a proposal awaited in a run, a wait on
   another strut's run.
@@ -2881,6 +2915,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
+| 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has

@@ -1,6 +1,7 @@
 // Types (plans/human-steps.md §9.5): the task types, New type, and the
 // editor — name (a new type only), the app that draws it and what is wrong
-// with it, the lease and expiry, on or off, the answer's shape, and, when
+// with it, the lease and expiry, on or off, open or invite-only (ruling 9:
+// a paid open type needs its K ready tests), the answer's shape, and, when
 // the server answers for them (§9.7), its pay (5a), its tests and copies
 // (4). Save is `staff/save-type`, the whole type; Delete only with no task
 // open. Below, the workers who hold it, with Revoke and Grant.
@@ -17,7 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { answerOfDraft, draftOf, saveOf, shapeChanged, type Draft, type GradeDraft } from "../lib/draft";
-import { liveTypes, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
+import { liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
 import type { TaskStats, TaskType, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
 import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
@@ -50,6 +51,7 @@ export function Types(props: Props) {
         type={editing}
         missing={open && !editing ? open : undefined}
         openTasks={editing ? openOf(stats.data, editing.name) : 0}
+        readyTests={editing ? stats.data?.types.find((t) => t.type === editing.name)?.readyTests : 0}
         onDone={(name) => {
           setCreating(false);
           props.go(name ? { tab: "types", type: name } : { tab: "types" });
@@ -77,6 +79,7 @@ export function Types(props: Props) {
                 <TableHead>Name</TableHead>
                 <TableHead>App</TableHead>
                 <TableHead>On</TableHead>
+                {props.shown.open && <TableHead>Who takes it</TableHead>}
                 <TableHead className="text-right">Waiting</TableHead>
                 <TableHead className="text-right">Workers</TableHead>
                 {props.shown.pay && <TableHead className="text-right">Pay</TableHead>}
@@ -89,6 +92,7 @@ export function Types(props: Props) {
                   <TableCell className="font-medium">{t.name}</TableCell>
                   <TableCell>{t.app}</TableCell>
                   <TableCell>{t.enabled ? "on" : <Badge variant="outline">off</Badge>}</TableCell>
+                  {props.shown.open && <TableCell>{t.open ? "open" : <Badge variant="outline">invite-only</Badge>}</TableCell>}
                   <TableCell className="text-right tabular-nums">{row(t.name)?.waiting ?? "—"}</TableCell>
                   <TableCell className="text-right tabular-nums">{row(t.name)?.granted ?? "—"}</TableCell>
                   {props.shown.pay && <TableCell className="text-right tabular-nums">{t.paySats ? `${t.paySats} sats` : "unpaid"}</TableCell>}
@@ -108,7 +112,7 @@ const openOf = (s: TaskStats | undefined, type: string) => {
   return r ? r.waiting + r.working : 0;
 };
 
-function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTasks: number; onDone: (name?: string) => void }) {
+function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTasks: number; readyTests?: number; onDone: (name?: string) => void }) {
   const client = useStrutClient();
   const { act, busy, error } = useAct();
   const was = props.type;
@@ -126,6 +130,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
   const nameProblem = was ? undefined : typeNameProblem(d.name, (props.types ?? []).map((t) => t.name));
   const out = saveOf(d, props.shown, was);
   const holders = useMemo(() => (props.workers ?? []).filter((w) => was && liveTypes(w).includes(was.name)), [props.workers, was]);
+  const payHint = props.shown.open && props.shown.pay ? openPayHint({ open: d.open, paySats: Number(d.paySats) || 0, testsOn: props.shown.tests && d.testsOn, qualify: Number(d.tests.qualify) }, props.readyTests) : null;
   const others = (props.workers ?? []).filter((w) => was && !liveTypes(w).includes(was.name) && w.status !== "banned");
   const [granting, setGranting] = useState("");
 
@@ -166,6 +171,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-semibold">{was ? was.name : "New task type"}</h2>
         {was && !was.enabled && <Badge variant="outline">off</Badge>}
+        {was && was.open === false && <Badge variant="outline">invite-only</Badge>}
         {was?.changedBy && <Note>last saved by {was.changedBy}</Note>}
       </div>
 
@@ -197,6 +203,26 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         <Field label="On" hint={d.enabled ? "A human step makes tasks of it, and workers are handed them." : "Off: a human step can make no new task of it, and its open tasks are not handed out and expire when due."}>
           <Switch checked={d.enabled} onCheckedChange={(c) => set({ enabled: c })} aria-label="On" />
         </Field>
+        {props.shown.open && (
+          <Field
+            label="Who takes it"
+            htmlFor="type-open"
+            hint={
+              payHint ? (
+                <span className="text-destructive">{payHint}</span>
+              ) : d.open ? (
+                "Anyone signed in to its app who is not suspended or banned, with no grant: their first ask records one, qualifying first on its tests. A revoke stays until you grant it again."
+              ) : (
+                "Only the workers you grant it to."
+              )
+            }
+          >
+            <NativeSelect id="type-open" value={d.open ? "open" : "invite"} onChange={(e) => set({ open: e.target.value === "open" })}>
+              <NativeSelectOption value="open">Open: any signed-in worker</NativeSelectOption>
+              <NativeSelectOption value="invite">Invite-only: workers you grant</NativeSelectOption>
+            </NativeSelect>
+          </Field>
+        )}
       </div>
 
       <Section title="The answer's shape">
@@ -280,7 +306,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
       {was && (
         <Section title="Workers who hold it">
           {holders.length === 0 ? (
-            <Note>Nobody holds it: no worker can take its tasks.</Note>
+            <Note>{was.open ? "Nobody holds it yet: it is open, so a worker holds it from their first ask." : "Nobody holds it: no worker can take its tasks."}</Note>
           ) : (
             <ul className="flex flex-col gap-1">
               {holders.map((w) => (
@@ -289,6 +315,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
                     {whoOf(w)}
                   </button>
                   <Badge variant="outline">{w.status}</Badge>
+                  {w.grants.some((g) => g.type === was.name && g.revokedAt === undefined && g.by === OPEN_GRANT_BY) && <Badge variant="secondary">open</Badge>}
                   {props.shown.standing && w.standing?.[was.name] && <span className="text-xs text-muted-foreground">{standingText(w.standing[was.name]!)}</span>}
                   <span className="ml-auto">
                     <ReasonButton
