@@ -2095,7 +2095,7 @@ it in `approve:`):
 
 Actions: "Save type", "Don't".
 
-**Built differently (#PRNUM):**
+**Built differently (#679):**
 
 - **The pay, test and copies fields came in this PR.** Items 4 and 5a
   were built first, so the input is `PUT /tasks/types/:name`'s whole body
@@ -2168,7 +2168,7 @@ part beside §14.14). The verdict (§9.6) is ruled and comes after them.
 holds only rules since #668. The `strut/staff` part is specs/API.md §14.15.
 Cancelling one task is not in item 6 (ruled). The places of §9.7 come
 with items 4, 5a and 5b.
-**Built differently (#PRNUM):** PR 1 put no `taskTypes` on the bag, so its
+**Built differently (#679):** PR 1 put no `taskTypes` on the bag, so its
 `list()` and `save` came together in PR 2.
 
 ### 9.11 Tests
@@ -2195,7 +2195,7 @@ with items 4, 5a and 5b.
 - `web/src/waiting.test.ts`: the waiting run's link.
 - The answer schema's two copies, in `answer-schema.test.ts`.
 
-The `task/set-type` row is PR 2's. **Built differently (#PRNUM):** PR 2's
+The `task/set-type` row is PR 2's. **Built differently (#679):** PR 2's
 tests are `src/tasks/set-type.test.ts`, every part of the row. It also covers
 a custom step calling `taskTypes.save` with no accepted record, a
 `meta/run-step` and a subflow, the card's dangers, that no test's expected
@@ -2297,7 +2297,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
-| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#PRNUM (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11 |
+| 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
