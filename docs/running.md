@@ -122,7 +122,7 @@ curl -s https://$STRUT_INDEX_HOST/index/catalog      # the index card, open to a
 curl -s https://$PKARR_RELAY_HOST/<z32 key>          # a Pkarr record through the relay
 
 # Browser live test — the service against a real Playwright server:
-docker run --rm -d -p 3300:3000 -e BROWSER_WS_PATH=devpath ghcr.io/stakwork/strut-browser:1.63.0
+docker run --rm -d -p 3300:3000 -e BROWSER_WS_PATH=devpath ghcr.io/stakwork/strut-browser:1.64.1
 BROWSER_WS_URL=ws://127.0.0.1:3300 BROWSER_WS_PATH=devpath npm run test:browser
 
 # Through OUR LLM gateway (stakgraph-gateway: Bifrost + the governance plugin,
@@ -220,7 +220,7 @@ standalone server image: node + media/document CLIs + agent venv + uv, fs backen
 
 ### `docker-compose.yml`
 
-the standalone compose: the PUBLISHED image (ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}, pushed from main by .github/workflows/publish-image.yml) on the graph backend + a PINNED Neo4j (`neo4j:${STRUT_NEO4J_TAG:-5.26.32}`, the 5.x LTS patch the old floating `neo4j:5` tag named, so its volumes open; never moved by an image update) + the browser (`${STRUT_BROWSER_TAG:-1.63.0}`) (named volumes for neo4j data, /data/workspace, /data/models, uv cache) — nothing built. A box that follows a release CHANNEL sets `STRUT_IMAGE_TAG=stable` and `STRUT_BROWSER_TAG=stable`: `.github/workflows/promote-image.yml` (run by hand with a commit on main) copies that commit's image to the channel tag by digest and moves strut-browser's tag of the same name to the Playwright version the commit pins
+the standalone compose: the PUBLISHED image (ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}, pushed from main by .github/workflows/publish-image.yml) on the graph backend + a PINNED Neo4j (`neo4j:${STRUT_NEO4J_TAG:-5.26.32}`, the 5.x LTS patch the old floating `neo4j:5` tag named, so its volumes open; never moved by an image update) + the browser (`${STRUT_BROWSER_TAG:-1.64.1}`) (named volumes for neo4j data, /data/workspace, /data/models, uv cache) — nothing built. A box that follows a release CHANNEL sets `STRUT_IMAGE_TAG=stable` and `STRUT_BROWSER_TAG=stable`: `.github/workflows/promote-image.yml` (run by hand with a commit on main) copies that commit's image to the channel tag by digest and moves strut-browser's tag of the same name to the Playwright version the commit pins
 
 ### `docker-compose.build.yml`
 

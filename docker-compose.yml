@@ -61,7 +61,7 @@ services:
   browser:
     # Moves with strut's tag: `STRUT_BROWSER_TAG=stable` beside
     # `STRUT_IMAGE_TAG=stable` (promote-image.yml moves the two together).
-    image: ghcr.io/stakwork/strut-browser:${STRUT_BROWSER_TAG:-1.63.0}   # or `build: images/browser`
+    image: ghcr.io/stakwork/strut-browser:${STRUT_BROWSER_TAG:-1.64.1}   # or `build: images/browser`
     restart: unless-stopped
     environment:
       BROWSER_WS_PATH: "${BROWSER_WS_PATH:-strut-browser}"
