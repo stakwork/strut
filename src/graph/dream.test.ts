@@ -70,7 +70,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   let strut: Strut | undefined;
   /** Which agent each model call was for, in order. */
   let calls: string[] = [];
-  /** What the dream's agent was first sent, and what each judge was sent. */
+  /** What the dream's agent was first sent (its system prompt, and its messages), and what each judge was sent. */
+  let tendSystem = "";
   let tendPrompt = "";
   let judged: string[] = [];
   /** What the stand-in judge answers: a verdict, or none (the rule is not about that run). */
@@ -91,10 +92,10 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
         const all = JSON.stringify(body.messages);
         const say = (name: string, input: unknown) => res.end(toolUse(`toolu_${++n}`, name, input));
         res.writeHead(200, { "content-type": "text/event-stream" });
-        if (system.includes("You tend a tree of Concepts")) {
+        if (system.includes("You are the dream.")) {
           calls.push("tend");
           const turn = body.messages.filter((m) => m.role === "assistant").length;
-          if (turn === 0) tendPrompt = all;
+          if (turn === 0) [tendSystem, tendPrompt] = [system, all];
           if (!lesson) return say("final_answer", { lessons: [] });
           // The run whose work was corrected (turn 0's), the root's ref_id, and the claim once it is written.
           const run = /turn 0 · [^\]]*? · run orchestrator (\d+)/.exec(all)?.[1];
@@ -137,6 +138,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     await tb.clear(backend);
     calls = [];
     judged = [];
+    tendSystem = "";
     tendPrompt = "";
     verdict = false;
     lesson = true;
@@ -199,6 +201,11 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     const run = await dream();
     assert.deepEqual(calls, ["tend", "tend", "tend", "tend"]);
+    // Its rules come from pages, not from the workflow: the mechanics, then the `Dream` page (what holds for any
+    // source, with the sources under it), then the page of the source it reads.
+    const at = (s: string) => tendSystem.indexOf(s);
+    for (const s of ["You are the dream.", 'the \\"Dream\\" Concept', "## Where a lesson goes", "- Assistant Conversations — ", 'the \\"Assistant Conversations\\" Concept', "Look for the moments a person corrected the assistant"]) assert.ok(at(s) >= 0, s);
+    assert.ok(at("You are the dream.") < at('the \\"Dream\\" Concept') && at("## Where a lesson goes") < at('the \\"Assistant Conversations\\" Concept'), "mechanics, the root, then the source");
     // The transcript the agent was handed: each turn with its run and the pages that run opened, then the root as a tender reads it.
     assert.match(tendPrompt, new RegExp(`\\[session c-1 · turn 0 · [^\\]]* · run orchestrator ${first["runId"]}[^\\]]*\\]\\\\+nOPENED: [^\\\\]*Personal`));
     assert.match(tendPrompt, /PERSON: too long, keep summaries to three lines/);
@@ -230,7 +237,11 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual([quiet["output"]["turns"], quiet["output"]["lessons"]], [0, []]);
     assert.equal((await claimsOn("Personal")).length, 1);
 
-    // The dream's own run opened no page (a tender reads through knowledge/page): it is not checked against the claim.
+    // The dream's own run opened its own pages, never the tree it tends (a tender reads through knowledge/page):
+    // it is not checked against the claim on Personal. A quiet dream opened nothing.
+    const knowledge = (strut!.services as unknown as { knowledge: KnowledgeCapability }).knowledge;
+    assert.deepEqual((await knowledge.opened("dream", run["runId"]))?.sort(), ["Assistant Conversations", "Dream"]);
+    assert.deepEqual(await knowledge.opened("dream", quiet["runId"]), []);
     assert.deepEqual((await verified("dream", run["runId"]))["checks"], []);
 
     // A person accepts: the page changes, so what was said is about an older page.
@@ -283,6 +294,33 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual([run["output"]["turns"], run["output"]["lessons"]], [3, []]);
     assert.equal((await json<{ proposals: unknown[] }>(`/proposals?runId=${run["runId"]}`)).proposals.length, 0);
     assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks, { "c-1": 2 });
+  });
+
+  it("the dream's rules are pages: another source's page swaps in by name, and a claim on the Dream page judges the dream's own runs", async () => {
+    lesson = false;
+    const knowledge = (strut!.services as unknown as { knowledge: KnowledgeCapability }).knowledge;
+    // A second kind of source is a page under Dream: the dream reads it in place of the conversations' page.
+    const dreamPage = await knowledge.page("Dream");
+    const [other] = await backend.nodes.writeMany([{ type: "Concept", data: { name: "Field Notes", description: "notes people wrote", docs: "Look for the lines a person underlined." } }]);
+    await backend.edges.write({ edge: "PARENT_OF", source_ref_id: dreamPage!.ref_id, target_ref_id: other!.ref_id });
+
+    // A claim on the Dream page itself: what every dream must hold to.
+    const rule = await knowledge.addClaim({ concept: "Dream", text: "A lesson quotes the person's own words" });
+    assert.ok("ok" in rule);
+
+    await say("hello");
+    verdict = true;
+    const run = await dream({ source: "Field Notes" });
+    assert.ok(tendSystem.includes('the \\"Field Notes\\" Concept') && tendSystem.includes("Look for the lines a person underlined."), "the named source's page");
+    assert.ok(!tendSystem.includes('the \\"Assistant Conversations\\" Concept'), "and not the conversations' page");
+    assert.ok(tendSystem.includes("## Where a lesson goes"), "the Dream page is read whatever the source");
+    assert.deepEqual((await knowledge.opened("dream", run["runId"]))?.sort(), ["Dream", "Field Notes"]);
+
+    // The dream's run opened the Dream page, so the claim on it is judged against that run.
+    const pass = await verified("dream", run["runId"]);
+    assert.deepEqual(pass["checks"].map((k: any) => [k.path, k.lastVerify]), [["concept:Dream", { ran: true }]]);
+    assert.match(judged.at(-1)!, /THE RULE: A lesson quotes the person's own words/);
+    assert.equal((await claimsOn("Dream"))[0]!["status"], "supported");
   });
 
   it("the Knowledge door: a page as a tender reads it, one claim per sentence, a cap per run, words only about a run that opened the page; its writers are sealed", async () => {

@@ -152,6 +152,20 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
+  it("ships Dream as a root with a page per kind of source under it: the dream's rules, general, none of them naming a kind of task", async () => {
+    const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
+    const dream = await read("Dream.md");
+    assert.deepEqual(dream.parents, [], "a root: the dream's own tree");
+    assert.ok(dream.description && dream.docs?.includes("PARENT_OF"), "says its children are the sources");
+    // What holds for any source: the posture, what a lesson is, the three things, where a lesson goes.
+    for (const must of ["You tend a tree of Concepts", "## What is a lesson", "THE CLAIM.", "WHAT WAS SAID.", "THE EDIT.", "## Where a lesson goes", "stuck", "Never\nrewrite a page"]) assert.ok(dream.docs!.includes(must), must);
+    // The first source: the conversations dream/turns hands over.
+    const convs = await read("Assistant Conversations.md");
+    assert.deepEqual(convs.parents, ["Dream"]);
+    for (const must of ["PERSON", "ASSISTANT", "cancelled", "OPENED", "not known"]) assert.ok(convs.docs!.includes(must), must);
+    for (const c of [dream, convs]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request|knowledge_|graph_/i, `${c.name}: no deployment, no tool's name (the workflow says how a tool is called)`);
+  });
+
   it("ships Personal as a root of its own set, kept as shipped, and apart from strut's pages", async () => {
     const file = "Personal.md";
     const c = parseConceptFile(file, await readFile(join(PERSONAL_CONCEPTS.dir, file), "utf-8"), PERSONAL_CONCEPTS.prefix);
@@ -484,20 +498,20 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     chats = new MemoryChatStore();
     return createStrut({ workspace: new WorkspaceManager(workspaceDir), graph: b, store: new MemoryRunStore(), chatStore: chats, serveUi: false, scheduler: false, ...extra });
   };
-  // Both names have an "o"; namesLike answers nothing for an empty query.
-  const names = async () => (await b.reader.namesLike("Concept", "o", 10)).map((n) => n.name).sort();
+  // namesLike answers nothing for an empty query: every name here has an "a" or an "o".
+  const names = async () => [...new Set([...(await b.reader.namesLike("Concept", "a", 20)), ...(await b.reader.namesLike("Concept", "o", 20))].map((n) => n.name))].sort();
 
-  it("seeds Workflow Builder and Job at boot; concepts: false seeds nothing", async () => {
+  it("seeds Workflow Builder, Job and Dream at boot, with the pages under them; concepts: false seeds nothing", async () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Workflow Builder"]);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["Job", "Personal", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Personal", "Workflow Builder"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;

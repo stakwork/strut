@@ -1948,8 +1948,9 @@ export async function createStrut<TServices = unknown>(
   }
 
   // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
-  // page the builder's prompt reads and the `Job` page the job agent opens
-  // first. On a graph only; a page that will not seed is a warning.
+  // page the builder's prompt reads, the `Job` page the job agent opens
+  // first, and the `Dream` pages the dream's rules are. On a graph only; a
+  // page that will not seed is a warning.
   if (graph && opts.concepts !== false) {
     try {
       await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
