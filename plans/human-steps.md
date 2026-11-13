@@ -1109,7 +1109,7 @@ added with `ALTER TABLE … ADD COLUMN` when `table_info` lacks it, and
 before still opens one that has them: it reads past them and writes them
 null.
 
-**Built differently (#PR_5A1):**
+**Built differently (#664):**
 
 - **The type's record says `paySats` and `holdHours`**, as `PUT` takes
   them, so a staff page reads a type and writes it back whole. `paySats`
@@ -1192,7 +1192,7 @@ A worker's status touches no earning (ruled). A suspension or a ban stops
 new work; what was earned stays owed until it is taken back. Whether a
 banned worker may withdraw is 5b's.
 
-**Built differently (#PR_5A1):**
+**Built differently (#664):**
 
 - **`pay_daily` counts a take-back on its answer's day,** not the day it
   was taken back: `taken_back_answers` and `taken_back_msat` are, of that
@@ -1278,7 +1278,7 @@ here" on the `human` step itself reads the same answer and marks its pay
 again: the run's totals count it twice while the ledger counts it once. A
 known limit, as for any step run again.
 
-**Built differently (#PR_5A1):** the dollars are rounded to the
+**Built differently (#664):** the dollars are rounded to the
 micro-dollar, as the ledger keeps money, and a pay that rounds to nothing
 marks nothing. Ruling 4 needed no code: strut enforces no run cap itself,
 only the gateway does, from the macaroon's run link, which never reads
@@ -1316,7 +1316,7 @@ the balance less what workers are owed, below 0 when the wallet is short.
 Worker pay never enters `daily`. There "earned" is what this server sold
 (paid-runs.md §8), and an item's margin stays its own.
 
-**Built differently (#PR_5A1):** the two `/tasks` rows of the table above
+**Built differently (#664):** the two `/tasks` rows of the table above
 are built in PR 1, with the rest of §22: `GET /tasks/workers` carries each
 worker's `balance` (one grouped read, `payeeBalances`), and `GET /tasks`
 and `GET /tasks/:id` carry an answered lease's `earning` (`msat`, `at`,
@@ -1881,7 +1881,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
-| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **PR 1 (the earning) built**: stakwork/strut#PR_5A1. Differs in §8.1. PR 2 (the books) not started |
+| 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **PR 1 (the earning) built**: stakwork/strut#664. Differs in §8.1. PR 2 (the books) not started |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | Not started |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
