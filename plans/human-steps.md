@@ -36,6 +36,7 @@
 | 5 | Workers across clients | **Shared: Stakwork manages the workers, clients manage the workflows.** For now the shared layer is the Sphinx mixer Stakwork runs (an invite admits a worker, a disabled account bans one). Each Stadeum keeps its own grants, standing and balance |
 | 6 | The Stadeum checking a worker's mixer account | **Deferred** (§11) |
 | 7 | Order | **`human` and the task store first** |
+| 8 | Items 4, 5a and 6: the questions their design passes left open | **All as recommended** (2026-11-12): §7.12 (#662), §8's ruled list (#660), §9.12 (#661) |
 
 ## Problem
 
@@ -684,21 +685,23 @@ is proposed.
 
 ## 9. The staff app (item 6)
 
-The staff are the client's admins. They make task types, let workers in,
-watch the queue and read what was answered. Today they can only do that
-with `curl` against the `/tasks` routes (§6). The staff app is those
+The staff are the client's admins, and only they (ruled, §9.12). They
+make task types, let workers in, watch the queue and read what was
+answered. Today they can only do that with `curl` against the `/tasks`
+routes (§6). The staff app is those
 routes as a page, the way `strut/earnings` is the `/earnings` routes as a
 page. The page is only a face: the routes decide. A client's own
 dashboard built by Jamie would need read steps a person grants it, and is
 not in this item.
 
-Everything below is proposed unless it says built.
+What §9.12 ruled is settled. Anything else below marked proposed is
+still open.
 
 ### 9.1 What it is
 
 | | |
 | --- | --- |
-| Name | `strut/staff`, title "Tasks and workers", icon `users`. **Proposed**; the name is open (§9.12) |
+| Name | `strut/staff`, title "Tasks and workers", icon `users`. The name is ruled (§9.12); the title and icon are proposed |
 | Sources | `src/apps/staff/` (`app.yaml`, `src/App.tsx`, `src/lib/`, `src/components/`), checked by `npx tsc -p kit/tsconfig.staff.json`, excluded from the root tsc, as `strut/earnings` |
 | Seed | `src/apps/staff-seed.ts`, a copy of `earnings-seed.ts`: `seedBundledApp` by tree hash at boot, after `strut/views` (it imports `TaskForm`). Seeded on every server, a served box too, as `strut/earnings` is |
 | Opt-out | `createStrut({ staff: false })` and `STRUT_HOST_CONFIG`'s `"staff": false` (`hostConfigFromEnv`, `src/server.ts`) seed nothing |
@@ -919,11 +922,12 @@ So review is a mark on the answer, never an undo of the run.
 - **In item 6:** the Tasks tab with `status: settled`, by type and by
   worker, is the review queue. Staff act on the worker (note, suspend,
   revoke), not on the answer.
-- **The verdict (proposed, after a ruling):** a person marks a settled
-  answer `ok` or `rejected`, with a reason. A table of its own,
-  `reviews` (task, verdict, why, by, at), one row a task. `PUT
+- **The verdict (ruled, §9.12):** a person marks a settled answer `ok`
+  or `rejected`, with a reason. It changes nothing in the run. It may be
+  changed until the earning's hold ends, then it is final. A table of its
+  own, `reviews` (task, verdict, why, by, at), one row a task. `PUT
   /tasks/:id/review`, `staff/review`, and a `review=none|ok|rejected`
-  filter on `GET /tasks`. It changes nothing in the run.
+  filter on `GET /tasks`.
 - **What a rejection does later:** with item 4 it counts against the
   worker's standing as a failed test does (§7 decides how). With item 5a
   a rejection inside the earning's hold takes the earning back, as a
@@ -965,8 +969,8 @@ it in `approve:`):
   `meta/run-step` and a subflow are refused.
 - **Input.** `{ name, app, answer?, leaseSeconds?, withinHours?, enabled? }`,
   later the pay and test fields of items 4 and 5a. It is merged over the
-  type when there is one, so a field left out is kept as it is, not reset
-  to the default. A new type needs `answer`. The input schema runs
+  type when there is one (ruled, §9.12), so a field left out is kept as it
+  is, not reset to the default. A new type needs `answer`. The input schema runs
   `answerSchemaProblem`, so a shape strut cannot check is refused to the
   model before any proposal is made.
 - **The door.** `ctx.services.taskTypes` (§9.2) is `list()` (each type
@@ -976,12 +980,13 @@ it in `approve:`):
   person's edits included, as `package/install`'s door does. A forged
   `ctx.proposal` opens nothing. The type's `changedBy` is the admin who
   accepted.
-- **What it cannot do.** It grants no worker, deletes no type and changes
-  no worker. Those stay a person's, in this app.
+- **What it cannot do (ruled, §9.12).** It grants no worker, deletes no
+  type and changes no worker. Those stay a person's, in this app.
 - **Its read twin.** `task/types` (`effect: "read"`, over `list()`): the
   types here, each with its app, answer shape, on or off, open tasks and
   workers. The builder needs the names before it writes a `human` step.
-- **Seeds.** The `builder` seed grants `task/types` and `task/set-type`,
+- **Seeds (ruled: the builder's alone, §9.12).** The `builder` seed
+  grants `task/types` and `task/set-type`,
   and lists `task/set-type` in `approve:`. Not `job` or `orchestrator`: a
   task type comes with a workflow, and workflows are the builder's. Not
   the builder chat, which has no proposals: there the person uses this
@@ -1018,11 +1023,11 @@ are money settings.
 
 ### 9.10 Building it
 
-Item 6 needs only item 3. It lands as two PRs against `main`, the second
-branched after the first merged:
+Item 6 needs only item 3. §9.2's split lands first, in a PR of its own
+(ruled, §9.12). Item 6 then lands as two PRs against `main`, each
+branched after the one before merged:
 
-1. **The app.** §9.2's split (unless it landed on its own, §9.12), the
-   reads of §9.4, the moved answer-schema check, the door and its steps,
+1. **The app.** The reads of §9.4, the moved answer-schema check, the door and its steps,
    `strut/staff` with Queue, Types, Workers and Tasks, its seed and
    opt-out, and the run overview's link to a waiting run's task.
 2. **`task/set-type`.** The step, `task/types`, `taskTypes.save` and its
@@ -1031,8 +1036,9 @@ branched after the first merged:
    is `list()` alone.
 
 Each updates `AGENTS.md` and specs/API.md (§22's new reads, a `strut/staff`
-part beside §14.14). The verdict (§9.6) waits for its ruling and comes
-after. The places of §9.7 come with items 4, 5a and 5b.
+part beside §14.14). The verdict (§9.6) is ruled and comes after them.
+Cancelling one task is not in item 6 (ruled). The places of §9.7 come
+with items 4, 5a and 5b.
 
 ### 9.11 Tests
 
@@ -1046,35 +1052,34 @@ after. The places of §9.7 come with items 4, 5a and 5b.
 | `task/set-type` | A direct call is refused. The builder's call records a proposal with the card's fields. A shape strut cannot check is refused before any proposal. A member's accept is `admin_required:`; an admin's saves the type with `changedBy` set to them. A forged `ctx.proposal` with no accepted record is refused. The person's edits are merged and checked again. A field left out keeps its value |
 | The page | Its pure parts in `src/apps/staff.test.ts`: the editor's model to schema and back, every schema it writes passing `answerSchemaProblem`, a schema it cannot draw opening in JSON, the Queue's warnings, the deep-link input. `npx tsc -p kit/tsconfig.staff.json` |
 
-### 9.12 Open for ruling
+### 9.12 Ruled (2026-11-12)
 
-1. **The name.** `strut/staff`, with door steps `staff/*` and the option
-   `staff: false`, or `strut/tasks` with `tasks/*`. I recommend
-   `strut/staff`: it is this plan's word, `tasks/*` would sit one letter
-   from the worker's `task/*`, and `createStrut({ tasks: false })` reads
-   as turning off the task store.
-2. **The shared bag (§9.2) now, on its own.** I recommend a small PR
-   before item 6, and before item 5a at the latest: today a step the
-   builder writes can grant itself a type or answer as another worker.
-   That spoils answers now, and pays someone once answers earn money.
-3. **Staff are admins.** Only full scope reaches the routes and this app.
-   I recommend admins only for now. A reviewer role (reads and marks
-   answers, changes nothing else) can come when a client asks for one.
+Evan: "I agree with all the recommendations."
+
+1. **The name is `strut/staff`,** with door steps `staff/*` and the
+   option `staff: false`: it is this plan's word, `tasks/*` would sit one
+   letter from the worker's `task/*`, and `createStrut({ tasks: false })`
+   would read as turning off the task store.
+2. **§9.2's split lands on its own, before item 6** (and before item 5a
+   at the latest): today a step the builder writes can grant itself a
+   type or answer as another worker.
+3. **Staff are admins only.** Only full scope reaches the routes and this
+   app. A reviewer role (reads and marks answers, changes nothing else)
+   can come when a client asks for one.
 4. **Review is a mark (§9.6).** A verdict changes nothing in its run; it
    counts against standing (item 4) and takes back an earning still in
-   its hold (item 5a). I recommend it: the run has already acted on the
-   answer, and checking before the run goes on is the workflow's to model.
+   its hold (item 5a). The run has already acted on the answer, and
+   checking before the run goes on is the workflow's to model.
 5. **A verdict may be changed** until the earning's hold ends, then it is
-   final. I recommend it, so a mistaken rejection does not cost a worker
-   pay, and paid money never moves back.
+   final, so a mistaken rejection does not cost a worker pay, and paid
+   money never moves back.
 6. **`task/set-type` is the builder's alone,** merges over the type, and
-   has no twin for grants, deletes or workers. I recommend it: letting
-   workers in and deleting a type are a person's acts, and a merge keeps
-   a model from resetting what it left out.
-7. **Cancelling one task** (`POST /tasks/:id/cancel`, which wakes its run
-   with `task_cancelled:` so `onError` runs). I recommend leaving it out
-   of item 6: a task nobody can answer expires, and the run's own cancel
-   exists.
+   has no twin for grants, deletes or workers: letting workers in and
+   deleting a type are a person's acts, and a merge keeps a model from
+   resetting what it left out.
+7. **Cancelling one task is not in item 6** (`POST /tasks/:id/cancel`,
+   which would wake its run with `task_cancelled:`): a task nobody can
+   answer expires, and the run's own cancel exists.
 
 ## 10. Scale
 
