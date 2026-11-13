@@ -699,6 +699,9 @@ describe("step_run — the app door", () => {
     const whoami = (version: string) => ({ type: "whoami", config: {}, app: appIdentity("probe", version) });
     const nap = (version: string) => ({ type: "nap", config: { ms: 0 }, app: appIdentity("probe", version) });
     assert.equal(await publish(WHOAMI), "v1");
+    // On a graph the publish is a history touch, whose snapshot a second later
+    // reads every app's record: take it now, so only the door's reads count.
+    await strut.history?.settle();
 
     const spy = {
       record: mock.method(workspace, "getApp"),
