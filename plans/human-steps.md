@@ -544,7 +544,7 @@ with status `new`. Staff see it and grant task types (§6).
   address can be. `visitorWrite` needed no change: it never counted the
   worker steps.
 
-**Built differently (#PR_NUM):** task types are open by default (ruling 9).
+**Built differently (#685):** task types are open by default (ruling 9).
 A signed-in visitor who is not suspended or banned takes an OPEN type's
 tasks with no grant from staff: their first `task/next` that reaches one
 (by name, or any of the calling app's with no `type`) records a grant,
@@ -649,7 +649,7 @@ one shape. For the builder, `task/set-type` is a step that runs only as a
 proposal an admin accepted (`approver: "admin"`, the `package/install`
 pattern). It comes with the staff app (§9).
 
-**Built differently (#PR_NUM):** a type has `open` (ruling 9), on `PUT
+**Built differently (#685):** a type has `open` (ruling 9), on `PUT
 /tasks/types/:name`, `staff/save-type` and `task/set-type` (merged, kept
 when left out): true by default, a type saved before it existed included.
 A PAID open type is refused (`409 needs_tests`, the message naming the
@@ -1008,7 +1008,7 @@ as a score per grant in `GET /tasks/workers`.
 - **`task/me`'s `qualifying` is always there**, `false` when not, as
   `payMsat` always is.
 
-**Built differently (#PR_NUM):** open types (ruling 9) grant through this
+**Built differently (#685):** open types (ruling 9) grant through this
 section unchanged. A worker's first ask of an open type records the grant
 (`by: "open"`) with K as a staff grant records it: the type's K when it
 has K ready tests, else 0 — only possible on an UNPAID type, since a paid
@@ -2385,7 +2385,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
-| 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#PR_NUM. Differs in §5.2, §6, §7.5 |
+| 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
