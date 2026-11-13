@@ -32,7 +32,7 @@ import { dumpYaml } from "./yaml.js";
  * page of any set in the same call, or a node already in the graph. Strut
  * seeds its own set (`STRUT_CONCEPTS`: the `Workflow Builder` page the
  * builder's prompt reads, the `Job` page the job workflow puts in its
- * agent's prompt) at boot; a host seeds its own sets with the same call once
+ * agent's prompt, the `Dream` pages the dream's rules are) at boot; a host seeds its own sets with the same call once
  * `createStrut` returned, so a page of its own can hang under one of
  * strut's. An attribute the graph's `Concept` does not declare is left out,
  * one log line naming it.
@@ -145,8 +145,10 @@ export interface ConceptSeedOutcome {
   edited?: true;
 }
 
-/** The pages strut ships (`src/concepts/`). Before strut shipped them the
- *  stakgraph lab seeded the same two files, under its own prefixes.
+/** The pages strut ships (`src/concepts/`): a root per agent — `Workflow
+ *  Builder`, `Job`, and `Dream`, the dream's own rules with a page per kind
+ *  of source under it — and the pages under them. Before strut shipped them
+ *  the stakgraph lab seeded the first two files, under its own prefixes.
  *  `Workflow Build` was the builder's entry under `Job`, there only because
  *  the orchestrator read `Job` alone; it reads both roots now, and the job
  *  agent's way to the builder is in `Job`'s own docs. `Job App` (an app a
