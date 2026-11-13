@@ -574,7 +574,7 @@ export interface PayoutSettings {
 }
 
 /** Ruled (plans/human-steps.md §8.2): off until an admin turns it on. */
-export const DEFAULT_PAYOUT_SETTINGS: Readonly<PayoutSettings> = Object.freeze({ on: false, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 });
+export const DEFAULT_PAYOUT_SETTINGS: Readonly<PayoutSettings> = Object.freeze({ on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 });
 
 export interface PayoutSettingsInput {
   on: boolean;

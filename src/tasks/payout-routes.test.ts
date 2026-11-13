@@ -44,7 +44,7 @@ const HOUR = 3_600_000;
 const X = "c".repeat(64);
 const ACTOR = `secp:${X}`;
 const ADDRESS = `02${X}_03${"d".repeat(64)}_1099511627776`;
-const ON = { on: true, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 };
+const ON = { on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 };
 
 describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
   let dir: string;
@@ -136,7 +136,7 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
     }
     assert.equal((await (await strut.ledger()).payoutSettings()).on, false, "nothing a refused caller sent was saved");
     const list = (await (await req("/tasks/payouts", { headers: await session("admin") })).json()) as Record<string, unknown>;
-    assert.deepEqual(list, { settings: { on: false, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 }, today: { day: "2026-11-13", paidMsat: 0, outMsat: 0, count: 0, serverLeftMsat: 2_000_000_000 }, payouts: [] });
+    assert.deepEqual(list, { settings: { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 }, today: { day: "2026-11-13", paidMsat: 0, outMsat: 0, count: 0, serverLeftMsat: 10_000_000_000 }, payouts: [] });
   });
 
   it("settings: saved whole by an admin with who and when; refused when a cap is under the minimum or a field is not one of the four", async () => {
@@ -181,19 +181,19 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
   it("the worker withdraws through the task service: task/me says it is open and how much; the session's address is paid; the books stay balanced", async () => {
     await earned(10_000_000);
     const closed = await strut.tasks.worker.me(ACTOR, { address: ADDRESS });
-    assert.deepEqual(closed.payout, { on: false, why: "off", minMsat: 1_000_000, dayLeftMsat: 200_000_000, maxMsat: 0 });
+    assert.deepEqual(closed.payout, { on: false, why: "off", minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 });
     await turnOn();
     const open = await strut.tasks.worker.me(ACTOR, { address: ADDRESS });
     assert.equal(open.payout!.on, true);
     assert.ok(open.payout!.maxMsat > 9_900_000 && open.payout!.maxMsat < 10_000_000, "the most whose fee cap still fits");
-    assert.deepEqual((await strut.tasks.worker.me(ACTOR)).payout, { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 200_000_000, maxMsat: 0 });
+    assert.deepEqual((await strut.tasks.worker.me(ACTOR)).payout, { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 });
     // The step: the address from the call's bag, never its input.
     const paid = await withdrawStep.run({ msat: 4_000_000 }, workerCtx(ACTOR, ADDRESS) as never);
     assert.deepEqual([paid.state, paid.msat, paid.feeMsat, paid.maxFeeMsat], ["settled", 4_000_000, 4_000, 20_000]);
     assert.deepEqual(payer.keysends().map((k) => [k.address, k.msat]), [[ADDRESS, 4_000_000]]);
     await assert.rejects(() => withdrawStep.run({ msat: 4_000_000 }, workerCtx(ACTOR) as never), /^PayoutError: no_address: /);
     const me = (await meStep.run({}, workerCtx(ACTOR, ADDRESS) as never)) as { balance: { totalMsat: number }; payout: { on: boolean; dayLeftMsat: number } };
-    assert.deepEqual([me.balance.totalMsat, me.payout.on, me.payout.dayLeftMsat], [10_000_000 - 4_004_000, true, 196_000_000]);
+    assert.deepEqual([me.balance.totalMsat, me.payout.on, me.payout.dayLeftMsat], [10_000_000 - 4_004_000, true, 996_000_000]);
     // The books beside the wallet: every send counted, the cover unmoved.
     const view = (await (await req("/earnings?wallet=1", { headers: keyed })).json()) as EarningsView;
     assert.equal(view.wallet!.differenceMsat, 0);

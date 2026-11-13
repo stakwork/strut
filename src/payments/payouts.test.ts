@@ -30,7 +30,7 @@ const HOUR = 3_600_000;
 const X = "c".repeat(64);
 const ACTOR = `secp:${X}`;
 const ADDRESS = `02${X}_03${"d".repeat(64)}_1099511627776`;
-const ON = { on: true, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 };
+const ON = { on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 };
 
 const refusal = (c: PayoutErrorCode) => (e: unknown) => e instanceof PayoutError && e.code === c;
 
@@ -104,7 +104,7 @@ for (const impl of impls) {
       await assert.rejects(payouts.pay(ACTOR, { address: ADDRESS, msat: 2_000_000 }), refusal("payouts_off"));
       assert.equal((await payouts.view(ACTOR, { address: ADDRESS, balance: await ledger.payeeBalance(ACTOR, { now }) })).why, "off");
       assert.deepEqual([payer.calls.length, (await ledger.payouts()).length], [0, 0]);
-      assert.deepEqual(await payouts.settings(), { on: false, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 });
+      assert.deepEqual(await payouts.settings(), { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 });
     });
 
     it("settles at once: the worker's address receives the amount, the worker pays the fee up to its cap, the books stay balanced and the cover does not move", async () => {

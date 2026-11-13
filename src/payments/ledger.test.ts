@@ -762,7 +762,7 @@ for (const impl of impls) {
 
     const PKEY = (n: number) => n.toString(16).padStart(64, "0");
     const ADDR = `02${"a".repeat(64)}_03${"b".repeat(64)}_1099511627776`;
-    const ON = { on: true, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 };
+    const ON = { on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 };
     /** A payout reserved at `at` (past the default hold), its fee cap the LSP's. */
     const reserve = (n: number, msat: number, o: { worker?: string; at?: number; fee?: number } = {}) =>
       store.reservePayout({ key: PKEY(n), worker: o.worker ?? "ann", address: ADDR, msat, maxFeeMsat: o.fee ?? defaultMaxFeeMsat(msat), at: o.at ?? T0 + 72 * HOUR });
@@ -770,7 +770,7 @@ for (const impl of impls) {
 
     it("payout settings: off until an admin saves them, saved whole with who and when, refused with a cap under the minimum", async () => {
       assert.deepEqual(await store.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
-      assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000 }, "ruled");
+      assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 }, "ruled");
       const saved = await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
       assert.deepEqual(saved, { ...ON, changedBy: "admin-1", changedAt: T0 });
       assert.deepEqual(await store.payoutSettings(), saved);
@@ -796,26 +796,26 @@ for (const impl of impls) {
     });
 
     it("each refusal, in order, with the most the worker could ask now", async () => {
-      await earn("l1", { msat: 300_000_000, hold: HOUR });
+      await earn("l1", { msat: 1_500_000_000, hold: HOUR });
       const at = T0 + HOUR;
       assert.deepEqual(refused(await reserve(1, 1_000_000, { at })), ["payouts_off", 0], "the switch first, off by default");
       await store.setPayoutSettings(ON);
-      assert.deepEqual(refused(await reserve(1, 999_999, { at })), ["below_minimum", 200_000_000]);
-      assert.deepEqual(refused(await reserve(1, 299_000_000, { at })), ["over_balance", 200_000_000], "the amount and its fee cap must fit; the day's cap is the least");
-      assert.deepEqual(refused(await reserve(1, 200_000_001, { at })), ["over_worker_day", 200_000_000]);
-      assert.equal((await reserve(1, 150_000_000, { at })).ok, true);
+      assert.deepEqual(refused(await reserve(1, 999_999, { at })), ["below_minimum", 1_000_000_000]);
+      assert.deepEqual(refused(await reserve(1, 1_499_000_000, { at })), ["over_balance", 1_000_000_000], "the amount and its fee cap must fit; the day's cap is the least");
+      assert.deepEqual(refused(await reserve(1, 1_000_000_001, { at })), ["over_worker_day", 1_000_000_000]);
+      assert.equal((await reserve(1, 750_000_000, { at })).ok, true);
       const twice = await reserve(2, 1_000_000, { at });
       assert.ok(!twice.ok);
       assert.deepEqual([twice.reason, twice.maxMsat, twice.out?.key], ["payout_out", 0, PKEY(1)], "one on its way, and it says which");
       assert.deepEqual(refused(await reserve(2, 1, { at })), ["below_minimum", 0], "the minimum before the one on its way");
       await store.payoutSettled({ key: PKEY(1), feeMsat: 1_000, at });
-      assert.deepEqual(refused(await reserve(2, 50_000_001, { at })), ["over_worker_day", 50_000_000], "the day's paid payouts count");
-      await store.setPayoutSettings({ ...ON, serverDaySats: 160_000 });
-      assert.deepEqual(refused(await reserve(2, 10_000_001, { at })), ["over_server_day", 10_000_000]);
-      assert.equal((await reserve(2, 10_000_000, { at })).ok, true);
+      assert.deepEqual(refused(await reserve(2, 250_000_001, { at })), ["over_worker_day", 250_000_000], "the day's paid payouts count");
+      await store.setPayoutSettings({ ...ON, serverDaySats: 800_000 });
+      assert.deepEqual(refused(await reserve(2, 50_000_001, { at })), ["over_server_day", 50_000_000]);
+      assert.equal((await reserve(2, 50_000_000, { at })).ok, true);
       // The next UTC day has caps of its own.
       await store.payoutSettled({ key: PKEY(2), feeMsat: 0, at });
-      assert.equal((await reserve(3, 50_000_001, { at: at + DAY })).ok, true);
+      assert.equal((await reserve(3, 250_000_001, { at: at + DAY })).ok, true);
     });
 
     it("a switch turned off holds at once: no new payout, and one on its way goes on", async () => {
@@ -1132,7 +1132,7 @@ describe("the ledger file", () => {
       assert.equal((await two.token("a"))!.paid, $(10));
       assert.deepEqual(await two.payeeBalance("ann", { now: T0 + 1 }), { totalMsat: 2_000_000, heldMsat: 0, withdrawableMsat: 2_000_000 });
       assert.deepEqual(await two.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
-      await two.setPayoutSettings({ on: true, minSats: 1_000, workerDaySats: 200_000, serverDaySats: 2_000_000, by: "bo", at: T0 });
+      await two.setPayoutSettings({ on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, by: "bo", at: T0 });
       const key = "e".repeat(64);
       assert.ok((await two.reservePayout({ key, worker: "ann", address: "a_b_1", msat: 1_000_000, maxFeeMsat: 5_000, at: T0 + 1 })).ok);
       assert.equal((await two.payeeBalance("ann", { now: T0 + 1 })).totalMsat, 995_000);

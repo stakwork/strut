@@ -135,7 +135,7 @@ index. A change in this area updates this file, not AGENTS.md.
   solvency (the wallet holds what every worker is owed), then the ledger's
   reserve — the minimum (1,000 sats), one payout on its way per worker, the
   amount and its fee cap in what is withdrawable, the worker's and the
-  server's UTC day (200,000 and 2,000,000 sats). The worker pays the routing
+  server's UTC day (1,000,000 and 10,000,000 sats). The worker pays the routing
   fee, at most its cap; the payout leaves their balance when it is
   RESERVED. A suspended or banned worker may withdraw (ruled): status stops
   new work, never money already released. A payout still pending a day after

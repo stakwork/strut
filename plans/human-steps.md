@@ -1912,8 +1912,8 @@ do: `{ state, feeMsat, paymentHash?, preimage?, error? }`.
 | --- | --- | --- |
 | `on` | The switch. Off: no new payout is reserved, for any worker, from the moment the change commits. Payouts already on their way go on, since a sent payment cannot be called back | Off, until an admin turns it on |
 | `minSats` | The least one withdrawal may ask | 1,000 sats |
-| `workerDaySats` | The most one worker's payouts may come to in a UTC day | 200,000 sats |
-| `serverDaySats` | The most all workers' payouts may come to in a UTC day | 2,000,000 sats |
+| `workerDaySats` | The most one worker's payouts may come to in a UTC day | 1,000,000 sats |
+| `serverDaySats` | The most all workers' payouts may come to in a UTC day | 10,000,000 sats |
 
 - **The caps count amounts, not fees,** of the payouts on their way and
   paid that UTC day. A failed payout counts for nothing. UTC days, as the
@@ -2393,9 +2393,11 @@ redesign changes what a ruling covers, the ruling says so.
    is likely none; the build checks it once.
 4. **The minimum withdrawal is 1,000 sats.** The LSP's 5-sat floor is 0.5% of
    that amount.
-5. **The caps are 200,000 sats a worker and 2,000,000 sats for the server,
-   per UTC day,** as defaults staff can change. They are a brake on a bug or
-   a theft, well above a day of honest work.
+5. **The caps are 1,000,000 sats a worker and 10,000,000 sats for the
+   server, per UTC day,** as defaults staff can change (ruled again on
+   2026-11-13: one answer may pay up to 1,000,000 sats, #665, and a worker's
+   day must hold at least one such answer). They are a brake on a bug or a
+   theft, well above a day of honest work.
 6. **A suspended or banned worker may withdraw what passed its hold,** as
    8.1's ruling 6 has it. Staff take back inside the hold, and the switch
    and a mixer ban remain.

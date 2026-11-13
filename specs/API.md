@@ -5314,8 +5314,8 @@ the shared bag, no proposal, no YAML, not `task/set-type`):
 
 The settings (one row in the ledger, read inside the reserve's own
 transaction, so a change holds at once): `on` false by default — off until
-an admin turns it on; `minSats` 1,000; `workerDaySats` 200,000;
-`serverDaySats` 2,000,000. The caps count amounts, not fees, of the payouts
+an admin turns it on; `minSats` 1,000; `workerDaySats` 1,000,000;
+`serverDaySats` 10,000,000. The caps count amounts, not fees, of the payouts
 on their way and paid that UTC day; a failed one counts for nothing.
 Turning it off stops new payouts; one on its way goes on. `404
 unknown_payout`, `409 reading`, `404 not_pending` and the wallet's codes as

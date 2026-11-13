@@ -31,7 +31,7 @@ const TYPE = "pet-match";
 const NOTHING = { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 };
 /** Withdrawing, to a worker whose session carries no Sphinx address (§8.2):
  *  every sign-in until item 5b's PR 2, a member's always. */
-const NO_PAYOUT = { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 200_000_000, maxMsat: 0 };
+const NO_PAYOUT = { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
 const MATCH = {
   type: "object",
   properties: { same: { type: "boolean" }, note: { type: "string", maxLength: 200 } },
