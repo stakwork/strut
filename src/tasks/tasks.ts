@@ -28,13 +28,21 @@
  *    leases, so their tasks are free again, and expires a task past its
  *    `withinHours`; `onSettle` hears that too.
  *
+ * The worker's door (§5, item 3) is the `task/*` steps over the worker
+ * calls: `next { wait }` holds up to 25 s for a task to appear, woken by
+ * what could free one (a task made, skipped, let go of, a grant); each
+ * worker makes at most `TASK_CALLS_PER_MINUTE` calls a minute (a held wait
+ * counts once); and the service knows from memory who is an ACTIVE worker,
+ * which the public routes count a request under (`isActiveWorker`).
+ *
  * Nothing is made until something is asked of it: no file on a strut that
  * never runs a `human` step, and a staff READ on such a strut answers empty.
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
-import { answerProblem, answerSchemaProblem } from "./answer-schema.js";
+import type { RunFile } from "../runs.js";
+import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
 import { MemoryTaskStore, type Lease, type TaskListQuery, type TaskRecord, type TaskSettled, type TaskStore, type TaskType } from "./task-store.js";
 import { liveGrants, MemoryWorkerStore, WORKER_STATUSES, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
@@ -55,6 +63,17 @@ export const FILES_MAX = 200;
 export const TASK_PARK_PREFIX = "task";
 /** Rule 8: how often the sweep runs. */
 export const SWEEP_EVERY_MS = 60_000;
+/** §5.1: the longest `next { wait }` holds for a task to appear, in
+ *  seconds — under a host's 60 s tool-call timeout. */
+export const NEXT_WAIT_MAX_S = 25;
+/** §5.2: the store's own limit, in memory — worker calls (`next`, `submit`,
+ *  `skip`, `file`, `me`) one worker may make in a minute. A held `next
+ *  { wait }` counts once. */
+export const TASK_CALLS_PER_MINUTE = 120;
+/** §5.2: requests to `/public/*` a minute counted under an ACTIVE worker
+ *  (`isActiveWorker`) in place of their address's budget, so a room of
+ *  workers behind one address is not one budget. */
+export const TASK_REQUESTS_PER_MINUTE = 240;
 
 const TYPE_NAME_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$/;
 const NAME_MAX = 128;
@@ -108,7 +127,11 @@ export type TaskErrorCode =
   | "lease_expired"
   | "task_closed"
   | "bad_answer"
-  | "unknown_worker";
+  | "unknown_worker"
+  | "too_many"
+  | "not_listed"
+  | "no_file"
+  | "in_use";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -172,6 +195,8 @@ export interface WorkerTask {
   files: string[];
   /** Epoch ms. */
   expires: number;
+  /** The task type's answer schema (§4.5): what a form draws (`TaskForm`). */
+  answer: AnswerSchema;
 }
 
 /** A worker as they see themselves (`task/me`). */
@@ -190,14 +215,23 @@ export interface TasksCapability {
    *  when there is none (rule 1). */
   ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean }>;
 
-  // The worker's. `actor` is the caller's own (rule 5).
+  // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
+  // app's name, when the call comes from one: a lease of a type another app
+  // draws is refused (`wrong_app`). Every call counts against the worker's
+  // `TASK_CALLS_PER_MINUTE` (`too_many`).
   /** The worker's live lease when it is of a type asked for, else a new one
    *  on the oldest open task they may take; `{ none: true }` when there is
-   *  none. `type` narrows to one type, `app` to the types an app draws. */
-  next(actor: string, o?: { type?: string; app?: string }): Promise<WorkerTask | { none: true }>;
-  submit(actor: string, o: { lease: string; answer: unknown }): Promise<{ ok: true }>;
+   *  none. `type` narrows to one type, `app` to the types an app draws.
+   *  `wait` (seconds, at most `NEXT_WAIT_MAX_S`) holds that long for a task
+   *  to appear before answering `{ none: true }`; it counts as one call. */
+  next(actor: string, o?: { type?: string; app?: string; wait?: number }): Promise<WorkerTask | { none: true }>;
+  submit(actor: string, o: { lease: string; answer: unknown; app?: string }): Promise<{ ok: true }>;
   /** The task reopens for someone else; never handed to this worker again. */
-  skip(actor: string, o: { lease: string; reason?: string }): Promise<{ ok: true }>;
+  skip(actor: string, o: { lease: string; reason?: string; app?: string }): Promise<{ ok: true }>;
+  /** One file the leased task names (`files`), as `run/files` answers one
+   *  (§5.5): only a path on the task's list, only through the caller's own
+   *  live lease, whether or not another path exists. */
+  file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
   /** Who the worker is here, and what they may take; the first call writes
    *  them as `new`. */
   me(actor: string, o?: { app?: string }): Promise<WorkerView>;
@@ -206,6 +240,10 @@ export interface TasksCapability {
   types(): Promise<TaskType[]>;
   /** Saves the whole type (a PUT: what is left out is the default). */
   setType(name: string, input: TaskTypeInput, by?: string): Promise<TaskType>;
+  /** Removes a type no open task is of (`in_use` otherwise: turn it off
+   *  and let them settle), and revokes its live grants. Its tasks on file
+   *  keep its name. */
+  deleteType(name: string, by?: string): Promise<{ name: string; revoked: number }>;
   workers(q?: { status?: WorkerStatus }): Promise<WorkerRecord[]>;
   /** `suspended` or `banned` expires the worker's live lease at once. */
   setWorker(actor: string, change: { status?: WorkerStatus; note?: string | null }, by?: string): Promise<WorkerRecord>;
@@ -220,6 +258,14 @@ export interface TasksCapability {
 export interface TasksService {
   /** Frozen: what `ctx.services.tasks` is. */
   capability: TasksCapability;
+  /** Frozen: the worker's calls alone — what a signed-in visitor's bag
+   *  carries (plans/human-steps.md §5.2), never the staff's. */
+  worker: WorkerTasksCapability;
+  /** Whether `actor` is an ACTIVE worker here, from memory (the store's
+   *  active workers, loaded when it opens and kept by every write): what
+   *  the public routes count a request under (§5.2). False before the
+   *  store is open. */
+  isActiveWorker(actor: string): boolean;
   /** Rule 7 and 8's notice: tasks that left `open` — answered, expired,
    *  cancelled — so a source can wake their runs. Returns the unsubscribe. */
   onSettle(listener: (settled: TaskSettled[]) => void): () => void;
@@ -238,9 +284,18 @@ export interface TasksService {
   close(): Promise<void>;
 }
 
+/** The worker's calls of the capability (§5.1). */
+export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "skip" | "file" | "me">;
+
 export interface TasksDeps {
   /** The stores, opened on first use. */
   open(): Promise<TaskStores>;
+  /** One of a task's files, as `run/files` answers one, read from where its
+   *  run's files are (src/tasks/files.ts); null when it is not there. The
+   *  service checks the lease and the list first. Left out: no files. */
+  file?(task: TaskRecord, path: string): Promise<RunFile | null>;
+  /** `TASK_CALLS_PER_MINUTE`, for a test. */
+  callsPerMinute?: number;
   /** Why the run `control` belongs to may not ask a person, else
    *  undefined: `ensure` refuses before anything is made. */
   refusal?(control: RunControl | undefined): string | undefined;
@@ -253,9 +308,20 @@ export interface TasksDeps {
 
 export function createTasks(deps: TasksDeps): TasksService {
   const now = deps.now ?? Date.now;
+  /** The ACTIVE workers, by actor: loaded when the store opens, kept by
+   *  every write of a worker row (`note`). */
+  const active = new Set<string>();
+  const note = (w: WorkerRecord): WorkerRecord => {
+    if (w.status === "active") active.add(w.actor);
+    else active.delete(w.actor);
+    return w;
+  };
   let opening: Promise<TaskStores> | undefined;
   const stores = (): Promise<TaskStores> => {
-    opening ??= deps.open();
+    opening ??= deps.open().then(async (s) => {
+      for (const w of await s.workers.list({ status: "active" })) active.add(w.actor);
+      return s;
+    });
     opening.catch(() => {
       opening = undefined;
     });
@@ -276,11 +342,101 @@ export function createTasks(deps: TasksDeps): TasksService {
     }
   };
 
+  /** §5.2: worker calls a minute, per worker, in memory. */
+  const perMinute = deps.callsPerMinute ?? TASK_CALLS_PER_MINUTE;
+  const calls = new Map<string, { minute: number; n: number }>();
+  const count = (actor: string) => {
+    actorOk(actor);
+    const minute = Math.floor(now() / 60_000);
+    const at = calls.get(actor);
+    if (!at || at.minute !== minute) {
+      if (calls.size > 10_000) for (const [k, v] of calls) if (v.minute !== minute) calls.delete(k);
+      calls.set(actor, { minute, n: 1 });
+      return;
+    }
+    if (++at.n > perMinute) throw new TaskError("too_many", `at most ${perMinute} task calls a minute for one worker; wait a minute (a held next { wait } counts once)`);
+  };
+
   /** Rules 5 and 6: the worker as they are now, written `new` on first sight. */
   const worker = async (actor: string): Promise<{ s: TaskStores; w: WorkerRecord }> => {
     actorOk(actor);
     const s = await stores();
-    return { s, w: await s.workers.seen(actor, now()) };
+    return { s, w: note(await s.workers.seen(actor, now())) };
+  };
+  /** A lease's type is drawn by the calling app (§5.1): another app reaches
+   *  none of its tasks, whatever lease it names. */
+  const appOk = async (s: TaskStores, l: Lease, app: string | undefined, kind?: TaskType) => {
+    if (app === undefined) return;
+    const k = kind ?? (await s.tasks.type(l.type));
+    if (!k || k.app !== app) throw new TaskError("wrong_app", `task type ${l.type} is drawn by another app`);
+  };
+
+  // ── next { wait } (§5.1) ──────────────────────────────────────────────
+  // A held `next` waits here, woken by what could free a task for it: a
+  // task MADE or SKIPPED of a type it may take wakes the oldest such waiter
+  // — one per task, and a waiter that then takes nothing hands the wake on
+  // to the next, so one task is never a thousand guarded writes — and what
+  // frees tasks of unknown types (the sweep, a worker let go of, a type
+  // saved) wakes every waiter once. A grant, a revoke or a status change
+  // wakes that worker's own. A lease that runs out between sweeps wakes
+  // nobody: the next call (a page asks again as a wait ends) finds it.
+  interface Wake {
+    type: string;
+    tried: Set<Waiter>;
+  }
+  interface Waiter {
+    actor: string;
+    types: ReadonlySet<string>;
+    wake(w: Wake | null): void;
+  }
+  const waiting: Waiter[] = [];
+  let closing = false;
+  const unwait = (w: Waiter) => {
+    const i = waiting.indexOf(w);
+    if (i >= 0) waiting.splice(i, 1);
+  };
+  /** Wake the oldest waiter for `type` that this wake has not tried. */
+  const wakeFor = (type: string, tried: Set<Waiter> = new Set()) => {
+    const i = waiting.findIndex((w) => w.types.has(type) && !tried.has(w));
+    if (i < 0) return;
+    const [w] = waiting.splice(i, 1);
+    tried.add(w!);
+    w!.wake({ type, tried });
+  };
+  const wakeAll = (actor?: string) => {
+    for (const w of [...waiting]) {
+      if (actor !== undefined && w.actor !== actor) continue;
+      unwait(w);
+      w.wake(null);
+    }
+  };
+  /** One try at a task: the lease, or the types the worker may take now. */
+  const attempt = async (actor: string, o: { type?: string; app?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
+    const { s, w } = await worker(actor);
+    mayWork(w);
+    const held = liveGrants(w);
+    const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
+    if (o.type !== undefined) {
+      const kind = kinds.get(o.type);
+      if (!kind) throw new TaskError("unknown_type", `no task type ${o.type} here`);
+      if (o.app !== undefined && kind.app !== o.app) throw new TaskError("wrong_app", `task type ${o.type} is drawn by another app`);
+      if (!held.includes(o.type)) throw new TaskError("not_granted", `you do not hold task type ${o.type}`);
+    }
+    const types = held.filter((name) => {
+      const kind = kinds.get(name);
+      return kind && kind.enabled && (o.type === undefined || name === o.type) && (o.app === undefined || kind.app === o.app);
+    });
+    const at = now();
+    const live = await s.tasks.heldBy(actor, at);
+    if (live) {
+      if (types.includes(live.type)) return { got: await workerTask(s, live), types };
+      throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
+    }
+    const taken = await s.tasks.take({ worker: actor, types, id: randomId(), now: at });
+    if (taken) return { got: await workerTask(s, taken), types };
+    // Another call of the same worker may have taken one meanwhile.
+    const raced = await s.tasks.heldBy(actor, at);
+    return raced && types.includes(raced.type) ? { got: await workerTask(s, raced), types } : { types };
   };
   const mayWork = (w: WorkerRecord) => {
     if (w.status !== "active") {
@@ -311,8 +467,8 @@ export function createTasks(deps: TasksDeps): TasksService {
   };
 
   const workerTask = async (s: TaskStores, l: Lease): Promise<WorkerTask> => {
-    const t = (await s.tasks.task(l.task))!;
-    return { lease: l.id, type: l.type, show: t.show, files: t.files, expires: l.expires };
+    const [t, kind] = await Promise.all([s.tasks.task(l.task), s.tasks.type(l.type)]);
+    return { lease: l.id, type: l.type, show: t!.show, files: t!.files, expires: l.expires, answer: kind?.answer ?? ({ type: "object", properties: {} } as AnswerSchema) };
   };
 
   const views = async (s: TaskStores, tasks: TaskRecord[]): Promise<TaskView[]> => {
@@ -344,7 +500,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (!kind.enabled) throw new TaskError("type_disabled", `task type ${type} is turned off`);
       if (o.resolveFiles) files = filesOf(await o.resolveFiles(files));
       const at = now();
-      return s.tasks.ensure({
+      const made = await s.tasks.ensure({
         id: randomId(),
         type,
         workflow,
@@ -356,42 +512,61 @@ export function createTasks(deps: TasksDeps): TasksService {
         created: at,
         due: at + Math.round((input.withinHours ?? kind.withinHours) * 3_600_000),
       });
+      if (made.created) wakeFor(made.task.type);
+      return made;
     },
 
     async next(actor, o = {}) {
-      const { s, w } = await worker(actor);
-      mayWork(w);
-      const held = liveGrants(w);
-      const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
-      if (o.type !== undefined) {
-        const kind = kinds.get(o.type);
-        if (!kind) throw new TaskError("unknown_type", `no task type ${o.type} here`);
-        if (o.app !== undefined && kind.app !== o.app) throw new TaskError("wrong_app", `task type ${o.type} is drawn by another app`);
-        if (!held.includes(o.type)) throw new TaskError("not_granted", `you do not hold task type ${o.type}`);
+      count(actor);
+      const wait = o.wait ?? 0;
+      if (typeof wait !== "number" || !Number.isFinite(wait) || wait < 0 || wait > NEXT_WAIT_MAX_S) {
+        throw new TaskError("bad_request", `wait is a number of seconds from 0 to ${NEXT_WAIT_MAX_S}`);
       }
-      const types = held.filter((name) => {
-        const kind = kinds.get(name);
-        return kind && kind.enabled && (o.type === undefined || name === o.type) && (o.app === undefined || kind.app === o.app);
-      });
-      const at = now();
-      const live = await s.tasks.heldBy(actor, at);
-      if (live) {
-        if (types.includes(live.type)) return workerTask(s, live);
-        throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
+      const deadline = Date.now() + wait * 1000;
+      /** The wake this call was handed: passed on when it takes nothing. */
+      let handed: Wake | null = null;
+      for (;;) {
+        let r: { got?: WorkerTask; types: string[] };
+        try {
+          r = await attempt(actor, o);
+        } catch (err) {
+          if (handed) wakeFor(handed.type, handed.tried);
+          throw err;
+        }
+        if (r.got) return r.got;
+        if (handed) wakeFor(handed.type, handed.tried);
+        const left = deadline - Date.now();
+        // A worker with nothing to take waits too: a page that asks again
+        // the moment it hears "none" would never stop asking.
+        if (left <= 0) return { none: true };
+        const woke = await new Promise<Wake | null | "timeout">((resolve) => {
+          const timer = setTimeout(() => {
+            unwait(waiter);
+            resolve("timeout");
+          }, left);
+          const waiter: Waiter = {
+            actor,
+            types: new Set(r.types),
+            wake: (w) => {
+              clearTimeout(timer);
+              resolve(w);
+            },
+          };
+          waiting.push(waiter);
+        });
+        if (woke === "timeout" || closing) return { none: true };
+        handed = woke;
       }
-      const taken = await s.tasks.take({ worker: actor, types, id: randomId(), now: at });
-      if (taken) return workerTask(s, taken);
-      // Another call of the same worker may have taken one meanwhile.
-      const raced = await s.tasks.heldBy(actor, at);
-      return raced && types.includes(raced.type) ? workerTask(s, raced) : { none: true };
     },
 
     async submit(actor, o) {
+      count(actor);
       const { s, w } = await worker(actor);
       mayWork(w);
       const l = await ownLease(s, w, o?.lease);
       const kind = await s.tasks.type(l.type);
       if (!kind) throw new TaskError("unknown_type", `task type ${l.type} is gone`);
+      await appOk(s, l, o.app, kind);
       const problem = answerProblem(kind.answer, o.answer);
       if (problem) throw new TaskError("bad_answer", problem);
       const settled = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now() });
@@ -401,15 +576,37 @@ export function createTasks(deps: TasksDeps): TasksService {
     },
 
     async skip(actor, o) {
+      count(actor);
       const { s, w } = await worker(actor);
       mayWork(w);
       const l = await ownLease(s, w, o?.lease);
+      await appOk(s, l, o.app);
       const reason = o.reason === undefined ? undefined : text("reason", o.reason);
       if (!(await s.tasks.skip({ lease: l.id, worker: actor, ...(reason === undefined ? {} : { reason }), now: now() }))) return whyNot(s, w, l.id);
+      // The task is open for someone else.
+      wakeFor(l.type);
       return { ok: true };
     },
 
+    async file(actor, o) {
+      count(actor);
+      const { s, w } = await worker(actor);
+      mayWork(w);
+      const l = await ownLease(s, w, o?.lease);
+      await appOk(s, l, o.app);
+      const path = o.path;
+      if (typeof path !== "string" || !path) throw new TaskError("bad_request", "path is required");
+      const t = (await s.tasks.task(l.task))!;
+      // Whether or not a file of that name exists: a task shows what its
+      // step named, never the rest of its run (§5.5).
+      if (!t.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of this task's files`);
+      const f = deps.file ? await deps.file(t, path) : null;
+      if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
+      return f;
+    },
+
     async me(actor, o = {}) {
+      count(actor);
       const { s, w } = await worker(actor);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
       const types = liveGrants(w)
@@ -438,7 +635,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const withinHours = hours(input.withinHours ?? DEFAULT_WITHIN_HOURS);
       if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new TaskError("bad_request", "enabled is true or false");
       const s = await stores();
-      return s.tasks.putType({
+      const saved = await s.tasks.putType({
         name,
         app,
         answer: input.answer as TaskType["answer"],
@@ -448,6 +645,27 @@ export function createTasks(deps: TasksDeps): TasksService {
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
+      // Turned on, or now drawn by another app: what a waiter may take changed.
+      wakeAll();
+      return saved;
+    },
+
+    async deleteType(name, by) {
+      if (typeof name !== "string" || !name) throw new TaskError("bad_request", "a task type's name is required");
+      const s = await storesIfAny();
+      const out = s ? await s.tasks.deleteType(name) : "missing";
+      if (out === "missing") throw new TaskError("unknown_type", `no task type ${name} here`);
+      if (out === "in_use") throw new TaskError("in_use", `task type ${name} has open tasks: turn it off (enabled: false) and let them settle or expire, or cancel their runs, then delete it`);
+      // A type made again under this name later starts with no workers.
+      const at = now();
+      let revoked = 0;
+      for (const w of await s!.workers.list()) {
+        if (!liveGrants(w).includes(name)) continue;
+        const r = await s!.workers.revoke(w.actor, name, { ...(by === undefined ? {} : { by }), why: "task type deleted", now: at });
+        if (r) note(r);
+        revoked += 1;
+      }
+      return { name, revoked };
     },
 
     async workers(q = {}) {
@@ -462,10 +680,14 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (change.note !== undefined && change.note !== null) text("note", change.note);
       const s = await stores();
       const at = now();
-      const w = await s.workers.set(actor, change, by, at);
+      const w = note(await s.workers.set(actor, change, by, at));
       // A worker who may no longer work lets go of what they hold, now: the
       // task is free for someone else (§4.6).
-      if (w.status === "suspended" || w.status === "banned") await s.tasks.release({ worker: actor, reason: `worker ${w.status}`, now: at });
+      if (w.status === "suspended" || w.status === "banned") {
+        if (await s.tasks.release({ worker: actor, reason: `worker ${w.status}`, now: at })) wakeAll();
+      }
+      // Their held wait hears it now: a suspension at once, a lift too.
+      wakeAll(actor);
       return w;
     },
 
@@ -473,7 +695,9 @@ export function createTasks(deps: TasksDeps): TasksService {
       actorOk(actor);
       const s = await stores();
       if (!(await s.tasks.type(type))) throw new TaskError("unknown_type", `no task type ${type} here`);
-      return s.workers.grant(actor, type, by, now());
+      const w = note(await s.workers.grant(actor, type, by, now()));
+      wakeAll(actor);
+      return w;
     },
 
     async revoke(actor, type, o = {}) {
@@ -483,7 +707,9 @@ export function createTasks(deps: TasksDeps): TasksService {
       const at = now();
       const w = await s.workers.revoke(actor, type, { ...o, now: at });
       if (!w) throw new TaskError("unknown_worker", `no worker ${actor} here`);
-      await s.tasks.release({ worker: actor, types: [type], reason: "grant revoked", now: at });
+      note(w);
+      if (await s.tasks.release({ worker: actor, types: [type], reason: "grant revoked", now: at })) wakeFor(type);
+      wakeAll(actor);
       return w;
     },
 
@@ -503,6 +729,8 @@ export function createTasks(deps: TasksDeps): TasksService {
     const s = await stores();
     const swept = await s.tasks.sweep(now());
     tell(swept.expired);
+    // Dead leases let go of: their tasks are free, of types not known here.
+    if (swept.leases) wakeAll();
     return swept;
   };
 
@@ -517,8 +745,11 @@ export function createTasks(deps: TasksDeps): TasksService {
     }
   };
 
+  const frozen = Object.freeze(capability);
   return {
-    capability: Object.freeze(capability),
+    capability: frozen,
+    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me }),
+    isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
@@ -556,6 +787,9 @@ export function createTasks(deps: TasksDeps): TasksService {
     async close() {
       if (timer) clearInterval(timer);
       timer = undefined;
+      // Every held wait answers "none" now, before the store goes.
+      closing = true;
+      wakeAll();
       const open = opening;
       opening = undefined;
       if (open) await (await open.catch(() => null))?.close();

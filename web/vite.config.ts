@@ -76,6 +76,8 @@ export default defineConfig({
       "/remote": "http://localhost:3000",
       "/public-view": "http://localhost:3000",
       "/public": "http://localhost:3000",
+      // The task store's staff routes (plans/human-steps.md §6).
+      "/tasks": "http://localhost:3000",
       // The index role's open reads: the store front (`?store=1`).
       "/index": index ? { target: index, changeOrigin: true } : "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.

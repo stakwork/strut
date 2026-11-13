@@ -339,7 +339,9 @@ export function createVisitorBudget(now: () => number = Date.now): VisitorBudget
   };
 }
 
-/** Is this call one a visitor's write budget counts? */
+/** Is this call one a visitor's write budget counts? Not a worker's step
+ *  (`task/*`, plans/human-steps.md §5.2): the task store keeps its own
+ *  count per worker (`TASK_CALLS_PER_MINUTE`). */
 export function visitorWrite(type: string, config: Record<string, unknown>): boolean {
   if (type === "app/state") return !!config["set"] && typeof config["set"] === "object" && Object.keys(config["set"] as object).length > 0;
   return type === "app/report-error" || GRAPH_WRITES.has(type);
@@ -353,6 +355,9 @@ export interface SignedInRules {
   /** Can the granted workflow's closure spend (an `agent`, an `llm`, …)?
    *  Unknown or unreadable counts as yes. */
   spends: (workflow: string) => Promise<boolean>;
+  /** Is this a WORKER's step (`worker: true` on its definition: the
+   *  `task/*` steps, plans/human-steps.md §5.2)? Absent: none is. */
+  worker?: (type: string) => boolean;
 }
 
 /**
@@ -364,7 +369,9 @@ export interface SignedInRules {
  *   and `graph/find` on a type the app declares;
  * - `run/launch` of a granted workflow whose closure spends nothing (as the
  *   visitor), and the reads of its own runs of one; a spending workflow only
- *   as one anyone may run (`runnable`), through the public run door.
+ *   as one anyone may run (`runnable`), through the public run door;
+ * - a WORKER's step (`rules.worker`, plans/human-steps.md §5.2) the app
+ *   grants: it decides from its caller alone, the visitor's own actor.
  * Everything else is the anonymous visitor's rule: the reads the public
  * view opens, never a private one.
  */
@@ -381,6 +388,7 @@ export async function signedInRefusal(
   if (!surface.apps.some((a) => a.name === app.name) || live !== app.version) return anonymous;
   if (type.startsWith("graph/") && config["namespace"] !== undefined) return `${type}: a visitor reads and writes the workspace's own namespace — leave out \`namespace\``;
   if (type === "app/state" || type === "app/report-error" || GRAPH_WRITES.has(type)) return null;
+  if (rules.worker?.(type)) return null;
   if (type === "graph/find") {
     const t = config["node_type"];
     if (typeof t === "string" && rules.declared.some((d) => d.toLowerCase() === t.toLowerCase())) return null;

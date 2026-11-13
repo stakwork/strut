@@ -1,8 +1,9 @@
 # Human steps: people as part of a workflow
 
 > **Status (2026-11-12): items 1 (stakwork/strut#654), 2a
-> (stakwork/strut#655) and 2b (stakwork/strut#656) built; the rest
-> proposed** — §12 has each item's state. Written against strut
+> (stakwork/strut#655), 2b (stakwork/strut#656) and 3
+> (stakwork/strut#657) built; the rest proposed** — §12 has each item's
+> state. Written against strut
 > `main` @a5663769. The rows under
 > "Rulings" are the owner's, from one conversation. Everything else is
 > mine and open. Strut succeeds Stakwork, and what Stakwork has that strut
@@ -470,6 +471,23 @@ oldest first, and the result's `type` tells the app which view to show.
 With a `type` it gives only that type's. `task/me` lists the types the
 worker holds in this app, so the app can show a menu.
 
+**Built differently (#657):**
+
+- **`task/next` hands out more:** `{ lease, type, show, files, expires,
+  answer }`. `files` is the task's list (§5.5) and `answer` the type's
+  answer schema, which a page needs to draw `TaskForm` (§5.3) and otherwise
+  has no way to read.
+- **A page's own call only.** Besides an actor and `ctx.app`, each step
+  refuses to run as anything but an app page's own one-step call: never a
+  step of a workflow the app launched, never an agent's tool. A worker is a
+  person (§1), and a workflow launched from the app carries `ctx.app` and
+  the viewer's actor.
+- **The calling app on every call.** `task/submit`, `task/skip` and
+  `task/file` also refuse (`wrong_app`) a lease of a type another app
+  draws, not only `task/next`.
+- **The first call** writes the `new` worker row: #655's service already
+  did, on every worker call (`seen`), so nothing was added for it.
+
 ### 5.2 Who may call them
 
 - **A member's page** (`POST /mcp`): when the app's `grants.steps` names
@@ -498,6 +516,32 @@ worker holds in this app, so the app can show a menu.
 The first call by an actor the store has not seen writes a `workers` row
 with status `new`. Staff see it and grant task types (§6).
 
+**Built differently (#657):**
+
+- **The signed-in bag** carries the worker's calls of the store alone
+  (`next`, `submit`, `skip`, `file`, `me`: `TasksService.worker`), never the
+  staff's, so no step a visitor's page reaches can save a type or grant one.
+- **Never kept, whatever claims.** The door also hands a worker's call no
+  claims reader, so a claim on a `task/*` step could not make it a kept run.
+- **The store's limit** counts every worker call, `task/me` and
+  `task/file` included (`too_many`).
+- **A held wait is woken**, not polled: a task made or skipped wakes the
+  oldest waiter that may take its type, and a waiter that takes nothing
+  hands the wake to the next, so one task is one guarded write, not one per
+  waiter; a grant, a revoke or a status change wakes that worker's own; the
+  sweep freeing leases, a release or a type saved wakes every waiter once.
+  A lease that runs out between sweeps wakes nobody: the page's next ask,
+  as its 25 s wait ends, finds the task. A worker with nothing to take
+  waits the whole 25 s too, so a page asking again on each answer never
+  loops.
+- **The monitor's `volume`** counts the worker steps per viewer over all of
+  them together (a warning marked `perViewer`), and the version's own count
+  leaves them out, read back from the files too. The per-viewer counts are
+  not on file: a restart starts them at nought.
+- **`budgetKey`** answers `{ key, limit }`; a worker's key is one no
+  address can be. `visitorWrite` needed no change: it never counted the
+  worker steps.
+
 ### 5.3 The kit
 
 - `useTask(type)` gives `{ task, submit, skip, status }`. It holds one
@@ -514,6 +558,26 @@ with status `new`. Staff see it and grant task types (§6).
   the task type needs its own UI.
 - The `App` Concept page gets a section on worker apps, so the builder
   knows the hooks and the grants.
+
+**Built differently (#657):**
+
+- **`useTaskFile(task, path)`**, not `useTaskFile(path)`: a hook has no
+  current lease of its own, so the page passes `useTask().task`. Beside it
+  `useTaskFileUrl(task, path)`, the `blob:` URL, as `useRunFileUrl`.
+- **`useTask(type?)`** answers `{ task, submit, skip, status, error }`,
+  `status` one of `waiting`, `working`, `sending`, `inactive` (the worker
+  may take nothing here now), `error`. It drops the task when its lease
+  runs out or the server says it is gone, and asks for the next; a refused
+  call waits 5 s before asking again, 30 s for `not_active`. `useWorker()`
+  is `task/me` as a query.
+- **`TaskForm`** takes the task (`{ lease, answer }`), `onSubmit`
+  (`useTask().submit`) and `onSkip`: the form is the task's `answer`
+  schema. A select takes the schema's values only, never "Other…", and a
+  pick of a number enum is sent as the number.
+- **The fold** (`kit/src/folds/answer-form.ts`) holds `fieldsOf` with
+  `initialContent`, `missingRequired` and `contentToSubmit`, all of which
+  `web/src/elicitation.ts` re-exports over, plus `answerOf` (the form's
+  content as the answer) and `formProblem` (why a schema is no form).
 
 ### 5.4 Reaching the app
 
@@ -558,6 +622,14 @@ Routes, full scope only (specs/API.md gets a section):
 | `GET /tasks/workers`, `PUT /tasks/workers/:actor` | The workers and their status |
 | `PUT /tasks/workers/:actor/grants/:type`, `DELETE …` | Grant and revoke a task type |
 | `GET /tasks`, `GET /tasks/:id` | Tasks by type, status or run, with their leases |
+
+**Built differently (#657):** `src/tasks/routes.ts`, specs/API.md §22.
+`DELETE /tasks/types/:name` is refused (`409 in_use`) while a task of the
+type is open, and revokes the type's live grants, so a type made again
+under the name starts with no workers; its tasks on file keep the name.
+`DELETE /tasks/workers/:actor/grants/:type` takes the reason as `?why=`.
+`GET /tasks` filters by `type`, `status`, `workflow` and `runId`, a page
+at a time (`before`, `limit`). A refusal is `{ error, code }`.
 
 A task type's answer shape, and later its pay, are the admin's, never the
 workflow's: the YAML names a type and cannot set them. That keeps an
@@ -684,7 +756,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 1 | **Parked runs** (§2). `src/park.ts`, `ctx.park`, `step.parked`, `run.waiting`, the `waiting` status, `foreach`'s rule, `strut.parking`, the wake, cancel of a waiting run, every reader in §2.4, the UI of §2.5. Proven with a test step that parks on a source the test settles | Nothing | **Built**: stakwork/strut#654. Differs in §2.3 |
 | 2a | **The task store** (§4). `src/tasks/`: the SQLite store and its memory twin, the answer schema check, worker status, the capability, the sweep. No runner code | Nothing | **Built**: stakwork/strut#655. Differs in §4.2–§4.6 |
 | 2b | **The `human` step** (§3). The core step, the store registered as the `task` source (`settled`, `cancelled`). The boot wake is strut's since #654 (§2.3) | 1 and 2a | **Built**: stakwork/strut#656. Differs in §3 |
-| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | Not started |
+| 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6 |
 | 4 | **Tests, copies and standing** (§7). Needs a short design pass first | 3 | Not started |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | Not started |
 | 5b | **Withdraw** (§8): the payer's third door. Needs its own design and a ruling. Peel's side is not in this repo | 5a | Not started |
@@ -700,7 +772,7 @@ merged.
 | --- | --- |
 | 1 | A run parks and holds no controller. A wake replays and finishes. A park in one branch lets the others finish. A foreach of N parks once with N waits. Cancel of a waiting run. A restart between settle and wake still wakes. Boot auto-resume passes a waiting run over. No `run.end` callback until the real end |
 | 2a, 2b | One task per run and path across wakes. Expiry fails the step and `onError` runs. Two workers never hold one task. One answer per lease. An answer that does not fit the schema is refused. A task type whose schema uses a keyword strut does not check is refused when saved. A `files` path that does not exist fails the step |
-| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. A `files` pattern is resolved when the task is made. `task/next` with no `type` returns a task of any type the worker holds in the calling app. An active worker's requests are counted per worker, a `new` one's per address |
+| 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. A `files` pattern is resolved when the task is made. `task/next` with no `type` returns a task of any type the worker holds in the calling app. An active worker's requests are counted per worker, a `new` one's per address. Built in `src/tasks/worker-door.test.ts` (with a run that parks, is answered through `/public/mcp` and finishes; the pattern, also #656's `human.test.ts`) and `src/tasks/tasks.test.ts` |
 
 ## Rejected
 

@@ -474,9 +474,10 @@ export interface StrutCapabilities {
   remote?: RemoteCapability;
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
    *  a step of a workflow — `ensure` (the `human` step's), the worker's
-   *  `next` / `submit` / `skip` / `me` for the actor the caller passes, and
-   *  the staff's types, workers, grants and lists. Set by the standard
-   *  server. */
+   *  `next` / `submit` / `skip` / `file` / `me` for the actor the caller
+   *  passes (the `task/*` steps, §5), and the staff's types, workers,
+   *  grants and lists. Set by the standard server; a signed-in visitor's
+   *  bag carries the worker's calls alone. */
   tasks?: TasksCapability;
 }
 

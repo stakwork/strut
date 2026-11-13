@@ -382,6 +382,148 @@ for (const impl of impls) {
       assert.equal((await tasks().list({ workflow: "pets", runId: "r1", status: "open" })).length, 5);
     });
 
+    // ── the worker's door (§5, item 3) ────────────────────────────────
+
+    it("next hands out the type's answer schema with the task", async () => {
+      await setup({ answer: MATCH });
+      assert.deepEqual((await take("ann")).answer, MATCH);
+    });
+
+    it("next { wait } holds until a task the worker may take is made; with none it answers none when the wait runs out", async () => {
+      await setup({ n: 0 });
+      const started = Date.now();
+      assert.deepEqual(await tasks().next("bob", { wait: 0.1 }), { none: true });
+      assert.ok(Date.now() - started >= 90, "held for the wait");
+      const held = tasks().next("ann", { wait: 5 });
+      await new Promise((r) => setTimeout(r, 20));
+      const [t] = await setup({ n: 1, workers: [] });
+      const got = (await held) as WorkerTask;
+      assert.equal(got.type, "pet-match");
+      assert.equal((await tasks().task(t.id))!.leases[0].worker, "ann");
+      await assert.rejects(tasks().next("ann", { wait: 26 }), refused("bad_request", /wait/));
+    });
+
+    it("a task made wakes one waiter; a waiter that cannot take it hands the wake on", async () => {
+      await setup({ n: 1, workers: ["carol", "dan", "ann"] });
+      const c = await take("carol");
+      await tasks().skip("carol", { lease: c.lease });
+      const d = await take("dan");
+      // carol waits first, but never gets the task she skipped; ann waits next.
+      const carol = tasks().next("carol", { wait: 0.4 });
+      await new Promise((r) => setTimeout(r, 10));
+      const ann = tasks().next("ann", { wait: 5 });
+      await new Promise((r) => setTimeout(r, 10));
+      const t0 = Date.now();
+      await tasks().skip("dan", { lease: d.lease });
+      const got = (await ann) as WorkerTask;
+      assert.deepEqual(got.show, { i: 0 });
+      assert.ok(Date.now() - t0 < 300, "handed on at once, not at carol's timeout");
+      assert.deepEqual(await carol, { none: true });
+    });
+
+    it("a grant wakes the worker's own held wait", async () => {
+      await setup({ n: 0, workers: ["ann"] });
+      await tasks().setType("other-type", { app: "workers", answer: MATCH });
+      await tasks().ensure({ type: "other-type", workflow: "w", runId: "r9", path: "w/ask", show: { o: 1 } });
+      const held = tasks().next("ann", { wait: 5, app: "workers" });
+      await new Promise((r) => setTimeout(r, 20));
+      const t0 = Date.now();
+      await tasks().grant("ann", "other-type");
+      const got = (await held) as WorkerTask;
+      assert.equal(got.type, "other-type");
+      assert.ok(Date.now() - t0 < 300);
+    });
+
+    it("next with no type gives the oldest task of any type the worker holds in the calling app, never another app's", async () => {
+      await setup({ n: 0, workers: ["ann"] });
+      await tasks().setType("elsewhere", { app: "other-app", answer: MATCH });
+      await tasks().setType("second", { app: "workers", answer: MATCH });
+      await tasks().grant("ann", "elsewhere");
+      await tasks().grant("ann", "second");
+      const ask = (type: string, path: string) => tasks().ensure({ type, workflow: "w", runId: "r1", path, show: { path } });
+      await ask("elsewhere", "w/a");
+      clock += 1;
+      await ask("second", "w/b");
+      clock += 1;
+      await ask("pet-match", "w/c");
+      const first = await take("ann", { app: "workers" });
+      assert.equal(first.type, "second", "the oldest of the app's types");
+      await tasks().submit("ann", { lease: first.lease, answer: { same: true } });
+      assert.equal((await take("ann", { app: "workers" })).type, "pet-match");
+      await assert.rejects(tasks().next("ann", { app: "workers", type: "elsewhere" }), refused("wrong_app"));
+    });
+
+    it("submit, skip and file refuse a lease of a type another app draws", async () => {
+      await setup({ answer: MATCH, app: "workers" });
+      const l = await take("ann", { app: "workers" });
+      await assert.rejects(tasks().submit("ann", { lease: l.lease, answer: { same: true }, app: "other-app" }), refused("wrong_app"));
+      await assert.rejects(tasks().skip("ann", { lease: l.lease, app: "other-app" }), refused("wrong_app"));
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: "found-0.jpg", app: "other-app" }), refused("wrong_app"));
+      assert.deepEqual(await tasks().submit("ann", { lease: l.lease, answer: { same: true }, app: "workers" }), { ok: true });
+    });
+
+    it("the store's limit: 120 calls a minute per worker, a held wait counted once", async () => {
+      await setup({ n: 0, workers: ["ann"] });
+      for (let i = 0; i < 118; i++) await tasks().me("ann");
+      const held = tasks().next("ann", { wait: 0.3 }); // call 119
+      await new Promise((r) => setTimeout(r, 20));
+      // Woken twice: attempts, not calls.
+      await tasks().setType("pet-match", { app: "workers", answer: BOX });
+      await tasks().setType("pet-match", { app: "workers", answer: BOX });
+      assert.deepEqual(await held, { none: true });
+      await tasks().me("ann"); // 120
+      await assert.rejects(tasks().me("ann"), refused("too_many", /120 task calls a minute/));
+      await tasks().me("bob");
+      clock += MIN;
+      await tasks().me("ann");
+    });
+
+    it("deleting a type: refused while a task of it is open; then gone, its grants revoked", async () => {
+      const [t] = await setup({ answer: MATCH });
+      await assert.rejects(tasks().deleteType("pet-match"), refused("in_use", /open tasks/));
+      await assert.rejects(tasks().deleteType("nope"), refused("unknown_type"));
+      const l = await take("ann");
+      await tasks().submit("ann", { lease: l.lease, answer: { same: false } });
+      assert.deepEqual(await tasks().deleteType("pet-match", "staff"), { name: "pet-match", revoked: 2 });
+      assert.deepEqual(await tasks().types(), []);
+      assert.deepEqual((await tasks().me("ann")).types, []);
+      const grant = (await tasks().workers()).find((w) => w.actor === "ann")!.grants[0];
+      assert.deepEqual([grant.revokedBy, grant.why], ["staff", "task type deleted"]);
+      assert.equal((await tasks().task(t.id))!.type, "pet-match", "its tasks keep its name");
+      // Made again, it starts with no workers.
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH });
+      assert.deepEqual((await tasks().me("ann")).types, []);
+    });
+
+    it("knows from memory who is an active worker: a grant, a suspension and a lift", async () => {
+      assert.equal(svc.isActiveWorker("ann"), false);
+      await tasks().me("ann");
+      assert.equal(svc.isActiveWorker("ann"), false, "new");
+      await setup({ n: 0, workers: ["ann"] });
+      assert.equal(svc.isActiveWorker("ann"), true);
+      await tasks().setWorker("ann", { status: "suspended" });
+      assert.equal(svc.isActiveWorker("ann"), false);
+      await tasks().setWorker("ann", { status: "active" });
+      assert.equal(svc.isActiveWorker("ann"), true);
+      if (impl.reopen) {
+        await svc.close();
+        svc = impl.reopen(dir, now);
+        assert.equal(svc.isActiveWorker("ann"), false, "nothing known before the store opens");
+        await tasks().types();
+        assert.equal(svc.isActiveWorker("ann"), true, "loaded when it opens");
+      }
+    });
+
+    it("a suspension answers a held wait at once", async () => {
+      await setup({ n: 0, workers: ["ann"] });
+      const held = tasks().next("ann", { wait: 5 });
+      await new Promise((r) => setTimeout(r, 20));
+      const t0 = Date.now();
+      await tasks().setWorker("ann", { status: "suspended" });
+      await assert.rejects(held, refused("not_active", /suspended/));
+      assert.ok(Date.now() - t0 < 300);
+    });
+
     if (impl.reopen) {
       it("survives a restart: tasks, leases, workers and types are on file", async () => {
         const [t] = await setup();
@@ -461,6 +603,38 @@ describe("the task store in a strut", () => {
       assert.deepEqual((await strut.tasks.capability.types()).map((t) => t.name), ["t"]);
     } finally {
       await strut.close();
+    }
+  });
+});
+
+describe("task/file's read (§5.5): only a path on the task's list, through the worker's own live lease", () => {
+  it("reads through the deps for a listed path; refuses one off the list whether or not it exists, and another worker's lease", async () => {
+    const read: string[] = [];
+    const svc = createTasks({
+      open: async () => memoryTaskStores(),
+      file: async (t, path) => {
+        read.push(`${t.runId}:${path}`);
+        return path === "gone.jpg" ? null : { path, mediaType: "image/jpeg", bytes: 3, base64: "AAAA" };
+      },
+    });
+    const tasks = svc.capability;
+    try {
+      await tasks.setType("pet-match", { app: "workers", answer: MATCH });
+      await tasks.grant("ann", "pet-match");
+      await tasks.grant("bob", "pet-match");
+      await tasks.ensure({ type: "pet-match", workflow: "w", runId: "r1", path: "w/review", files: ["found.jpg", "gone.jpg"] });
+      const l = (await tasks.next("ann")) as WorkerTask;
+      assert.deepEqual(l.files, ["found.jpg", "gone.jpg"]);
+      assert.deepEqual(await tasks.file("ann", { lease: l.lease, path: "found.jpg", app: "workers" }), { path: "found.jpg", mediaType: "image/jpeg", bytes: 3, base64: "AAAA" });
+      await assert.rejects(tasks.file("ann", { lease: l.lease, path: "secret.txt" }), refused("not_listed"));
+      await assert.rejects(tasks.file("ann", { lease: l.lease, path: "../found.jpg" }), refused("not_listed"));
+      await assert.rejects(tasks.file("ann", { lease: l.lease, path: "gone.jpg" }), refused("no_file", /no longer there/));
+      await assert.rejects(tasks.file("bob", { lease: l.lease, path: "found.jpg" }), refused("no_lease"));
+      await tasks.submit("ann", { lease: l.lease, answer: { same: true } });
+      await assert.rejects(tasks.file("ann", { lease: l.lease, path: "found.jpg" }), refused("lease_closed"));
+      assert.deepEqual(read, ["r1:found.jpg", "r1:gone.jpg"], "nothing off the list, nothing past the lease, was read");
+    } finally {
+      await svc.close();
     }
   });
 });

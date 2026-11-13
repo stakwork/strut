@@ -23,7 +23,9 @@
  * viewer as actor and `ctx.app` set, so a run `run/launch` starts carries
  * the app too. A write — a graph write, an error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
- * not. Results are whole data, never trimmed for a model; past 5 MB they
+ * not, and a WORKER's step (`worker: true`, the `task/*` steps of
+ * plans/human-steps.md §5) never is: its lease and answer are the record.
+ * Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap. Every call of a known app — refused, failed
  * or run — is counted by the monitor (./monitor.ts): what an app costs the
  * server, and the warnings when it costs too much.
@@ -266,8 +268,11 @@ export async function graphWriteRefusal(
   return null;
 }
 
-/** Is this a write the door KEEPS as a step run (§9)? */
-export function keptFromApp(type: string): boolean {
+/** Is this a write the door KEEPS as a step run (§9)? A worker's step
+ *  (`worker: true`) never is (plans/human-steps.md §5.2), whatever claims
+ *  it carries: the door hands its run no claims reader either. */
+export function keptFromApp(type: string, registry?: StepRegistry): boolean {
+  if (registry?.[type]?.worker) return false;
   return GRAPH_WRITES.has(type) || type === "app/report-error";
 }
 
@@ -376,6 +381,9 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       if (bad) return refuse(`step_run refused: ${bad}`);
     }
     if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    // A worker's call leaves nothing behind but its lease and answer: no
+    // claims read, so nothing makes it a kept run.
+    const worker = deps.registry[base]?.worker === true;
     const result = await runStep(
       type,
       deps.registry,
@@ -386,12 +394,12 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app,
-        keep: (!deps.visitor || !!deps.visitor.keep) && keptFromApp(base),
+        keep: (!deps.visitor || !!deps.visitor.keep) && keptFromApp(base, deps.registry),
         // The page gets the output alone.
         events: false,
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
-      deps.runStepDeps,
+      worker ? { ...deps.runStepDeps, claims: null } : deps.runStepDeps,
     );
     if (result.status !== "success") {
       return fail(result.error?.message ?? (result.status === "cancelled" ? `${type} was cancelled` : `${type} failed`));
