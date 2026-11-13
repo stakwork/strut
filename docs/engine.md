@@ -414,6 +414,15 @@ and the child env is scrubbed by construction).
   handling or a failed launch settles the run as an error
   (`settleUnfinishedRun`, runner.ts). Iterative code steps consume
   `ctx.journal` to resume completed iterations (harvey/evolve-loop does).
+  A step whose run held something in this process's memory puts it back
+  when it is replayed: `StepDef.onReplay(cfg, ctx, output)`, called with
+  the step's resolved config before its `step.replayed`, as one unit of the
+  run (a throw fails the step). `job/dir` and a kept `git/checkout` take
+  the job's hold again there (`reholdJob`, src/jobs.ts): a park or the dead
+  process let it go. When another run took the job meanwhile the resumed
+  run WAITS for it to let go — live, cancel and pause looked at every
+  250 ms, told at once when the hold goes — never `job_busy:`, which stays
+  a fresh launch's answer.
   A durable resume drops the attempt's `run.json` first
   (`RunStore.clearRunSummary`), so a summary always means the latest
   attempt finished and a resumed run reads as live everywhere. A log over
@@ -438,7 +447,14 @@ and the child env is scrubbed by construction).
   park; the waiting runs are kept on file so a registration at the next
   boot wakes what settled meanwhile. `POST …/cancel` on a waiting run
   finalizes it as cancelled at once and tells the sources; `POST …/resume`
-  wakes it by hand. A park fails the step (`park_refused:`) where nothing
+  wakes it by hand. A LIVE run whose controller is cancelling ends
+  `cancelled`, never `waiting`, even when every branch left open parked
+  (the cancel came after their last checkpoint — a woken run cancelled
+  while its parked steps run again): `run.cancelled`, and its end hook
+  (`RunEndInfo { status: "cancelled", waitingOn }`) tells each target's
+  source, as a cancel of a waiting run does. A park lets go of the run's
+  job; on any durable resume `job/dir`'s replay takes it again
+  (`StepDef.onReplay`, above). A park fails the step (`park_refused:`) where nothing
   could wake the run: no source for the prefix, a single-step run, a
   public run, an agent's tool call; `ctx.parkRefusal(prefix)` asks first,
   for a step that must not start what it would wait on. The UI shows

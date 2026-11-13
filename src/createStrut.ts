@@ -1726,9 +1726,15 @@ export async function createStrut<TServices = unknown>(
         await prior?.(runId, info);
       } finally {
         if (info?.workflow) {
-          await (info.parked ? parking.parked(info.workflow, runId, info.waitingOn ?? []) : parking.ended(info.workflow, runId)).catch((err) =>
-            console.error(`[parking] ${info.workflow}/${runId}:`, err),
-          );
+          // A run cancelled with its open branches parked (the cancel came
+          // after their last checkpoint) tells their sources, as a cancel of
+          // a waiting run does.
+          await (info.parked
+            ? parking.parked(info.workflow, runId, info.waitingOn ?? [])
+            : info.status === "cancelled" && info.waitingOn?.length
+              ? parking.cancelled(info.workflow, runId, info.waitingOn)
+              : parking.ended(info.workflow, runId)
+          ).catch((err) => console.error(`[parking] ${info.workflow}/${runId}:`, err));
           // A run cancelled while live leaves no task open behind it: a
           // worker would answer for nothing (a waiting run's cancel told the
           // task source already). A run that failed keeps its tasks: a

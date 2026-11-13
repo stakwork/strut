@@ -94,6 +94,13 @@ export interface StepDef<
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
+  /** Called when a durable resume REPLAYS this step's journaled output
+   *  instead of running it (RUN_CONTROL_SPEC §5): a wake, a restart, a
+   *  person's resume. It puts back what `run` held in this process's memory
+   *  and the park or the dead process let go — a job's hold (`job/dir`).
+   *  Its config is resolved as for `run`; a throw fails the step. Most
+   *  steps have none: a replay costs nothing. */
+  onReplay?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>, output: z.infer<TOutput>) => Promise<void>;
 }
 
 /** What a gated step says of itself on the person's card (`StepDef.describe`). */
@@ -329,7 +336,10 @@ export interface RunEndInfo {
    *  resources go as at any end; what runs at a run's real end (the verify
    *  pass, the projection) waits for it. */
   parked?: true;
-  /** With `parked`: what it waits on. */
+  /** With `parked`: what it waits on. With `status: "cancelled"`: what the
+   *  branches it stopped had parked on — a cancel that came after their
+   *  last checkpoint. Each target's source is told, as for a cancel of a
+   *  waiting run. */
   waitingOn?: string[];
   /** How the run ended, when it did (not `parked`). */
   status?: "success" | "error" | "cancelled";
@@ -1032,6 +1042,8 @@ export interface AnyStepDef {
   /** A worker's step (see `StepDef.worker`). */
   worker?: boolean;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
+  /** What a replay puts back in memory (see `StepDef.onReplay`). */
+  onReplay?: (cfg: any, ctx: StepContext<any>, output: any) => Promise<void>;
 }
 
 /** Step registry — maps step type names to their definitions. */

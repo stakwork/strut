@@ -3461,6 +3461,8 @@ it refuses (`{ error, problems: [...] }`, `error` the problems joined by
   whose config names a secret — a `secretsEnv`, `tokenSecret`,
   `storageStateSecret` or `secrets` field (`git/*`, `browser/open`,
   `http/verify`): a stranger would choose which secret it reads;
+- neither a step nor a workflow's closure is `human`: a public run cannot
+  wait for a person, so each run would fail `park_refused:`;
 - a workflow declares an `input:` block (§2);
 - a `markup` has a `capUsd`;
 - a priced item has a wallet (§18, or the host's own `services.lightning`);

@@ -50,6 +50,11 @@ export interface RunnableDeps {
  *  workflow or the steps they run. A workflow that holds one is runnable. */
 const CONTAINER_STEPS: ReadonlySet<string> = new Set(["subflow", "loop", "foreach", "if"]);
 
+/** Steps that park the run (src/park.ts): a public run cannot wait, so one
+ *  would only fail `park_refused:` (plans/human-steps.md §3). */
+const PARKING_STEPS: ReadonlySet<string> = new Set(["human"]);
+const parksWhy = "waits for a person, and a public run cannot wait (park_refused:)";
+
 /** The ledger's subject for an item: `workflow:<name>` or `step:<type>`. */
 export const runnableSubject = (r: Pick<PublicRunnable, "kind" | "name">): string => `${r.kind}:${r.name}`;
 
@@ -147,7 +152,7 @@ export async function runnableCan(item: Pick<PublicRunnable, "kind" | "name">, d
  * Why a step may not be run by anyone, or undefined: not one that spends or
  * runs a shell (the app door's list, and every step that calls a model:
  * the workflow is the unit of spend), not one of the runner's containers,
- * not sealed (the meta surface, the graders), not one whose config names a
+ * not one that parks (`human`), not sealed (the meta surface, the graders), not one whose config names a
  * secret (the caller would pick which secret it reads), and on this server.
  * Asked at the save, and again at every call (src/public-tools.ts): the
  * registry changes after a save.
@@ -156,6 +161,7 @@ export function stepRunnableProblem(type: string, registry: StepRegistry, patter
   const label = runnableLabel({ kind: "step", name: type });
   if (PAID_OR_SHELL.includes(type) || SPENDING_STEPS.has(type)) return `${label} spends or runs a shell — a stranger runs it inside a workflow, which is the unit of spend: make the workflow runnable`;
   if (CONTAINER_STEPS.has(type)) return `${label} runs other steps, which a stranger's config would choose — make a workflow that holds it runnable`;
+  if (PARKING_STEPS.has(type)) return `${label} ${parksWhy}`;
   if (isSealedStep(type, registry, patterns)) return `${label} is sealed: the meta surface and the graders are never run from outside`;
   const def = registry[type];
   if (!def) return `no step "${type}" on this strut server`;
@@ -172,6 +178,8 @@ export function stepRunnableProblem(type: string, registry: StepRegistry, patter
  *   sealed (a grader, the meta surface);
  * - a step is not one that spends or runs a shell (the app door's list:
  *   the workflow is the unit of spend), nor one of the runner's containers;
+ * - neither a step nor a workflow's closure parks (`human`): a public run
+ *   cannot wait, so every run would fail `park_refused:`;
  * - a workflow declares `input:` (a stranger's payload is checked against
  *   it, and a form is drawn from it);
  * - a markup has a per-run cap, and a priced item a wallet;
@@ -201,6 +209,8 @@ export async function runnableProblem(item: PublicRunnable, deps: RunnableDeps):
   const { closure, steps } = await closureOf(flow, item.name, deps);
   const reached = sealedInClosure(closure, registry, patterns);
   if (reached) return `${label} reaches the sealed ${reached}`;
+  const parks = [...closure.types].find((t) => PARKING_STEPS.has(t));
+  if (parks) return `${label} reaches step "${parks}", which ${parksWhy}`;
   if (flow.inputBlock == null) return `${label} declares no input: block — a stranger's payload is checked against it, and the Run form is drawn from it`;
   const priced = priceProblem();
   if (priced) return priced;
