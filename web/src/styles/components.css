@@ -1295,6 +1295,27 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
   font-size: 12px;
   color: var(--text-muted);
 }
+.flyout-retention {
+  flex: 1 1 100%;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.run-evicted-note {
+  position: absolute;
+  top: var(--sp-3);
+  left: var(--sp-3);
+  z-index: 5;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--surface, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 .flyout-footer-error {
   flex: 1;
   font-size: 12px;

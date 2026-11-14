@@ -567,6 +567,11 @@ export interface FlowDef {
   promotes?: PromoteSpec[];
   /** Open to other workspaces: `true`, or `"person"` (a person's credential only). */
   peer?: true | "person";
+  /** The workflow's own `retain:` as text (`1h`, `runs:20`), and the fleet
+   *  default (`STRUT_RUN_RETENTION`) that applies when it sets none. */
+  retain?: string;
+  fleetRetention?: string;
+  fleetRetentionEnv?: string;
 }
 
 /** Parsed flow of a workflow — the active version, or a pinned historical
@@ -919,6 +924,9 @@ export interface RunSummary {
    *  resumes it; `waitingOn` says on what. */
   status: string;
   waitingOn?: string[];
+  /** Retention dropped this run's log; the summary is what is left. */
+  logEvicted?: boolean;
+  evictedAt?: string;
   input?: unknown;
   output?: unknown;
   error?: { message: string };
