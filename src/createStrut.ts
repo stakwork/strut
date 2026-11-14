@@ -202,6 +202,7 @@ import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
+import { createRetention, formatRetention, parseRetention } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
@@ -3580,6 +3581,9 @@ export async function createStrut<TServices = unknown>(
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
         ...(flow.sealed ? { sealed: true } : {}),
         ...(flow.peer ? { peer: flow.peer } : {}),
+        // The workflow's own `retain:` and the fleet default, both as text (`1h`, `runs:20`).
+        ...(flow.retain ? { retain: formatRetention(flow.retain) } : {}),
+        ...(fleetRetention ? { fleetRetention: formatRetention(fleetRetention), fleetRetentionEnv: "STRUT_RUN_RETENTION" } : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -8202,6 +8206,24 @@ export async function createStrut<TServices = unknown>(
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
+  // Run retention (src/retention.ts): the fleet default, and the sweep that
+  // starts and stops beside the scheduler.
+  const fleetRetention = (() => {
+    const raw = bootEnv()["STRUT_RUN_RETENTION"];
+    if (!raw) return undefined;
+    const r = parseRetention(raw, { allowBare: true });
+    if ("error" in r) {
+      console.warn(`[retention] ignoring STRUT_RUN_RETENTION="${raw}": ${r.error}`);
+      return undefined;
+    }
+    return r;
+  })();
+  const retention = createRetention({
+    store,
+    workspace,
+    ...(fleetRetention ? { fallback: fleetRetention } : {}),
+    hasClaims: async (workflow, runId) => !!claimsAuthoring && (await claimsAuthoring.listRunEvidence(workflow, { runId, limit: 1 })).length > 0,
+  });
   const automations = createAutomations({
     workspace,
     store,
@@ -8272,7 +8294,10 @@ export async function createStrut<TServices = unknown>(
     }
     return c.json({ actor, claimed, skipped });
   });
-  if (opts.scheduler === undefined ? bootEnv()["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
+  if (opts.scheduler === undefined ? bootEnv()["STRUT_SCHEDULER"] !== "0" : opts.scheduler) {
+    automations.start();
+    retention.start();
+  }
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -10195,6 +10220,7 @@ export async function createStrut<TServices = unknown>(
     // What the history still has waiting is committed before the stores go.
     await history?.close();
     automations.stop();
+    retention.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
     proposalChanges.close();

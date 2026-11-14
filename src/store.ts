@@ -305,6 +305,10 @@ export interface RunStore {
    *  when something was repaired. Optional — backends whose appends are
    *  atomic (in-memory, a database row) have nothing to heal. */
   repairLog?(workflow: string, runId: string): Promise<boolean>;
+  /** Retention (`src/retention.ts`): drop a FINISHED run's event log and
+   *  everything else in its directory but the summary, which is rewritten
+   *  with `logEvicted: true` + `evictedAt`. No summary: nothing to do. */
+  evictRun(workflow: string, runId: string, evictedAt: string): Promise<void>;
 }
 
 /**
@@ -648,6 +652,14 @@ export class FileRunStore implements RunStore {
     await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
   }
 
+  async evictRun(workflow: string, runId: string, evictedAt: string): Promise<void> {
+    const summary = await this.getRunSummary(workflow, runId);
+    if (!summary) return;
+    const dir = this.runDir(workflow, runId);
+    for (const entry of await readdir(dir)) if (entry !== "run.json") await rm(join(dir, entry), { recursive: true, force: true });
+    await this.finalize(workflow, runId, { ...summary, logEvicted: true, evictedAt });
+  }
+
   /**
    * Tail a run's event log: yield every event from the start of the file
    * (history), then follow appends (live) until a terminal event
@@ -830,6 +842,17 @@ export class MemoryRunStore implements RunStore {
 
   async clearRunSummary(workflow: string, runId: string): Promise<void> {
     this.summaries.delete(this.key(workflow, runId));
+  }
+
+  async evictRun(workflow: string, runId: string, evictedAt: string): Promise<void> {
+    const k = this.key(workflow, runId);
+    const summary = this.summaries.get(k);
+    if (!summary) return;
+    this.events.delete(k);
+    this.callbacks.delete(k);
+    this.mcp.delete(k);
+    this.jobCallbacks.delete(k);
+    this.summaries.set(k, { ...summary, logEvicted: true, evictedAt });
   }
 
   async deleteRuns(workflow: string): Promise<void> {

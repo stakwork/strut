@@ -1265,6 +1265,17 @@ function Shell() {
     setLocalPeer(readPeer(flow));
   }, [selectedWf, selectedEntry, localSteps, localParams, localInput, localPeer, activeVersion, viewVersion, refreshWorkflows]);
 
+  // Retention (`retain:`) is versioned content: setting it publishes the
+  // active version's YAML with that one key changed (null removes it).
+  const handleSetRetain = useCallback(async (retain: string | { runs: number } | null) => {
+    if (!selectedWf || !activeVersion) return;
+    const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
+    const prev = (yaml.load(await api.getWorkflowYaml(selectedWf, activeVersion)) ?? {}) as Record<string, unknown>;
+    if (retain == null) delete prev["retain"]; else prev["retain"] = retain;
+    await api.publishWorkflowYaml(selectedWf, `v${Math.max(0, ...nums) + 1}`, yaml.dump(prev, { lineWidth: 120, noRefs: true }));
+    await refreshWorkflows();
+  }, [selectedWf, selectedEntry, activeVersion, refreshWorkflows]);
+
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
   // edits are lost — the Versions panel asks first.
@@ -1643,6 +1654,7 @@ function Shell() {
                         <div class="run-row-main">
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                          {run.logEvicted && <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
@@ -2101,7 +2113,11 @@ function Shell() {
               />
             : <div class="empty">Loading job…</div>
         ) : canvas
-          ? <SystemCanvas
+          ? <>
+            {selectedRunSummary?.logEvicted && !isRunView && (
+              <div class="run-evicted-note">This run's log was evicted by retention{selectedRunSummary.evictedAt ? ` (${selectedRunSummary.evictedAt})` : ""}; only its summary is kept.</div>
+            )}
+            <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's
               // `autoFit="canvas-change"` only fires on sub-canvas
@@ -2128,6 +2144,7 @@ function Shell() {
               )}
               themes={{ strut: strutTheme }}
             />
+          </>
           : <div class="empty">{workflows.length === 0 ? "Create a workflow to get started" : "Select a workflow to view its flow graph"}</div>}
       </div>
 
@@ -2231,6 +2248,7 @@ function Shell() {
           apps={apps.filter((a) => a.grants.workflows.includes(selectedWf) || a.grants.automations.includes(selectedWf)).map((a) => ({ name: a.name, title: a.title }))}
           onOpenApp={selectApp}
           onTab={setWfTab}
+          onSetRetain={handleSetRetain}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}
           disabled={!!selectedEntry?.disabled}

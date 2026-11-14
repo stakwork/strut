@@ -129,7 +129,7 @@ reads.
 | ------ | ------------------------------- | -------- |
 | GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
 | GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
-| GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
+| GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes?, sealed?, peer?, retain?, fleetRetention?, fleetRetentionEnv? }` — the parsed active (or named) version; `retain` is the workflow's own (`1h`, `runs:20`), `fleetRetention` the `STRUT_RUN_RETENTION` default |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |

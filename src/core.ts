@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { InputBlock } from "./input-block.js";
 import type { TokenUsage } from "./pricing.js";
+import type { Retention } from "./retention.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -420,6 +421,9 @@ export interface Flow {
    *  (scope `peer:person`, plans/chained-orchestrators.md §2). Content like
    *  `sealed:`, so it rides in the version hash. */
   peer?: PeerOpen;
+  /** The YAML `retain:` — how long a finished run's log is kept
+   *  (`src/retention.ts`): a window, or the newest N runs. */
+  retain?: Retention;
 }
 
 /** Who another strut's request must be to launch a workflow: any peer
@@ -953,6 +957,10 @@ export type RunStatus = "success" | "error" | "cancelled" | "waiting";
 
 /** Run summary written to run.json. */
 export interface RunSummary {
+  /** The retention sweep dropped this run's event log and directory
+   *  (`src/retention.ts`); this summary is what is left. */
+  logEvicted?: boolean;
+  evictedAt?: string;
   runId: string;
   workflow: string;
   startedAt: string;
