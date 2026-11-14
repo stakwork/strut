@@ -3,6 +3,7 @@ import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { eventTone, statusTone } from "../helpers";
 import { fmtDuration } from "../duration";
+import { fmtEventTime } from "../event-time";
 import { ValueFields } from "./ValueFields";
 import { StepData } from "../flow-to-canvas";
 import { CloseIcon } from "../icons";
@@ -93,12 +94,11 @@ export function EventsPanel(props: {
         <div class="events-header">Events ({events.length})</div>
         <EvolveChart events={events} onOpenRun={props.onOpenRun} />
         {events.map((evt, i) => {
-          const hasData = evt.input != null || evt.output != null || evt.error != null;
           const isOpen = expanded === i;
           const refs = props.onOpenRun ? runRefs(evt) : [];
           return (
             <div key={i} class="event-row">
-              <div class="event-row-summary" onClick={() => hasData && setExpanded(isOpen ? null : i)}>
+              <div class="event-row-summary" onClick={() => setExpanded(isOpen ? null : i)}>
                 <span class={`event-type event-type-${eventTone(evt.type)}`}>{evt.type}</span>
                 <span class="event-path">{evt.path}</span>
                 {refs.map((r, j) => (
@@ -115,6 +115,10 @@ export function EventsPanel(props: {
               </div>
               {isOpen && (
                 <div class="event-detail">
+                  {(() => {
+                    const t = fmtEventTime(evt);
+                    return t ? <div class="event-detail-time"><time dateTime={t.iso} title={t.title}>{t.text}</time></div> : null;
+                  })()}
                   {evt.input != null && (
                     <>
                       <div class="event-detail-label">Input</div>
