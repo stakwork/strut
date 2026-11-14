@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { useFileScope } from "../use-artifact-url";
-import { connectAppHost, type AppHostConnection } from "../app-host";
-import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
+import { connectAppHost, sellerOf, type AppHostConnection } from "../app-host";
+import { nativeWalletOf } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes, strangerFrameAttributes } from "../frame-permissions";
-import { signInNote, type SignInAsk, type WalletAsk } from "../native-pay";
+import { nativeWalletApp, signInNote, type SignInAsk, type WalletAsk } from "../native-pay";
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
@@ -56,12 +56,16 @@ import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type
 // session; the page learns the actor, never a key. In a native host's web
 // view whose wallet signs a visitor in (Peel), the person's Sphinx account
 // is asked first: its own sheet is the sign-in (plans/app-payments.md §4.4).
+// There, a visitor's page whose version requests a wallet is offered the
+// person's, as a member's is (specs/WALLET.md §1.1, plans/app-payments.md
+// §11 R8): its identity names the SELLER, the server whose app it is.
 // A visitor's page of ANOTHER strut server (`app.from`, ../remote-app,
 // specs/API.md §17.9) is read from that server, its calls relayed there,
 // the visitor signed in THERE (the session kept here under that server),
 // and framed as a STRANGER's: this UI's CSP written ahead of its document,
 // no microphone and nothing its version declares (the frame runs on this
-// strut's origin, whose grants a feature would hand it).
+// strut's origin, whose grants a feature would hand it) — but its wallet
+// request, which is the person's to grant on the native host's sheet.
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
@@ -175,15 +179,19 @@ export function AppHost(props: {
           : visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         const info = await infoRead;
         if (cancelled) return;
-        // A stranger's version declares nothing this host grants.
+        // A stranger's version declares nothing this host grants: its
+        // wallet request is the person's to grant, on the native host's
+        // sheet, never this host's.
         const permissions = !from && Array.isArray(info?.permissions) ? info.permissions : undefined;
         // In a native host's web view (Peel), the version's wallet request,
         // for its wallet: read only there, and only an app that asks for one
-        // is offered a wallet (specs/WALLET.md §1.1).
-        let wallet: NativeWalletApp | undefined;
-        if (!visitor && nativeWalletOf(window) && info && "wallet" in info && info.wallet) {
-          wallet = { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}), title: info.title ?? app.name, request: info.wallet };
-        }
+        // is offered a wallet (specs/WALLET.md §1.1). A visitor's page too,
+        // a stranger's included (plans/app-payments.md §11 R8): the identity
+        // names the seller, whose app it is, which the native host keys the
+        // connection by and its sheet names.
+        const wallet = nativeWalletOf(window)
+          ? nativeWalletApp({ app, title: info?.title ?? app.title ?? app.name, request: info?.wallet, seller: sellerOf(from) })
+          : undefined;
         conn = await connectAppHost({
           frame,
           theme,

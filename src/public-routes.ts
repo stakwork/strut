@@ -38,6 +38,7 @@ import type { RunStore } from "./store.js";
 import { summarizeFromEvents } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { ArtifactsCapability } from "./capabilities.js";
+import type { BuildInfo } from "./apps/build.js";
 import type { PublicSurfaceService } from "./public-surface.js";
 import type { ListedRunnable } from "./public-runnable.js";
 import { declaredPaths, outputOnlySummary as outputOnly, publicEvent, publicSummary, relativeFile, stepHelpers } from "./public-surface.js";
@@ -240,6 +241,11 @@ export interface PublicAppInfo {
   /** The browser features the version's frame is granted (`app.yaml`'s
    *  `permissions:`), which a visitor's host sets before the document loads. */
   permissions?: string[];
+  /** The wallet connection the version REQUESTS (its `dist/build.json`'s
+   *  `wallet`, as a member's host reads it, specs/WALLET.md §1.1): what a
+   *  native host's connect sheet asks the visitor for. Nothing else of the
+   *  build is shown. */
+  wallet?: BuildInfo["wallet"];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its

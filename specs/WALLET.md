@@ -51,7 +51,9 @@ is hand-rolled; ids, timeouts and errors are the SDK's.
 
 ### 1.1 The native bridge
 
-A host whose wallet is native shows strut's UI in a web view (`?app=…&solo=1`).
+A host whose wallet is native shows strut's UI in a web view (`?app=…&solo=1`,
+or a visitor's page: `?app=…&public=1`, `&from=<seller>` for another strut
+server's).
 Inside it, the app's sandboxed frame talks to strut's UI over the MCP Apps
 bridge, as everywhere. strut's UI then relays to the native host
 (`kit/src/wallet/relay.ts`, wired in `web/src/app-host.ts`). Nothing is decided
@@ -75,9 +77,28 @@ rejected promise means the native host did not answer, and the page reads it as
 { v: 1, op: "capability", app }                     → { result: WalletCapability }  (what this app is offered)
 { v: 1, op: "call", method, params, app }           → { result: <MethodResults[method]> } | { error }
 
-app: { name, version, peer?, title, request }       // NativeWalletApp: the version hosted, its title,
-                                                    // and its app.yaml `wallet:` request (null: none)
+app: { name, version, peer?, seller, title, request }   // NativeWalletApp: the version hosted, the server
+                                                        // whose app it is, its title, and its app.yaml
+                                                        // `wallet:` request (null: none)
 ```
+
+**The app's identity** (`NativeWalletApp`, checked by `nativeWalletAppProblems`;
+the `native_apps` vectors, §7):
+
+| Field | |
+|---|---|
+| `name`, `version` | the app and the version on screen |
+| `peer?` | the peer (org) the app lives on, reached through `seller`'s read-through; absent for `seller`'s own app |
+| `seller` | the strut server whose app it is, as its base URL (`isSellerUrl`, as a purchase's and a sign-in's, §1.2): this server's own for its apps and its peers' (the page's own address under strut's mount); another server's, `from`, for a visitor's page of that server. ALWAYS present |
+| `title` | the manifest's title, for the sheets |
+| `request` | the version's `wallet:` request, or `null` |
+
+The native host keys an app's connection by **(seller, peer, name)**, as it
+knows them: a stranger's app named like a trusted one never holds that one's
+connection or budget. strut's UI never sends an identity with problems: that
+page is offered no wallet. `seller` was added after the first version of this
+message; a native host that does not read it ignores it, so the contract's
+version did not change.
 
 - **Capability first.** strut's UI sends `capability` once per frame, before the
   bridge exists, because the offer rides in `ui/initialize`. An answer that is
@@ -87,6 +108,17 @@ app: { name, version, peer?, title, request }       // NativeWalletApp: the vers
   requests one. It reads the request from the version's `dist/build.json`
   (`wallet`, beside `title`), with the version's file token, here and through a
   peer's read-through.
+- **A visitor's page too.** A public app's page (this server's, or another
+  server's through `from`) is offered the wallet as a member's is
+  (plans/app-payments.md §11 R8). Its request comes from the public read,
+  `GET /public/apps/:name` (specs/API.md §17.2), which carries the build's
+  `wallet` and nothing else of the build; another server's is checked
+  (`connectionRequestProblems`) before it is sent. A stranger's page still gets
+  nothing else its version declares (specs/API.md §17.9): what it may spend is
+  the person's to grant, on the native host's sheet, which names the seller.
+- **No node key.** strut's UI drops `pubkey` from `get_info`'s answer, whatever
+  the native host sent: an app learns who signed in from `useVisitor()`, never
+  from the wallet (plans/app-payments.md §4.4).
 - **`call` params are already through `checkParams`.** The native host checks
   them again. On the iPhone the main frame is the org's code, not Peel's, so
   nothing from the page is trusted there.
@@ -123,10 +155,14 @@ included, so the check is what keeps the app from talking to the native host
 directly.
 
 **What the native host trusts.** On the Mac the main frame is strut's UI as Peel
-ships it, so its `app` is the app hosted. On the iPhone it is the org's strut
-UI, which can name any app of that org. There Peel keys connections by org
-(§5.2), and the sheet names the org from Peel's own record of the page it
-opened.
+ships it, so its `app` is the app hosted, and its `seller` is the server Peel
+opened it from: its own strut, or the `from` of a stranger's public app (#625's
+remote mode). Peel holds both to its own record of the address it opened and
+refuses an `app` that is not that one. On the iPhone it is the org's strut UI,
+or a stranger's box opened directly, which can name anything. There Peel keys
+connections by the org or the origin it loaded (plans/app-payments.md §5.3),
+ignores the page's `seller`, and the sheet names the org or the origin from
+Peel's own record of the page it opened.
 
 ### 1.2 The host's own purchase: a visitor's credit, one tap
 
@@ -652,7 +688,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds thirteen lists. Every implementation runs all of them in its own
+`vectors.json` holds fourteen lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -661,6 +697,7 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `results` | `{ name, method, result, valid }` | an answer of this shape is (or is not) one the contract allows (`resultProblems`) |
 | `notifications` | `{ name, notification, valid }` | the same (`notificationProblems`) |
 | `connection_requests` | `{ name, request, valid }` | an `app.yaml` `wallet:` block is (or is not) accepted |
+| `native_apps` | `{ name, app, valid }` | an app identity strut's UI sends a native host (§1.1 `NativeWalletApp`) is (or is not) one (`nativeWalletAppProblems`): above all, it names its `seller`. A native host refuses every invalid one |
 | `preimages` | `{ preimage, payment_hash, valid }` | `sha256(preimage) == payment_hash` |
 | `host_capabilities` | `{ name, capability, expect }` | `hostWalletCapabilityOf` reads a native host's `host_capability` answer as `expect`: an op it does not know left out, `null` for no capability (§1.2) |
 | `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |

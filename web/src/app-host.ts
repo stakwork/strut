@@ -28,7 +28,7 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { checkChallenge } from "./challenge";
-import { createHostWalletProbe, signInAsk, walletAsk, type SignInAsk, type WalletAsk } from "./native-pay";
+import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, type SignInAsk, type WalletAsk } from "./native-pay";
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
@@ -96,11 +96,13 @@ export interface AppHostOptions {
   /** A visitor's app as the server serves it: what a native wallet's sheet
    *  names when it pays for the page's credit. */
   visitorApp?: { name: string; version: string; title: string };
-  /** The app as a native host's wallet names it — its identity, title and
-   *  `wallet:` request (specs/WALLET.md §1.1) — for an app that requests a
-   *  wallet. When this page is a native host's main frame (Peel's web view),
-   *  the host's wallet is offered to the page and its `strut/wallet/*` calls
-   *  are relayed there; anywhere else it is unused. */
+  /** The app as a native host's wallet names it — its identity, the seller
+   *  whose app it is, its title and `wallet:` request (specs/WALLET.md §1.1,
+   *  ./native-pay `nativeWalletApp`) — for an app that requests a wallet: a
+   *  member's page or a visitor's, this server's or another's. When this
+   *  page is a native host's main frame (Peel's web view), the host's wallet
+   *  is offered to the page and its `strut/wallet/*` calls are relayed
+   *  there; anywhere else it is unused. */
   wallet?: NativeWalletApp;
   /** The app, at the version on screen: the host then carries its
    *  channels (plans/app-channels.md §3) — one socket to this strut's
@@ -169,11 +171,11 @@ const thisServer: VisitorWallet = { purse: visitorPurse, save: savePurseNow, kee
  *  so a priced launch never waits on the question (./native-pay). */
 const hostWallet = createHostWalletProbe();
 
-/** The strut server a visitor's page is of, as a native wallet's sheet
- *  names it: another server's base (`from`), or this one's — the page's
- *  own origin on a box that serves it (a direct open, where the native
- *  host checks against the origin it loaded). */
-const sellerOf = (from?: string) => from ?? new URL(`${API_BASE}/`, location.href).href.replace(/\/+$/, "");
+/** The strut server a page's app is of, as a native wallet's sheet names
+ *  it and keys its connection by: another server's base (`from`), or this
+ *  one's — the page's own origin on a box that serves it (a direct open,
+ *  where the native host checks against the origin it loaded). */
+export const sellerOf = (from?: string) => sellerBase(from, API_BASE, location.href);
 
 /** A link a page may open in a new tab: the web's own, and mail. Never a
  *  `javascript:` URL, which a new window runs on THIS page's origin. */

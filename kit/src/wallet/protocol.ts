@@ -797,12 +797,42 @@ export const NATIVE_WALLET_GLOBAL = "strutWallet";
 export interface NativeWalletApp {
   name: string;
   version: string;
-  /** The peer (org) the app lives on; absent for this strut's own app. */
+  /** The peer (org) the app lives on, reached through `seller`'s
+   *  read-through; absent for `seller`'s own app. */
   peer?: string;
+  /** The strut server whose app it is, as its base URL (`isSellerUrl`, as
+   *  a `buy_credit` purchase's and a `sign_in` request's): this server's
+   *  own for its apps and its peers', another server's (`from`) for a
+   *  visitor's page of that server. Always present, so a native host keys
+   *  every connection by (seller, peer, name): a stranger's app named like
+   *  a trusted one never holds that one's connection or budget. */
+  seller: string;
   /** The manifest's title, for the sheets. */
   title: string;
   /** The version's `wallet:` request; null when it asks for none. */
   request: ConnectionRequest | null;
+}
+
+/** What is wrong with an app identity (`NativeWalletApp`); none when it is
+ *  one. strut's UI never sends one with problems (`probeNativeWallet`: no
+ *  wallet for that page), and a native host refuses one. Above all: a
+ *  `seller`, and a request that is one, or null. */
+export function nativeWalletAppProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return ["an app must be an object"];
+  const a = raw as Record<string, unknown>;
+  const out: string[] = [];
+  const text = (v: unknown, what: string) => {
+    if (typeof v !== "string" || !v) out.push(`${what} must be a string`);
+    else if (v.length > CREDIT_TEXT_MAX) out.push(`${what} is longer than ${CREDIT_TEXT_MAX} characters`);
+  };
+  text(a.name, "name");
+  text(a.version, "version");
+  text(a.title, "title");
+  if (a.peer !== undefined && (typeof a.peer !== "string" || !a.peer || a.peer.includes("/"))) out.push("peer must be a peer's id, with no /");
+  if (!isSellerUrl(a.seller)) out.push("seller must be a strut server's base URL: https, or http on loopback, with no credentials, query or fragment");
+  if (a.request === undefined) out.push("request must be the version's wallet: request, or null");
+  else if (a.request !== null) for (const p of connectionRequestProblems(a.request)) out.push(`request: ${p}`);
+  return out;
 }
 
 /** UI → native. `capability` asks what the native wallet offers this app

@@ -26,14 +26,19 @@
 // challenge is for the SELLER's host, and has not ended), one `sign_in`, its
 // answer read; the session is then the provider's (../visitor-signin).
 //
+// It also builds the APP's identity for its own wallet connection
+// (`nativeWalletApp`, specs/WALLET.md §1.1), naming the seller, for a
+// member's page and a visitor's alike.
+//
 // Pure, apart from the native host it is handed, so the root test run
 // covers it (native-pay.test.ts); ./app-host wires it, the sheets
 // (components/PaymentSheet.tsx, components/SignInSheet.tsx) draw it.
 
 import {
-  NATIVE_WALLET_HANDLER, buyCreditNatively, creditStatusNatively, nativeWalletOf, probeHostWallet, signInNatively,
-  signInRequestProblems, visitorChallengeClaims,
-  type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWallet, type SignInRequest, type WalletErrorCode,
+  NATIVE_WALLET_HANDLER, buyCreditNatively, connectionRequestProblems, creditStatusNatively, nativeWalletAppProblems, nativeWalletOf,
+  probeHostWallet, signInNatively, signInRequestProblems, visitorChallengeClaims,
+  type ConnectionRequest, type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWallet, type NativeWalletApp,
+  type SignInRequest, type WalletErrorCode,
 } from "@strut/kit/wallet";
 import type { CheckedChallenge } from "./challenge";
 import type { PaymentRequired } from "./visitor-pay";
@@ -231,4 +236,45 @@ export function signInNote(a: Extract<SignInAnswerOf, { outcome: "refused" }>, n
   if (a.declined) return `You declined in ${name}.`;
   if (a.code === "RESTRICTED") return `${Name} did not sign you in (${a.message}). Press Sign in with ${name} to confirm there.`;
   return `${Name} did not sign you in (${a.message}).`;
+}
+
+// ── The app's own wallet connection (specs/WALLET.md §1.1) ────────────────
+// Not the host's: an app whose version requests a wallet (`app.yaml`'s
+// `wallet:`) is offered the native host's, and its `strut/wallet/*` calls
+// are relayed there (`relayNativeWallet`). A member's page and a VISITOR's
+// alike (plans/app-payments.md §11 R8): this server's public app, or
+// another server's (`from`). The identity names the SELLER, so the native
+// host keys the connection by the server whose app it is.
+
+/** The strut server a page's app is of, as its base URL: what `seller`
+ *  names in a purchase, a sign-in and an app's identity. Another server's
+ *  (`from`), or this one's: the UI's API prefix (`apiBase`) on the page's
+ *  own address (`href`). */
+export function sellerOf(from: string | undefined, apiBase: string, href: string): string {
+  return from ?? new URL(`${apiBase}/`, href).href.replace(/\/+$/, "");
+}
+
+/** The app as a native host's wallet names it (`NativeWalletApp`), for a
+ *  version that requests a wallet; undefined for one that asks for none,
+ *  or for a request that is not one (a stranger's server may answer
+ *  anything): then the page is offered no wallet. `request` is the
+ *  version's `wallet:` — from its `dist/build.json` for a member's page,
+ *  from the public read (`GET /public/apps/:name`, this server's or
+ *  `from`'s) for a visitor's. */
+export function nativeWalletApp(o: {
+  app: { name: string; version: string; peer?: string };
+  title: string;
+  request: unknown;
+  seller: string;
+}): NativeWalletApp | undefined {
+  if (!o.request || connectionRequestProblems(o.request).length) return undefined;
+  const app: NativeWalletApp = {
+    name: o.app.name,
+    version: o.app.version,
+    ...(o.app.peer ? { peer: o.app.peer } : {}),
+    seller: o.seller,
+    title: o.title,
+    request: o.request as ConnectionRequest,
+  };
+  return nativeWalletAppProblems(app).length ? undefined : app;
 }

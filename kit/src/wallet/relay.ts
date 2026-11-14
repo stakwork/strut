@@ -10,7 +10,7 @@
  *  `setRequestHandler` and `notification`. */
 import {
   NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, hostWalletCapabilityOf,
-  isWalletCapability, isWalletErrorCode, nativeAppKey, notificationProblems, readCreditReply, readSignInReply, walletErrorBody, walletRequestMethod,
+  isWalletCapability, isWalletErrorCode, nativeAppKey, nativeWalletAppProblems, notificationProblems, readCreditReply, readSignInReply, walletErrorBody, walletRequestMethod,
   type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWalletApp, type NativeWalletMessage,
   type NativeWalletReply, type SignInReplyOutcome, type SignInRequest, type WalletCapability, type WalletErrorBody, type WalletMethod,
   type WalletNotification,
@@ -45,8 +45,10 @@ export function nativeWalletOf(win: unknown = globalThis): NativeWallet | undefi
 
 /** Ask the native host what it offers this app. Undefined when it offers
  *  nothing, answers with something else, or not within `timeoutMs`: then
- *  the page simply has no wallet. */
+ *  the page simply has no wallet. An identity that is not one (no seller,
+ *  a request that is not one: `nativeWalletAppProblems`) is never sent. */
 export async function probeNativeWallet(native: NativeWallet, app: NativeWalletApp, timeoutMs = 5_000): Promise<WalletCapability | undefined> {
+  if (nativeWalletAppProblems(app).length) return undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reply = await Promise.race([
@@ -103,7 +105,16 @@ export function relayNativeWallet(opts: {
       if (r && typeof r === "object" && "error" in r) {
         throw rpcError(errorBodyOf(r.error) ?? walletErrorBody("OTHER", "the wallet refused"));
       }
-      if (r && typeof r === "object" && "result" in r) return r.result as Record<string, unknown>;
+      if (r && typeof r === "object" && "result" in r) {
+        // An app learns who signed in from `useVisitor()`, never from the
+        // wallet (plans/app-payments.md §4.4): no node key reaches a page,
+        // whatever the native host answered.
+        if (method === "get_info" && r.result && typeof r.result === "object" && "pubkey" in r.result) {
+          const { pubkey: _pubkey, ...info } = r.result as Record<string, unknown>;
+          return info;
+        }
+        return r.result as Record<string, unknown>;
+      }
       throw rpcError(walletErrorBody("INTERNAL", "the wallet answered with neither a result nor an error"));
     });
   }

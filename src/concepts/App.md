@@ -692,6 +692,8 @@ if (!wallet.available) return <p>Tipping needs a wallet: open this app in Peel.<
   base64 text; leave it out unless the payee reads it.
 - **`window.webln`** is there too, for a library that expects WebLN.
 - **Where it works:** in a host that carries a wallet, which today is Peel.
+  A public app's page works too: a visitor in Peel tips or buys from their
+  own wallet, and the connection is kept per server whose app it is.
   On the iPhone the org's apps share one connection. Elsewhere — a browser,
   another host, the strut server's own UI — `available` is false: the app still loads, shows
   its prices, and says that paying needs Peel. Never hide the button or the
