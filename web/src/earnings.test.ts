@@ -12,14 +12,17 @@ import {
   rangeFrom,
   readWithdrawInvoice,
   shortOfWorkers,
-  shortOfWorkersWarning,
+  shortOfWorkersRefusal,
+  sendPurposeNote,
   showsWorkers,
   subjectLabel,
   withdrawBlocked,
   withdrawRefusal,
   workersAcceptedLine,
   workersDayMsat,
+  workersOutLine,
   workersOwedSub,
+  workersPaidSub,
   type WorkersView,
 } from "./earnings.js";
 
@@ -77,6 +80,9 @@ describe("what workers are owed (plans/human-steps.md §8.1)", () => {
     assert.equal(showsWorkers(undefined), false, "a scoped view has none");
     assert.equal(showsWorkers(none), false);
     assert.equal(showsWorkers(owed), true);
+    assert.equal(showsWorkers({ ...none, paidOut: { count: 1, msat: 5_000_000, feeMsat: 0, days: [] } }), true, "paid everything out: still shown");
+    assert.equal(showsWorkers({ ...none, outMsat: 5_000_000 }), true, "a payout on its way");
+    assert.equal(showsWorkers({ ...none, paidOut: { count: 0, msat: 0, feeMsat: 0, days: [] }, outMsat: 0 }), false);
     assert.equal(showsWorkers({ ...none, accepted: { answers: 1, msat: 1000, days: [] }, takenBack: { answers: 1, msat: 1000 } }), true, "every answer in range taken back: still shown");
   });
 
@@ -88,6 +94,18 @@ describe("what workers are owed (plans/human-steps.md §8.1)", () => {
     assert.equal(workersAcceptedLine(owed), "4 answers accepted from workers, earning 39,000 sats; 1 of them taken back (20,000 sats).");
     assert.equal(workersAcceptedLine({ ...owed, takenBack: { answers: 0, msat: 0 } }), "4 answers accepted from workers, earning 39,000 sats.");
     assert.equal(workersDayMsat(owed.accepted.days[0]!), 15_000_000, "accepted that day, less what of it was taken back");
+  });
+
+  it("Paid to workers: what was paid and its fees, payouts on their way, and how a payout is marked in the pending list", () => {
+    const paid: WorkersView = { ...owed, outMsat: 7_000_000, paidOut: { count: 3, msat: 30_000_000, feeMsat: 150_000, days: [] } };
+    assert.equal(workersPaidSub(paid), "3 withdrawals · fees 150 sats");
+    assert.equal(workersPaidSub({ ...owed, paidOut: { count: 1, msat: 1000, feeMsat: 0, days: [] } }), "1 withdrawal · fees 0 sats");
+    assert.equal(workersPaidSub(owed), "0 withdrawals · fees 0 sats", "a strut from before payouts");
+    assert.equal(workersOutLine(paid), "7,000 sats on its way to workers: reserved, not yet settled.");
+    assert.equal(workersOutLine(owed), null);
+    assert.equal(sendPurposeNote("worker"), " · a worker's payout");
+    assert.equal(sendPurposeNote("purchase"), " · credit");
+    assert.equal(sendPurposeNote("withdrawal"), "");
   });
 
   it("the wallet's cover: none without a balance or a debt; red when short", () => {
@@ -123,7 +141,7 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     assert.ok(over.ok && over.overBalance);
   });
 
-  it("warns when paying would leave the wallet short of what workers are owed — the amount and its whole fee cap out — and never refuses", () => {
+  it("says when paying would leave the wallet short of what workers are owed — the amount and its whole fee cap out — and the dialogs refuse it", () => {
     const inv = encodeBolt11({ msat: 10_000_000, paymentHash: HASH, timestamp: nowS - 60, expirySecs: 600 });
     // 50,000 sats held, 30,000 owed: 10,000 + a 50-sat cap out leaves 39,950.
     const fine = readWithdrawInvoice(inv, { balanceMsat: 50_000_000, owedToWorkersMsat: 30_000_000, nowMs: NOW, provider: "sphinx" });
@@ -131,11 +149,15 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     const short = readWithdrawInvoice(inv, { balanceMsat: 50_000_000, owedToWorkersMsat: 45_000_000, nowMs: NOW, provider: "sphinx" });
     assert.ok(short.ok);
     assert.deepEqual(short.shortOfWorkers, { afterMsat: 39_950_000, owedMsat: 45_000_000, shortMsat: 5_050_000 });
-    assert.equal(short.overBalance, false, "a warning: it can still be paid");
+    assert.equal(short.overBalance, false, "within the balance: only the workers' cover refuses it");
     assert.equal(
-      shortOfWorkersWarning(short.shortOfWorkers!),
-      "Paid, this leaves the wallet as little as 39,950 sats, 5,050 sats short of the 45,000 sats workers are owed for accepted answers. Their pay comes out of this wallet.",
+      shortOfWorkersRefusal(short.shortOfWorkers!, short.msat),
+      "Refused: paying this would leave the wallet 5,050 sats short of the 45,000 sats workers are owed for accepted answers. Withdraw at most 4,950 sats.",
     );
+    // The most it names does leave what is owed: the fee cap falls with the amount.
+    const most = short.msat - short.shortMsat;
+    assert.equal(shortOfWorkers({ balanceMsat: 50_000_000, msat: most, maxFeeMsat: 24_750, owedMsat: 45_000_000 }), undefined);
+    assert.equal(shortOfWorkersRefusal({ afterMsat: 0, owedMsat: 9_000, shortMsat: 9_000 }, 2_000), "Refused: paying this would leave the wallet 9 sats short of the 9 sats workers are owed for accepted answers. Withdraw at most 0 sats.");
     // Nothing owed, or no balance read: nothing to warn of.
     for (const o of [{ balanceMsat: 50_000_000 }, { owedToWorkersMsat: 45_000_000 }, { balanceMsat: 50_000_000, owedToWorkersMsat: 0 }]) {
       const r = readWithdrawInvoice(inv, { ...o, nowMs: NOW });
@@ -172,6 +194,8 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     assert.match(withdrawRefusal({ code: "wallet_refused", walletCode: "own_invoice", error: "wallet_refused: the invoice is the account's own" }), /this wallet's own/);
     assert.match(withdrawRefusal({ code: "wallet_refused", walletCode: "max_fee_too_low", error: "wallet_refused: max_fee_msat 1000 is below …" }), /routing fee limit/);
     assert.match(withdrawRefusal({ code: "wallet_unavailable", error: "wallet_unavailable: no answer in 75 s" }), /did not answer: no answer in 75 s/);
+    assert.match(withdrawRefusal({ code: "short_of_workers", error: "short_of_workers: paying 10 msat would leave 5 msat, 9 msat short of the 14 msat workers are owed" }), /^Refused: paying 10 msat would leave .* short of the 14 msat workers are owed\. .*add sats or withdraw less/);
+    assert.match(withdrawRefusal({ code: "balance_unknown", error: "balance_unknown: workers are owed 14 msat here and the wallet's balance cannot be read now" }), /^Refused: workers are owed 14 msat here/);
     assert.equal(withdrawRefusal({ code: "wallet_refused", error: "wallet_refused: the core would not pay it" }), "the core would not pay it");
   });
 });

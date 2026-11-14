@@ -1,19 +1,22 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Lease, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
 
-export const TABS = ["queue", "types", "workers", "tasks", "tests"] as const;
+export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
 export type Tab = (typeof TABS)[number];
 
-export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests" };
+export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts" };
 
 /** Where the page is: a tab and what is open in it. */
 export interface Place {
   tab: Tab;
   type?: string;
+  /** On the Payouts tab: only this worker's payouts. */
   worker?: string;
   task?: string;
+  /** On the Payouts tab: one payout, by its key. */
+  payout?: string;
   test?: string;
   /** Tasks of one run: `<workflow>/<runId>`. */
   run?: string;
@@ -29,8 +32,9 @@ export const REVIEW_FILTERS: readonly ReviewFilter[] = ["none", "ok", "rejected"
 
 /**
  * Where a deep link opens (§9.1): `input` takes one of `tab=queue|types|
- * workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
- * `test=<id>`, `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
+ * workers|tasks|tests|payouts`, `type=<name>`, `worker=<actor>`, `task=<id>`,
+ * `test=<id>`, `payout=<key>` (one payout), `tab=payouts&worker=<actor>`
+ * (that worker's payouts), `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
  * answered), `review=none|ok|rejected` (the review queue, §9.6; with `by`,
  * that worker's). A thing named opens its tab; with nothing named, the
  * Queue.
@@ -40,6 +44,8 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   const tab = str("tab");
   const named = (TABS as readonly string[]).includes(tab ?? "") ? (tab as Tab) : undefined;
   const review = REVIEW_FILTERS.find((r) => r === str("review"));
+  if (str("payout")) return { tab: "payouts", payout: str("payout")! };
+  if (named === "payouts") return { tab: "payouts", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (str("task")) return { tab: "tasks", task: str("task")! };
   if (str("run")) return { tab: "tasks", run: str("run")! };
   if (review) return { tab: "tasks", review, ...(str("by") ? { by: str("by")! } : {}) };
@@ -52,6 +58,8 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
 
 /** A place as the app link's input, the inverse of `placeOf`. */
 export function inputOf(p: Place): Record<string, string> {
+  if (p.payout) return { payout: p.payout };
+  if (p.tab === "payouts") return { tab: "payouts", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.task) return { task: p.task };
   if (p.run) return { run: p.run };
   if (p.review) return { review: p.review, ...(p.by ? { by: p.by } : {}) };
@@ -120,9 +128,12 @@ export interface Shown {
   /** Ruling 9: a type's Open / Invite-only choice — every type carries
    *  `open` (with no type yet, shown). */
   open: boolean;
+  /** Item 5b: the Payouts tab and a worker's link to theirs — `/tasks/payouts`
+   *  answers (a host's own store answers `not_available`). */
+  payouts: boolean;
 }
 
-export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown" }): Shown {
+export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown"; payoutsAnswer?: "yes" | "no" | "unknown" }): Shown {
   const types = o.types ?? [];
   const workers = o.workers ?? [];
   const tests = o.testsAnswer === "yes";
@@ -134,11 +145,12 @@ export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer
     pay,
     review: tests,
     open: types.every((t) => t.open !== undefined),
+    payouts: o.payoutsAnswer === "yes",
     earnings: workers.some((w) => w.balance !== undefined) && (types.some((t) => (t.paySats ?? 0) > 0) || workers.some((w) => (w.balance?.totalMsat ?? 0) > 0)),
   };
 }
 
-/** Whether the test routes answer: a refusal that names `not_available`
+/** Whether a route answers here: a refusal that names `not_available`
  *  (a host's own store) is "no"; any other error says nothing. */
 export function testsAnswerOf(r: { data?: unknown; error?: unknown }): "yes" | "no" | "unknown" {
   if (r.data !== undefined) return "yes";
@@ -158,6 +170,40 @@ export function owedLine(books: Books | undefined): { text: string; short: boole
   return cover >= 0
     ? { text: `${owed}; the wallet holds ${fmtSats(wallet.balance.msat)}, ${fmtSats(cover)} more than that.`, short: false }
     : { text: `${owed}; the wallet holds ${fmtSats(wallet.balance.msat)}, ${fmtSats(-cover)} short of it.`, short: true };
+}
+
+// ── payouts (§8.2) ─────────────────────────────────────────────────────────
+
+export const PAYOUT_STATES = ["out", "stale", "paid", "failed"] as const;
+export type PayoutState = (typeof PAYOUT_STATES)[number];
+
+/** What a payout is to staff: `stale` is an `out` one that waits for a person. */
+export function payoutState(p: Pick<Payout, "state" | "stale">): PayoutState {
+  return p.state === "out" && p.stale ? "stale" : p.state;
+}
+
+/** A Sphinx address shortened (`<pubkey>_<lsp>_<scid>`): the pubkey's first
+ *  and last few, and the channel. */
+export function shortAddress(address: string): string {
+  const [pubkey, , scid] = address.split("_");
+  if (!pubkey || scid === undefined) return address.length > 16 ? `${address.slice(0, 8)}…${address.slice(-4)}` : address;
+  return `${pubkey.slice(0, 6)}…${pubkey.slice(-4)}_…_${scid}`;
+}
+
+/** The wallet's cover for the Payouts tab: the Queue's line, and whether
+ *  withdrawals are refused (the wallet is short of what workers are owed). */
+export function payoutCover(books: Books | undefined): { text: string; short: boolean } | null {
+  const line = owedLine(books);
+  return line ? { text: line.text, short: line.short } : null;
+}
+
+/** The most one worker's payouts came to today among `payouts` (those
+ *  listed: the newest), failed ones counting for nothing: the worker cap's
+ *  use. */
+export function mostByOneWorkerToday(payouts: readonly Pick<Payout, "worker" | "msat" | "state" | "day">[], day: string): number {
+  const by = new Map<string, number>();
+  for (const p of payouts) if (p.day === day && p.state !== "failed") by.set(p.worker, (by.get(p.worker) ?? 0) + p.msat);
+  return Math.max(0, ...by.values());
 }
 
 // ── words ──────────────────────────────────────────────────────────────────

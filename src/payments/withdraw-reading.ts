@@ -7,8 +7,8 @@
  * person confirms is what `POST /earnings/withdraw` checks.
  *
  * Given what WORKERS are owed (plans/human-steps.md §8.1), it also says when
- * the amount would leave the wallet short of it: a warning, never a refusal
- * (ruling 7: 5a warns, 5b refuses).
+ * the amount would leave the wallet short of it. The dialogs refuse then, as
+ * the route does (`409 short_of_workers`: ruling 7, 5a warned, 5b refuses).
  */
 
 import { Bolt11Error, decodeBolt11, type DecodedInvoice } from "./bolt11.js";

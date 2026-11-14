@@ -25,7 +25,9 @@ import {
   subjectLabel,
   workersAcceptedLine,
   workersDayMsat,
+  workersOutLine,
   workersOwedSub,
+  workersPaidSub,
   type RangeId,
   type WorkersView,
 } from "@strut/kit/folds";
@@ -156,12 +158,13 @@ export default function App() {
             ))}
           </div>
 
-          <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <section className={cn("grid grid-cols-2 gap-3", workers ? "md:grid-cols-3" : "md:grid-cols-5")}>
             <Tile label="Earned" value={fmtUsd(view.totals.earned)} sub={`${view.totals.calls} run${view.totals.calls === 1 ? "" : "s"}${view.totals.failed ? ` · ${view.totals.failed} failed` : ""}`} />
             <Tile label="Cost" value={fmtUsd(view.totals.cost)} sub="what they spent on models" />
             <Tile label="Margin" value={fmtUsd(view.totals.margin)} sub="earned − cost" loss={view.totals.margin < 0} />
             <Tile label="Received" value={fmtSats(view.received.msat)} sub={`${view.received.count} payment${view.received.count === 1 ? "" : "s"} · ${fmtUsd(view.received.usd)} of credit`} />
             <Tile label="Withdrawn" value={fmtSats(view.withdrawn.msat)} sub={`${view.withdrawn.count} · fees ${fmtSats(view.withdrawn.feeMsat)}`} />
+            {workers && <Tile label="Paid to workers" value={fmtSats(workers.paidOut?.msat ?? 0)} sub={workersPaidSub(workers)} />}
           </section>
           {view.deposited.count > 0 && (
             <p className="text-sm text-muted-foreground">Also added by hand: {fmtSats(view.deposited.msat)} ({view.deposited.count}). Not credit and not earnings: sats this server may spend.</p>
@@ -171,6 +174,7 @@ export default function App() {
               Also paid out: {fmtSats(view.purchases.msat)} for credit bought from other servers ({view.purchases.count}, fees {fmtSats(view.purchases.feeMsat)}).
             </p>
           )}
+          {workers && workersOutLine(workers) && <p className="text-sm text-muted-foreground">{workersOutLine(workers)}</p>}
           {workers && workers.accepted.answers > 0 && (
             <p className="text-sm text-muted-foreground">In this range, {workersAcceptedLine(workers)} Worker pay is owed in sats, apart from what this server earned.</p>
           )}

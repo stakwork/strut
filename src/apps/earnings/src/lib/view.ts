@@ -19,7 +19,7 @@ export interface PendingSend {
   paymentHash: string;
   msat: number;
   at: number;
-  purpose: "withdrawal" | "purchase";
+  purpose: "withdrawal" | "purchase" | "worker";
   payer: string;
   stale: boolean;
   reading: boolean;

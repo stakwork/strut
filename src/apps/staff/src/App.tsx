@@ -1,11 +1,12 @@
 // strut/staff (plans/human-steps.md §9, specs/API.md §14.15): the task
 // store's staff routes as a page, for an ADMIN — strut's own UI lists it in
 // Apps, a host (Stadeum) frames it for a person it signed in as an admin.
-// Five tabs, each deep-linkable (`?input=tab=…`, `type=`, `worker=`,
-// `task=`, `test=`, `run=`): the Queue (what waits, and what needs a
+// Six tabs, each deep-linkable (`?input=tab=…`, `type=`, `worker=`,
+// `task=`, `test=`, `run=`, `payout=`): the Queue (what waits, and what needs a
 // person), the task Types (who draws them, the answer's shape, pay, tests,
 // copies, who holds them), the Workers (letting them in, what they did and
-// earned), the Tasks (every task and its answers), and the Tests. Every call
+// earned), the Tasks (every task and its answers), the Tests, and the
+// Payouts (workers' withdrawals: the switch, the caps, the list). Every call
 // is a `staff/*` step, which answers only strut's own page shown to an admin
 // with a name; the page is only a face, the routes decide. Parts of items 4
 // (tests, standing, copies) and 5a (pay, earnings) show only when the server
@@ -24,6 +25,7 @@ import { Types } from "./components/Types";
 import { Workers } from "./components/Workers";
 import { Tasks } from "./components/Tasks";
 import { Tests } from "./components/Tests";
+import { Payouts } from "./components/Payouts";
 
 export default function App() {
   const client = useStrutClient();
@@ -44,11 +46,13 @@ export default function App() {
   const workers = useQuery({ queryKey: ["staff", "workers"], queryFn: () => client.run<{ workers: Worker[] }>("staff/workers", {}) });
   // Whether the test routes answer here (item 4): the Tests tab's own read.
   const tests = useQuery({ queryKey: ["staff", "tests", "all"], queryFn: () => client.run<{ tests: Test[] }>("staff/tests", {}) });
+  // Whether the payout routes answer here (item 5b): the Payouts tab's own read.
+  const payouts = useQuery({ queryKey: ["staff", "payouts", "any"], queryFn: () => client.run("staff/payouts", { limit: 1 }) });
   const shown = useMemo(
-    () => shownOf({ types: types.data?.types, workers: workers.data?.workers, testsAnswer: testsAnswerOf(tests) }),
-    [types.data, workers.data, tests.data, tests.error],
+    () => shownOf({ types: types.data?.types, workers: workers.data?.workers, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts) }),
+    [types.data, workers.data, tests.data, tests.error, payouts.data, payouts.error],
   );
-  const tabs = TABS.filter((t) => t !== "tests" || shown.tests);
+  const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts));
   const tab: Tab = tabs.includes(place.tab) ? place.tab : "queue";
   // Strut's own admin pages act as the person viewing them: with the bare
   // key and no name, every step refuses.
@@ -94,6 +98,7 @@ export default function App() {
           {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} error={workers.error} />}
           {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} />}
           {tab === "tests" && shown.tests && <Tests go={go} place={place} types={types.data?.types} />}
+          {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={workers.data?.workers} />}
         </main>
       )}
     </div>

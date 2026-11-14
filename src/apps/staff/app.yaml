@@ -3,8 +3,9 @@ description: >-
   The people who answer this server's workflows (plans/human-steps.md §9): the
   queue of tasks waiting for a person, the task types (who draws them, the
   answer's shape, its pay and its tests), the workers (letting them in,
-  suspending them, what they answered and earned) and every task with its
-  answers. Strut ships it and seeds it on every server; it is an admin's:
+  suspending them, what they answered and earned), every task with its
+  answers, and the payouts (workers' withdrawals: the switch, the caps, the
+  list). Strut ships it and seeds it on every server; it is an admin's:
   listed to an admin alone, and its steps answer an admin alone.
 icon: users
 admin: true
@@ -31,5 +32,9 @@ grants:
     - staff/test-file
     - staff/test-from-task
     - staff/retire-test
+    - staff/payouts
+    - staff/save-payouts
+    - staff/payout-read
+    - staff/payout-resolve
     - app/list
     - earnings/read

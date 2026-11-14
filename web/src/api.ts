@@ -3279,8 +3279,8 @@ export interface PendingWithdrawal {
   /** The wallet answered `pending`: it is out. False: its pay call never answered. */
   answered: boolean;
   actor?: string;
-  /** A person's withdrawal, or credit this strut bought (item 9). */
-  purpose: "withdrawal" | "purchase";
+  /** A person's withdrawal, credit this strut bought (item 9), or a worker's payout (§8.2). */
+  purpose: "withdrawal" | "purchase" | "worker";
   /** The wallet it went through (`sphinx:<url>`, `nwc:<pubkey>`). */
   payer: string;
   /** Past its invoice's expiry and an hour: no more polling — record it or drop it. */

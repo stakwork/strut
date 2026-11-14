@@ -262,3 +262,39 @@ export interface Books {
   workers?: { owedMsat: number; heldMsat: number; withdrawableMsat: number; payees: number; accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> }; takenBack: { answers: number; msat: number } };
   wallet?: { balance?: { msat: number; usd?: number }; rate?: number; owedToWorkersMsat?: number; coverMsat?: number; error?: string };
 }
+
+export type PayoutStateName = "out" | "paid" | "failed";
+
+/** One payout, as `GET /tasks/payouts` lists it (src/payments/ledger.ts). */
+export interface Payout {
+  key: string;
+  worker: string;
+  address: string;
+  msat: number;
+  maxFeeMsat: number;
+  state: PayoutStateName;
+  /** Still out a day after it was sent: it waits for a person. */
+  stale: boolean;
+  at: number;
+  day: string;
+  feeMsat?: number;
+  paymentHash?: string;
+  ended?: number;
+  why?: string;
+  by?: string;
+}
+
+export interface PayoutSettings {
+  on: boolean;
+  minSats: number;
+  workerDaySats: number;
+  serverDaySats: number;
+  changedBy?: string;
+  changedAt?: number;
+}
+
+export interface PayoutsAnswer {
+  settings: PayoutSettings;
+  today: { day: string; paidMsat: number; outMsat: number; count: number; serverLeftMsat: number };
+  payouts: Payout[];
+}
