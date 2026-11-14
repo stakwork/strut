@@ -5956,6 +5956,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .earnings-range-btn { background: none; border: 0; color: var(--text-muted); font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
 .earnings-range-btn.is-active { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong); }
 .earnings-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.earnings-tiles.has-workers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .earnings-tiles .ov-tile { background: var(--surface-2); }
 .earnings-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .earnings-table th { text-align: right; font-weight: 500; color: var(--text-muted); padding: 4px 6px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
@@ -5973,6 +5974,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 }
 
 /* Withdraw: a dialog over the Publish dialog. */
+.withdraw-dialog .btn:disabled { opacity: 0.45; cursor: default; }
 .withdraw-backdrop { z-index: 50; }
 .withdraw-dialog { z-index: 51; width: min(500px, 92vw); display: flex; flex-direction: column; gap: var(--sp-3); }
 .withdraw-dialog .dialog-title { margin-bottom: 0; }

@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, openPayHint, owedLine, placeOf, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -201,17 +201,43 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     const plain: TaskType = { name: "a", app: "w", answer: { type: "boolean" } as never, leaseSeconds: 600, withinHours: 72, enabled: true, changedAt: 0 };
     const worker: Worker = { actor: "w1", status: "active", firstSeen: 0, changedAt: 0, grants: [] };
     // A host's own store: no test routes, no pay on its types, no balance or standing on its workers, no open on its types.
-    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false, open: false });
+    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false, open: false, payouts: false });
     // This strut, before anything is tested or paid: the sections, not the empty columns.
     const here = shownOf({ types: [{ ...plain, holdHours: 72, open: true }], workers: [{ ...worker, balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true, open: true });
+    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true, open: true, payouts: false });
     // A tested, paid type: the columns too.
     const busy = shownOf({ types: [{ ...plain, holdHours: 72, open: false, paySats: 5, tests: { qualify: 1 } as never }], workers: [{ ...worker, balance: { totalMsat: 5000, heldMsat: 5000, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true, open: true });
+    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true, open: true, payouts: false });
+    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "no", payoutsAnswer: "yes" }).payouts, true, "the Payouts tab: when /tasks/payouts answers");
     assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes" }).open, true, "no type yet: the choice is shown for the first");
     assert.equal(testsAnswerOf({ error: new Error("step_run: not_available: this server's task store is its host's") }), "no");
     assert.equal(testsAnswerOf({ error: new Error("network") }), "unknown");
     assert.equal(testsAnswerOf({ data: { tests: [] } }), "yes");
+  });
+
+  it("the Payouts tab: its deep links, an address and a state in words, the cover, the worker cap's use", () => {
+    const key = "ab".repeat(32);
+    assert.deepEqual(placeOf({ tab: "payouts" }), { tab: "payouts" });
+    assert.deepEqual(placeOf({ tab: "payouts", worker: "secp:abc" }), { tab: "payouts", worker: "secp:abc" }, "a worker's page links here: not their Workers page");
+    assert.deepEqual(placeOf({ worker: "secp:abc" }), { tab: "workers", worker: "secp:abc" });
+    assert.deepEqual(placeOf({ payout: key }), { tab: "payouts", payout: key });
+    for (const p of [{ tab: "payouts" }, { tab: "payouts", worker: "secp:abc" }, { tab: "payouts", payout: key }] as const) assert.deepEqual(placeOf(inputOf(p)), p);
+    assert.deepEqual(inputOf({ tab: "payouts", worker: "w" }), { tab: "payouts", worker: "w" });
+    const address = `02${"a1".repeat(32)}_03${"b2".repeat(32)}_1099511627776`;
+    assert.equal(shortAddress(address), "02a1a1…a1a1_…_1099511627776");
+    assert.equal(shortAddress("not-an-address"), "not-an-address");
+    const p = { state: "out", stale: false } as const;
+    assert.deepEqual([payoutState(p), payoutState({ ...p, stale: true }), payoutState({ state: "paid", stale: false }), payoutState({ state: "failed", stale: false })], ["out", "stale", "paid", "failed"]);
+    assert.equal(payoutCover(undefined), null, "nothing owed: no line");
+    const books = { workers: { owedMsat: 20_000, heldMsat: 20_000, withdrawableMsat: 0, payees: 1, accepted: { answers: 1, msat: 20_000, days: [] }, takenBack: { answers: 0, msat: 0 } }, wallet: { balance: { msat: 5_000 }, coverMsat: -15_000 } };
+    assert.equal(payoutCover(books)!.short, true);
+    const day = "2026-11-13";
+    assert.equal(
+      mostByOneWorkerToday([{ worker: "a", msat: 3000, state: "paid", day }, { worker: "a", msat: 2000, state: "out", day }, { worker: "b", msat: 4000, state: "paid", day }, { worker: "b", msat: 9000, state: "failed", day }, { worker: "a", msat: 9000, state: "paid", day: "2026-11-12" }], day),
+      5000,
+      "a failed payout and another day count for nothing",
+    );
+    assert.equal(mostByOneWorkerToday([], day), 0);
   });
 
   it("the Queue's line on what workers are owed beside the wallet; none for a strut that never paid one", () => {
@@ -476,6 +502,18 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const back = await admin("staff/take-back", { task: id, worker: "w1", why: "the wrong pet" });
     assert.equal(back.error, undefined, back.error);
     assert.equal(back.result.earnings[0].result, "taken");
+
+    // 5b: the Payouts tab's four steps, granted by the app, reach the payout routes in the admin's name.
+    const none = await admin("staff/payouts");
+    assert.equal(none.error, undefined, none.error);
+    assert.deepEqual([none.result.settings.on, none.result.payouts, none.result.today.serverLeftMsat], [false, [], 10_000_000_000]);
+    const savedP = await admin("staff/save-payouts", { on: true, minSats: 10, workerDaySats: 500, serverDaySats: 5000 });
+    assert.equal(savedP.error, undefined, savedP.error);
+    assert.deepEqual([savedP.result.settings.on, savedP.result.settings.minSats, savedP.result.settings.changedBy], [true, 10, "ada"]);
+    assert.equal((await admin("staff/payouts", { state: "stale" })).result.today.serverLeftMsat, 5_000_000);
+    assert.match((await admin("staff/payout-read", { key: "ab".repeat(32) })).error ?? "", /unknown_payout/);
+    assert.match((await admin("staff/payout-resolve", { key: "ab".repeat(32), action: "drop" })).error ?? "", /unknown_payout/);
+    await admin("staff/save-payouts", { on: false, minSats: 1000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 });
 
     // §9.6: a verdict through the door, in the admin's name; a mark that
     // leaves the finished run as it was.

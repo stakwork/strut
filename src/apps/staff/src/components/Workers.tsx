@@ -223,6 +223,11 @@ function WorkerDetail(props: Props & { actor: string }) {
         <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "tasks", by: w.actor })}>
           Their answers
         </Button>
+        {props.shown.payouts && (
+          <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "payouts", worker: w.actor })}>
+            Their payouts
+          </Button>
+        )}
       </div>
       {holding && (
         <p className="text-sm">

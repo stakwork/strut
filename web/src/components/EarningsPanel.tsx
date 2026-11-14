@@ -9,13 +9,16 @@ import {
   fmtUsd,
   priceLine,
   rangeFrom,
+  sendPurposeNote,
   showsWorkers,
   subjectLabel,
   withdrawBlocked,
   withdrawRefusal,
   workersAcceptedLine,
   workersDayMsat,
+  workersOutLine,
   workersOwedSub,
+  workersPaidSub,
   type RangeId,
 } from "../earnings";
 import { fmtTime } from "./JobTimeline";
@@ -156,12 +159,13 @@ export function EarningsPanel() {
             ))}
           </div>
 
-          <div class="earnings-tiles">
+          <div class={`earnings-tiles${workers ? " has-workers" : ""}`}>
             <Tile label="Earned" value={fmtUsd(view.totals.earned)} sub={`${view.totals.calls} run${view.totals.calls === 1 ? "" : "s"}${view.totals.failed ? ` · ${view.totals.failed} failed` : ""}`} />
             <Tile label="Cost" value={fmtUsd(view.totals.cost)} sub="what they spent on models" />
             <Tile label="Margin" value={fmtUsd(view.totals.margin)} sub="earned − cost" tone={view.totals.margin < 0 ? "loss" : undefined} />
             <Tile label="Received" value={fmtSats(view.received.msat)} sub={`${view.received.count} payment${view.received.count === 1 ? "" : "s"} · ${fmtUsd(view.received.usd)} of credit`} />
             <Tile label="Withdrawn" value={fmtSats(view.withdrawn.msat)} sub={`${view.withdrawn.count} · fees ${fmtSats(view.withdrawn.feeMsat)}`} />
+            {workers && <Tile label="Paid to workers" value={fmtSats(workers.paidOut?.msat ?? 0)} sub={workersPaidSub(workers)} />}
           </div>
           {view.deposited.count > 0 && (
             <div class="auto-hint">Also added by hand: {fmtSats(view.deposited.msat)} ({view.deposited.count}). Not credit and not earnings: sats this server may spend.</div>
@@ -169,6 +173,7 @@ export function EarningsPanel() {
           {view.purchases.count > 0 && (
             <div class="auto-hint">Also paid out: {fmtSats(view.purchases.msat)} for credit bought from other servers ({view.purchases.count}, fees {fmtSats(view.purchases.feeMsat)}).</div>
           )}
+          {workers && workersOutLine(workers) && <div class="auto-hint">{workersOutLine(workers)}</div>}
           {workers && workers.accepted.answers > 0 && (
             <div class="auto-hint">In this range, {workersAcceptedLine(workers)} Worker pay is owed in sats, apart from what this server earned.</div>
           )}
@@ -323,7 +328,7 @@ function PendingRow(props: { p: api.PendingWithdrawal; onChanged: () => void }) 
   return (
     <div class={`earnings-pending-item${decide ? " is-stale" : ""}`}>
       <div class="earnings-pending-row">
-        <span>{fmtSats(p.msat)}{p.purpose === "purchase" ? " · credit" : ""}</span>
+        <span>{fmtSats(p.msat)}{sendPurposeNote(p.purpose)}</span>
         <span class="auto-hint">{state}</span>
         <span class="auto-hint">{fmtTime(new Date(p.at).toISOString())}</span>
       </div>

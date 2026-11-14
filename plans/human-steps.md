@@ -2342,6 +2342,28 @@ Against `main`, never stacked.
    Earnings tab and `strut/earnings`; the Withdraw dialogs' refusal. It
    comes after PR 1 and is checked in the browser.
 
+   **Built differently (PR 3):**
+
+   - **The Payouts tab is not in `strut/staff`'s tabs until the routes
+     answer:** `shownOf` gains `payouts`, from the page's own read of
+     `staff/payouts` (a host's store answers `not_available`), as `tests`
+     does. `app.yaml` grants the four steps with it.
+   - **The worker cap's use is the most one worker was paid today among the
+     payouts listed.** `today` has only the server's sums, and no route
+     answers a worker's. The server cap's is `today`'s.
+   - **`showsWorkers` also holds once a payout was paid or is on its way**
+     (`workers.paidOut.count`, `workers.outMsat`), so a strut that paid out
+     everything it owed still shows **Paid to workers**. The fold is
+     `kit/src/folds/earnings.ts`: `workersPaidSub`, `workersOutLine`,
+     `sendPurposeNote`.
+   - **The dialogs' refusal names the most that may be asked:** the amount
+     less the shortfall, which is safe because the fee cap falls with the
+     amount (`shortOfWorkersRefusal`). It replaces `shortOfWorkersWarning`.
+     Review and Pay stay off; the route's `short_of_workers` and
+     `balance_unknown` read through `withdrawRefusal` if they slip through.
+   - **No contract changes:** the pages read what PR 1 answers. Not
+     done here: a Paid to workers column by day.
+
 **Outside strut, separate repos:**
 
 - **stakwork/sphinx:** the treasury daemon's `POST /keysend` and
@@ -3119,7 +3141,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
-| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#688 (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. PR 2 (sign-in keeps the address, the contracts, the kit) and PR 3 (the pages) not yet |
+| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#688 (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. **PR 2 built**: stakwork/strut#689 (sign-in keeps the address, the contracts, the kit). **PR 3 built** (the pages): the Payouts tab in `strut/staff`, **Paid to workers** in the Earnings tab and `strut/earnings`, the Withdraw dialogs' refusal. Differs in §8.2. The live one-mixer check waits for the daemon's routes |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |

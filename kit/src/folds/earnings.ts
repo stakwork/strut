@@ -82,6 +82,8 @@ export function withdrawRefusal(r: { error?: string; code?: string; walletCode?:
     case "INSUFFICIENT_BALANCE":
       return `The wallet does not hold enough: ${said}`;
   }
+  if (r.code === "short_of_workers") return `Refused: ${said}. Their pay comes out of this wallet; add sats or withdraw less.`;
+  if (r.code === "balance_unknown") return `Refused: ${said}.`;
   if (r.code === "wallet_unavailable") return `The wallet did not answer: ${said}. If it was sent, it shows as pending below; asking again reads where it stands.`;
   if (r.code === "wallet_unauthorized") return `The wallet refused strut's pay credential: ${said}`;
   return said || "The wallet refused the payment.";
@@ -115,13 +117,35 @@ export interface WorkersView {
   payees: number;
   accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> };
   takenBack: { answers: number; msat: number };
+  /** Payouts on their way now (plans/human-steps.md §8.2); absent on a strut from before them. */
+  outMsat?: number;
+  /** Paid to workers in the range, from their withdrawals: the sats they received and the fees. */
+  paidOut?: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
 }
 
 /** Whether a page shows what workers are owed: once any worker was paid
- *  (something is owed, or answers earned in the range). A strut that never
- *  paid one reads as it did before workers were paid. */
+ *  (something is owed, or answers earned in the range, or a payout went out
+ *  or is on its way). A strut that never paid one reads as it did before
+ *  workers were paid. */
 export function showsWorkers(w: WorkersView | undefined): w is WorkersView {
-  return !!w && (w.owedMsat > 0 || w.payees > 0 || w.accepted.answers > 0 || w.takenBack.answers > 0);
+  return !!w && (w.owedMsat > 0 || w.payees > 0 || w.accepted.answers > 0 || w.takenBack.answers > 0 || (w.paidOut?.count ?? 0) > 0 || (w.outMsat ?? 0) > 0);
+}
+
+/** The line under "Paid to workers": `3 withdrawals · fees 12 sats`. */
+export function workersPaidSub(w: WorkersView): string {
+  const p = w.paidOut ?? { count: 0, feeMsat: 0 };
+  return `${p.count} withdrawal${p.count === 1 ? "" : "s"} · fees ${fmtSats(p.feeMsat)}`;
+}
+
+/** What a send still on its way is for, after its amount: nothing for a
+ *  person's withdrawal. */
+export function sendPurposeNote(purpose: "withdrawal" | "purchase" | "worker"): string {
+  return purpose === "purchase" ? " · credit" : purpose === "worker" ? " · a worker's payout" : "";
+}
+
+/** Payouts still on their way to workers, in a line; null when none. */
+export function workersOutLine(w: WorkersView): string | null {
+  return (w.outMsat ?? 0) > 0 ? `${fmtSats(w.outMsat!)} on its way to workers: reserved, not yet settled.` : null;
 }
 
 /** The line under "Owed to workers": `≈ $19.00 · 9,000 sats held, 10,000
@@ -160,9 +184,11 @@ export function coverLine(wallet: { coverMsat?: number; owedToWorkersMsat?: numb
   return { short: true, text: `Short of what workers are owed by ${fmtSats(-wallet.coverMsat)}: they are owed ${fmtSats(owed)}. Add sats to cover it.` };
 }
 
-/** Withdraw's warning when paying would leave the wallet short of what
- *  workers are owed (plans/human-steps.md §8.1, ruling 7): a warning, never
- *  a refusal — the payment can still be made. */
-export function shortOfWorkersWarning(s: { afterMsat: number; owedMsat: number; shortMsat: number }): string {
-  return `Paid, this leaves the wallet as little as ${fmtSats(s.afterMsat)}, ${fmtSats(s.shortMsat)} short of the ${fmtSats(s.owedMsat)} workers are owed for accepted answers. Their pay comes out of this wallet.`;
+/** Withdraw's refusal when paying would leave the wallet short of what
+ *  workers are owed (plans/human-steps.md §8.2, ruling 7: 5a warned, 5b
+ *  refuses; `POST /earnings/withdraw` answers `409 short_of_workers`). The
+ *  most it may ask is the amount less the shortfall: the fee cap falls with
+ *  the amount, so that always leaves what is owed. */
+export function shortOfWorkersRefusal(s: { afterMsat: number; owedMsat: number; shortMsat: number }, msat: number): string {
+  return `Refused: paying this would leave the wallet ${fmtSats(s.shortMsat)} short of the ${fmtSats(s.owedMsat)} workers are owed for accepted answers. Withdraw at most ${fmtSats(Math.max(0, msat - s.shortMsat))}.`;
 }

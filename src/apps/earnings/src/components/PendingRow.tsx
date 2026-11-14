@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStrutClient } from "@strut/kit";
-import { fmtSats, withdrawRefusal } from "@strut/kit/folds";
+import { fmtSats, sendPurposeNote, withdrawRefusal } from "@strut/kit/folds";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { decidesByHand, pendingState, type PendingSend } from "../lib/view";
@@ -56,7 +56,7 @@ export function PendingRow(props: { p: PendingSend; onChanged: () => void }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="font-medium">{fmtSats(p.msat)}{p.purpose === "purchase" ? " · credit" : ""}</span>
+        <span className="font-medium">{fmtSats(p.msat)}{sendPurposeNote(p.purpose)}</span>
         <span className="text-muted-foreground">{pendingState(p)}</span>
         <span className="ml-auto text-xs text-muted-foreground">{new Date(p.at).toLocaleString()}</span>
       </div>
