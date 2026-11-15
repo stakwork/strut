@@ -134,10 +134,13 @@ export function AccountWidget(props: {
                   </>
                 )}
               </div>
-              <div class="account-row">
-                <span>Credit</span>
-                <span class="account-num">{credit ? `$${credit.usd.toFixed(2)}${credit.sats ? ` · ${credit.sats.toLocaleString("en-US")} sats` : ""}` : "No credit"}</span>
-              </div>
+              {/* A worker's page is about what they earn: their credit only when they hold some. */}
+              {(credit || !worker) && (
+                <div class="account-row">
+                  <span>Credit</span>
+                  <span class="account-num">{credit ? `$${credit.usd.toFixed(2)}${credit.sats ? ` · ${credit.sats.toLocaleString("en-US")} sats` : ""}` : "No credit"}</span>
+                </div>
+              )}
               {worker && (
                 <>
                   <div class="account-row"><span>Held</span><span class="account-num">{formatSats(worker.heldMsat)}</span></div>

@@ -498,8 +498,9 @@ On a public page (a visitor's, never a member's), strut itself draws an
 ACCOUNT WIDGET over the app, outside its frame: a small pill that opens a
 panel with who is signed in (Sign in / Sign out, the same flow as
 `useVisitor`), the credit held at this server, and — for a signed-in worker on
-an app that grants `task/me` — what is held and what can be withdrawn
-(Withdraw, which also needs `task/withdraw`). Without those grants the worker
+an app that grants `task/me` — what they earned: what is held and what can be
+withdrawn (Withdraw, which also needs `task/withdraw`); a worker's panel shows
+credit only when they hold some. Without those grants the worker
 part is not drawn. The app draws none of this and sees nothing of it.
 
 Say where it sits by default in `app.yaml`:
