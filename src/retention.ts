@@ -5,8 +5,10 @@
  * `retain: 1h` keeps a finished run's log for a window; `retain: { runs: 20 }`
  * keeps the newest 20 finished runs'. Past that a run's `events.jsonl` and
  * run directory go and its summary stays, flagged `logEvicted`. Never touched:
- * running or waiting runs, runs with claim evidence, runs whose artifacts
- * another run references, and anything outside the workflow keys.
+ * running or waiting runs, runs whose artifacts another run references, and
+ * anything outside the workflow keys. Claim evidence does not hold a run: the
+ * Evidence nodes keep their verdict and content, and a re-verify of an
+ * evicted run skips it (`unknown-run`), so a checked workflow is evicted too.
  *
  * A run with no summary is either in flight or died with its process (heap
  * crash, OOM: the 1 GB logs). It is evicted as `crashed` only when it is not
@@ -71,8 +73,6 @@ export interface RetentionDeps {
   workspace: { listWorkflows(): Promise<Array<{ name: string }>>; getWorkflow(name: string): Promise<{ retain?: Retention }> };
   /** The fleet default (`STRUT_RUN_RETENTION`), for workflows with no `retain`. */
   fallback?: Retention;
-  /** True when claim evidence points at the run. Absent: no claims layer. */
-  hasClaims?: (workflow: string, runId: string) => Promise<boolean>;
   /** True while the run is in this process's active set. Absent: nothing is live. */
   isLive?: (workflow: string, runId: string) => boolean;
   /** Settles once boot's auto-resume scan has run; a sweep waits for it, so
@@ -154,7 +154,9 @@ export function createRetention(deps: RetentionDeps): Retainer {
     if (!policies.size) return 0;
     const refs = await artifactReferences(deps.store, names);
     let evicted = 0;
+    const byWorkflow: string[] = [];
     for (const [name, policy] of policies) {
+      const before = evicted;
       let finished = 0;
       for (const id of await deps.store.listRuns(name)) {
         let s = await deps.store.getRunSummary(name, id);
@@ -174,11 +176,13 @@ export function createRetention(deps: RetentionDeps): Retainer {
         if (!due) continue;
         if ((s as { kept?: boolean }).kept) continue;
         if ([...(refs.get(id) ?? [])].some((by) => by !== id)) continue;
-        if (await deps.hasClaims?.(name, id).catch(() => true)) continue;
         await deps.store.evictRun(name, id, new Date(now()).toISOString(), crashed ? s : undefined);
         evicted++;
       }
+      if (evicted > before) byWorkflow.push(`${name} ${evicted - before}`);
     }
+    // The one line a sweep that did something leaves: what to look for in the logs.
+    if (evicted) console.log(`[retention] evicted ${evicted} run log(s): ${byWorkflow.join(", ")}`);
     return evicted;
   }
 

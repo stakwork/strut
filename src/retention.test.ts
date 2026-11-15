@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -51,13 +51,12 @@ async function seed(store: RunStore, id: string, s: RunSummary) {
   await store.finalize("w", id, s);
 }
 
-function sweeper(store: RunStore, retain: unknown, fallback?: { windowMs: number } | { runs: number }, hasClaims?: (w: string, r: string) => Promise<boolean>, extra: Partial<Parameters<typeof createRetention>[0]> = {}) {
+function sweeper(store: RunStore, retain: unknown, fallback?: { windowMs: number } | { runs: number }, extra: Partial<Parameters<typeof createRetention>[0]> = {}) {
   const flow = retain === undefined ? {} : { retain: parseRetention(retain) as never };
   return createRetention({
     store,
     workspace: { listWorkflows: async () => [{ name: "w" }], getWorkflow: async () => flow },
     ...(fallback ? { fallback } : {}),
-    ...(hasClaims ? { hasClaims } : {}),
     isLive: (_w: string, id: string) => id === "5", // the scenario's in-flight run
     ...extra,
     now: () => NOW,
@@ -91,7 +90,14 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
   test(`sweep (${label}): window eviction keeps summary, skips running and waiting`, async () => {
     const store = await make();
     await scenario(store);
-    assert.equal(await sweeper(store, "1h").sweep(), 2);
+    const log = mock.method(console, "log", () => {});
+    try {
+      assert.equal(await sweeper(store, "1h").sweep(), 2);
+      assert.equal(await sweeper(store, "1h").sweep(), 0); // idempotent, and quiet
+    } finally {
+      log.mock.restore();
+    }
+    assert.deepEqual(log.mock.calls.map((c) => c.arguments[0]), ["[retention] evicted 2 run log(s): w 2"]);
     for (const id of ["1", "2"]) {
       const s = await store.getRunSummary("w", id);
       assert.equal(s?.logEvicted, true);
@@ -102,7 +108,6 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.equal((await store.getRunEvents("w", "3")).length, 1);
     assert.ok(!(await store.getRunSummary("w", "4"))?.logEvicted);
     assert.equal((await store.getRunEvents("w", "5")).length, 1);
-    assert.equal(await sweeper(store, "1h").sweep(), 0); // idempotent
   });
 
   test(`sweep (${label}): count eviction`, async () => {
@@ -113,16 +118,15 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.equal((await store.getRunSummary("w", "1"))?.logEvicted, true);
   });
 
-  test(`sweep (${label}): claimed, kept and artifact-referenced runs are skipped`, async () => {
+  test(`sweep (${label}): kept and artifact-referenced runs are skipped`, async () => {
     const store = await make();
-    await seed(store, "1", summary("1", 5));
     await seed(store, "2", summary("2", 5, { kept: true } as never));
     await seed(store, "3", summary("3", 5));
     await seed(store, "4", summary("4", 5, { output: { artifacts: [{ id: "x", url: "/artifacts/3/out.txt" }] } }));
     await seed(store, "5", summary("5", 5, { output: { url: "/artifacts/5/self.txt" } })); // its own: not a reference
-    const evicted = await sweeper(store, "1h", undefined, async (_w, id) => id === "1").sweep();
+    const evicted = await sweeper(store, "1h").sweep();
     assert.equal(evicted, 2); // 4 and 5
-    for (const id of ["1", "2", "3"]) assert.ok(!(await store.getRunSummary("w", id))?.logEvicted, id);
+    for (const id of ["2", "3"]) assert.ok(!(await store.getRunSummary("w", id))?.logEvicted, id);
     assert.equal((await store.getRunSummary("w", "5"))?.logEvicted, true);
   });
 
@@ -163,7 +167,7 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     const live = (_w: string, id: string) => id === "1";
     let settle!: () => void;
     const settled = new Promise<void>((r) => (settle = r));
-    const r = sweeper(store, "1h", undefined, undefined, { isLive: live, resumeSettled: settled });
+    const r = sweeper(store, "1h", undefined, { isLive: live, resumeSettled: settled });
     const pending = r.sweep();
     await new Promise((res) => setTimeout(res, 20));
     for (const id of ["1", "2", "3", "4"]) assert.equal(await store.getRunSummary("w", id), null, `${id} before settle`);
@@ -188,15 +192,13 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.equal(await store.getRunSummary("w", "4"), null);
   });
 
-  test(`crashed (${label}): claims, kept-by-reference and artifact references hold`, async () => {
+  test(`crashed (${label}): an artifact reference holds`, async () => {
     const store = await make();
-    await seedCrashed(store, "1", 3); // claimed
     await seedCrashed(store, "2", 3); // referenced
     await seedCrashed(store, "3", 3);
     await seed(store, "9", summary("9", 0.1, { output: { url: "/artifacts/2/x.txt" } }));
-    const n = await sweeper(store, "1h", undefined, async (_w, id) => id === "1").sweep();
+    const n = await sweeper(store, "1h").sweep();
     assert.equal(n, 1);
-    assert.equal(await store.getRunSummary("w", "1"), null);
     assert.equal(await store.getRunSummary("w", "2"), null);
     assert.equal((await store.getRunSummary("w", "3"))?.crashed, true);
   });
