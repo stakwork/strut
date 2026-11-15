@@ -837,7 +837,7 @@ a model is worse for the worker than an answer refused before it earns.
 (`createMcpDoor` builds the transport for each one), so the session
 decides it.
 
-**Built differently (item 8's PR):**
+**Built differently (#700):**
 
 - **The door.** `POST /mcp` takes the larger cap on every request, not
   only a member's: every caller there holds a key or a session already.
@@ -3362,7 +3362,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
-| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built** (item 8's PR). Differs in §5.6. A check at submit is later |
+| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.
