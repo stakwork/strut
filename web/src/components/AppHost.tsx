@@ -11,6 +11,8 @@ import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { AccountWidget } from "./AccountWidget";
 import { appIdentityOf, createPlacementController, initialState, type PlacementController } from "../account-widget";
 import { PaymentSheet } from "./PaymentSheet";
+import { CameraSheet } from "./CameraSheet";
+import type { CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
@@ -132,6 +134,10 @@ export function AppHost(props: {
   const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; sphinx?: SignInAsk; note?: string; done: (s: VisitorSession | null) => void } | null>(null);
   const signInRef = useRef(signIn);
   signInRef.current = signIn;
+  /** The photo the page asked for (@strut/kit/camera), and where it goes. */
+  const [camera, setCamera] = useState<{ app: string; facing: "environment" | "user"; maxSide: number; title?: string; done: (p: CameraPhoto | null) => void } | null>(null);
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
   const connRef = useRef<AppHostConnection | null>(null);
   /** A visitor's account widget (../account-widget): its placement, and what
    *  it reads and does through the connection. */
@@ -220,6 +226,19 @@ export function AppHost(props: {
           handlers: {
             onInitialized: markReady,
             onSession: () => setSessionTick((t) => t + 1),
+            // The page's photo: strut's camera sheet, the frame having none.
+            onCapture: (params) =>
+              new Promise<CameraPhoto | null>((resolve) => {
+                cameraRef.current?.done(null);
+                setCamera({
+                  ...params,
+                  app: info?.title ?? app.title ?? app.name,
+                  done: (p) => {
+                    setCamera(null);
+                    resolve(p);
+                  },
+                });
+              }),
             ...(visitor
               ? {
                   // The visitor signs in (plans/app-repos.md §5.3): through
@@ -316,6 +335,7 @@ export function AppHost(props: {
       // A sheet still open answers its call: the page is going away.
       paymentRef.current?.done(null);
       signInRef.current?.done(null);
+      cameraRef.current?.done(null);
       clearTimeout(readyTimer);
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
@@ -363,6 +383,15 @@ export function AppHost(props: {
           onDone={payment.done}
           {...(payment.wallet ? { wallet: payment.wallet } : {})}
           {...(from ? { seller: hostOf(from) } : {})}
+        />
+      )}
+      {camera && (
+        <CameraSheet
+          app={camera.app}
+          facing={camera.facing}
+          maxSide={camera.maxSide}
+          onDone={camera.done}
+          {...(camera.title ? { title: camera.title } : {})}
         />
       )}
       {signIn && (

@@ -151,7 +151,7 @@ refuses the call (the promise rejects, or the event never fires):
 | name | lets the page |
 |---|---|
 | `motion` | `devicemotion` / `deviceorientation` — tilt controls (no compass heading). Motion can be read to guess what a person types, so ask only when the app is steered by tilting. On iPhone, call `DeviceMotionEvent.requestPermission()` from a tap first |
-| `camera` | `getUserMedia({ video })` — the browser still asks the person |
+| `camera` | a photo from strut's own camera: `useCamera().capture()` (see "The camera"). The frame's own `getUserMedia` is refused by Chrome — an app's frame has an opaque origin — so take photos through the hook |
 | `geolocation` | `navigator.geolocation` — the browser still asks the person |
 
 `fullscreen`, `pointer-lock`, `gamepad`, `wake-lock`, `microphone` and
@@ -372,6 +372,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 | `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
+| `useCamera()` → `{ available, capture({ facing?, maxSide?, title? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
 | `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors") |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -517,6 +518,28 @@ ones inside it, so call it on a state change, not every frame. A collapsed
 widget is a small dot that stays on screen and opens on a click: an app can
 collapse the widget, never hide or remove it. Keep the corner you pick clear of
 the app's own controls; strut does not move the app out of the way.
+
+### The camera
+
+An app's frame gets no camera of its own: it is a sandboxed document with an
+opaque origin, and Chrome refuses `getUserMedia` there whatever the frame's
+`allow`. So strut draws the camera, as it draws the payment and sign-in
+sheets: list `camera` in `permissions:`, then on a click
+
+```tsx
+const camera = useCamera();
+const photo = await camera.capture({ title: "Fit the whole page in the frame" }); // File | null
+if (photo) await launch({}, undefined, undefined, [photo]);
+```
+
+The person sees a full-screen viewfinder that says which app asks, takes the
+shot, and chooses Retake or Use photo; the page gets that one JPEG (its
+longest side `maxSide`, 1600 px by default, at most 4096) and never the
+stream. `facing: "user"` asks for the front camera. Cancel answers null.
+`available` is false where the host draws no camera (no `camera` in
+`permissions:`, or an app hosted from another server). To send the photo
+with a run, see `useLaunch`'s `files`; on a public page the workflow's
+runnable entry must take files (`attachments: true`).
 
 ## Worker apps: people as a step of a workflow
 

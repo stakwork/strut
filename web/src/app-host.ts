@@ -33,6 +33,7 @@ import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, ty
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
+import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCaptureParams, type CameraPhoto } from "@strut/kit/camera";
 import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
 import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
@@ -77,6 +78,10 @@ export interface AppHostHandlers {
   /** The PAGE signed the visitor in or out (`strut/visitor/*`): the account
    *  widget reads who is signed in again. */
   onSession?: () => void;
+  /** The page asked for a photo (`strut/camera/capture`, @strut/kit/camera):
+   *  the host's camera sheet, the photo the person took or null. Offered only
+   *  to a page whose app declares `camera` — the frame itself gets none. */
+  onCapture?: (params: Required<Pick<CameraCaptureParams, "facing" | "maxSide">> & Pick<CameraCaptureParams, "title">) => Promise<CameraPhoto | null>;
 }
 
 export interface AppHostOptions {
@@ -289,6 +294,9 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // only this server's: another server's socket is not relayed (yet).
   const channels = opts.visitor ? (visitorCap && !from ? opts.channels : undefined) : opts.channels;
   const accountOn = !!(opts.visitor && opts.account);
+  // The camera is the host's (an opaque-origin frame gets none): for an app
+  // that declares it, on this server.
+  const cameraOn = !!opts.handlers.onCapture && !from && (opts.permissions ?? []).includes("camera");
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
@@ -297,13 +305,14 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       openLinks: {},
       sandbox: { permissions: from ? strangerMcpPermissions() : mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability || channels || visitorCap || accountOn
+      ...(capability || channels || visitorCap || accountOn || cameraOn
         ? {
             experimental: {
               ...(capability ? { [WALLET_CAPABILITY]: capability } : {}),
               ...(channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
               ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
               ...(accountOn ? { [ACCOUNT_CAPABILITY]: { v: 1 } } : {}),
+              ...(cameraOn ? { [CAMERA_CAPABILITY]: { v: 1 } } : {}),
             },
           }
         : {}),
@@ -353,6 +362,14 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       const parsed = parsePlacement(params);
       if (!parsed.ok) throw new Error(parsed.error);
       return placement.request(parsed.placement);
+    }) as never);
+  }
+  if (cameraOn) {
+    const onCapture = opts.handlers.onCapture!;
+    bridge.setRequestHandler(CAMERA_CAPTURE_METHOD as never, { params: CAMERA_PASS_THROUGH } as never, (async (params: unknown) => {
+      const parsed = parseCaptureParams(params);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return (await onCapture(parsed.params)) ?? { cancelled: true };
     }) as never);
   }
   bridge.onmessage = async (params) => {

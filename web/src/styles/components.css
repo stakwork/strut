@@ -6095,3 +6095,19 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
   font-size: 12px;
   cursor: pointer;
 }
+
+/* The host's camera (components/CameraSheet.tsx): over the app's frame, which
+   gets no camera of its own; the page gets only the photo "Use photo" hands it. */
+.camera-sheet { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; justify-content: space-between; background: #000; color: #fff; }
+.camera-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.camera-top { position: relative; display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-6); background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0)); font-size: 13px; }
+.camera-asks { flex: 1; min-width: 0; padding-top: 6px; text-align: right; color: rgba(255, 255, 255, 0.85); }
+.camera-title { margin-top: 2px; color: #fff; font-size: 14px; font-weight: 600; }
+.camera-cancel { flex: none; padding: 6px 12px; border: 0; border-radius: 999px; background: rgba(0, 0, 0, 0.5); color: #fff; font: inherit; cursor: pointer; }
+.camera-error { position: relative; align-self: center; margin: 0 var(--sp-4); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: rgba(127, 29, 29, 0.9); font-size: 13px; }
+.camera-bar { position: relative; display: flex; justify-content: center; align-items: center; gap: var(--sp-3); min-height: 120px; padding: var(--sp-3) var(--sp-4) var(--sp-5); background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.75)); }
+.camera-shutter { width: 74px; height: 74px; padding: 0; border: 4px solid #fff; border-radius: 50%; background: #fff; box-shadow: inset 0 0 0 4px #000; cursor: pointer; }
+.camera-shutter:active { transform: scale(0.94); }
+.camera-shutter:disabled { opacity: 0.4; cursor: default; }
+.camera-btn { min-width: 128px; height: 46px; padding: 0 var(--sp-4); border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.camera-btn.is-primary { background: #fff; color: #000; }
