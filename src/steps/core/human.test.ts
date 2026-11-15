@@ -457,7 +457,12 @@ describe("the human step", () => {
       const runId = await launch(strut, "woken");
       await waiting(strut, "woken", runId);
       await answerNext(strut, { same: true });
-      for (let i = 0; i < 300 && !((await tasksOf(strut, runId)).length === 2 && gate.started()); i++) await sleep(10);
+      // The step makes its task before the runner logs `step.parked`, so wait
+      // for the event itself, not only the task.
+      const secondParked = async () =>
+        (await strut.store.getRunEvents("woken", runId)).some((e) => e.type === "step.parked" && e.path === "woken/second");
+      for (let i = 0; i < 300 && !(gate.started() && (await secondParked())); i++) await sleep(10);
+      assert.equal((await tasksOf(strut, runId)).length, 2);
       const log = await strut.store.getRunEvents("woken", runId);
       assert.ok(log.some((e) => e.type === "run.resumed" && e.woken), "woken");
       assert.ok(log.some((e) => e.type === "step.parked" && e.path === "woken/second"), "the second human step parked");
