@@ -4,7 +4,7 @@
 > 2026-11-12; Paul's remarks reached the conversation through Evan, and the
 > discussion with Paul and Tom is ongoing. Work item (a) is built (this
 > file's first PR, #669), item (b) is built (#677), item (c) is built
-> (#683), item (d) is built (below), and the dream is automatic by default
+> (#683), item (d) is built (#696), and the dream is automatic by default
 > ("Automatic by default", below). Item (e) is not started. Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
@@ -148,7 +148,7 @@ Ruled: checks first. One PR each, against main.
 | a | Whole-work checks on main (rulings 5, 9) | built (this PR) |
 | b | A branch you can create, run on and drop (2, 3, 10) | built (below) |
 | c | The branch recorded in git (2) | built (below) |
-| d | Claims following a page onto a branch, and a compare read (4) | built (below) |
+| d | Claims following a page onto a branch, and a compare read (4) | built (#696, below) |
 | e | Merge as proposals (8) | not started |
 | — | The `Dream` Concept (7) | another session, in parallel |
 | — | The type list (6) | deferred |
