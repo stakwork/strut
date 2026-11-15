@@ -175,7 +175,7 @@ describe("the human step", () => {
       assert.equal((await tasksOf(strut, runId)).length, 1);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -195,7 +195,7 @@ describe("the human step", () => {
       assert.equal((await strut.store.getRunEvents("again", runId)).filter((e) => e.type === "step.parked").length, 2);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -236,7 +236,7 @@ describe("the human step", () => {
       );
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -254,7 +254,7 @@ describe("the human step", () => {
       assert.match(done.error!.message, /^task_expired: /);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -286,7 +286,7 @@ describe("the human step", () => {
       assert.deepEqual((await tasksOf(strut, runId)).map((t) => t.files), [files]);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -306,7 +306,7 @@ describe("the human step", () => {
       assert.deepEqual([task!.root, task!.job, task!.files], ["job", "matter-7", ["scans/p1.png", "scans/p2.png"]]);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -333,7 +333,7 @@ describe("the human step", () => {
       }
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -349,7 +349,7 @@ describe("the human step", () => {
       assert.match(b.error!.message, /^type_disabled: /);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -387,7 +387,7 @@ describe("the human step", () => {
       assert.equal((await tasksOf(strut, runId)).length, 3, "no task made twice across the wakes");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -407,7 +407,7 @@ describe("the human step", () => {
       assert.equal((await strut.store.getRunSummary("stop", runId))?.status, "cancelled", "the cancel's settle wakes nothing");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -436,7 +436,7 @@ describe("the human step", () => {
     } finally {
       gate.release();
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -474,7 +474,7 @@ describe("the human step", () => {
     } finally {
       gate.release();
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -504,7 +504,7 @@ describe("the human step", () => {
       assert.deepEqual(done.output, { answer: { same: false }, by: WORKER, task: task!.id });
     } finally {
       await two?.strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -528,7 +528,7 @@ describe("the human step", () => {
       assert.deepEqual(await strut.tasks.capability.list(), [], "no task made");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -557,7 +557,7 @@ describe("the human step", () => {
       assert.deepEqual(await strut.tasks.capability.list(), []);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
@@ -611,7 +611,7 @@ describe("the human step's pay (plans/human-steps.md §8.1)", () => {
     } finally {
       boom.on = false;
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -629,7 +629,7 @@ describe("the human step's pay (plans/human-steps.md §8.1)", () => {
       assert.equal(done.totals?.cost, 0.021, "past the $0.001 cap, and the run went on");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -652,7 +652,7 @@ describe("the human step's pay (plans/human-steps.md §8.1)", () => {
       assert.equal(done.totals, undefined, "no cost at all");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -672,7 +672,7 @@ describe("the human step's pay (plans/human-steps.md §8.1)", () => {
       assert.equal(existsSync(join(dir, "payments", "ledger.db")), false, "no ledger file");
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
@@ -718,7 +718,7 @@ describe("the human step's copies (plans/human-steps.md §7.6)", () => {
       });
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -748,7 +748,7 @@ describe("the human step's copies (plans/human-steps.md §7.6)", () => {
       assert.deepEqual((await tasksOf(strut, runId)).map((t) => t.status), ["disputed"]);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -772,7 +772,7 @@ describe("the human step's copies (plans/human-steps.md §7.6)", () => {
       assert.deepEqual(out.answers.map((a) => a.agrees), [false, true, true]);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -790,7 +790,7 @@ describe("the human step's copies (plans/human-steps.md §7.6)", () => {
       assert.deepEqual(done.output, { answer: { same: true }, by: "ann", task: task!.id });
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -806,7 +806,7 @@ describe("the human step's copies (plans/human-steps.md §7.6)", () => {
       assert.deepEqual(await strut.tasks.capability.list(), []);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
@@ -835,7 +835,7 @@ describe("the human step on a peer's launch", () => {
       assert.deepEqual(await strut.tasks.capability.list(), []);
     } finally {
       await strut.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
