@@ -1,0 +1,36 @@
+html, body, #root { height: 100%; margin: 0; background: #0b0b0c; }
+.court-app { position: relative; height: 100vh; display: flex; flex-direction: column; color: #f4f4f5; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; overflow: hidden; background: #0b0b0c; }
+
+.court-head { position: absolute; z-index: 3; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 14px 16px 28px; background: linear-gradient(#000c, #0000); }
+.court-mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: #f5c542; color: #1a1300; }
+.court-title { font-weight: 650; font-size: 15px; letter-spacing: 0.01em; }
+.court-sub { font-size: 12px; color: #a1a1aa; }
+
+.court-stage { position: relative; flex: 1; min-height: 0; }
+.court-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.court-start { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; padding: 0 32px; text-align: center; background: radial-gradient(circle at 50% 35%, #2a2412, #0b0b0c 60%); }
+.court-start h1 { margin: 8px 0 0; font-size: 24px; }
+.court-start p { margin: 0; color: #a1a1aa; font-size: 15px; line-height: 1.45; }
+.court-doc-icon { width: 88px; height: 88px; border-radius: 26px; display: grid; place-items: center; background: #f5c54222; color: #f5c542; border: 1px solid #f5c54255; }
+.court-busy { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; background: #000a; font-size: 15px; backdrop-filter: blur(2px); }
+.court-spin { animation: court-spin 0.9s linear infinite; color: #f5c542; }
+@keyframes court-spin { to { transform: rotate(360deg); } }
+
+.court-bar { position: relative; z-index: 2; display: flex; justify-content: center; align-items: center; gap: 12px; min-height: 112px; padding: 0 16px 8px; background: #0b0b0c; }
+.court-btn { display: inline-flex; align-items: center; gap: 8px; height: 48px; padding: 0 22px; border: 0; border-radius: 14px; background: #f5c542; color: #1a1300; font: inherit; font-size: 15px; font-weight: 650; cursor: pointer; }
+.court-btn:disabled { opacity: 0.5; }
+.court-btn-wide { width: 100%; max-width: 340px; justify-content: center; height: 54px; font-size: 16px; }
+.court-btn-ghost { background: #27272a; color: #f4f4f5; }
+
+.court-sheet { position: absolute; z-index: 4; left: 0; right: 0; bottom: 0; max-height: 78%; overflow: auto; padding: 18px 18px 22px; border-radius: 22px 22px 0 0; background: #fafaf9; color: #18181b; box-shadow: 0 -18px 48px #0009; animation: court-up 320ms cubic-bezier(.2,.8,.2,1); }
+@keyframes court-up { from { transform: translateY(100%); } }
+.court-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.court-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 600; }
+.court-earned { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+.court-sheet h2 { margin: 10px 0 2px; font-size: 20px; line-height: 1.2; }
+.court-sheet p { margin: 8px 0 16px; font-size: 14px; line-height: 1.45; color: #3f3f46; }
+.court-sheet .court-btn { width: 100%; justify-content: center; }
+.court-sheet .court-btn-ghost { background: #e4e4e7; color: #18181b; }
+
+.court-error { position: absolute; z-index: 5; left: 12px; right: 12px; bottom: 124px; padding: 10px 12px; border-radius: 12px; background: #7f1d1d; font-size: 13px; }
+.court-pay { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 4px 10px; border-radius: 999px; background: #f5c54222; border: 1px solid #f5c54266; color: #f5c542; font-size: 13px; font-weight: 650; }

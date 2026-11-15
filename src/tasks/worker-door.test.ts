@@ -10,7 +10,6 @@ import { readdir, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { webcrypto } from "node:crypto";
 import { z } from "zod";
 import { createStrut } from "../createStrut.js";
 import { WorkspaceManager } from "../workspace.js";
@@ -18,6 +17,7 @@ import { defineStep, type RunSummary, type StepContext } from "../core.js";
 import type { StrutCapabilities } from "../capabilities.js";
 import { appIdentity } from "../auth.js";
 import { kitForTests } from "../test-util/app-kit.js";
+import { jpeg, keySignIn, publicAppToken, setEnv, stepCall } from "../test-util/public-door.js";
 import { STEP_RUN_TOOL } from "../apps/tools.js";
 import { createRegistry } from "../steps/registry.js";
 import { TASK_REQUESTS_PER_MINUTE } from "./tasks.js";
@@ -44,14 +44,6 @@ const MATCH = {
   properties: { same: { type: "boolean" }, note: { type: "string", maxLength: 200 } },
   required: ["same"],
 };
-
-const subtle = webcrypto.subtle;
-const hex = (b: ArrayBuffer) => Buffer.from(new Uint8Array(b)).toString("hex");
-const p256Key = () => subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]) as Promise<CryptoKeyPair>;
-const p256Sign = async (key: CryptoKeyPair, message: string) => ({
-  key: hex(await subtle.exportKey("raw", key.publicKey)),
-  sig: hex(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.privateKey, new TextEncoder().encode(message))),
-});
 
 /** Writes files under the run's artifacts. */
 const writeFiles = defineStep({
@@ -112,8 +104,6 @@ steps:
       files: "{{ photo.attachments }}"
       read: "{{ read.result }}"
 `;
-/** A JPEG's first bytes and some more: what the camera hands a page. */
-const jpeg = (n: number, fill = 0) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(n - 4, fill)]);
 
 /** A paid type's workflow (plans/human-steps.md §8.1). */
 const PAID = `name: paid
@@ -126,7 +116,7 @@ steps:
 
 describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   let root: string;
-  let saved: string | undefined;
+  let restoreEnv: () => void;
   let strut: Awaited<ReturnType<typeof createStrut>>;
   let identity: string;
   let otherIdentity: string;
@@ -137,27 +127,9 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
 
   const req = (path: string, init: RequestInit = {}) => strut.app.request(`http://workers.test${path}`, init);
   /** A visitor signs in with a new key: its token and actor. */
-  const signIn = async () => {
-    const key = await p256Key();
-    const { challenge } = (await (await req("/visitors/challenge")).json()) as { challenge: string };
-    const res = await req("/visitors/session", { method: "POST", headers: json, body: JSON.stringify({ challenge, method: "key", ...(await p256Sign(key, challenge)) }) });
-    assert.equal(res.status, 200, await res.clone().text());
-    return (await res.json()) as { actor: string; token: string };
-  };
+  const signIn = () => keySignIn(req);
   /** A page's call on a door, as its host sends it. */
-  const mcp = async (path: string, type: string, config: Record<string, unknown>, headers: Record<string, string>, app: string) => {
-    const res = await req(path, {
-      method: "POST",
-      headers: { ...json, accept: "application/json, text/event-stream", ...headers },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type, config, app } } }),
-    });
-    const text = await res.text();
-    assert.equal(res.status, 200, text);
-    const line = text.split("\n").find((l) => l.startsWith("data: "));
-    const body = line ? JSON.parse(line.slice(6)) : JSON.parse(text);
-    const out = JSON.parse(body.result.content[0].text) as Record<string, any>;
-    return body.result.isError ? { error: out["error"] as string } : { result: out };
-  };
+  const mcp = (path: string, type: string, config: Record<string, unknown>, headers: Record<string, string>, app: string) => stepCall(req, path, type, config, headers, app);
   /** A signed-in visitor's call through the visitor's door. */
   const call = (token: string | undefined, type: string, config: Record<string, unknown> = {}, app = identity) =>
     mcp("/public/mcp", type, config, token ? { authorization: `Bearer ${token}` } : {}, app);
@@ -185,13 +157,9 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     return { runId, task: task! };
   };
 
-  let savedRouterKey: string | undefined;
   before(async () => {
-    saved = process.env["STRUT_API_KEY"];
-    process.env["STRUT_API_KEY"] = KEY;
     // The stand-in model is reached through a provider that needs a key.
-    savedRouterKey = process.env["OPENROUTER_API_KEY"];
-    process.env["OPENROUTER_API_KEY"] = "test";
+    restoreEnv = setEnv({ STRUT_API_KEY: KEY, OPENROUTER_API_KEY: "test" });
     const kit = await kitForTests();
     root = await mkdtemp(join(tmpdir(), "strut-worker-door-"));
     const workspace = new WorkspaceManager(join(root, "ws"));
@@ -226,10 +194,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
       body: JSON.stringify({ apps: [{ name: "workers" }, { name: "other" }, { name: "plain" }], visitors: { signIn: ["key"] } }),
     });
     assert.equal(view.status, 200, await view.clone().text());
-    const tokenOf = async (name: string) => {
-      const html = await (await req(`/public/apps/${name}/document`)).text();
-      return html.match(/<meta name="strut-app-token" content="([^"]+)">/)![1]!.replace(/&amp;/g, "&");
-    };
+    const tokenOf = (name: string) => publicAppToken(req, name);
     identity = await tokenOf("workers");
     otherIdentity = await tokenOf("other");
     ungranted = await tokenOf("plain");
@@ -242,10 +207,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   after(async () => {
     await strut?.close?.().catch(() => {});
     await rm(root, { recursive: true, force: true });
-    if (saved === undefined) delete process.env["STRUT_API_KEY"];
-    else process.env["STRUT_API_KEY"] = saved;
-    if (savedRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
-    else process.env["OPENROUTER_API_KEY"] = savedRouterKey;
+    restoreEnv?.();
   });
 
   it("end to end: a run parks on human, a signed-in worker's page answers through /public/mcp, and the run finishes", async () => {
