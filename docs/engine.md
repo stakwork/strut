@@ -184,9 +184,16 @@ and the child env is scrubbed by construction).
   (`createRetention`, started beside the automations scheduler, at boot then
   hourly, unref'd, stopped on `close()`) walks workflow keys only and NEVER
   touches: a run with no summary (in flight), a `waiting` (parked) run, a run
-  with claim evidence (`listRunEvidence`), a run marked `kept`, or a run whose
-  artifacts another run references. `step:<type>` / `check:<id>` buckets
-  (kept `run_step` / paid check runs) are not workflows and are never walked.
+  marked `kept`, or a run whose artifacts another run references.
+  `step:<type>` / `check:<id>` buckets (kept `run_step` / paid check runs) are
+  not workflows and are never walked. Claim evidence does NOT hold a run
+  (2026-11-15: swarm38's checked workflows write evidence on every run, so the
+  skip kept every log): the Evidence nodes keep their verdict and content,
+  and a re-verify of an evicted run skips it (`runPass`: no `run.start` →
+  `unknown-run`; the Concept work pass and `addEvidence` find no events
+  too), so no check can write a verdict from a missing log. A sweep that
+  evicts logs one line: `[retention] evicted N run log(s): <workflow> <n>, …`
+  (failures: `[retention] sweep failed:`).
   CRASHED runs: a run that died with its process (heap crash, OOM — the
   gigabyte logs) has a log and no `run.json`, and boot's auto-resume leaves
   it so (a log over `resumeMaxLogBytes`, past the age cap, resumed too often,
@@ -201,7 +208,7 @@ and the child env is scrubbed by construction).
   window, so it needs `CRASHED_STALE_MS` = 1 h of silence); and the last
   control marker in the log's final 64 KB (`RunStore.readLogTail`, never the
   whole log) is not `run.paused` (a human's: "resume it by hand"). The
-  claims, kept and artifact-reference skips apply as for any run, and a
+  kept and artifact-reference skips apply as for any run, and a
   qualifying crashed run joins the count form's newest-first ordering (one
   that does not qualify is neither counted nor touched). Eviction deletes
   the log and directory and WRITES a minimal summary (`status: "error"`,

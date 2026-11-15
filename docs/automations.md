@@ -71,7 +71,7 @@ the Automations flyout's HTTP door: GET /automations[?workflow=], POST /automati
 
 ### `src/retention.ts`
 
-the run-retention sweep (docs/engine.md "Retention"): started right beside `automations.start()` in `createStrut` (same `scheduler` option / `STRUT_SCHEDULER` switch), once at boot and then hourly, its timer unref'd and stopped by `close()`. Evicts finished runs' logs per the workflow's `retain:` or `STRUT_RUN_RETENTION`; never a running, waiting, claimed, kept or artifact-referenced run.
+the run-retention sweep (docs/engine.md "Retention"): started right beside `automations.start()` in `createStrut` (same `scheduler` option / `STRUT_SCHEDULER` switch), once at boot and then hourly, its timer unref'd and stopped by `close()`. Evicts finished runs' logs per the workflow's `retain:` or `STRUT_RUN_RETENTION`; never a running, waiting, kept or artifact-referenced run (claim evidence does not hold one), and logs `[retention] evicted N run log(s): …` when it evicts.
 
 ### `src/steps/lib/automation/`
 

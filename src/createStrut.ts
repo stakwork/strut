@@ -8232,7 +8232,6 @@ export async function createStrut<TServices = unknown>(
     resumeSettled,
     workspace,
     ...(fleetRetention ? { fallback: fleetRetention } : {}),
-    hasClaims: async (workflow, runId) => !!claimsAuthoring && (await claimsAuthoring.listRunEvidence(workflow, { runId, limit: 1 })).length > 0,
   });
   const automations = createAutomations({
     workspace,
