@@ -246,6 +246,8 @@ export interface PublicAppInfo {
    *  native host's connect sheet asks the visitor for. Nothing else of the
    *  build is shown. */
   wallet?: BuildInfo["wallet"];
+  /** Where the visitor's account widget sits by default (`app.yaml`'s `account:`). */
+  account?: BuildInfo["account"];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its

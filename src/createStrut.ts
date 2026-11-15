@@ -3825,6 +3825,7 @@ export async function createStrut<TServices = unknown>(
       // in a native host's web view is offered the person's wallet on it
       // (plans/app-payments.md §11 R8).
       ...(view.build?.wallet ? { wallet: view.build.wallet } : {}),
+      ...(view.build?.account ? { account: view.build.account } : {}),
     };
   };
   /** What the `runnable` checks ask of the server (src/public-runnable.ts). */

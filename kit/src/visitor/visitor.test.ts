@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { NO_VISITOR, VISITOR_CAPABILITY, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD, createBridgeVisitor, visitorCapabilityOf } from "./index.js";
+import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, NO_ACCOUNT, createBridgeAccount, NO_VISITOR, VISITOR_CAPABILITY, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD, createBridgeVisitor, visitorCapabilityOf } from "./index.js";
 
 /** An `App` whose host offered `capability` and answers sign-in with `answer`. */
 const app = (capability: unknown, answer: unknown = { actor: "p256:02ab" }) => {
@@ -45,5 +45,22 @@ describe("the visitor contract (plans/app-repos.md §5)", () => {
     await assert.rejects(v.signIn(), /offers no sign-in/);
     await assert.rejects(NO_VISITOR.signIn(), /offers no sign-in/);
     assert.equal(NO_VISITOR.actor(), undefined);
+  });
+});
+
+describe("the account widget contract", () => {
+  it("is available only when the host offers it; setPlacement asks the host with the params as given", async () => {
+    const asked: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const mk = (cap: unknown) => createBridgeAccount({
+      getHostCapabilities: () => (cap === undefined ? {} : { experimental: { [ACCOUNT_CAPABILITY]: cap } }),
+      request: async (r) => (asked.push(r), {}),
+    });
+    const on = mk({ v: 1 });
+    assert.equal(on.available(), true);
+    await on.setPlacement({ corner: "bottom-left", collapsed: true });
+    assert.deepEqual(asked, [{ method: ACCOUNT_PLACEMENT_METHOD, params: { corner: "bottom-left", collapsed: true } }]);
+    assert.equal(mk(undefined).available(), false);
+    await assert.rejects(mk(undefined).setPlacement({ collapsed: true }), /no account widget/);
+    assert.equal(NO_ACCOUNT.available(), false);
   });
 });

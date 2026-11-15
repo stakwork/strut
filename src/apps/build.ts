@@ -88,6 +88,9 @@ export interface BuildInfo {
    *  specs/WALLET.md §5.1), for the host that shows the connect sheet: read
    *  with the version's file token, here and through a peer's read-through. */
   wallet?: AppManifest["wallet"];
+  /** Where the visitor's account widget sits by default (`app.yaml`'s
+   *  `account:`), read by a visitor's host like `wallet`. */
+  account?: AppManifest["account"];
   /** The browser features the version's frame is granted beyond every
    *  app's (`app.yaml`'s `permissions:`, manifest.ts `DECLARED_PERMISSIONS`:
    *  motion, camera, geolocation): a host reads them, with the version's
@@ -666,6 +669,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     warnings,
     title: manifest.title,
     ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
+    ...(manifest.account ? { account: manifest.account } : {}),
     ...(manifest.permissions?.length ? { permissions: manifest.permissions } : {}),
   };
   await mkdir(join(root, "dist"), { recursive: true });

@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, SCREENSHOT_MAX_BYTES, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { ACCOUNT_CORNERS, ACCOUNT_STYLES, APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, SCREENSHOT_MAX_BYTES, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { ACCOUNT_CORNERS as KIT_CORNERS, ACCOUNT_STYLES as KIT_STYLES } from "@strut/kit/visitor";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -279,6 +280,15 @@ describe("the app build", () => {
     assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
   });
 
+  it("build.json carries the account widget's default placement, defaults filled; an app without one says nothing", async () => {
+    const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Game\naccount:\n  corner: bottom-left\n" });
+    assert.ok((await build(dir)).ok);
+    assert.deepEqual((await readBuildInfo(dir))!.account, { corner: "bottom-left", style: "pill" });
+    const none = await writeApp(fresh(), minimal());
+    assert.ok((await build(none)).ok);
+    assert.equal((await readBuildInfo(none))!.account, undefined);
+  });
+
   it("build.json carries the permissions the version's frame is granted beyond every app's, for the host that frames it", async () => {
     const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Tilt maze\npermissions: [motion, fullscreen, motion, geolocation]\n" });
     const r = await build(dir);
@@ -391,6 +401,19 @@ wallet:
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  budget_renewal: weekly\n"), /wallet/);
   });
 
+  it("keeps an account placement (defaults top-right, pill), and refuses an unknown corner, style or key, naming the path", () => {
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    const manifest = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { manifest: { account?: unknown } }).manifest;
+    assert.equal(manifest("").account, undefined);
+    assert.deepEqual(manifest("account: {}\n").account, { corner: "top-right", style: "pill" });
+    for (const corner of ACCOUNT_CORNERS) for (const style of ACCOUNT_STYLES) {
+      assert.deepEqual(manifest(`account: { corner: ${corner}, style: ${style} }\n`).account, { corner, style });
+    }
+    assert.match(errors("account:\n  corner: middle\n"), /account\.corner/);
+    assert.match(errors("account:\n  style: banner\n"), /account\.style/);
+    assert.match(errors("account:\n  hidden: true\n"), /account/);
+  });
+
   it("keeps the declared frame permissions once each, drops every app's, and names the allowed set for any other", () => {
     const ok = parseManifest("title: Racer\npermissions: [fullscreen, pointer-lock, gamepad, geolocation, motion, wake-lock, camera, microphone, clipboard-write, motion]\n");
     assert.ok(ok.ok);
@@ -424,6 +447,8 @@ wallet:
     assert.deepEqual([...WALLET_REQUESTABLE_METHODS].sort(), [...REQUESTABLE_METHODS].sort());
     assert.deepEqual([...WALLET_NOTIFICATION_TYPES], [...NOTIFICATION_TYPES]);
     assert.deepEqual([...WALLET_RENEWAL_PERIODS], [...RENEWAL_PERIODS]);
+    assert.deepEqual([...ACCOUNT_CORNERS], [...KIT_CORNERS]);
+    assert.deepEqual([...ACCOUNT_STYLES], [...KIT_STYLES]);
   });
 });
 

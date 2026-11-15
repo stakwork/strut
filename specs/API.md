@@ -3591,7 +3591,7 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
-| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
+| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account? }]` — each at the version the public view serves; `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
 

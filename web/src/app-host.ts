@@ -27,13 +27,14 @@ import {
   WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
+import { parsePlacement, creditOf, type CreditView, type PlacementController } from "./account-widget";
 import { checkChallenge } from "./challenge";
 import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, type SignInAsk, type WalletAsk } from "./native-pay";
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
-import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
+import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
 import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
 import { strutLink } from "./app-links";
 import { mcpPermissions, strangerMcpPermissions } from "./frame-permissions";
@@ -73,6 +74,9 @@ export interface AppHostHandlers {
    *  signs a visitor in (Peel): ask it first (./native-pay `signInAsk`).
    *  Absent, no sign-in is offered. */
   onSignIn?: (methods: SignInMethod[], sphinx?: SignInAsk) => Promise<VisitorSession | null>;
+  /** The PAGE signed the visitor in or out (`strut/visitor/*`): the account
+   *  widget reads who is signed in again. */
+  onSession?: () => void;
 }
 
 export interface AppHostOptions {
@@ -119,10 +123,31 @@ export interface AppHostOptions {
    *  Apps' own four are reported in `ui/initialize` as
    *  `hostCapabilities.sandbox.permissions`. */
   permissions?: string[];
+  /** A visitor's account widget (./account-widget): offered to the page as
+   *  `experimental["strut/account"]`, its `strut/account/placement` moving or
+   *  collapsing it under the controller's limits. */
+  account?: PlacementController;
+  /** The app's identity (its document's `strut-app-token`, ./account-widget
+   *  `appIdentityOf`): what `run` calls `step_run` as. */
+  identity?: string;
+}
+
+/** What the account widget asks of the connection, for a visitor's page. */
+export interface AccountApi {
+  /** The visitor's credit at this seller, from the purse's L402 credential; null with none. */
+  credit(): Promise<CreditView | null>;
+  /** The host's own `step_run` as the app's viewer (the grants and the visitor's
+   *  rules apply as for the page); throws the refusal. Absent without the app's identity. */
+  run?: (type: string, config: Record<string, unknown>) => Promise<unknown>;
+  /** The same sign-in flow the page's `useVisitor().signIn` draws (the sheet,
+   *  Peel's wallet first); absent where the server offers no sign-in. */
+  signIn?: () => Promise<VisitorSession | null>;
 }
 
 export interface AppHostConnection {
   bridge: AppBridge;
+  /** For a visitor's page: what its account widget reads and does. */
+  accountApi?: AccountApi;
   /** A theme change → `ui/notifications/host-context-changed`. */
   setTheme(theme: McpUiTheme): void;
   /** What the page is opened with (`?input=`, ./app-links `appToolInput`)
@@ -263,6 +288,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // A visitor's page carries channels only where a visitor may sign in, and
   // only this server's: another server's socket is not relayed (yet).
   const channels = opts.visitor ? (visitorCap && !from ? opts.channels : undefined) : opts.channels;
+  const accountOn = !!(opts.visitor && opts.account);
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
@@ -271,12 +297,13 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       openLinks: {},
       sandbox: { permissions: from ? strangerMcpPermissions() : mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability || channels || visitorCap
+      ...(capability || channels || visitorCap || accountOn
         ? {
             experimental: {
               ...(capability ? { [WALLET_CAPABILITY]: capability } : {}),
               ...(channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
               ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
+              ...(accountOn ? { [ACCOUNT_CAPABILITY]: { v: 1 } } : {}),
             },
           }
         : {}),
@@ -297,17 +324,35 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
         },
       })
     : undefined;
-  if (visitorCap) {
-    const onSignIn = opts.handlers.onSignIn!;
+  // Sign the visitor in: the page's `strut/visitor/sign-in` and the account
+  // widget's button are the one flow.
+  const signInFlow = visitorCap
+    ? async () => {
+        // Peel's web view: the person's Sphinx account signs the visitor in.
+        const sphinx = signInAsk({ wallet: await hostWallet(window), seller: sellerOf(from), app: opts.visitorApp });
+        return opts.handlers.onSignIn!(visitorCap.methods as SignInMethod[], sphinx);
+      }
+    : undefined;
+  if (signInFlow) {
     bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
-      // Peel's web view: the person's Sphinx account signs the visitor in.
-      const sphinx = signInAsk({ wallet: await hostWallet(window), seller: sellerOf(from), app: opts.visitorApp });
-      const session = await onSignIn(visitorCap.methods as SignInMethod[], sphinx);
+      const session = await signInFlow();
+      opts.handlers.onSession?.();
       return session ? { actor: session.actor } : {};
     }) as never);
     bridge.setRequestHandler(VISITOR_SIGN_OUT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
       await signOutVisitor(from);
+      opts.handlers.onSession?.();
       return {};
+    }) as never);
+  }
+  if (accountOn) {
+    const placement = opts.account!;
+    // A request (the bridge allows one handler per method, so no notification
+    // form): answered, or refused, with what the widget will show.
+    bridge.setRequestHandler(ACCOUNT_PLACEMENT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async (params: unknown) => {
+      const parsed = parsePlacement(params);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return placement.request(parsed.placement);
     }) as never);
   }
   bridge.onmessage = async (params) => {
@@ -398,8 +443,36 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       }
     };
   }
+  const identity = opts.identity;
+  const accountApi: AccountApi | undefined = opts.visitor
+    ? {
+        async credit() {
+          const credential = visitorWalletFor(from).purse.credential;
+          if (!credential) return null;
+          const a = await liveCredit(from ?? API_BASE, credential).catch(() => null);
+          return a ? creditOf(a.status, a.body) : null;
+        },
+        ...(identity
+          ? {
+              run: async (type: string, config: Record<string, unknown>) => {
+                const r = (await client.request({ method: "tools/call", params: { name: "step_run", arguments: { type, config, app: identity } } })) as CallResult;
+                const text = (r.content as Array<{ type: string; text?: string }> | undefined)?.find((c) => c.type === "text")?.text;
+                if (r.isError) throw new Error(text || `${type} failed`);
+                if (r.structuredContent !== undefined) return r.structuredContent;
+                try {
+                  return text === undefined ? undefined : JSON.parse(text);
+                } catch {
+                  return text;
+                }
+              },
+            }
+          : {}),
+        ...(signInFlow ? { signIn: signInFlow } : {}),
+      }
+    : undefined;
   return {
     bridge,
+    ...(accountApi ? { accountApi } : {}),
     setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand), theme }),
     setToolInput(args) {
       toolInput = args;

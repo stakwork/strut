@@ -123,6 +123,7 @@ data:
   graph:
     types: {}                  # node types it declares and may WRITE (below: Graph types)
 permissions: []                # motion, camera, geolocation: beyond every app's (below)
+account: { corner: top-right, style: pill }   # where strut's account widget sits on a public page (below); optional
 ```
 
 The grants are the app's whole reach, checked by the strut server on every call in
@@ -370,6 +371,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
+| `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
 | `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors") |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -488,6 +490,33 @@ async function keep(score: number) {
 Write it so it works either way: an app is anonymous where the server
 offers no sign-in (`available` false) — hide the sign-in button then, and
 let the game play.
+
+### The account widget
+
+On a public page (a visitor's, never a member's), strut itself draws an
+ACCOUNT WIDGET over the app, outside its frame: a small pill that opens a
+panel with who is signed in (Sign in / Sign out, the same flow as
+`useVisitor`), the credit held at this server, and — for a signed-in worker on
+an app that grants `task/me` — what is held and what can be withdrawn
+(Withdraw, which also needs `task/withdraw`). Without those grants the worker
+part is not drawn. The app draws none of this and sees nothing of it.
+
+Say where it sits by default in `app.yaml`:
+
+```yaml
+account:
+  corner: bottom-left   # top-left | top-right (default) | bottom-left | bottom-right
+  style: handle         # pill (default) | handle: starts collapsed, a dot
+```
+
+Anything else under `account:` is a build error. At run time the page may move
+or collapse it with `useAccountWidget()` (offered only where the host says so:
+`available`); `setPlacement({ corner?, collapsed? })` rejects an unknown corner.
+The host applies at most one change per 500 ms and holds the latest of the
+ones inside it, so call it on a state change, not every frame. A collapsed
+widget is a small dot that stays on screen and opens on a click: an app can
+collapse the widget, never hide or remove it. Keep the corner you pick clear of
+the app's own controls; strut does not move the app out of the way.
 
 ## Worker apps: people as a step of a workflow
 

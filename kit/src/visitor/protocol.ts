@@ -44,3 +44,33 @@ export function visitorCapabilityOf(hostCapabilities: unknown): VisitorCapabilit
 export const VISITOR_PASS_THROUGH = {
   "~standard": { version: 1 as const, vendor: "strut", validate: (value: unknown) => ({ value }) },
 };
+
+// ── The account widget (plans: the strut-drawn account widget) ───────────
+// Strut draws the visitor's account widget over a public app, outside its
+// frame. The app may MOVE or COLLAPSE it, never hide it: a collapsed widget
+// is a small handle that stays visible and clickable.
+
+/** What a host puts in `ui/initialize`'s `hostCapabilities.experimental`
+ *  when it draws the widget: `{ v: 1 }`. */
+export const ACCOUNT_CAPABILITY = "strut/account";
+/** Page → host: move or collapse/expand the widget. `{ corner?, collapsed? }`;
+ *  answers `{ corner, collapsed }` as applied (the host rate-limits: a
+ *  change inside the window is held and applied later, the latest one). */
+export const ACCOUNT_PLACEMENT_METHOD = "strut/account/placement";
+/** The corners the widget may sit in, and how `app.yaml`'s `account.style`
+ *  starts it (`handle`: collapsed). Copied in src/apps/manifest.ts. */
+export const ACCOUNT_CORNERS = ["top-left", "top-right", "bottom-left", "bottom-right"] as const;
+export const ACCOUNT_STYLES = ["pill", "handle"] as const;
+export type AccountCorner = (typeof ACCOUNT_CORNERS)[number];
+export type AccountStyle = (typeof ACCOUNT_STYLES)[number];
+
+export interface AccountPlacement {
+  corner?: AccountCorner;
+  collapsed?: boolean;
+}
+
+/** Whether the host draws an account widget for this page. */
+export function accountCapabilityOf(hostCapabilities: unknown): boolean {
+  const c = (hostCapabilities as { experimental?: Record<string, unknown> } | undefined)?.experimental?.[ACCOUNT_CAPABILITY];
+  return typeof c === "object" && c !== null && (c as { v?: unknown }).v === 1;
+}

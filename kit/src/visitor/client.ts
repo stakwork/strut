@@ -2,6 +2,7 @@
  *  over the MCP Apps `App` it already runs. `useVisitor` is over it. No
  *  React, no dependency. */
 import {
+  ACCOUNT_PLACEMENT_METHOD, accountCapabilityOf, type AccountPlacement,
   VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD, visitorCapabilityOf, type VisitorMethod,
 } from "./protocol.js";
 
@@ -77,4 +78,30 @@ export const NO_VISITOR: VisitorClient = {
     throw new Error(NO_HOST);
   },
   subscribe: () => () => {},
+};
+
+/** The account widget's client: `available` when the host offers
+ *  `experimental["strut/account"]`; `setPlacement` asks the host to move or
+ *  collapse it (the host validates and rate-limits; it never hides it). */
+export interface AccountClient {
+  available(): boolean;
+  setPlacement(placement: AccountPlacement): Promise<void>;
+}
+
+export function createBridgeAccount(app: VisitorBridgeApp): AccountClient {
+  const available = () => accountCapabilityOf(app.getHostCapabilities());
+  return {
+    available,
+    async setPlacement(placement) {
+      if (!available()) throw new Error("this page's host draws no account widget");
+      await app.request({ method: ACCOUNT_PLACEMENT_METHOD, params: { ...placement } }, VISITOR_PASS_THROUGH);
+    },
+  };
+}
+
+export const NO_ACCOUNT: AccountClient = {
+  available: () => false,
+  setPlacement: async () => {
+    throw new Error("this page's host draws no account widget");
+  },
 };

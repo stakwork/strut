@@ -6021,3 +6021,75 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
   width: 90px; font: inherit; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border-strong);
   color: var(--text); padding: 2px var(--sp-2); border-radius: var(--r-md);
 }
+
+/* The visitor's account widget (components/AccountWidget.tsx): strut's own,
+   over the app's frame and under its sheets. An app may move it between
+   corners and collapse it to a dot, never hide it: no rule here is driven by
+   anything that sets display, visibility, opacity or size to nothing. */
+.account-widget {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  gap: var(--sp-2);
+  max-width: calc(100% - var(--sp-4));
+  font-size: 13px;
+  color: var(--text);
+}
+.account-widget.at-top-left { top: var(--sp-2); left: var(--sp-2); flex-direction: column; align-items: flex-start; }
+.account-widget.at-top-right { top: var(--sp-2); right: var(--sp-2); flex-direction: column; align-items: flex-end; }
+.account-widget.at-bottom-left { bottom: var(--sp-2); left: var(--sp-2); flex-direction: column-reverse; align-items: flex-start; }
+.account-widget.at-bottom-right { bottom: var(--sp-2); right: var(--sp-2); flex-direction: column-reverse; align-items: flex-end; }
+.account-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.account-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.account-pill-dot.is-on { background: var(--ok); }
+.account-dot {
+  display: block;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.account-panel {
+  width: min(280px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+.account-widget .btn { white-space: nowrap; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.account-num { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.account-note { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.account-collapse {
+  align-self: flex-end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
