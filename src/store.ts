@@ -305,10 +305,18 @@ export interface RunStore {
    *  when something was repaired. Optional — backends whose appends are
    *  atomic (in-memory, a database row) have nothing to heal. */
   repairLog?(workflow: string, runId: string): Promise<boolean>;
-  /** Retention (`src/retention.ts`): drop a FINISHED run's event log and
-   *  everything else in its directory but the summary, which is rewritten
-   *  with `logEvicted: true` + `evictedAt`. No summary: nothing to do. */
-  evictRun(workflow: string, runId: string, evictedAt: string): Promise<void>;
+  /** Retention (`src/retention.ts`): drop a run's event log and everything
+   *  else in its directory but the summary, which is rewritten with
+   *  `logEvicted: true` + `evictedAt`. A run with no summary (it died with
+   *  its process) gets `fallback` as its summary; without one, nothing to do. */
+  evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void>;
+  /** The last events of the log, read from at most its last `maxBytes`
+   *  (complete lines only, oldest first) — never the whole log, which a
+   *  crashed run may have grown to a gigabyte. Empty for an unknown run. */
+  readLogTail(workflow: string, runId: string, maxBytes: number): Promise<RunEvent[]>;
+  /** When the run was last written (epoch ms): its log's mtime, else its
+   *  directory's. Null for an unknown run. */
+  runWrittenAt(workflow: string, runId: string): Promise<number | null>;
 }
 
 /**
@@ -652,10 +660,49 @@ export class FileRunStore implements RunStore {
     await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
   }
 
-  async evictRun(workflow: string, runId: string, evictedAt: string): Promise<void> {
-    const summary = await this.getRunSummary(workflow, runId);
+  async readLogTail(workflow: string, runId: string, maxBytes: number): Promise<RunEvent[]> {
+    let fh;
+    try {
+      fh = await open(join(this.runDir(workflow, runId), "events.jsonl"), "r");
+    } catch {
+      return [];
+    }
+    try {
+      const { size } = await fh.stat();
+      const start = Math.max(0, size - maxBytes);
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      const lines = buf.toString("utf-8").split("\n");
+      if (start > 0) lines.shift(); // begins mid-line
+      const events: RunEvent[] = [];
+      for (const line of lines) {
+        try {
+          if (line.trim()) events.push(JSON.parse(line) as RunEvent);
+        } catch {
+          // a torn final line
+        }
+      }
+      return events;
+    } finally {
+      await fh.close();
+    }
+  }
+
+  async runWrittenAt(workflow: string, runId: string): Promise<number | null> {
+    const at = await this.logWrittenAt(workflow, runId);
+    if (at !== null) return at;
+    try {
+      return (await stat(this.runDir(workflow, runId))).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void> {
+    const summary = (await this.getRunSummary(workflow, runId)) ?? fallback;
     if (!summary) return;
     const dir = this.runDir(workflow, runId);
+    await mkdir(dir, { recursive: true });
     for (const entry of await readdir(dir)) if (entry !== "run.json") await rm(join(dir, entry), { recursive: true, force: true });
     await this.finalize(workflow, runId, { ...summary, logEvicted: true, evictedAt });
   }
@@ -844,9 +891,24 @@ export class MemoryRunStore implements RunStore {
     this.summaries.delete(this.key(workflow, runId));
   }
 
-  async evictRun(workflow: string, runId: string, evictedAt: string): Promise<void> {
+  async readLogTail(workflow: string, runId: string, maxBytes: number): Promise<RunEvent[]> {
+    const out: RunEvent[] = [];
+    let bytes = 0;
+    for (const e of [...(this.events.get(this.key(workflow, runId)) ?? [])].reverse()) {
+      bytes += Buffer.byteLength(JSON.stringify(e)) + 1;
+      if (bytes > maxBytes) break;
+      out.unshift(e);
+    }
+    return out;
+  }
+
+  async runWrittenAt(workflow: string, runId: string): Promise<number | null> {
+    return this.logWrittenAt(workflow, runId);
+  }
+
+  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void> {
     const k = this.key(workflow, runId);
-    const summary = this.summaries.get(k);
+    const summary = this.summaries.get(k) ?? fallback;
     if (!summary) return;
     this.events.delete(k);
     this.callbacks.delete(k);

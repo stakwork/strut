@@ -187,6 +187,29 @@ and the child env is scrubbed by construction).
   with claim evidence (`listRunEvidence`), a run marked `kept`, or a run whose
   artifacts another run references. `step:<type>` / `check:<id>` buckets
   (kept `run_step` / paid check runs) are not workflows and are never walked.
+  CRASHED runs: a run that died with its process (heap crash, OOM — the
+  gigabyte logs) has a log and no `run.json`, and boot's auto-resume leaves
+  it so (a log over `resumeMaxLogBytes`, past the age cap, resumed too often,
+  paused by a human, an earlier death's). The sweep evicts such a run only
+  when ALL hold: it is not in the active set (`controllers`, via `isLive`);
+  boot's auto-resume scan has settled (the sweep awaits `resumeSettled`,
+  resolved after `bootResumeRuns`, at once when nothing resumes — before it,
+  a run about to be relaunched has no controller and no summary and would
+  look dead); its log was last WRITTEN longer ago than the window
+  (`RunStore.runWrittenAt`: the log's mtime, else the run directory's — never
+  the first event, so a long-running run is not stale; the count form has no
+  window, so it needs `CRASHED_STALE_MS` = 1 h of silence); and the last
+  control marker in the log's final 64 KB (`RunStore.readLogTail`, never the
+  whole log) is not `run.paused` (a human's: "resume it by hand"). The
+  claims, kept and artifact-reference skips apply as for any run, and a
+  qualifying crashed run joins the count form's newest-first ordering (one
+  that does not qualify is neither counted nor touched). Eviction deletes
+  the log and directory and WRITES a minimal summary (`status: "error"`,
+  `crashed: true`, `logEvicted`, `startedAt` from `run.start`, `finishedAt` =
+  the last write, `parentRunId` when known). Child runs: a resumed parent
+  re-executes an unjournaled `meta/run-workflow` with NO runId, so the child
+  is a fresh run; a dead child is never relaunched, and a live one is
+  protected by `isLive`.
   `GET /workflows/:name/flow` returns `retain` and the fleet default
   (`fleetRetention`) as text for the flyout.
 

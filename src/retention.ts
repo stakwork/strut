@@ -7,8 +7,21 @@
  * run directory go and its summary stays, flagged `logEvicted`. Never touched:
  * running or waiting runs, runs with claim evidence, runs whose artifacts
  * another run references, and anything outside the workflow keys.
+ *
+ * A run with no summary is either in flight or died with its process (heap
+ * crash, OOM: the 1 GB logs). It is evicted as `crashed` only when it is not
+ * live, boot's auto-resume has settled (a run it is about to relaunch must
+ * not look dead), its log was last WRITTEN longer ago than the window (the
+ * count form: `CRASHED_STALE_MS`), and a human did not leave it paused.
  */
+import type { RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
+
+/** With a count (`{ runs: N }`) there is no window, so a summary-less run
+ *  counts as crashed only once its log has been silent this long. */
+export const CRASHED_STALE_MS = 3_600_000;
+/** How much of a log's end is read to find a human's pause. */
+const TAIL_BYTES = 64 * 1024;
 
 export type Retention = { windowMs: number } | { runs: number };
 
@@ -60,6 +73,11 @@ export interface RetentionDeps {
   fallback?: Retention;
   /** True when claim evidence points at the run. Absent: no claims layer. */
   hasClaims?: (workflow: string, runId: string) => Promise<boolean>;
+  /** True while the run is in this process's active set. Absent: nothing is live. */
+  isLive?: (workflow: string, runId: string) => boolean;
+  /** Settles once boot's auto-resume scan has run; a sweep waits for it, so
+   *  a cut-off run about to be resumed is never taken for a crashed one. */
+  resumeSettled?: Promise<unknown>;
   now?: () => number;
   intervalMs?: number;
 }
@@ -95,7 +113,37 @@ export function createRetention(deps: RetentionDeps): Retainer {
   let timer: ReturnType<typeof setInterval> | null = null;
   let running: Promise<number> | null = null;
 
+  /** The summary to leave for a summary-less run that died, or null when it
+   *  is live, recent, paused by a human, or unreadable. */
+  async function crashedSummary(workflow: string, runId: string, policy: Retention): Promise<RunSummary | null> {
+    if (deps.isLive?.(workflow, runId)) return null;
+    const written = await deps.store.runWrittenAt(workflow, runId);
+    if (written === null) return null;
+    const staleMs = "runs" in policy ? CRASHED_STALE_MS : policy.windowMs;
+    if (now() - written <= staleMs) return null;
+    const marker = (await deps.store.readLogTail(workflow, runId, TAIL_BYTES))
+      .reverse()
+      .find((e) => e.type === "run.paused" || e.type === "run.resumed" || e.type === "run.cancelling");
+    if (marker?.type === "run.paused") return null; // a human paused it: resume it by hand
+    const start = (await deps.store.getRunStart(workflow, runId)) as { ts?: string; parentRunId?: string } | null;
+    const startedMs = start?.ts ? Date.parse(start.ts) : Number(runId);
+    const startedAt = new Date(Number.isFinite(startedMs) ? startedMs : written).toISOString();
+    return {
+      runId,
+      workflow,
+      status: "error",
+      crashed: true,
+      startedAt,
+      finishedAt: new Date(written).toISOString(),
+      durationMs: Math.max(0, written - Date.parse(startedAt)),
+      input: null,
+      error: { message: "run died with its process (no summary); log evicted by retention" },
+      ...(start?.parentRunId ? { parentRunId: start.parentRunId } : {}),
+    };
+  }
+
   async function sweepOnce(): Promise<number> {
+    await deps.resumeSettled;
     const names = (await deps.workspace.listWorkflows()).map((w) => w.name);
     const policies = new Map<string, Retention>();
     for (const name of names) {
@@ -109,9 +157,17 @@ export function createRetention(deps: RetentionDeps): Retainer {
     for (const [name, policy] of policies) {
       let finished = 0;
       for (const id of await deps.store.listRuns(name)) {
-        const s = await deps.store.getRunSummary(name, id);
-        // No summary: in flight. `waiting`: parked. Neither is ever touched.
-        if (!s || s.status === "waiting") continue;
+        let s = await deps.store.getRunSummary(name, id);
+        // `waiting`: parked, never touched.
+        if (s?.status === "waiting") continue;
+        let crashed = false;
+        if (!s) {
+          // In flight, or died with its process: only a crashed run counts.
+          const dead = await crashedSummary(name, id, policy).catch(() => null);
+          if (!dead) continue;
+          s = dead;
+          crashed = true;
+        }
         finished++;
         if (s.logEvicted) continue;
         const due = "runs" in policy ? finished > policy.runs : now() - Date.parse(s.finishedAt) > policy.windowMs;
@@ -119,7 +175,7 @@ export function createRetention(deps: RetentionDeps): Retainer {
         if ((s as { kept?: boolean }).kept) continue;
         if ([...(refs.get(id) ?? [])].some((by) => by !== id)) continue;
         if (await deps.hasClaims?.(name, id).catch(() => true)) continue;
-        await deps.store.evictRun(name, id, new Date(now()).toISOString());
+        await deps.store.evictRun(name, id, new Date(now()).toISOString(), crashed ? s : undefined);
         evicted++;
       }
     }

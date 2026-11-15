@@ -1654,6 +1654,7 @@ function Shell() {
                         <div class="run-row-main">
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                          {run.crashed && <span class="badge badge-danger" title="The run died with its process">crashed</span>}
                           {run.logEvicted && <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>

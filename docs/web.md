@@ -19,7 +19,7 @@ index. A change in this area updates this file, not AGENTS.md.
   when it sets none. Save publishes a new version with `retain:` changed
   (`handleSetRetain` in app.tsx; disabled while the canvas has unpublished
   edits). A run whose summary has `logEvicted` shows a "log evicted" badge in
-  the runs list, and its view (no events) a note saying only the summary is kept.
+  the runs list (a run that died with its process, `crashed`, also gets a red "crashed" badge), and its view (no events) a note saying only the summary is kept.
 - **Flyout has two modes**: when no run is selected, clicking a
   canvas node opens the step editor (edit id, type, config). When
   a run is selected, it opens run results (input, output, error,

@@ -960,6 +960,11 @@ export interface RunSummary {
   /** The retention sweep dropped this run's event log and directory
    *  (`src/retention.ts`); this summary is what is left. */
   logEvicted?: boolean;
+  /** The run died with its process and never wrote a summary; retention
+   *  wrote this one when it evicted the log (`src/retention.ts`). */
+  crashed?: boolean;
+  /** The run's parent, when it was a child run. */
+  parentRunId?: string;
   evictedAt?: string;
   runId: string;
   workflow: string;

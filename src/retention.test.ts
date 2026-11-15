@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, stat } from "node:fs/promises";
+import { mkdtemp, readdir, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRetention, formatRetention, createRetention } from "./retention.js";
@@ -51,13 +51,15 @@ async function seed(store: RunStore, id: string, s: RunSummary) {
   await store.finalize("w", id, s);
 }
 
-function sweeper(store: RunStore, retain: unknown, fallback?: { windowMs: number } | { runs: number }, hasClaims?: (w: string, r: string) => Promise<boolean>) {
+function sweeper(store: RunStore, retain: unknown, fallback?: { windowMs: number } | { runs: number }, hasClaims?: (w: string, r: string) => Promise<boolean>, extra: Partial<Parameters<typeof createRetention>[0]> = {}) {
   const flow = retain === undefined ? {} : { retain: parseRetention(retain) as never };
   return createRetention({
     store,
     workspace: { listWorkflows: async () => [{ name: "w" }], getWorkflow: async () => flow },
     ...(fallback ? { fallback } : {}),
     ...(hasClaims ? { hasClaims } : {}),
+    isLive: (_w: string, id: string) => id === "5", // the scenario's in-flight run
+    ...extra,
     now: () => NOW,
   });
 }
@@ -70,7 +72,22 @@ async function scenario(store: RunStore) {
   await store.append("w", "5", { type: "run.start", ts: new Date(NOW - 20 * HOUR).toISOString(), runId: "5" } as never); // in flight: no summary
 }
 
-for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunStore], ["file", async () => new FileRunStore(await mkdtemp(join(tmpdir(), "ret-")))]] as const) {
+const roots = new WeakMap<object, string>();
+
+/** A run that died with its process: a log, no summary. `lastWriteHoursAgo` is the log's mtime. */
+async function seedCrashed(store: RunStore, id: string, lastWriteHoursAgo: number, opts: { paused?: boolean; parent?: string } = {}) {
+  const ts = (h: number) => new Date(NOW - h * HOUR).toISOString();
+  await store.append("w", id, { type: "run.start", ts: ts(lastWriteHoursAgo + 1), runId: id, ...(opts.parent ? { parentRunId: opts.parent } : {}) } as never);
+  await store.append("w", id, { type: "step.start", ts: ts(lastWriteHoursAgo), runId: id } as never);
+  if (opts.paused) await store.append("w", id, { type: "run.paused", ts: ts(lastWriteHoursAgo), runId: id } as never);
+  const root = roots.get(store);
+  if (root) {
+    const when = new Date(NOW - lastWriteHoursAgo * HOUR);
+    await utimes(join(root, "workflows", "w", "runs", id, "events.jsonl"), when, when);
+  }
+}
+
+for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunStore], ["file", async () => { const root = await mkdtemp(join(tmpdir(), "ret-")); const st = new FileRunStore(root); roots.set(st, root); return st as RunStore; }]] as const) {
   test(`sweep (${label}): window eviction keeps summary, skips running and waiting`, async () => {
     const store = await make();
     await scenario(store);
@@ -115,6 +132,73 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.equal(await sweeper(await mk(), undefined, { windowMs: HOUR }).sweep(), 2);
     assert.equal(await sweeper(await mk(), "100h", { windowMs: HOUR }).sweep(), 0);
     assert.equal(await sweeper(await mk(), { runs: 2 }, { windowMs: HOUR }).sweep(), 1);
+  });
+}
+
+
+for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunStore], ["file", async () => { const root = await mkdtemp(join(tmpdir(), "ret-")); const st = new FileRunStore(root); roots.set(st, root); return st as RunStore; }]] as const) {
+  test(`crashed (${label}): evicted with a minimal summary`, async () => {
+    const store = await make();
+    await seedCrashed(store, "7", 3, { parent: "6" });
+    assert.equal(await sweeper(store, "1h").sweep(), 1);
+    const s = await store.getRunSummary("w", "7");
+    assert.equal(s?.crashed, true);
+    assert.equal(s?.logEvicted, true);
+    assert.equal(s?.status, "error");
+    assert.equal(s?.parentRunId, "6");
+    assert.equal(s?.finishedAt, new Date(NOW - 3 * HOUR).toISOString());
+    assert.equal(s?.startedAt, new Date(NOW - 4 * HOUR).toISOString());
+    assert.deepEqual(await store.getRunEvents("w", "7"), []);
+    const root = roots.get(store);
+    if (root) assert.deepEqual(await readdir(join(root, "workflows", "w", "runs", "7")), ["run.json"]);
+    assert.equal(await sweeper(store, "1h").sweep(), 0);
+  });
+
+  test(`crashed (${label}): live, recent, paused and unsettled runs are untouched`, async () => {
+    const store = await make();
+    await seedCrashed(store, "1", 3); // live
+    await seedCrashed(store, "2", 0.5); // written inside the window
+    await seedCrashed(store, "3", 3, { paused: true }); // a human paused it
+    await seedCrashed(store, "4", 3); // about to be resumed
+    const live = (_w: string, id: string) => id === "1";
+    let settle!: () => void;
+    const settled = new Promise<void>((r) => (settle = r));
+    const r = sweeper(store, "1h", undefined, undefined, { isLive: live, resumeSettled: settled });
+    const pending = r.sweep();
+    await new Promise((res) => setTimeout(res, 20));
+    for (const id of ["1", "2", "3", "4"]) assert.equal(await store.getRunSummary("w", id), null, `${id} before settle`);
+    settle();
+    assert.equal(await pending, 1); // only 4
+    for (const id of ["1", "2", "3"]) assert.equal(await store.getRunSummary("w", id), null, id);
+    assert.equal((await store.getRunSummary("w", "4"))?.crashed, true);
+  });
+
+  test(`crashed (${label}): count form counts it in order and needs 1h of silence`, async () => {
+    const store = await make();
+    await seed(store, "1", summary("1", 9));
+    await seedCrashed(store, "2", 2); // stale: counted, 2nd newest
+    await seed(store, "3", summary("3", 0.2));
+    await seedCrashed(store, "4", 0.5); // inside the floor: neither counted nor touched
+    assert.equal(await sweeper(store, { runs: 2 }).sweep(), 1); // newest two counted: 3, 2 → evicts 1
+    assert.equal((await store.getRunSummary("w", "1"))?.logEvicted, true);
+    assert.equal(await store.getRunSummary("w", "2"), null);
+    assert.equal(await store.getRunSummary("w", "4"), null);
+    assert.equal(await sweeper(store, { runs: 1 }).sweep(), 1); // now 2 is beyond the newest 1
+    assert.equal((await store.getRunSummary("w", "2"))?.crashed, true);
+    assert.equal(await store.getRunSummary("w", "4"), null);
+  });
+
+  test(`crashed (${label}): claims, kept-by-reference and artifact references hold`, async () => {
+    const store = await make();
+    await seedCrashed(store, "1", 3); // claimed
+    await seedCrashed(store, "2", 3); // referenced
+    await seedCrashed(store, "3", 3);
+    await seed(store, "9", summary("9", 0.1, { output: { url: "/artifacts/2/x.txt" } }));
+    const n = await sweeper(store, "1h", undefined, async (_w, id) => id === "1").sweep();
+    assert.equal(n, 1);
+    assert.equal(await store.getRunSummary("w", "1"), null);
+    assert.equal(await store.getRunSummary("w", "2"), null);
+    assert.equal((await store.getRunSummary("w", "3"))?.crashed, true);
   });
 }
 

@@ -8218,8 +8218,15 @@ export async function createStrut<TServices = unknown>(
     }
     return r;
   })();
+  // The sweep waits for boot's auto-resume scan (`bootResumeRuns`, deferred to
+  // the end of construction): before it, a cut-off run about to be relaunched
+  // has no controller and no summary and would look crashed.
+  let settleResume: () => void = () => {};
+  const resumeSettled = new Promise<void>((resolve) => (settleResume = resolve));
   const retention = createRetention({
     store,
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    resumeSettled,
     workspace,
     ...(fleetRetention ? { fallback: fleetRetention } : {}),
     hasClaims: async (workflow, runId) => !!claimsAuthoring && (await claimsAuthoring.listRunEvidence(workflow, { runId, limit: 1 })).length > 0,
@@ -10393,9 +10400,12 @@ export async function createStrut<TServices = unknown>(
         autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : reconcilePublic ? reconcilePublicRuns() : undefined,
         autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
       ]);
+      void bootScan.finally(settleResume);
     }, autoResumeOpts.delayMs ?? 3000);
     bootTimer.unref?.();
   }
+  // Nothing to resume: the sweep need not wait.
+  if (!(autoResumeRuns || autoResumeChats || reconcilePublic)) settleResume();
 
   return {
     app,

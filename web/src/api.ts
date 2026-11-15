@@ -926,6 +926,8 @@ export interface RunSummary {
   waitingOn?: string[];
   /** Retention dropped this run's log; the summary is what is left. */
   logEvicted?: boolean;
+  /** The run died with its process (no summary of its own). */
+  crashed?: boolean;
   evictedAt?: string;
   input?: unknown;
   output?: unknown;
