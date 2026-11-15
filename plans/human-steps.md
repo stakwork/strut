@@ -655,8 +655,198 @@ practical size is the tool call's: about 3.7 MB of binary. A path not on
 the list is refused whether or not the file exists.
 
 Never a run's or a job's file token: that opens every file of the run.
-Links scoped to a lease for larger images, and uploads from a worker, are
-later (§11).
+Links scoped to a lease for larger images are later (§11). Files FROM a
+worker are §5.6.
+
+### 5.6 Files from a worker (item 8)
+
+> **Proposed (2026-11-15); nothing here is built.** Two questions wait
+> for Evan's ruling (§5.6.7).
+
+Some answers are a file: a photo of a court paper, a signed form, the
+found dog. A page can send only JSON today. The demo of 2026-11-15 stood
+in with a free public launch that carried the photo, and answered the task
+with that run's id: strut never checked that the run was the worker's or
+held a document, so it cannot carry real pay. Here the photo is part of
+the answer, saved into the run that asked, and the workflow's next steps
+use it.
+
+It follows #694's public launch with files: the owner opts in, the
+chat's caps, one parser (`decodeAttachment` and the caps of
+`src/ai/attachments.ts`), and the same word, `attachments`. `files` is
+taken: on a task it is what the WORKFLOW hands the worker (§5.5).
+
+#### 5.6.1 The task type opts in
+
+A type has `attachments` beside its answer schema. It is the admin's, as
+the answer's shape and the pay are (§6):
+
+```json
+{ "app": "court", "answer": { "...": "..." }, "attachments": { "max": 4, "min": 1, "types": ["image/*"] } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `max` | How many files one answer may carry: 1 to 10 (the chat's `MAX_ATTACHMENTS`) |
+| `min` | How many it must carry: 0 to `max`, 0 when left out |
+| `types` | The media types it takes, `image/*` for a family. Left out: `["image/*", "application/pdf"]`, what a model can see |
+
+Absent or `null`: the type takes no files, as today. The bytes are held
+to the chat's caps (5 MB an image, 10 MB another file, 15 MB together)
+and to the door (§5.6.6). The type sets no byte cap of its own, so there
+is one number to keep. `PUT /tasks/types/:name`, `staff/save-type` and
+`task/set-type` take it, merged and kept when left out as `tests` and
+`copies` are. The card has a line ("Files: 1 to 4 images with each
+answer") and the staff editor a field. It is one JSON column,
+`task_types.attachments`, added by `ALTER TABLE` as pay's columns were.
+
+Not taken: a file field inside the answer schema. `answer-schema.ts` is
+one file in two places, held byte for byte with the kit's. `TaskForm`
+would have to draw a camera. Copies compare answers by `equal`, and one
+photo never equals another. A test's expected answer would have to hold
+files. Kept beside the answer, every rule over the answer stays as it is.
+
+#### 5.6.2 The page sends them
+
+- `task/next` hands out the rule with the task, `attachments: { max,
+  min, types }`, when the type takes files, so the page knows to show its
+  camera.
+- `task/submit { lease, answer, attachments? }`. `attachments` is what
+  `run/launch` takes: `[{ name, mediaType?, data }]`, base64 or a data
+  URL. Every check runs before anything is written: the lease, the
+  answer's schema, then the files against the type's rule and the chat's
+  caps. A type with no rule refuses any file. Too few, too many, a type it
+  does not take or too many bytes are each `bad_answer: …`, so the page
+  keeps the task and the worker tries again.
+- The kit: `useTask().submit(answer, files?)`. `files` are `File`s, such
+  as the one `useCamera().capture()` returns, sent through `fileData` as
+  `useLaunch` sends its. `TaskForm` is unchanged: a page passes
+  `onSubmit={(a) => submit(a, photos)}`.
+
+#### 5.6.3 Where they live
+
+In the task's RUN's artifacts, under `tasks/<task id>/<name>`, as a
+launch's files are under `attachments/`. On a job run too: the run's
+artifacts, not the job's directory, which may be a checkout. A name
+already there is numbered (`photo-2.jpg`, `writeNewFile`'s rule), so two
+copies' answers never overwrite each other.
+
+`submit` writes them after every check and BEFORE the guarded `settle`.
+The run is woken only once its files are on disk. A crash between the two,
+or a `settle` that loses a race with the lease's expiry, leaves files no
+answer names, never an answer whose files are lost. Nothing reads such a
+file, and the artifacts capability has no delete, so it stays.
+
+The lease records what was saved: `leases.attachments`, `[{ name,
+mediaType, size, path }]` (`RunAttachment`'s shape, `path` under the run's
+artifacts), written in `settle`'s transaction with the answer and added by
+`ALTER TABLE`.
+
+#### 5.6.4 What the run gets
+
+The `human` step's output gains `attachments`: the settled answer's files,
+`[{ name, mediaType, size, path }]`, absent when it has none. With copies,
+each of `answers` carries its own, and the top-level `attachments` are the
+agreed answer's (`by`'s). Copies compare answers alone, never files.
+`run/files` and `GET /artifacts/:runId/<path>` read them like any of the
+run's files.
+
+Staff see them too. `GET /tasks/:id` shows each lease's `attachments`, and
+`GET /tasks/:id/files/<path>` (`taskFile`, `staff/file`) serves a path on
+an answer's list as it serves one on the task's own, so a reviewer (§9.6)
+looks at the photo. The staff app's task view lists them and draws an
+image.
+
+**A later agent sees them (gap 1).** An agent's prompt carries only the
+files its run was LAUNCHED with (`ctx.attachments`, fixed at `run.start`),
+so a photo that reaches a `human` step mid-run reaches no agent. The
+agent's `attachments` takes a list beside `true` and `false`:
+
+```yaml
+- id: read
+  type: agent
+  config:
+    prompt: Read the case number and the filing date off this court paper.
+    attachments: "{{ photo.attachments }}"
+```
+
+A list is exactly the files the prompt carries: paths under the run's
+artifacts, or entries `{ path, name?, mediaType? }` (what `human` hands
+out), read and drawn as the launch's are (`loadRunAttachments`,
+`attachmentParts`) and held to the chat's caps (a list over them fails the
+step). `true` stays the launch's files and `false` none. It is general:
+any file in the run's artifacts can go on a prompt this way.
+
+Not taken: the step's files JOINING the run's attachments, so every later
+agent sees them with no YAML. `ctx.attachments` is fixed at `run.start`
+and read back by a resume. Growing it mid-run needs a new event and its
+replay, branches see different files depending on when they ran, and a
+judge that must not see the photo has to opt out.
+
+#### 5.6.5 Copies and tests
+
+- **Copies.** Each answer's files are its own: numbered names in the one
+  folder, and `answers[i].attachments` on the output.
+- **A test instance** has no run. A page cannot tell it from a task
+  (§7.2), so a type that takes files takes them on an instance, checked
+  as on a task, and then DROPS them: no run reads them, and a grader
+  (`equal` or a step) sees the answer alone. So a type's tests check its
+  JSON answer, never its photo. A grader that sees files is later.
+- `tests.fromTask` copies a task's `show`, files and answer, never an
+  answer's attachments.
+
+#### 5.6.6 The door's size
+
+A worker's page answers through `POST /public/mcp`, a member's through
+`POST /mcp`. Both are the MCP SDK's transport, which refuses a request
+over 4 MB (its `DEFAULT_MAX_REQUEST_BODY_SIZE`) before strut reads it.
+That leaves about 2.9 MB of files as base64 beside the answer: a few
+photos at the camera's default 1,600 px (`CAMERA_DEFAULT_SIDE`; a page of
+a document is about 0.3 to 0.8 MB), not ten. It also holds #694's launch
+with files from a page to 4 MB, though specs/API.md promises 15 MB.
+Question 2 (§5.6.7) is what to do about it.
+
+#### 5.6.7 Open questions
+
+**1. Taking back a bad answer (gap 2).** Pay is earned at submit and held
+`holdHours`. Only staff's review (`PUT /tasks/:id/review`, §9.6) or a
+failed test takes it back. A run that finds the photo is a blank wall or
+the wrong page cannot.
+
+| | Option | Cost |
+| --- | --- | --- |
+| a | **Leave it to staff.** The workflow flags the answer (an `agent` says it is no court paper; the run fails or routes it), and a person rejects it in `strut/staff`: §9.6's take-back and standing fail | Nothing to build. The worker is paid until a person looks |
+| b | **The workflow's verdict: `task/reject { task, worker?, why }`.** A step that runs §9.6's `review` with `rejected` for a task the CALLING run made (the store checks the task's run against the run control, as `ensure`'s `refusal` reads it, never an input), `by: "workflow:<name>"`. Only on a type whose admin allows it (`rejectBy: "workflow"`), since a workflow must not set its own pay (§6). Inside the hold it takes the earning back and counts in standing as staff's rejection does; staff's `ok` restores both, so a model's mistake costs the worker nothing once a person looks | One step and one flag on the type, over the review's code |
+| c | **A check before the answer is accepted.** The type names a sealed step (the grader's contract, `grade-step.ts`) that `submit` runs on the answer and its files. A `fail` refuses the answer (`bad_answer: <the check's reason>`) while the worker still holds the lease: they retake the photo, and nothing is paid for a bad one | Best for the worker. A model call on every answer, which the page waits on for seconds, and a grader that sees files, which none does today |
+
+**Recommended: b**, in a second PR after the first. It reuses the review
+whole (the take-back, standing, `ok`'s restore, final when the hold ends),
+and the workflow already sees the photo through its agent. c is the better
+worker experience and can follow.
+
+**2. The door's size (§5.6.6).**
+
+| | Option | Cost |
+| --- | --- | --- |
+| a | Raise the cap on a request that carries a session (a member's, a signed-in visitor's) to `PUBLIC_RUN_FILES_BODY_MAX_BYTES`, about 20.3 MB, which `POST /public/workflows/:name/run` already takes from anyone. An anonymous visitor's request stays 4 MB | An answer, and a signed-in page's launch, get the chat's caps whole |
+| b | Raise it on every request on both doors | An anonymous address may send 20 MB bodies at the door's 1,200 requests a minute |
+| c | Keep 4 MB, as strut's own number (`createMcpDoor` takes it, so a bump of the SDK cannot move it). An answer's files are at most 2.5 MB together, and specs/API.md says a page's launch is held to the door | A filing of many pages becomes several tasks |
+
+**Recommended: a.** The cap is passed per request (`createMcpDoor`
+builds the transport for each one), so the session decides it.
+
+#### 5.6.8 Tests that prove it
+
+In `src/tasks/worker-door.test.ts`'s pattern: a type takes files; a run
+parks; a signed-in visitor's page answers with a photo through `POST
+/public/mcp`; the run wakes; its next step, an `agent` on a stand-in
+model with `attachments: "{{ photo.attachments }}"`, gets the image on its
+prompt. Beside it: files refused by a type that takes none, too few, too
+many, a type not taken and too many bytes, each with the task still the
+worker's; two copies' files kept apart; an instance's files taken and
+dropped; staff reading an answer's file; the agent's list (exactly those
+files, a path outside the run refused, over the caps a failure); and the
+door's cap as ruled.
 
 ## 6. Task types and staff
 
@@ -3097,7 +3287,7 @@ directory, so past one process the answer is another strut.
 
 **Later**
 
-- Lease-scoped file links, and uploads from a worker's page.
+- Lease-scoped file links. (Uploads from a worker's page are item 8, §5.6.)
 - Invitation codes behind the qualifying tests.
 - A default worker app for task types that need only `TaskForm`.
 - Other things that park: a timer, a proposal awaited in a run, a wait on
@@ -3147,6 +3337,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
+| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size. Then, if ruled, the workflow's verdict (§5.6.7, question 1) | 3 | Proposed 2026-11-15; two questions wait for a ruling |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.
@@ -3158,6 +3349,7 @@ merged.
 | 1 | A run parks and holds no controller. A wake replays and finishes. A park in one branch lets the others finish. A foreach of N parks once with N waits. Cancel of a waiting run. A restart between settle and wake still wakes. Boot auto-resume passes a waiting run over. No `run.end` callback until the real end |
 | 2a, 2b | One task per run and path across wakes. Expiry fails the step and `onError` runs. Two workers never hold one task. One answer per lease. An answer that does not fit the schema is refused. A task type whose schema uses a keyword strut does not check is refused when saved. A `files` path that does not exist fails the step |
 | 3 | A visitor without a grant gets nothing. A suspended worker's next call is refused. A page cannot name another worker. A different app cannot pull the type. No run directory is written for a worker's call. `task/file` refuses a path not on the task's list. A `files` pattern is resolved when the task is made. `task/next` with no `type` returns a task of any type the worker holds in the calling app. An active worker's requests are counted per worker, a `new` one's per address. Built in `src/tasks/worker-door.test.ts` (with a run that parks, is answered through `/public/mcp` and finishes; the pattern, also #656's `human.test.ts`) and `src/tasks/tasks.test.ts` |
+| 8 | §5.6.8 |
 
 ## Rejected
 
