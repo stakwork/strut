@@ -80,6 +80,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
 import type { RunFile } from "../runs.js";
+import type { RunAttachment } from "../core.js";
 import { ZERO_BALANCE, type Earning, type LedgerStore, type PayeeBalance } from "../payments/ledger.js";
 import { PayoutError, type PayoutAnswer, type Payouts, type PayoutView } from "../payments/payouts.js";
 import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
@@ -117,11 +118,14 @@ import {
 import { gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
+import { answerAttachments, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
+import type { Attachment } from "../ai/attachments.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
+export type { AttachmentRule } from "./answer-files.js";
 export type { Standing } from "./task-tests.js";
 export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
@@ -325,6 +329,9 @@ export interface TaskTypeInput {
    *  `more`) with these over them; absent or null: off, a step asks one
    *  worker. */
   copies?: Partial<CopiesRule> | null;
+  /** The files an answer carries (§5.6): one, none required, images and
+   *  PDFs, with these over them; absent or null: none. */
+  attachments?: Partial<AttachmentRule> | null;
 }
 
 /** What a settled task's answer earned (§8.1): the lease's stamp, and the
@@ -341,6 +348,8 @@ export interface CopyAnswer {
   answer: unknown;
   by: string;
   agrees: boolean;
+  /** The files it carried (§5.6), under the run's artifacts. */
+  attachments?: RunAttachment[];
 }
 
 /** A copies task decided (§7.9): settled by agreement (`agreed`) or
@@ -367,6 +376,9 @@ export interface WorkerTask {
   /** What an answer earns, msat: the type's pay when the lease was taken,
    *  locked (§8.1). 0: unpaid. */
   payMsat: number;
+  /** The files an answer carries (§5.6): how many, and of what types.
+   *  Absent: the type takes none. */
+  attachments?: AttachmentRule;
 }
 
 /** A worker as they see themselves (`task/me`). */
@@ -573,7 +585,7 @@ export interface TasksCapability {
    *  when there is none (rule 1). A settled task comes with what its
    *  answers earned (`pay`, §8.1), when they earned anything, and a copies
    *  task's settled with every answer (`answers`, §7.6). */
-  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay; answers?: CopyAnswer[] }>;
+  ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay; answers?: CopyAnswer[]; attachments?: RunAttachment[] }>;
 
   // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
   // app's name, when the call comes from one: a lease of a type another app
@@ -585,7 +597,11 @@ export interface TasksCapability {
    *  `wait` (seconds, at most `NEXT_WAIT_MAX_S`) holds that long for a task
    *  to appear before answering `{ none: true }`; it counts as one call. */
   next(actor: string, o?: { type?: string; app?: string; wait?: number }): Promise<WorkerTask | { none: true }>;
-  submit(actor: string, o: { lease: string; answer: unknown; app?: string }): Promise<{ ok: true }>;
+  /** Answers the lease: `answer` in the type's answer schema, and the
+   *  files its `attachments` rule takes (§5.6) — `[{ name, mediaType?,
+   *  data }]`, the chat's shape and caps — saved in the task's run before
+   *  it settles (a test instance's are checked and dropped). */
+  submit(actor: string, o: { lease: string; answer: unknown; attachments?: unknown; app?: string }): Promise<{ ok: true }>;
   /** The task reopens for someone else; never handed to this worker again. */
   skip(actor: string, o: { lease: string; reason?: string; app?: string }): Promise<{ ok: true }>;
   /** One file the leased task names (`files`), as `run/files` answers one
@@ -741,6 +757,9 @@ export interface TasksDeps {
   testFiles?: TestFiles;
   /** One of a real task's files' bytes, for a test made from it. */
   bytes?(task: TaskRecord, path: string): Promise<Uint8Array | null>;
+  /** §5.6.3: an answer's files written into the task's run's artifacts
+   *  (`saveAnswerAttachments`). Left out: no answer carries files here. */
+  saveAttachments?(task: TaskRecord, files: Attachment[]): Promise<RunAttachment[]>;
   /** §7.4: why a step may not grade (not sealed, not here), else
    *  undefined. Asked when a type or test is saved and at each grading.
    *  Left out: only `equal` grades. */
@@ -1030,6 +1049,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       expires: l.expires,
       answer: kind?.answer ?? ({ type: "object", properties: {} } as AnswerSchema),
       payMsat: l.payMsat ?? 0,
+      ...(kind?.attachments ? { attachments: kind.attachments } : {}),
     };
   };
 
@@ -1108,12 +1128,17 @@ export function createTasks(deps: TasksDeps): TasksService {
   /** What a settled task's answers earned — the submitted leases' stamps,
    *  every copy's (§7.6) — and the dollars at the rate now; and a copies
    *  task's answers in the order given. */
-  const settledExtras = async (s: TaskStores, t: TaskRecord): Promise<{ pay?: TaskPay; answers?: CopyAnswer[] }> => {
+  const settledExtras = async (s: TaskStores, t: TaskRecord): Promise<{ pay?: TaskPay; answers?: CopyAnswer[]; attachments?: RunAttachment[] }> => {
     if (t.status !== "settled") return {};
     const answered = answersOf(await s.tasks.leasesOf([t.id]));
-    const answers = t.copies > 1 ? answered.map((l) => ({ answer: l.answer ?? null, by: l.worker, agrees: l.agrees === true })) : undefined;
+    const answers = t.copies > 1
+      ? answered.map((l) => ({ answer: l.answer ?? null, by: l.worker, agrees: l.agrees === true, ...(l.attachments?.length ? { attachments: l.attachments } : {}) }))
+      : undefined;
+    // The settled answer's files (§5.6.4): its worker's lease's.
+    const sent = answered.find((l) => l.worker === t.by)?.attachments;
+    const files = sent?.length ? { attachments: sent } : {};
     const msat = answered.reduce((n, l) => n + (l.payMsat ?? 0), 0);
-    if (!msat) return answers ? { answers } : {};
+    if (!msat) return { ...(answers ? { answers } : {}), ...files };
     let usd: number | undefined;
     try {
       const rate = await deps.usdPerBtc?.();
@@ -1121,7 +1146,7 @@ export function createTasks(deps: TasksDeps): TasksService {
     } catch (err) {
       console.warn(`[tasks] no rate for task ${t.id}'s pay in dollars: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return { pay: { msat, ...(usd !== undefined && usd > 0 ? { usd } : {}) }, ...(answers ? { answers } : {}) };
+    return { pay: { msat, ...(usd !== undefined && usd > 0 ? { usd } : {}) }, ...(answers ? { answers } : {}), ...files };
   };
   const balanceOf = async (actor: string): Promise<PayeeBalance> => {
     const ledger = await deps.ledgerIfAny?.();
@@ -1272,7 +1297,25 @@ export function createTasks(deps: TasksDeps): TasksService {
       await appOk(s, l, o.app, kind);
       const problem = answerProblem(kind.answer, o.answer);
       if (problem) throw new TaskError("bad_answer", problem);
-      const r = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, now: now(), decide: inlineDecider(kind) });
+      // §5.6: the files the type takes, checked before anything is written,
+      // then saved in the task's run BEFORE it settles, so the run wakes to
+      // them. A test instance has no run: a page cannot tell it from a task,
+      // so its files are checked alike and dropped (§5.6.5).
+      let files: Attachment[];
+      try {
+        files = answerAttachments(l.type, kind.attachments, o.attachments);
+      } catch (err) {
+        throw new TaskError("bad_answer", err instanceof Error ? err.message : String(err));
+      }
+      let attachments: RunAttachment[] | undefined;
+      if (files.length) {
+        const t = (await s.tasks.task(l.task))!;
+        if (t.root !== "test") {
+          if (!deps.saveAttachments) throw new TaskError("bad_request", "this server keeps no files from workers");
+          attachments = await deps.saveAttachments(t, files);
+        }
+      }
+      const r = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, ...(attachments ? { attachments } : {}), now: now(), decide: inlineDecider(kind) });
       if (!r) return whyNot(s, w, l.id);
       const settled = r.task;
       // The answer is accepted: what it earns is owed (§8.1), a test's as a
@@ -1377,6 +1420,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const holdHours = holdOk(input.holdHours);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
+      const attachments = ruled(() => attachmentRuleOf(input.attachments));
       const s = await stores();
       // Ruling 9: a paid open type qualifies every newcomer on K ready tests.
       const short = openPayProblem({ name, open, ...(paySats ? { paySats } : {}), ...(tests ? { tests } : {}) }, tests && open && paySats ? await s.tasks.readyTests(name) : 0);
@@ -1393,6 +1437,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         holdHours,
         ...(tests ? { tests } : {}),
         ...(copies ? { copies } : {}),
+        ...(attachments ? { attachments } : {}),
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
@@ -1561,9 +1606,12 @@ export function createTasks(deps: TasksDeps): TasksService {
       const s = await storesIfAny();
       const t = s && typeof id === "string" ? await s.tasks.task(id) : undefined;
       if (!t) throw new TaskError("unknown_task", `no task ${id}`);
-      // A path not on the list is refused whether or not it exists (§5.5).
-      if (!t.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of this task's files`);
-      const f = deps.file ? await deps.file(t, path) : null;
+      // A path not on the list is refused whether or not it exists (§5.5) —
+      // the task's own, or one its answers carried (§5.6.4), which are in
+      // the run's artifacts whatever the task's root.
+      const sent = !t.files.includes(path) && (await s!.tasks.leasesOf([t.id])).some((l) => l.attachments?.some((a) => a.path === path));
+      if (!sent && !t.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of this task's files`);
+      const f = deps.file ? await deps.file(sent ? { ...t, root: "run" } : t, path) : null;
       if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
       return f;
     },

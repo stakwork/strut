@@ -200,7 +200,11 @@ index. A change in this area updates this file, not AGENTS.md.
   the bytes, so a resume reads them back from there — and handed to every
   step as `ctx.attachments`. Every `agent` step of the run puts them on its
   prompt as the parts above (`attachments`, default true; a sub-agent never
-  gets them — its prompt is its caller's words); in a session they are that
+  gets them — its prompt is its caller's words). An agent's `attachments`
+  may instead LIST files of the run's artifacts — paths, or `{ path, name?,
+  mediaType? }` as a `human` step's `attachments` hands them out (a worker's
+  photo, plans/human-steps.md §5.6.4): exactly those on its prompt, read and
+  held to the same caps (`listedParts`, src/steps/core/agent.ts); in a session they are that
   turn's message, replayed like the chat's, and the turn line records them
   (`SessionTurn.attachments`). `job/start` / `job/continue` take
   `attachments: [name]`: the files the job needs — this turn's, or, from an

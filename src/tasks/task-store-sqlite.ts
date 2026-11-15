@@ -26,10 +26,15 @@
  * it, `user_version` still 2. *
  * Open types (plans/human-steps.md ruling 9) add `task_types.invite_only`
  * the same way: null or 0 is open, so a type on file from before is open.
+ * Files from a worker (§5.6, item 8) add `task_types.attachments` (the
+ * type's rule, JSON, null takes none) and `leases.attachments` (what an
+ * answer saved, JSON) the same way.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
 import type { AnswerSchema } from "./answer-schema.js";
+import type { AttachmentRule } from "./answer-files.js";
+import type { RunAttachment } from "../core.js";
 import {
   DEFAULT_HOLD_HOURS,
   DUE_SOON_MS,
@@ -115,7 +120,8 @@ create table if not exists task_types (
   hold_hours real,
   tests text,
   copies text,
-  invite_only integer
+  invite_only integer,
+  attachments text
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -133,6 +139,7 @@ create table if not exists leases (
   booked_at integer,
   answer text,
   agrees integer,
+  attachments text,
   unique (task, worker)
 ) strict;
 
@@ -176,6 +183,8 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["leases", "booked_at", "integer"],
   ["leases", "answer", "text"],
   ["leases", "agrees", "integer"],
+  ["task_types", "attachments", "text"],
+  ["leases", "attachments", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -242,12 +251,12 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
-           invite_only = excluded.invite_only`,
+           invite_only = excluded.invite_only, attachments = excluded.attachments`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -275,7 +284,7 @@ export class SqliteTaskStore implements TaskStore {
       ),
       // The same guard, read only: the type `take` would hand out (§7.2).
       peek: p(`select t.type from tasks t join task_types ty on ty.name = t.type where ${TAKEABLE} order by t.seq limit 1`),
-      submit: p("update leases set status = 'submitted', closed = ?1, answer = ?4 where id = ?2 and worker = ?3 and status = 'open' and expires > ?1"),
+      submit: p("update leases set status = 'submitted', closed = ?1, answer = ?4, attachments = ?5 where id = ?2 and worker = ?3 and status = 'open' and expires > ?1"),
       settle: p("update tasks set status = 'settled', settled_at = ?1, answer = ?2, by = ?3 where id = ?4 and status = 'open' and due > ?1"),
       // Copies (§7.6): the answers in the order given; a decision, each
       // guarded by the task still open and wanting the answers decided on.
@@ -471,6 +480,7 @@ export class SqliteTaskStore implements TaskStore {
         t.tests ? JSON.stringify(t.tests) : null,
         t.copies ? JSON.stringify(t.copies) : null,
         t.open === false ? 1 : null,
+        t.attachments ? JSON.stringify(t.attachments) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -657,7 +667,8 @@ export class SqliteTaskStore implements TaskStore {
         const t = this.s.task.get(l.task as string) as Row | undefined;
         const many = !!t && (t.copies as number) > 1 && t.test === null;
         // A copies task's answer stays on its lease (§7.6); one copy's is the task's.
-        if (Number(this.s.submit.run(o.now, o.lease, o.worker, many ? JSON.stringify(o.answer) : null).changes) !== 1) return undefined;
+        const files = o.attachments?.length ? JSON.stringify(o.attachments) : null;
+        if (Number(this.s.submit.run(o.now, o.lease, o.worker, many ? JSON.stringify(o.answer) : null, files).changes) !== 1) return undefined;
         if (!many) {
           // The task left `open` (or ran past due) while the lease was live:
           // nothing is written, the lease included.
@@ -954,6 +965,8 @@ function typeOf(r: Row): TaskType {
   if (tests !== undefined) t.tests = JSON.parse(tests) as TestRules;
   const copies = opt<string>(r.copies);
   if (copies !== undefined) t.copies = JSON.parse(copies) as CopiesRule;
+  const attachments = opt<string>(r.attachments);
+  if (attachments !== undefined) t.attachments = JSON.parse(attachments) as AttachmentRule;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;
@@ -1052,5 +1065,7 @@ function leaseOf(r: Row): Lease {
   if (answer !== undefined) l.answer = JSON.parse(answer);
   const agrees = opt<number>(r.agrees);
   if (agrees !== undefined) l.agrees = agrees === 1;
+  const attachments = opt<string>(r.attachments);
+  if (attachments !== undefined) l.attachments = JSON.parse(attachments) as RunAttachment[];
   return l;
 }

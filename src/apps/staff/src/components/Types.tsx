@@ -286,6 +286,22 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         </Section>
       )}
 
+      <Section title="Files" aside={<Switch checked={d.filesOn} onCheckedChange={(c) => set({ filesOn: c })} aria-label="Files with each answer" />}>
+        {!d.filesOn ? (
+          <Note>Off: an answer is its fields alone. On, the worker sends files with it (a photo of a document), saved in the task's run for the workflow's next steps.</Note>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-4">
+            <Num label="At most" v={d.files.max} set={(max) => set({ files: { ...d.files, max } })} hint="files an answer carries, 1 to 10" />
+            <Num label="At least" v={d.files.min} set={(min) => set({ files: { ...d.files, min } })} hint="0: optional" />
+            <div className="md:col-span-2">
+              <Field label="Of the types">
+                <Input value={d.files.types} onChange={(e) => set({ files: { ...d.files, types: e.target.value } })} placeholder="image/*, application/pdf" />
+              </Field>
+            </div>
+          </div>
+        )}
+      </Section>
+
       <div className="flex flex-wrap items-center gap-2 border-t pt-4">
         <Button onClick={() => void save()} disabled={busy !== null || "problem" in out || !!nameProblem} title={"problem" in out ? out.problem : undefined}>
           <Save /> {confirm === "shape" ? `Save: check ${props.openTasks} open task${props.openTasks === 1 ? "'s" : "s'"} answers against the new shape` : "Save"}

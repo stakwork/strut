@@ -35,6 +35,14 @@
  * and what an answer earns are the TASK TYPE's, an admin's (§6): the
  * workflow names a type and cannot set them.
  *
+ * FILES (§5.6): a type whose `attachments` rule takes files has its
+ * worker send them with the answer (a photo of a court paper); they are
+ * saved in this run's artifacts as `tasks/<task id>/<name>`, and the output's
+ * `attachments` names them, `[{ name, mediaType, size, path }]` — what a
+ * later `agent` step puts on its prompt with `attachments: "{{ <id>.attachments }}"`.
+ * With copies, each of `answers` carries its own, and `attachments` are the
+ * agreed answer's.
+ *
  * PAY (§8.1): an answer of a paid type adds `pay: { msat, usd? }` to the
  * output, `usd` at the rate when the step returns, and marks the output
  * with those dollars as the step's cost (`withUsage`, no model call), as
@@ -51,6 +59,8 @@ import { emptyUsage } from "../../pricing.js";
 import type { StrutCapabilities } from "../../capabilities.js";
 import { COPIES_MAX, FILES_MAX, TASK_PARK_PREFIX, WITHIN_HOURS_MAX } from "../../tasks/tasks.js";
 import { resolveTaskFiles, taskFilesRoot } from "../../tasks/files.js";
+
+const ATTACHMENT = z.object({ name: z.string(), mediaType: z.string(), size: z.number(), path: z.string() });
 
 const EXAMPLE = `- id: review
   type: human
@@ -73,7 +83,7 @@ const EXAMPLE = `- id: review
 
 export default defineStep({
   type: "human",
-  description: `Ask a PERSON: make a task of a task type and wait — the run leaves memory — until a worker answers it in the type's app; the answer is this step's output, \`{ answer, by, task }\` (\`by\`: the worker), with \`pay: { msat, usd }\` when the type pays — counted in the run's cost. \`copies: N\` asks N workers (up to the type's \`copies.max\`; a type without a copies rule asks one): the answer is the one enough of them agreed on, \`by\` the first who gave it, and \`answers\` every copy as \`[{ answer, by, agrees }]\`; answers that never agree fail the step \`task_disputed:\` and \`onError\` runs. The task type (an admin's: its app, the answer's shape, its pay) must exist and be enabled. \`files\` are paths under the run's files (the job's directory on a job run, else the run's artifacts); \`*\` and \`?\` match within one folder, expanded when the task is made. Unanswered within \`withinHours\` (the type's default otherwise), the step fails \`task_expired:\` and \`onError\` runs. Not in a public run, a single-step run, or as an agent's tool.\n\n${EXAMPLE}`,
+  description: `Ask a PERSON: make a task of a task type and wait — the run leaves memory — until a worker answers it in the type's app; the answer is this step's output, \`{ answer, by, task }\` (\`by\`: the worker), with \`pay: { msat, usd }\` when the type pays — counted in the run's cost. \`copies: N\` asks N workers (up to the type's \`copies.max\`; a type without a copies rule asks one): the answer is the one enough of them agreed on, \`by\` the first who gave it, and \`answers\` every copy as \`[{ answer, by, agrees }]\`; answers that never agree fail the step \`task_disputed:\` and \`onError\` runs. A type that takes files (its \`attachments\` rule: a photo of a document) has the worker send them with the answer: saved in this run's artifacts, named by the output's \`attachments\` (\`[{ name, mediaType, size, path }]\`), which a later agent puts on its prompt with \`attachments: "{{ <this step's id>.attachments }}"\`. The task type (an admin's: its app, the answer's shape, its pay) must exist and be enabled. \`files\` are paths under the run's files (the job's directory on a job run, else the run's artifacts); \`*\` and \`?\` match within one folder, expanded when the task is made. Unanswered within \`withinHours\` (the type's default otherwise), the step fails \`task_expired:\` and \`onError\` runs. Not in a public run, a single-step run, or as an agent's tool.\n\n${EXAMPLE}`,
   input: z.object({
     task: z.string().min(1).describe("the task type's name (an admin makes it, with its app and the answer's shape)"),
     show: z.unknown().optional().describe("what the worker's app is handed: any JSON, at most 256 KB; name files instead of inlining them"),
@@ -101,7 +111,8 @@ export default defineStep({
     by: z.string(),
     task: z.string(),
     pay: z.object({ msat: z.number(), usd: z.number().optional() }).optional(),
-    answers: z.array(z.object({ answer: z.unknown(), by: z.string(), agrees: z.boolean() })).optional(),
+    answers: z.array(z.object({ answer: z.unknown(), by: z.string(), agrees: z.boolean(), attachments: z.array(ATTACHMENT).optional() })).optional(),
+    attachments: z.array(ATTACHMENT).optional(),
   }),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     // Nothing is made where nothing could wake the run.
@@ -113,7 +124,7 @@ export default defineStep({
     if (!tasks) throw new Error("human: this server keeps no task store (ctx.services.tasks)");
 
     const job = ctx.job;
-    const { task, pay, answers } = await tasks.ensure(
+    const { task, pay, answers, attachments } = await tasks.ensure(
       {
         type: cfg.task,
         workflow: workflowOf(ctx),
@@ -139,7 +150,7 @@ export default defineStep({
       case "open":
         return ctx.park(`${TASK_PARK_PREFIX}:${task.id}`);
       case "settled": {
-        const out = { answer: task.answer, by: task.by ?? "", task: task.id, ...(pay ? { pay } : {}), ...(answers ? { answers } : {}) };
+        const out = { answer: task.answer, by: task.by ?? "", task: task.id, ...(pay ? { pay } : {}), ...(answers ? { answers } : {}), ...(attachments ? { attachments } : {}) };
         // The answer's pay in dollars, as this step's cost: the run's
         // totals count it, the model caps never do (§8.1).
         return pay?.usd ? withUsage(out, { modelCalls: 0, usage: emptyUsage(), cost: pay.usd }) : out;

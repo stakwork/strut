@@ -411,6 +411,16 @@ the task's id.
   rate the output has `msat` alone and no cost is marked. What is OWED is
   the ledger's record, written when the answer was accepted, held for the
   type's `holdHours` (specs/API.md §22, "Pay"), never this output.
+- `attachments` (plans/human-steps.md §5.6): when the type takes files
+  with an answer (its `attachments` rule: a photo of a court paper), the
+  worker sends them with it, and they are saved in this run's artifacts as
+  `tasks/<task id>/<name>` before the run wakes. The output names them,
+  `[{ name, mediaType, size, path }]` (absent with none; with copies, each
+  of `answers` carries its own and these are the agreed answer's). An
+  `agent` step later in the run sees them on its prompt with `attachments:
+  "{{ <this step's id>.attachments }}"`: the agent's `attachments` takes a
+  LIST of the run's files beside `true` (the files the run was launched
+  with, the default) and `false`.
 - A worker answers in the task type's app, through the `task/*` steps
   (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
   app door, as the page's signed-in viewer; an admin makes the task types

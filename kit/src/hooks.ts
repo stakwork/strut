@@ -888,6 +888,20 @@ export interface WorkerTask {
    *  when this task was taken, locked — a later change of pay never reaches
    *  it. 0: unpaid. */
   payMsat: number;
+  /** The files an answer carries (a photo of a document): how many, and
+   *  of what media types (`image/*` a family) — `submit(answer, files)`.
+   *  Absent: the task type takes none. */
+  attachments?: TaskAttachmentRule;
+}
+
+/** What files a task type takes with an answer (`WorkerTask.attachments`). */
+export interface TaskAttachmentRule {
+  /** At most this many. */
+  max: number;
+  /** At least this many: 0 when they are optional. */
+  min: number;
+  /** Media types; `image/*` is any image. */
+  types: string[];
 }
 
 /** A worker's payout on its way (`task/me`'s `payout.out`). */
@@ -966,9 +980,12 @@ export type TaskHookStatus = "waiting" | "working" | "sending" | "inactive" | "e
 export interface UseTask {
   /** The task in hand, or null. */
   task: WorkerTask | null;
-  /** Answer it: in the task type's answer schema. Then the next one is asked
-   *  for, and `useWorker()` is read again, so its balance moves. */
-  submit: (answer: unknown) => Promise<void>;
+  /** Answer it: in the task type's answer schema, with the `files` its
+   *  `attachments` rule takes (a photo from `useCamera().capture()`: at
+   *  most 10, 5 MB an image, 15 MB together) — saved in the task's run for
+   *  the workflow's next steps. Then the next one is asked for, and
+   *  `useWorker()` is read again, so its balance moves. */
+  submit: (answer: unknown, files?: readonly File[]) => Promise<void>;
   /** Pass on it: it goes to someone else, never back to this worker. */
   skip: (reason?: string) => Promise<void>;
   status: TaskHookStatus;
@@ -1081,8 +1098,9 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
     [client, drop],
   );
   const submit = useCallback(
-    async (answer: unknown) => {
-      await send(TASK_STEPS.submit, { answer });
+    async (answer: unknown, files?: readonly File[]) => {
+      const attachments = files?.length ? await Promise.all(files.map(fileData)) : undefined;
+      await send(TASK_STEPS.submit, compact({ answer, attachments }));
       // The answer earned: the balance `useWorker()` shows moved.
       void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
     },

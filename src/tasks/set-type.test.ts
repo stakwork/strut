@@ -83,7 +83,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
   });
 
@@ -149,8 +149,15 @@ describe("task/set-type: its input, the merge and the card", () => {
         ["Pay", "unpaid", false],
         ["Tests", "off", false],
         ["Copies", "off: a step asks one worker", false],
+        ["Files", "none: an answer is its JSON alone", false],
       ],
     );
+    // §5.6: the files an answer carries, merged over the defaults; a bad rule refused on the card.
+    const photo = typeCard({ name: "court-paper", app: "workers", answer: MATCH, attachments: { max: 4, min: 1, types: ["image/*"] } });
+    assert.equal(field(photo, "Files")!.value, "1 to 4 files (image/*) with each answer, saved in the task's run");
+    assert.equal(field(typeCard({ name: "court-paper", app: "workers", answer: MATCH, attachments: {} }), "Files")!.value, "0 to 1 file (image/*, application/pdf) with each answer, saved in the task's run");
+    assert.equal(typeChangeInput.safeParse({ name: "court-paper", attachments: { max: 11 } }).success, false, "max past 10 is the model's error");
+    assert.deepEqual(mergeType("court-paper", { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 72, enabled: true, holdHours: 72, attachments: { max: 4, min: 1, types: ["image/*"] } }, { attachments: { max: 2 } }).attachments, { max: 2, min: 1, types: ["image/*"] });
     assert.match(card.summary!, /^A new task type pet-match, drawn by the app workers: .* It is open: any signed-in worker of the app may take its tasks, with no grant\.$/);
     // Invite-only: an admin grants it.
     const invite = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false });

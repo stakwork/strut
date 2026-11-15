@@ -6,7 +6,7 @@
  * - `typeChangeInput`: the step's input — the name and the fields to change,
  *   as `PUT /tasks/types/:name` takes them — every field checked as the store
  *   checks it (the answer's shape by `answerSchemaProblem`, the tests and
- *   copies rules by their own checks), so a bad shape is refused to the
+ *   copies rules and the files an answer carries by their own checks), so a bad shape is refused to the
  *   model before any proposal is made.
  * - `mergeType`: the change merged over the type when there is one (ruled,
  *   §9.12): a field left out keeps its value, and a `tests` or `copies`
@@ -26,6 +26,7 @@ import type { CardField, ProposalDescription } from "../core.js";
 import type { Proposal } from "../proposals.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
+import { attachmentRuleLine, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
 import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type TaskType, type TestRules } from "./task-store.js";
 import {
@@ -110,6 +111,12 @@ export const typeChangeInput = z.object({
     .optional()
     .superRefine((v, c) => ruleIssue(c, () => copiesRuleOf(v, shapeOnly)))
     .describe("How many workers a `human` step may ask one task, each paid: { max, agree, compare, onDisagree }, merged over the type's own (or the defaults: 3, 2, \"equal\", \"more\"); null: one worker a task."),
+  attachments: z
+    .record(z.string(), z.any())
+    .nullable()
+    .optional()
+    .superRefine((v, c) => ruleIssue(c, () => attachmentRuleOf(v)))
+    .describe("The files a worker sends with each answer — a photo of a document, a signed form: { max, min, types }, merged over the type's own (or the defaults: 1, 0, [\"image/*\", \"application/pdf\"]); max at most 10, types media types (`image/*` a family); null: none. They are saved in the task's run, and the `human` step's output names them as `attachments`."),
 });
 
 /** What `task/set-type` asks, as its schema parsed it. */
@@ -148,11 +155,11 @@ export interface TaskTypesDeps {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** `change` merged over `existing` (ruled, §9.12): what is left out keeps
- *  its value; `tests` and `copies` merge over the type's own rules, `null`
- *  turns them off. A new type needs `answer` (`bad_request`). */
+ *  its value; `tests`, `copies` and `attachments` merge over the type's own
+ *  rules, `null` turns them off. A new type needs `answer` (`bad_request`). */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   const answer = change.answer !== undefined ? change.answer : existing?.answer;
@@ -168,6 +175,7 @@ export function mergeType(
   const holdHours = change.holdHours ?? existing?.holdHours;
   const tests = rules<TestRules>(existing?.tests, change.tests);
   const copies = rules<CopiesRule>(existing?.copies, change.copies);
+  const attachments = rules<AttachmentRule>(existing?.attachments, change.attachments);
   if (leaseSeconds !== undefined) out.leaseSeconds = leaseSeconds;
   if (withinHours !== undefined) out.withinHours = withinHours;
   if (enabled !== undefined) out.enabled = enabled;
@@ -176,6 +184,7 @@ export function mergeType(
   if (holdHours !== undefined) out.holdHours = holdHours;
   if (tests !== undefined) out.tests = tests;
   if (copies !== undefined) out.copies = copies;
+  if (attachments !== undefined) out.attachments = attachments;
   return out;
 }
 
@@ -241,6 +250,7 @@ interface Planned {
   holdHours: number;
   tests?: TestRules;
   copies?: CopiesRule;
+  attachments?: AttachmentRule;
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
@@ -254,12 +264,14 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   holdHours: t.holdHours,
   ...(t.tests ? { tests: t.tests } : {}),
   ...(t.copies ? { copies: t.copies } : {}),
+  ...(t.attachments ? { attachments: t.attachments } : {}),
 });
 
 interface Problems {
   answer?: string;
   tests?: string;
   copies?: string;
+  attachments?: string;
   /** Ruling 9: paid and open with too few ready tests (`openPayProblem`). */
   open?: string;
 }
@@ -273,7 +285,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
     problems.answer = err instanceof Error ? err.message.replace(/^bad_request: /, "") : String(err);
     merged = { ...mergeType(name, existing, { ...change, answer: null }), answer: undefined };
   }
-  const rule = <T>(key: "tests" | "copies", check: () => T | undefined): T | undefined => {
+  const rule = <T>(key: "tests" | "copies" | "attachments", check: () => T | undefined): T | undefined => {
     try {
       return check();
     } catch (err) {
@@ -283,6 +295,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   };
   const tests = rule("tests", () => testRulesOf(merged.tests, shapeOnly));
   const copies = rule("copies", () => copiesRuleOf(merged.copies, shapeOnly));
+  const attachments = rule("attachments", () => attachmentRuleOf(merged.attachments));
   const pay = merged.paySats && merged.paySats > 0 ? Math.round(merged.paySats * 1000) / 1000 : 0;
   // A new type has no tests yet; a host's store that counts none is not checked here.
   const ready = existing ? existing.readyTests : 0;
@@ -302,6 +315,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       holdHours: merged.holdHours ?? DEFAULT_HOLD_HOURS,
       ...(tests ? { tests } : {}),
       ...(copies ? { copies } : {}),
+      ...(attachments ? { attachments } : {}),
     },
     problems,
   };
@@ -389,6 +403,11 @@ export function testsText(r: TestRules | undefined): string {
   );
 }
 
+/** The files an answer carries (§5.6), for the card. */
+export function attachmentsText(a: AttachmentRule | undefined): string {
+  return a ? `${attachmentRuleLine(a)}, saved in the task's run` : "none: an answer is its JSON alone";
+}
+
 export function copiesText(c: CopiesRule | undefined): string {
   if (!c) return "off: a step asks one worker";
   return (
@@ -443,6 +462,10 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     }
     if (!problems.copies) {
       const d = rulesDiff("copies", before.copies, after.copies);
+      if (d) changes.push(d);
+    }
+    if (!problems.attachments) {
+      const d = rulesDiff("files", before.attachments, after.attachments);
       if (d) changes.push(d);
     }
   }
@@ -508,6 +531,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   fields.push({ label: "Pay", value: pay, ...(rises ? { danger: true } : {}) });
   fields.push(problems.tests ? { label: "Tests", value: `refused: ${problems.tests}`, danger: true } : { label: "Tests", value: testsText(after.tests) });
   fields.push(problems.copies ? { label: "Copies", value: `refused: ${problems.copies}`, danger: true } : { label: "Copies", value: copiesText(after.copies) });
+  fields.push(problems.attachments ? { label: "Files", value: `refused: ${problems.attachments}`, danger: true } : { label: "Files", value: attachmentsText(after.attachments) });
 
   const lines: string[] = [];
   if (!existing) {
@@ -520,7 +544,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   }
   if (appProblem) lines.push(`Workers cannot answer it yet: ${appProblem}.`);
   if (rises) lines.push(`Its pay rises from ${payBefore ? satsText(payBefore) : "nothing"} to ${satsText(after.paySats)} an answer${dollars(after.paySats)}.`);
-  const fails = problems.answer ?? problems.tests ?? problems.copies ?? problems.open;
+  const fails = problems.answer ?? problems.tests ?? problems.copies ?? problems.attachments ?? problems.open;
   if (fails) lines.push(`Accepting it fails: ${fails}.`);
   return { title, summary: lines.join(" "), fields, actions: { accept: "Save type", reject: "Don't" }, full: true };
 }

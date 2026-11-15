@@ -748,6 +748,24 @@ describe("a worker's page (plans/human-steps.md §5.3)", () => {
     }
   });
 
+  it("submit with files sends them as the answer's attachments, the chat's shape (plans/human-steps.md §5.6)", async () => {
+    let nexts = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? { ...TASK, attachments: { max: 1, min: 1, types: ["image/*"] } } : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => ({ ok: true }),
+    });
+    const h = await renderHook(() => useTask(), { client });
+    await until(() => h.result().task?.lease === "l1", "the task");
+    assert.deepEqual(h.result().task?.attachments, { max: 1, min: 1, types: ["image/*"] }, "what the type takes");
+    const photo = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2])], "page 1.jpg", { type: "image/jpeg" });
+    await act(async () => { await h.result().submit({ pages: 1 }, [photo]); });
+    assert.deepEqual(calls.find((c) => c.type === "task/submit"), {
+      type: "task/submit",
+      config: { lease: "l1", answer: { pages: 1 }, attachments: [{ name: "page 1.jpg", mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString("base64") }] },
+    });
+    await h.unmount();
+  });
+
   it("a bad answer keeps the task; a lease that is gone drops it and asks again; a worker not active is `inactive`", async () => {
     let answer: "bad" | "gone" = "bad";
     let nexts = 0;

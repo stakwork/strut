@@ -186,7 +186,7 @@ by the gate.
 | `title`          | the job's name (`plans/job-index.md`), recorded on the JOB, never on the run: the host's label for it, kept until a later launch carries another. 400 without `job` |
 | `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme. `{ room: true }` as for `callback` |
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
-| `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`; a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — this message's, or one an earlier turn of its session carried (the turn log records them, `/sessions?id=`); not to a builder job on a peer |
+| `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`, or lists the run's files it wants instead (`attachments: "{{ photo.attachments }}"`: a worker's photo, §22 "Files from a worker"); a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — this message's, or one an earlier turn of its session carried (the turn log records them, `/sessions?id=`); not to a builder job on a peer |
 | `conversation`   | a session id (§9; a bad one is a 400) — the conversation this run belongs to, for a job turn you launch yourself: when it ends, strut WAKES that conversation as it does for a job a turn started (`CALLBACKS.md` §9, `src/wake.ts`). Recorded on `run.start`; read wherever `startedBy.session` is (a proposal's conversation). The deployment's only: a peer's launch carrying it is a 403 |
 | `branch`         | a Concept BRANCH's name (§5.7) — the run's Concepts are that branch's, the rest of the graph is live. A launch-level field like `job`, never in `input`: recorded on `run.start` and the summary, handed to steps as `ctx.branch`, kept by a durable resume, and every run this run starts is on it (`job/start`, `job/continue`, `meta/run-workflow`, `meta/run-step`, `run/launch`, the wake turn reporting on its job) and can name no other. A conversation stays on the branch its first turn ran on: an `agent` step's session whose first turn ran on another branch (or on main) fails the turn `session_branch:`. The deployment's only: 403 for any other scope, and a peer's launch carrying it is a 403 (a branch does not cross to another strut); a malformed name is a 400, a branch that does not exist a 404, and nothing launches. A run that names one dropped since (a resume, a wake) ends at once `no_branch:` |
 | `wake`           | `true`: ASK strut to wake this run's conversation when a job ends — on a person's turn (`input.session`), the jobs it starts; on a job turn you launch naming a `conversation`, that job (`CALLBACKS.md` §9, `src/wake.ts`). Opt-in: a launch that does not ask is never woken, so a host that wakes on its own never gets two. `true` or `false` (else a 400); recorded on `run.start` as `wakeAsked`. A peer's is dropped (its turns are relays) |
@@ -2489,7 +2489,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/types` | `GET /tasks/types` | `{ types }` |
-| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
 | `staff/worker { actor }` | `GET /tasks/workers/:actor` | `{ worker, holding?, week, recent }` |
@@ -5005,8 +5005,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer, payMsat }` or `{ none: true }` |
-| `task/submit` | `{ lease, answer }` | `{ ok: true }` |
+| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
+| `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
@@ -5028,12 +5028,20 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   next lease, never one in hand. A type with tests may hand out a TEST in
   place of a task, and only tests while the worker qualifies: the same
   fields from the same code, answered, skipped and timed out the same way,
-  its files the test's own copies under the same paths.
+  its files the test's own copies under the same paths. `attachments`,
+  present when the type takes files with an answer, is its rule `{ max,
+  min, types }` ("Files from a worker" below).
 - **`task/submit`**: once per lease, before it expires, checked against
   the type's answer schema (`bad_answer`). It settles the task, and the
   waiting run goes on with `{ answer, by, task }` — for a task asked of
   several workers, once every answer is in and the type's rule decides
-  ("Copies" below). An answer under a paid
+  ("Copies" below). `attachments` are the files the type takes with an
+  answer, `[{ name, mediaType?, data }]` as `POST …/run` takes them (`data`
+  base64 or a data URL; at most 10, 5 MB an image, 10 MB another file, 15
+  MB together), then held to the type's rule: a type with none refuses any;
+  too few, too many or a type it does not take is `bad_answer`, and the task
+  stays the worker's. They are saved in the task's run before it settles
+  ("Files from a worker" below). An answer under a paid
   lease is then owed to its worker: booked in the ledger (`pay`, one row
   per lease). A booking that fails never fails the answer: the store's
   sweep books it within a minute, once.
@@ -5095,7 +5103,7 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies). A PAID open type needs its tests on, `tests.qualify` (K) at least 1 and K ready tests: else `409 needs_tests`, its message naming the shortfall ("Open task types") |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files). `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). A PAID open type needs its tests on, `tests.qualify` (K) at least 1 and K ready tests: else `409 needs_tests`, its message naming the shortfall ("Open task types") |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
@@ -5105,7 +5113,7 @@ server whose task store is its host's (which answers none of them).
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
 | `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
-| `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list only, `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
+| `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
 
@@ -5508,6 +5516,41 @@ work): a type without it asks one, and a step asking more than `max` fails
 The in-process service also tells `onAgreed` listeners each decision of a
 copies task (not `more`): `{ task, type, agreed, answers: [{ lease,
 worker, agrees }], at }`, `agreed` false when it was disputed.
+
+### Files from a worker (`plans/human-steps.md` §5.6)
+
+Some answers are a file: a photo of a court paper, a signed form. A TYPE
+opts in with `attachments` (an admin's, as its answer and pay are):
+
+| `attachments` | | Default |
+| --- | --- | --- |
+| `max` | How many files one answer may carry; 1 to 10 | 1 |
+| `min` | How many it must carry; 0 to `max` | 0 |
+| `types` | Media types it takes, `image/*` a family; 1 to 20 | `["image/*", "application/pdf"]` |
+
+- **Sent** with `task/submit { lease, answer, attachments }` (the kit's
+  `useTask().submit(answer, files)`), in `POST …/run`'s shape and caps (10
+  files, 5 MB an image, 10 MB another file, 15 MB together), then held to
+  the type's rule; everything is checked before anything is written.
+  `task/next` hands the rule out as `attachments`.
+- **Saved** in the task's RUN's artifacts as `tasks/<task id>/<name>` (a
+  job run's too, never the job's directory), a name already there numbered
+  (`page-2.jpg`), BEFORE the task settles: the run wakes to them. A crash
+  between leaves files no answer names.
+- **Named** by the `human` step's output, `attachments: [{ name, mediaType,
+  size, path }]` (`path` under the run's artifacts; absent with none), and
+  per answer on a copies task's `answers`, the top-level ones the agreed
+  answer's. Copies compare answers alone, never files. An `agent` step puts
+  them on its prompt with `attachments: "{{ <step id>.attachments }}"`
+  (the agent's `attachments` takes a list of the run's files beside `true`
+  and `false`, specs/SPEC.md §4.1.9). Staff read them on the
+  lease (`attachments`) and through `GET /tasks/:id/files/<path>`.
+- **A test instance** takes them as a task does, checked alike, and drops
+  them: it has no run, and a grader sees the answer alone.
+- **The door.** A page's request on `POST /public/mcp` with a signed-in
+  visitor's session, and any on `POST /mcp`, may be as large as a public
+  launch with files (`PUBLIC_RUN_FILES_BODY_MAX_BYTES`, about 20.3 MB); an
+  anonymous visitor's stays at 4 MB (`413`).
 
 ### Review (`plans/human-steps.md` §9.6)
 
