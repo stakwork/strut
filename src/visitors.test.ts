@@ -8,7 +8,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, createHmac, webcrypto } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ import { MemoryRunStore } from "./store.js";
 import { defineStep } from "./core.js";
 import { verifyChannelTicket } from "./auth.js";
 import { kitForTests } from "./test-util/app-kit.js";
+import { lnSign, p256Key, p256Sign } from "./test-util/public-door.js";
 import { STEP_RUN_TOOL } from "./apps/tools.js";
 import { createRegistry } from "./steps/registry.js";
 import { VISIT_HEADER, emptySurface } from "./public-surface.js";
@@ -32,25 +33,13 @@ import {
   offeredMethods, signedInRefusal, visitorLimits, visitorWrite,
 } from "./visitors.js";
 
-const subtle = webcrypto.subtle;
 const hex = (b: ArrayBuffer | Uint8Array) => Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b)).toString("hex");
 const sha256 = (s: string | Uint8Array) => new Uint8Array(createHash("sha256").update(s).digest());
 const utf8 = (s: string) => new TextEncoder().encode(s);
-const p256Key = () => subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]) as Promise<CryptoKeyPair>;
-const p256Sign = async (key: CryptoKeyPair, message: string) => ({
-  key: hex(await subtle.exportKey("raw", key.publicKey)),
-  sig: hex(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.privateKey, utf8(message))),
-});
 /** A child key derived one-way from a root key and a host — what a provider
  *  holding a root key does where the app asks for `visitorKey: domain`
  *  (LUD-05 derives a BIP-32 path from an HMAC of the domain; an HMAC of the
  *  host straight into a key is the same idea, for a test). */
-/** A Lightning signed message the way sphinx-rs's `sign_bytes` makes one
- *  (the ln-message vectors are its real output): for keys a test makes. */
-const lnSign = (priv: Uint8Array, message: string) => {
-  const s = secp256k1.sign(sha256(sha256(Buffer.concat([utf8("Lightning Signed Message:"), utf8(message)]))), priv);
-  return new Uint8Array([31 + s.recovery!, ...s.toCompactRawBytes()]);
-};
 const childKey = (root: Uint8Array, host: string) => {
   const n = secp256k1.CURVE.n;
   const k = BigInt(`0x${createHmac("sha256", root).update(host).digest("hex")}`) % n;

@@ -1,0 +1,52 @@
+name: court-paper
+description: Ask a worker for a photo of a court document (task type court-paper), then read it — the court, the case, the parties, what it asks of whom and by when.
+input:
+  note: { type: string, default: "" }
+params:
+  model: claude-sonnet-5-5
+steps:
+  # A worker answers with the photo: saved in this run, named in ask.attachments.
+  - id: ask
+    type: human
+    config:
+      task: court-paper
+      show:
+        ask: "Photograph a court document: the whole page, flat, in good light."
+        note: "{{ input.note }}"
+  # The agent's working folder (the run's own: no job here). It has no tools.
+  - id: dir
+    type: job/dir
+  - id: read
+    type: agent
+    config:
+      cwd: "{{ dir.path }}"
+      model: "{{ params.model }}"
+      maxSteps: 3
+      toolFilter: ["none"]
+      attachments: "{{ ask.attachments }}"
+      prompt: "Read the court document in the attached photo and fill in the answer. {{ input.note }}"
+      system: |
+        You read a photo of a court document for the person it concerns.
+        Transcribe names, numbers, dates and amounts exactly as printed or
+        typed. Leave a field "" when the page does not say it. The summary is
+        two plain sentences a non-lawyer understands: what this document is
+        and what it asks of them, by when.
+      schema:
+        type: object
+        additionalProperties: false
+        required: [kind, court, case, plaintiff, defendant, appearance, amount, summary]
+        properties:
+          kind: { type: string, description: "what the document is, e.g. Judgment Debtor Summons" }
+          court: { type: string, description: "the court and where it sits" }
+          case: { type: string, description: "the case number(s) as written" }
+          plaintiff: { type: string }
+          defendant: { type: string }
+          appearance: { type: string, description: "when and where they must appear, as written" }
+          amount: { type: string, description: "the total the document states, as written" }
+          summary: { type: string }
+  - id: done
+    type: pack
+    config:
+      reading: "{{ read.object }}"
+      photo: "{{ ask.attachments }}"
+      by: "{{ ask.by }}"

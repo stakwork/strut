@@ -25,6 +25,7 @@ import { PayoutError } from "../payments/payouts.js";
 import type { EarningsView } from "../payments/earnings.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { STAFF_APP } from "../apps/staff-seed.js";
+import { setEnv } from "../test-util/public-door.js";
 import { WORKER_ADDRESS } from "../steps/lib/task/_shared.js";
 import withdrawStep from "../steps/lib/task/withdraw.js";
 import meStep from "../steps/lib/task/me.js";
@@ -48,7 +49,7 @@ const ON = { on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 
 
 describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
   let dir: string;
-  const saved: Record<string, string | undefined> = {};
+  let restoreEnv: () => void;
   let strut: Awaited<ReturnType<typeof createStrut>>;
   let wallet: FakeWallet;
   let payer: FakePayer;
@@ -57,12 +58,7 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
   beforeEach(async () => {
     dir = join(tmpdir(), `strut-payouts-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
-    for (const k of CLEARED) {
-      saved[k] = process.env[k];
-      delete process.env[k];
-    }
-    process.env["STRUT_API_KEY"] = KEY;
-    process.env["STRUT_PEER_KEY"] = PEER;
+    restoreEnv = setEnv({ ...Object.fromEntries(CLEARED.map((k) => [k, undefined])), STRUT_API_KEY: KEY, STRUT_PEER_KEY: PEER });
     now = T0;
     wallet = new FakeWallet({ startMsat: 100_000_000 });
     payer = new FakePayer();
@@ -82,10 +78,7 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
   });
   afterEach(async () => {
     await strut.close();
-    for (const k of CLEARED) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
+    restoreEnv();
     await rm(dir, { recursive: true, force: true });
   });
 
