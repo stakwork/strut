@@ -143,13 +143,6 @@ export function appIdentityOf(html: string): string | undefined {
   return m ? m[1]!.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&") : undefined;
 }
 
-/** `p256:02ab…ef` → a short form of an actor for the pill. */
-export function shortActor(actor: string): string {
-  const [kind, rest] = actor.includes(":") ? [actor.slice(0, actor.indexOf(":")), actor.slice(actor.indexOf(":") + 1)] : ["", actor];
-  const short = rest.length > 12 ? `${rest.slice(0, 6)}…${rest.slice(-4)}` : rest;
-  return kind ? `${kind}:${short}` : short;
-}
-
 /** msat as sats, "1,234 sats". */
 export const formatSats = (msat: number) => `${Math.floor(msat / 1000).toLocaleString("en-US")} sats`;
 

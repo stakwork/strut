@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { formatSats, shortActor, workerOf, type CreditView, type PlacementController, type WorkerView } from "../account-widget";
+import { formatSats, workerOf, type CreditView, type PlacementController, type WorkerView } from "../account-widget";
 import type { AccountApi } from "../app-host";
 import { signOutVisitor, visitorInfo } from "../visitor-signin";
 
@@ -115,16 +115,36 @@ export function AccountWidget(props: {
         />
       ) : (
         <>
-          <button type="button" class="account-pill" aria-expanded={open} onClick={() => setOpen(!open)}>
-            <span class={`account-pill-dot${actor ? " is-on" : ""}`} aria-hidden="true" />
-            {actor ? shortActor(actor) : canSignIn ? "Sign in" : "Account"}
+          {/* Signed in: a person, never the key — the key is no name. */}
+          <button
+            type="button"
+            class={`account-pill${actor ? " is-icon" : ""}`}
+            aria-expanded={open}
+            aria-label={actor ? "Account: signed in" : undefined}
+            title={actor ? "Account" : undefined}
+            onClick={() => setOpen(!open)}
+          >
+            {actor ? (
+              <>
+                <svg class="account-person" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="8.5" r="4" />
+                  <path d="M4.5 20.5c0-4.1 3.4-7 7.5-7s7.5 2.9 7.5 7" />
+                </svg>
+                <span class="account-pill-dot is-on is-badge" aria-hidden="true" />
+              </>
+            ) : (
+              <>
+                <span class="account-pill-dot" aria-hidden="true" />
+                {canSignIn ? "Sign in" : "Account"}
+              </>
+            )}
           </button>
           {open && (
             <div class="account-panel" role="dialog" aria-label="Account">
               <div class="account-row">
                 {actor ? (
                   <>
-                    <span>Signed in as <strong title={actor}>{shortActor(actor)}</strong></span>
+                    <span title={actor}>Signed in</span>
                     <button type="button" class="btn" onClick={() => void signOut()}>Sign out</button>
                   </>
                 ) : (

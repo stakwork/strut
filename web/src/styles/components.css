@@ -6057,6 +6057,10 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 }
 .account-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .account-pill-dot.is-on { background: var(--ok); }
+/* Signed in: a round button with a person in it and the dot as a badge. */
+.account-pill.is-icon { position: relative; justify-content: center; width: 34px; min-height: 34px; padding: 0; }
+.account-person { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.account-pill-dot.is-badge { position: absolute; right: 1px; bottom: 1px; width: 9px; height: 9px; box-shadow: 0 0 0 2px var(--surface); }
 .account-dot {
   display: block;
   width: 28px;

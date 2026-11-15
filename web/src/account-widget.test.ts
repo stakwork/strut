@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ACCOUNT_CORNERS } from "@strut/kit/visitor";
 import {
-  appIdentityOf, createPlacementController, creditOf, initialState, parsePlacement, PLACEMENT_INTERVAL_MS, shortActor, workerOf,
+  appIdentityOf, createPlacementController, creditOf, initialState, parsePlacement, PLACEMENT_INTERVAL_MS, workerOf,
 } from "./account-widget";
 
 /** A controller on a clock and timers the test drives. */
@@ -125,9 +125,7 @@ describe("what the panel shows", () => {
     assert.equal(appIdentityOf("<head></head>"), undefined);
   });
 
-  it("shortens an actor, reads credit, and reads a worker's balance — nothing for what is not one", () => {
-    assert.equal(shortActor("p256:02abcdef0123456789ff"), "p256:02abcd…89ff");
-    assert.equal(shortActor("alice"), "alice");
+  it("reads credit, and reads a worker's balance — nothing for what is not one", () => {
     assert.deepEqual(creditOf(200, { remaining_usd: 1.5, remaining_sats: 3000 }), { usd: 1.5, sats: 3000 });
     assert.equal(creditOf(401, { remaining_usd: 1 }), null);
     assert.equal(creditOf(200, {}), null);
