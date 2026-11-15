@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { CONVERSATION_TURNS_MAX, type ConversationTurn, type ConversationsCapability } from "../../../conversations.js";
 import type { KnowledgeCapability } from "../../../knowledge.js";
-import { dataDirOf, readState } from "./_state.js";
+import { branchOfDream, dataDirOf, readState } from "./_state.js";
 
 /** A turn still in flight: the dream waits for it, and for the turns after it. */
 const LIVE = new Set(["running", "paused", "stale"]);
@@ -83,7 +83,8 @@ export default defineStep({
     // A dream with no tree to tend stops here: nothing read, nothing sent to a model, nothing marked.
     if (!(await knowledge.page(cfg.tree))) throw new Error(`dream/turns: there is no Concept "${cfg.tree}" to tend: the dream's \`root\` names the tree's root Concept`);
 
-    const state = await readState(dataDirOf(ctx, "dream/turns"), cfg.tree);
+    // A dream on a Concept branch reads by marks of its own (_state.ts).
+    const state = await readState(dataDirOf(ctx, "dream/turns"), cfg.tree, await branchOfDream(ctx));
     const floor = state ? 0 : Date.now() - cfg.days * 86_400_000;
     // The dream is strut's own job over the conversations: it reads them all, as the run logs can be.
     const viewer = { all: true } as const;

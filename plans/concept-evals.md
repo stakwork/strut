@@ -1,11 +1,11 @@
 # Concept evals — trying a change to the Concept tree safely
 
-> **Status (2026-11-13):** the primitives below were ruled by Evan on
+> **Status (2026-11-14):** the primitives below were ruled by Evan on
 > 2026-11-12; Paul's remarks reached the conversation through Evan, and the
 > discussion with Paul and Tom is ongoing. Work item (a) is built (this
 > file's first PR, #669), item (b) is built (#677), item (c) is built
-> (#683), and the dream is automatic by default ("Automatic by default",
-> below). The rest are not started. Everything marked
+> (#683), item (d) is built (below), and the dream is automatic by default
+> ("Automatic by default", below). Item (e) is not started. Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
 > `job-claims.md`, `concept-history.md` (the history in git), and
@@ -148,7 +148,7 @@ Ruled: checks first. One PR each, against main.
 | a | Whole-work checks on main (rulings 5, 9) | built (this PR) |
 | b | A branch you can create, run on and drop (2, 3, 10) | built (below) |
 | c | The branch recorded in git (2) | built (below) |
-| d | Claims following a page onto a branch, and a compare read (4) | not started |
+| d | Claims following a page onto a branch, and a compare read (4) | built (below) |
 | e | Merge as proposals (8) | not started |
 | — | The `Dream` Concept (7) | another session, in parallel |
 | — | The type list (6) | deferred |
@@ -369,3 +369,114 @@ the history was off (at main's commit then).
 verdicts, a commit stamped on evidence (d); merge (e); the type list; any
 other UI. Checked by hand once (headless Chrome on a scratch strut): the
 Changes view from `now` to `try` drew the one page the branch had edited.
+
+## (d) What was built
+
+The direction Evan said yes to on 2026-11-13 ("yes, start the (d)
+session", after the framing below was put to him): no fifth subject kind;
+the evidence carries the branch; main's status filters by branch; claims
+written from a branch land on main's shared claims; a compare read; nothing
+names a kind of task. Everything past that is marked *mine*.
+
+**No fifth subject kind.** A branch is the setting a Concept was used in,
+not a thing measured. A work whose root ran on a branch opened the
+branch's page of a name, and is judged by main's claims about `{ kind:
+"concept", name }`, exactly as on main (ruling 4: the claims are the
+measure, the pages the candidate). The verify pass finds the claimed page
+where the work ran (`reader.pageOn(name, branch)`, `ours`, `verifyWork`);
+the evidence is ABOUT main's Concept node (it outlives the branch), with
+the branch page's version on its source.
+
+**The evidence carries the branch.** `SourceContext.branch` (inside
+`HAS_SOURCE.context`, the one JSON string jarvis gives it, so no schema or
+conformance entry: no graph attribute is new) is the source run's
+`run.start.branch` — a work's root's, the run a person's word cites. Every
+evidence a run on a branch is the source of carries it, whatever the kind.
+
+**Status per (claim, subject, branch).** `claimStatus` takes `branch` and
+`since`: a Concept's status counts only the works run on the side it is
+read on (`evidenceOn`), and a branch's active version is its own page's
+(`reader.activeVersion(subject, branch)`). Main is the default everywhere
+status was read: the Knowledge app and `knowledge/claims`, `GET /claims`,
+the ledger, the verify pass. A branch is read with `GET
+/claims?kind=concept&name=…&branch=…`, `statusFor(subject, { branch })`,
+and by the Knowledge door a run on the branch holds (`knowledge/page`,
+`knowledge/claims`). A run's ledger (`verifier.ledger`) reads its branch's.
+
+**Claims and words from a branch run.** Item (b)'s refusals are lifted.
+`knowledge/add-claim` in a run on a branch writes the claim on main's page
+of that name, shared; `knowledge/add-evidence` records a person's word
+about the run it cites, with that run's branch. So the dream can run on a
+branch end to end.
+
+**The compare read.** `knowledge.compare({ branch, concept? | tree?,
+works? })`, as the `knowledge/compare` step and `GET
+/branches/:name/compare` (specs/API.md §5.7): for one page, a tree on main,
+or every page with claims, each claim on main and on the branch side by
+side — each side's page version, status, the verdicts on its current page
+(one per check per work), and the works judged there, newest first —
+`changed` when the two pages differ, an `outcome` per claim, and totals.
+`reader.compareFor` reads a page's claims and their evidence once for both
+sides. Nothing in it names a kind of task.
+
+*Mine*, every one open to a ruling:
+- **Only a Concept's status reads per branch.** A step's, workflow's or
+  job's evidence from a run on a branch carries the branch too, and still
+  counts where it always did: those subjects are live on every branch
+  (ruling 3), and a job's version is a run, which is on one side already.
+  So a branch trial that fails a WORKFLOW's claim still shows on main's
+  ledger for that workflow, as under (b). Reading those per branch needs no
+  new data, only callers that pass the branch.
+- **A work is on its root's branch.** A run on another branch inside a work
+  (a main run's `meta/run-workflow { branch }` child) read pages that are
+  not the root's branch's, and is not observed there. An eval runs the
+  flow from a root launched on the branch.
+- **No history commit on the evidence.** The branch and the source run's
+  start time already find the tree in the history (`history/read show {
+  at: <run start>, branch }`); a commit would cost a settle per work and be
+  absent with the history off.
+- **A branch counts only works whose source run started after it was
+  made** (`reader.scopeOf`: run ids are ms start times; an id that is no
+  time falls back to when it was observed). So a name made again after a
+  drop starts clean, and an old trial never reads as the new one's.
+- **`on_change` and an external check's open slot read the same side
+  only.** An unedited copy has main's version: asking main's evidence would
+  skip it, and main and a branch would make each other fire.
+- **A person's word carries the CITED run's branch, not the writer's.** It
+  is about what that run read. A dream on a branch that records what a
+  person said about a run on main writes main's evidence; it is that
+  person's word about main all the same.
+- **A claim on a page the branch alone has is refused**, with a message
+  that says so: a claim hangs on main's page node. Merge (e) would bring the
+  page to main first.
+- **The outcome** is the share of supporting verdicts on each side's
+  CURRENT page (`outcomeOf`, never a division by zero): `better`, `worse`,
+  `same`, and `unmeasured` while a side has no verdict there. Status alone
+  is the newest measurement; the share counts every work run on that
+  version, which is what repeating a trial many times adds.
+- **Its scope**: `tree` is main's tree, walked by `PARENT_OF` a level at a
+  time from the root, the root included; neither `concept` nor `tree` is
+  every page that carries claims; `works` lists at most 10 a side (50 when
+  asked). Its doors: a route beside the branch routes (full scope), and a
+  read step granted to nothing yet (an eval workflow, or (e), can be given
+  it).
+- **`GET /claims` takes `branch` for a Concept only** (a 400 for another
+  kind, whose status is one across branches); a branch with no page of
+  that name, or none at all, reads `stale` / `unknown`, not a 404.
+- **A dream on a branch keeps its own marks**
+  (`<dataDir>/dream/branch-<name>/<tree>.json`), starting from main's when
+  it first reads, and from main's again for a branch made again under the
+  name. Without it a dream tried on a branch would move main's marks, and
+  main's next dream would skip those turns.
+
+**Checked end to end** (src/graph/branches.test.ts, on a Ladybug file and
+on Neo4j): a claim on `Guide` with a code check, a work on main (supported),
+a branch whose `Guide` was edited and the same work on it (refuted, the
+evidence's `branch: "try"`, a different page version), main's status still
+`supported` and the branch's `refuted`; an unedited branch measured under
+`on_change`; `GET /branches/try/compare?concept=Guide` with both verdicts
+(`outcome: worse`); a person's word on the branch run carrying the branch;
+and, dropped and made again, the branch reading `unknown`.
+
+**Not built here:** merge (e); the type list; any view of the compare; a
+per-branch status for steps, workflows and jobs.

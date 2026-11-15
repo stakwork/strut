@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import { advanceState, dataDirOf } from "./_state.js";
+import { advanceState, branchOfDream, dataDirOf } from "./_state.js";
 
 export default defineStep({
   type: "dream/done",
@@ -16,7 +16,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
-    const state = await advanceState(dataDirOf(ctx, "dream/done"), cfg.tree, cfg.cursor, new Date());
+    const state = await advanceState(dataDirOf(ctx, "dream/done"), cfg.tree, cfg.cursor, new Date(), await branchOfDream(ctx));
     return { conversations: Object.keys(cfg.cursor).length, at: state.at };
   },
 });

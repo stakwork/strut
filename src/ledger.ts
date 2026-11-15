@@ -93,17 +93,19 @@ function mergeLastVerify(all: LastVerify[]): LastVerify | undefined {
  * The ledger for `subjects`. `lastVerify` comes from a verify result when
  * there is one; `pending` marks every runnable check instead (a run was just
  * launched and its pass has not settled). Subjects with no claims are left
- * out, so an empty ledger means "nothing here carries a contract".
+ * out, so an empty ledger means "nothing here carries a contract". A
+ * Concept's status is read on `branch` (a run on a Concept branch: its
+ * pages, its works), else on main.
  */
 export async function buildLedger(
   reader: Pick<ClaimsReader, "statusFor">,
   subjects: readonly SubjectRef[],
-  opts: { result?: Pick<VerifyResult, "checks">; pending?: boolean } = {},
+  opts: { result?: Pick<VerifyResult, "checks">; pending?: boolean; branch?: string } = {},
 ): Promise<Ledger> {
   const ledger: Ledger = {};
   const names = new Set<string>();
   for (const subject of subjects) {
-    const rows = await reader.statusFor(subject);
+    const rows = await reader.statusFor(subject, opts.branch ? { branch: opts.branch } : {});
     if (rows.length === 0) continue;
     let key = subjectName(subject);
     if (names.has(key)) key = `${subject.kind}:${key}`;

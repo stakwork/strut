@@ -24,9 +24,10 @@
  *
  * The record of which branches exist is a file per branch,
  * `<dataDir>/branches/<name>.json`: name, namespace, when, who, from what.
- * Claims are not on branches (ruling 4: shared; item d): a run on a branch
- * opens the branch's pages, which no claim is about, so the verify pass
- * records nothing about them.
+ * Claims are shared (ruling 4) and follow a page onto a branch by name
+ * (item d): a work on a branch is judged by main's claims on the branch's
+ * page of that name, its evidence carries the branch, and a Concept's
+ * status is read per side (src/graph/claims.ts `claimStatus`).
  */
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -263,7 +264,8 @@ export function branchOfServices(services: unknown): string | undefined {
 /**
  * The run's view of the bag on `branch` (one seam, beside `bindPrincipal`
  * and `bindGraph` in the runner): the graph's Concepts are the branch's
- * (src/graph/branch.ts), so are the Knowledge door's pages, and the
+ * (src/graph/branch.ts), so are the Knowledge door's pages and the
+ * status of each claim it reads, and the
  * automation steps schedule nothing (a fire is a run of its own, on the live
  * tree). On every run, on a branch or not, a conversation stays on the
  * branch its first turn ran on (`sessions`). The consumer's bag is never

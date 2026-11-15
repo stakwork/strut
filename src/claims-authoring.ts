@@ -252,7 +252,7 @@ export interface RunEvidence {
 export type ClaimsAuthoring = ReturnType<typeof buildClaimsAuthoring>;
 
 export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
-  const reader = new ClaimsReader(deps.graph, { jobs: deps.jobs });
+  const reader = new ClaimsReader(deps.graph, { jobs: deps.jobs, ...(deps.branches ? { branches: deps.branches } : {}) });
   const writer = new ClaimsWriter(deps.graph, reader);
   const sealedPatterns = () => sealedStepPatterns(deps.env ?? bootEnv());
 
@@ -681,18 +681,22 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       }
     },
 
-    /** A subject's active claims, each with its checks and computed status. */
-    async listClaims(subject: SubjectInput): Promise<ClaimsResult<{ subject: SubjectInput; claims: ClaimListing[] }>> {
+    /** A subject's active claims, each with its checks and computed status.
+     *  A Concept's status is read on `branch` when one is named (item d: its
+     *  page there, the works run on it); the claims are main's, shared. */
+    async listClaims(subject: SubjectInput, opts: { branch?: string } = {}): Promise<ClaimsResult<{ subject: SubjectInput; branch?: string; claims: ClaimListing[] }>> {
       try {
         const ref = toSubjectRef(subject);
+        const branch = ref.kind === "concept" ? opts.branch : undefined;
         // A job on file with nothing claimed yet has no node, and an empty contract.
         if (ref.kind === "job") {
           if (!(await jobOnFile(ref.id))) throw new ClaimsError("NOT_FOUND", `job "${ref.id}" is not on file`);
         } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the ${ref.kind === "concept" ? "graph" : "workspace"}`);
-        const rows = await reader.statusFor(ref);
+        const rows = await reader.statusFor(ref, branch ? { branch } : {});
         return {
           ok: true,
           subject,
+          ...(branch ? { branch } : {}),
           claims: rows.map((r) => ({
             id: r.claim.id,
             text: r.claim.claim_text,

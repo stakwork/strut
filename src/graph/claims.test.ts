@@ -15,8 +15,10 @@ import {
   ClaimsReader,
   SUBJECT_KINDS,
   activeTurnOf,
+  claimSide,
   claimStatus,
   claimsReaderFor,
+  evidenceBranch,
   evidenceId,
   isEpistemicId,
   isExternalCheck,
@@ -29,6 +31,7 @@ import {
 import type { GraphBackend } from "./backend.js";
 import type { JobView } from "../job-index.js";
 import { conceptVersionOf, readConceptVersion } from "./concept-version.js";
+import { outcomeOf } from "../knowledge.js";
 
 
 // ── claimStatus (pure) ──────────────────────────────────────────────────────
@@ -219,6 +222,46 @@ describe("a CONCEPT subject (pure)", () => {
     assert.equal(on([read("p1", { strength: -1 }), read("p2", { at: 5000, run: "r9" })], "p2").status, "supported", "the edit answered it");
     assert.equal(on([read("p1")], null).status, "stale", "the page is gone: never supported");
     assert.equal(on([ev({ about: { kind: "workflow", name: "Planning", content_hash: "p1" } })], "p1").status, "unknown", "a workflow of the same name is another subject");
+  });
+
+  it("status is per branch (item d): main counts main's works, a branch its own since it was made — one bad trial never marks main refuted, an unedited copy at main's version reads apart", () => {
+    const onBranch = (branch: string, run: string, over: Partial<EvidenceRow> & { at?: number } = {}) =>
+      read("p1", { run, ...over, source: { ref_id: `run-ref-${run}`, node_type: "StrutRun", run_id: run, context: { version: "p1", branch } } });
+    const mainGood = read("p1", { at: 10, run: "1000" });
+    const trialBad = onBranch("try", "2000", { at: 20, strength: -1 });
+    const at = (evidence: EvidenceRow[], active: string | null, where: { branch?: string; since?: number } = {}) =>
+      claimStatus({ claim: { id: "c1" }, checks: [{ id: "k1" }], subject: PAGE, evidence, activeVersion: active, ...where });
+    assert.equal(evidenceBranch(trialBad), "try");
+    assert.equal(evidenceBranch(mainGood), undefined);
+    assert.equal(at([mainGood, trialBad], "p1").status, "supported", "main: the branch's refutation does not count");
+    assert.equal(at([mainGood, trialBad], "p1", { branch: "try" }).status, "refuted", "the branch: its own, at its page's version (the same as main's)");
+    assert.equal(at([mainGood], "p1", { branch: "try" }).status, "unknown", "main's evidence is not the branch's");
+    assert.equal(at([trialBad], "p1", { branch: "other" }).status, "unknown", "nor another branch's");
+    // A name made again after a drop starts clean: a run that started before it was made is the old one's.
+    assert.equal(at([trialBad], "p1", { branch: "try", since: 1500 }).status, "refuted");
+    assert.equal(at([trialBad], "p1", { branch: "try", since: 2001 }).status, "unknown");
+    // Another kind ignores the branch: its status is one across branches (ruling 3: the rest is live).
+    const step = { ...ev({ run: "3000", strength: -1 }), source: { ref_id: "r", node_type: "StrutRun", run_id: "3000", context: { branch: "try" } } };
+    assert.equal(claimStatus({ claim: { id: "c1" }, checks: [{ id: "k1" }], subject: STEP, evidence: [step], activeVersion: V2 }).status, "refuted");
+  });
+
+  it("claimSide: the side's status, its verdicts on its current page (every work, not the newest), every work it judged newest first", () => {
+    const work = (run: string, version: string, strength: number, branch?: string) =>
+      read(version, { run, at: Number(run), strength, source: { ref_id: `r${run}`, node_type: "StrutRun", run_id: run, context: { version, ...(branch ? { branch } : {}) } } });
+    const evidence = [work("100", "p0", -1), work("200", "p1", 1), work("300", "p1", -1), work("400", "p1", 1), work("500", "p2", 1, "try"), work("600", "p2", 1, "try")];
+    const base = { claim: { id: "c1" }, checks: [{ id: "k1" }], subject: PAGE, evidence };
+    const main = claimSide({ ...base, activeVersion: "p1" });
+    assert.deepEqual([main.version, main.status.status, main.supports, main.refutes], ["p1", "supported", 2, 1]);
+    assert.deepEqual(main.works.map((e) => e.source?.run_id), ["400", "300", "200", "100"]);
+    const branch = claimSide({ ...base, activeVersion: "p2", branch: "try" });
+    assert.deepEqual([branch.status.status, branch.supports, branch.refutes, branch.works.length], ["supported", 2, 0, 2]);
+    const gone = claimSide({ ...base, activeVersion: null, branch: "try" });
+    assert.deepEqual([gone.version, gone.supports, gone.refutes, gone.status.status], [null, 0, 0, "stale"]);
+    // The compare's outcome: the share of supporting verdicts on each side's current page.
+    assert.equal(outcomeOf(main, branch), "better");
+    assert.equal(outcomeOf(branch, main), "worse");
+    assert.equal(outcomeOf({ supports: 1, refutes: 1 }, { supports: 2, refutes: 2 }), "same");
+    assert.equal(outcomeOf(main, gone), "unmeasured");
   });
 
   it("conceptVersionOf: the page and its children's names and descriptions, whatever order they were read in", () => {

@@ -68,6 +68,7 @@ import {
   EVIDENCE_TYPE,
   activeTurnOf,
   evidenceId,
+  evidenceOn,
   isExternalCheck,
   newEpistemicId,
   newestFirst,
@@ -427,6 +428,9 @@ export interface VerifyResult {
   slots: number;
   /** What this pass's checks reported spending. */
   costUsd: number;
+  /** The Concept branch the observed run (a work: its root) was on: where
+   *  its Concepts' status is read (`ledger`). Absent: main. */
+  branch?: string;
 }
 
 /** What `verifyJob` returns (plans/job-claims.md §5): the pass over the job
@@ -500,7 +504,7 @@ export type Verifier = ReturnType<typeof createVerifier>;
 
 export function createVerifier(deps: VerifierDeps) {
   const { graph, store, workspace } = deps;
-  const reader = new ClaimsReader(graph, { jobs: deps.jobs });
+  const reader = new ClaimsReader(graph, { jobs: deps.jobs, ...(deps.branches ? { branches: deps.branches } : {}) });
   const env = () => deps.env ?? bootEnv();
   const inflight = new Map<string, { explicit: boolean; promise: Promise<VerifyResult> }>();
   /** Explicit job passes in flight, by job: a second one joins the first. */
@@ -551,8 +555,16 @@ export function createVerifier(deps: VerifierDeps) {
       /** The bag checks run with, when not the deployment's: a pass over a
        *  work adds the work (`ctx.services.work`, src/work.ts). */
       services: undefined as unknown,
+      /** Where a Concept is read on the run's branch: its page's ref_id and
+       *  when the branch was made (`reader.scopeOf`), by name. */
+      pages: new Map<string, string | null>(),
+      scope: undefined as { branch?: string; since?: number } | undefined,
     };
   }
+  /** The run's branch (a work: its root's), stamped on every evidence it is the source of. */
+  const setBranch = (pass: Pass, branch: string | undefined) => {
+    if (branch) pass.result.branch = branch;
+  };
   type Pass = ReturnType<typeof newPass>;
 
   /** Where the run's artifacts are — a step check's `cwd` of choice. */
@@ -584,16 +596,42 @@ export function createVerifier(deps: VerifierDeps) {
 
   /** `HAS_SOURCE.context` for a subject: a step's path (and cassette); a
    *  job's TURN — its path is unused (plans/job-claims.md §2); a Concept's
-   *  VERSION, which no node holds. */
-  const contextOf = (o: ObservedSubject): SourceContext =>
-    o.subject.kind === "job"
+   *  VERSION, which no node holds. Every one carries the source run's
+   *  Concept BRANCH when it was on one (plans/concept-evals.md item d):
+   *  what a Concept's status per branch reads. */
+  const contextOf = (o: ObservedSubject, branch: string | undefined): SourceContext => ({
+    ...(o.subject.kind === "job"
       ? { turn: o.version! }
-      : { path: o.path, ...(o.subject.kind === "concept" ? { version: o.version! } : {}), ...(o.check.cassette ? { cassette: o.check.cassette } : {}) };
+      : { path: o.path, ...(o.subject.kind === "concept" ? { version: o.version! } : {}), ...(o.check.cassette ? { cassette: o.check.cassette } : {}) }),
+    ...(branch ? { branch } : {}),
+  });
 
-  /** Is the Concept a run opened this graph's own? Claims are about the
-   *  Concept of that name in the backend's namespace; a run may have read
-   *  one of the same name elsewhere. Every other subject: yes. */
-  const ours = async (o: ObservedSubject): Promise<boolean> => o.subject.kind !== "concept" || (!!o.ref && o.ref === (await reader.subjectRefId(o.subject)));
+  /** The page a run on `branch` (none: main) opens by a claim's Concept
+   *  name: main's own, or the branch's of that name. Once per pass. */
+  const pageOf = async (pass: Pass, name: string, branch: string | undefined): Promise<string | null> => {
+    const k = `${branch ?? ""}|${name}`;
+    if (!pass.pages.has(k)) pass.pages.set(k, branch ? await reader.pageOn(name, branch) : await reader.subjectRefId({ kind: "concept", name }));
+    return pass.pages.get(k)!;
+  };
+
+  /** Is the Concept a run opened the page a claim is about, where the run
+   *  was? Claims are about the Concept of that name in the backend's
+   *  namespace, and follow it onto a branch by name (item d): a run on main
+   *  must have read main's page, a run on a branch the branch's. A run may
+   *  have read one of the same name elsewhere. Every other subject: yes. */
+  const ours = async (pass: Pass, o: ObservedSubject, branch: string | undefined): Promise<boolean> =>
+    o.subject.kind !== "concept" || (!!o.ref && o.ref === (await pageOf(pass, subjectName(o.subject), branch)));
+
+  /** Does a piece of this check's evidence count where the pass observes? A
+   *  Concept's only on the same side — main's on main, a branch's on it
+   *  since it was made — so `on_change` asks about THIS side's page, and a
+   *  branch copy at main's version is still measured. */
+  const sameSide = async (pass: Pass, o: ObservedSubject) => {
+    if (o.subject.kind !== "concept") return () => true;
+    pass.scope ??= await reader.scopeOf(pass.result.branch);
+    const where = pass.scope;
+    return (e: EvidenceRow) => evidenceOn(e, where);
+  };
 
   const claimsOf = async (pass: Pass, s: SubjectRef) => {
     const k = subjectKey(s);
@@ -785,7 +823,7 @@ export function createVerifier(deps: VerifierDeps) {
         evidence_status: "planned",
         description: bound(`${check.description ?? check.name}\n\nLook at: ${where}. It produced: ${preview}`),
       },
-      context: contextOf(o),
+      context: contextOf(o, pass.result.branch),
     });
     if (written !== "written") return { skipped: "unknown-version" };
     // A slot about an older run is a question whose answer would be born
@@ -802,13 +840,16 @@ export function createVerifier(deps: VerifierDeps) {
     const job = o.subject.kind === "job";
     const explicit = job ? pass.explicitJob : pass.explicit;
     const all = await evidenceOf(pass, claim.id, o.subject);
+    const here = await sameSide(pass, o);
     const mine = all.filter((e) => e.check_id === check.id);
+    // What this side measured: the policy, a job's count and the slots read it.
+    const seen = mine.filter(here);
     // A job's evidence path is `job:<id>#<n>` (plans/job-claims.md §2): the
     // automatic pass writes #0 and is idempotent as every pass is; an
     // explicit verify of the same turn APPENDS — n counts this check's
     // evidence on the turn — so a pod that answered a 500 mid-restart and is
     // up now can be measured again, and `newestFirst` picks the new one.
-    const path = job ? `${o.path}#${explicit ? mine.filter((e) => e.about?.content_hash === o.version).length : 0}` : o.path;
+    const path = job ? `${o.path}#${explicit ? seen.filter((e) => e.about?.content_hash === o.version).length : 0}` : o.path;
     const id = evidenceId(check.id, pass.runId, path);
     const existing = mine.find((e) => e.id === id);
     if (existing) return existing.evidence_status === "planned" ? { planned: id } : { ran: true };
@@ -823,7 +864,7 @@ export function createVerifier(deps: VerifierDeps) {
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
     const fires = policyFires({
       check,
-      evidence: mine.filter((e) => e.evidence_status === "collected"),
+      evidence: seen.filter((e) => e.evidence_status === "collected"),
       version: o.version,
       checkVersion: isExternalCheck(check) ? "external" : await resolveCheckVersion(check, config, pass.activeStepHashes),
       runId: pass.runId,
@@ -833,7 +874,7 @@ export function createVerifier(deps: VerifierDeps) {
     });
     if (!fires) return { skipped: "policy" };
     if (isExternalCheck(check)) {
-      const slot = await openSlot(pass, o, claim, check, id, mine);
+      const slot = await openSlot(pass, o, claim, check, id, seen);
       await evidenceOf(pass, claim.id, o.subject, true);
       return slot;
     }
@@ -852,7 +893,7 @@ export function createVerifier(deps: VerifierDeps) {
       node: { content: ran.mapped.content, evidence_mode: ran.mode, evidence_status: "collected", observed_at: o.at },
       strength: ran.mapped.supports ? 1 : -1,
       context: {
-        ...contextOf(o),
+        ...contextOf(o, pass.result.branch),
         checkVersion: ran.checkVersion,
         ...(ran.model ? { model: ran.model } : {}),
         ...(ran.checkRun ? { checkRun: ran.checkRun } : {}),
@@ -869,7 +910,7 @@ export function createVerifier(deps: VerifierDeps) {
    *  loop `runPass` and `verifyJob` share. `only` narrows to claim ids. */
   async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[], preset?: LastVerify): Promise<void> {
     const claims = (await claimsOf(pass, o.subject)).filter((c) => !only || only.includes(c.id));
-    if (claims.length === 0 || !(await ours(o))) return;
+    if (claims.length === 0 || !(await ours(pass, o, pass.result.branch))) return;
     if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
 
     let input: RunCheckSubject | JobCheckSubject | null = null;
@@ -918,6 +959,7 @@ export function createVerifier(deps: VerifierDeps) {
     if (!launch) return { ...pass.result, skipped: "unknown-run" };
     if (launch.origin === "verify" || key.startsWith("check:")) return { ...pass.result, skipped: "verify-origin" };
     pass.principal = launch.principal;
+    setBranch(pass, launch.branch);
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
     // A Concept is observed by the run's WORK, never by the run alone.
@@ -1014,6 +1056,8 @@ export function createVerifier(deps: VerifierDeps) {
       if (end && end.ts > endedAt) endedAt = end.ts;
       if (m.runId === root.runId) {
         pass.principal = start.principal;
+        // The work is on its root's branch: every run it starts is (ruling 10).
+        setBranch(pass, start.branch);
         rootCheck = observed.find((o) => o.subject.kind === "workflow" && o.path === start.path)?.check ?? {
           runId: root.runId,
           input: start.input,
@@ -1032,8 +1076,10 @@ export function createVerifier(deps: VerifierDeps) {
     for (const [name, rs] of reads) {
       if (!claimed.has(name)) continue;
       const subject: SubjectRef = { kind: "concept", name };
-      const ref = await reader.subjectRefId(subject);
-      // Reads of a page of that name elsewhere (another namespace) are not this graph's.
+      // The page the claims follow by name where the work ran: main's, or its
+      // branch's (item d). A read of a page of that name elsewhere (another
+      // namespace, another branch) is not it.
+      const ref = await pageOf(pass, name, pass.result.branch);
       const versions = [...new Set(rs.filter((r) => r.ref === ref).map((r) => r.version))];
       if (!ref || !versions.length) continue;
       const o: ObservedSubject = { subject, version: versions[0]!, ref, path: conceptSubjectPath(name), at: endedAt, check: { ...check, concept: name } };
@@ -1102,7 +1148,9 @@ export function createVerifier(deps: VerifierDeps) {
       const pass = newPass(key, turn, true);
       pass.explicitJob = true;
       const events = await store.getRunEvents(key, turn);
-      pass.principal = events.find((e) => e.type === "run.start")?.principal;
+      const launch = events.find((e) => e.type === "run.start");
+      pass.principal = launch?.principal;
+      setBranch(pass, launch?.branch);
       const output = (await store.getRunSummary(key, turn))?.output ?? [...events].reverse().find((e) => e.type === "run.end")?.output;
       const path = jobSubjectPath(job);
       const o: ObservedSubject = { subject, version: turn, path, at: new Date().toISOString(), check: { runId: turn, input: undefined, path, ...(output !== undefined ? { output } : {}) } };
@@ -1229,9 +1277,13 @@ export function createVerifier(deps: VerifierDeps) {
     if (input.job && launch?.job !== input.job) return { error: `run ${input.runId} does not carry job "${input.job}"` };
 
     const about = (await reader.subjectsOf(claim.id)).map((s) => s.subject);
+    // The run's branch: a person's word about a run on a branch is that
+    // branch's evidence, like every other (item d).
+    const pass = newPass(name, input.runId, true);
+    setBranch(pass, launch?.branch);
     const observed: ObservedSubject[] = [];
     for (const o of subjectsOfRun(name, events)) {
-      if (o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)) && (await ours(o))) observed.push(o);
+      if (o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)) && (await ours(pass, o, pass.result.branch))) observed.push(o);
     }
     const distinct = [...new Map(observed.map((o) => [subjectKey(o.subject), o])).values()];
     if (distinct.length === 0) {
@@ -1270,7 +1322,7 @@ export function createVerifier(deps: VerifierDeps) {
       sourceRef,
       node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
       strength,
-      context: { ...contextOf(o), by: input.by },
+      context: { ...contextOf(o, pass.result.branch), by: input.by },
     });
     if (written !== "written") return { error: `the version that run executed (${o.version}) is not in the graph` };
     return { ok: true, evidence: id, filled: false, subject: o.subject };
@@ -1299,7 +1351,7 @@ export function createVerifier(deps: VerifierDeps) {
   }
 
   /** The ledger a settled pass produced: computed statuses + per-check lastVerify. */
-  const ledger = (result: VerifyResult): Promise<Ledger> => buildLedger(reader, result.subjects, { result });
+  const ledger = (result: VerifyResult): Promise<Ledger> => buildLedger(reader, result.subjects, { result, ...(result.branch ? { branch: result.branch } : {}) });
   /** The contract of what a launch can execute, every runnable check `pending`. */
   const pendingLedger = (subjects: readonly SubjectRef[]): Promise<Ledger> => buildLedger(reader, subjects, { pending: true });
 

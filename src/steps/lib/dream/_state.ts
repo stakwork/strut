@@ -4,6 +4,12 @@
  * by its own dream over what may be the same conversations. Bookkeeping, so a
  * file under the data directory (`<dataDir>/dream/<tree>.json`) and never
  * the graph: memory is for what the person said.
+ *
+ * A dream run on a Concept BRANCH (plans/concept-evals.md item d) keeps
+ * marks of its own, `<dataDir>/dream/branch-<name>/<tree>.json`, so trying a
+ * dream on a branch never moves main's: its first read starts where main's
+ * dream is then, and a branch made again under a dropped one's name starts
+ * so too (the file names the branch it was written for, by when it was made).
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -13,29 +19,63 @@ export interface DreamState {
   marks: Record<string, number>;
   /** When a dream last finished. */
   at?: string;
+  /** A branch's file: the branch it was written for. */
+  branch?: DreamBranch;
 }
 
-/** A tree's file: its root's name, made safe for a file name. */
-const fileOf = (dataDir: string, tree: string) => join(dataDir, "dream", `${tree.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_") || "tree"}.json`);
+/** The Concept branch a dream runs on: its name, and when it was made. */
+export interface DreamBranch {
+  name: string;
+  createdAt?: string;
+}
 
-/** The state, or null when no dream has finished here yet. */
-export async function readState(dataDir: string, tree: string): Promise<DreamState | null> {
+/** A tree's file: its root's name, made safe for a file name; a branch's in a folder of its own. */
+const fileOf = (dataDir: string, tree: string, branch?: string) =>
+  join(dataDir, "dream", ...(branch ? [`branch-${branch}`] : []), `${tree.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_") || "tree"}.json`);
+
+async function readAt(file: string): Promise<DreamState | null> {
   try {
-    const s = JSON.parse(await readFile(fileOf(dataDir, tree), "utf-8")) as Partial<DreamState>;
-    return { marks: s.marks && typeof s.marks === "object" ? s.marks : {}, ...(typeof s.at === "string" ? { at: s.at } : {}) };
+    const s = JSON.parse(await readFile(file, "utf-8")) as Partial<DreamState>;
+    return {
+      marks: s.marks && typeof s.marks === "object" ? s.marks : {},
+      ...(typeof s.at === "string" ? { at: s.at } : {}),
+      ...(s.branch && typeof s.branch.name === "string" ? { branch: s.branch } : {}),
+    };
   } catch {
     return null;
   }
 }
 
-/** Move each mark forward to `cursor`'s, never back. */
-export async function advanceState(dataDir: string, tree: string, cursor: Record<string, number>, now: Date): Promise<DreamState> {
-  const marks = { ...((await readState(dataDir, tree))?.marks ?? {}) };
+/** The state, or null when no dream has finished here yet. On a branch,
+ *  its own once its dream finished there, else main's: where it starts. */
+export async function readState(dataDir: string, tree: string, branch?: DreamBranch): Promise<DreamState | null> {
+  if (branch) {
+    const own = await readAt(fileOf(dataDir, tree, branch.name));
+    if (own && own.branch?.createdAt === branch.createdAt) return own;
+  }
+  const main = await readAt(fileOf(dataDir, tree));
+  return main && branch ? { marks: main.marks, ...(main.at ? { at: main.at } : {}) } : main;
+}
+
+/** Move each mark forward to `cursor`'s, never back: main's, or the branch's own. */
+export async function advanceState(dataDir: string, tree: string, cursor: Record<string, number>, now: Date, branch?: DreamBranch): Promise<DreamState> {
+  const marks = { ...((await readState(dataDir, tree, branch))?.marks ?? {}) };
   for (const [id, turn] of Object.entries(cursor)) if (Number.isInteger(turn) && turn > (marks[id] ?? -1)) marks[id] = turn;
-  const state = { marks, at: now.toISOString() };
-  await mkdir(dirname(fileOf(dataDir, tree)), { recursive: true });
-  await writeFile(fileOf(dataDir, tree), JSON.stringify(state, null, 2), "utf-8");
+  const state: DreamState = { marks, at: now.toISOString(), ...(branch ? { branch } : {}) };
+  const file = fileOf(dataDir, tree, branch?.name);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(state, null, 2), "utf-8");
   return state;
+}
+
+/** The branch a dream's step runs on (`ctx.branch`), with when it was made
+ *  (`ctx.services.branches`); undefined on main. */
+export async function branchOfDream(ctx: { branch?: string; services?: unknown } | undefined): Promise<DreamBranch | undefined> {
+  const name = ctx?.branch;
+  if (!name) return undefined;
+  const branches = (ctx?.services as { branches?: { get(name: string): Promise<{ createdAt: string } | null> } } | undefined)?.branches;
+  const made = await branches?.get(name).catch(() => null);
+  return { name, ...(made?.createdAt ? { createdAt: made.createdAt } : {}) };
 }
 
 export function dataDirOf(ctx: { services?: unknown } | undefined, step: string): string {
