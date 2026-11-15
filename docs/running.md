@@ -206,6 +206,63 @@ through the vendor layer, not kit/src). Every publish carries a
 `preview-stamp.txt`, so it is always a new version and rebuilds. The proxy's
 allow/refuse logic is tested in `scripts/preview-app.test.mjs`.
 
+### Payments locally (`scripts/fake-sphinx-daemon.ts`)
+
+A stand-in for the Sphinx treasury daemon (specs/LIGHTNING.md), so strut
+takes payments IN and sends payouts OUT on a laptop or in an end-to-end
+test, with no mixer and no real sats:
+
+```bash
+PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
+LIGHTNING_DAEMON_URL=http://127.0.0.1:3461 LIGHTNING_DAEMON_TOKEN=demo \
+LIGHTNING_DAEMON_PAY_TOKEN=demo-pay STRUT_RATE_URL=http://127.0.0.1:3461/prices \
+STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
+```
+
+- **In** (the receive token): `POST /invoice` makes a readable BOLT11 with
+  a real preimage; it settles `SETTLE_AFTER_MS` after it was made, as if
+  someone paid it (`0`: only by hand), or at once on `POST
+  /settle/:payment_hash`. `GET /invoice/:hash`, `GET /payments`, `GET
+  /balance` (`START_SATS`, default 100,000, plus what came in, less what went
+  out).
+- **Out** (the pay token alone, which must differ from the receive token, as
+  the boot requires): `POST /pay` (an admin's Withdraw) and `POST /keysend` +
+  `GET /keysend/:id` (a worker's payout), idempotent as the real daemon is.
+  Each settles at once and debits the amount plus the LSP's fee floor
+  (`lspFeeFloorMsat`), or fails `not enough balance`. `POST /next-payout
+  { "state": "failed" | "pending" }` makes the next one fail, or stay pending
+  until `POST /settle/:id` (a keysend's id, or a pay's payment hash).
+- **The rate**: `GET /prices` answers mempool's `{ time, USD }`
+  (`USD_PER_BTC`, default 100,000, so $1 is 1,000 sats).
+- In a test, `startFakeSphinxDaemon({ port: 0, … })` starts it in-process and
+  answers `{ url, close }` (scripts/fake-sphinx-daemon.test.ts drives it with
+  `SphinxDaemonProvider` and `SphinxDaemonPayer`).
+
+What else a paid flow needs, each learned the hard way:
+
+- **An owner before a price.** `PUT /public-view` refuses a runnable
+  workflow that spends (a model call) and has no owner ("spends … no owner
+  to pay for a stranger's run"). Set one first: `PUT /workflows/:name/owner
+  { "owner": "<actor>" }`.
+- **A public app is held.** Once `PUT /public-view` adds an app, a republish
+  is only a draft (`live: false`). Make it live with `PUT /apps/:name/active
+  { "version": "vN" }`, which takes a new release and its lock.
+- **Worker payouts are off until an admin turns them on**: the Payouts tab in
+  `strut/staff`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
+  1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four).
+- **A worker withdraws only to the Sphinx address their session carries**
+  (docs/tasks.md, "Withdraw"; else `no_address`). A `sphinx` sign-in keeps
+  it (`keptSphinxAddress`, src/visitors.ts): `POST /visitors/session
+  { challenge, method: "sphinx", key, sig, address }`, kept only when the
+  address's pubkey is the key that signed. Peel sends it; a test can make
+  its own: a secp256k1 key signs `GET /visitors/challenge`'s challenge as a
+  Lightning signed message (`lnSign` in src/visitors.test.ts) and posts
+  `address: "<its 33-byte key, hex>_<any 33-byte key>_<any scid>"`, which
+  the stand-in keysends to. The public view must offer `sphinx` (the default
+  once an app is public) with the default root `visitorKey`: a domain's
+  child key keeps no address. The challenge is signed with `STRUT_API_KEY`
+  or `STRUT_SECRET_KEY`, so set one.
+
 ## Files
 
 What each file and folder in this area is, in the order of the tree.

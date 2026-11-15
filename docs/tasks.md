@@ -142,8 +142,10 @@ index. A change in this area updates this file, not AGENTS.md.
   it was sent is stale and waits for staff (`paid` with the fee they give,
   or `drop`, which gives the reserve back). `task/me`'s `payout` says
   whether withdrawing is open and how much; on a host's own store it is
-  `not_here`. Until sign-in keeps the address (item 5b's PR 2) every worker
-  has none, and `task/withdraw` answers `no_address`.
+  `not_here`. A `sphinx` sign-in keeps the address (`keptSphinxAddress`,
+  src/visitors.ts) when its pubkey is the key that signed; any other
+  sign-in has none, and `task/withdraw` answers `no_address`. To try it
+  locally without a mixer: docs/running.md, "Payments locally".
 
 ## Files
 
