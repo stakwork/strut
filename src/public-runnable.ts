@@ -298,6 +298,8 @@ export interface ListedRunnable {
   /** The credit a run needs to start, in dollars: base + markup × capUsd. */
   reserve: number;
   results: "output" | "run";
+  /** A workflow whose launch may carry files (`attachments`, the chat's caps). */
+  attachments?: true;
   /** A workflow's `input:` block; a step's input JSON Schema. */
   input: unknown;
   /** The ledger's last `RECENT_DAYS` days for the item: runs, and the
@@ -344,6 +346,7 @@ export async function listRunnable(
       capUsd: item.capUsd ?? null,
       reserve: microsToUsd(runnableReserve(item)),
       results: item.results ?? "output",
+      ...(item.kind === "workflow" && item.attachments ? { attachments: true as const } : {}),
       input,
       recent: { days: recent.days, runs: recent.runs, average: microsToUsd(recent.average) },
     });

@@ -109,6 +109,21 @@ export const walletRequestSchema = z
     }
   });
 
+/** The account widget's corners and styles (`@strut/kit/visitor`:
+ *  ACCOUNT_CORNERS, ACCOUNT_STYLES). Copied like the wallet's lists;
+ *  build.test.ts holds them equal. */
+export const ACCOUNT_CORNERS = ["top-left", "top-right", "bottom-left", "bottom-right"] as const;
+export const ACCOUNT_STYLES = ["pill", "handle"] as const;
+
+/** `account:` — where strut draws the visitor's account widget over the
+ *  app by default (`handle` starts collapsed). Defaults: top-right, pill. */
+export const accountSchema = z
+  .object({
+    corner: z.enum(ACCOUNT_CORNERS).default("top-right"),
+    style: z.enum(ACCOUNT_STYLES).default("pill"),
+  })
+  .strict();
+
 /**
  * `permissions:` — what an app's frame is granted beyond what every app
  * gets (plans/apps.md §9). The host (web/src/frame-permissions.ts
@@ -211,6 +226,8 @@ export const manifestSchema = z
       .strict()
       .optional(),
     wallet: walletRequestSchema.optional(),
+    /** Where the visitor's account widget sits by default. */
+    account: accountSchema.optional(),
     /** Browser features the frame grants beyond every app's (`DECLARED_PERMISSIONS`). */
     permissions: permissionsSchema.optional(),
     csp: z

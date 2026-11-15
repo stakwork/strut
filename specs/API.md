@@ -3510,6 +3510,7 @@ anyone without its definition or its runs being shown. One pricing rule,
 | `capUsd` | the most one run may spend, above 0; required with a markup. Left out on an item with a daily cap, a run may spend a tenth of the daily cap, so ten run at once |
 | `dailyCapUsd` | the spend the owner carries per UTC day, above 0 |
 | `results` | a workflow's: what its launcher reads, `output` (the default) or the whole `run` |
+| `attachments` | a workflow's: `true` lets a launch carry files — `attachments: [{ name, mediaType?, data }]` (base64 or a data URL), the chat's caps (10 files, 10 MB each, 5 MB an image, 15 MB together) — saved under the run's artifacts as `attachments/<name>` and put on each agent step's prompt. Off when absent: a stranger's files are kept only where the owner said so |
 
 Base and markup both 0 is free. The RESERVE a run needs is derived, never
 set: `base + markup × capUsd`. Changing the list publishes no version.
@@ -3608,7 +3609,7 @@ a `404`, as if it were not there.
 
 | Route | Answer |
 | --- | --- |
-| `GET /public` | `{ host: { remote: 1 }, workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
+| `GET /public` | `{ host: { remote: 1 }, workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, attachments?, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
 | `GET /llms.txt` | the same as ONE markdown page for an agent that fetches URLs (§17.8); not under `/public`, open the same way |
 | `GET /public/workflows[?q=]` | the public workflows, as above |
 | `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
@@ -3627,7 +3628,7 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
-| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
+| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account? }]` — each at the version the public view serves; `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
 
@@ -3640,7 +3641,8 @@ before it says nothing, and cannot be hosted that way.
 not sealed, whether or not its definition is public (its YAML is never
 shown there): prices in dollars, `capUsd` null when the item sets none,
 `reserve` the credit a run needs to start (`base + markup × capUsd`),
-`results` `output` unless the item says `run`, `input` the workflow's
+`results` `output` unless the item says `run`, `attachments: true` on a
+workflow whose launch takes files, `input` the workflow's
 `input:` block or the step's input JSON Schema (draft 2020-12, the input
 view: a field with a default is not `required`; what §17.7's `config` is
 built from), and `recent` the ledger's
@@ -3719,7 +3721,7 @@ are exposed to a browser's script).
 
 | Route | |
 | --- | --- |
-| `POST /public/workflows/:name/run` | `{ input?, key? }` → `202 { runId, token, credit? }` (`existing: true` when `key` named a run of this caller's: one in flight, or — with a credit token — any run that token and key launched); priced with no token, or one short: `402` (§17.5) |
+| `POST /public/workflows/:name/run` | `{ input?, key?, attachments? }` (`attachments` only where the item says `attachments: true`; the body is 256 KB, and up to 15 MB of files more with them) → `202 { runId, token, credit? }` (`existing: true` when `key` named a run of this caller's: one in flight, or — with a credit token — any run that token and key launched); priced with no token, or one short: `402` (§17.5) |
 | `GET /public/workflows/:name/runs/:runId` | with the run token (`?t=` or `Authorization: Bearer`): the launcher's view; `?wait=<s>` holds while the run is in flight, at most 55 s |
 | `POST /public/workflows/:name/runs/:runId/cancel` | with the run token: cancels that run and the runs it started; `202 { ok, runId, state }`, `409` when it already ended |
 

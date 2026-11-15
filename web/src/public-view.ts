@@ -189,6 +189,19 @@ export function setResults(rec: PublicViewRecord, row: Row, results: "output" | 
   return next;
 }
 
+/** Whether a runnable workflow's launch takes files (`attachments: true`);
+ *  off is absent. */
+export function setAttachments(rec: PublicViewRecord, row: Row, on: boolean): PublicViewRecord {
+  const next = copyOf(rec);
+  if (row.kind !== "workflow") return next;
+  next.runnable = next.runnable.map((r) => {
+    if (!isRow(row)(r)) return r;
+    const { attachments: _old, ...rest } = r;
+    return on ? { ...rest, attachments: true } : rest;
+  });
+  return next;
+}
+
 const micros = (dollars: number | undefined) => Math.round((dollars ?? 0) * 1_000_000);
 
 /** The credit a run needs to start, in dollars: base + markup × the

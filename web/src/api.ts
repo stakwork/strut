@@ -2285,6 +2285,7 @@ export function appDocumentPath(name: string, version: string, peer?: string): s
 export interface AppBuildInfo {
   title?: string;
   wallet?: ConnectionRequest;
+  account?: { corner?: string; style?: string };
   permissions?: string[];
 }
 export async function fetchAppBuildInfo(
@@ -2970,6 +2971,8 @@ export interface PublicRunnable {
   capUsd?: number;
   dailyCapUsd?: number;
   results?: "output" | "run";
+  /** A workflow's launch may carry files (`attachments`). */
+  attachments?: boolean;
 }
 export interface PublicViewRecord {
   concepts: string[];
@@ -3048,6 +3051,8 @@ export interface PublicAppInfo {
    *  Another server's is checked before it is used (./native-pay
    *  `nativeWalletApp`). */
   wallet?: ConnectionRequest;
+  /** Where its account widget sits by default (`app.yaml`'s `account:`). */
+  account?: { corner?: string; style?: string };
 }
 /** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
 async function publicFetch(path: string): Promise<Response> {

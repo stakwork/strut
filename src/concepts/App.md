@@ -123,6 +123,7 @@ data:
   graph:
     types: {}                  # node types it declares and may WRITE (below: Graph types)
 permissions: []                # motion, camera, geolocation: beyond every app's (below)
+account: { corner: top-right, style: pill }   # where strut's account widget sits on a public page (below); optional
 ```
 
 The grants are the app's whole reach, checked by the strut server on every call in
@@ -150,7 +151,7 @@ refuses the call (the promise rejects, or the event never fires):
 | name | lets the page |
 |---|---|
 | `motion` | `devicemotion` / `deviceorientation` — tilt controls (no compass heading). Motion can be read to guess what a person types, so ask only when the app is steered by tilting. On iPhone, call `DeviceMotionEvent.requestPermission()` from a tap first |
-| `camera` | `getUserMedia({ video })` — the browser still asks the person |
+| `camera` | a photo from strut's own camera: `useCamera().capture()` (see "The camera"). The frame's own `getUserMedia` is refused by Chrome — an app's frame has an opaque origin — so take photos through the hook |
 | `geolocation` | `navigator.geolocation` — the browser still asks the person |
 
 `fullscreen`, `pointer-lock`, `gamepad`, `wake-lock`, `microphone` and
@@ -370,6 +371,8 @@ tool (`step_run`) the host relays to the strut server:
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
+| `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
+| `useCamera()` → `{ available, capture({ facing?, maxSide?, title? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
 | `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors") |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -488,6 +491,56 @@ async function keep(score: number) {
 Write it so it works either way: an app is anonymous where the server
 offers no sign-in (`available` false) — hide the sign-in button then, and
 let the game play.
+
+### The account widget
+
+On a public page (a visitor's, never a member's), strut itself draws an
+ACCOUNT WIDGET over the app, outside its frame: a small pill that opens a
+panel with who is signed in (Sign in / Sign out, the same flow as
+`useVisitor`), the credit held at this server, and — for a signed-in worker on
+an app that grants `task/me` — what they earned: what is held and what can be
+withdrawn (Withdraw, which also needs `task/withdraw`); a worker's panel shows
+credit only when they hold some. Without those grants the worker
+part is not drawn. The app draws none of this and sees nothing of it.
+
+Say where it sits by default in `app.yaml`:
+
+```yaml
+account:
+  corner: bottom-left   # top-left | top-right (default) | bottom-left | bottom-right
+  style: handle         # pill (default) | handle: starts collapsed, a dot
+```
+
+Anything else under `account:` is a build error. At run time the page may move
+or collapse it with `useAccountWidget()` (offered only where the host says so:
+`available`); `setPlacement({ corner?, collapsed? })` rejects an unknown corner.
+The host applies at most one change per 500 ms and holds the latest of the
+ones inside it, so call it on a state change, not every frame. A collapsed
+widget is a small dot that stays on screen and opens on a click: an app can
+collapse the widget, never hide or remove it. Keep the corner you pick clear of
+the app's own controls; strut does not move the app out of the way.
+
+### The camera
+
+An app's frame gets no camera of its own: it is a sandboxed document with an
+opaque origin, and Chrome refuses `getUserMedia` there whatever the frame's
+`allow`. So strut draws the camera, as it draws the payment and sign-in
+sheets: list `camera` in `permissions:`, then on a click
+
+```tsx
+const camera = useCamera();
+const photo = await camera.capture({ title: "Fit the whole page in the frame" }); // File | null
+if (photo) await launch({}, undefined, undefined, [photo]);
+```
+
+The person sees a full-screen viewfinder that says which app asks, takes the
+shot, and chooses Retake or Use photo; the page gets that one JPEG (its
+longest side `maxSide`, 1600 px by default, at most 4096) and never the
+stream. `facing: "user"` asks for the front camera. Cancel answers null.
+`available` is false where the host draws no camera (no `camera` in
+`permissions:`, or an app hosted from another server). To send the photo
+with a run, see `useLaunch`'s `files`; on a public page the workflow's
+runnable entry must take files (`attachments: true`).
 
 ## Worker apps: people as a step of a workflow
 

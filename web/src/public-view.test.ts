@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, setSignIn, setVisitorKey, setVisitorLimit, shownNumber, DEFAULT_SIGN_IN, visitorsOf, SIGN_IN_METHODS, typedNumber, usd, visitorAppLink, VISITOR_DEFAULT_LIMITS } from "./public-view.js";
+import { boxesOf, capNote, DAILY_CAP_SHARE, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setAttachments, setBox, setPrice, setResults, setSignIn, setVisitorKey, setVisitorLimit, shownNumber, DEFAULT_SIGN_IN, visitorsOf, SIGN_IN_METHODS, typedNumber, usd, visitorAppLink, VISITOR_DEFAULT_LIMITS } from "./public-view.js";
 import { DAILY_CAP_SHARE as SERVER_DAILY_CAP_SHARE } from "../../src/public-runnable.js";
 import { DEFAULT_SIGN_IN as SERVER_DEFAULT_SIGN_IN, normalizeSurface, VISITOR_METHOD_NAMES } from "../../src/public-surface.js";
 import { DEFAULT_VISITOR_LIMITS } from "../../src/visitors.js";
@@ -109,6 +109,8 @@ describe("a workflow or step row's three boxes", () => {
     rec = setResults(rec, wf, "run");
     assert.deepEqual(rec.runnable, [{ kind: "workflow", name: "cve/scan", markup: 1.5, capUsd: 5, results: "run" }]);
     assert.deepEqual(setResults(rec, wf, "output").runnable[0], { kind: "workflow", name: "cve/scan", markup: 1.5, capUsd: 5 });
+    assert.deepEqual(setAttachments(rec, wf, true).runnable[0], { kind: "workflow", name: "cve/scan", markup: 1.5, capUsd: 5, results: "run", attachments: true });
+    assert.deepEqual(setAttachments(setAttachments(rec, wf, true), wf, false).runnable, rec.runnable);
     assert.deepEqual(setPrice(rec, wf, "capUsd", "").runnable[0], { kind: "workflow", name: "cve/scan", markup: 1.5, results: "run" });
     assert.deepEqual(setBox(setBox(rec, wf, "run", false), wf, "run", true).runnable, [{ kind: "workflow", name: "cve/scan" }]);
   });

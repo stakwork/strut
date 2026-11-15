@@ -5805,6 +5805,8 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .public-run-can .auto-hint { margin: 0; }
 .public-price { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--sp-2); }
 .public-price label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; min-width: 0; }
+.public-price label.public-files { flex-direction: row; align-items: center; gap: var(--sp-2); align-self: end; min-height: 26px; }
+.public-price label.public-files input { width: auto; }
 .public-price input,
 .public-price select {
   font: inherit;
@@ -6042,3 +6044,95 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
   width: 90px; font: inherit; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border-strong);
   color: var(--text); padding: 2px var(--sp-2); border-radius: var(--r-md);
 }
+
+/* The visitor's account widget (components/AccountWidget.tsx): strut's own,
+   over the app's frame and under its sheets. An app may move it between
+   corners and collapse it to a dot, never hide it: no rule here is driven by
+   anything that sets display, visibility, opacity or size to nothing. */
+.account-widget {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  gap: var(--sp-2);
+  max-width: calc(100% - var(--sp-4));
+  font-size: 13px;
+  color: var(--text);
+}
+.account-widget.at-top-left { top: var(--sp-2); left: var(--sp-2); flex-direction: column; align-items: flex-start; }
+.account-widget.at-top-right { top: var(--sp-2); right: var(--sp-2); flex-direction: column; align-items: flex-end; }
+.account-widget.at-bottom-left { bottom: var(--sp-2); left: var(--sp-2); flex-direction: column-reverse; align-items: flex-start; }
+.account-widget.at-bottom-right { bottom: var(--sp-2); right: var(--sp-2); flex-direction: column-reverse; align-items: flex-end; }
+.account-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.account-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.account-pill-dot.is-on { background: var(--ok); }
+/* Signed in: a round button with a person in it and the dot as a badge. */
+.account-pill.is-icon { position: relative; justify-content: center; width: 34px; min-height: 34px; padding: 0; }
+.account-person { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.account-pill-dot.is-badge { position: absolute; right: 1px; bottom: 1px; width: 9px; height: 9px; box-shadow: 0 0 0 2px var(--surface); }
+.account-dot {
+  display: block;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.account-panel {
+  width: min(280px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+.account-widget .btn { white-space: nowrap; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.account-num { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.account-note { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.account-collapse {
+  align-self: flex-end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* The host's camera (components/CameraSheet.tsx): over the app's frame, which
+   gets no camera of its own; the page gets only the photo "Use photo" hands it. */
+.camera-sheet { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; justify-content: space-between; background: #000; color: #fff; }
+.camera-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.camera-top { position: relative; display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-6); background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0)); font-size: 13px; }
+.camera-asks { flex: 1; min-width: 0; padding-top: 6px; text-align: right; color: rgba(255, 255, 255, 0.85); }
+.camera-title { margin-top: 2px; color: #fff; font-size: 14px; font-weight: 600; }
+.camera-cancel { flex: none; padding: 6px 12px; border: 0; border-radius: 999px; background: rgba(0, 0, 0, 0.5); color: #fff; font: inherit; cursor: pointer; }
+.camera-error { position: relative; align-self: center; margin: 0 var(--sp-4); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: rgba(127, 29, 29, 0.9); font-size: 13px; }
+.camera-bar { position: relative; display: flex; justify-content: center; align-items: center; gap: var(--sp-3); min-height: 120px; padding: var(--sp-3) var(--sp-4) var(--sp-5); background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.75)); }
+.camera-shutter { width: 74px; height: 74px; padding: 0; border: 4px solid #fff; border-radius: 50%; background: #fff; box-shadow: inset 0 0 0 4px #000; cursor: pointer; }
+.camera-shutter:active { transform: scale(0.94); }
+.camera-shutter:disabled { opacity: 0.4; cursor: default; }
+.camera-btn { min-width: 128px; height: 46px; padding: 0 var(--sp-4); border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.camera-btn.is-primary { background: #fff; color: #000; }

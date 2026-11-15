@@ -4,13 +4,16 @@ import type { StrutClient } from "./client.js";
 import { createStaticHost, type StrutHost } from "./host.js";
 import { NO_WALLET, type WalletClient } from "./wallet/client.js";
 import { NO_CHANNELS, type ChannelsClient } from "./channels/client.js";
-import { NO_VISITOR, type VisitorClient } from "./visitor/client.js";
+import { NO_ACCOUNT, NO_VISITOR, type AccountClient, type VisitorClient } from "./visitor/client.js";
+import { NO_CAMERA, type CameraClient } from "./camera/client.js";
 
 const ClientContext = createContext<StrutClient | null>(null);
 const HostContext = createContext<StrutHost | null>(null);
 const WalletContext = createContext<WalletClient>(NO_WALLET);
 const ChannelsContext = createContext<ChannelsClient>(NO_CHANNELS);
 const VisitorContext = createContext<VisitorClient>(NO_VISITOR);
+const AccountContext = createContext<AccountClient>(NO_ACCOUNT);
+const CameraContext = createContext<CameraClient>(NO_CAMERA);
 
 /** The query defaults every hook runs under: a step result is deterministic
  *  (no retry), an iframe gets focus events it should not refetch on, and a
@@ -36,6 +39,10 @@ export interface StrutProviderProps {
   channels?: ChannelsClient;
   /** The host's sign-in (plans/app-repos.md §5); a page with none gets `NO_VISITOR`. */
   visitor?: VisitorClient;
+  /** The host's account widget; a page with none gets `NO_ACCOUNT`. */
+  account?: AccountClient;
+  /** The host's camera; a page with none gets `NO_CAMERA`. */
+  camera?: CameraClient;
   queryClient?: QueryClient;
   children?: ReactNode;
 }
@@ -43,7 +50,7 @@ export interface StrutProviderProps {
 /** What an app is mounted under (§2.4): the client, the host and a
  *  react-query client. A host's own page wraps kit components in it with its
  *  own client. */
-export function StrutProvider({ client, host, wallet, channels, visitor, queryClient, children }: StrutProviderProps) {
+export function StrutProvider({ client, host, wallet, channels, visitor, account, camera, queryClient, children }: StrutProviderProps) {
   const qc = useMemo(() => queryClient ?? createKitQueryClient(), [queryClient]);
   const h = useMemo(() => host ?? createStaticHost(), [host]);
   return createElement(
@@ -58,7 +65,7 @@ export function StrutProvider({ client, host, wallet, channels, visitor, queryCl
         createElement(
           ChannelsContext.Provider,
           { value: channels ?? NO_CHANNELS },
-          createElement(VisitorContext.Provider, { value: visitor ?? NO_VISITOR }, createElement(QueryClientProvider, { client: qc }, children)),
+          createElement(VisitorContext.Provider, { value: visitor ?? NO_VISITOR }, createElement(AccountContext.Provider, { value: account ?? NO_ACCOUNT }, createElement(CameraContext.Provider, { value: camera ?? NO_CAMERA }, createElement(QueryClientProvider, { client: qc }, children)))),
         ),
       ),
     ),
@@ -95,4 +102,14 @@ export function useStrutHost(): StrutHost {
   const host = useContext(HostContext);
   if (!host) throw new Error("useStrutHost: no <StrutProvider> above this component");
   return host;
+}
+
+/** The account widget client of the nearest `StrutProvider` — what `useAccountWidget` is over. */
+export function useStrutAccount(): AccountClient {
+  return useContext(AccountContext);
+}
+
+/** The camera client of the nearest `StrutProvider` — what `useCamera` is over. */
+export function useStrutCamera(): CameraClient {
+  return useContext(CameraContext);
 }

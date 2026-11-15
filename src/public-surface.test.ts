@@ -488,7 +488,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     runId = res.runId;
     const dir = join(root, "apps", "bench");
     await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\npermissions: [fullscreen, geolocation]\nwallet:\n  request_methods: [pay_keysend, get_budget]\n  max_amount: 5000000\n  renewal_period: weekly\n");
+    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\npermissions: [fullscreen, geolocation]\nwallet:\n  request_methods: [pay_keysend, get_budget]\n  max_amount: 5000000\n  renewal_period: weekly\naccount:\n  corner: bottom-left\n");
     await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">hi</p>; }\n');
     const r = await strut.apps.publish(dir, "bench", { surface: "person" });
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -527,7 +527,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     // What its frame is granted beyond every app's, and the wallet its
     // version requests (from its build), for the visitor's host: nothing
     // else of the build.
-    const bench = { name: "bench", version: "v1", title: "Bench", permissions: ["geolocation"], wallet: { request_methods: ["pay_keysend", "get_budget"], max_amount: 5000000, renewal_period: "weekly" } };
+    const bench = { name: "bench", version: "v1", title: "Bench", permissions: ["geolocation"], wallet: { request_methods: ["pay_keysend", "get_budget"], max_amount: 5000000, renewal_period: "weekly" }, account: { corner: "bottom-left", style: "pill" } };
     assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [bench]);
     assert.deepEqual(await (await strut.app.request("/public/apps/bench")).json(), bench, "the one app's read, which a visitor's host frames it by");
 

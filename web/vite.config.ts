@@ -36,6 +36,7 @@ export default defineConfig({
       "@strut/kit/channels": fileURLToPath(new URL("../kit/src/channels/index.ts", import.meta.url)),
       // The visitor contract (plans/app-repos.md §5): what the host's sign-in sheet answers.
       "@strut/kit/visitor": fileURLToPath(new URL("../kit/src/visitor/index.ts", import.meta.url)),
+      "@strut/kit/camera": fileURLToPath(new URL("../kit/src/camera/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",

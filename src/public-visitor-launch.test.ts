@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -114,13 +115,13 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
       services: { lightning: lightningCapability(wallet) },
       payments: { rate: async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" }) },
     });
-    for (const name of ["free-out", "free-run", "priced", "closed", "ungranted", "acme/shop/fortune"]) {
+    for (const name of ["free-out", "free-run", "priced", "closed", "ungranted", "acme/shop/fortune", "takes-files"]) {
       await workspace.publishWorkflowByContent(name, wf(name));
       await workspace.setWorkflowOwner(name, "owner-1");
     }
     const dir = join(root, "apps", "shop");
     await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "app.yaml"), "title: Shop\ngrants:\n  workflows: [free-out, free-run, priced, closed]\n");
+    await writeFile(join(dir, "app.yaml"), "title: Shop\ngrants:\n  workflows: [free-out, free-run, priced, closed, takes-files]\n");
     await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">shop</p>; }\n');
     const r = await strut.apps.publish(dir, "shop", { surface: "person" });
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -142,6 +143,7 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
           { kind: "workflow", name: "free-run", dailyCapUsd: 5, results: "run" },
           { kind: "workflow", name: "priced", base: 0.5 },
           { kind: "workflow", name: "ungranted", base: 0.5 },
+          { kind: "workflow", name: "takes-files", dailyCapUsd: 5, results: "run", attachments: true },
         ],
       }),
     });
@@ -162,6 +164,7 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
       { name: "free-out", results: "output" },
       { name: "free-run", results: "run" },
       { name: "priced", results: "output" },
+      { name: "takes-files", results: "run" },
     ]);
   });
 
@@ -256,6 +259,40 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     assert.match((await call("run/launch", { workflow: "free-out", input: { text: "x" }, job: "j1" }, { visit: VISIT })).error!, /drop job/);
     assert.match((await call("run/launch", { workflow: "free-out", input: {} }, { visit: VISIT })).error!, /input: text/);
     assert.match((await call("run/list", { workflow: "closed" }, { visit: VISIT })).error!, /not in the public view/);
+  });
+
+  it("files: a runnable entry with attachments: true takes the page's files — saved under the run, read back — and the others refuse them", async () => {
+    // A JPEG's bytes, past the 256 KB a body without files may be.
+    const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(300 * 1024)]);
+    const launched = await call(
+      "run/launch",
+      { workflow: "takes-files", input: { text: "summons" }, attachments: [{ name: "summons.jpg", mediaType: "image/jpeg", data: photo.toString("base64") }] },
+      { visit: VISIT },
+    );
+    assert.equal(launched.error, undefined, launched.error);
+    const runId = launched.result!["runId"] as string;
+    await waitEnded("takes-files", runId);
+    const start = (await store.getRunEvents("takes-files", runId)).find((e) => e.type === "run.start") as { attachments?: unknown };
+    assert.deepEqual(start.attachments, [{ name: "summons.jpg", mediaType: "image/jpeg", size: photo.length, path: "attachments/summons.jpg" }]);
+    const file = await call("run/files", { workflow: "takes-files", runId, path: "attachments/summons.jpg" }, { visit: VISIT });
+    assert.equal(file.error, undefined, file.error);
+    assert.equal(Buffer.from(file.result!["base64"] as string, "base64").equals(photo), true);
+    // Over HTTP too, the body's own cap raised for files alone.
+    const http = (name: string) =>
+      strut.app.request(`/public/workflows/${name}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: { text: "x" }, attachments: [{ name: "a.jpg", data: photo.toString("base64") }] }),
+      });
+    assert.equal((await http("takes-files")).status, 202);
+    assert.equal((await http("free-out")).status, 413);
+
+    const tiny = [{ name: "a.txt", data: Buffer.from("hi").toString("base64") }];
+    assert.match((await call("run/launch", { workflow: "free-out", input: { text: "x" }, attachments: tiny }, { visit: VISIT })).error!, /takes no files from a public launch/);
+    assert.match((await call("run/launch", { workflow: "takes-files", input: { text: "x" }, attachments: Array(11).fill(tiny[0]) }, { visit: VISIT })).error!, /at most 10 attachments/);
+    assert.match((await call("run/launch", { workflow: "takes-files", input: { text: "x" }, attachments: [{ name: "a.txt", data: "not base64!" }] }, { visit: VISIT })).error!, /not base64/);
+    const listed = (await (await strut.app.request("/public")).json()) as { runnable: Array<{ name: string; attachments?: true }> };
+    assert.deepEqual(listed.runnable.filter((r) => r.attachments).map((r) => r.name), ["takes-files"]);
   });
 
   it("priced: no credit is a payment_required RESULT; the host's L402 header launches it against the token, which no argument or result carries", async () => {

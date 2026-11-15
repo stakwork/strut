@@ -8,7 +8,11 @@ import { frameAttributes, strangerFrameAttributes } from "../frame-permissions";
 import { nativeWalletApp, signInNote, type SignInAsk, type WalletAsk } from "../native-pay";
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
+import { AccountWidget } from "./AccountWidget";
+import { appIdentityOf, createPlacementController, initialState, type PlacementController } from "../account-widget";
 import { PaymentSheet } from "./PaymentSheet";
+import { CameraSheet } from "./CameraSheet";
+import type { CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
@@ -130,7 +134,18 @@ export function AppHost(props: {
   const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; sphinx?: SignInAsk; note?: string; done: (s: VisitorSession | null) => void } | null>(null);
   const signInRef = useRef(signIn);
   signInRef.current = signIn;
+  /** The photo the page asked for (@strut/kit/camera), and where it goes. */
+  const [camera, setCamera] = useState<{ app: string; facing: "environment" | "user"; maxSide: number; title?: string; done: (p: CameraPhoto | null) => void } | null>(null);
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
   const connRef = useRef<AppHostConnection | null>(null);
+  /** A visitor's account widget (../account-widget): its placement, and what
+   *  it reads and does through the connection. */
+  const [account, setAccount] = useState<{ placement: PlacementController; api: NonNullable<AppHostConnection["accountApi"]> } | null>(null);
+  /** The page signed the visitor in or out (the widget reads again). */
+  const [sessionTick, setSessionTick] = useState(0);
+  /** The widget signed the visitor in or out: the frame loads again as the new viewer. */
+  const [restart, setRestart] = useState(0);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady };
   const inputKey = props.toolInput ? JSON.stringify(props.toolInput) : "";
@@ -148,6 +163,7 @@ export function AppHost(props: {
     let cancelled = false;
     let conn: AppHostConnection | null = null;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposePlacement = () => {};
     const markReady = () => {
       clearTimeout(readyTimer);
       if (!cancelled) handlers.current.onReady?.();
@@ -192,8 +208,11 @@ export function AppHost(props: {
         const wallet = nativeWalletOf(window)
           ? nativeWalletApp({ app, title: info?.title ?? app.title ?? app.name, request: info?.wallet, seller: sellerOf(from) })
           : undefined;
+        const placement = visitor ? createPlacementController(initialState(info?.account)) : undefined;
+        if (placement) disposePlacement = () => placement.dispose();
         conn = await connectAppHost({
           frame,
+          ...(placement ? { account: placement, identity: appIdentityOf(html) } : {}),
           theme,
           brand: await brand,
           ...(visitor ? { visitor: true, visitorApp: { name: app.name, version: app.version, title: info?.title ?? app.title ?? app.name } } : {}),
@@ -206,6 +225,20 @@ export function AppHost(props: {
           channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) },
           handlers: {
             onInitialized: markReady,
+            onSession: () => setSessionTick((t) => t + 1),
+            // The page's photo: strut's camera sheet, the frame having none.
+            onCapture: (params) =>
+              new Promise<CameraPhoto | null>((resolve) => {
+                cameraRef.current?.done(null);
+                setCamera({
+                  ...params,
+                  app: info?.title ?? app.title ?? app.name,
+                  done: (p) => {
+                    setCamera(null);
+                    resolve(p);
+                  },
+                });
+              }),
             ...(visitor
               ? {
                   // The visitor signs in (plans/app-repos.md §5.3): through
@@ -275,6 +308,7 @@ export function AppHost(props: {
         });
         if (cancelled) { await conn.close(); return; }
         connRef.current = conn;
+        if (placement && conn.accountApi) setAccount({ placement, api: conn.accountApi });
         // Before the document loads: what initialize is followed by — the
         // input as it is NOW, should it have changed while connecting.
         conn.setToolInput(toolInput.current);
@@ -296,9 +330,12 @@ export function AppHost(props: {
     })();
     return () => {
       cancelled = true;
+      disposePlacement();
+      setAccount(null);
       // A sheet still open answers its call: the page is going away.
       paymentRef.current?.done(null);
       signInRef.current?.done(null);
+      cameraRef.current?.done(null);
       clearTimeout(readyTimer);
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
@@ -312,7 +349,7 @@ export function AppHost(props: {
     // The token is the scope's; a reload re-fetches the document (a new
     // version was published under the same label only on a rebuild).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.name, app.version, app.peer, from, props.reload, scope?.token, ready]);
+  }, [app.name, app.version, app.peer, from, props.reload, restart, scope?.token, ready]);
 
   useEffect(() => {
     connRef.current?.setTheme(theme);
@@ -329,6 +366,15 @@ export function AppHost(props: {
     <div class={`app-host${theme === "light" ? " light" : ""}`}>
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
+      {account && visitor && (
+        <AccountWidget
+          placement={account.placement}
+          api={account.api}
+          tick={sessionTick}
+          onSession={() => setRestart((n) => n + 1)}
+          {...(from ? { from } : {})}
+        />
+      )}
       {payment && (
         <PaymentSheet
           payment={payment.p}
@@ -337,6 +383,15 @@ export function AppHost(props: {
           onDone={payment.done}
           {...(payment.wallet ? { wallet: payment.wallet } : {})}
           {...(from ? { seller: hostOf(from) } : {})}
+        />
+      )}
+      {camera && (
+        <CameraSheet
+          app={camera.app}
+          facing={camera.facing}
+          maxSide={camera.maxSide}
+          onDone={camera.done}
+          {...(camera.title ? { title: camera.title } : {})}
         />
       )}
       {signIn && (

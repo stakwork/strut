@@ -51,7 +51,8 @@ import { isPriced, runnableReserve } from "./public-runnable.js";
 import { parseAuthorization, tokenRefusal, type VerifiedToken } from "./l402.js";
 import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type CreditRefusal } from "./public-credit.js";
 import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
-import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
+import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_FILES_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
+import { parseAttachments, type Attachment } from "./ai/attachments.js";
 import type { PublicTools } from "./public-tools.js";
 import { defaultVisitorAddress } from "./visitor-address.js";
 
@@ -116,8 +117,9 @@ export interface PublicLaunchDeps {
   workflowCap(name: string): Promise<number | undefined>;
   /** Launch the run detached, as published, `origin: "public"`, under the
    *  id the caps minted, with its cap (`RunOptions.maxCostUsd`) and, when
-   *  priced, the credit token's id (`run.start.credit`). */
-  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string; visitor?: string }): void;
+   *  priced, the credit token's id (`run.start.credit`), and the files the
+   *  launch carried (an item with `attachments: true`). */
+  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string; visitor?: string; attachments?: Attachment[] }): void;
   /** Cancel a live run's tree: 202, or why not (404, 409). */
   cancel(name: string, runId: string): Promise<{ status: 202 | 404 | 409; body: Record<string, unknown> }>;
   /** Launches one visitor address may make a minute (`PUBLIC_LAUNCHES_PER_MINUTE`). */
@@ -145,10 +147,11 @@ export interface PublicLaunchRequest {
   who: string;
   /** `Authorization` as sent: a credit token as `L402 <macaroon>:<preimage>`. */
   authorization?: string | undefined;
-  /** The body (`{ input?, key? }` and nothing else), read only once the
-   *  budget, the item and the drain have answered; or the refusal reading
-   *  it came to (too big, not JSON). */
-  readBody: () => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
+  /** The body (`{ input?, key? }`, and `attachments` for an item that takes
+   *  files), read only once the budget, the item and the drain have
+   *  answered — at most `max` bytes, which the item decides; or the refusal
+   *  reading it came to (too big, not JSON). */
+  readBody: (max: number) => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
   /** What scopes a `key` when no credit token does (the visit, for a
    *  visitor's page). Default: the address. */
   scope?: string;
@@ -246,6 +249,8 @@ export interface PublicAppInfo {
    *  native host's connect sheet asks the visitor for. Nothing else of the
    *  build is shown. */
   wallet?: BuildInfo["wallet"];
+  /** Where the visitor's account widget sits by default (`app.yaml`'s `account:`). */
+  account?: BuildInfo["account"];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its
@@ -729,16 +734,26 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const draining = launches.draining();
     if (draining) return refuse(503, draining, { "retry-after": "60" });
 
-    // The body: `input` and `key` alone, validated against the `input:`
-    // block. Nothing a stranger sends picks the version, the knobs, a job,
-    // a callback or files.
-    const read = await r.readBody();
+    // The body: `input` and `key`, validated against the `input:` block, and
+    // files only where the item takes them (`attachments: true`, the chat's
+    // caps). Nothing a stranger sends picks the version, the knobs, a job or
+    // a callback.
+    const takesFiles = item.kind === "workflow" && item.attachments === true;
+    const read = await r.readBody(takesFiles ? PUBLIC_RUN_FILES_BODY_MAX_BYTES : PUBLIC_RUN_BODY_MAX_BYTES);
     if ("refused" in read) return read.refused;
     const body = read.body as Record<string, unknown>;
     if (!body || typeof body !== "object" || Array.isArray(body)) return refuse(400, "the body is a JSON object: { input?, key? }");
-    if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
-    const extra = Object.keys(body).filter((k) => k !== "input" && k !== "key");
-    if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key } alone — drop ${extra.join(", ")}`);
+    const { attachments: sentFiles, ...fields } = body;
+    if (Buffer.byteLength(JSON.stringify(fields)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
+    if (sentFiles !== undefined && !takesFiles) return refuse(400, `workflow "${name}" takes no files from a public launch — drop attachments (its owner turns them on with attachments: true on its runnable entry)`);
+    const extra = Object.keys(fields).filter((k) => k !== "input" && k !== "key");
+    if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key${takesFiles ? ", attachments" : ""} } alone — drop ${extra.join(", ")}`);
+    let files: Attachment[] = [];
+    try {
+      files = parseAttachments(sentFiles);
+    } catch (err) {
+      return refuse(400, `attachments: ${err instanceof Error ? err.message : String(err)}`);
+    }
     const sentKey = body["key"];
     if (sentKey !== undefined && (typeof sentKey !== "string" || !sentKey || sentKey.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
     if (flow.inputBlock == null) return refuse(409, `workflow "${name}" no longer declares an input: block, so a stranger's input cannot be checked`);
@@ -834,6 +849,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
         ...(presented ? { credit: presented.tokenId } : {}),
         ...(r.visitor ? { visitor: r.visitor } : {}),
+        ...(files.length ? { attachments: files } : {}),
       });
     } catch (err) {
       admitted.release();
@@ -858,7 +874,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       who: visitorAddress(c),
       authorization: c.req.header("authorization"),
       // Read only once the cheaper refusals have answered.
-      readBody: () => readJsonBody(c),
+      readBody: (max) => readJsonBody(c, max),
     });
     return c.json(out.body, out.status, out.headers);
   });
@@ -894,13 +910,14 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     }
     return ++at.n > callLimit;
   };
-  /** A JSON body of at most 256 KB, read from the request, or the refusal. */
-  const readJsonBody = async (c: Context): Promise<{ body: unknown } | { refused: PublicLaunchOutcome }> => {
+  /** A JSON body of at most `max` bytes (256 KB unless a launch's item
+   *  takes files), read from the request, or the refusal. */
+  const readJsonBody = async (c: Context, max = PUBLIC_RUN_BODY_MAX_BYTES): Promise<{ body: unknown } | { refused: PublicLaunchOutcome }> => {
     const length = Number(c.req.header("content-length") ?? 0);
-    const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } } };
-    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
+    const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${Math.floor(max / 1024)} KB` } } };
+    if (length > max) return tooBig;
     const raw = await c.req.text();
-    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
+    if (Buffer.byteLength(raw) > max) return tooBig;
     try {
       return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
     } catch {

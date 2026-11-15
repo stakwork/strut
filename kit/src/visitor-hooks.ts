@@ -6,9 +6,9 @@
  *  sign-in sees `available: false`. */
 import { useCallback, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useStrutClient, useStrutVisitor } from "./provider.js";
+import { useStrutAccount, useStrutClient, useStrutVisitor } from "./provider.js";
 import { reloadAppState } from "./hooks.js";
-import type { VisitorMethod } from "./visitor/protocol.js";
+import type { AccountPlacement, VisitorMethod } from "./visitor/protocol.js";
 
 export interface UseVisitor {
   /** The host can sign a visitor in here (the public view names a method). */
@@ -45,4 +45,19 @@ export function useVisitor(): UseVisitor {
     refresh();
   }, [visitor, refresh]);
   return { available: visitor.available(), methods: visitor.methods(), ...(actor ? { actor } : {}), signIn, signOut };
+}
+
+export interface UseAccountWidget {
+  /** The host draws an account widget over this page. */
+  available: boolean;
+  /** Move the widget to a corner and/or collapse or expand it (a game
+   *  collapses it during play, expands it in menus). The host rate-limits
+   *  (about one change per 500 ms; the latest wins) and never lets it be
+   *  hidden. Rejects an unknown corner. */
+  setPlacement(placement: AccountPlacement): Promise<void>;
+}
+
+export function useAccountWidget(): UseAccountWidget {
+  const account = useStrutAccount();
+  return { available: account.available(), setPlacement: account.setPlacement };
 }
