@@ -52,16 +52,20 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   const id = (c: Context) => c.req.param("id") ?? "";
 
   // A subject's contract: claims with computed status, latest evidence, their
-  // checks, and open slots (questions an external check is waiting on).
+  // checks, and open slots (questions an external check is waiting on). A
+  // Concept's status is main's, or a Concept branch's with `branch`
+  // (plans/concept-evals.md item d).
   app.get("/claims", async (c) => {
     if (!claims) return c.json({ enabled: false, claims: [] });
     const subject = personSubjectSchema.safeParse({ kind: c.req.query("kind"), name: c.req.query("name") });
     if (!subject.success) return c.json({ error: "kind (step | workflow | job | concept) and name are required" }, 400);
-    const listing = await claims.listClaims(subject.data);
+    const branch = c.req.query("branch") || undefined;
+    if (branch && subject.data.kind !== "concept") return c.json({ error: "branch reads a Concept's claims: a step's, workflow's or job's status is one across branches" }, 400);
+    const listing = await claims.listClaims(subject.data, branch ? { branch } : {});
     // A built-in step has no node in the workspace: it simply has no contract.
     if (!("ok" in listing)) return c.json({ enabled: true, subject: subject.data, claims: [], note: listing.error });
     const verifyCostUsd = deps.verifier ? await deps.verifier.costOf(toSubjectRef(subject.data)).catch(() => 0) : 0;
-    return c.json({ enabled: true, subject: listing.subject, claims: listing.claims, ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}) });
+    return c.json({ enabled: true, subject: listing.subject, ...(listing.branch ? { branch: listing.branch } : {}), claims: listing.claims, ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}) });
   });
 
   // What the checks said about a workflow's runs, newest run first: each

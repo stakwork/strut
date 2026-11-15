@@ -137,9 +137,15 @@ index. A change in this area updates this file, not AGENTS.md.
   shows (ruled 2026-11-11: AI-driven, its claims and checks written
   directly, its Concept edits proposals). An AI author there is stamped
   `ai` like any other, so fixed point 2 holds for its checks. That workflow
-  is the dream (below). Not built: Concepts in other namespaces, claims
-  travelling with a package's pages, running a check against a tree that
-  is not live, any UI.
+  is the dream (below). ON A CONCEPT BRANCH (below; plans/concept-evals.md
+  item d) the claims follow the page by name: a work whose root ran on a
+  branch opened the branch's page, and main's claims judge it there. Its
+  evidence carries the branch (`SourceContext.branch`, every evidence a run
+  on a branch is the source of), and a Concept's status is per (claim,
+  subject, branch) — main's counts the works run on main, a branch's the
+  works run on it since it was made, at its own page's version — so one
+  bad trial never marks main's claim refuted. Not built: Concepts in other
+  namespaces, claims travelling with a package's pages, any UI.
 
 - **The dream — a tree of Concepts kept in step with what people say**
   (`src/workflows/system/dream/`, `src/knowledge.ts`, the `knowledge/*` and
@@ -181,7 +187,10 @@ index. A change in this area updates this file, not AGENTS.md.
   and the lessons it finds (at most 60 turns read, 10 claims written); and
   `dream/turns` reads every person's conversations on the server, so with
   review off anyone the assistant talks to can change that tree. Neither a
-  cap nor a rule about whose words count is ruled. No undo: a change is
+  cap nor a rule about whose words count is ruled. A dream
+  run on a Concept branch (an eval of the dream, or of a tree) keeps its
+  own marks (`<dataDir>/dream/branch-<name>/<tree>.json`), starting where
+  main's dream is: it never moves main's. No undo: a change is
   put back by another change (plans/concept-history.md, "Open: Revert in
   the Knowledge app"). **Its rules are Concept pages, not its prompt** (ruling 7 of
   2026-11-12): the YAML keeps the mechanics — the steps, how each tool is
@@ -266,10 +275,39 @@ index. A change in this area updates this file, not AGENTS.md.
   Main never sees a branch: while one exists, a Ladybug search that names
   no namespace leaves `branch-*` out (with none it reads as it always did),
   and the history snapshot (`packageFiles(…, EVERYTHING)`)
-  records no branch page. Claims stay shared and are not on branches yet
-  (item d): a run on a branch opens the branch's pages, which no claim is
-  about, so the verify pass records nothing about them, and the Knowledge
-  door adds no claim or evidence from a branch.
+  records no branch page.
+  CLAIMS FOLLOW A PAGE ONTO A BRANCH (item d; ruling 4, "Shared": the
+  claims are the measure, the pages the candidate). No fifth subject kind:
+  a work whose root ran on a branch is observed on the branch's page of a
+  claimed name (the verify pass's `ours` and `verifyWork` find the page on
+  the root's branch, `reader.pageOn`) and judged by main's claims about
+  `{ kind: "concept", name }`, its evidence ABOUT main's Concept node with
+  the branch's page version and the branch on its source
+  (`context.branch`). Status is per (claim, subject, branch): `claimStatus`
+  counts only the side it is read on (`evidenceOn`; main is the default
+  everywhere it was read: the Knowledge app, `knowledge/claims`, `GET
+  /claims`, the ledger, the verify pass), a branch's active version is its
+  own page's (`reader.activeVersion(subject, branch)`), and a branch counts
+  only works whose root run started after it was made (`reader.scopeOf`:
+  run ids are ms start times), so a name made again after a drop starts
+  clean. `on_change` asks about the same side, so a branch's copy at main's
+  version is still measured on it. In a run on a branch the Knowledge door
+  reads each claim's status there, `knowledge/add-claim` writes main's claim
+  (refused for a page the branch alone has) and `knowledge/add-evidence`
+  records a person's word about the run it cites, on THAT run's branch.
+  Only a Concept's status reads per branch: a step's, workflow's or job's
+  evidence from a run on a branch carries the branch too, and still counts
+  where it always did (ruling 3: those are live on every branch). THE
+  COMPARE READ (`knowledge.compare`, the `knowledge/compare` step, `GET
+  /branches/:name/compare`): for one page, a tree on main (its root and
+  every page under it, `PARENT_OF` read level by level) or every page that
+  carries claims, each claim on main and on the branch side by side
+  (`reader.compareFor`, one read of its evidence; `claimSide`): each side's
+  page version, status, the verdicts on its current page (one per check per
+  work) and the works judged there, newest first; `changed` when the two
+  pages differ, and an `outcome` per claim — `better | worse | same` by the
+  share of supporting verdicts on each side's current page, `unmeasured`
+  while a side has none (`outcomeOf`) — with totals.
   THE GIT BRANCH (item c; src/history.ts): a create snapshots main and
   starts a git branch of the same name at main's commit then (the fork
   point; a git branch of that name left from before is kept aside first);
@@ -292,7 +330,7 @@ index. A change in this area updates this file, not AGENTS.md.
   `refs/dropped/<name>/<time>` (the drop's answer says where, `kept`): a
   record of what was tried, the name free. The Knowledge app's Changes
   takes a branch's name as a moment. With no history, a branch is as in
-  (b). Not built: the compare read (d), merge (e), a per-branch type list.
+  (b). Not built: merge (e), a per-branch type list, a view of the compare.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any
@@ -366,7 +404,7 @@ what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`
 
 ### `src/verify.ts`
 
-the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step — a run `launchDetached` started only once strut has decided whether its end wakes a conversation (createStrut's `detachedEnds`), so a work is never judged before the turn that reports on its job; check runs (`origin: "verify"`) are never verified. A run's step, workflow and job subjects are its own; its CONCEPT subjects belong to its WORK (src/work.ts): each pass asks whether the run was the last of its work (`workPasses`, nothing read when no Concept carries a claim) and, once it was, judges the work (`verifyWork`, one at a time per root): the pages any of its runs opened, at the version their reads returned (a page the runs read at different versions is observed at none, `unknown-version`), each check handed the root run, every page the work opened and `work`, its bag carrying `ctx.services.work`; the evidence sourced to the root run
+the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step — a run `launchDetached` started only once strut has decided whether its end wakes a conversation (createStrut's `detachedEnds`), so a work is never judged before the turn that reports on its job; check runs (`origin: "verify"`) are never verified. A run's step, workflow and job subjects are its own; its CONCEPT subjects belong to its WORK (src/work.ts): each pass asks whether the run was the last of its work (`workPasses`, nothing read when no Concept carries a claim) and, once it was, judges the work (`verifyWork`, one at a time per root): the pages any of its runs opened, at the version their reads returned (a page the runs read at different versions is observed at none, `unknown-version`), each check handed the root run, every page the work opened and `work`, its bag carrying `ctx.services.work`; the evidence sourced to the root run. CONCEPT BRANCHES (plans/concept-evals.md item d): a pass is on its run's branch (a work: its root's, `run.start.branch`; the result's `branch`), every evidence it writes carries it (`contextOf`), a claimed page is the one of that name on that branch (`pageOf`, `ours`), `on_change` and a slot read only the same side's evidence (`sameSide`), and `ledger(result)` reads a Concept's status there; `addEvidence` takes the cited run's branch
 
 ### `src/work.ts`
 
@@ -374,11 +412,11 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 
 ### `src/knowledge.ts`
 
-the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page). A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. `cycles({ limit, tree })`: the dream's recent runs that read something, newest first, from the run store (`cycleOf` folds a summary — run, status, times, tree, source, `review`, turns, `more`, lessons with `change` (`proposed` on runs from before review was a switch), `stuck`, error — and leaves out a quiet or parked run; at most 200 runs looked through). Changing a Concept is not here: the workflow's own graph steps change it, and where the tree is reviewed its `approve:` makes each change a proposal
+the KNOWLEDGE door: what a workflow that tends the Concept tree works through (the `dream`), and no workflow of ordinary work holds. `createKnowledge({ graph, claims, verifier, store })` → `ctx.services.knowledge`, set by createStrut wherever the claims layer is on: `page(name)` (one Concept as a TENDER reads it — docs cut at 6,000, parents, the pages under it with whether each carries claims, its claims with their computed status; no version is recorded, so tending is never an observation), `claims()` (every Concept carrying claims, with them, by name: what the Knowledge app scans for the refuted ones), `opened(workflow, runId)` (the pages a run opened, off its log: `conceptsOpenedIn`, verify.ts; null when the log cannot say), `addClaim({ concept, text })` (written at once through a door that sets `ClaimActor.concepts`, stamped `ai`, with the STANDARD check — `conceptCheckSpec`: a `subflow` to the `concept-check` system workflow handed the root run of each work that opened the page (the work itself on its bag, src/work.ts); the same sentence already on the page is that claim; at most `KNOWLEDGE_CLAIMS_PER_RUN`, 10, a run; a sentence holding `{{` refused, since it goes into the check's config) and `addEvidence` (what a PERSON said about a run's work, asserted, through `verifier.addEvidence`: only about a run that opened the claim's page, on that run's branch). `compare({ branch, concept?, tree?, works? })`: main against a Concept branch over the same claims (plans/concept-evals.md item d) — each claim's status, verdicts on the current page and works on each side (`reader.compareFor`), `changed`, an `outcome` per claim (`outcomeOf`) and totals; refuses a branch `deps.branches` does not have. `onBranch(ns)`: the door a run on a branch has — the branch's pages, each claim's status on the branch, a claim added on main's page of the name (refused for a page the branch alone has), sharing main's per-run claim count. A tender never writes a check's config: what it reads is untrusted text, and a check is something strut runs. `cycles({ limit, tree })`: the dream's recent runs that read something, newest first, from the run store (`cycleOf` folds a summary — run, status, times, tree, source, `review`, turns, `more`, lessons with `change` (`proposed` on runs from before review was a switch), `stuck`, error — and leaves out a quiet or parked run; at most 200 runs looked through). Changing a Concept is not here: the workflow's own graph steps change it, and where the tree is reviewed its `approve:` makes each change a proposal
 
 ### `src/branches.ts`
 
-CONCEPT BRANCHES (plans/concept-evals.md items b, c): `createBranches({ dataDir, graph, inFlight, history? })` → `ctx.services.branches` (`list`, `get`, `create`, `drop`), set by createStrut on a graph workspace; a branch's namespace is `branch-<name>` (`BRANCH_NAME`: lowercase letters, digits, `-`, `_`, a letter first, at most 56; a new one never `main`, the history's branch). With the history on, a create calls `history.branched` once the pages are copied and before it writes the record (its git branch from main's commit now, before any run can be on it) and a drop calls `history.dropBranch` after the record goes and before the pages do (its last writes committed, its git branch kept under `refs/dropped/`, the answer's `kept`); a history failure is logged and fails neither. `load()` (createStrut, at boot) sets the backend's `branches.held` from the records, what a Ladybug read on main leaves `branch-*` out by; a create sets it before it writes, a drop or a failed create reads it again. Create registers the namespace (Neo4j searches registered ones only), clears what a cut-off create left there, copies the live tree in batches of 200 (`writeMany` upsert, `embed: "later"`; every declared attribute but `unique_source_id`) and its `PARENT_OF` edges, then writes the record; a copy that fails is cleared. Drop removes the record first (a run that starts from then on finds no branch), then every node in the namespace (`DETACH DELETE`), and on Neo4j unregisters the namespace. `bindBranch(services, branch)`: the run's view of the bag (the runner, beside `bindPrincipal` / `bindGraph`; an accepted proposal made on a branch too) — `graph` held to the branch (`onBranch`, src/graph/branch.ts), `knowledge` reading the branch's pages and adding no claim or evidence (`KnowledgeCapability.onBranch`), the automation steps' `create`/`update`/`fire` refused; on EVERY run, `sessions` refusing a conversation whose first turn ran on another branch and stamping each committed turn with the run's. `branchOfServices`: the branch a bag is already on — a run launched with a step's `ctx.services` is on it (runner.ts). Tested on both engines in graph/branches.test.ts
+CONCEPT BRANCHES (plans/concept-evals.md items b, c): `createBranches({ dataDir, graph, inFlight, history? })` → `ctx.services.branches` (`list`, `get`, `create`, `drop`), set by createStrut on a graph workspace; a branch's namespace is `branch-<name>` (`BRANCH_NAME`: lowercase letters, digits, `-`, `_`, a letter first, at most 56; a new one never `main`, the history's branch). With the history on, a create calls `history.branched` once the pages are copied and before it writes the record (its git branch from main's commit now, before any run can be on it) and a drop calls `history.dropBranch` after the record goes and before the pages do (its last writes committed, its git branch kept under `refs/dropped/`, the answer's `kept`); a history failure is logged and fails neither. `load()` (createStrut, at boot) sets the backend's `branches.held` from the records, what a Ladybug read on main leaves `branch-*` out by; a create sets it before it writes, a drop or a failed create reads it again. Create registers the namespace (Neo4j searches registered ones only), clears what a cut-off create left there, copies the live tree in batches of 200 (`writeMany` upsert, `embed: "later"`; every declared attribute but `unique_source_id`) and its `PARENT_OF` edges, then writes the record; a copy that fails is cleared. Drop removes the record first (a run that starts from then on finds no branch), then every node in the namespace (`DETACH DELETE`), and on Neo4j unregisters the namespace. `bindBranch(services, branch)`: the run's view of the bag (the runner, beside `bindPrincipal` / `bindGraph`; an accepted proposal made on a branch too) — `graph` held to the branch (`onBranch`, src/graph/branch.ts), `knowledge` reading the branch's pages and each claim's status there (`KnowledgeCapability.onBranch`; item d), the automation steps' `create`/`update`/`fire` refused; on EVERY run, `sessions` refusing a conversation whose first turn ran on another branch and stamping each committed turn with the run's. `branchOfServices`: the branch a bag is already on — a run launched with a step's `ctx.services` is on it (runner.ts). Tested on both engines in graph/branches.test.ts
 
 ### `src/ledger.ts`
 
@@ -386,7 +424,7 @@ the ledger (plans/claims.md §5): buildLedger (claims per subject with computed 
 
 ### `src/claims-routes.ts`
 
-the Claims panel's HTTP door: GET /claims?kind=&name= (contract + computed status + latest evidence + open slots; `{ enabled: false }` on a filesystem workspace), GET /workflows/:name/evidence (the run view: every verdict on a workflow's runs — its claims and its steps' — keyed by the run, `limit` counts runs; mounted before the `/:version` catch-all), POST/PATCH/DELETE /claims[/:id], /claims/:id/{attach,detach,checks,evidence}, PATCH/DELETE /checks/:id. Mutations behind requireApiKey; the actor is a PERSON (unscoped, stamped `person`; evidence `asserted`, `by: person`)
+the Claims panel's HTTP door: GET /claims?kind=&name=&branch= (contract + computed status + latest evidence + open slots; with `branch`, a Concept's status on that Concept branch; `{ enabled: false }` on a filesystem workspace), GET /workflows/:name/evidence (the run view: every verdict on a workflow's runs — its claims and its steps' — keyed by the run, `limit` counts runs; mounted before the `/:version` catch-all), POST/PATCH/DELETE /claims[/:id], /claims/:id/{attach,detach,checks,evidence}, PATCH/DELETE /checks/:id. Mutations behind requireApiKey; the actor is a PERSON (unscoped, stamped `person`; evidence `asserted`, `by: person`)
 
 ### `src/history.ts`
 
@@ -406,11 +444,11 @@ context/concept: a Concept as an agent's context — the page's docs (capped at 
 
 ### `src/steps/lib/knowledge/`
 
-the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/cycles { tree?, limit? } (`effect: read`: what the dream learned, cycle by cycle, `cycles()`; its lessons quote the conversations the sealed dream read, so it answers ONE caller: strut's own page (`isFirstParty`) shown to an ADMIN, in the page's own call (`RUN_STEP_FLOW`) — the viewer who sees the dream's proposals (`pageSees`); a workflow, an agent's tool, a run a page launched, a member's page or a model-written one is refused `is an admin's`, before anything is read; not `sealed`, since a sealed step is refused to every app), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the three reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused
+the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/compare { branch, concept?, tree?, works? } (`effect: read`: main against a Concept branch over the same claims, `compare()`; plans/concept-evals.md item d), knowledge/cycles { tree?, limit? } (`effect: read`: what the dream learned, cycle by cycle, `cycles()`; its lessons quote the conversations the sealed dream read, so it answers ONE caller: strut's own page (`isFirstParty`) shown to an ADMIN, in the page's own call (`RUN_STEP_FLOW`) — the viewer who sees the dream's proposals (`pageSees`); a workflow, an agent's tool, a run a page launched, a member's page or a model-written one is refused `is an admin's`, before anything is read; not `sealed`, since a sealed step is refused to every app), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the three reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused
 
 ### `src/steps/lib/dream/`
 
-dream/turns { tree, limit, days } (`sealed`: it reads EVERY person's conversations, `conversations.all()`): the turns no dream has read, oldest first, each with its run (`workflow` + `run`, as knowledge/add-evidence takes them) and the Concept pages that run opened; a WAKE (strut's turn after a job ended) is kept as context with no `said`, with the job run(s) it reports on and the pages each opened, so the reply a person then corrects is in the transcript; a turn in flight and what follows it wait; `text` is the transcript, `cursor` what dream/done takes. dream/done { tree, cursor } (`sealed`): moves the marks, forward only. Marks are bookkeeping, a file per tree (`<dataDir>/dream/<tree>.json`, _state.ts), never the graph
+dream/turns { tree, limit, days } (`sealed`: it reads EVERY person's conversations, `conversations.all()`): the turns no dream has read, oldest first, each with its run (`workflow` + `run`, as knowledge/add-evidence takes them) and the Concept pages that run opened; a WAKE (strut's turn after a job ended) is kept as context with no `said`, with the job run(s) it reports on and the pages each opened, so the reply a person then corrects is in the transcript; a turn in flight and what follows it wait; `text` is the transcript, `cursor` what dream/done takes. dream/done { tree, cursor } (`sealed`): moves the marks, forward only. Marks are bookkeeping, a file per tree (`<dataDir>/dream/<tree>.json`, _state.ts), never the graph; a dream on a Concept branch reads and moves its own (`<dataDir>/dream/branch-<name>/<tree>.json`, `branchOfDream`), starting from main's, and a branch made again under the name (another `createdAt`) starts from main's again
 
 ### `src/steps/lib/history/`
 
@@ -418,7 +456,7 @@ history/read (plans/concept-history.md §4): the HISTORY (src/history.ts) as git
 
 ### `src/graph/claims.ts`
 
-the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed. Four subject kinds, one rule — a run observes each thing it used, at the version it used: `step`, `workflow` (content hashes), `job` (the turn) and `concept` (what opening the page returned; evidence ABOUT the Concept, the version on its source)
+the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject), a Concept's per (claim, subject, branch) (`evidenceOn`: main's works on main, a branch's since it was made; plans/concept-evals.md item d), `claimSide` (one side of a compare: status, verdicts on the current page, works) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor — `{ branch }` reads a Concept's on a branch —, `pageOn` a branch's page of a name, `scopeOf` when a branch was made (deps `branches`), `compareFor` a Concept's claims on main and a branch from one read; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed. Four subject kinds, one rule — a run observes each thing it used, at the version it used: `step`, `workflow` (content hashes), `job` (the turn) and `concept` (what opening the page returned; evidence ABOUT the Concept, the version on its source)
 
 ### `src/graph/concept-version.ts`
 

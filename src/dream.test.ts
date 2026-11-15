@@ -50,9 +50,12 @@ describe("dream/turns", () => {
       opened: async (workflow: string, run: string) => (run === "171" ? null : workflow === "job" ? ["Job", "Planning"] : ["Personal"]),
     },
   });
-  const read = async (cfg: Record<string, unknown> = {}) =>
-    (await turns.run(turns.input.parse(cfg), { services: services() } as never)) as { count: number; turns: DreamTurn[]; cursor: Record<string, number>; more?: true; text: string };
-  const mark = (cursor: Record<string, number>) => done.run(done.input.parse({ cursor }), { services: services() } as never);
+  /** A step's context: on main, or on a Concept branch made at `made`. */
+  const ctxOn = (branch?: string, made = "2026-11-14T00:00:00.000Z") =>
+    ({ services: { ...services(), branches: { get: async (n: string) => (n === branch ? { createdAt: made } : null) } }, ...(branch ? { branch } : {}) }) as never;
+  const read = async (cfg: Record<string, unknown> = {}, ctx: never = ctxOn()) =>
+    (await turns.run(turns.input.parse(cfg), ctx)) as { count: number; turns: DreamTurn[]; cursor: Record<string, number>; more?: true; text: string };
+  const mark = (cursor: Record<string, number>, ctx: never = ctxOn()) => done.run(done.input.parse({ cursor }), ctx);
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "strut-dream-turns-"));
@@ -107,6 +110,17 @@ describe("dream/turns", () => {
     assert.deepEqual([next.turns.map((t) => t.turn), next.cursor], [[3, 4], { "c-1": 4 }]);
     // Each tree keeps its own marks: another tree's dream reads the same conversations from the start.
     assert.equal((await read({ tree: "Job" })).count, 5);
+  });
+
+  it("a dream on a Concept branch keeps marks of its own: it starts where main's dream is, never moves main's, and a branch made again under the name starts so too", async () => {
+    await mark({ "c-1": 0 });
+    const onTry = await read({}, ctxOn("try"));
+    assert.deepEqual(onTry.turns.map((t) => t.turn), [1, 2], "from main's marks");
+    await mark(onTry.cursor, ctxOn("try"));
+    assert.equal((await read({}, ctxOn("try"))).count, 0, "the branch's marks moved");
+    assert.deepEqual((await read()).turns.map((t) => t.turn), [1, 2], "main's did not");
+    assert.equal((await read({}, ctxOn("other"))).count, 2, "nor another branch's");
+    assert.deepEqual((await read({}, ctxOn("try", "2026-11-15T00:00:00.000Z"))).turns.map((t) => t.turn), [1, 2], "dropped and made again: from main's");
   });
 
   it("a limit leaves the rest for the next dream; the first dream reads only the last days; no tree, no dream", async () => {

@@ -28,7 +28,14 @@
  *     something, each with its lessons (what a person said, the claim, the
  *     change). Read off the run store, so it quotes the conversations the
  *     dream read: its step (`knowledge/cycles`) answers strut's own page
- *     shown to an admin and no one else.
+ *     shown to an admin and no one else;
+ *   - `compare`: main against a Concept BRANCH over the same claims
+ *     (plans/concept-evals.md item d) — each side's status, and what the
+ *     works run on each said — so a candidate tree is measured.
+ *
+ * On a branch (`onBranch`) the door reads the branch's pages and each
+ * claim's status there; a claim it adds is main's, shared (ruling 4), and a
+ * person's word it records is about the run it cites, on that run's branch.
  *
  * Changing a Concept is not here: a tender changes it with the ordinary
  * graph steps, and where its tree is reviewed they are under its workflow's
@@ -36,6 +43,7 @@
  */
 import { toSubjectRef, type ClaimActor, type ClaimListing, type ClaimsAuthoring } from "./claims-authoring.js";
 import type { GraphBackend } from "./graph/backend.js";
+import type { ClaimSide, EvidenceRow } from "./graph/claims.js";
 import type { RunStatus, RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
 import { conceptsOpenedIn, type Verifier } from "./verify.js";
@@ -57,6 +65,9 @@ export const DREAM_WORKFLOW = "dream";
 /** The most of the dream's runs one `cycles` read looks through, newest
  *  first: a quiet dream (nothing new to read) is skipped, not counted. */
 export const DREAM_CYCLES_SCAN = 200;
+
+/** The works `compare` lists on each side of a claim, newest first, unless asked for more (at most 50). */
+export const COMPARE_WORKS = 10;
 
 const CONCEPT = "Concept";
 const PARENT_OF = "PARENT_OF";
@@ -173,6 +184,50 @@ export function cycleOf(s: RunSummary): DreamCycle | null {
   };
 }
 
+/** One side of a claim in `compare`: main, or the branch. */
+export interface CompareSide {
+  /** The page's version on this side; absent: no page of that name here. */
+  version?: string;
+  status: ClaimListing["status"];
+  /** The verdicts on this side's CURRENT page, one per check per work. */
+  supports: number;
+  refutes: number;
+  /** The works judged on this side, any version, newest first: the run (a
+   *  work's root), its verdict, what was observed or said. */
+  works: Array<{ workflow?: string; run?: string; version?: string; current: boolean; supports: boolean; content?: string; by?: string; at?: number }>;
+}
+
+/** A claim on main and on a branch, side by side. */
+export interface CompareClaim {
+  concept: string;
+  id: string;
+  text: string;
+  /** The branch's page reads otherwise than main's (their versions differ). */
+  changed: boolean;
+  main: CompareSide;
+  branch: CompareSide;
+  /** The branch against main on this claim: the share of verdicts that
+   *  support it on each side's current page. `unmeasured`: a side has none. */
+  outcome: "better" | "worse" | "same" | "unmeasured";
+}
+
+/** `compare`: main against a branch over the same claims (item d). */
+export interface KnowledgeCompare {
+  branch: string;
+  /** One page, or a tree (its root and every page under it, on main); neither: every page that carries claims. */
+  concept?: string;
+  tree?: string;
+  claims: CompareClaim[];
+  totals: {
+    better: number;
+    worse: number;
+    same: number;
+    unmeasured: number;
+    main: { supports: number; refutes: number };
+    branch: { supports: number; refutes: number };
+  };
+}
+
 export interface KnowledgeCapability {
   /** One Concept, by its exact name; null when there is none. */
   page(name: string): Promise<KnowledgePage | null>;
@@ -185,9 +240,16 @@ export interface KnowledgeCapability {
   /** The dream's recent cycles, newest first: its runs that read something
    *  (`cycleOf`), at most `limit`, only one tree's when `tree` is given. */
   cycles(opts?: { limit?: number; tree?: string }): Promise<DreamCycle[]>;
+  /** Main against Concept branch `branch` over the same claims: one page
+   *  (`concept`), a tree (`tree`, its root's name), or every page that
+   *  carries claims. Each claim's status on both sides, the verdicts on each
+   *  side's current page, the works judged there (at most `works` a side).
+   *  Optional: a host's own door may have none. */
+  compare?(input: { branch: string; concept?: string; tree?: string; works?: number }): Promise<KnowledgeCompare | { error: string }>;
   /** The door as a run on a Concept branch has it (src/branches.ts): pages
-   *  are the branch's (`namespace`); claims are shared and read as they
-   *  are, and none is added or evidenced from a branch yet (item d). */
+   *  are the branch's (`namespace`), and so is each claim's status (item
+   *  d); a claim added is main's, shared, and evidence is about the run it
+   *  cites, on that run's branch. */
   onBranch?(namespace: string): KnowledgeCapability;
 }
 
@@ -196,6 +258,17 @@ export interface KnowledgeDeps {
   claims: ClaimsAuthoring;
   verifier: Pick<Verifier, "addEvidence">;
   store: Pick<RunStore, "getRunEvents" | "listRuns" | "getRunSummary">;
+  /** The Concept branches (src/branches.ts): `compare` refuses one that does not exist. */
+  branches?: { get(name: string): Promise<unknown> };
+}
+
+/** What a branch's door shares with main's: where it reads, and the per-run claim count. */
+interface DoorOn {
+  /** The Concept branch it reads on; absent: main. */
+  branch?: string;
+  /** The graph's own namespace, where the claims and main's tree are. */
+  home: string;
+  added: Map<string, number>;
 }
 
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
@@ -213,6 +286,38 @@ function claimOf(c: ClaimListing): KnowledgeClaim {
     ...(c.speaker ? { speaker: c.speaker } : {}),
     ...(l ? { latest: { ...(l.content ? { content: l.content } : {}), ...(l.mode ? { mode: l.mode } : {}), ...(l.by ? { by: l.by } : {}) } } : {}),
   };
+}
+
+/** One side of a claim as `compare` answers it: the newest `cap` works. */
+function sideOf(side: ClaimSide, cap: number): CompareSide {
+  const work = (e: EvidenceRow): CompareSide["works"][number] => ({
+    ...(e.source?.run_key ? { workflow: e.source.run_key } : {}),
+    ...(e.source?.run_id ? { run: e.source.run_id } : {}),
+    ...(e.about?.content_hash ? { version: e.about.content_hash } : {}),
+    current: side.version !== null && e.about?.content_hash === side.version,
+    supports: (e.strength ?? 0) > 0,
+    ...(e.content ? { content: e.content } : {}),
+    ...(typeof e.source?.context?.by === "string" ? { by: e.source.context.by } : {}),
+    ...(typeof e.observed_at === "number" ? { at: e.observed_at } : {}),
+  });
+  return {
+    ...(side.version ? { version: side.version } : {}),
+    status: side.status.status,
+    supports: side.supports,
+    refutes: side.refutes,
+    works: side.works.slice(0, cap).map(work),
+  };
+}
+
+/** The branch against main on one claim: the share of supporting verdicts
+ *  on each side's current page. Either side with none: `unmeasured`. */
+export function outcomeOf(main: Pick<ClaimSide, "supports" | "refutes">, branch: Pick<ClaimSide, "supports" | "refutes">): CompareClaim["outcome"] {
+  const m = main.supports + main.refutes;
+  const b = branch.supports + branch.refutes;
+  if (!m || !b) return "unmeasured";
+  // branch.supports / b against main.supports / m, without dividing.
+  const diff = branch.supports * m - main.supports * b;
+  return diff > 0 ? "better" : diff < 0 ? "worse" : "same";
 }
 
 /** The standard check: the ROOT run of a work that opened the page, handed
@@ -250,18 +355,43 @@ export function renderKnowledgePage(p: KnowledgePage): string {
   ].join("\n");
 }
 
-export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
+export function createKnowledge(deps: KnowledgeDeps, on: DoorOn = { home: deps.graph.namespace, added: new Map() }): KnowledgeCapability {
   const { graph, claims } = deps;
-  const added = new Map<string, number>();
+  const { added } = on;
+  /** Where a claim's status is read: this door's branch, else main. */
+  const where = on.branch ? { branch: on.branch } : {};
+
+  /** A tree on main, by its root's name: the root and every page under it
+   *  (`PARENT_OF`, one read per level); null when there is no such page. */
+  async function treeOf(root: string): Promise<Set<string> | null> {
+    const d = graph.dialect;
+    const [top] = await graph.query(`MATCH ${d.node("p", CONCEPT, { namespace: "$ns", name: "$name" })} WHERE ${d.live("p")} RETURN p.ref_id AS ref LIMIT 1`, { ns: on.home, name: root });
+    if (!top || typeof top["ref"] !== "string") return null;
+    const names = new Set([root]);
+    const seen = new Set<string>([top["ref"]]);
+    for (let level = [top["ref"]]; level.length; ) {
+      const rows = await graph.query(
+        `MATCH ${d.node("p", CONCEPT)}-[r:\`${PARENT_OF}\`]->${d.node("c", CONCEPT, { namespace: "$ns" })}
+         WHERE p.ref_id IN $refs AND ${d.edgeLive("r")} AND ${d.live("c")} RETURN c.ref_id AS ref, c.name AS name`,
+        { ns: on.home, refs: level },
+      );
+      level = [];
+      for (const r of rows) {
+        const ref = String(r["ref"]);
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        names.add(String(r["name"]));
+        level.push(ref);
+      }
+    }
+    return names;
+  }
 
   return {
     onBranch(namespace) {
       const branch = namespace.replace(/^branch-/, "");
-      const none = async () => ({ error: `this run is on Concept branch "${branch}": claims and evidence are not written from a branch yet — they are shared, and follow a page onto a branch in a later change` });
       const door: KnowledgeCapability = {
-        ...createKnowledge({ ...deps, graph: { ...graph, query: graph.query.bind(graph), namespace } }),
-        addClaim: none,
-        addEvidence: none,
+        ...createKnowledge({ ...deps, graph: { ...graph, query: graph.query.bind(graph), namespace } }, { ...on, branch }),
         onBranch: (ns) => {
           if (ns !== namespace) throw new Error(`this run is on Concept branch "${branch}", and stays on it`);
           return door;
@@ -291,7 +421,7 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
           { ref },
         ),
         claims.reader.claimedSubjects("concept"),
-        claims.listClaims({ kind: "concept", name }),
+        claims.listClaims({ kind: "concept", name }, where),
       ]);
       const has = new Set(claimed);
       const docs = text(node["docs"]) ?? "";
@@ -321,7 +451,10 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
         const read = await Promise.all(
           names.slice(i, i + CLAIMS_AT_ONCE).map(async (concept) => {
             const subject = { kind: "concept" as const, name: concept };
-            const [ref, listed] = await Promise.all([claims.reader.subjectRefId(toSubjectRef(subject)), claims.listClaims(subject)]);
+            const [ref, listed] = await Promise.all([
+              on.branch ? claims.reader.pageOn(concept, on.branch) : claims.reader.subjectRefId(toSubjectRef(subject)),
+              claims.listClaims(subject, where),
+            ]);
             return ref && "ok" in listed && listed.claims.length ? { concept, ref_id: ref, claims: listed.claims.map(claimOf) } : null;
           }),
         );
@@ -354,7 +487,13 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
       if (sentence.includes("{{")) return { error: "a claim's text may not contain {{ — write the rule in plain words" };
       const subject = { kind: "concept" as const, name: input.concept };
       const have = await claims.listClaims(subject);
-      if (!("ok" in have)) return have;
+      // Claims are shared (ruling 4): one is about main's page of that name,
+      // whichever side wrote it. A page made on the branch has none yet.
+      if (!("ok" in have)) {
+        return on.branch && !(await claims.reader.subjectRefId(subject))
+          ? { error: `"${input.concept}" is a page of Concept branch "${on.branch}" alone: a claim is about main's page of a name, and main has none of this one — put the rule on a page main has too` }
+          : have;
+      }
       const same = have.claims.find((c) => c.text.trim() === sentence);
       if (same) return { ok: true, id: same.id, existing: true };
       const key = by.runId ?? "";
@@ -365,6 +504,53 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
       if (!("ok" in made)) return made;
       added.set(key, (added.get(key) ?? 0) + 1);
       return { ok: true, id: made.id };
+    },
+
+    async compare(input) {
+      const branch = input.branch;
+      if (!branch || (deps.branches && !(await deps.branches.get(branch)))) return { error: `no Concept branch "${branch}" — GET /branches lists them` };
+      if (input.concept && input.tree) return { error: "name a concept or a tree, not both" };
+      const claimed = await claims.reader.claimedSubjects("concept");
+      let names = claimed;
+      if (input.concept) names = claimed.filter((n) => n === input.concept);
+      else if (input.tree) {
+        const under = await treeOf(input.tree);
+        if (!under) return { error: `no Concept "${input.tree}" on main` };
+        names = claimed.filter((n) => under.has(n));
+      }
+      const cap = Math.max(1, Math.min(Math.trunc(input.works ?? COMPARE_WORKS), 50));
+      const out: CompareClaim[] = [];
+      for (let i = 0; i < names.length; i += CLAIMS_AT_ONCE) {
+        const read = await Promise.all(names.slice(i, i + CLAIMS_AT_ONCE).map((concept) => claims.reader.compareFor({ kind: "concept", name: concept }, branch).then((rows) => ({ concept, rows }))));
+        for (const { concept, rows } of read) {
+          for (const r of rows) {
+            out.push({
+              concept,
+              id: r.claim.id,
+              text: r.claim.claim_text,
+              changed: r.main.version !== r.branch.version,
+              main: sideOf(r.main, cap),
+              branch: sideOf(r.branch, cap),
+              outcome: outcomeOf(r.main, r.branch),
+            });
+          }
+        }
+      }
+      const sum = (side: "main" | "branch", k: "supports" | "refutes") => out.reduce((n, c) => n + c[side][k], 0);
+      return {
+        branch,
+        ...(input.concept ? { concept: input.concept } : {}),
+        ...(input.tree ? { tree: input.tree } : {}),
+        claims: out,
+        totals: {
+          better: out.filter((c) => c.outcome === "better").length,
+          worse: out.filter((c) => c.outcome === "worse").length,
+          same: out.filter((c) => c.outcome === "same").length,
+          unmeasured: out.filter((c) => c.outcome === "unmeasured").length,
+          main: { supports: sum("main", "supports"), refutes: sum("main", "refutes") },
+          branch: { supports: sum("branch", "supports"), refutes: sum("branch", "refutes") },
+        },
+      };
     },
 
     async addEvidence(input) {

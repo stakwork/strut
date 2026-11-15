@@ -574,7 +574,18 @@ once, when the work is done.
 - **A page that was not opened** is caught one level up: put the claim on
   the page that lists it, with a check over `{{ input.concepts }}`.
 
-`GET /claims?kind=concept&name=Planning` lists them; `GET
+- **On a Concept branch** (§5.7) the claims are the same ones, shared:
+  a work whose root ran on a branch opened the branch's page of that name,
+  and is judged by main's claims on it. Its evidence carries the branch
+  (`source.context.branch`), and a Concept's status is read per side —
+  main's from the works run on main, a branch's from the works run on it
+  since it was made, at its own page's version — so a trial on a branch
+  never moves main's status.
+
+`GET /claims?kind=concept&name=Planning` lists them, each status main's;
+`&branch=<name>` reads each on that branch instead (the response then
+carries `branch`; a branch with no page of that name reads `stale` or
+`unknown`; `branch` with another kind is a 400). `GET
 /workflows/:name/evidence` carries a run's, with `subject: { kind:
 "concept", name, version }` and `run.path: "concept:<name>"`. `when:
 publish` is refused.
@@ -586,7 +597,7 @@ refused on every write to such a claim (the claim, its checks, attaching
 and detaching). Runs launched from those doors are still checked against
 these claims.
 
-### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` items b, c)
+### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` items b, c, d)
 
 A BRANCH is a named copy of the Concept pages, in a graph namespace of its
 own (`branch-<name>`), that a run is pointed at with the launch's `branch`
@@ -612,6 +623,7 @@ for any other scope, and a 404 on a strut with no graph workspace.
 | GET    | `/branches`        | — | 200 `{ branches: ConceptBranch[] }`, by name |
 | POST   | `/branches`        | `{ name, from?: "main" \| "empty" }` | 201 `ConceptBranch` |
 | DELETE | `/branches/:name`  | — | 200 `{ name, pages, kept? }` |
+| GET    | `/branches/:name/compare?concept=\|tree=&works=` | — | 200 `KnowledgeCompare` |
 
 `ConceptBranch` is `{ name, namespace, createdAt, createdBy?, from, pages,
 links }`: `from: "main"` (the default) copies every live Concept of the
@@ -628,9 +640,33 @@ dropped branch ends `no_branch:` when it is woken. `kept` is `{ ref, commit
 (what its runs last wrote committed first), so the name is free again and
 what was tried still reads by its commits; absent with no history.
 
-Claims are not on branches yet: a run on a branch opens the branch's
-pages, which no claim (§5.6) is about, so nothing is recorded about them,
-and `knowledge/add-claim` / `knowledge/add-evidence` refuse in such a run.
+CLAIMS FOLLOW A PAGE ONTO A BRANCH (`plans/concept-evals.md` item d): the
+claims on a Concept (§5.6) are shared, and a work whose root ran on a
+branch is judged by them on the branch's page of that name. Its evidence
+carries the branch, and a Concept's status is per side (`GET
+/claims?…&branch=`). In a run on a branch, `knowledge/add-claim` writes a
+claim on main's page of that name (refused for a page the branch alone
+has) and `knowledge/add-evidence` records a person's word about the run it
+cites, on that run's branch.
+
+`GET /branches/:name/compare` sets main against the branch over the same
+claims: one page (`concept`), a tree (`tree`: its root's name, the root
+and every page under it on main), or, with neither, every page that
+carries claims; `works` (1–50, default 10) is the most works listed on each
+side of a claim. `KnowledgeCompare` is `{ branch, concept?, tree?, claims,
+totals }`. Each of `claims` is `{ concept, id, text, changed, main, branch,
+outcome }`: `changed` when the branch's page reads otherwise than main's
+(their versions differ); `main` and `branch` are each `{ version?, status,
+supports, refutes, works }` — the page's version on that side (absent: no
+page of the name there), the claim's status there, the verdicts on that
+side's CURRENT page (one per check per work), and the works judged there,
+newest first, each `{ workflow, run, version, current, supports, content?,
+by?, at }`; `outcome` is `better | worse | same` by the share of supporting
+verdicts on each side's current page, `unmeasured` while a side has none.
+`totals` is `{ better, worse, same, unmeasured, main: { supports, refutes },
+branch: { supports, refutes } }`. 404 for no such branch, 400 for a tree
+main has no root of, 409 where the claims layer is off. The same read is
+the `knowledge/compare` step.
 
 ## 6. Control a run
 

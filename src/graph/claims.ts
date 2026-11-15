@@ -29,7 +29,10 @@
  * the shapes a check reads and returns, the status rule, and the reads.
  *
  * Status is COMPUTED ON READ, per (claim, subject) — `claimStatus` is one
- * pure function and no verdict is ever stored on a node. Every read here
+ * pure function and no verdict is ever stored on a node. A Concept's is
+ * per (claim, subject, BRANCH) (plans/concept-evals.md item d): its claims
+ * are shared, main's pages and a branch's are the candidates, and the
+ * evidence says which one a work used (`SourceContext.branch`). Every read here
  * skips deleted nodes and legacy muted edges (`dialect.live` / `edgeLive`):
  * a retired slot is neither evidence nor an open slot.
  *
@@ -50,6 +53,10 @@ import { readConceptVersion } from "./concept-version.js";
 import type { WorkSubject } from "../work.js";
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
+
+/** A Concept branch's namespace is this and its name (`BRANCH_NAMESPACE_PREFIX`,
+ *  search.ts — not imported: that module loads neo4j-driver). */
+const BRANCH_NAMESPACE_PREFIX = "branch-";
 
 export const CLAIM_TYPE = "Claim";
 export const CHECK_TYPE = "Check";
@@ -174,6 +181,11 @@ export function activeTurnOf(runs: ReadonlyArray<{ runId: string; parentRunId?: 
  *  version — its claims read `stale` or `unknown`, never `supported`. */
 export interface ClaimsReaderDeps {
   jobs?: { get?: JobIndex["get"] };
+  /** The Concept branches (src/branches.ts): when one was made, so its
+   *  status counts only the works run on it since — a name made again after
+   *  a drop starts clean. Without it, a branch's status counts all its
+   *  name's evidence. */
+  branches?: { get(name: string): Promise<{ createdAt: string } | null> };
 }
 
 // ── The check contract ──────────────────────────────────────────────────────
@@ -243,6 +255,12 @@ export interface SourceContext {
    *  (`AccessedNode.version`). There is no version node to point `ABOUT` at,
    *  so this is where a reader finds it. */
   version?: string;
+  /** The Concept BRANCH the source run was on (src/branches.ts; its
+   *  `run.start.branch`), absent on main. A Concept's version alone cannot
+   *  tell main's page from a branch's — an unedited copy has main's — so this
+   *  is what a Concept's status per branch reads (`claimStatus`). Every
+   *  evidence a run on a branch is the source of carries it. */
+  branch?: string;
   /** A job subject's evidence (plans/job-claims.md §2): the turn observed —
    *  the run id the `ABOUT` edge points at, for readers that do not follow
    *  the edge. */
@@ -369,11 +387,39 @@ export interface ClaimStatusInput {
   checks: ReadonlyArray<Pick<CheckRow, "id" | "retired_at">>;
   subject: SubjectRef;
   evidence: readonly EvidenceRow[];
-  /** Content hash of the subject's active version, or null when it has none. */
+  /** Content hash of the subject's active version, or null when it has none.
+   *  On a branch, its own page's (`ClaimsReader.activeVersion`). */
   activeVersion: string | null;
+  /** A CONCEPT subject's status is read where its page was used: main
+   *  (absent) counts only evidence whose source ran on main, a branch only
+   *  its own (`SourceContext.branch`). The other kinds ignore it. */
+  branch?: string;
+  /** On a branch: when it was made, epoch ms. Evidence whose source run
+   *  started before (run ids are ms start times) is an earlier branch's of
+   *  the same name, made and dropped, and does not count. */
+  since?: number;
 }
 
 const NO_CHECK = "";
+
+/** The Concept branch an evidence's source run was on; undefined: main. */
+export function evidenceBranch(e: Pick<EvidenceRow, "source">): string | undefined {
+  const b = e.source?.context?.branch;
+  return typeof b === "string" && b ? b : undefined;
+}
+
+/** When the evidence was observed, epoch SECONDS (`observed_at`, else when it was written). */
+const observedSeconds = (e: EvidenceRow) => (typeof e.observed_at === "number" ? e.observed_at : Math.floor((e.created_at ?? 0) / 1000));
+
+/** Does the evidence count where a Concept's status is read: from a run on
+ *  `where.branch` (none: main), and on a branch from a run that started
+ *  after it was made (a run id that is no time: observed since). */
+export function evidenceOn(e: EvidenceRow, where: { branch?: string; since?: number }): boolean {
+  if (evidenceBranch(e) !== (where.branch || undefined)) return false;
+  if (!where.branch || where.since === undefined) return true;
+  const started = Number(e.source?.run_id);
+  return Number.isFinite(started) && started > 0 ? started >= where.since : observedSeconds(e) >= Math.floor(where.since / 1000);
+}
 
 /**
  * Newest first. `observed_at` is epoch SECONDS (every jarvis datetime is),
@@ -382,13 +428,12 @@ const NO_CHECK = "";
  * are ms timestamps), then when the node was written, then the id.
  */
 export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
-  const seconds = (e: EvidenceRow) => (typeof e.observed_at === "number" ? e.observed_at : Math.floor((e.created_at ?? 0) / 1000));
   const runMs = (e: EvidenceRow) => {
     const n = Number(e.source?.run_id);
     return Number.isFinite(n) ? n : 0;
   };
   return (
-    seconds(b) - seconds(a) ||
+    observedSeconds(b) - observedSeconds(a) ||
     runMs(b) - runMs(a) ||
     (b.created_at ?? 0) - (a.created_at ?? 0) ||
     (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -419,19 +464,20 @@ export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
  *
  * A refutation on the current version always wins, so a second check can
  * never paper over a failing one.
+ *
+ * A CONCEPT's status is per branch (plans/concept-evals.md item d): only the
+ * evidence of works run where it is read counts — main's on main, a
+ * branch's on that branch (`evidenceOn`) — and the active version is that
+ * side's page. One bad trial on a branch never marks main's claim refuted.
  */
 export function claimStatus(input: ClaimStatusInput): ClaimStatus {
-  const { claim, subject, activeVersion } = input;
-  const active = new Set(input.checks.filter((k) => k.retired_at === undefined || k.retired_at === null).map((k) => k.id));
-  const mine = input.evidence.filter(
-    (e) => e.claim_id === claim.id && isVersionOf(e.about, subject) && (e.check_id === undefined || active.has(e.check_id)),
-  );
+  const { subject, activeVersion } = input;
+  const { active, mine, counted } = measured(input);
 
   const slots = mine
     .filter((e) => e.evidence_status === "planned")
     .sort(newestFirst)
     .map((e) => ({ evidence_id: e.id, ...(e.check_id ? { check_id: e.check_id } : {}) }));
-  const counted = mine.filter((e) => e.evidence_status === "collected" && typeof e.strength === "number" && e.strength !== 0);
 
   const streams = new Map<string, EvidenceRow[]>();
   for (const e of counted) {
@@ -465,6 +511,51 @@ export function claimStatus(input: ClaimStatusInput): ClaimStatus {
     openSlot: slots.length > 0,
     slots,
     ...(deciding[0] ? { latest: deciding[0] } : {}),
+  };
+}
+
+/** What `claimStatus` reads: the claim's evidence about the subject from
+ *  its active checks (on the side a Concept is read on), and of it the
+ *  COUNTED — collected, with a verdict. */
+function measured(input: ClaimStatusInput): { active: Set<string>; mine: EvidenceRow[]; counted: EvidenceRow[] } {
+  const { claim, subject } = input;
+  const active = new Set(input.checks.filter((k) => k.retired_at === undefined || k.retired_at === null).map((k) => k.id));
+  const mine = input.evidence.filter(
+    (e) =>
+      e.claim_id === claim.id &&
+      isVersionOf(e.about, subject) &&
+      (e.check_id === undefined || active.has(e.check_id)) &&
+      (subject.kind !== "concept" || evidenceOn(e, input)),
+  );
+  const counted = mine.filter((e) => e.evidence_status === "collected" && typeof e.strength === "number" && e.strength !== 0);
+  return { active, mine, counted };
+}
+
+/** One side of a COMPARE (plans/concept-evals.md item d): a claim's status
+ *  where it is read — main, or a branch — and what the works judged there
+ *  said. `supports` / `refutes` count the verdicts on that side's CURRENT
+ *  page (one per check per work: what the status rests on, every measurement
+ *  rather than the newest); `works` is every verdict there, any version,
+ *  newest first. */
+export interface ClaimSide {
+  /** The page's version on that side; null: no page of that name there. */
+  version: string | null;
+  status: ClaimStatus;
+  supports: number;
+  refutes: number;
+  works: EvidenceRow[];
+}
+
+/** A claim read on one side. Pure. */
+export function claimSide(input: ClaimStatusInput): ClaimSide {
+  const { counted } = measured(input);
+  const current = input.activeVersion === null ? [] : counted.filter((e) => e.about?.content_hash === input.activeVersion);
+  return {
+    version: input.activeVersion,
+    status: claimStatus(input),
+    supports: current.filter((e) => e.strength! > 0).length,
+    refutes: current.filter((e) => e.strength! < 0).length,
+    works: [...counted].sort(newestFirst),
   };
 }
 
@@ -532,14 +623,15 @@ export class ClaimsReader {
   /** Content hash of the subject's active version; null when the subject
    *  does not exist or has none. For a job: its active TURN, from the job
    *  index (`activeTurnOf`) — null without an index, or with no record. For
-   *  a Concept: what opening its page returns now (`readConceptVersion`). */
-  async activeVersion(subject: SubjectRef): Promise<string | null> {
+   *  a Concept: what opening its page returns now (`readConceptVersion`) —
+   *  on `branch`, the branch's page of that name (none there: null). */
+  async activeVersion(subject: SubjectRef, branch?: string): Promise<string | null> {
     if (subject.kind === "job") {
       const view = await this.deps.jobs?.get?.(subject.id, { threads: false });
       return view ? activeTurnOf(view.runs) : null;
     }
     if (subject.kind === "concept") {
-      const ref = await this.subjectRefId(subject);
+      const ref = branch ? await this.pageOn(subject.name, branch) : await this.subjectRefId(subject);
       return ref ? readConceptVersion(this.graph, ref) : null;
     }
     const n = SUBJECT_NODE[subject.kind];
@@ -564,6 +656,27 @@ export class ClaimsReader {
       { ns: this.ns, name: subjectName(subject) },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
+  }
+
+  /** `ref_id` of the page named `name` on a Concept branch (its namespace,
+   *  `branch-<branch>`, src/branches.ts), or null: what a run on that branch
+   *  opens by the name a claim is about. */
+  async pageOn(name: string, branch: string): Promise<string | null> {
+    const d = this.d;
+    const rows = await this.graph.query(
+      `MATCH ${d.node("s", SUBJECT_NODE.concept.label, { namespace: "$ns", name: "$name" })} WHERE ${d.live("s")} RETURN s.ref_id AS r LIMIT 1`,
+      { ns: `${BRANCH_NAMESPACE_PREFIX}${branch}`, name },
+    );
+    return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
+  }
+
+  /** Where a Concept's status is read (`claimStatus`'s `branch` and
+   *  `since`): main, or a branch counted from when it was made. */
+  async scopeOf(branch?: string): Promise<{ branch?: string; since?: number }> {
+    if (!branch) return {};
+    const made = await this.deps.branches?.get(branch).catch(() => null);
+    const ms = made ? Date.parse(made.createdAt) : NaN;
+    return { branch, ...(Number.isFinite(ms) ? { since: ms } : {}) };
   }
 
   /** `ref_id` of the version node a `VersionRef` names, or null. For a
@@ -818,17 +931,32 @@ export class ClaimsReader {
   }
 
   /** Every active claim on a subject with its active checks and computed
-   *  status — the rows the ledger is built from. */
-  async statusFor(subject: SubjectRef): Promise<SubjectLedgerRow[]> {
-    const [claims, activeVersion] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject)]);
+   *  status — the rows the ledger is built from. A Concept's is read on
+   *  main, or on `branch`: its page there, the evidence of works run on it
+   *  since it was made (`claimStatus`); `evidence` is still every side's. */
+  async statusFor(subject: SubjectRef, opts: { branch?: string } = {}): Promise<SubjectLedgerRow[]> {
+    const branch = subject.kind === "concept" ? opts.branch : undefined;
+    const [claims, activeVersion, where] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject, branch), this.scopeOf(branch)]);
     return mapLimit(claims, STATUS_CONCURRENCY, async (claim) => {
       const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
-      return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion }), evidence };
+      return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion, ...where }), evidence };
+    });
+  }
+
+  /** Every active claim on a Concept read on main and on `branch` side by
+   *  side, from one read of its evidence (item d's compare): each side's
+   *  page version, status and what the works run there said. */
+  async compareFor(subject: Extract<SubjectRef, { kind: "concept" }>, branch: string): Promise<Array<{ claim: ClaimRow; main: ClaimSide; branch: ClaimSide }>> {
+    const [claims, onMain, onBranch, where] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject), this.activeVersion(subject, branch), this.scopeOf(branch)]);
+    return mapLimit(claims, STATUS_CONCURRENCY, async (claim) => {
+      const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
+      const base = { claim, checks, subject, evidence };
+      return { claim, main: claimSide({ ...base, activeVersion: onMain }), branch: claimSide({ ...base, activeVersion: onBranch, ...where }) };
     });
   }
 }
 
-/** Claims `statusFor` reads at once: each is about seven statements, and a
+/** Claims `statusFor` and `compareFor` read at once: each is about seven statements, and a
  *  subject with dozens of claims would otherwise send them all together. */
 const STATUS_CONCURRENCY = 4;
 

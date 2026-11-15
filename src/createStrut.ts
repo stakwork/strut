@@ -124,7 +124,7 @@ import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
-import { createKnowledge } from "./knowledge.js";
+import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -2127,6 +2127,8 @@ export async function createStrut<TServices = unknown>(
         graph: claimsGraph,
         workspace,
         jobs: claimsJobs,
+        // A Concept's status on a branch counts from when it was made (plans/concept-evals.md item d).
+        ...(branchesCap ? { branches: branchesCap } : {}),
         getRegistry: async () => {
           await rebuildRegistry();
           return registry;
@@ -2169,6 +2171,7 @@ export async function createStrut<TServices = unknown>(
         store,
         workspace,
         jobs: claimsJobs,
+        ...(branchesCap ? { branches: branchesCap } : {}),
         services: () => services,
         getRegistry: async () => {
           await rebuildRegistry();
@@ -2203,7 +2206,7 @@ export async function createStrut<TServices = unknown>(
   // The Knowledge door (src/knowledge.ts): what a workflow that tends the
   // Concept tree works through. A host's own wins.
   if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["knowledge"]) {
-    (services as Record<string, unknown>)["knowledge"] = createKnowledge({ graph: claimsGraph, claims: claimsAuthoring, verifier, store });
+    (services as Record<string, unknown>)["knowledge"] = createKnowledge({ graph: claimsGraph, claims: claimsAuthoring, verifier, store, ...(branchesCap ? { branches: branchesCap } : {}) });
   }
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
@@ -8461,6 +8464,22 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return branchError(c, err);
     }
+  });
+  // Main against the branch over the same claims (item d): one page
+  // (`concept`), a tree (`tree`, its root's name) or every page with claims.
+  app.get("/branches/:name/compare", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const knowledge = (services as Record<string, unknown>)["knowledge"] as KnowledgeCapability | undefined;
+    if (!knowledge?.compare) return c.json({ error: "the claims layer is off on this strut server: there is nothing to compare" }, 409);
+    const name = c.req.param("name");
+    if (!(await branchesCap!.get(name))) return c.json({ error: `no Concept branch "${name}"` }, 404);
+    const works = c.req.query("works");
+    if (works !== undefined && !(Number.isInteger(Number(works)) && Number(works) >= 1 && Number(works) <= 50)) return c.json({ error: "works is a whole number from 1 to 50" }, 400);
+    const concept = c.req.query("concept");
+    const tree = c.req.query("tree");
+    const out = await knowledge.compare({ branch: name, ...(concept ? { concept } : {}), ...(tree ? { tree } : {}), ...(works ? { works: Number(works) } : {}) });
+    return "error" in out ? c.json(out, 400) : c.json(out);
   });
 
   // `callback: { url }` asks for the result to be POSTed there when the run

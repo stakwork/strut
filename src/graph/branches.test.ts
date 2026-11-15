@@ -134,10 +134,20 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
       return { held: true };
     },
   });
+  /** A check: the work's answer is short when its text says so. */
+  const judge = defineStep({
+    type: "test/judge",
+    input: z.object({ text: z.any() }),
+    output: z.any(),
+    async run(cfg) {
+      const text = String(cfg.text ?? "");
+      return { supports: !/long/i.test(text), content: /long/i.test(text) ? "the answer is long" : "the answer is short" };
+    },
+  });
   const source: ParkSource = { settled: async (on) => answers.has(on) };
 
   const boot = async (): Promise<Strut> => {
-    const registry: StepRegistry = await createRegistry([branchOf, waitFor, hold]);
+    const registry: StepRegistry = await createRegistry([branchOf, waitFor, hold, judge]);
     const strut = await createStrut({
       workspace: new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") }),
       store,
@@ -405,7 +415,7 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
     assert.equal((await res(strut, "/workflows/read-page/run", send("POST", { input: { name: "Job" }, branch: "Bad Name" }))).status, 400);
   });
 
-  it("search answers the branch's pages on the branch and never on main; the Knowledge door reads the branch and adds no claim; the verify pass records nothing about a branch page; the snapshot leaves the branch out", async () => {
+  it("search answers the branch's pages on the branch and never on main; the Knowledge door reads the branch, and a claim it adds is main's; the snapshot leaves the branch out", async () => {
     const strut = await boot();
     const { guide } = await tree();
     const knowledge = (strut.services as unknown as { knowledge: KnowledgeCapability }).knowledge;
@@ -424,16 +434,13 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
     const page = await step(strut, "knowledge/page", { name: "Guide" }, "try");
     assert.deepEqual([page.ref_id, page.docs, page.children.map((c: { name: string }) => c.name)], [copy.ref_id, "MAIN guide docs.", ["Tone"]]);
     assert.equal(page.claims.length, 1, "claims are shared: the page's name carries them");
-    assert.match(JSON.stringify(await step(strut, "knowledge/add-claim", { concept: "Guide", text: "Answers are long" }, "try")), /not written from a branch/);
-
-    // A run on main that opens the page is checked against its claim…
-    const main = await launch(strut, "read-page", { input: { name: "Guide" } });
-    const checked = await post(strut, `/workflows/read-page/runs/${main.runId}/verify`);
-    assert.deepEqual((checked["checks"] as Array<{ path: string }>).filter((k) => k.path.startsWith("concept:")).map((k) => k.path), ["concept:Guide"]);
-    // …a run on the branch opened the copy: nothing is judged or recorded about it (item d).
-    const { runId } = await launch(strut, "read-page", { input: { name: "Guide" }, branch: "try" });
-    const verified = await post(strut, `/workflows/read-page/runs/${runId}/verify`);
-    assert.deepEqual((verified["checks"] as Array<{ path: string }>).filter((k) => k.path.startsWith("concept:")), []);
+    // A claim added from a branch is main's, shared (item d): main's page carries it.
+    const added = await step(strut, "knowledge/add-claim", { concept: "Guide", text: "Answers are long" }, "try");
+    assert.equal(added.ok, true, JSON.stringify(added));
+    assert.deepEqual((await knowledge.page("Guide"))!.claims.map((c) => c.text), ["Answers are short", "Answers are long"]);
+    // A page made on the branch alone has no claim yet: a claim is about main's page of a name.
+    await step(strut, "graph/create-node", { node_type: "Concept", node_data: { name: "Branch Only", description: "new here" } }, "try");
+    assert.match(String((await step(strut, "knowledge/add-claim", { concept: "Branch Only", text: "Something holds" }, "try")).error), /a page of Concept branch "try" alone/);
 
     // The workspace's snapshot (the history's, an everything package) is main's.
     const { files } = await packageFiles({ workspace: strut.workspace, cache: packageCache(dir), graph: backend }, EVERYTHING);
@@ -496,6 +503,78 @@ for (const tb of testBackends()) describe(`Concept branches, on ${tb.name}`, { s
     assert.equal(await mayQueryRaw({ namespaces: ["default"] }, holding("branch-a", "shared"), "private"), false);
     assert.equal(await mayQueryRaw({ namespaces: ["shared", "branch-a"] }, holding("branch-a", "shared"), "private"), false);
     assert.equal(await mayQueryRaw({ namespaces: ["default", "shared"] }, holding("branch-a", "shared"), "private"), true);
+  });
+
+  it("claims follow a page onto a branch (item d): a work on the branch is judged by main's claim, its evidence carries the branch, main's status is untouched, and the compare read shows both", async () => {
+    const strut = await boot();
+    const { guide } = await tree();
+    await backend.nodes.update(guide, { set: { docs: "Keep answers short." } });
+    const claim = (text: string, policy?: string) =>
+      post(strut, "/claims", { subjects: [{ kind: "concept", name: "Guide" }], text, checks: [{ type: "test/judge", config: { text: "{{ input.output.text }}" }, ...(policy ? { policy } : {}) }] });
+    const short = (await claim("Answers are short"))["id"] as string;
+    const once = (await claim("Answers stay short", "on_change"))["id"] as string;
+    const statusOf = async (id: string, branch?: string) =>
+      ((await json(strut, `/claims?kind=concept&name=Guide${branch ? `&branch=${branch}` : ""}`))["claims"] as Array<{ id: string; status: string }>).find((c) => c.id === id)?.status;
+    const judged = async (runId: string) => {
+      const r = await post(strut, `/workflows/read-page/runs/${runId}/verify`);
+      return (r["checks"] as Array<{ path: string; claimId: string; lastVerify: unknown }>).filter((k) => k.path === "concept:Guide").map((k) => [k.claimId, k.lastVerify]);
+    };
+
+    // Main: the page says short, the work is short — supported.
+    const onMain = await launch(strut, "read-page", { input: { name: "Guide" } });
+    assert.deepEqual(await judged(onMain.runId), [[short, { ran: true }], [once, { ran: true }]]);
+    assert.equal(await statusOf(short), "supported");
+
+    // The candidate: a branch whose Guide says otherwise. A work on it is judged by main's claims.
+    await post(strut, "/branches", { name: "try" });
+    const copy = (await conceptsIn("branch-try")).find((c) => c.name === "Guide")!;
+    await backend.nodes.update(copy.ref_id, { set: { docs: "Write long answers." } });
+    const onBranch = await launch(strut, "read-page", { input: { name: "Guide" }, branch: "try" });
+    assert.match(String((onBranch.summary.output as { text: string }).text), /long answers/);
+    assert.deepEqual(await judged(onBranch.runId), [[short, { ran: true }], [once, { ran: true }]]);
+    const evidence = (await strut.verifier!.reader.evidenceFor(short)).filter((e) => e.evidence_status === "collected");
+    const fromBranch = evidence.find((e) => e.source?.run_id === onBranch.runId)!;
+    const fromMain = evidence.find((e) => e.source?.run_id === onMain.runId)!;
+    assert.deepEqual([fromBranch.source?.context?.branch, fromBranch.strength, fromMain.source?.context?.branch, fromMain.strength], ["try", -1, undefined, 1]);
+    assert.notEqual(fromBranch.about?.content_hash, fromMain.about?.content_hash, "each is about the page its work read");
+    // One bad trial never marks main's claim refuted: main's status is main's works', the branch's its own.
+    assert.equal(await statusOf(short), "supported");
+    assert.equal(await statusOf(short, "try"), "refuted");
+
+    // A copy left as it was reads main's version, and is still measured on its branch (`on_change` asks about its own side).
+    await post(strut, "/branches", { name: "same" });
+    const unchanged = await launch(strut, "read-page", { input: { name: "Guide" }, branch: "same" });
+    assert.deepEqual(await judged(unchanged.runId), [[short, { ran: true }], [once, { ran: true }]]);
+    assert.deepEqual([await statusOf(once), await statusOf(once, "same"), await statusOf(once, "try")], ["supported", "supported", "refuted"]);
+
+    // The compare read: main and the branch over the same claims.
+    const compared = await json(strut, "/branches/try/compare?concept=Guide");
+    const row = (compared["claims"] as Array<Record<string, any>>).find((c) => c["id"] === short)!;
+    assert.deepEqual(
+      [row["changed"], row["main"].status, row["main"].supports, row["main"].refutes, row["branch"].status, row["branch"].supports, row["branch"].refutes, row["outcome"]],
+      [true, "supported", 1, 0, "refuted", 0, 1, "worse"],
+    );
+    assert.deepEqual(row["branch"].works.map((w: { run: string; current: boolean; supports: boolean }) => [w.run, w.current, w.supports]), [[onBranch.runId, true, false]]);
+    assert.deepEqual(row["main"].works.map((w: { run: string }) => w.run), [onMain.runId], "main's works are main's alone");
+    assert.deepEqual(compared["totals"], { better: 0, worse: 2, same: 0, unmeasured: 0, main: { supports: 2, refutes: 0 }, branch: { supports: 0, refutes: 2 } });
+    // A tree (its root and the pages under it), the step, and the refusals.
+    assert.equal((await json(strut, "/branches/same/compare?tree=Guide"))["totals"].same, 2);
+    assert.deepEqual((await json(strut, "/branches/try/compare?tree=Tone"))["claims"], [], "Guide is not under Tone");
+    assert.equal((await step(strut, "knowledge/compare", { branch: "try", concept: "Guide" }))["totals"].worse, 2);
+    assert.equal((await res(strut, "/branches/nope/compare")).status, 404);
+    assert.equal((await res(strut, "/branches/try/compare?tree=Nowhere")).status, 400);
+
+    // A person's word about a run on the branch is the branch's too.
+    const word = await strut.verifier!.addEvidence({ claim: short, name: "read-page", runId: onBranch.runId, supports: true, content: "long was asked for here", by: "person" });
+    assert.ok("ok" in word, JSON.stringify(word));
+    assert.equal((await strut.verifier!.reader.evidenceFor(short)).find((e) => e.id === word.evidence)?.source?.context?.branch, "try");
+    assert.equal(await statusOf(short), "supported", "main is as it was");
+
+    // Dropped and made again under the name: the old trial's works are not the new branch's.
+    await json(strut, "/branches/try", { method: "DELETE" });
+    await post(strut, "/branches", { name: "try" });
+    assert.equal(await statusOf(short, "try"), "unknown");
+    assert.equal(await statusOf(short), "supported");
   });
 
   it("drop: refused while a run on it is in flight; removes its pages and its record; a run on it then fails", async () => {
