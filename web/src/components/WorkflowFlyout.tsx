@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { CloseIcon, ClockIcon } from "../icons";
 import { FlyoutResizer } from "./FlyoutResizer";
@@ -80,6 +80,8 @@ export function WorkflowFlyout(props: {
   /** The apps that grant this workflow (plans/apps.md §1.3): a chip each. */
   apps?: Array<{ name: string; title: string }>;
   onOpenApp?: (name: string) => void;
+  /** Publish the workflow with `retain:` set (null: removed). */
+  onSetRetain?: (retain: string | { runs: number } | null) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -203,6 +205,7 @@ export function WorkflowFlyout(props: {
             {ok > 0 && <span class="badge badge-ok">{ok} ok</span>}
             {failed > 0 && <span class="badge badge-danger">{failed} failed</span>}
           </span>
+          {props.onSetRetain && <RetentionSetting workflow={props.workflow} disabled={props.dirty} onSet={props.onSetRetain} />}
           {(deleteError ?? toggleError) && <span class="flyout-footer-error">{deleteError ?? toggleError}</span>}
           {props.onSetDisabled && (
             <ConfirmButton class="btn" tone="primary" ask={!props.disabled} disabled={toggling}
@@ -215,5 +218,64 @@ export function WorkflowFlyout(props: {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Retention ───────────────────────────────────────────────────────────────
+//
+// The workflow's `retain:` (src/retention.ts): none, a window ("1h") or the
+// newest N runs. Versioned content, so saving publishes a new version.
+
+type RetainMode = "none" | "window" | "runs";
+
+function RetentionSetting(props: { workflow: string; disabled: boolean; onSet: (retain: string | { runs: number } | null) => Promise<void> }) {
+  const [flow, setFlow] = useState<api.FlowDef | null>(null);
+  const [mode, setMode] = useState<RetainMode>("none");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = () =>
+    api.getWorkflowFlow(props.workflow).then((f) => {
+      setFlow(f);
+      const m = /^runs:(\d+)$/.exec(f.retain ?? "");
+      setMode(f.retain ? (m ? "runs" : "window") : "none");
+      setValue(m ? m[1]! : (f.retain ?? ""));
+    }, () => {});
+  useEffect(() => { void load(); }, [props.workflow]);
+  if (!flow) return null;
+
+  const next = (): string | { runs: number } | null => (mode === "none" ? null : mode === "runs" ? { runs: Number(value) } : value.trim());
+  const current = flow.retain ?? "";
+  const dirty = (mode === "none" ? "" : mode === "runs" ? `runs:${value}` : value.trim()) !== current;
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await props.onSet(next());
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <span class="flyout-retention" title="How long finished runs keep their event log (retain:)">
+      <span class="flyout-apps-label">Retention</span>
+      <select value={mode} onChange={(e) => setMode((e.target as HTMLSelectElement).value as RetainMode)}>
+        <option value="none">none</option>
+        <option value="window">window</option>
+        <option value="runs">runs</option>
+      </select>
+      {mode !== "none" && (
+        <input value={value} placeholder={mode === "runs" ? "20" : "1h"} size={6}
+          onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
+      )}
+      {dirty && <button type="button" class="btn" disabled={saving || props.disabled} onClick={() => void save()}>Save</button>}
+      {mode === "none" && flow.fleetRetention && (
+        <span class="flyout-meta-value">Fleet default: {flow.fleetRetention} ({flow.fleetRetentionEnv ?? "STRUT_RUN_RETENTION"})</span>
+      )}
+      {error && <span class="flyout-footer-error">{error}</span>}
+    </span>
   );
 }

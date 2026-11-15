@@ -16,6 +16,7 @@ import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js"
 import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
 import { bootEnv } from "./env.js";
 import { packagePrefixOf } from "./package-lookup.js";
+import { checkRetain } from "./retention.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -73,6 +74,9 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   if (peer != null && typeof peer !== "boolean" && peer !== "person") {
     throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut server may launch it), `person` (only through a credential that names a person) or absent.");
   }
+  // `retain:` is a duration or `{ runs: N }`; a typo must fail the publish.
+  const retain = (parsed as { retain?: unknown } | null)?.retain;
+  if (retain != null) checkRetain(retain);
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;
   // what it names (step types, the sealed check) is the claims layer's
@@ -162,6 +166,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     ...(data.settings != null ? { settings: data.settings } : {}),
     ...(data.sealed === true ? { sealed: true } : {}),
     ...(data.peer === true || data.peer === "person" ? { peer: data.peer as PeerOpen } : {}),
+    ...(data.retain != null ? { retain: checkRetain(data.retain) } : {}),
   };
 }
 
@@ -180,6 +185,8 @@ export interface WorkflowContent {
   /** `peer: true` — another strut may launch it (plans/federation.md §3);
    *  `"person"` — only through a credential that names a person. */
   peer?: boolean | PeerOpen;
+  /** `retain: 1h` / `{ runs: 20 }` — how long finished runs' logs are kept (`src/retention.ts`). */
+  retain?: string | { runs: number };
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -195,6 +202,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           ...(content.claims != null ? { claims: content.claims } : {}),
           ...(content.sealed ? { sealed: true } : {}),
           ...(content.peer ? { peer: content.peer } : {}),
+          ...(content.retain != null ? { retain: content.retain } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );

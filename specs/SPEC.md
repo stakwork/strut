@@ -792,6 +792,8 @@ Each field has a `type` (`string`, `number`, `boolean`, or `json` — any JSON v
 
 #### `params` — tunable defaults (the experiment surface)
 
+A workflow may declare a top-level `retain:` — `retain: 1h` (a duration: s, m, h, d, w) or `retain: { runs: 20 }` — how long a finished run's event log is kept; past it the log and run directory are deleted and the summary stays, flagged `logEvicted` (docs/engine.md "Retention").
+
 A workflow may declare a top-level `params:` block of default knobs — prompts, thresholds, sample sizes, model names. Step configs reference them via `{{ params.* }}`, exactly like `input`. Position in the file is cosmetic; conventionally it sits at the bottom (like Docker Compose's `volumes:`).
 
 ```yaml

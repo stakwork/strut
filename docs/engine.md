@@ -31,7 +31,11 @@ services bag can override it, same as `http`/`secrets`).
   run's directory (so one run can't reach another's files). Invalid runIds
   (path separators, `..`) are rejected.
 - **Retention:** artifacts survive the run (they're part of its record);
-  `onRunEnd` does not touch them.
+  `onRunEnd` does not touch them, and neither does run retention (below):
+  eviction (`src/retention.ts`) removes a run's event log and run directory
+  only, never `<workspace>/artifacts/<runId>/`, and skips a run whose
+  artifacts another run's input or output names (`artifacts/<runId>` in its
+  summary), so no link a run handed out can break.
 - **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths) and
   mints the run's **file token** (`token`, when there is a secret to sign
   it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY` — never its dev default);
@@ -162,6 +166,52 @@ and the child env is scrubbed by construction).
   no JSON workflows. The API accepts either a `steps` array (server
   serializes to YAML) or a raw `yaml` string. Files are stored as
   `<version>.yaml` in the workflow directory. `js-yaml` for parsing.
+
+- **`retain:` = how long finished runs keep their log** (`src/retention.ts`).
+  An optional top-level field: a duration (`30m`, `1h`, `7d`; units s m h d
+  w) or `{ runs: N }` (N a positive integer). Parsed by `parseRetention` (the
+  one parser, shared with the env var and the sweep); `flowFromYaml` puts it
+  on `Flow.retain`, `WorkflowContent.retain` / `renderWorkflowYaml` write it
+  back, and `assertValidWorkflowYaml` (so publish and the validator) refuses a
+  bad value. Meaning: a FINISHED run past the window (by `finishedAt`), or
+  beyond the newest N finished runs of that workflow, is EVICTED: its
+  `events.jsonl` and everything else in its run directory go
+  (`RunStore.evictRun`, File + Memory), and `run.json` stays, rewritten with
+  `logEvicted: true` + `evictedAt`, so the run still lists (the UI badges it
+  "log evicted"; its view says the log is gone). `STRUT_RUN_RETENTION` is the
+  fleet default for workflows with no `retain:` (`1h`, `20` or `runs:20`;
+  invalid: warned at boot, ignored; unset: nothing is evicted). The sweep
+  (`createRetention`, started beside the automations scheduler, at boot then
+  hourly, unref'd, stopped on `close()`) walks workflow keys only and NEVER
+  touches: a run with no summary (in flight), a `waiting` (parked) run, a run
+  with claim evidence (`listRunEvidence`), a run marked `kept`, or a run whose
+  artifacts another run references. `step:<type>` / `check:<id>` buckets
+  (kept `run_step` / paid check runs) are not workflows and are never walked.
+  CRASHED runs: a run that died with its process (heap crash, OOM — the
+  gigabyte logs) has a log and no `run.json`, and boot's auto-resume leaves
+  it so (a log over `resumeMaxLogBytes`, past the age cap, resumed too often,
+  paused by a human, an earlier death's). The sweep evicts such a run only
+  when ALL hold: it is not in the active set (`controllers`, via `isLive`);
+  boot's auto-resume scan has settled (the sweep awaits `resumeSettled`,
+  resolved after `bootResumeRuns`, at once when nothing resumes — before it,
+  a run about to be relaunched has no controller and no summary and would
+  look dead); its log was last WRITTEN longer ago than the window
+  (`RunStore.runWrittenAt`: the log's mtime, else the run directory's — never
+  the first event, so a long-running run is not stale; the count form has no
+  window, so it needs `CRASHED_STALE_MS` = 1 h of silence); and the last
+  control marker in the log's final 64 KB (`RunStore.readLogTail`, never the
+  whole log) is not `run.paused` (a human's: "resume it by hand"). The
+  claims, kept and artifact-reference skips apply as for any run, and a
+  qualifying crashed run joins the count form's newest-first ordering (one
+  that does not qualify is neither counted nor touched). Eviction deletes
+  the log and directory and WRITES a minimal summary (`status: "error"`,
+  `crashed: true`, `logEvicted`, `startedAt` from `run.start`, `finishedAt` =
+  the last write, `parentRunId` when known). Child runs: a resumed parent
+  re-executes an unjournaled `meta/run-workflow` with NO runId, so the child
+  is a fresh run; a dead child is never relaunched, and a live one is
+  protected by `isLive`.
+  `GET /workflows/:name/flow` returns `retain` and the fleet default
+  (`fleetRetention`) as text for the flyout.
 
 - **`params` = the experiment surface.** A workflow may declare a
   top-level `params:` block of tunable default knobs (prompts,
