@@ -570,7 +570,7 @@ what they earned here, an earning held for the type's hold before it can
 be withdrawn. `useTask()`
 holds one `task/next` on the server at a time (none while the page is
 hidden) and hands back `task` — `{ lease, type, show, files, expires,
-answer, payMsat }`, `type` saying which view to draw, `show` what the
+answer, payMsat, attachments? }`, `type` saying which view to draw, `show` what the
 workflow put there, `payMsat` what this answer earns, fixed when the task
 was taken — then `submit(answer)` (it must fit the type's `answer` schema)
 and `skip()` let it go and the next is asked for; `submit` reads
@@ -595,6 +595,32 @@ return (
     <TaskForm task={task} onSubmit={submit} onSkip={() => skip()} />
   </>
 );
+```
+
+Some answers are a PHOTO — a court paper, a signed form. The task type says
+so (its `attachments` rule, an admin's), and `task.attachments` hands it to
+the page: `{ max, min, types }`, how many files an answer carries and of
+what media types (`image/*` any image); absent, the type takes none. Draw a
+button that takes a photo with `useCamera()` (the app's `permissions:`
+list `camera`; see "The camera") and send the photos with the answer,
+`submit(answer, files)`: at most `max`, at least `min`, 5 MB an image, 15
+MB together — a refusal (`bad_answer: …`) keeps the task in hand, so the
+worker can take it again. The server saves them in the run that asked, and
+its next steps read them; never send a photo another way (a launch, app
+state) and name it in the answer.
+
+```tsx
+import { useCamera, useTask } from "@strut/kit";
+const { task, submit, skip } = useTask("court-paper");
+const camera = useCamera();
+const [photos, setPhotos] = useState<File[]>([]);
+const take = async () => {
+  const photo = await camera.capture({ title: "The first page" });
+  if (photo) setPhotos((p) => [...p, photo]);
+};
+// …
+<button onClick={take} disabled={!camera.available || photos.length >= (task?.attachments?.max ?? 0)}>Take a photo</button>
+<TaskForm task={task} onSubmit={(answer) => submit(answer, photos).then(() => setPhotos([]))} onSkip={() => skip()} />
 ```
 
 A worker app with a withdraw section also grants `task/withdraw`.

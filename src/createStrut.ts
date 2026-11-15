@@ -47,6 +47,7 @@ import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
+import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
@@ -220,7 +221,14 @@ import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } fr
 import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
 /** How long `GET /llms.txt` keeps a page it built, per base URL. */
 const LLMS_TXT_CACHE_MS = 30_000;
-import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
+/** The most an app door's MCP request may be when its caller is known — a
+ *  key, a member's or a person's token on `POST /mcp`, a signed-in
+ *  visitor's session on `POST /public/mcp` — so a page's files fit, a
+ *  worker's photos with an answer among them (plans/human-steps.md §5.6.7):
+ *  what a public launch with files may be. An anonymous request stays at
+ *  the SDK's 4 MB (`MCP_BODY_MAX_BYTES`). */
+const APP_DOOR_BODY_MAX_BYTES = PUBLIC_RUN_FILES_BODY_MAX_BYTES;
+import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
@@ -1585,6 +1593,13 @@ export async function createStrut<TServices = unknown>(
     // never kept (src/tasks/grade-step.ts) — billed to the grading principal.
     testFiles,
     bytes: taskBytes,
+    // Files from a worker (plans/human-steps.md §5.6.3): an answer's files
+    // in its task's run's artifacts, `tasks/<task id>/<name>`, written before
+    // the task settles — on a job run too, never the job's directory.
+    saveAttachments: async (t, files) => {
+      if (!artifacts) throw new Error("this server keeps no run artifacts: a worker's files have nowhere to go");
+      return saveAnswerAttachments(artifacts, t.runId, t.id, files);
+    },
     graderProblem: graderProblem(() => registry),
     grade: stepGrader({ registry: () => registry, services: () => services as Record<string, unknown> }),
     ...(opts.tasks?.principal ? { principal: opts.tasks.principal } : {}),
@@ -9889,7 +9904,11 @@ export async function createStrut<TServices = unknown>(
       const { buildPublicAgentTools, publicMcpInstructions } = await import("./public-agents.js");
       const publicUrl = publicUrlOf(c);
       const agentTools = buildPublicAgentTools({ doors: publicDoors, who, authorization: c.req.header("authorization"), publicUrl });
-      return createMcpDoor(() => toolsetServer({ tools: { ...agentTools, ...tools }, instructions: publicMcpInstructions(publicUrl), meta: APP_TOOL_META })).handle(c.req.raw);
+      // A signed-in visitor's page may send files — a worker's photo with
+      // an answer, a launch's attachments — so its request may be as large as
+      // a public launch with files (plans/human-steps.md §5.6.7); an
+      // anonymous one stays at the SDK's 4 MB.
+      return createMcpDoor(() => toolsetServer({ tools: { ...agentTools, ...tools }, instructions: publicMcpInstructions(publicUrl), meta: APP_TOOL_META }), signedIn ? { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES } : {}).handle(c.req.raw);
     });
     /** The builder deps both doors spread: public links, and a run that
      *  outlives the wait window goes on detached, tracked like any launch —
@@ -9917,7 +9936,7 @@ export async function createStrut<TServices = unknown>(
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
-      return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta })).handle(c.req.raw);
+      return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
     const builderHandler = async (c: Context) => {
       // The SDK loads on the first MCP request, never at boot.
@@ -9939,7 +9958,7 @@ export async function createStrut<TServices = unknown>(
           });
         return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
       };
-      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt, tools: appTools, meta: appMeta }).handle(c.req.raw);
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt, tools: appTools, meta: appMeta }, { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
     const assistantHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer, assistantInstructions } = await import("./ai/mcp.js");
@@ -9959,7 +9978,7 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         packages: (services as Record<string, unknown>)["packages"] as PackagesCapability,
       });
-      return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta })).handle(c.req.raw);
+      return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
     app.post("/mcp/builder", builderHandler);
     app.post("/mcp", async (c) =>

@@ -311,20 +311,29 @@ export function builderServer({ deps, instructions, prompt, tools, meta }: Build
  * between requests — the deployment key is the session). The response is
  * the transport's: an SSE stream carrying the result (and any progress
  * notification), or a JSON error.
+ *
+ * A request over `maxBodyBytes` is refused (413) before it is read: the
+ * SDK's 4 MB (`MCP_BODY_MAX_BYTES`) unless the caller says more — an app
+ * door does for a request with a session, so a page's files fit
+ * (plans/human-steps.md §5.6.7).
  */
-export function createMcpDoor(server: () => Promise<Server>): { handle(req: Request): Promise<Response> } {
+export function createMcpDoor(server: () => Promise<Server>, o: { maxBodyBytes?: number } = {}): { handle(req: Request): Promise<Response> } {
   return {
     async handle(req) {
       const { WebStandardStreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
       const s = await server();
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, maxRequestBodySize: o.maxBodyBytes ?? MCP_BODY_MAX_BYTES });
       await s.connect(transport);
       return transport.handleRequest(req);
     },
   };
 }
 
+/** The most an MCP request may be by default: the SDK's own default, held
+ *  here so a bump of the SDK cannot move it. */
+export const MCP_BODY_MAX_BYTES = 4 * 1024 * 1024;
+
 /** The builder set's door (`POST /mcp/builder`). */
-export function createBuilderMcp(opts: BuilderMcpOptions): { handle(req: Request): Promise<Response> } {
-  return createMcpDoor(() => builderServer(opts));
+export function createBuilderMcp(opts: BuilderMcpOptions, o: { maxBodyBytes?: number } = {}): { handle(req: Request): Promise<Response> } {
+  return createMcpDoor(() => builderServer(opts), o);
 }

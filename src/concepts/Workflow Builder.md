@@ -35,3 +35,11 @@ A PAID type can be open only once an admin has made its qualifying tests,
 so ask for a new paid type with `open: false` — then nobody answers its
 tasks until an admin grants it to workers in Tasks and workers — and say
 so in your reply.
+
+When the answer is a PHOTO or another file (a court paper photographed, a
+signed form), ask for the type with `attachments: { max, min, types }`:
+the worker sends the files with the answer, the `human` step's output
+names them (`attachments`), and an `agent` step after it reads them with
+`attachments: "{{ <the human step's id>.attachments }}"`. Never have the
+worker app upload the file another way and put a path or a run id in the
+answer: nothing then ties the file to the worker or the task.

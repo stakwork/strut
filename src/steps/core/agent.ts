@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
-import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
+import { attachmentParts, checkAttachmentCaps, loadRunAttachments, normalizeType } from "../../ai/attachments.js";
 import { applyToolWrappers } from "../../extensions.js";
 import { loadAieo, resolveModel, createWebTools, modelProvider, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
@@ -23,7 +23,7 @@ import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, reportedCost, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
-import { join, resolve, dirname, isAbsolute, sep } from "node:path";
+import { basename, join, resolve, dirname, isAbsolute, sep } from "node:path";
 import os from "node:os";
 
 /**
@@ -966,6 +966,42 @@ async function attachedParts(ctx: StepContext): Promise<unknown[]> {
   return (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat();
 }
 
+/** One file an agent's `attachments` LISTS: a path under the run's
+ *  artifacts, or what a `human` step's `attachments` hands out. */
+type ListedFile = string | { path: string; name?: string | undefined; mediaType?: string | undefined };
+
+/** The files the step lists (`attachments: [...]`, plans/human-steps.md
+ *  §5.6.4) — read from the run's artifacts, held to the chat's caps — as
+ *  user-message parts, and as the run records them. */
+export async function listedParts(ctx: StepContext | undefined, list: ListedFile[]): Promise<{ files: RunAttachment[]; parts: unknown[] }> {
+  if (!list.length) return { files: [], parts: [] };
+  const artifacts = (ctx?.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+  if (!ctx || !artifacts) throw new Error("agent: attachments lists files of the run, and this run has no artifacts capability to read them from");
+  const dir = await artifacts.dir(ctx.runId);
+  const loaded = await Promise.all(
+    list.map(async (e) => {
+      const path = typeof e === "string" ? e : e.path;
+      const name = (typeof e === "string" ? undefined : e.name) || basename(path);
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(await artifacts.read(ctx.runId, path));
+      } catch (err) {
+        throw new Error(`agent: attachments: ${JSON.stringify(path)} is not a file of this run (${err instanceof Error ? err.message : String(err)})`);
+      }
+      return { name, mediaType: normalizeType(typeof e === "string" ? undefined : e.mediaType, name), bytes, path, savedAt: join(dir, path) };
+    }),
+  );
+  try {
+    checkAttachmentCaps(loaded);
+  } catch (err) {
+    throw new Error(`agent: attachments: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return {
+    files: loaded.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.bytes.length, path: a.path })),
+    parts: (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat(),
+  };
+}
+
 /** The files a thread's turns carried (`SessionTurn.attachments`), newest
  *  turn first, each with the run whose artifacts hold it. */
 function threadAttachments(turns: SessionTurn[]): RunAttachment[] {
@@ -1336,10 +1372,13 @@ export default defineStep({
         "give this agent the CALLER's MCP servers as tools — the ones its run was launched with (`POST …/run { mcp }`), named `<server>_<tool>`; a run launched without any has none, whatever this says. `false` keeps an agent to its own tools (a judge, a narrow researcher), and the sub-agents and jobs it launches get none either.",
       ),
     attachments: z
-      .boolean()
+      .union([
+        z.boolean(),
+        z.array(z.union([z.string().min(1), z.object({ path: z.string().min(1), name: z.string().optional(), mediaType: z.string().optional() })])),
+      ])
       .default(true)
       .describe(
-        "put the files the run was launched with (`POST …/run { attachments }`) on this agent's prompt, after its text — an image or a PDF as a file the model sees, text inline, anything else by its saved path; a run launched without any has none. `false` for an agent that should not see them (a judge, a second agent of the workflow). A sub-agent (an agent called as a tool) never gets them.",
+        "the files on this agent's prompt, after its text — an image or a PDF as a file the model sees, text inline, anything else by its saved path. `true`: the files the run was launched with (`POST …/run { attachments }`); a run launched without any has none. `false`: none (a judge, a second agent of the workflow). A LIST: exactly those files of the run's artifacts, each a path or `{ path, name?, mediaType? }` — what a `human` step's `attachments` hands out, so `attachments: \"{{ photo.attachments }}\"` shows the agent the files a worker sent (a step that sent none leaves no list, and `true` applies); at most 10, 5 MB an image, 15 MB together, or the step fails. A sub-agent (an agent called as a tool) never gets any.",
       ),
     model: z
       .string()
@@ -1962,7 +2001,10 @@ export default defineStep({
       // parts the builder chat makes of a message's attachments. A
       // sub-agent's prompt is its caller's words: the files stay with the
       // caller.
-      const files = cfg.attachments && !ctx?.agentTool && ctx?.attachments?.length ? await attachedParts(ctx) : [];
+      // Or the files the step lists (plans/human-steps.md §5.6.4): a
+      // worker's photo from a `human` step, any file of the run.
+      const listed = Array.isArray(cfg.attachments) && !ctx?.agentTool ? await listedParts(ctx, cfg.attachments) : undefined;
+      const files = listed ? listed.parts : cfg.attachments === true && !ctx?.agentTool && ctx?.attachments?.length ? await attachedParts(ctx) : [];
       const task = { role: "user" as const, content: files.length ? [{ type: "text", text: basePrompt }, ...files] : basePrompt };
       // The REQUEST and the RECORD (plans/compaction.md §3). This turn's
       // record is `lead` (a compaction at open, if any), the task, then
@@ -2152,7 +2194,7 @@ export default defineStep({
               ...(ctx?.actor ? { actor: ctx.actor } : {}),
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
               ...(ctx?.job ? { job: ctx.job } : {}),
-              ...(files.length ? { attachments: ctx!.attachments } : {}),
+              ...(files.length ? { attachments: listed ? listed.files : ctx!.attachments } : {}),
               ...(ctx?.wake ? { wake: true as const } : {}),
               provider: resolved.provider,
               model: resolved.name,

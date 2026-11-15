@@ -42,8 +42,24 @@ export interface TaskType {
   holdHours?: number;
   tests?: TestRules;
   copies?: CopiesRule;
+  /** The files an answer carries (plans/human-steps.md §5.6); absent: none. */
+  attachments?: AttachmentRule;
   changedAt: number;
   changedBy?: string;
+}
+
+export interface AttachmentRule {
+  max: number;
+  min: number;
+  types: string[];
+}
+
+/** A file an answer carried, under the task's run's artifacts. */
+export interface SentFile {
+  name: string;
+  mediaType: string;
+  size: number;
+  path: string;
 }
 
 export interface Percentiles {
@@ -179,6 +195,8 @@ export interface Lease {
   payMsat?: number;
   answer?: unknown;
   agrees?: boolean;
+  /** The files its answer carried (§5.6). */
+  attachments?: SentFile[];
   earning?: Earning;
   review?: Review;
 }

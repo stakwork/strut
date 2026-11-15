@@ -89,17 +89,26 @@ export function parseAttachments(raw: unknown): Attachment[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new Error("attachments must be an array");
   if (raw.length > MAX_ATTACHMENTS) throw new Error(`at most ${MAX_ATTACHMENTS} attachments per message`);
+  return checkAttachmentCaps(raw.map((item, i) => decodeAttachment(item, `attachments[${i}]`)));
+}
+
+/** The caps every set of files a person sends is held to — a chat message,
+ *  a launch, a worker's answer (plans/human-steps.md §5.6) — and an agent's
+ *  listed files: at most `MAX_ATTACHMENTS`, an image `MAX_IMAGE_BYTES`, any
+ *  other file `MAX_ATTACHMENT_BYTES`, `MAX_ATTACHMENTS_TOTAL_BYTES`
+ *  together. Throws the first one broken; returns `list`. */
+export function checkAttachmentCaps<T extends Attachment>(list: T[]): T[] {
+  if (list.length > MAX_ATTACHMENTS) throw new Error(`at most ${MAX_ATTACHMENTS} attachments at once`);
   let total = 0;
-  return raw.map((item, i) => {
-    const a = decodeAttachment(item, `attachments[${i}]`);
+  for (const a of list) {
     const cap = IMAGE_TYPES.has(a.mediaType) ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
     if (a.bytes.length > cap) throw new Error(`${a.name} is ${formatBytes(a.bytes.length)}; the limit is ${formatBytes(cap)}`);
     total += a.bytes.length;
     if (total > MAX_ATTACHMENTS_TOTAL_BYTES) {
       throw new Error(`attachments total more than ${formatBytes(MAX_ATTACHMENTS_TOTAL_BYTES)} in one message`);
     }
-    return a;
-  });
+  }
+  return list;
 }
 
 /** One `{ name, mediaType?, data }` decoded — base64 or a data URL, the
@@ -123,7 +132,7 @@ export function decodeAttachment(item: unknown, label: string): Attachment {
 
 /** The given media type, else the extension's; a browser sends "" or
  *  `application/octet-stream` for anything it does not know. */
-function normalizeType(given: string | undefined, name: string): string {
+export function normalizeType(given: string | undefined, name: string): string {
   const t = given?.trim().toLowerCase();
   if (t && t !== "application/octet-stream") return t === "image/jpg" ? "image/jpeg" : t;
   return BY_EXTENSION[extname(name).toLowerCase()] ?? "application/octet-stream";
@@ -177,6 +186,18 @@ export async function writeNewFile(dir: string, name: string, bytes: Buffer): Pr
   }
 }
 
+/** `name` made safe, numbered past the names in `taken` (`photo-2.jpg`),
+ *  and added to it. */
+export function freeName(name: string, taken: Set<string>): string {
+  const safe = safeName(name);
+  const ext = extname(safe);
+  const stem = safe.slice(0, safe.length - ext.length);
+  let file = safe;
+  for (let n = 2; taken.has(file); n++) file = `${stem}-${n}${ext}`;
+  taken.add(file);
+  return file;
+}
+
 function safeName(name: string): string {
   const s = basename(name.replace(/\\/g, "/"))
     .replace(/[^\w.\- ]+/g, "_")
@@ -198,13 +219,7 @@ export async function saveRunAttachments(
   const taken = new Set<string>();
   const saved: RunAttachment[] = [];
   for (const a of list) {
-    const safe = safeName(a.name);
-    const ext = extname(safe);
-    const stem = safe.slice(0, safe.length - ext.length);
-    let file = safe;
-    for (let n = 2; taken.has(file); n++) file = `${stem}-${n}${ext}`;
-    taken.add(file);
-    const path = `attachments/${file}`;
+    const path = `attachments/${freeName(a.name, taken)}`;
     await artifacts.write(runId, path, a.bytes);
     saved.push({ name: a.name, mediaType: a.mediaType, size: a.bytes.length, path });
   }

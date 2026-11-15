@@ -5,7 +5,7 @@
 // save never drops one the page does not show.
 import { answerSchemaProblem, type AnswerSchema } from "@strut/kit/folds";
 import { modelOf, schemaOf, STARTER, type AnswerModel } from "./schema";
-import type { CopiesRule, GradeRule, TaskType, TestRules } from "./types";
+import type { AttachmentRule, CopiesRule, GradeRule, TaskType, TestRules } from "./types";
 
 /** The store's defaults (src/tasks/tasks.ts, task-store.ts, task-copies.ts), shown on a new type. */
 export const DEFAULTS = {
@@ -14,6 +14,7 @@ export const DEFAULTS = {
   holdHours: 72,
   tests: { rate: 0.05, newRate: 0.25, newTasks: 50, qualify: 10, window: 20, minGraded: 10, threshold: 0.8, grade: "equal", gradeCapUsd: 0.05 } as TestRules,
   copies: { max: 3, agree: 2, compare: "equal", onDisagree: "more" } as CopiesRule,
+  attachments: { max: 1, min: 0, types: ["image/*", "application/pdf"] } as AttachmentRule,
 };
 
 export interface GradeDraft {
@@ -41,6 +42,9 @@ export interface Draft {
   tests: Record<"rate" | "newRate" | "newTasks" | "qualify" | "window" | "minGraded" | "threshold" | "gradeCapUsd", string> & { grade: GradeDraft };
   copiesOn: boolean;
   copies: { max: string; agree: string; onDisagree: "more" | "fail"; compare: GradeDraft };
+  /** §5.6: the files an answer carries; `types` comma-separated. */
+  filesOn: boolean;
+  files: { max: string; min: string; types: string };
 }
 
 const s = (n: number | undefined) => (n === undefined ? "" : String(n));
@@ -54,6 +58,7 @@ export function gradeDraftOf(g: GradeRule | undefined): GradeDraft {
 export function draftOf(t?: TaskType): Draft {
   const tests = t?.tests ?? DEFAULTS.tests;
   const copies = t?.copies ?? DEFAULTS.copies;
+  const files = t?.attachments ?? DEFAULTS.attachments;
   const answer = t?.answer ?? (schemaOf(STARTER) as AnswerSchema);
   return {
     name: t?.name ?? "",
@@ -80,6 +85,8 @@ export function draftOf(t?: TaskType): Draft {
     },
     copiesOn: !!t?.copies,
     copies: { max: s(copies.max), agree: s(copies.agree), onDisagree: copies.onDisagree, compare: gradeDraftOf(copies.compare) },
+    filesOn: !!t?.attachments,
+    files: { max: s(files.max), min: s(files.min), types: files.types.join(", ") },
   };
 }
 
@@ -164,6 +171,16 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
       input["copies"] = { max, agree, compare, onDisagree: d.copies.onDisagree };
     } else input["copies"] = null;
   } else if (was?.copies) input["copies"] = was.copies;
+  if (d.filesOn) {
+    const max = num(d.files.max, "the most files");
+    if (typeof max !== "number") return max;
+    const min = num(d.files.min, "the fewest files");
+    if (typeof min !== "number") return min;
+    const types = d.files.types.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!types.length) return { problem: "name the files' types (image/*, application/pdf)" };
+    input["attachments"] = { max, min, types };
+  }
+  // Off: left out, which a whole-type PUT saves as none.
   return { input };
 }
 

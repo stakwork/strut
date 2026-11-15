@@ -275,6 +275,10 @@ function TaskDetail(props: Props & { id: string }) {
               {copies ? "Agreed on; first given by" : "Given by"} {t.by ? who(t.by) : "—"}
             </Note>
             {draws ? <TaskForm task={{ lease: t.id, answer: type!.answer }} readOnly value={t.answer as Record<string, unknown>} /> : <div className="rounded-md border p-2"><JsonTree value={t.answer} /></div>}
+            {/* The files the answer carried (§5.6): in the run, read through staff/file. */}
+            {(t.leases.find((l) => l.worker === t.by)?.attachments ?? []).map((a) => (
+              <TaskFileView key={a.path} task={t.id} path={a.path} />
+            ))}
           </>
         ) : t.status === "disputed" ? (
           <Note>The copies did not agree: the step failed task_disputed, and its onError ran. Each copy's answer is under its lease below.</Note>
@@ -336,6 +340,7 @@ function TaskDetail(props: Props & { id: string }) {
                     {copies && (
                       <TableCell className="max-w-72">
                         {l.answer !== undefined ? <JsonTree value={l.answer} /> : "—"}
+                        {l.attachments?.map((a) => <TaskFileView key={a.path} task={t.id} path={a.path} />)}
                         {l.agrees !== undefined && <Badge variant={l.agrees ? "secondary" : "outline"}>{l.agrees ? "agreed" : "disagreed"}</Badge>}
                       </TableCell>
                     )}

@@ -146,6 +146,16 @@ describe("strut/staff: the type editor's draft", () => {
     assert.equal(shapeChanged(undefined, { type: "boolean" } as never), false);
   });
 
+  it("the files an answer carries (§5.6): kept through a draft, comma-separated types, left out when off", () => {
+    const photo: TaskType = { ...type, attachments: { max: 4, min: 1, types: ["image/*", "application/pdf"] } };
+    const d = draftOf(photo);
+    assert.deepEqual([d.filesOn, d.files], [true, { max: "4", min: "1", types: "image/*, application/pdf" }]);
+    assert.deepEqual((saveOf(d, all, photo) as { input: Record<string, unknown> }).input["attachments"], photo.attachments);
+    assert.equal("attachments" in (saveOf({ ...d, filesOn: false }, all, photo) as { input: Record<string, unknown> }).input, false, "off: the PUT saves none");
+    assert.match((saveOf({ ...d, files: { ...d.files, types: " , " } }, all, photo) as { problem: string }).problem, /types/);
+    assert.deepEqual([draftOf().filesOn, draftOf().files.types], [false, "image/*, application/pdf"]);
+  });
+
   it("a new type's name is held to the store's rule", () => {
     assert.equal(typeNameProblem("acme/pet-match", []), undefined);
     assert.match(typeNameProblem("Pets", [])!, /lowercase/);

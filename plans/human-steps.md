@@ -660,8 +660,9 @@ worker are §5.6.
 
 ### 5.6 Files from a worker (item 8)
 
-> **Proposed (2026-11-15); nothing here is built.** Two questions wait
-> for Evan's ruling (§5.6.7).
+> **Ruled and built (2026-11-15).** §5.6.7 has Evan's rulings: staff
+> take back a bad answer for now, a check at submit is later; the app
+> doors take 20 MB from a request with a session.
 
 Some answers are a file: a photo of a court paper, a signed form, the
 found dog. A page can send only JSON today. The demo of 2026-11-15 stood
@@ -819,10 +820,10 @@ the wrong page cannot.
 | b | **The workflow's verdict: `task/reject { task, worker?, why }`.** A step that runs §9.6's `review` with `rejected` for a task the CALLING run made (the store checks the task's run against the run control, as `ensure`'s `refusal` reads it, never an input), `by: "workflow:<name>"`. Only on a type whose admin allows it (`rejectBy: "workflow"`), since a workflow must not set its own pay (§6). Inside the hold it takes the earning back and counts in standing as staff's rejection does; staff's `ok` restores both, so a model's mistake costs the worker nothing once a person looks | One step and one flag on the type, over the review's code |
 | c | **A check before the answer is accepted.** The type names a sealed step (the grader's contract, `grade-step.ts`) that `submit` runs on the answer and its files. A `fail` refuses the answer (`bad_answer: <the check's reason>`) while the worker still holds the lease: they retake the photo, and nothing is paid for a bad one | Best for the worker. A model call on every answer, which the page waits on for seconds, and a grader that sees files, which none does today |
 
-**Recommended: b**, in a second PR after the first. It reuses the review
-whole (the take-back, standing, `ok`'s restore, final when the hold ends),
-and the workflow already sees the photo through its agent. c is the better
-worker experience and can follow.
+**Ruled (2026-11-15): a now, c later.** Nothing is built for it in item
+8: staff take back a bad answer, and the photo types are best invite-only
+until c is. b is dropped: an earning that appears and is then taken back by
+a model is worse for the worker than an answer refused before it earns.
 
 **2. The door's size (§5.6.6).**
 
@@ -832,8 +833,30 @@ worker experience and can follow.
 | b | Raise it on every request on both doors | An anonymous address may send 20 MB bodies at the door's 1,200 requests a minute |
 | c | Keep 4 MB, as strut's own number (`createMcpDoor` takes it, so a bump of the SDK cannot move it). An answer's files are at most 2.5 MB together, and specs/API.md says a page's launch is held to the door | A filing of many pages becomes several tasks |
 
-**Recommended: a.** The cap is passed per request (`createMcpDoor`
-builds the transport for each one), so the session decides it.
+**Ruled (2026-11-15): a.** The cap is passed per request
+(`createMcpDoor` builds the transport for each one), so the session
+decides it.
+
+**Built differently (item 8's PR):**
+
+- **The door.** `POST /mcp` takes the larger cap on every request, not
+  only a member's: every caller there holds a key or a session already.
+  On `POST /public/mcp` it is a signed-in visitor's session that raises it.
+  The cap is strut's own number now, `createMcpDoor`'s `maxBodyBytes`
+  (`MCP_BODY_MAX_BYTES`, the SDK's 4 MB, by default).
+- **Saving goes through the artifacts capability** (`list`, then `write`),
+  not `writeNewFile` on its directory, so a host's own artifacts work too.
+  Names are kept apart by one save of a task at a time in the process (the
+  task's folder listed, a taken name numbered), since the capability has no
+  write that refuses a file that is there.
+- **An agent's list that resolves to nothing** (a `human` step whose
+  worker sent no file has no `attachments`) is no list, and the agent's
+  default, the launch's files, applies.
+- **The staff editor** shows Files on every server and leaves the field out
+  when it is off, which a whole-type PUT saves as none.
+- **The chat's caps are one function** now, `checkAttachmentCaps`, which
+  `parseAttachments` and the agent's list both call; `freeName` numbers a
+  name for a launch and for an answer alike.
 
 #### 5.6.8 Tests that prove it
 
@@ -3290,6 +3313,8 @@ directory, so past one process the answer is another strut.
 - Lease-scoped file links. (Uploads from a worker's page are item 8, §5.6.)
 - Invitation codes behind the qualifying tests.
 - A default worker app for task types that need only `TaskForm`.
+- A check at submit (§5.6.7, question 1): a sealed step that sees the answer
+  and its files and refuses a bad photo before it earns.
 - Other things that park: a timer, a proposal awaited in a run, a wait on
   another strut's run.
 - `human` in a public run.
@@ -3337,7 +3362,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
-| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size. Then, if ruled, the workflow's verdict (§5.6.7, question 1) | 3 | Proposed 2026-11-15; two questions wait for a ruling |
+| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built** (item 8's PR). Differs in §5.6. A check at submit is later |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.

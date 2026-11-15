@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileArtifactsCapability } from "../../capabilities.js";
 import { z } from "zod";
 import { coreRegistry } from "../registry.js";
 import { CancelledError, RunController, isCancelledError } from "../../run-control.js";
@@ -11,6 +12,7 @@ import { runWorkflow } from "../../runner.js";
 import { MemoryRunStore } from "../../store.js";
 import { withAccessedNodes, withMessages, withMedia, withUsage, usageOf, messagesOf, accessedNodesOf, mediaOf, defineStep, flow, step, type StepContext, type StepRegistry } from "../../core.js";
 import agent, {
+  listedParts,
   repoTree,
   textEdit,
   buildRegistryTools,
@@ -1851,4 +1853,34 @@ describe("mid-stream socket death is resumed, not lost", () => {
         s.close();
       }
     }));
+});
+
+describe("agent: attachments as a list of the run's files (plans/human-steps.md §5.6.4)", () => {
+  it("exactly the files listed, read from the run's artifacts; a path outside the run, or over the chat's caps, fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "strut-agent-listed-"));
+    try {
+      const artifacts = fileArtifactsCapability(root);
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2]);
+      await artifacts.write("r1", "tasks/t1/page.png", png);
+      await artifacts.write("r1", "notes.md", "the clerk's stamp");
+      const ctx = { runId: "r1", services: { artifacts } } as unknown as StepContext;
+      const { files, parts } = await listedParts(ctx, [{ path: "tasks/t1/page.png", name: "page 1.png", mediaType: "image/png" }, "notes.md"]);
+      assert.deepEqual(files, [
+        { name: "page 1.png", mediaType: "image/png", size: 7, path: "tasks/t1/page.png" },
+        { name: "notes.md", mediaType: "text/markdown", size: 17, path: "notes.md" },
+      ]);
+      const text = JSON.stringify(parts);
+      assert.ok(text.includes(png.toString("base64")), "the image as a file part");
+      assert.match(text, /\[attachment\] page 1\.png \(image\/png, 7 B\) — saved at [^"]+tasks\/t1\/page\.png/);
+      assert.match(text, /the clerk's stamp/, "text inline");
+      assert.deepEqual(await listedParts(ctx, []), { files: [], parts: [] });
+      await assert.rejects(listedParts(ctx, ["../r2/secret.png"]), /agent: attachments: "\.\.\/r2\/secret\.png" is not a file of this run/);
+      await assert.rejects(listedParts(ctx, ["missing.png"]), /is not a file of this run/);
+      await artifacts.write("r1", "big.png", Buffer.alloc(5 * 1024 * 1024 + 1));
+      await assert.rejects(listedParts(ctx, ["big.png"]), /agent: attachments: big\.png is 5\.0 MB; the limit is 5\.0 MB/);
+      await assert.rejects(listedParts({ runId: "r1", services: {} } as unknown as StepContext, ["notes.md"]), /no artifacts capability/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

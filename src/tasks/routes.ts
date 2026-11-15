@@ -7,9 +7,9 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   open, `tests` and `copies` off). A paid open type with fewer ready
+ *   open, `tests`, `copies` and `attachments` off). A paid open type with fewer ready
  *   tests than its K is refused, `409 needs_tests` (ruling 9)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
@@ -249,6 +249,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
+        ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),

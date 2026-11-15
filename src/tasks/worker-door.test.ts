@@ -22,6 +22,13 @@ import { STEP_RUN_TOOL } from "../apps/tools.js";
 import { createRegistry } from "../steps/registry.js";
 import { TASK_REQUESTS_PER_MINUTE } from "./tasks.js";
 import { PUBLIC_REQUESTS_PER_MINUTE } from "../public-routes.js";
+import { registerModelWrapper } from "../extensions.js";
+import { mockModel } from "../privacy/testing/mock-model.js";
+
+// A stand-in model for the agent that reads a worker's photo (§5.6.4): it
+// records every prompt, and answers with the case number.
+const reader = mockModel({ turns: [[{ type: "text", text: "Case 24-CV-1234" }]], provider: "openrouter", modelId: "acme/reader" });
+registerModelWrapper((model, info) => (info.modelId === "acme/reader" ? (reader as never) : model));
 
 const KEY = "worker-door-key";
 const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
@@ -79,6 +86,34 @@ steps:
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const HOUR = 60 * 60 * 1000;
+
+/** A court paper photographed (plans/human-steps.md §5.6): a worker sends
+ *  the photo with their answer, and an agent reads it off the run. */
+const PAPER = { type: "object", properties: { pages: { type: "integer", minimum: 1 } }, required: ["pages"] };
+const PAPERS = `name: papers
+steps:
+  - id: photo
+    type: human
+    config:
+      task: court-paper
+      show:
+        court: "{{ input.court }}"
+  - id: read
+    type: agent
+    config:
+      cwd: "{{ input.dir }}"
+      system: You read court papers.
+      prompt: Read the case number off this court paper.
+      model: openrouter/acme/reader
+      attachments: "{{ photo.attachments }}"
+  - id: done
+    type: pack
+    config:
+      files: "{{ photo.attachments }}"
+      read: "{{ read.result }}"
+`;
+/** A JPEG's first bytes and some more: what the camera hands a page. */
+const jpeg = (n: number, fill = 0) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(n - 4, fill)]);
 
 /** A paid type's workflow (plans/human-steps.md §8.1). */
 const PAID = `name: paid
@@ -150,9 +185,13 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     return { runId, task: task! };
   };
 
+  let savedRouterKey: string | undefined;
   before(async () => {
     saved = process.env["STRUT_API_KEY"];
     process.env["STRUT_API_KEY"] = KEY;
+    // The stand-in model is reached through a provider that needs a key.
+    savedRouterKey = process.env["OPENROUTER_API_KEY"];
+    process.env["OPENROUTER_API_KEY"] = "test";
     const kit = await kitForTests();
     root = await mkdtemp(join(tmpdir(), "strut-worker-door-"));
     const workspace = new WorkspaceManager(join(root, "ws"));
@@ -167,6 +206,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     });
     await workspace.publishWorkflowByContent("pets", PETS);
     await workspace.publishWorkflowByContent("paid", PAID);
+    await workspace.publishWorkflowByContent("papers", PAPERS);
     const apps: Array<[string, string]> = [
       ["workers", "steps: [task/next, task/submit, task/skip, task/file, task/me]"],
       ["other", "steps: [\"task/*\"]"],
@@ -204,6 +244,8 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await rm(root, { recursive: true, force: true });
     if (saved === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = saved;
+    if (savedRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+    else process.env["OPENROUTER_API_KEY"] = savedRouterKey;
   });
 
   it("end to end: a run parks on human, a signed-in worker's page answers through /public/mcp, and the run finishes", async () => {
@@ -232,6 +274,89 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     assert.deepEqual(done.output, { same: true, by: worker.actor });
     const view = (await (await staff("GET", `/tasks/${task.id}`)).json()) as { task: { status: string; by: string; leases: Array<{ status: string }> } };
     assert.deepEqual([view.task.status, view.task.by, view.task.leases.map((l) => l.status)], ["settled", worker.actor, ["submitted"]]);
+  });
+
+  it("files end to end (§5.6): a worker's page answers with a photo through /public/mcp, the run wakes, and its next step's agent sees the photo", async () => {
+    // Staff: a type that takes one or two photos with each answer.
+    for (const bad of [{ max: 0 }, { max: 11 }, { min: 3, max: 2 }, { types: ["photos"] }, { size: 1 }]) {
+      assert.equal((await staff("PUT", "/tasks/types/court-paper", { app: "workers", answer: PAPER, attachments: bad })).status, 400, JSON.stringify(bad));
+    }
+    const put = await staff("PUT", "/tasks/types/court-paper", { app: "workers", answer: PAPER, open: false, attachments: { max: 2, min: 1, types: ["image/*"] } });
+    assert.equal(put.status, 200, await put.clone().text());
+    assert.deepEqual(((await put.json()) as { type: { attachments: unknown } }).type.attachments, { max: 2, min: 1, types: ["image/*"] });
+    const worker = await signIn();
+    await staff("PUT", `/tasks/workers/${encodeURIComponent(worker.actor)}/grants/court-paper`);
+
+    const res = await req("/workflows/papers/run", { method: "POST", headers: auth, body: JSON.stringify({ input: { court: "Travis County", dir: root } }) });
+    assert.equal(res.status, 202, await res.clone().text());
+    const { runId } = (await res.json()) as { runId: string };
+    const until = async (status: string) => {
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const s = await strut.store.getRunSummary("papers", runId);
+        if (s?.status === status) return s;
+        if (Date.now() > deadline) throw new Error(`never ${status}: ${JSON.stringify(s?.status)} ${JSON.stringify(s?.error ?? "")}`);
+        await sleep(10);
+      }
+    };
+    await until("waiting");
+    const [task] = await strut.tasks.capability.list({ runId });
+
+    // The page learns what the type takes with the task.
+    const got = (await call(worker.token, "task/next", { wait: 1, type: "court-paper" })).result as { lease: string; attachments: unknown };
+    assert.deepEqual(got.attachments, { max: 2, min: 1, types: ["image/*"] });
+    const photo = jpeg(2048);
+    const file = (name: string, bytes: Buffer, mediaType?: string) => ({ name, ...(mediaType ? { mediaType } : {}), data: bytes.toString("base64") });
+    // Each refusal is bad_answer, and the task stays the worker's.
+    for (const [attachments, why] of [
+      [undefined, /bad_answer: task type court-paper needs a file with each answer/],
+      [[file("filing.pdf", Buffer.from("%PDF-1.4"), "application/pdf")], /bad_answer: task type court-paper takes image\/\*; filing\.pdf is application\/pdf/],
+      [[file("a.jpg", photo), file("b.jpg", photo), file("c.jpg", photo)], /bad_answer: task type court-paper takes at most 2 files/],
+      [[file("big.jpg", jpeg(5 * 1024 * 1024 + 1))], /bad_answer: big\.jpg is 5\.0 MB; the limit is 5\.0 MB/],
+      [[{ name: "x.jpg", data: "not base64!" }], /bad_answer: attachments\[0\] \(x\.jpg\): data is not base64/],
+    ] as const) {
+      const r = await call(worker.token, "task/submit", { lease: got.lease, answer: { pages: 1 }, ...(attachments ? { attachments } : {}) });
+      assert.match(r.error ?? "", why, JSON.stringify(r));
+    }
+    assert.equal(((await call(worker.token, "task/next", { type: "court-paper" })).result as { lease: string }).lease, got.lease, "still the worker's");
+
+    // The answer, with the photo (a data URL, as `fileData` may send one).
+    const sent = await call(worker.token, "task/submit", { lease: got.lease, answer: { pages: 1 }, attachments: [{ name: "page 1.jpg", data: `data:image/jpeg;base64,${photo.toString("base64")}` }] });
+    assert.deepEqual(sent, { result: { ok: true } });
+    const done = await until("success");
+    const saved = [{ name: "page 1.jpg", mediaType: "image/jpeg", size: photo.length, path: `tasks/${task!.id}/page 1.jpg` }];
+    assert.deepEqual(done.output, { files: saved, read: "Case 24-CV-1234" });
+    // In the run's artifacts, byte for byte.
+    const artifacts = (strut.services as { artifacts: { read(runId: string, path: string): Promise<Uint8Array> } }).artifacts;
+    assert.deepEqual(Buffer.from(await artifacts.read(runId, saved[0]!.path)), photo);
+    // The agent SAW it: the image on its prompt, after its text and the file's line.
+    const user = JSON.stringify(reader.prompts.at(-1)!.find((m: { role: string }) => m.role === "user"));
+    assert.ok(user.includes(photo.toString("base64")), user.slice(0, 400));
+    assert.match(user, /\[attachment\] page 1\.jpg \(image\/jpeg, 2 KB\) — saved at [^"]+tasks\/[0-9a-f]+\/page 1\.jpg/);
+    assert.match(user, /Read the case number off this court paper\./);
+
+    // Staff see the file with the answer, and read it without a lease.
+    const view = (await (await staff("GET", `/tasks/${task!.id}`)).json()) as { task: { leases: Array<{ attachments?: unknown }> } };
+    assert.deepEqual(view.task.leases[0]!.attachments, saved);
+    const read = await staff("GET", `/tasks/${task!.id}/files/${saved[0]!.path.split("/").map(encodeURIComponent).join("/")}`);
+    assert.equal(read.status, 200, await read.clone().text());
+    assert.equal(((await read.json()) as { base64?: string }).base64, photo.toString("base64"));
+  });
+
+  it("the door's size (§5.6.7): a signed-in page's request may carry 20 MB of files; an anonymous one stays at 4 MB", async () => {
+    const worker = await signIn();
+    // Over 4 MB: two images of 3 MB, as base64 about 8 MB. The door passes it, and the
+    // task store answers (a new worker may take nothing) rather than the transport's 413.
+    const big = jpeg(3 * 1024 * 1024).toString("base64");
+    const attachments = [{ name: "a.jpg", data: big }, { name: "b.jpg", data: big }];
+    const signedIn = await call(worker.token, "task/submit", { lease: "nope", answer: {}, attachments });
+    assert.match(signedIn.error ?? "", /not_active/, JSON.stringify(signedIn).slice(0, 300));
+    const anonymous = await req("/public/mcp", {
+      method: "POST",
+      headers: { ...json, accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type: "task/submit", config: { lease: "nope", answer: {}, attachments }, app: identity } } }),
+    });
+    assert.equal(anonymous.status, 413, (await anonymous.text()).slice(0, 300));
   });
 
   it("pay end to end: the answer earns, the run's totals count it, task/me shows it held then withdrawable, and only staff take it back", async () => {

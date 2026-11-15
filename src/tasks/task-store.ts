@@ -41,6 +41,8 @@
  * else later by `decide`, guarded, while no lease can be taken.
  */
 import type { AnswerSchema } from "./answer-schema.js";
+import type { AttachmentRule } from "./answer-files.js";
+import type { RunAttachment } from "../core.js";
 
 export const TASK_STATUSES = ["open", "settled", "expired", "cancelled", "disputed"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -152,6 +154,8 @@ export interface TaskType {
   tests?: TestRules;
   /** Its copies rule (§7.6); absent: off, a step asks one worker. */
   copies?: CopiesRule;
+  /** The files an answer carries (§5.6); absent: none. */
+  attachments?: AttachmentRule;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;
@@ -221,6 +225,9 @@ export interface Lease {
    *  disputed task). A one-copy task's answer is the task's alone. */
   answer?: unknown;
   agrees?: boolean;
+  /** The files its answer carried (§5.6), saved under the task's run's
+   *  artifacts; absent with none, and on a test instance (dropped). */
+  attachments?: RunAttachment[];
 }
 
 /** A task that left `open`: what its run's wake needs. */
@@ -483,6 +490,8 @@ export interface TaskStore {
     lease: string;
     worker: string;
     answer: unknown;
+    /** The answer's files, saved already (§5.6.3): kept on the lease. */
+    attachments?: RunAttachment[];
     now: number;
     decide?: (answers: unknown[], copies: number) => CopiesDecision | undefined;
   }): Promise<SettleResult | undefined>;
@@ -814,6 +823,7 @@ export class MemoryTaskStore implements TaskStore {
     if (!l || l.worker !== o.worker || !live(l, o.now)) return undefined;
     const t = this.tasks.get(l.task);
     if (!t || t.status !== "open" || t.due <= o.now) return undefined;
+    if (o.attachments?.length) l.attachments = clone(o.attachments);
     if (t.copies <= 1) {
       Object.assign(l, { status: "submitted", closed: o.now });
       Object.assign(t, { status: "settled", settledAt: o.now, answer: clone(o.answer), by: o.worker });
