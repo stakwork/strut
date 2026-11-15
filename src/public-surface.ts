@@ -69,6 +69,11 @@ export interface PublicRunnable {
   /** What a workflow's launcher reads: its output (the default), or the
    *  whole run. A workflow's only. */
   results?: "output" | "run";
+  /** A workflow's only: its launch may carry FILES (`attachments`, the
+   *  chat's shape and caps, src/ai/attachments.ts), saved under the run's
+   *  artifacts and on each agent step's prompt. Off unless set: a stranger's
+   *  bytes are stored only where the person said so. */
+  attachments?: boolean;
 }
 
 /** The sign-ins a box may name (plans/app-repos.md §5.3; src/visitors.ts). */
@@ -165,8 +170,8 @@ export function visitorsProblem(v: unknown): string | undefined {
   }
   return undefined;
 }
-const RUNNABLE_FIELDS = ["kind", "name", "base", "markup", "capUsd", "dailyCapUsd", "results"];
-const RUNNABLE_SHAPE = "runnable is a list of { kind: workflow | step, name, base?, markup?, capUsd?, dailyCapUsd?, results? }";
+const RUNNABLE_FIELDS = ["kind", "name", "base", "markup", "capUsd", "dailyCapUsd", "results", "attachments"];
+const RUNNABLE_SHAPE = "runnable is a list of { kind: workflow | step, name, base?, markup?, capUsd?, dailyCapUsd?, results?, attachments? }";
 
 /** The label a refusal names an item by: `workflow "acme/x"`. */
 export const runnableLabel = (r: { kind: string; name: string }) => `${r.kind} "${r.name}"`;
@@ -192,6 +197,10 @@ export function runnableShapeProblem(v: unknown): string | undefined {
   if (o["results"] !== undefined) {
     if (o["kind"] === "step") return `${label}: results is a workflow's (a step's call answers its output)`;
     if (o["results"] !== "output" && o["results"] !== "run") return `${label}: results is "output" or "run"`;
+  }
+  if (o["attachments"] !== undefined) {
+    if (o["kind"] === "step") return `${label}: attachments is a workflow's (a step's call takes its config alone)`;
+    if (typeof o["attachments"] !== "boolean") return `${label}: attachments is true or false`;
   }
   return undefined;
 }
@@ -276,6 +285,7 @@ export function normalizeSurface(v: unknown): PublicSurface {
         ...(x.capUsd !== undefined ? { capUsd: x.capUsd } : {}),
         ...(x.dailyCapUsd !== undefined ? { dailyCapUsd: x.dailyCapUsd } : {}),
         ...(x.kind === "workflow" && x.results === "run" ? { results: "run" as const } : {}),
+        ...(x.kind === "workflow" && x.attachments === true ? { attachments: true } : {}),
       })),
       (x) => `${x.kind}:${x.name}`,
     ),

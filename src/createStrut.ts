@@ -3934,6 +3934,7 @@ export async function createStrut<TServices = unknown>(
           ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
           ...(o.credit ? { credit: o.credit } : {}),
           ...(o.visitor ? { visitor: o.visitor } : {}),
+          ...(o.attachments?.length ? { attachments: o.attachments } : {}),
         });
       },
       cancel: async (name, runId) => {

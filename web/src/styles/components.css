@@ -5784,6 +5784,8 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .public-run-can .auto-hint { margin: 0; }
 .public-price { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--sp-2); }
 .public-price label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; min-width: 0; }
+.public-price label.public-files { flex-direction: row; align-items: center; gap: var(--sp-2); align-self: end; min-height: 26px; }
+.public-price label.public-files input { width: auto; }
 .public-price input,
 .public-price select {
   font: inherit;

@@ -20,6 +20,7 @@ import {
   runHints,
   capNote,
   sameRecord,
+  setAttachments,
   setBox,
   setPrice,
   setResults,
@@ -218,6 +219,12 @@ function ItemRow(props: {
                   <option value="output">its output</option>
                   <option value="run">the whole run</option>
                 </select>
+              </label>
+            )}
+            {row.kind === "workflow" && (
+              <label class="public-files" title="A launch may carry files (10 at most, 15 MB together), saved with the run and shown to its agents">
+                <input type="checkbox" checked={item.attachments === true} onChange={(e) => props.edit((r) => setAttachments(r, row, (e.target as HTMLInputElement).checked))} />
+                <span>Takes files</span>
               </label>
             )}
           </div>

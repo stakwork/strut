@@ -57,6 +57,11 @@ import type { PublicRunnable } from "./public-surface.js";
 
 /** The most a launch body may be (§3 step 2). */
 export const PUBLIC_RUN_BODY_MAX_BYTES = 256 * 1024;
+/** The most a launch body may be when its item takes files (`attachments:
+ *  true`): the body's own 256 KB, plus the chat's attachment total
+ *  (src/ai/attachments.ts, 15 MB) as base64, plus room for its JSON. The
+ *  files themselves are held to the chat's caps once read. */
+export const PUBLIC_RUN_FILES_BODY_MAX_BYTES = PUBLIC_RUN_BODY_MAX_BYTES + Math.ceil((15 * 1024 * 1024 * 4) / 3) + 64 * 1024;
 /** Launches one visitor address may make in a minute: a smaller allowance
  *  than the reads' (`PUBLIC_REQUESTS_PER_MINUTE`, 1200). */
 export const PUBLIC_LAUNCHES_PER_MINUTE = 60;

@@ -2961,6 +2961,8 @@ export interface PublicRunnable {
   capUsd?: number;
   dailyCapUsd?: number;
   results?: "output" | "run";
+  /** A workflow's launch may carry files (`attachments`). */
+  attachments?: boolean;
 }
 export interface PublicViewRecord {
   concepts: string[];

@@ -40,20 +40,27 @@ describe("the runnable record", () => {
     assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", dailyCapUsd: 0 }] })!, /refuses every run/);
     assert.match(surfaceProblem({ runnable: [{ kind: "step", name: "s", results: "run" }] })!, /results is a workflow's/);
     assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", results: "all" }] })!, /"output" or "run"/);
+    assert.equal(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", attachments: true }] }), undefined);
+    assert.match(surfaceProblem({ runnable: [{ kind: "step", name: "s", attachments: true }] })!, /attachments is a workflow's/);
+    assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", attachments: "yes" }] })!, /attachments is true or false/);
   });
 
-  it("normalizes: zero prices and the default results dropped, each item once", () => {
+  it("normalizes: zero prices, the default results and attachments off dropped, each item once", () => {
     assert.deepEqual(
       normalizeSurface({
         runnable: [
           { kind: "workflow", name: "a", base: 0, markup: 0, results: "output", dailyCapUsd: 5 },
           { kind: "workflow", name: "a", base: 9 },
           { kind: "step", name: "a", base: 1 },
+          { kind: "workflow", name: "b", attachments: false },
+          { kind: "workflow", name: "c", attachments: true },
         ],
       }).runnable,
       [
         { kind: "workflow", name: "a", dailyCapUsd: 5 },
         { kind: "step", name: "a", base: 1 },
+        { kind: "workflow", name: "b" },
+        { kind: "workflow", name: "c", attachments: true },
       ],
     );
   });
