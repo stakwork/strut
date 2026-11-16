@@ -334,7 +334,7 @@ export interface WorkerPageProps {
   subtitle?: string;
   /** The header's mark (a lucide icon); a briefcase without one. */
   icon?: ReactNode;
-  /** What the work is, shown before sign-in and while there is none. */
+  /** What the work is, shown before sign-in (never once signed in: it asks them to sign in). */
   intro?: ReactNode;
   className?: string;
 }
@@ -426,12 +426,7 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
       <Screen
         icon={<Loader2 className="size-10 animate-spin [animation-duration:2.4s]" />}
         heading="Looking for work…"
-        text={
-          <>
-            No tasks right now. The next one shows up here.
-            {intro && <span className="mt-3 block text-[13px]">{intro}</span>}
-          </>
-        }
+        text="No tasks right now. The next one shows up here."
       />
     );
   }
