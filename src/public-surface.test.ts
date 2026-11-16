@@ -528,8 +528,15 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     // version requests (from its build), for the visitor's host: nothing
     // else of the build.
     const bench = { name: "bench", version: "v1", title: "Bench", permissions: ["geolocation"], wallet: { request_methods: ["pay_keysend", "get_budget"], max_amount: 5000000, renewal_period: "weekly" }, account: { corner: "bottom-left", style: "pill" } };
-    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [bench]);
-    assert.deepEqual(await (await strut.app.request("/public/apps/bench")).json(), bench, "the one app's read, which a visitor's host frames it by");
+    // Its share links: the visitor's page on this server's base, and the same opened in Peel.
+    const link = "http://localhost/?app=bench&solo=1&public=1";
+    const links = { link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
+    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ ...bench, ...links }]);
+    assert.deepEqual(await (await strut.app.request("/public/apps/bench")).json(), { ...bench, ...links }, "the one app's read, which a visitor's host frames it by");
+    // Behind a proxy that mounts it under a path (mcp's /lab): the proxy's host and prefix.
+    const prefixed = (await (await strut.app.request("/public/apps/bench", { headers: { "x-forwarded-prefix": "/lab", "x-forwarded-host": "box.example", "x-forwarded-proto": "https" } })).json()) as { link: string; peelLink: string };
+    assert.equal(prefixed.link, "https://box.example/lab/?app=bench&solo=1&public=1");
+    assert.equal(prefixed.peelLink, "peel://open?url=https%3A%2F%2Fbox.example%2Flab%2F%3Fapp%3Dbench%26solo%3D1%26public%3D1");
 
     const doc = await strut.app.request("/public/apps/bench/document");
     assert.equal(doc.status, 200);

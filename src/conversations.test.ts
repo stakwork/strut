@@ -14,6 +14,7 @@ import type { RunEvent } from "./core.js";
 import { isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs } from "./conversations.js";
 import { encodeId } from "./session-store.js";
 import listStep from "./steps/lib/conversation/list.js";
+import { createProposal, proposalsRoot } from "./proposals.js";
 
 describe("conversations: the pure parts", () => {
   it("titleOf: Hive's leading @<workspace> line left out, whitespace as one space, cut", () => {
@@ -275,6 +276,40 @@ describe("conversations through a whole strut", () => {
     assert.deepEqual(wake.wake, { job: person.jobs[0].job, runId: person.jobs[0].runId });
     assert.equal(wake.text, "Summary.");
     assert.equal(wake.delivered, undefined, "the job delivered nothing");
+  });
+
+  it("a job's proposal shows under the turn that started it, where its card is; one made elsewhere, or not the reader's, does not", async () => {
+    const { say, get, idle } = await boot({
+      reply: (body) => (lastUser(body).includes("flights?") ? { text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] } : { text: "Hello.", artifacts: [] }),
+    });
+    const session = "alice/c-1";
+    await say("alice", session, "flights?", { wake: true });
+    await until(async () => ((await get("alice", session)).body.turns.length === 2 ? true : undefined), "the wake turn");
+    await say("alice", session, "thanks");
+    await idle();
+    const started = (await get("alice", session)).body.turns.find((t: any) => t.jobs.length);
+    const { job, runId } = started.jobs[0];
+    const root = proposalsRoot(dir);
+    const by = { workflow: "builder", path: "builder/agent", job, actor: "alice" };
+    const propose = (title: string, b: Record<string, unknown>) => createProposal(root, { step: "task/set-type", input: {}, title, by: { ...by, ...b } as never });
+    const ofRun = await propose("by the job's run", { runId, conversation: session });
+    const ofChild = await propose("by a run inside the job", { runId: "child-run", conversation: session });
+    await propose("by the job, from another conversation", { runId: "elsewhere", conversation: "alice/c-2" });
+    await propose("by another job", { runId: "other", job: "not-here", conversation: session });
+    const bobs = await propose("by the job, for bob", { runId, conversation: session, actor: "bob" });
+    const turns = (await get("alice", session)).body.turns;
+    const where = (id: string) => turns.filter((t: any) => t.proposals.some((p: any) => p.id === id)).map((t: any) => t.runId);
+    assert.deepEqual(where(ofRun.id), [started.runId], "on the turn that started the job run");
+    assert.deepEqual(where(ofChild.id), [started.runId], "a run inside the job: on the turn holding the job's card");
+    assert.deepEqual(
+      turns.flatMap((t: any) => t.proposals.map((p: any) => p.title)),
+      ["by the job's run", "by a run inside the job", "by the job, for bob"],
+      "made elsewhere, or by a job not started here, it shows nowhere here",
+    );
+    // A person's token: only their own, as visibleTo decides.
+    const mine = (await get("alice", session, "", "peer:person")).body.turns.flatMap((t: any) => t.proposals.map((p: any) => p.id));
+    assert.deepEqual(mine, [ofRun.id, ofChild.id]);
+    assert.ok(!mine.includes(bobs.id));
   });
 
   it("a wake turn carries what the job run it woke on delivered, resolved, with the run's workflow", async () => {

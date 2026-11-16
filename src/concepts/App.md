@@ -663,12 +663,15 @@ Workers are signed-in visitors of the public view (or the server's own
 members). Once the app is published and draws its task types, ask for it
 with `app/make-public` (the version `app/publish` answered): an ADMIN
 approves a card that says what anyone will see and who can sign in, and
-strut adds the app, held at that version. A view that names no sign-in
+strut adds the app, held at that version (an app strut seeds, such as
+strut/worker, is added unheld and follows strut's releases). A view that names no sign-in
 offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
 writes. Say in your reply that later publishes are drafts until someone
-makes them live.
+makes them live. The result (and `GET /public/apps`) carries the app's
+share links: hand the person `peelLink` (`link` for a browser), never a
+URL built by hand.
 
 ## The assistant
 

@@ -182,6 +182,16 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(listed?.publisher, "harness-seed", "a service's step stays the service's to clean up");
   });
 
+  it("publishWorkflow with an actor: an ownerless workflow is adopted by them; one with an owner keeps it", async () => {
+    const pub = (await authoring.publishWorkflow("found-pets", logFlow("found-pets", "v1"), undefined, undefined, undefined, "ann")) as any;
+    assert.equal(pub.ok, true, JSON.stringify(pub));
+    assert.equal((await strut.workspace.getWorkflowMetadata("found-pets"))?.owner, "ann");
+    await authoring.publishWorkflow("found-pets", logFlow("found-pets", "v2"), undefined, undefined, undefined, "bo");
+    assert.equal((await strut.workspace.getWorkflowMetadata("found-pets"))?.owner, "ann", "the owner stays");
+    await authoring.publishWorkflow("no-one", logFlow("no-one", "v1"));
+    assert.equal((await strut.workspace.getWorkflowMetadata("no-one"))?.owner, undefined, "no actor, no owner");
+  });
+
   it("publishWorkflow stamps publisher 'ai' and publishes over anyone's workflow; a seed's says the next boot puts it back", async () => {
     // Candidate: published through the meta surface → stamped.
     const pub = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v1"))) as any;

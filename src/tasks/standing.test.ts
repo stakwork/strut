@@ -301,4 +301,35 @@ describe("a standing type on a strut: a pick-up, an answer, the run", () => {
     assert.match(((await bad.json()) as { error: string }).error, /show reads only input and params/);
     assert.deepEqual(await worker.next("cat", { app: "labelers" }), { none: true });
   });
+
+  it("where every run needs someone to bill: an ownerless workflow bills who published its active version; with nobody at all it is refused", async () => {
+    const was = process.env["STRUT_MOTHERSHIP_REQUIRED"];
+    process.env["STRUT_MOTHERSHIP_REQUIRED"] = "1";
+    try {
+      await strut.workspace.publishWorkflowByContent("label-flow", WORKFLOW);
+      const nobody = await putType({ standing: { workflow: "label-flow" } });
+      assert.equal(nobody.status, 400);
+      assert.match(((await nobody.json()) as { error: string }).error, /nobody to bill/);
+
+      const v2 = WORKFLOW.replace("Photograph a nutrition label", "Photograph the label");
+      await strut.workspace.publishWorkflowByContent("label-flow", v2, undefined, undefined, undefined, { source: "agent", actor: "ada" });
+      await strut.workspace.setWorkflowOwner("label-flow", null);
+      assert.equal((await strut.workspace.getWorkflowMetadata("label-flow"))?.owner, undefined);
+      const put = await putType({ standing: { workflow: "label-flow" } });
+      assert.equal(put.status, 200, await put.clone().text());
+
+      const ann = (await strut.tasks.worker.next("ann", { app: "labelers" })) as WorkerTask;
+      await strut.tasks.worker.submit("ann", { lease: ann.lease, answer: { product: "rye" } });
+      const runId = (await strut.tasks.capability.list({ type: "labels", limit: 10 })).find((t) => t.leases.some((l) => l.id === ann.lease))!.runId;
+      let start;
+      for (let i = 0; i < 800 && !start; i++) {
+        start = (await strut.store.getRunEvents("label-flow", runId)).find((e) => e.type === "run.start");
+        if (!start) await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.equal(start?.["principal"], "ada", JSON.stringify(start));
+    } finally {
+      if (was === undefined) delete process.env["STRUT_MOTHERSHIP_REQUIRED"];
+      else process.env["STRUT_MOTHERSHIP_REQUIRED"] = was;
+    }
+  });
 });

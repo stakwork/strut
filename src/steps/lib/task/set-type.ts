@@ -16,7 +16,8 @@ import { typeCard, typeChangeInput } from "../../../tasks/set-type.js";
  * `ctx.proposal` opens nothing.
  *
  * Its input is merged over the type when there is one, so a field left out
- * keeps its value; a new type needs `answer`. It grants no worker, deletes
+ * keeps its value; a new type with no `answer` takes the empty object (a
+ * files-only task: photos and nothing else). It grants no worker, deletes
  * no type and changes no worker: those are a person's, in `strut/staff`. A
  * type is open by default (ruling 9); a paid open type with fewer ready
  * tests than its K is refused when saved, and the card says so first.
@@ -39,7 +40,7 @@ export default defineStep({
   description:
     "Ask an admin to make or change a TASK TYPE — what a workflow's `human` step names: the app that draws its tasks, the answer's shape, lease, expiry, on or off, open or invite-only, pay, tests and copies. " +
     "The call becomes a proposal an ADMIN of this strut server approves on a card that shows the type, what changes, its workers and its pay; strut saves it when they accept, and tells you the result on a later turn. " +
-    "Read task/types first: an existing name is CHANGED, the fields you leave out kept as they are; a new name needs `answer`. The app must grant task/next and task/submit. " +
+    "Read task/types first: an existing name is CHANGED, the fields you leave out kept as they are; a new name with no `answer` takes an empty one (a files-only task: photos and nothing else). The app must grant task/next and task/submit. " +
     "A type is OPEN by default: any signed-in worker of the app takes its tasks with no grant. A PAID open type needs at least tests.qualify ready tests (task/types' readyTests), so ask for a new paid type with open: false (invite-only: an admin grants workers in Tasks and workers, strut/staff) and say so in your reply. Put the reason in `rationale`, in the person's terms. " +
     "Never saves on its own: a direct call is refused. When the person is not an admin, the call is refused (admin_required:) — tell them an admin makes task types, and to ask one.",
   input: typeChangeInput,
