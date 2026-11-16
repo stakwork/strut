@@ -61,9 +61,41 @@ without thinking to search for it?*
 My earlier `feat/dream-cycle` branch had the dream output memory's facts.
 This brings that back on Evan's design.
 
+## The assistant changes concepts too
+
+The dream is not the only writer. In a conversation, the assistant saves
+what the person says straight into concepts with the graph tools
+(`graph_edit_node` and the like). The `Dream` concept's rules (the smallest
+change, never rewrite a page, where a lesson goes, never the root, pages
+from git left alone) bind the dream alone.
+
+Seen on Peel, 2026-11-16: Tom said "for larger summaries, keep it simple,
+concise and actionable". The assistant answered "I saved that to your
+communication style" and rewrote that concept's docs, dropping an
+unrelated rule (tribe posts: short, the PR link, tag the person). The dream
+then read the turn, found the lesson saved, and only reworded the
+description. Two writers changed one concept, and the one without the
+rules lost a line.
+
+Proposal: one set of rules for every writer of concepts.
+
+- **The assistant changes a concept the way the dream does:** through
+  `knowledge/edit-page` and `knowledge/add-page` (lines changed, never the
+  whole docs; pages from git as proposals), following the `Dream` concept's
+  "Where a lesson goes". The person still gets "saved" at once.
+- **The dream then treats that turn as a lesson already applied:** it
+  writes the claim and records what was said, and changes nothing more
+  unless the change was wrong.
+- The assistant's own graph tools no longer edit `Concept` nodes.
+
+The other way, the assistant only noting the lesson and the next dream
+applying it, keeps one writer but leaves the person waiting a cycle.
+
 ## Open for Evan
 
 - Peel's memory saving: move into the dream, or keep it for facts only?
+- The assistant's concept edits: through the dream's doors and rules (the
+  proposal above), or only noted for the next dream?
 - How a concept names a fact: an edge from the concept to the fact, or a
   line of text? An edge would let a superseded fact mark the concept's
   claims for a fresh look.
