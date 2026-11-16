@@ -12,8 +12,10 @@ thing in strut that sends sats out, which is never on the services bag.
 This file is the contract each provider is built against:
 
 - **The Sphinx daemon** (`src/payments/sphinx-daemon.ts`): four routes,
-  and `POST /pay`, `POST /keysend` and `GET /keysend/:id` for the payer, built in the sphinx repo
-  (`wasm/daemon/src/http.ts`, stakwork/sphinx#428).
+  and `POST /pay`, `POST /keysend`, `GET /keysend/:id` and
+  `POST /keysend/:id/cancel` for the payer, built in the sphinx repo
+  (`wasm/daemon/src/http.ts`, stakwork/sphinx#428; the keysend routes,
+  stakwork/sphinx#431).
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
   that answer exactly this.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
@@ -256,6 +258,44 @@ know.
 **The one way to pay twice** is a daemon that lost its ledger: it reads an
 `id` it sent as never taken, and strut then fails the payout and gives the
 reserve back. Back the daemon's ledger up with its state.
+
+A `pending` answer may carry `reason`: what the daemon knows of why it is
+not settled or failed yet (`lsp_unconfirmed: …`, `cancel_too_late: …`,
+`cancel_unconfirmed: …`). `pending` means unknown, never failed. strut
+keeps the reason of a read or a cancel as the send's `lastError`; a send's
+own answer, which goes to the worker, leaves it out.
+
+### `POST /keysend/:id/cancel` — cancel a keysend the LSP still holds
+
+With the PAY token, no body. strut calls it for a payout still `pending` a
+day after it was sent (plans/human-steps.md §8.2, ruling 11). It never
+sends. It asks the LSP to cancel the keysend and waits up to 10 s for its
+word, then answers the keysend as it stands, with `cancelled`:
+
+```json
+{ "id": "<64 hex>", "state": "failed", "payment_hash": "<hex>", "fee_msat": 0, "error": "cancelled: the payer cancelled it before it was paid", "cancelled": true }
+{ "id": "<64 hex>", "state": "pending", "payment_hash": "<hex>", "fee_msat": 0, "reason": "cancel_too_late: …", "cancelled": false }
+```
+
+- **Cancelled** is `failed` with an `error` that starts `cancelled:`. The
+  LSP removed the payment in the write that marked it cancelled, so nothing
+  was paid and nothing can be. It is the one end of a pending keysend that
+  strut takes as certain: the payout fails and the reserve goes back to the
+  worker with nobody's yes.
+- **Too late** (the LSP had taken it for paying) and **no answer** stay
+  `pending`, with `reason`. The daemon keeps the cancel in its ledger and
+  asks it again every minute until the keysend ends, so strut asks once and
+  reads with the GET from then on.
+- **An ended keysend** is answered as it stands. An `id` the daemon never
+  took is `404 { code: "not_found" }`, read as `failed`, as on the GET.
+- **`409 { code: "not_cancellable" }`**: a keysend the daemon did not send
+  async, which the LSP does not hold.
+- **A `404 no route …`** is a daemon that keysends but predates the cancel
+  (`no_keysend_cancel`). With either of these two the payout stays stale,
+  and a person records it as paid or drops it.
+- **The LSP must know the cancel** (the mixer's `cancelpay`,
+  stakwork/sphinx#433). One that does not gives no answer: the keysend
+  stays `pending` with `cancel_unconfirmed`, and a person decides.
 
 ## NWC (NIP-47)
 

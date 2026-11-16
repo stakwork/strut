@@ -4570,6 +4570,11 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   Sphinx mixer keeps the debit of a payment its LSP never answered and
   never refunds it, so the daemon answers `pending` forever — and no longer
   polled: a person reads it once more, or records it as paid or drops it.
+  A worker's payout (`purpose: "worker"`) is stale a day after it was sent,
+  and is then cancelled, not left: `cancelAt` is when the wallet took the
+  ask, and it is read every minute until the wallet says how it ended
+  (plans/human-steps.md §8.2, ruling 11). With no `cancelAt` the wallet
+  could not cancel it, and a person decides as above.
   `reading`: a read is in flight. `lastError`: what the last read said.
 - `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
   payer), the balance at the rate of the moment (or `error`), and the

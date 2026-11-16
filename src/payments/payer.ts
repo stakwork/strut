@@ -86,7 +86,8 @@ export interface KeysendResult {
   paymentHash?: string;
   /** Once settled, when it hashes to the payment hash. */
   preimage?: string;
-  /** `failed`: the wallet's words. */
+  /** `failed`: the wallet's words. `pending`, on a read or a cancel: why it
+   *  is not known yet, when the wallet says (the daemon's `reason`). */
   error?: string;
 }
 
@@ -119,10 +120,22 @@ export interface Payer {
   /** Where a keysend stands, by its id, without ever sending. An id the
    *  wallet never took is `failed`: the daemon writes the id before it sends. */
   keysendStatus?(req: { id: string }): Promise<KeysendResult>;
+  /** Ask the wallet to cancel a pending keysend it still holds, by its id;
+   *  never sends. The answer is the keysend as it stands after: `failed`
+   *  with `cancelled: …` (nothing was paid under it and nothing can be),
+   *  `settled`, or still `pending` (`error` says why: the wallet had taken
+   *  it for paying, or has not answered the cancel). The wallet keeps the
+   *  cancel and asks it again by itself until the keysend ends, so once is
+   *  enough. An id the wallet never took is `failed`. A daemon without the
+   *  route throws `wallet_refused` with walletCode `no_keysend_cancel`; a
+   *  keysend it cannot cancel, `not_cancellable`. */
+  keysendCancel?(req: { id: string }): Promise<KeysendResult>;
 }
 
 /** The walletCode a payer throws for a wallet with no keysend route. */
 export const NO_KEYSEND = "no_keysend";
+/** …and for a daemon that keysends but has no cancel route. */
+export const NO_KEYSEND_CANCEL = "no_keysend_cancel";
 
 // ── the fee (fee.ts) ──────────────────────────────────────────────────────
 
@@ -305,6 +318,12 @@ export class SphinxDaemonPayer implements Payer {
     return daemonKeysend(this.#daemon(), "GET", req.id);
   }
 
+  /** `POST /keysend/:id/cancel`: asks the LSP to cancel it, never sends. */
+  async keysendCancel(req: { id: string }): Promise<KeysendResult> {
+    if (!req || typeof req.id !== "string" || !/^[0-9a-f]{64}$/.test(req.id)) throw new LightningError("bad_request", "keysend's id is 64 lowercase hex characters");
+    return daemonKeysend(this.#daemon(), "CANCEL", req.id);
+  }
+
   #daemon() {
     return { url: this.#url, token: this.#token, http: this.#http, timeoutMs: this.#timeoutMs };
   }
@@ -328,19 +347,30 @@ function checkKeysendRequest(req: KeysendRequest): void {
  * A `404 no route …` is a daemon without these routes (`no_keysend`). The
  * fee booked is what it reports, as the LSP charged it; within one mixer
  * that is none.
+ *
+ * `POST /keysend/:id/cancel` (`CANCEL`, no body) asks the LSP to cancel a
+ * pending keysend it still holds and answers the keysend as it stands after,
+ * waiting up to 10 s for the LSP: `failed` with `cancelled: …` is certain
+ * (nothing was paid, nothing can be); `pending` carries a `reason`
+ * (`cancel_too_late: …`, `cancel_unconfirmed: …`), read here as `error`. The
+ * daemon keeps the cancel and asks it again every minute until the keysend
+ * ends. A `404 no route …` there is a daemon that keysends but predates the
+ * cancel (`no_keysend_cancel`); `409 not_cancellable`, a keysend it did not
+ * send async.
  */
-async function daemonKeysend(o: { url: string; token: string; http: HttpCapability; timeoutMs: number }, method: "POST" | "GET", id: string, body?: Record<string, unknown>): Promise<KeysendResult> {
-  const route = method === "POST" ? "POST /keysend" : "GET /keysend/:id";
+async function daemonKeysend(o: { url: string; token: string; http: HttpCapability; timeoutMs: number }, method: "POST" | "GET" | "CANCEL", id: string, body?: Record<string, unknown>): Promise<KeysendResult> {
+  const route = method === "POST" ? "POST /keysend" : method === "GET" ? "GET /keysend/:id" : "POST /keysend/:id/cancel";
+  const timeout = method === "POST" ? o.timeoutMs : method === "GET" ? 10_000 : 20_000;
   let res: HttpResponse;
   try {
-    res = await o.http(method === "POST" ? `${o.url}/keysend` : `${o.url}/keysend/${id}`, {
-      method,
+    res = await o.http(method === "POST" ? `${o.url}/keysend` : method === "GET" ? `${o.url}/keysend/${id}` : `${o.url}/keysend/${id}/cancel`, {
+      method: method === "GET" ? "GET" : "POST",
       headers: { authorization: `Bearer ${o.token}`, accept: "application/json" },
       ...(body ? { body } : {}),
-      timeout: method === "POST" ? o.timeoutMs : 10_000,
+      timeout,
     });
   } catch (err) {
-    const why = err instanceof Error ? (err.name === "TimeoutError" ? `no answer in ${(method === "POST" ? o.timeoutMs : 10_000) / 1000} s` : err.message) : String(err);
+    const why = err instanceof Error ? (err.name === "TimeoutError" ? `no answer in ${timeout / 1000} s` : err.message) : String(err);
     throw new LightningError("wallet_unavailable", `the Sphinx daemon at ${o.url} did not answer ${route}: ${why}`);
   }
   const said = res.body && typeof res.body === "object" && !Array.isArray(res.body) ? (res.body as Record<string, unknown>) : {};
@@ -350,9 +380,12 @@ async function daemonKeysend(o: { url: string; token: string; http: HttpCapabili
     if (res.status === 401 || res.status === 403) throw new LightningError("wallet_unauthorized", `the Sphinx daemon refused the pay token on ${route}: ${message}`, walletCode);
     if (res.status >= 500) throw new LightningError("wallet_unavailable", `the Sphinx daemon failed ${route}: ${message}`, walletCode);
     if (res.status === 404 && /^no route /.test(message)) {
+      if (method === "CANCEL") {
+        throw new LightningError("wallet_refused", `the Sphinx daemon at ${o.url} has no ${route}: it predates the cancel of a keysend (specs/LIGHTNING.md)`, NO_KEYSEND_CANCEL);
+      }
       throw new LightningError("wallet_refused", `the Sphinx daemon at ${o.url} has no ${route}: it predates the keysend strut pays workers through (specs/LIGHTNING.md)`, NO_KEYSEND);
     }
-    if (res.status === 404 && method === "GET") return { id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
+    if (res.status === 404 && method !== "POST") return { id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
     throw new LightningError("wallet_refused", `the Sphinx daemon refused ${route}: ${message}`, walletCode);
   }
   const state = said["state"];
@@ -376,6 +409,9 @@ async function daemonKeysend(o: { url: string; token: string; http: HttpCapabili
     ...(paymentHash ? { paymentHash } : {}),
     ...(preimage ? { preimage } : {}),
     ...(state === "failed" ? { error: typeof said["error"] === "string" && said["error"] ? said["error"] : "the payment failed" } : {}),
+    // Pending is unknown, never failed: a read and a cancel say what the
+    // daemon knows of it. A send does not: its answer goes to the worker.
+    ...(state === "pending" && method !== "POST" && typeof said["reason"] === "string" && said["reason"] ? { error: said["reason"] } : {}),
   };
 }
 

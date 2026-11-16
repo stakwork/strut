@@ -39,6 +39,7 @@
 | 8 | Items 4, 5a and 6: the questions their design passes left open | **All as recommended** (2026-11-12): §7.12 (#662), §8's ruled list (#660), §9.12 (#661) |
 | 9 | Who may take a task type's tasks | **Task types are open to any signed-in worker by default; a paid open type needs at least K ready tests** (ruled 2026-11-13). Staff can still make a type invite-only, and then grants work as before. An unpaid open type needs no tests |
 | 10 | Item 5b (withdraw) | **The ten questions all as recommended; a payout pays the worker's Sphinx address from sign-in by keysend, not an invoice** (ruled 2026-11-13). §8.2's "Ruled (2026-11-13)" |
+| 11 | A payout still out a day after it was sent | **Cancelled through the daemon** (ruled 2026-11-15): strut asks the wallet to cancel it. Cancelled, it fails and the reserve goes back with nobody's yes. A person decides only when the wallet cannot cancel. §8.2's "Built differently (ruling 11)" |
 
 ## Problem
 
@@ -2236,7 +2237,7 @@ purpose `worker` and two hooks into the ledger:
 | The daemon answers `failed`, or refused it before sending | Dropped | The payout is `failed` with the daemon's words, and the reserve goes back to the worker's balance |
 | `GET /keysend/:id` answers 404 | — | The daemon never took it: it writes the id before it sends. The payout fails, and the reserve goes back |
 | The process dies between the reserve and the pending entry | — | Nothing was sent, because the pending entry is written before the payer is called. A minute after the reserve, the minute's check fails a payout that is `out` in the ledger, on no pending list and paid nowhere |
-| Stale: still `pending` a day after it was sent | Polling stops. A person records it as paid or drops it | The same, from the Payouts tab or the Earnings tab. `paid` settles the payout, with the fee the person gives (else 0). `drop` fails it and gives the reserve back |
+| Stale: still `pending` a day after it was sent | Polling stops. A person records it as paid or drops it | The same, from the Payouts tab or the Earnings tab. `paid` settles the payout, with the fee the person gives (else 0). `drop` fails it and gives the reserve back. **Built differently (ruling 11): it is cancelled through the daemon first**, below |
 
 **Stale after a day.** A keysend has no expiry to measure from, and a
 payment within one mixer waits on the worker's client (below). The worker
@@ -2246,6 +2247,34 @@ enough for a worker who closed it straight away.
 **A stale payout needs a person's judgment.** If the worker received the
 sats, `paid` is right. If not, `drop` makes them owed again. Only the
 worker's wallet knows which, and the Payouts tab says so beside the buttons.
+
+**Built differently (stakwork/strut#704, ruling 11): a stale payout is
+cancelled.** The daemon gained `POST /keysend/:id/cancel`
+(stakwork/sphinx#431) over the mixer's `cancelpay` (stakwork/sphinx#433),
+so a payout no longer needs a person to end it:
+
+- **The minute's check asks once.** For a payout still `pending` a day
+  after it was sent, `withdrawals.ts` calls `payer.keysendCancel({ id })`.
+  The daemon keeps the cancel and asks the LSP again every minute, so strut
+  asks once (`cancelAt` on the pending entry) and reads with
+  `GET /keysend/:id` from then on. Polling no longer stops.
+- **Cancelled** is `failed` with `cancelled: …`. The mixer removed the
+  payment in the write that marked it cancelled, so nothing was paid and
+  nothing can be. The payout fails and the reserve goes back to the worker,
+  with nobody's yes. It is the one end of a pending keysend strut takes as
+  certain.
+- **Too late** (the LSP had taken it for paying) stays out, with the
+  daemon's reason as `lastError`. It ends when the wallet says how:
+  `settled`, or cancelled once the mixer holds it for the recipient.
+- **A person still decides** when the wallet cannot cancel: a daemon that
+  predates the route (`no_keysend_cancel`), a keysend it did not send async
+  (`not_cancellable`), or a mixer without `cancelpay`, where the cancel
+  stays unanswered. Read again, Record as paid and Drop are as they were.
+- **Files:** `payer.ts` (`keysendCancel`, `NO_KEYSEND_CANCEL`),
+  `withdrawals.ts` (`cancelAt`, the check), `fake-wallet.ts`, the wording
+  in `strut/staff`, `strut/earnings` and the console's Earnings panel.
+  Tests in `payer.test.ts` and `payouts.test.ts`. specs/LIGHTNING.md has
+  the route.
 
 **Who pays the routing fee: the worker** (ruled).
 
@@ -3358,7 +3387,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 3 | **The worker's door** (§5, §6). The `task/*` steps, `worker: true`, the visitor rule and bag, the budgets, the `/tasks` routes, `useTask`, `useWorker`, `useTaskFile`, `TaskForm`, the `App` page | 2b | **Built**: stakwork/strut#657. Differs in §5.1–§5.3, §6; the store taken off the shared bag in #663 (§9.2) |
 | 4 | **Tests, copies and standing** (§7). Designed and ruled in #662; three PRs (§7.11) | 3 | **4a built**: stakwork/strut#671 (tests, grading, standing, qualifying). Differs in §7.1–§7.5, §7.7, §7.9, §7.10. **4b built**: stakwork/strut#675 (copies). Differs in §7.6, §7.7; whether a disagreeing copy keeps its earning is open (§7.6). **4c built**: stakwork/strut#676 (the shipped graders, `grade/overlap` and `grade/judge`). Differs in §7.4 |
 | 5a | **Earnings recorded and shown** (§8): the earning on an accepted answer, the hold, the balance in `task/me`, the run's cost. No money leaves | 3 | **Built**: stakwork/strut#664 (the earning) and stakwork/strut#666 (the books). Differs in §8.1 |
-| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#688 (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. **PR 2 built**: stakwork/strut#689 (sign-in keeps the address, the contracts, the kit). **PR 3 built** (the pages): the Payouts tab in `strut/staff`, **Paid to workers** in the Earnings tab and `strut/earnings`, the Withdraw dialogs' refusal. Differs in §8.2. **Peel's side**: stakwork/peel#557 (`address` in `sign_in` with the root key). The live one-mixer check waits for the daemon's routes |
+| 5b | **Withdraw** (§8.2): the payer's third door, a keysend to the worker's Sphinx address. Designed in #681, ruled in #687. Peel's side is stakwork/peel's and the daemon's keysend stakwork/sphinx's | 5a | **PR 1 built**: stakwork/strut#688 (strut's money side: the ledger's payouts, `payouts.ts`, the payer's keysend, `withdrawals.ts`' keysend kind and hooks, ruling 7's refusal, `task/withdraw` and `task/me`'s `payout`, the `/tasks/payouts` routes and `staff/*` steps, the books' `paidOut`). Differs in §8.2. **PR 2 built**: stakwork/strut#689 (sign-in keeps the address, the contracts, the kit). **PR 3 built** (the pages): the Payouts tab in `strut/staff`, **Paid to workers** in the Earnings tab and `strut/earnings`, the Withdraw dialogs' refusal. Differs in §8.2. **Peel's side**: stakwork/peel#557 (`address` in `sign_in` with the root key). **Cancel after a day built** (ruling 11): stakwork/strut#704, a stale payout is cancelled through the daemon's `POST /keysend/:id/cancel`. Differs in §8.2. What is left is outside strut: stakwork/sphinx#431 (the daemon's routes) and stakwork/sphinx#433 (the mixer's hold and `cancelpay`) merged and deployed, then the live one-mixer check |
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |

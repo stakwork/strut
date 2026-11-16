@@ -16,7 +16,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { decodeBolt11, encodeBolt11 } from "./bolt11.js";
 import { LightningError, checkPaymentHash, type Invoice, type InvoiceLookup, type LightningProvider, type ReceivedPayment } from "./lightning.js";
-import { lspFeeFloorMsat, NO_KEYSEND, type KeysendRequest, type KeysendResult, type PayRequest, type PayResult, type Payer } from "./payer.js";
+import { lspFeeFloorMsat, NO_KEYSEND, NO_KEYSEND_CANCEL, type KeysendRequest, type KeysendResult, type PayRequest, type PayResult, type Payer } from "./payer.js";
 
 /** One invoice as the fake keeps it. Times are epoch ms. */
 export interface FakeInvoice {
@@ -189,7 +189,8 @@ export type FakePayOutcome = "settled" | "pending" | "failed" | LightningError;
  * that payment as it stands, a failed one included — and reads one by id
  * without sending (`keysendStatus`), an id it never took `failed`.
  * `noKeysend` models a daemon without the route; `forget(id)` one that lost
- * its ledger.
+ * its ledger. `keysendCancel` cancels a pending one as the daemon's `POST
+ * /keysend/:id/cancel` does (`tooLate`, `noKeysendCancel`).
  */
 export class FakePayer implements Payer {
   readonly provider = "sphinx" as const;
@@ -202,9 +203,14 @@ export class FakePayer implements Payer {
   feeShare = 0.001;
   readonly #payments = new Map<string, PayResult & { msat: number; invoice: string }>();
   /** Every pay and status call, in order. */
-  readonly calls: Array<{ method: "pay" | "status" | "keysend" | "keysendStatus"; paymentHash: string; maxFeeMsat: number; address?: string; msat?: number }> = [];
+  readonly calls: Array<{ method: "pay" | "status" | "keysend" | "keysendStatus" | "keysendCancel"; paymentHash: string; maxFeeMsat: number; address?: string; msat?: number }> = [];
   /** A daemon without `POST /keysend`: every keysend is refused `no_keysend`. */
   noKeysend = false;
+  /** A daemon that keysends but predates the cancel (`no_keysend_cancel`). */
+  noKeysendCancel = false;
+  /** Keysends (by id) the LSP had already taken for paying: a cancel of one
+   *  is too late, and it stays pending until the test settles or fails it. */
+  readonly tooLate = new Set<string>();
   /** The wallet it pays out of: each settled payment, fee included, comes
    *  off its balance, as a real wallet's would. */
   wallet?: FakeWallet;
@@ -261,6 +267,22 @@ export class FakePayer implements Payer {
     if (this.noKeysend) throw new LightningError("wallet_refused", "the fake daemon has no GET /keysend/:id", NO_KEYSEND);
     const k = this.#keysends.get(req.id);
     if (!k) return { id: req.id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
+    return this.#keysendAnswer(k);
+  }
+
+  /** As the daemon's `POST /keysend/:id/cancel`: a pending keysend the LSP
+   *  still holds (every one, unless `tooLate` names it) fails `cancelled: …`
+   *  for good; one it had taken for paying stays pending, with why. An ended
+   *  one is answered as it stands; an id never taken is `failed`. */
+  async keysendCancel(req: { id: string }): Promise<KeysendResult> {
+    this.calls.push({ method: "keysendCancel", paymentHash: req.id, maxFeeMsat: 0 });
+    if (this.noKeysend || this.noKeysendCancel) throw new LightningError("wallet_refused", "the fake daemon has no POST /keysend/:id/cancel", NO_KEYSEND_CANCEL);
+    const k = this.#keysends.get(req.id);
+    if (!k) return { id: req.id, state: "failed", feeMsat: 0, error: "the daemon never took this payment" };
+    if (k.state !== "pending") return this.#keysendAnswer(k);
+    if (this.tooLate.has(req.id)) return { ...this.#keysendAnswer(k), error: "cancel_too_late: the LSP had already taken the payment for paying" };
+    k.state = "failed";
+    k.error = "cancelled: the payer cancelled it before it was paid";
     return this.#keysendAnswer(k);
   }
 

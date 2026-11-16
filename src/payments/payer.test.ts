@@ -249,6 +249,8 @@ interface Keysend {
   payment_hash?: string;
   preimage?: string;
   error?: string;
+  /** Pending only: what the daemon knows of why. */
+  reason?: string;
   sent: number;
 }
 
@@ -272,6 +274,12 @@ class KeysendDaemon {
   routes = true;
   /** What GET answers next, once, in place of the truth. */
   next: { status: number; body: unknown } | null = null;
+  /** False: a daemon that keysends but predates `POST /keysend/:id/cancel`. */
+  cancelRoute = true;
+  /** Pending keysends the LSP still holds: a cancel of one fails it for good. */
+  held = new Set<string>();
+  /** Pending keysends the daemon did not send async: it cannot cancel them. */
+  notAsync = new Set<string>();
 
   async start() {
     this.server = createServer(async (req, res) => {
@@ -284,7 +292,8 @@ class KeysendDaemon {
       };
       const isPost = req.method === "POST" && path === "/keysend";
       const get = req.method === "GET" ? /^\/keysend\/([0-9a-f]{64})$/.exec(path) : null;
-      if (!this.routes || (!isPost && !get)) return send(404, { error: `no route ${req.method} ${path}`, code: "not_found" });
+      const cancel = req.method === "POST" && this.cancelRoute ? /^\/keysend\/([0-9a-f]{64})\/cancel$/.exec(path) : null;
+      if (!this.routes || (!isPost && !get && !cancel)) return send(404, { error: `no route ${req.method} ${path}`, code: "not_found" });
       if (req.headers.authorization !== `Bearer ${PAY}`) return send(req.headers.authorization === `Bearer ${RECEIVE}` ? 403 : 401, { error: "the pay token alone keysends", code: "forbidden" });
       if (this.next) {
         const n = this.next;
@@ -294,6 +303,18 @@ class KeysendDaemon {
       if (get) {
         const k = this.sends.get(get[1]!);
         return k ? send(200, this.answer(k)) : send(404, { error: `no keysend ${get[1]}`, code: "not_found" });
+      }
+      if (cancel) {
+        const k = this.sends.get(cancel[1]!);
+        if (!k) return send(404, { error: `no keysend ${cancel[1]}`, code: "not_found" });
+        if (k.state === "pending") {
+          if (this.notAsync.has(k.id)) return send(409, { error: "this keysend was not sent async: the LSP holds nothing to cancel", code: "not_cancellable" });
+          if (this.held.has(k.id)) {
+            k.state = "failed";
+            k.error = "cancelled: the payer cancelled it before it was paid";
+          } else k.reason = "cancel_too_late: the LSP had already taken the payment for paying";
+        }
+        return send(200, { ...this.answer(k), cancelled: k.state === "failed" && /^cancelled:/.test(k.error ?? "") });
       }
       const id = body["id"];
       const address = body["address"];
@@ -338,6 +359,7 @@ class KeysendDaemon {
       ...(k.payment_hash ? { payment_hash: k.payment_hash } : {}),
       ...(k.preimage && k.state === "settled" ? { preimage: k.preimage } : {}),
       ...(k.error && k.state === "failed" ? { error: k.error } : {}),
+      ...(k.reason && k.state === "pending" ? { reason: k.reason } : {}),
     };
   }
 
@@ -359,6 +381,9 @@ describe("SphinxDaemonPayer: keysend to a worker's Sphinx address (plans/human-s
     daemon.requests = [];
     daemon.routes = true;
     daemon.next = null;
+    daemon.cancelRoute = true;
+    daemon.held.clear();
+    daemon.notAsync.clear();
     payer = new SphinxDaemonPayer({ url: daemon.url, payToken: PAY });
   });
 
@@ -386,6 +411,37 @@ describe("SphinxDaemonPayer: keysend to a worker's Sphinx address (plans/human-s
     assert.deepEqual(read, { id: id(3), state: "settled", feeMsat: 1_200, paymentHash: daemon.sends.get(id(3))!.payment_hash }, "a preimage that does not hash to it is not kept");
     assert.deepEqual(daemon.requests.map((r) => `${r.method} ${r.path}`), ["POST /keysend", `GET /keysend/${id(3)}`, `GET /keysend/${id(3)}`]);
     assert.equal(daemon.sends.get(id(3))!.sent, 1);
+  });
+
+  it("cancel: one the LSP still holds is failed for good; one it had taken stays pending with why, on the cancel and on the read after; never sends", async () => {
+    daemon.outcomes.push("pending", "pending");
+    await payer.keysend({ id: id(20), address, msat: 1_000_000, maxFeeMsat: 5_000 });
+    await payer.keysend({ id: id(21), address, msat: 1_000_000, maxFeeMsat: 5_000 });
+    daemon.held.add(id(20));
+    assert.deepEqual(await payer.keysendCancel({ id: id(20) }), { id: id(20), state: "failed", feeMsat: 0, error: "cancelled: the payer cancelled it before it was paid" });
+    assert.deepEqual(daemon.requests.at(-1), { method: "POST", path: `/keysend/${id(20)}/cancel`, auth: `Bearer ${PAY}`, body: {} });
+    // asked again: it stands
+    assert.equal((await payer.keysendCancel({ id: id(20) })).state, "failed");
+    const late = await payer.keysendCancel({ id: id(21) });
+    assert.deepEqual(late, { id: id(21), state: "pending", feeMsat: 0, error: "cancel_too_late: the LSP had already taken the payment for paying" });
+    assert.deepEqual(await payer.keysendStatus({ id: id(21) }), late, "a read says why it is still pending");
+    // a send's own answer never carries the daemon's reason: it goes to the worker
+    assert.deepEqual(await payer.keysend({ id: id(21), address, msat: 1_000_000, maxFeeMsat: 5_000 }), { id: id(21), state: "pending", feeMsat: 0 });
+    daemon.settle(id(21));
+    assert.equal((await payer.keysendCancel({ id: id(21) })).state, "settled");
+    assert.deepEqual([daemon.sends.get(id(20))!.sent, daemon.sends.get(id(21))!.sent], [1, 1]);
+  });
+
+  it("cancel: an id never taken is failed; a daemon that predates the cancel is no_keysend_cancel; one not sent async is not_cancellable", async () => {
+    assert.deepEqual(await payer.keysendCancel({ id: id(22) }), { id: id(22), state: "failed", feeMsat: 0, error: "the daemon never took this payment" });
+    daemon.outcomes.push("pending");
+    await payer.keysend({ id: id(23), address, msat: 1_000_000, maxFeeMsat: 5_000 });
+    daemon.notAsync.add(id(23));
+    await assert.rejects(payer.keysendCancel({ id: id(23) }), code("wallet_refused", "not_cancellable"));
+    daemon.cancelRoute = false;
+    await assert.rejects(payer.keysendCancel({ id: id(23) }), code("wallet_refused", "no_keysend_cancel"));
+    assert.equal((await payer.keysendStatus({ id: id(23) })).state, "pending", "the keysend routes still answer");
+    await assert.rejects(payer.keysendCancel({ id: "nope" }), code("bad_request"));
   });
 
   it("an id the daemon never took reads as failed: it writes the id before it sends", async () => {

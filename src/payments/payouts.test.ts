@@ -186,15 +186,62 @@ for (const impl of impls) {
       assert.equal(payer.calls.length, 0);
     });
 
-    it("stale a day after it was sent: no more reading, and a person records it as paid, with the fee they give, or drops it", async () => {
+    it("stale a day after it was sent, the wallet is asked to cancel it: cancelled, it fails and the reserve is the worker's again, with nobody's yes", async () => {
+      await payouts.saveSettings(ON);
+      await earned(10_000_000);
+      payer.outcomes.push("pending");
+      const out = await payouts.pay(ACTOR, { address: ADDRESS, msat: 2_000_000 });
+      now += KEYSEND_STALE_MS - 1;
+      assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "pending" }], "not yet a day: read, not cancelled");
+      now += 2;
+      assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "failed", error: "cancelled: the payer cancelled it before it was paid" }]);
+      assert.deepEqual(payer.calls.map((c) => c.method), ["keysend", "keysendStatus", "keysendCancel"]);
+      const p = (await ledger.payoutOf(out.key))!;
+      assert.deepEqual([p.state, p.why, p.by], ["failed", "cancelled: the payer cancelled it before it was paid", undefined]);
+      assert.equal(await total(), 10_000_000, "the reserve is the worker's again");
+      assert.deepEqual(await withdrawals.pending(), []);
+      assert.equal((await books()).wallet!.differenceMsat, 0, "nothing left the wallet");
+      // The worker may withdraw again, under a new key.
+      const again = await payouts.pay(ACTOR, { address: ADDRESS, msat: 2_000_000 });
+      assert.deepEqual([again.state, again.key !== out.key], ["settled", true]);
+    });
+
+    it("a cancel that comes too late is asked once: the payout stays out and is read every minute until the wallet says how it ended", async () => {
+      await payouts.saveSettings(ON);
+      await earned(10_000_000);
+      payer.outcomes.push("pending");
+      const out = await payouts.pay(ACTOR, { address: ADDRESS, msat: 2_000_000 });
+      payer.tooLate.add(out.key);
+      now += KEYSEND_STALE_MS + 1;
+      const why = "cancel_too_late: the LSP had already taken the payment for paying";
+      assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "pending", error: why }]);
+      const [kept] = await withdrawals.pending();
+      assert.deepEqual([kept!.stale, kept!.cancelAt, kept!.lastError], [true, now, why]);
+      assert.equal((await ledger.payoutOf(out.key))!.state, "out", "still reserved: it may yet arrive");
+      // The wallet keeps the cancel: strut only reads from here on.
+      now += 60_000;
+      assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "pending" }]);
+      payer.settle(out.key);
+      now += 60_000;
+      assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "settled" }]);
+      assert.deepEqual(payer.calls.map((c) => c.method), ["keysend", "keysendCancel", "keysendStatus", "keysendStatus"]);
+      assert.equal((await ledger.payoutOf(out.key))!.state, "paid");
+      assert.equal(await total(), 10_000_000 - 2_002_000);
+      assert.equal((await books()).wallet!.differenceMsat, 0);
+    });
+
+    it("a wallet that cannot cancel leaves a stale payout to a person, who records it as paid, with the fee they give, or drops it", async () => {
       await payouts.saveSettings(ON);
       await earned(20_000_000);
+      payer.noKeysendCancel = true;
       payer.outcomes.push("pending");
       const one = await payouts.pay(ACTOR, { address: ADDRESS, msat: 2_000_000 });
       now += KEYSEND_STALE_MS + 1;
-      const reads = payer.calls.length;
-      assert.deepEqual(await withdrawals.check(), [{ paymentHash: one.key, state: "unread", error: "stale: still pending a day after it was sent; record it as paid or drop it" }]);
-      assert.equal(payer.calls.length, reads, "nobody reads it unasked");
+      const [said] = await withdrawals.check();
+      assert.deepEqual([said!.paymentHash, said!.state], [one.key, "unread"]);
+      assert.match(said!.error!, /^stale: still pending a day after it was sent; record it as paid or drop it \(.*no POST \/keysend\/:id\/cancel/);
+      assert.equal((await withdrawals.pending())[0]!.cancelAt, undefined, "no cancel stands");
+      assert.deepEqual(payer.calls.map((c) => c.method), ["keysend", "keysendCancel"], "asked, never read unasked");
       assert.equal((await payouts.view(ACTOR, { address: ADDRESS, balance: await ledger.payeeBalance(ACTOR, { now }) })).out?.stale, true);
       assert.deepEqual((await payouts.list({ state: "stale" })).payouts.map((p) => [p.key, p.stale]), [[one.key, true]]);
       const paid = await payouts.resolve(one.key, { action: "paid", feeMsat: 3_000 }, "admin-1");

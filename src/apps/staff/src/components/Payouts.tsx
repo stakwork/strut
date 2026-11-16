@@ -236,7 +236,7 @@ function Stale(props: { p: Payout }) {
   const feeBad = !Number.isFinite(feeMsat) || feeMsat < 0;
   return (
     <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
-      <Note>On its way for over a day and the wallet does not say. Only the worker's wallet knows whether the sats arrived: look there before you decide. Recording it paid when it did not loses the sats; dropping it when it did pays the worker twice.</Note>
+      <Note>On its way for over a day. The wallet is asked to cancel it: if it had not arrived it fails by itself and the sats are the worker's again, and if it had it is recorded paid. Decide by hand only when the wallet cannot cancel or does not say. Only the worker's wallet knows whether the sats arrived: look there first. Recording it paid when it did not loses the sats; dropping it when it did pays the worker twice.</Note>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void act("read", () => client.run<{ state?: string }>("staff/payout-read", { key })).then((r) => setSaid(r ? `Read again: ${r.state ?? "no answer"}.` : null))}>
           Read again
