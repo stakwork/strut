@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
 export type Tab = (typeof TABS)[number];
@@ -387,4 +387,18 @@ export function jsonLine(v: unknown, max = 80): string {
 export function errorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw.replace(/^step_run(?: refused)?: /, "");
+}
+
+// ── sharing a worker app (§9.5) ─────────────────────────────────────────────
+
+/** Each public worker app once, with the types its workers answer. */
+export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[] }> {
+  const out = new Map<string, { app: string; share: TypeShare; types: string[] }>();
+  for (const t of types ?? []) {
+    if (!t.share?.public || !t.share.peelLink) continue;
+    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [] };
+    row.types.push(t.name);
+    out.set(t.app, row);
+  }
+  return [...out.values()];
 }

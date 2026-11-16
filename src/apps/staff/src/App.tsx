@@ -93,7 +93,7 @@ export default function App() {
         />
       ) : (
         <main className="flex min-w-0 flex-col gap-5">
-          {tab === "queue" && <Queue go={go} />}
+          {tab === "queue" && <Queue go={go} types={types.data?.types} />}
           {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} error={types.error} />}
           {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} error={workers.error} />}
           {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} />}

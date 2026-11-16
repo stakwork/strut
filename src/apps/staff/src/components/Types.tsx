@@ -22,6 +22,7 @@ import { liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, w
 import type { TaskStats, TaskType, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
 import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { TypeShareLine } from "./Share";
 
 interface Props {
   go: (p: Place) => void;
@@ -175,6 +176,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         {was?.standing && <Badge variant="outline">standing</Badge>}
         {was?.changedBy && <Note>last saved by {was.changedBy}</Note>}
       </div>
+      {was && <TypeShareLine type={was} />}
       {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}. Saving here keeps it.</Note>}
 
       <div className="grid gap-4 md:grid-cols-2">

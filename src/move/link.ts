@@ -42,7 +42,7 @@ export function qrSvg(text: string): string {
   const n = m.length + 8;
   let d = "";
   m.forEach((row, y) => row.forEach((dark, x) => (d += dark ? `M${x + 4} ${y + 4}h1v1h-1z` : "")));
-  return `<svg class="qr" viewBox="0 0 ${n} ${n}" shape-rendering="crispEdges" role="img" aria-label="QR code of the link"><rect width="${n}" height="${n}" fill="#fff"/><path fill="#000" d="${d}"/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="qr" viewBox="0 0 ${n} ${n}" shape-rendering="crispEdges" role="img" aria-label="QR code of the link"><rect width="${n}" height="${n}" fill="#fff"/><path fill="#000" d="${d}"/></svg>`;
 }
 
 /** `text` as a QR code for a terminal, two columns a module. */

@@ -2523,7 +2523,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | Step | The route | Answers |
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
-| `staff/types` | `GET /tasks/types` | `{ types }` |
+| `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
 | `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
@@ -2546,6 +2546,13 @@ and the app monitor keeps a call's config with those fields redacted.
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
 line on what workers are owed). It launches nothing.
+
+**Sharing the worker app.** The Queue opens with a "Share with workers"
+block for each public app a type is answered in (`sharedApps`): the QR of
+its `peelLink` (an iPhone camera opens it in Peel) and Copy buttons for
+`peelLink` (Peel) and `link` (a browser). A type's page shows its app's
+block, or says the app is not in the public view; the page makes nothing
+public (that stays the Public view dialog or `app/make-public`).
 
 ### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
 

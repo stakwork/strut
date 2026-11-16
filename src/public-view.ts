@@ -277,6 +277,17 @@ export interface PublicViewCapability {
    *  ACCEPTED `app/make-public` proposal on disk (an admin's) for that app
    *  and version. */
   addApp(name: string, version: string, o: { proposal: string; actor?: string }): Promise<MadePublic>;
+  /** Whether the app is in the public view, and its share links
+   *  (`publicAppLinks`) when it is and this server has seen where it is
+   *  reached: what strut/staff hands a task type's workers. A read. */
+  share(name: string): Promise<AppShare>;
+}
+
+/** A public view app's share (`PublicViewCapability.share`). */
+export interface AppShare {
+  public: boolean;
+  link?: string;
+  peelLink?: string;
 }
 
 /** The save `PUT /public-view` writes through (createStrut): its checks,
@@ -319,6 +330,12 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
           : { signIn: [...DEFAULT_SIGN_IN], set: false },
         ...(served ? { served } : {}),
       };
+    },
+
+    async share(name) {
+      const listed = (await deps.view()).apps.some((a) => a.name === name);
+      const base = listed ? deps.base?.() : undefined;
+      return { public: listed, ...(base ? publicAppLinks(base, name) : {}) };
     },
 
     async addApp(name, version, o) {
