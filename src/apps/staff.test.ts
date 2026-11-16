@@ -255,7 +255,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(mostByOneWorkerToday([], day), 0);
   });
 
-  it("Invite on the Workers tab (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
+  it("Invite (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
     assert.deepEqual(inviteSatsOf(""), {}, "blank is the settings' default");
     assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);

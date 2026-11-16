@@ -223,12 +223,14 @@ index. A change in this area updates this file, not AGENTS.md.
 - **Inviting a worker** (`plans/human-steps.md` §5.8; src/payments/invites.ts,
   src/public-join.ts, `staff/invite`, the `/tasks/invites` routes). Staff
   send a new worker ONE https link, `https://<public view>/public/join#<the
-  daemon's invite>&a=<the worker app's URL, encoded>`: Invite on the Workers
-  tab asks the treasury daemon for a Sphinx invite through the PAYER (the
-  daemon pays the mixer for it: the starting sats, the payout settings'
-  `inviteSats` by default, and the mixer's price on top), and builds the link
-  on the public view's base, opening the WORKER APP — an app the task types
-  name that is in the public view (staff pick one when there are several).
+  daemon's invite>&a=<the worker app's share link, encoded>`: Invite, in a
+  worker app's Share block (§9.5), asks the treasury daemon for a Sphinx
+  invite through the PAYER (the daemon pays the mixer for it: the starting
+  sats, the payout settings' `inviteSats` by default, and the mixer's price
+  on top), and builds the link on the share links' base, opening the WORKER
+  APP at its share link (`publicAppLinks`) — an app the task types name that
+  is in the public view (the route takes `app` when there are several).
+  Share is for a worker who has Peel; Invite for someone who does not.
   `/public/join` opens Peel on Android with Chrome's `intent://` form of
   `sphinx.chat://?action=i&…&a=…`, the newest APK as its fallback; Peel signs
   a new user up and opens `a=`, an existing user goes straight there, and
@@ -270,7 +272,7 @@ the WORKER's door to the task store (plans/human-steps.md §5.1), thin over `ctx
 
 ### `src/steps/lib/staff/`
 
-the STAFF's door to the task store (plans/human-steps.md §9.3; specs/API.md §14.15), for `strut/staff` alone: each step is one `/tasks…` route made in process in the viewer's name through `ctx.services.staffAdmin` (createStrut's `staffAdminDoor`, `inProcessDoor` over `STAFF_ROUTES`: no other path), which the app door hands to the bag of ONE call — a first-party page's shown to an admin (src/apps/tools.ts `adminBag`, which also leaves the deployment's `onRunEvent` out) — and to nothing else; `_door.ts` `staffCall` refuses without it (`../_admin-door.ts` `adminDoorOf`, the check `earnings/*` shares) and throws a route's refusal with its `code` first. staff/stats, types, save-type, delete-type, workers, worker, set-worker, grant, revoke, tasks (with `review`, the review queue), task, file, take-back (5a), review (§9.6: `PUT /tasks/:id/review`), tests, test, save-test (a new test, or with `id` a change before it is served), test-file (base64 bytes, sent raw), test-from-task, retire-test (item 4), and item 5b's payouts (§8.2): staff/payouts (`GET /tasks/payouts`), staff/save-payouts (`PUT /tasks/payouts/settings`), staff/payout-read and staff/payout-resolve (`POST /tasks/payouts/:key/read` and `…/resolve`) — `strut/staff` grants them with its Payouts tab (item 5b's PR 3); staff/save-payouts takes `inviteSats` too. §5.8's invites: staff/invite { sats?, app? } (`POST /tasks/invites`; `effect: "write"` — the wallet pays the mixer; adds `qr`, the link as an SVG data URL, `linkQr`), staff/invites { app? } (`GET /tasks/invites`) and staff/cancel-invite { code } (`POST /tasks/invites/:code/cancel`), for the Workers tab's Invite. The staff door forwards the base the page's request came on (`inProcessDoor`'s `publicUrl`, as `x-forwarded-proto` / `x-forwarded-host`), so an invite's link names the host the staff see. The ones that write an expected answer list `expected` in `redact`; none is kept as a run (`keptFromApp`). `effect` read or write, as their routes
+the STAFF's door to the task store (plans/human-steps.md §9.3; specs/API.md §14.15), for `strut/staff` alone: each step is one `/tasks…` route made in process in the viewer's name through `ctx.services.staffAdmin` (createStrut's `staffAdminDoor`, `inProcessDoor` over `STAFF_ROUTES`: no other path), which the app door hands to the bag of ONE call — a first-party page's shown to an admin (src/apps/tools.ts `adminBag`, which also leaves the deployment's `onRunEvent` out) — and to nothing else; `_door.ts` `staffCall` refuses without it (`../_admin-door.ts` `adminDoorOf`, the check `earnings/*` shares) and throws a route's refusal with its `code` first. staff/stats, types, save-type, delete-type, workers, worker, set-worker, grant, revoke, tasks (with `review`, the review queue), task, file, take-back (5a), review (§9.6: `PUT /tasks/:id/review`), tests, test, save-test (a new test, or with `id` a change before it is served), test-file (base64 bytes, sent raw), test-from-task, retire-test (item 4), and item 5b's payouts (§8.2): staff/payouts (`GET /tasks/payouts`), staff/save-payouts (`PUT /tasks/payouts/settings`), staff/payout-read and staff/payout-resolve (`POST /tasks/payouts/:key/read` and `…/resolve`) — `strut/staff` grants them with its Payouts tab (item 5b's PR 3); staff/save-payouts takes `inviteSats` too. §5.8's invites: staff/invite { sats?, app? } (`POST /tasks/invites`; `effect: "write"` — the wallet pays the mixer; adds `qrSvg`, the link as a QR code, as staff/types' share), staff/invites { app? } (`GET /tasks/invites`) and staff/cancel-invite { code } (`POST /tasks/invites/:code/cancel`), for the Share block's Invite and the Workers tab's list. A route's in-process request is `http://strut.invalid`, so the invite routes take the base the share links use (`lastBase`, where the page's own request came, with any mount path). The ones that write an expected answer list `expected` in `redact`; none is kept as a run (`keptFromApp`). `effect` read or write, as their routes
 
 ### `src/steps/lib/grade/`
 

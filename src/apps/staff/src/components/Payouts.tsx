@@ -149,7 +149,7 @@ function Caps(props: { settings: PayoutSettings; today: PayoutsAnswer["today"]; 
         {field("minSats", "Least one withdrawal (sats)", "A worker asks for at least this.")}
         {field("workerDaySats", "One worker a day (sats)", props.payouts ? `Most by one worker today: ${fmtSats(mostByOneWorkerToday(props.payouts, props.today.day))}, of those listed.` : "Each worker, in a UTC day.")}
         {field("serverDaySats", "All workers a day (sats)", `Today: ${fmtSats(used)} paid or on its way; ${fmtSats(props.today.serverLeftMsat)} left.`)}
-        {s.inviteSats !== undefined && field("inviteSats", "A new worker's invite (sats)", "What Invite on the Workers tab starts a worker with when it names none; the mixer's price is paid on top.")}
+        {s.inviteSats !== undefined && field("inviteSats", "A new worker's invite (sats)", "What a Share block's Invite starts a worker with when it names none; the mixer's price is paid on top.")}
       </div>
       {problem && changed && <Note className="text-destructive">{problem}</Note>}
       {changed && (

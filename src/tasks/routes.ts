@@ -136,8 +136,9 @@ export interface TaskRoutesDeps {
   /** §8.2: a worker's withdrawals and their settings (src/payments/payouts.ts).
    *  Absent: the payout routes answer 501. */
   payouts?: Pick<Payouts, "list" | "saveSettings" | "read" | "resolve">;
-  /** §5.8: worker invites (src/payments/invites.ts), and the public view's
-   *  base their links are on. Absent: the invite routes answer 501. */
+  /** §5.8: worker invites (src/payments/invites.ts), and the base their
+   *  links are on: the share links' (createStrut: `lastBase` for a staff
+   *  page's in-process request). Absent: the invite routes answer 501. */
   invites?: Invites;
   publicUrl?: (c: Context) => string;
 }

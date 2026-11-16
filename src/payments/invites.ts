@@ -9,8 +9,9 @@
  * The invite rides after `#`, so it never reaches a server; `/public/join`
  * (src/public-join.ts) turns it back into `sphinx.chat://?action=i&…` for
  * Peel. `a=` is strut's own section, in the link alone: the worker app's
- * address in the public view, percent-encoded, which Peel opens once the
- * worker is signed up (or at once, for a Peel user). The mixer keeps only
+ * share `link` (`publicAppLinks`, what strut/staff's Share block hands a
+ * Peel user), percent-encoded, which Peel opens once the worker is signed up
+ * (or at once, for a Peel user). The mixer keeps only
  * code → starting sats, and the core's parser ignores a section it does not
  * know.
  *
@@ -23,6 +24,7 @@
 import { LightningError } from "./lightning.js";
 import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvite } from "./payer.js";
 import { INVITE_SATS_MAX } from "./ledger.js";
+import { publicAppLinks } from "../public-routes.js";
 
 export type InviteErrorCode =
   | "bad_request"
@@ -93,16 +95,10 @@ export interface InvitesDeps {
 export interface Invites {
   /** A new invite, its link opening `app` (or the one worker app). */
   create(o: { sats?: number; app?: string; base: string }): Promise<InviteView & { app: string }>;
-  /** Every invite the daemon keeps, newest first, each link opening `app`. */
+  /** Every invite the daemon keeps, newest first, each link opening `app`
+   *  (or the one worker app); with several and none asked, no links. */
   list(o: { app?: string; base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
-}
-
-/** A public app's page as a visitor opens it, the page alone: what Peel
- *  opens for `peel://open?url=` (web/src/store-links.ts `liveAppUrl`). */
-export function workerAppUrl(base: string, app: string): string {
-  const p = new URLSearchParams({ app, solo: "1", public: "1" });
-  return `${base.replace(/\/+$/, "")}/?${p.toString()}`;
 }
 
 /** The join link for a daemon's invite: its query after `#` (the
@@ -140,7 +136,8 @@ export function createInvites(deps: InvitesDeps): Invites {
     return apps.length === 1 ? apps[0] : undefined;
   };
   const view = (inv: WalletInvite, base: string, app: string | undefined): InviteView => {
-    const link = inv.link ? joinLink(base, inv.link, app ? workerAppUrl(base, app) : undefined) : undefined;
+    // No app, no link: one that opened nothing after the sign-up would mislead.
+    const link = inv.link && app ? joinLink(base, inv.link, publicAppLinks(base, app).link) : undefined;
     return { code: inv.code, ...(link ? { link } : {}), sats: inv.sats, status: inv.status, ...(inv.createdAt ? { createdAt: inv.createdAt } : {}) };
   };
   const payerOf = async (): Promise<Payer & Required<Pick<Payer, "invite" | "invites" | "cancelInvite">>> => {

@@ -26,13 +26,17 @@ import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
 import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, PEEL_ANDROID_RELEASES } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
-import { createInvites, InviteError, joinLink, workerAppUrl } from "./invites.js";
+import { createInvites, InviteError, joinLink } from "./invites.js";
+import { publicAppLinks } from "../public-routes.js";
+
+/** The worker app's share link: what `a=` opens. */
+const workerAppUrl = (base: string, app: string) => publicAppLinks(base, app).link;
 
 const D = "AAAA_-zz"; // a `d=` section's URL-safe base64, as the core writes it
 const INVITE = `sphinx.chat://?action=i&d=${D}&c=BBBB`;
 
 describe("the join link (§5.8)", () => {
-  it("is the invite after # with sphinx.chat:// taken off, then a= the worker app's URL encoded whole", () => {
+  it("is the invite after # with sphinx.chat:// taken off, then a= the worker app's share link encoded whole", () => {
     const app = workerAppUrl("https://stadeum.example/", "acme/workers");
     assert.equal(app, "https://stadeum.example/?app=acme%2Fworkers&solo=1&public=1");
     const link = joinLink("https://stadeum.example", INVITE, app)!;
@@ -131,8 +135,8 @@ describe("createInvites (§5.8)", () => {
     const all = await invites.list({ base: BASE, app: "pets" });
     assert.deepEqual(all.invites.map((i) => i.code), [second.code, first.code]);
     assert.ok(all.invites.every((i) => i.link?.endsWith(`&a=${encodeURIComponent(workerAppUrl(BASE, "pets"))}`)));
-    // Several apps and none asked: links with no a=, as the page shows them.
-    assert.ok((await invites.list({ base: BASE })).invites.every((i) => !i.link?.includes("&a=")));
+    // Several apps and none asked: no links (one that opened nothing would mislead).
+    assert.ok((await invites.list({ base: BASE })).invites.every((i) => i.link === undefined));
     assert.deepEqual(await invites.cancel(first.code), { code: first.code, status: "cancelled" });
     await assert.rejects(invites.cancel("f".repeat(64)), refused("unknown_invite", 404));
     await assert.rejects(invites.cancel("../balance"), refused("bad_request", 400));
@@ -178,11 +182,11 @@ describe("worker invites on a server (§5.8)", () => {
     const traded = await req("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
     return { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, "x-strut-ui": "1", ...json };
   };
-  /** The staff's door as the app door hands it to strut/staff, on the page's own base. */
-  const staffCtx = (publicUrl: string) => ({
+  /** The staff's door as the app door hands it to strut/staff. */
+  const staffCtx = () => ({
     app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true },
     actor: "admin-1",
-    services: { staffAdmin: inProcessDoor((r, a) => Promise.resolve(strut.app.fetch(inProcessRequest(r, a))), STAFF_ROUTES, "staff", publicUrl) },
+    services: { staffAdmin: inProcessDoor((r, a) => Promise.resolve(strut.app.fetch(inProcessRequest(r, a))), STAFF_ROUTES, "staff") },
   });
   const appUrl = (base: string, app = "workers") => encodeURIComponent(workerAppUrl(base, app));
 
@@ -246,14 +250,17 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal(unknown.status, 404);
   });
 
-  it("the staff/* steps through the staff door: the link on the base the page came on, with its QR code; several worker apps need one picked", async () => {
-    const ctx = staffCtx("https://stadeum.example");
-    const made = (await inviteStep.run({ sats: 21 }, ctx as never)) as { code: string; link: string; qr: string; sats: number };
+  it("the staff/* steps through the staff door: the link on the base the share links use (where the page came, a mount path kept), with its QR code; several worker apps need one picked", async () => {
+    const ctx = staffCtx();
+    // The page's own request, from outside behind mcp's /lab: the base the
+    // door's in-process requests (http://strut.invalid) take.
+    const page = await req("/health", { headers: { "x-forwarded-proto": "https", "x-forwarded-host": "stadeum.example", "x-forwarded-prefix": "/lab" } });
+    assert.equal(page.status, 200);
+    const made = (await inviteStep.run({ sats: 21 }, ctx as never)) as { code: string; link: string; qrSvg: string; sats: number };
     assert.equal(made.sats, 21);
-    assert.ok(made.link.startsWith("https://stadeum.example/public/join#action=i&d="), made.link);
-    assert.ok(made.link.endsWith(`&a=${appUrl("https://stadeum.example")}`));
-    assert.match(made.qr, /^data:image\/svg\+xml;base64,/);
-    assert.match(Buffer.from(made.qr.split(",")[1]!, "base64").toString(), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" /);
+    assert.ok(made.link.startsWith("https://stadeum.example/lab/public/join#action=i&d="), made.link);
+    assert.ok(made.link.endsWith(`&a=${appUrl("https://stadeum.example/lab")}`), made.link);
+    assert.match(made.qrSvg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" /);
     const listed = (await invitesStep.run({}, ctx as never)) as { invites: Array<{ code: string; link: string }> };
     assert.equal(listed.invites.find((i) => i.code === made.code)?.link, made.link);
     assert.deepEqual(await cancelInviteStep.run({ code: made.code }, ctx as never), { code: made.code, status: "cancelled" });
@@ -261,9 +268,10 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal((await req("/tasks/types/court", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "court", answer: { type: "boolean" } }) })).status, 200);
     assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "court" }] }) })).status, 200);
     await assert.rejects(inviteStep.run({}, ctx as never), /^Error: pick_app: .*court, workers/);
+    // The last request from outside (the PUT above) moved the base.
     const court = (await inviteStep.run({ app: "court" }, ctx as never)) as { link: string; app: string };
     assert.equal(court.app, "court");
-    assert.ok(court.link.endsWith(`&a=${appUrl("https://stadeum.example", "court")}`));
+    assert.ok(court.link.endsWith(`&a=${appUrl("http://strut.test", "court")}`), court.link);
     // The step refuses a page that is not strut's staff app shown to an admin.
     await assert.rejects(inviteStep.run({}, { ...ctx, app: { name: "mine", version: "v1" } } as never), /is an admin's/);
   });

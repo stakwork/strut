@@ -360,5 +360,5 @@ export interface InvitesAnswer {
   why?: "no_pay_credential" | "no_invites";
 }
 
-/** `staff/invite`'s answer: the invite, its app and its link as a QR code. */
-export type MadeInvite = Invite & { app: string; qr?: string };
+/** `staff/invite`'s answer: the invite, its app and its link as a QR code (an SVG). */
+export type MadeInvite = Invite & { app: string; qrSvg?: string };

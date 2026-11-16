@@ -42,23 +42,15 @@ export function adminDoorOf(ctx: StepContext | undefined, type: string, key: str
 /** A door that reaches the routes `reaches` matches and no other path: one
  *  request each, sent in process through `send` in the viewer's name
  *  (createStrut: `app.fetch(inProcessRequest(req, actor))`). A `Uint8Array`
- *  body goes as the raw bytes (a test's file), anything else as JSON.
- *  `publicUrl`, the base the page's own request came on, rides as
- *  `x-forwarded-proto` / `x-forwarded-host`, so a route that hands out a
- *  link (a worker invite's, plans/human-steps.md §5.8) names that host and
- *  not the in-process one. */
-export function inProcessDoor(send: (req: Request, actor?: string) => Promise<Response>, reaches: RegExp, what: string, publicUrl?: string): AdminDoor {
-  let forwarded: Record<string, string> = {};
-  // A base that does not parse (a Host header no browser sends) forwards nothing.
-  const u = publicUrl ? URL.parse(publicUrl) : null;
-  if (u) forwarded = { "x-forwarded-proto": u.protocol.replace(/:$/, ""), "x-forwarded-host": u.host };
+ *  body goes as the raw bytes (a test's file), anything else as JSON. */
+export function inProcessDoor(send: (req: Request, actor?: string) => Promise<Response>, reaches: RegExp, what: string): AdminDoor {
   return Object.freeze({
     call: async (method: string, path: string, body?: unknown, actor?: string) => {
       if (!reaches.test(path)) throw new Error(`the ${what} door reaches its own routes alone, not ${path}`);
       const raw = body instanceof Uint8Array;
       const req = new Request(`http://strut.invalid${path}`, {
         method,
-        headers: { "content-type": raw ? "application/octet-stream" : "application/json", "x-strut-ui": "1", ...forwarded },
+        headers: { "content-type": raw ? "application/octet-stream" : "application/json", "x-strut-ui": "1" },
         ...(body === undefined ? {} : { body: raw ? new Uint8Array(body as Uint8Array) : JSON.stringify(body) }),
       });
       const res = await send(req, actor);
