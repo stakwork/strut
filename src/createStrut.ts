@@ -2420,7 +2420,9 @@ export async function createStrut<TServices = unknown>(
    *  of a link made outside a request, an accepted `app/make-public`'s. */
   let lastBase: string | undefined;
   app.use("*", async (c, next) => {
-    lastBase = baseOfRequest(c);
+    // A request strut made to itself (an admin door's, app/look's) is
+    // `http://strut.invalid`, not where anyone reaches this server.
+    if (!inProcessOf(c)) lastBase = baseOfRequest(c);
     await next();
   });
 

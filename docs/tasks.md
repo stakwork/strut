@@ -79,6 +79,15 @@ index. A change in this area updates this file, not AGENTS.md.
   grader's note stay behind the routes. The answer-shape check is one file
   in two places (`src/tasks/answer-schema.ts`, `kit/src/folds/`), so the
   type editor offers to save only what the store takes.
+  How workers get in (§9.5): `staff/types` adds each type's `share` — its
+  app in the public view or not, and then the share links
+  (`ctx.services.publicView.share`, src/public-view.ts, `publicAppLinks` on
+  `lastBase`, the last OUTSIDE request's base: an in-process request no
+  longer moves it) and a QR of `peelLink` drawn server-side (`qrSvg`,
+  src/move/link.ts, `qrcode-generator`). The Queue opens with a "Share with
+  workers" block per public worker app (`sharedApps`,
+  `components/Share.tsx`); a type's page shows its app's, or says it is
+  not public. The page makes nothing public.
 - **Task types the builder asks for** (`plans/human-steps.md` §9.8, item 6
   PR 2; `src/tasks/set-type.ts`, `task/set-type`, `task/types`). The
   builder writes the workflow with the `human` step, so it knows when a

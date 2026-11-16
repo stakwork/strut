@@ -21,12 +21,13 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
 import statsStep from "../steps/lib/staff/stats.js";
 import saveTestStep from "../steps/lib/staff/save-test.js";
+import { qrSvg } from "../move/link.js";
 
 /**
  * `strut/staff` (plans/human-steps.md §9, §9.11): the task store's staff
@@ -547,6 +548,27 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.match((await admin("staff/review", { task: id, verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
     assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
+  });
+
+  it("staff/types answers each type's share: not public, then public with its links on the request's base and a QR of the Peel link", async () => {
+    const cookie = await signIn("ada", "admin");
+    // As mcp's /lab proxies it: another host, a mount path.
+    const lab = { cookie, "x-forwarded-host": "box.example", "x-forwarded-proto": "https", "x-forwarded-prefix": "/lab" };
+    const types = async () => {
+      const r = await door("/mcp", lab, "staff/types");
+      assert.equal(r.error, undefined, r.error);
+      return r.result.types.find((t: { name: string }) => t.name === "pets") as TaskType;
+    };
+    assert.deepEqual((await types()).share, { public: false }, "workers is not in the public view: no links");
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }] }) });
+    assert.equal(put.status, 200, await put.clone().text());
+    const share = (await types()).share!;
+    const link = "https://box.example/lab/?app=workers&solo=1&public=1";
+    assert.deepEqual([share.public, share.link, share.peelLink], [true, link, `peel://open?url=${encodeURIComponent(link)}`]);
+    assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
+    const shared = sharedApps([await types()]);
+    assert.deepEqual(shared.map((a) => [a.app, a.types]), [["workers", ["pets"]]], "the Queue's block: each public worker app once");
+    await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {

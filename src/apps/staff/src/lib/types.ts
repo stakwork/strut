@@ -50,6 +50,20 @@ export interface TaskType {
   standing?: { workflow: string };
   changedAt: number;
   changedBy?: string;
+  /** Where its workers answer it (§9.5): whether its app is in the public
+   *  view, and then its links and a QR of the Peel one. Absent on a server
+   *  whose public view has no share read. */
+  share?: TypeShare;
+}
+
+export interface TypeShare {
+  public: boolean;
+  /** The visitor's page in a browser. */
+  link?: string;
+  /** The same page opened in Peel. */
+  peelLink?: string;
+  /** `peelLink` as a QR code, an SVG. */
+  qrSvg?: string;
 }
 
 export interface AttachmentRule {
