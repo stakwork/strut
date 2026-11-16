@@ -46,7 +46,7 @@ import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
 import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
-import type { RunStore } from "./store.js";
+import { localRuns, type RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
 
 /** A title, at most. */
@@ -622,10 +622,13 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     ...(deps.running(e.id) ? { running: true as const } : {}),
   });
 
-  /** The jobs a conversation's turns started or continued, in turn order. */
+  /** The jobs a conversation's turns started or continued, in turn order.
+   *  Read from this disk only: it runs for every listed record with none
+   *  kept, and must not restore each old turn from the run archive. */
   const jobsOfTurns = async (turns: readonly ConversationRun[]): Promise<TurnJob[]> => {
     const out: TurnJob[] = [];
-    for (const t of turns) out.push(...turnJobs(await deps.store.getRunEvents(t.workflow, t.runId).catch(() => [] as RunEvent[])));
+    const runs = localRuns(deps.store);
+    for (const t of turns) out.push(...turnJobs(await runs.getRunEvents(t.workflow, t.runId).catch(() => [] as RunEvent[])));
     return out;
   };
 

@@ -3880,9 +3880,11 @@ export async function createStrut<TServices = unknown>(
   // gate's mode. The record's door is `/public-view` — behind the gate like
   // every route (a peer's write is a 403), and no step or builder tool
   // writes it. Never a "publish": nothing is copied or versioned.
+  // The public view reads this disk only: an anonymous caller walking a
+  // public workflow's run ids must not be able to restore its whole archive.
   const publicSurface = createPublicSurface({
     dataDir,
-    store,
+    store: localStore,
     ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
   });
   {
@@ -3968,7 +3970,7 @@ export async function createStrut<TServices = unknown>(
       return actor && tasks.isActiveWorker(actor) ? { key: `worker:${actor}`, limit: TASK_REQUESTS_PER_MINUTE } : undefined;
     },
     workspace,
-    store,
+    store: localStore,
     runnable: async () => {
       let descriptions: Map<string, string | undefined> | undefined;
       return listRunnable(await publicSurface.get(), {

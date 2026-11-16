@@ -1,6 +1,6 @@
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat, utimes } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -10,6 +10,7 @@ import { createStrut } from "./createStrut.js";
 import { hiddenFromSteps } from "./env.js";
 import { MemoryObjectStore, type ObjectStore } from "./object-store.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, parseRetention } from "./retention.js";
+import { searchRunEvents } from "./authoring.js";
 import { RunArchiveError, archiveFromEnv, checkArchive, type RunArchive } from "./run-archive.js";
 import { FileRunStore, localRuns } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -310,6 +311,39 @@ describe("the run archive: a bucket that fails", () => {
     assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
   });
 
+  it("a key that may not list: the re-check's 403 for a lost object means upload again, not a failed sweep", async () => {
+    const w = await world();
+    await seed(w.store, "1", summary("1", 0.5));
+    await seed(w.store, "2", summary("2", 0.5));
+    await quiet(() => sweeper(w, "1h").sweep());
+    const lost = (await w.store.getRunSummary("w", "1"))!.archive!.key;
+    w.objects.objects.delete(lost);
+    // Without s3:ListBucket a HEAD of a key that is not there throws a 403.
+    const { head } = w.archive.objects;
+    w.archive.objects.head = async (key) => {
+      if (!w.objects.objects.has(key)) throw new Error(`S3 HEAD "${key}" failed (403)`);
+      return head(key);
+    };
+    const later = await quiet(() => sweeper(w, "1h", { now: () => NOW + 2 * HOUR }).sweep());
+    assert.equal(later.result, 2, "both evicted: the lost one uploaded again first");
+    assert.deepEqual(later.warnings, []);
+    assert.equal(puts(w).filter((p) => p.includes("/w/1/")).length, 2);
+    assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
+  });
+
+  it("a local log shorter than the archived one is never uploaded over it: it goes, and the bucket's is the log", async () => {
+    const w = await world();
+    await seed(w.store, "1", summary("1", 0.5));
+    await quiet(() => sweeper(w, "1h").sweep());
+    const whole = await logOf(w, "1");
+    // The file lost its tail (a crash, a torn line cut off).
+    await writeFile(join(w.runDir("1"), "events.jsonl"), whole.slice(0, whole.indexOf("\n") + 1));
+    assert.equal((await quiet(() => sweeper(w, "1h", { now: () => NOW + 2 * HOUR }).sweep())).result, 1);
+    assert.equal(puts(w).length, 1, "not uploaded again");
+    assert.equal(w.archived("1"), whole);
+    assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
+  });
+
   it("the store itself refuses to drop a log the bucket does not hold", async () => {
     const w = await world();
     await seed(w.store, "1");
@@ -415,6 +449,19 @@ describe("the run archive: restore on read", () => {
     assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
   });
 
+  it("a search over the newest runs reads this disk; a search of a named run restores it", async () => {
+    const w = await world();
+    await seed(w.store, "1");
+    await seed(w.store, "2");
+    await evict(w, "1");
+    const scan = (await searchRunEvents(w.store, "w", "the output of run")) as { matches: Array<{ runId: string }> };
+    assert.deepEqual(scan.matches.map((m) => m.runId), ["2"]);
+    assert.equal(await hasLog(w, "1"), false);
+    const named = (await quiet(() => searchRunEvents(w.store, "w", "the output of run", { runIds: ["1"] }))).result as { matches: Array<{ runId: string }> };
+    assert.deepEqual(named.matches.map((m) => m.runId), ["1"]);
+    assert.equal(await hasLog(w, "1"), true);
+  });
+
   it("a restored log is left a day, then evicted again without another upload", async () => {
     const w = await world();
     await seed(w.store, "1", summary("1", 5));
@@ -476,6 +523,38 @@ describe("the run archive: a run that goes on", () => {
     assert.equal(await hasLog(w, "1"), false);
     const events = (await quiet(() => w.store.getRunEvents("w", "1"))).result;
     assert.deepEqual(events.map((e) => e.type), ["run.start", "step.end", "run.end", "run.resumed", "step.end", "run.end"]);
+  });
+
+  it("evicted after the resume read it and before the resume cleared the summary: the clear brings the log back first", async () => {
+    const w = await world();
+    await seed(w.store, "1", summary("1", 5));
+    // A durable resume reads the log (it is here), then looks things up...
+    assert.equal((await w.store.getRunEvents("w", "1")).length, 3);
+    // ...and the sweep lands in between.
+    assert.equal((await quiet(() => sweeper(w, "1h").sweep())).result, 1);
+    assert.equal(await hasLog(w, "1"), false);
+    // The resume goes on: its clear drops the one pointer to the archived log.
+    await quiet(() => w.store.clearRunSummary("w", "1"));
+    assert.equal(await w.store.getRunSummary("w", "1"), null);
+    assert.equal((await w.store.getRunEvents("w", "1")).length, 3, "the runner replays the whole log");
+    await w.store.append("w", "1", event("1", "run.resumed"));
+    await w.store.append("w", "1", event("1", "run.end"));
+    await w.store.finalize("w", "1", summary("1", 4));
+    assert.equal((await quiet(() => sweeper(w, "1h").sweep())).result, 1);
+    assert.equal(w.archived("1")!.trim().split("\n").length, 5, "the bucket holds the whole log, not the part after the resume");
+  });
+
+  it("a clear that cannot bring the log back rejects and leaves the summary: the resume fails, nothing is lost", async () => {
+    let isDown = false;
+    const w = await world();
+    const { get } = w.archive.objects;
+    w.archive.objects.get = (key) => (isDown ? Promise.reject(new Error("no route to host")) : get(key));
+    await seed(w.store, "1");
+    await evict(w, "1");
+    const before = await w.store.getRunSummary("w", "1");
+    isDown = true;
+    await assert.rejects(w.store.clearRunSummary("w", "1"), RunArchiveError);
+    assert.deepEqual(await w.store.getRunSummary("w", "1"), before);
   });
 
   it("a resume that starts while the log is uploading: the upload is not recorded, and the next sweep uploads the finished run", async () => {
@@ -690,6 +769,46 @@ describe("the run archive through createStrut", () => {
       assert.ok(await t.store.archiveRun("flaky", failed.runId, new Date().toISOString()));
       const now = gunzipSync(t.objects.objects.get(key)!).toString();
       assert.ok(now.length > before.length && now.startsWith(before));
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("the public door never restores: an archived run reads there as an evicted one", async () => {
+    const t = await boot();
+    try {
+      await t.workspace.publishWorkflowByContent("hello", ONE_STEP("hello"));
+      const run = await t.strut.run("hello", {});
+      assert.ok(await t.store.archiveRun("hello", run.runId, new Date().toISOString()));
+      assert.equal(await t.store.evictRun("hello", run.runId, new Date().toISOString()), true);
+      const put = await t.strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ workflows: [{ name: "hello", runs: true }] }) });
+      assert.equal(put.status, 200, await put.clone().text());
+      const listed = await t.get("/public/workflows/hello/runs");
+      assert.equal(listed.status, 200);
+      const events = await t.get(`/public/workflows/hello/runs/${run.runId}/events`);
+      assert.equal(events.status, 404, "as for a run whose log was deleted");
+      assert.equal(await t.logHere("hello", run.runId), false, "nothing was restored for an anonymous reader");
+      // The door behind the key still opens it.
+      assert.equal(((await (await quiet(() => t.get(`/workflows/hello/runs/${run.runId}/events`))).result.json()) as unknown[]).length > 0, true);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("a job whose run's log the bucket cannot give back still opens: that run reads as an evicted one", async () => {
+    const t = await boot({ get: async () => { throw new Error("no route to host"); } });
+    try {
+      await t.workspace.publishWorkflowByContent("hello", ONE_STEP("hello"));
+      const launched = await t.strut.app.request("/workflows/hello/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {}, job: "j1" }) });
+      assert.equal(launched.status, 202, await launched.clone().text());
+      const { runId } = (await launched.json()) as { runId: string };
+      await t.waitForSummary("hello", runId);
+      assert.ok(await t.store.archiveRun("hello", runId, new Date().toISOString()));
+      assert.equal(await t.store.evictRun("hello", runId, new Date().toISOString()), true);
+      const job = await t.get("/jobs/j1");
+      assert.equal(job.status, 200, await job.clone().text());
+      const view = (await job.json()) as { runs: Array<{ runId: string }> };
+      assert.deepEqual(view.runs.map((r) => r.runId), [runId]);
     } finally {
       await t.close();
     }

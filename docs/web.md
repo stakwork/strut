@@ -23,9 +23,10 @@ index. A change in this area updates this file, not AGENTS.md.
   With `archive` on the summary too (plans/run-archive.md) the badge is
   "archived" and the run opens like any other: the events read restores the
   log on the server, the canvas says "Restoring this run's log from the
-  archive…" until it answers, and the runs list is read again so the badge
-  goes. A log the bucket cannot give back shows the server's reason in that
-  note (`runLogError` in app.tsx, the 503's `error`).
+  archive…" until it answers (`runLogLoading` in app.tsx), and the runs
+  list is read again so the badge goes. A log the bucket cannot give back
+  shows the server's reason in that note (`runLogError`, the 503's
+  `error`); a click on it reads the log again.
 - **Flyout has two modes**: when no run is selected, clicking a
   canvas node opens the step editor (edit id, type, config). When
   a run is selected, it opens run results (input, output, error,

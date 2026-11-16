@@ -107,7 +107,8 @@ export async function downloadLog(objects: ObjectStore, log: ArchivedLog, file: 
   const tmp = `${file}.restoring`;
   let bytes = 0;
   try {
-    await pipeline(await objects.get(log.key), createGunzip(), counting((n) => (bytes += n)), createWriteStream(tmp));
+    // Flushed before the rename: a crash must not leave a short file under the log's name.
+    await pipeline(await objects.get(log.key), createGunzip(), counting((n) => (bytes += n)), createWriteStream(tmp, { flush: true }));
     if (bytes !== log.bytes) throw new Error(`"${log.key}" holds ${bytes} bytes of log where ${log.bytes} were archived`);
     await rename(tmp, file);
   } catch (err) {

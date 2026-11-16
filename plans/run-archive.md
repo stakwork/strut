@@ -117,8 +117,10 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
   sweeps and needs no migration.
 - **Evict.** By `retain:`, else `STRUT_RUN_RETENTION`, else 7 days. Only a
   run whose upload was recorded, and the store itself enforces it:
-  `evictRun` refuses unless `archive.bytes` equals the local log's size. A
-  log only grows, so the same size is the same log. A log uploaded on an
+  `evictRun` refuses unless the recorded upload is at least as long as the
+  local log. A log only grows, so the bucket's copy then holds all of it;
+  a shorter local log (a file a crash left short) is never uploaded over
+  the bucket's. A log uploaded on an
   earlier sweep is looked up in the bucket again right before it is
   evicted, and uploaded again if the object is gone or another size (an
   expiry rule shorter than the local window, a manual delete). A crashed
@@ -129,7 +131,9 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
   upload a resume overtook is not recorded. An object is read only
   through a summary's record, and a restore refuses an object that does
   not gunzip to exactly `bytes`: a stale object is never taken for the
-  log.
+  log. The clear itself brings an archived log back before it drops the
+  summary, the one pointer to it: the sweep can evict a run between a
+  resume's read of its log and its clear.
 - **Restore on read.** The readers of a log's content (`getRunEvents`,
   `tailEvents`, `getRunStart`, `readLogTail`, `repairLog`) first bring
   back a log that is in the bucket and not on this disk, one restore at a
@@ -137,14 +141,18 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
   a durable resume, the verify pass (which now verifies such a run where
   it skipped it). A restored log stays a day, then is evicted again with
   no second upload.
-- **A scan never restores.** A read of one run someone asked for restores
-  it. A scan over many runs must not, or one listing pages the whole
-  archive back onto the disk. Scans use `localRuns(store)`, where an
-  archived run reads as an evicted one (what they saw before): the
-  version counts, step stats, a package build's suggestions; the public
-  view's index of what a workflow's runs reported skips an evicted run.
-  `logSize` and `logWrittenAt` never restore either: boot's resume scan
-  asks `logWrittenAt` of every run.
+- **What restores, and what never does.** A read of a run someone asked
+  for restores it: the run view, a resume, an explicit verify, the
+  builder's read of a run or search of named runs, a conversation page, a
+  job view. What strut does by itself, and any walk over many runs, reads
+  this disk only (`localRuns(store)`, where an archived run reads as an
+  evicted one, which is what these saw before): the version counts, step
+  stats, a package build's suggestions, the builder's default search, the
+  verify pass strut makes at a run's end, a conversation's jobs backfill,
+  the public view's index. The public doors never restore either: an
+  anonymous caller could otherwise walk a public workflow's run ids and
+  bring its archive back. `logSize` and `logWrittenAt` never restore:
+  boot's resume scan asks `logWrittenAt` of every run.
 - **A bucket that fails.** Strut boots and runs. Each sweep asks a probe
   first (`<prefix>/archive.json`); when it fails, or an upload fails, the
   sweep uploads and evicts nothing more and says so in one line. Boot says
@@ -275,10 +283,15 @@ Where the brief left room, or the code turned out other than it assumed:
    `createStrut` its own `FileRunStore`, so an archive built into strut's
    default store alone would never run there. `createStrut` gives the
    archive to whatever store it has (`RunStore.useArchive`).
-2. **Bulk scans read locally** (`localRuns`), §1.3. The brief asked for
-   every read to restore; four readers walk every run of a workflow
-   (version counts, step stats, build suggestions, the public view's
-   index) and would have paged the archive back in.
+2. **Only a run someone asked for is restored** (§1.3). The brief asked
+   for every read to restore. Seven readers walk many runs or run
+   unasked (version counts, step stats, build suggestions, the builder's
+   default search, the automatic verify pass, a conversation's jobs
+   backfill, the public view's index) and would have paged the archive
+   back in; they read this disk through `localRuns`. The public doors
+   read it too. To rule: whether a public visitor's read of one archived
+   run should restore it, and whether a job view (up to 100 runs) and a
+   conversation page (20 to 100 turns) should.
 3. **`logSize` and `logWrittenAt` do not restore.** Boot's resume scan
    calls `logWrittenAt` on every run. `logSize` answers from the record,
    so a resume's size cap still sees an archived log's real size.
@@ -286,7 +299,9 @@ Where the brief left room, or the code turned out other than it assumed:
    upload again" fall out of the existing resume (it drops the summary)
    with no new state.
 5. **Size is the check** both ways, since the checksum default had to be
-   turned off for S3-compatible stores.
+   turned off for S3-compatible stores. The bucket is asked again right
+   before an eviction, and a restored file is flushed before it takes the
+   log's name.
 6. **Multipart, not gzip-to-a-temp-file**: no disk needed to free disk.
    The cost is `@aws-sdk/lib-storage` beside the client, and the
    incomplete-upload lifecycle rule in §1.5.

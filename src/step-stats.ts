@@ -64,6 +64,9 @@ export async function stepStats(
   const countsOf = async (key: string, id: string): Promise<StepCounts> => {
     const summary = await store.getRunSummary(key, id);
     if (summary?.stepCounts) return summary.stepCounts;
+    // Its log is not here (deleted, or in the run archive): nothing to
+    // count, and nothing written, so counts made later from the log stand.
+    if (summary?.logEvicted) return {};
     const counts = countSteps(await store.getRunEvents(key, id));
     // Re-read before writing: a resume may have cleared the summary while
     // the log was read, and writing the old one back would end a live run.

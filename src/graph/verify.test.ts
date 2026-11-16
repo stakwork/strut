@@ -696,6 +696,11 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       assert.equal(await runs.evictRun("clipper", run.runId, new Date().toISOString()), true);
       assert.equal(await runs.logWrittenAt("clipper", run.runId), null, "the log is in the bucket, not here");
 
+      // The pass strut makes by itself reads this disk only: nothing is restored for it.
+      assert.equal((await booted.verifier!.verifyRun("clipper", run.runId)).skipped, "unknown-run");
+      assert.equal(await runs.logWrittenAt("clipper", run.runId), null);
+
+      // Asked for, the run is restored and verified.
       const again = await post(run.runId);
       assert.equal(again.status, 200, "an evicted run with no archive is a 404 here (`unknown-run`)");
       const result = (await again.json()) as VerifyResult;

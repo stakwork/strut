@@ -254,7 +254,10 @@ export interface RunStore {
   /** Drop a run's summary: a durable resume does, before the run goes on,
    *  so a summary always means the latest attempt FINISHED — a resumed run
    *  reads as live, never as the outcome it is being resumed from. The log
-   *  keeps the old terminal event. Nothing to drop is not an error. */
+   *  keeps the old terminal event. Nothing to drop is not an error. A store
+   *  with an archive first brings back a log that is in the bucket and not
+   *  on this disk (the summary is the one pointer to it), and rejects,
+   *  leaving the summary, when it cannot. */
   clearRunSummary(workflow: string, runId: string): Promise<void>;
   /** The full event log (empty for an unknown run). */
   getRunEvents(workflow: string, runId: string): Promise<RunEvent[]>;
@@ -313,7 +316,7 @@ export interface RunStore {
    *  `logEvicted: true` + `evictedAt`. A run with no summary (it died with
    *  its process) gets `fallback` as its summary; without one, nothing to do.
    *  A store with an archive drops only a log the bucket holds (the
-   *  summary's `archive` names this very log). True when the log went. */
+   *  summary's `archive` is at least as long as it). True when the log went. */
   evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<boolean>;
   /** Give the store its archive (plans/run-archive.md): from then on
    *  `archiveRun` uploads, and a read of a log that is in the bucket and
@@ -344,8 +347,8 @@ export interface RunStore {
 /** The store for a scan over MANY runs (a backfill, a count, a listing):
  *  what is on this disk, so the scan cannot page the whole archive back in.
  *  A read of one run someone asked for uses the store itself. */
-export function localRuns(store: RunStore): RunStore {
-  return store.local?.() ?? store;
+export function localRuns<S extends object>(store: S): S {
+  return ((store as { local?: () => unknown }).local?.() as S | undefined) ?? store;
 }
 
 /**
@@ -651,14 +654,23 @@ export class FileRunStore implements RunStore {
       const { logEvicted: _gone, evictedAt: _at, ...rest } = summary;
       await this.finalize(workflow, runId, { ...rest, restoredAt: new Date().toISOString() });
       try {
-        await downloadLog(archive.objects, summary.archive, this.logFile(workflow, runId));
+        await this.download(archive, workflow, runId, summary.archive);
       } catch (err) {
         // The summary as it was, unless the run's records went meanwhile.
         if (await this.getRunSummary(workflow, runId)) await this.finalize(workflow, runId, summary);
-        throw new RunArchiveError(`The log of run ${runId} of "${workflow}" is archived in ${archive.label} and could not be restored: ${errorText(err)}`);
+        throw err;
       }
-      console.log(`[archive] restored the log of ${workflow}/${runId} from ${archive.label}`);
     });
+  }
+
+  /** The archived log back in its place. The caller holds the run's lock. */
+  private async download(archive: RunArchive, workflow: string, runId: string, log: ArchivedLog): Promise<void> {
+    try {
+      await downloadLog(archive.objects, log, this.logFile(workflow, runId));
+    } catch (err) {
+      throw new RunArchiveError(`The log of run ${runId} of "${workflow}" is archived in ${archive.label} and could not be restored: ${errorText(err)}`);
+    }
+    console.log(`[archive] restored the log of ${workflow}/${runId} from ${archive.label}`);
   }
 
   async archiveRun(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedLog } | null> {
@@ -667,11 +679,15 @@ export class FileRunStore implements RunStore {
     const before = await this.getRunSummary(workflow, runId);
     const local = await this.localLogSize(workflow, runId);
     if (local === null) return {};
-    if (before?.archive?.bytes === local) {
+    // A log only grows, so the bucket's copy holds this one while it is at
+    // least as long. A shorter local log (a torn tail cut off, a file a
+    // crash left short) is never uploaded over it.
+    if (before?.archive && local <= before.archive.bytes) {
       // Recorded on an earlier sweep, and the caller is about to evict on
       // this answer: ask the bucket again. An object a lifecycle rule
-      // expired, or one written over, is uploaded again.
-      const held = await archive.objects.head(before.archive.key);
+      // expired, or one written over, is uploaded again. A HEAD that fails
+      // is "not held" too: without `s3:ListBucket` a missing key is a 403.
+      const held = await archive.objects.head(before.archive.key).catch(() => null);
       if (held?.size === before.archive.size) return { archive: before.archive };
     }
     const key = logKey(archive, workflow, runId);
@@ -782,7 +798,17 @@ export class FileRunStore implements RunStore {
   }
 
   async clearRunSummary(workflow: string, runId: string): Promise<void> {
-    await this.oneAtATime(workflow, runId, () => rm(join(this.runDir(workflow, runId), "run.json"), { force: true }));
+    await this.oneAtATime(workflow, runId, async () => {
+      // The summary is the one pointer to an archived log. A resume read the
+      // log before it got here; had the sweep evicted it since, the run
+      // would go on from an empty log and its next upload would replace the
+      // whole one in the bucket. So the log comes back first.
+      if (this.archive && (await this.localLogSize(workflow, runId)) === null) {
+        const held = (await this.getRunSummary(workflow, runId))?.archive;
+        if (held) await this.download(this.archive, workflow, runId, held);
+      }
+      await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
+    });
   }
 
   async readLogTail(workflow: string, runId: string, maxBytes: number): Promise<RunEvent[]> {
@@ -829,9 +855,9 @@ export class FileRunStore implements RunStore {
       const summary = (await this.getRunSummary(workflow, runId)) ?? fallback;
       if (!summary) return false;
       if (this.archive) {
-        // The log goes only when the bucket holds this very log.
+        // The log goes only when the bucket holds it: all of it, or more.
         const local = await this.localLogSize(workflow, runId);
-        if (local !== null && summary.archive?.bytes !== local) return false;
+        if (local !== null && !(summary.archive && local <= summary.archive.bytes)) return false;
       }
       const dir = this.runDir(workflow, runId);
       await mkdir(dir, { recursive: true });

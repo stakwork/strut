@@ -205,7 +205,7 @@ export function createRetention(deps: RetentionDeps): Retainer {
       if (!archive) return {};
       if (failed) return null;
       const bytes = await deps.store.logSize(name, id);
-      const upload = bytes > 0 && s.archive?.bytes !== bytes;
+      const upload = bytes > 0 && !(s.archive && bytes <= s.archive.bytes);
       if (upload && uploads > 0 && bytes > budget) {
         waiting++;
         return null;

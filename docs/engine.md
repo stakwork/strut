@@ -243,12 +243,15 @@ and the child env is scrubbed by construction).
     A kept or artifact-referenced run is uploaded and stays local.
   - **Evict.** The policy is `retain:`, else `STRUT_RUN_RETENTION`, else
     `ARCHIVE_LOCAL_WINDOW` (7 days). A log goes only when the bucket holds
-    it: `FileRunStore.evictRun` itself refuses unless `archive.bytes` equals
-    the local log's size (a log only grows, so equal size is the same log).
+    it: `FileRunStore.evictRun` itself refuses unless `archive.bytes` is at
+    least the local log's size (a log only grows, so the bucket's copy
+    holds a local log no longer than it; a SHORTER local log, a file a
+    crash left short, is never uploaded over the bucket's).
     For a log uploaded on an earlier sweep the sweep asks the bucket again
     first (a HEAD of the recorded key and size, in `archiveRun`): an object
     a lifecycle rule expired or someone deleted is uploaded again, never
-    trusted. A crashed run is uploaded, then evicted with its `crashed`
+    trusted, and a HEAD that fails counts as gone (without `s3:ListBucket`
+    a missing key answers 403). A crashed run is uploaded, then evicted with its `crashed`
     summary carrying `archive`.
   - **A run that goes on.** The record lives on the summary, and a durable
     resume drops the summary before it appends (`clearRunSummary`), so a
@@ -257,6 +260,11 @@ and the child env is scrubbed by construction).
     and the summary's `finishedAt` are checked again under the run's lock).
     An object is read only through a summary's record, and a restore
     refuses an object that does not gunzip to exactly `bytes`.
+    `clearRunSummary` itself brings an archived log back before it drops
+    the summary (the one pointer to it), and rejects when it cannot: the
+    sweep can evict a run between a resume's read of the log and its clear,
+    and the run would otherwise go on from an empty log and its next upload
+    replace the whole one.
   - **Restore on read.** `getRunEvents`, `tailEvents`, `getRunStart`,
     `readLogTail` and `repairLog` (a resume's first call) first bring back a
     log that is in the bucket and not on this disk
@@ -273,14 +281,25 @@ and the child env is scrubbed by construction).
     archived run on a strut with no archive configured (a bucket unset
     later, data moved to another box), which would otherwise read as a
     run with no events.
-  - **A scan over many runs never restores.** `localRuns(store)`
-    (`RunStore.local`) is the store reading this disk only, where an
-    archived run reads as an evicted one. The version counts
-    (`GET /workflows/:name/versions`), `stepStats` and a package build's
-    suggestions use it; the public view's index of the nodes a workflow's
-    runs reported (`indexFor` in `public-surface.ts`) skips an evicted run
-    by its summary; `graph/project` builds its own store with no archive. A new scan over many runs must use it too, or it pages the
-    whole archive back in.
+  - **What restores, and what never does.** A read of a run SOMEONE ASKED
+    FOR restores it: the run view (`…/events`, `…/stream`), a transcript,
+    provenance, the builder's read of a run, a search of named `runIds`, a
+    resume, an explicit verify (`POST …/verify`, `verify_run`,
+    `addEvidence`), a conversation page (its turns), a job view (its newest
+    runs; one the bucket cannot give back reads as evicted, the job still
+    opens). Everything strut does by itself, and every walk over many runs,
+    reads this disk only through `localRuns(store)` (`RunStore.local`),
+    where an archived run reads as an evicted one, or skips an evicted
+    summary: the sweep, boot's resume scan, the version counts
+    (`GET /workflows/:name/versions`), `stepStats`, a package build's
+    suggestions, the builder's default search (the newest N runs), the
+    verify pass strut makes when a run ends (so a work with old members is
+    not restored at every turn's end), a conversation's jobs backfill, and
+    the PUBLIC doors (`publicRoutes`, the public view's node index): an
+    anonymous caller walking a public workflow's run ids must not be able
+    to restore its archive. `graph/project` builds its own store with no
+    archive. A new walk over many runs must use `localRuns` too, or it
+    pages the whole archive back in.
   - **A bucket that fails.** Each sweep first asks `checkArchive` (a HEAD of
     `<prefix>/archive.json`, written the first time): when it fails the
     sweep uploads and evicts nothing and says so in one line
