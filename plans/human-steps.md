@@ -874,7 +874,7 @@ door's cap as ruled.
 
 ### 5.7 Onboarding: inviting a worker
 
-**Built: this section's PR** (strut's side). Peel Android's side is
+**Built: stakwork/strut#711** (strut's side). Peel Android's side is
 stakwork/peel-android's and the daemon's routes stakwork/sphinx's, built
 beside it.
 
@@ -3500,7 +3500,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
-| Invites | **Inviting a worker** (§5.7): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): this section's PR. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.7) |
+| Invites | **Inviting a worker** (§5.7): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.7) |
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
