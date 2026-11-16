@@ -31,7 +31,11 @@
  */
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { mergeBranch, type MergeResult } from "./branch-merge.js";
+import type { ConceptSources } from "./concept-sources.js";
 import type { GraphBackend } from "./graph/backend.js";
+import type { History } from "./history.js";
+import type { Proposal } from "./proposals.js";
 import { onBranch } from "./graph/branch.js";
 import { branchOf } from "./graph/scope.js";
 import { BRANCH_NAMESPACE_PREFIX } from "./graph/search.js";
@@ -69,8 +73,17 @@ export interface BranchesCapability {
   get(name: string): Promise<ConceptBranch | null>;
   create(input: { name: string; from?: "main" | "empty"; by?: string }): Promise<ConceptBranch>;
   /** The pages it removed, and where its git branch is kept (`refs/dropped/<name>/<time>`) when the history keeps one. */
-  drop(name: string): Promise<{ name: string; pages: number; kept?: { ref: string; commit: string } }>;
+  drop(name: string): Promise<BranchDrop>;
+  /** What the branch changed since its fork, onto main (item e,
+   *  src/branch-merge.ts): ordinary pages at once, pages from git as one
+   *  proposal per checkout or skipped; then the branch is dropped. Refused
+   *  (`MergeConflict`) where main changed one of its pages too, and while a
+   *  run on it is in flight. `dryRun`: what it would do, nothing written,
+   *  the branch kept. */
+  merge(name: string, o?: { actor?: string; run?: string; by?: Proposal["by"]; dryRun?: boolean }): Promise<MergeResult & { dropped?: BranchDrop }>;
 }
+
+export type BranchDrop = { name: string; pages: number; kept?: { ref: string; commit: string } };
 
 /** A refusal a route answers with its status. */
 export class BranchError extends Error {
@@ -102,8 +115,11 @@ export interface BranchesDeps {
   /** Whether a run on the branch is in flight in this process. */
   inFlight(name: string): boolean;
   /** The history (src/history.ts), when it is on: told when a branch is made
-   *  and dropped. What it does is a record; a failure there fails neither. */
-  history?: { branched(name: string, t: { cause: string; actor?: string }): Promise<void>; dropBranch(name: string): Promise<{ ref: string; commit: string } | undefined> };
+   *  and dropped (a record; a failure there fails neither), and read by a
+   *  merge for what the branch changed. */
+  history?: Pick<History, "branched" | "dropBranch" | "settle" | "sync" | "git" | "touch">;
+  /** Which pages' text comes from git, and their proposals (item e). */
+  sources?: ConceptSources;
   now?: () => Date;
 }
 
@@ -172,6 +188,26 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
     if (graph.branches) graph.branches.held = held ?? (await cap.list()).length > 0;
   };
 
+  /** Drop, inside the branch's lock. */
+  const dropLocked = async (name: string): Promise<BranchDrop> => {
+    const branch = await read(name);
+    if (!branch) throw new BranchError(404, `no branch "${name}"`);
+    if (deps.inFlight(name)) throw new BranchError(409, `branch "${name}" has a run in flight — drop it once the run ends (or cancel it)`);
+    // The record first: a run that starts from here on finds no branch.
+    await unlink(fileOf(name));
+    // Its git branch, what it last wrote committed, kept aside while the pages are still there to read.
+    const kept = await deps.history?.dropBranch(name).catch((err: unknown) => {
+      console.warn(`[branches] ${name}: the history did not keep it: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    });
+    const pages = await purge(branch.namespace);
+    if (graph.kind === "neo4j") {
+      await graph.tx((tx) => tx.run(`MATCH (s:NameSpace) SET s.data = [x IN coalesce(s.data, []) WHERE x <> $ns]`, { ns: branch.namespace }));
+    }
+    await mark();
+    return { name, pages, ...(kept ? { kept } : {}) };
+  };
+
   const cap: BranchesCapability = {
     load: () => mark(),
 
@@ -228,24 +264,18 @@ export function createBranches(deps: BranchesDeps): BranchesCapability {
       });
     },
 
-    async drop(name) {
+    drop: (name) => withLock(`branch:${name}`, () => dropLocked(name)),
+
+    async merge(name, o = {}) {
       return withLock(`branch:${name}`, async () => {
         const branch = await read(name);
         if (!branch) throw new BranchError(404, `no branch "${name}"`);
-        if (deps.inFlight(name)) throw new BranchError(409, `branch "${name}" has a run in flight — drop it once the run ends (or cancel it)`);
-        // The record first: a run that starts from here on finds no branch.
-        await unlink(fileOf(name));
-        // Its git branch, what it last wrote committed, kept aside while the pages are still there to read.
-        const kept = await deps.history?.dropBranch(name).catch((err: unknown) => {
-          console.warn(`[branches] ${name}: the history did not keep it: ${err instanceof Error ? err.message : String(err)}`);
-          return undefined;
-        });
-        const pages = await purge(branch.namespace);
-        if (graph.kind === "neo4j") {
-          await graph.tx((tx) => tx.run(`MATCH (s:NameSpace) SET s.data = [x IN coalesce(s.data, []) WHERE x <> $ns]`, { ns: branch.namespace }));
-        }
-        await mark();
-        return { name, pages, ...(kept ? { kept } : {}) };
+        if (!o.dryRun && deps.inFlight(name)) throw new BranchError(409, `branch "${name}" has a run in flight — merge it once the run ends (or cancel it)`);
+        const merged = await mergeBranch({ graph, ...(deps.history ? { history: deps.history } : {}), ...(deps.sources ? { sources: deps.sources } : {}) }, branch, o);
+        if (o.dryRun) return merged;
+        // What it changed is on main, or waits as a proposal that carries
+        // the pages: the branch goes, its git branch kept under refs/dropped/.
+        return { ...merged, dropped: await dropLocked(name) };
       });
     },
   };

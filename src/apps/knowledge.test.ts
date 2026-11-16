@@ -192,6 +192,10 @@ describe("strut/knowledge: claims and the changes waiting on a person", () => {
     assert.equal(conceptOfChange(change("t", "graph/create-triplet", { ...triplet, target_type: "Person" })), null);
     assert.equal(conceptOfChange(change("x", "graph/create-node", { node_type: "Concept", node_data: { name: "x" } })), null);
     assert.equal(conceptOfChange(change("x", "graph/edit-node", {})), null);
+    // The dream's own two read the same way.
+    assert.equal(conceptOfChange(change("e", "knowledge/edit-page", { ref_id: "a", node_data: { docs: "x" } })), "a");
+    assert.equal(conceptOfChange(change("t", "knowledge/add-page", triplet)), "p");
+    assert.equal(conceptOfChange(change("t", "knowledge/add-page", { ...triplet, target_type: "Person" })), null);
   });
 
   it("the changes by Concept, oldest first, only what still waits and only Concepts in the tree; what waits across the tree, changes first", () => {

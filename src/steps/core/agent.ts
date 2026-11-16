@@ -920,7 +920,12 @@ export function buildRegistryTools(
           park: refuseParkInTool,
           parkRefusal: parkRefusalInTool,
         };
-        if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
+        if (gated) {
+          // A call the step answers itself has nothing for a person to decide here.
+          const own = def.answerGated ? await guardEscapes(`tool "${childCtx.path || stepType}"`, () => def.answerGated!(parsed, childCtx)) : undefined;
+          if (own !== undefined) return own;
+          return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
+        }
         // An error the tool-step lets escape fails this call, which the model
         // reads, rather than the whole agent (src/escaped-errors.ts).
         const checked = withinReach(stepType, parsed, childCtx);

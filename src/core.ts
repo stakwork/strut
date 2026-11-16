@@ -77,6 +77,12 @@ export interface StepDef<
    *  package). Called by the gate once, best effort: a throw or nothing
    *  leaves the description's first sentence as the title. */
   describe?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<ProposalDescription | undefined>;
+  /** For a call an agent's `approve:` gates: the step's OWN answer in place
+   *  of the proposal, or undefined to propose it as usual. For a call there
+   *  is nothing for a person to decide on here: `knowledge/edit-page` answers
+   *  a page whose text comes from git itself (its own proposal into a
+   *  checkout, or skipped), whatever the review says. */
+  answerGated?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<unknown>;
   /** For a gated step: who may ACCEPT a proposal of it (src/proposals.ts).
    *  `admin`: only an ADMIN of this strut server (plans/member-rights.md) —
    *  the deployment key, an admin's session, a host's server holding the
@@ -1050,6 +1056,8 @@ export interface AnyStepDef {
   after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
   /** The person's card's title and summary (see `StepDef.describe`). */
   describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
+  /** Its own answer to a gated call (see `StepDef.answerGated`). */
+  answerGated?: (cfg: any, ctx: StepContext<any>) => Promise<unknown>;
   /** Who may accept a proposal of it (see `StepDef.approver`). */
   approver?: "admin";
   /** A worker's step (see `StepDef.worker`). */

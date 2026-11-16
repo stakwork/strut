@@ -168,8 +168,15 @@ index. A change in this area updates this file, not AGENTS.md.
   (2) records WHAT WAS SAID with `knowledge/add-evidence` as that person's
   word against the claim, when the run whose work they corrected opened
   the page (the claim then reads `refuted` on that version); (3) CHANGES
-  the tree as little as would have got it right, with `graph/edit-node` or
-  `graph/create-triplet`. **Automatic by default** (ruled 2026-11-13: "in
+  the tree as little as would have got it right, with `knowledge/edit-page`
+  or `knowledge/add-page` — `graph/edit-node`'s and `graph/create-triplet`'s
+  inputs, with the rule for a page from git (below): an edit of one is never
+  made in the graph, whatever `review` says, but answered by the step (a
+  `knowledge/write-pages` proposal in dev mode or an opened repo, skipped
+  elsewhere; `answerGated` answers a reviewed call the same way, so it is
+  never proposed as a graph edit), and a triplet that would change one is
+  refused; the answer's note says which, and the lesson's `change` says it.
+  **Automatic by default** (ruled 2026-11-13: "in
   practice no one should need to review, it should be automatic"; "Main,
   with history"): the change lands as the dream makes it, on the live tree,
   and the history keeps it — the commit carries the dream's run (`Run:`),
@@ -330,7 +337,50 @@ index. A change in this area updates this file, not AGENTS.md.
   `refs/dropped/<name>/<time>` (the drop's answer says where, `kept`): a
   record of what was tried, the name free. The Knowledge app's Changes
   takes a branch's name as a moment. With no history, a branch is as in
-  (b). Not built: merge (e), a per-branch type list, a view of the compare.
+  (b). MERGE (item e; src/branch-merge.ts, `POST /branches/:name/merge`,
+  the `knowledge/merge` step): what the branch changed since its fork —
+  `base..<name>` under `concepts/`, pages edited, added or removed and their
+  `PARENT_OF` links (a page file's `parents`) — is applied to main, then the
+  branch is dropped (its git branch kept under `refs/dropped/`). A page
+  main changed too since the fork refuses the whole merge, naming it
+  (`merge_conflict:`; both ending the same is no conflict, a page only main
+  changed stays). Ordinary pages land at once, one commit (`merge <name>`);
+  a page whose text comes FROM GIT (below) is never changed by it — one
+  `knowledge/write-pages` proposal per writable checkout, the rest skipped
+  and listed; a page the branch ADDS is ordinary, even under a page from
+  git. Automatic by default; the step's `review: true` makes the merge a
+  proposal of itself an admin accepts first; strut never merges on a score
+  by itself. Needs the history; a branch made `from: "empty"` is not
+  merged. The branch's evidence stays on the branch: main's new page
+  versions start unmeasured. Not built: a per-branch type list, a view of
+  the compare or the merge.
+
+- **Pages whose text comes from git — never changed automatically**
+  (src/concept-sources.ts, plans/concept-evals.md item e, rulings 5–8). A
+  page is FROM GIT when main's node carries a seed or package stamp
+  (`unique_source_id`): strut's own sets (`strut/concepts/`,
+  `strut/concepts/personal/`, the lab's earlier `lab/builder/concepts/` and
+  `lab/job/concepts/`), any package's (`pkg/<publisher>/<name>/`), or a
+  seeder strut does not know. Neither a merge nor the dream changes one in
+  the graph (the next seed would put git's text back, or a package page
+  would become a fork nobody chose); `Workflow Builder`, `App`, `Game` are
+  not special, they only hold more text. A change to one is a proposal of
+  `knowledge/write-pages` (an ADMIN's yes, sealed, runs only as an accepted
+  proposal, its door checking the record on disk) where strut has a
+  WRITABLE CHECKOUT for it: DEV MODE, strut's own pages with
+  `STRUT_DEV_CONCEPTS=1` honoured only when the folder strut seeds them from
+  is tracked by a git checkout (under `npm run dev`, the checkout's
+  `src/concepts/`; the person makes the PR with their own git — strut never
+  commits or pushes there), or a package OPENED HERE AS A REPO (its working
+  copy; the repo's Commit then makes the branch and the PR). Anything else —
+  strut's pages on a deployed strut, a package installed from an index or a
+  `git+` ref, a host's seeder — is skipped, and the answer says why.
+  Accepting writes each page's file as its stamp names it, in the form its
+  seeder or install reads (`fileText`: the front matter byte for byte when
+  only the docs changed, the old `<Name>.md` form kept where the page still
+  fits it), then RELOADS that set from there (`seedConcepts`: the node takes
+  the file's text and its new stamp); a removed page is a removed file and
+  its node retired.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any
@@ -416,7 +466,15 @@ the KNOWLEDGE door: what a workflow that tends the Concept tree works through (t
 
 ### `src/branches.ts`
 
-CONCEPT BRANCHES (plans/concept-evals.md items b, c): `createBranches({ dataDir, graph, inFlight, history? })` → `ctx.services.branches` (`list`, `get`, `create`, `drop`), set by createStrut on a graph workspace; a branch's namespace is `branch-<name>` (`BRANCH_NAME`: lowercase letters, digits, `-`, `_`, a letter first, at most 56; a new one never `main`, the history's branch). With the history on, a create calls `history.branched` once the pages are copied and before it writes the record (its git branch from main's commit now, before any run can be on it) and a drop calls `history.dropBranch` after the record goes and before the pages do (its last writes committed, its git branch kept under `refs/dropped/`, the answer's `kept`); a history failure is logged and fails neither. `load()` (createStrut, at boot) sets the backend's `branches.held` from the records, what a Ladybug read on main leaves `branch-*` out by; a create sets it before it writes, a drop or a failed create reads it again. Create registers the namespace (Neo4j searches registered ones only), clears what a cut-off create left there, copies the live tree in batches of 200 (`writeMany` upsert, `embed: "later"`; every declared attribute but `unique_source_id`) and its `PARENT_OF` edges, then writes the record; a copy that fails is cleared. Drop removes the record first (a run that starts from then on finds no branch), then every node in the namespace (`DETACH DELETE`), and on Neo4j unregisters the namespace. `bindBranch(services, branch)`: the run's view of the bag (the runner, beside `bindPrincipal` / `bindGraph`; an accepted proposal made on a branch too) — `graph` held to the branch (`onBranch`, src/graph/branch.ts), `knowledge` reading the branch's pages and each claim's status there (`KnowledgeCapability.onBranch`; item d), the automation steps' `create`/`update`/`fire` refused; on EVERY run, `sessions` refusing a conversation whose first turn ran on another branch and stamping each committed turn with the run's. `branchOfServices`: the branch a bag is already on — a run launched with a step's `ctx.services` is on it (runner.ts). Tested on both engines in graph/branches.test.ts
+CONCEPT BRANCHES (plans/concept-evals.md items b, c): `createBranches({ dataDir, graph, inFlight, history? })` → `ctx.services.branches` (`list`, `get`, `create`, `drop`), set by createStrut on a graph workspace; a branch's namespace is `branch-<name>` (`BRANCH_NAME`: lowercase letters, digits, `-`, `_`, a letter first, at most 56; a new one never `main`, the history's branch). With the history on, a create calls `history.branched` once the pages are copied and before it writes the record (its git branch from main's commit now, before any run can be on it) and a drop calls `history.dropBranch` after the record goes and before the pages do (its last writes committed, its git branch kept under `refs/dropped/`, the answer's `kept`); a history failure is logged and fails neither. `load()` (createStrut, at boot) sets the backend's `branches.held` from the records, what a Ladybug read on main leaves `branch-*` out by; a create sets it before it writes, a drop or a failed create reads it again. Create registers the namespace (Neo4j searches registered ones only), clears what a cut-off create left there, copies the live tree in batches of 200 (`writeMany` upsert, `embed: "later"`; every declared attribute but `unique_source_id`) and its `PARENT_OF` edges, then writes the record; a copy that fails is cleared. Drop removes the record first (a run that starts from then on finds no branch), then every node in the namespace (`DETACH DELETE`), and on Neo4j unregisters the namespace. `bindBranch(services, branch)`: the run's view of the bag (the runner, beside `bindPrincipal` / `bindGraph`; an accepted proposal made on a branch too) — `graph` held to the branch (`onBranch`, src/graph/branch.ts), `knowledge` reading the branch's pages and each claim's status there (`KnowledgeCapability.onBranch`; item d), the automation steps' `create`/`update`/`fire` refused; on EVERY run, `sessions` refusing a conversation whose first turn ran on another branch and stamping each committed turn with the run's. `branchOfServices`: the branch a bag is already on — a run launched with a step's `ctx.services` is on it (runner.ts). `merge(name, { actor?, run?, by?, dryRun? })` (item e): inside the branch's lock, refused while a run on it is in flight (a dry run is not), `mergeBranch` (src/branch-merge.ts), then the drop (`dropLocked`, the drop's own body) — its answer `dropped`; deps `sources` (src/concept-sources.ts) and a history that `settle`s, `sync`s, `git`s and `touch`es. Tested on both engines in graph/branches.test.ts and graph/branch-merge.test.ts
+
+### `src/branch-merge.ts`
+
+MERGE a Concept branch into main (plans/concept-evals.md item e): `planMerge` — the history settled and synced (main's commit is the live tree), the fork point `merge-base main <branch>` (refused when that commit is newer than the branch: its git branch was made later, with the history off), the branch's changes `diff --name-status --no-renames base <branch> -- concepts/`, main's `diff --name-only base main`, each changed file read at base and at the branch (`git show`, `parseConceptFile`); a path main changed too is a CONFLICT unless main's file is the branch's (`MergeConflict`, the names, 409) — then each edited or removed page's main node asked whether its text comes from git (`sources.fromGit`). `landPages`: the ordinary pages on main through the raw backend — an edit `nodes.update` with the attributes the branch dropped removed, an add `upsert` (a deleted node of the name restored), then the links (`parents` added since the base written, dropped ones deleted; a parent main lacks is a note), then the removals (`deleteNode`). `mergeBranch`: plan, a dry run's answer (the checkouts it would propose to, no record), else land — one `merge <name>` touch and a settle, whatever stopped it — and `sources.propose` for the pages from git. `MergeRefused` (409): no history, a branch made `from: "empty"` (against its fork it removes every page main has). The branch's evidence is not copied: main's new versions start unmeasured
+
+### `src/concept-sources.ts`
+
+PAGES WHOSE TEXT COMES FROM GIT (plans/concept-evals.md item e, rulings 5–8): `createConceptSources({ graph, dataDir, own?, dev?, repos?, proposals?, history? })` → `ctx.services.conceptSources`, set by createStrut on a graph workspace. `parseStamp` (`<prefix><file>@<hash>`), `fromGit(names)` / `fromGitByRef(ref)` — main's live nodes carrying a stamp, each a `PageSource { name, set, file, checkout?, why? }`: strut's own sets (an earlier seeder's `legacyPrefixes` read as strut's) with `checkout: "strut"` only in DEV MODE, a package's `pkg/<p>/<n>/` with `checkout: <package>` only when it is opened here as a repo (`repos.isOpen`), anything else skipped with why. `pageOf(name)`: main's page as a page file holds it (`conceptPageFile`, packages/build.ts), what the dream's edit is laid over. `propose(changes, { by, cause })`: one `knowledge/write-pages` proposal per checkout (`approver: "admin"`, a card naming the checkout, the pages and why), the rest `skipped`. `write(input, { proposal })`, the door: the accepted record on disk for this very input (`stable` JSON) or `write_pages_needs_person:`; the checkout resolved again (`no_checkout:` — dev off, the repo closed or waiting on a merge); each page's set held by that checkout and its file a bare `<name>.md`; the file written in its form (`fileText`: the front matter byte for byte when its values did not change, the old `<Name>.md` form where the file is named by the page and it still fits, else `renderConceptPage`) or removed; the touched sets reloaded (`seedConcepts`: strut's own set as it is, a repo's `{ dir: <working copy>/concepts, prefix: conceptPrefix(pkg), keepEdited, adopt }`), removed pages retired (`retireConcepts`), the history touched (`proposal <id>`). `devConcepts(sets, env)`: at boot, `STRUT_DEV_CONCEPTS=1` and the sets whose folder holds pages `git ls-files` lists (never a build's copy, an image's or a dependency's); createStrut says in one line when the flag is set and not honoured. Tested on both engines in graph/branch-merge.test.ts, the dream's side in graph/dream.test.ts
 
 ### `src/ledger.ts`
 
@@ -444,7 +502,7 @@ context/concept: a Concept as an agent's context — the page's docs (capped at 
 
 ### `src/steps/lib/knowledge/`
 
-the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/compare { branch, concept?, tree?, works? } (`effect: read`: main against a Concept branch over the same claims, `compare()`; plans/concept-evals.md item d), knowledge/cycles { tree?, limit? } (`effect: read`: what the dream learned, cycle by cycle, `cycles()`; its lessons quote the conversations the sealed dream read, so it answers ONE caller: strut's own page (`isFirstParty`) shown to an ADMIN, in the page's own call (`RUN_STEP_FLOW`) — the viewer who sees the dream's proposals (`pageSees`); a workflow, an agent's tool, a run a page launched, a member's page or a model-written one is refused `is an admin's`, before anything is read; not `sealed`, since a sealed step is refused to every app), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the three reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused
+the Knowledge door as steps (src/knowledge.ts), thin over `ctx.services.knowledge`: knowledge/page { name, text? } (`effect: read`: a Concept as a tender reads it; `text: true` adds it as one block for a prompt; reading a page this way is not opening it), knowledge/claims (`effect: read`: every Concept carrying claims, with them — the Knowledge app's), knowledge/compare { branch, concept?, tree?, works? } (`effect: read`: main against a Concept branch over the same claims, `compare()`; plans/concept-evals.md item d), knowledge/cycles { tree?, limit? } (`effect: read`: what the dream learned, cycle by cycle, `cycles()`; its lessons quote the conversations the sealed dream read, so it answers ONE caller: strut's own page (`isFirstParty`) shown to an ADMIN, in the page's own call (`RUN_STEP_FLOW`) — the viewer who sees the dream's proposals (`pageSees`); a workflow, an agent's tool, a run a page launched, a member's page or a model-written one is refused `is an admin's`, before anything is read; not `sealed`, since a sealed step is refused to every app), knowledge/add-claim { concept, text } and knowledge/add-evidence { claim, workflow, run, supports?, said, by? } — both `sealed: true`, so the meta surface can neither run them nor publish a workflow that reaches them, and an app's page is refused. Granted by the `dream` system workflow alone (and the three reads to strut/knowledge): never by the job, builder or orchestrator seeds, never the builder chat's tools. The capability reads the graph as it is, so each step first asks whether its CALLER may read the graph's own namespace, where the tree is kept (`requireKnowledge`, _shared.ts: `graphFor` + `boundsOf` + `readsNamespace`): on a personal strut an app's page reads `shared` alone and is refused ITEM E: knowledge/edit-page and knowledge/add-page (`sealed`, `effect: write`) are how the dream changes the tree: `graph/edit-node`'s and `graph/create-triplet`'s own inputs, cards and runs, with the rule for a page whose text comes from git (src/concept-sources.ts) in front — on main (never on a branch, where every page is a copy), an edit of such a page is laid over its page file and becomes a `knowledge/write-pages` proposal (dev mode, an opened repo) or is skipped (`status: pending | skipped | unchanged`, a `note` the lesson's change repeats; a rename of one is skipped), and a triplet that would change one (naming it inline, or `target_ref_id` moving it under a parent) is refused; `answerGated` (StepDef, agent.ts) answers a call the dream's review gates the same way, so a page from git is never proposed as a graph edit; the Knowledge app and the kit's concept diff read them as the graph steps they wrap. knowledge/write-pages { checkout, pages: [{ name, set, file, text? }], cause } (`sealed`, `approver: "admin"`): the apply of such a proposal, ONLY as one (`ctx.proposal`), through `conceptSources.write`. knowledge/merge { branch, review? } (`effect: write`, `approver: "admin"`, not sealed, granted to nothing): an eval workflow's door to `branches.merge` — refused in a run on a branch; `review: true` makes the merge a proposal of this step (its card from a dry run: what lands, is proposed, is skipped; a conflict refuses it before anything is proposed)
 
 ### `src/steps/lib/dream/`
 

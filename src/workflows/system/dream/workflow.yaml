@@ -21,6 +21,14 @@ description: Reads the new turns of the conversations with the assistant and kee
 # person accepts or rejects first. Concepts are the only thing the dream
 # evolves.
 #
+# A page whose text comes from GIT (one strut or a package ships: main's
+# node carries its seed or package stamp) is never changed by the dream,
+# whatever `review` says (plans/concept-evals.md item e). knowledge/edit-page
+# answers such a change itself: a proposal that writes the page's file into
+# its checkout where strut has one (dev mode, or a package opened as a
+# repo), skipped elsewhere, its note saying which; the lesson's change says
+# so. knowledge/add-page refuses a triplet that would change one.
+#
 # HOW it judges all of that is not here: it is on Concept pages the agent
 # reads, the dream's own tree (src/concepts/Dream.md): `Dream` holds what is
 # true for any source — the posture, what a lesson is, where it goes in the
@@ -63,10 +71,10 @@ params:
   # graph/graph-get, which opens a page of the dream's OWN guidance (one
   # around `Dream` or its source's page): opening it is recorded, so the
   # claims on that page judge this run.
-  tools: [knowledge/page, knowledge/add-claim, knowledge/add-evidence, graph/edit-node, graph/create-triplet, graph/graph-get]
+  tools: [knowledge/page, knowledge/add-claim, knowledge/add-evidence, knowledge/edit-page, knowledge/add-page, graph/graph-get]
   # What waits for a person when the tree is reviewed (`input.review`): every
-  # change to the tree. Not reviewed, nothing waits.
-  review: [graph/edit-node, graph/create-triplet]
+  # change to the tree. Not reviewed, nothing waits — but a page from git.
+  review: [knowledge/edit-page, knowledge/add-page]
   none: []
   # The mechanics, above the pages: what the tools do and how they are
   # called. The judgment is the pages'.
@@ -88,15 +96,18 @@ params:
       every claim: you never write a check.
     - knowledge_add_evidence records a person's words against a claim,
       naming the run their words were about as the material names it.
-    - graph_edit_node and graph_create_triplet change the tree, once per
+    - knowledge_edit_page and knowledge_add_page change the tree, once per
       change. Where a person reviews this tree, the answer says the change
       waits for their yes: go on, and never make the same call again.
-      graph_edit_node takes the page's ref_id from knowledge_page:
+      knowledge_edit_page takes the page's ref_id from knowledge_page:
       `node_data: { docs }` is the WHOLE new text, so copy the page's docs
       and change only what you mean to; `node_data: { description }` is its
-      one line. graph_create_triplet adds a page under its parent:
+      one line. knowledge_add_page adds a page under its parent:
       source_ref_id the parent's, edge_type PARENT_OF, target_type Concept,
       target_data { name, description, docs }.
+    - A page whose text comes from git is not changed in the graph: the
+      answer's note says whether the change waits for a person or was
+      skipped. Say which in the lesson's change.
     - Answer with `lessons`, one per lesson (none when the material held
       none), and `stuck`.
 steps:
@@ -173,7 +184,7 @@ steps:
                 claim: { type: string, description: "the sentence that should hold from now on" }
                 claim_id: { type: string, description: "the claim's id" }
                 recorded: { type: boolean, description: "true when their words were recorded against the claim" }
-                change: { type: string, description: "the change you made to the tree, in a line (it waits for a person where this tree is reviewed); empty when none" }
+                change: { type: string, description: "the change you made to the tree, in a line (it waits for a person where this tree is reviewed, or where the page's text comes from git; skipped where the answer said so); empty when none" }
           stuck:
             type: array
             description: "claims that went wrong again though their page already says it plainly: what a person should look at, one line each"

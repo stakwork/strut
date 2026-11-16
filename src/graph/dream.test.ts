@@ -87,6 +87,9 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   let lesson = true;
   /** A page of its own guidance the stand-in tender opens first, by name. */
   let openFirst = "";
+  /** A page from git the stand-in tender changes in place of adding one (its ref_id), and what it was last sent. */
+  let editSeeded = "";
+  let tendLast = "";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
@@ -105,6 +108,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           calls.push("tend");
           const turn = body.messages.filter((m) => m.role === "assistant").length;
           if (turn === 0) [tendSystem, tendPrompt, tendTools] = [system, all, JSON.stringify(body.tools ?? [])];
+          tendLast = all;
           if (openFirst && turn === 0) return say("graph_graph_get", { node_type: "Concept", name: openFirst, children: "PARENT_OF" });
           if (!lesson) return say("final_answer", { lessons: [] });
           // The run whose work was corrected (turn 0's), the root's ref_id, and the claim once it is written.
@@ -113,9 +117,11 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           const claim = /\\+"id\\+":\\+"([0-9a-z]{32})\\+"/.exec(all)?.[1];
           if (turn === 0) return say("knowledge_add_claim", { concept: "Personal", text: CLAIM });
           if (turn === 1) return say("knowledge_add_evidence", { claim, workflow: "orchestrator", run, said: SAID, by: "evan" });
+          // A page whose text comes from git: the tool answers for it.
+          if (turn === 2 && editSeeded) return say("knowledge_edit_page", { ref_id: editSeeded, node_data: { docs: NEW_DOCS }, rationale: "Summaries run long." });
           // The root is never edited: the lesson goes on a page under it.
           if (turn === 2)
-            return say("graph_create_triplet", {
+            return say("knowledge_add_page", {
               source_ref_id: root,
               edge_type: "PARENT_OF",
               target_type: "Concept",
@@ -162,6 +168,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     verdict = false;
     lesson = true;
     openFirst = "";
+    editSeeded = "";
+    tendLast = "";
     dir = join(tmpdir(), `strut-dream-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     strut = await createStrut({
@@ -243,7 +251,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     for (const s of ["You are the dream.", 'the \\"Dream\\" Concept', "## Where a lesson goes", "- Assistant Conversations — ", 'the \\"Assistant Conversations\\" Concept', "Look for the moments a person corrected the assistant"]) assert.ok(at(s) >= 0, s);
     assert.ok(at("You are the dream.") < at('the \\"Dream\\" Concept') && at("## Where a lesson goes") < at('the \\"Assistant Conversations\\" Concept'), "mechanics, the root, then the source");
     // Not reviewed: the tools that change the tree run, and none says it waits for a person.
-    assert.ok(tendTools.includes("graph_create_triplet") && tendTools.includes("graph_edit_node"), tendTools.slice(0, 300));
+    assert.ok(tendTools.includes("knowledge_add_page") && tendTools.includes("knowledge_edit_page"), tendTools.slice(0, 300));
     assert.ok(!tendTools.includes("PROPOSED") && !tendSystem.includes("nothing changes until"), "nothing waits");
     // The transcript the agent was handed: each turn with its run and the pages that run opened, then the root as a tender reads it.
     assert.match(tendPrompt, new RegExp(`\\[session c-1 · turn 0 · [^\\]]* · run orchestrator ${first["runId"]}[^\\]]*\\]\\\\+nOPENED: [^\\\\]*Personal`));
@@ -326,12 +334,12 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     const run = await dream({ review: true });
     // The tools that change the tree say the change waits; the dream's own words hold either way.
-    assert.match(tendTools, /graph_create_triplet[^]*PROPOSED, not run/);
+    assert.match(tendTools, /knowledge_add_page[^]*PROPOSED, not run/);
     assert.ok(tendSystem.includes("Where a person reviews this tree, the answer says the change"));
     assert.deepEqual([run["output"]["review"], run["output"]["lessons"].length], [true, 1]);
 
     const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
-    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/create-triplet", "pending"]]);
+    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["knowledge/add-page", "pending"]]);
     assert.equal(await docsOf("Personal"), docsBefore);
     assert.equal(await docsOf("Summaries"), undefined);
     assert.equal((await claimsOn("Personal"))[0]!["status"], "refuted");
@@ -346,6 +354,22 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.equal(await docsOf("Personal"), docsBefore);
     assert.equal(await docsOf("Summaries"), NEW_DOCS);
     assert.equal((await claimsOn("Personal"))[0]!["status"], "stale");
+  });
+
+  it("a page whose text comes from git is never changed by the dream, whatever the review says: on a strut with no checkout for it the change is skipped, and the tool says so", async () => {
+    // `Assistant Conversations`, a page strut ships under `Dream` (not a root): from git.
+    const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
+    editSeeded = String(seeded["r"]);
+    for (const review of [false, true]) {
+      await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
+      await say(SAID);
+      const run = await dream({ review });
+      // Skipped, in both modes: no proposal, the page as git has it, and the answer says why.
+      assert.deepEqual((await json<{ proposals: unknown[] }>(`/proposals?runId=${run["runId"]}`)).proposals, []);
+      assert.equal(await docsOf("Assistant Conversations"), seeded["d"]);
+      assert.match(tendLast, /\\+"status\\+":\\+"skipped\\+"/);
+      assert.match(tendLast, /comes from git \(strut\/concepts\/Assistant Conversations\.md\)/);
+    }
   });
 
   it("knowledge/cycles answers strut's own page shown to an admin, and no one else: the lessons quote what people said", async () => {

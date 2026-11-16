@@ -45,6 +45,8 @@ import type { TaskTypesCapability } from "./tasks/set-type.js";
 import type { PublicViewCapability } from "./public-view.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
+import type { BranchesCapability } from "./branches.js";
+import type { ConceptSources } from "./concept-sources.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -422,6 +424,14 @@ export interface StrutCapabilities {
    *  evidence. Set by the standard server wherever the claims layer is on;
    *  the `knowledge/*` steps are thin over it. */
   knowledge?: KnowledgeCapability;
+  /** The Concept branches (src/branches.ts): set by the standard server on a
+   *  graph workspace. `knowledge/merge` merges one into main. */
+  branches?: BranchesCapability;
+  /** Which Concept pages' text comes from git, and the proposals that write
+   *  a change to one into its checkout (src/concept-sources.ts, plans/
+   *  concept-evals.md item e). Set by the standard server on a graph
+   *  workspace. */
+  conceptSources?: ConceptSources;
   /** The other struts this one may call (peers.ts; plans/federation.md
    *  §2.2): name a peer, make a request with its token injected — the
    *  token itself is readable by nothing. Set by the standard server; a

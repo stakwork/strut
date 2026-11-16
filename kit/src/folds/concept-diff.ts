@@ -191,7 +191,7 @@ export function proposalRefs(p: ConceptProposal): string[] {
 }
 
 /** The steps a proposal can change a Concept page with. */
-export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "graph/create-node", "graph/delete-node", "graph/create-triplet"] as const;
+export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "graph/create-node", "graph/delete-node", "graph/create-triplet", "knowledge/edit-page", "knowledge/add-page"] as const;
 
 /**
  * SOURCE TWO: a pending proposal laid over the page as it is now (`current`,
@@ -206,6 +206,8 @@ export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "gr
  *   graph/delete-node  a removed page
  *   graph/create-triplet  a new Concept under an existing one (PARENT_OF,
  *                      source_ref_id → target_data): an added page, its parent named
+ *   knowledge/edit-page, knowledge/add-page  the dream's: graph/edit-node's
+ *                      and graph/create-triplet's inputs, read the same way
  */
 export function proposalEntry(
   p: ConceptProposal,
@@ -222,14 +224,16 @@ export function proposalEntry(
     }
     case "graph/delete-node":
       return current ? { path: current.path, before: current.page } : null;
-    case "graph/create-triplet": {
+    case "graph/create-triplet":
+    case "knowledge/add-page": {
       const target = (input["target_data"] && typeof input["target_data"] === "object" ? input["target_data"] : {}) as Record<string, unknown>;
       if (String(input["edge_type"] ?? "").toUpperCase() !== "PARENT_OF" || String(input["target_type"] ?? "").toLowerCase() !== "concept" || typeof target["name"] !== "string") return null;
       const parent = typeof input["source_ref_id"] === "string" ? nameOf(input["source_ref_id"]) : undefined;
       const page = pageFromData(target);
       return { path: keylessPath(page.name), after: { ...page, parents: parent ? [parent] : [] } };
     }
-    case "graph/edit-node": {
+    case "graph/edit-node":
+    case "knowledge/edit-page": {
       if (!current || input["node_type"] !== undefined) return null;
       const before = current.page;
       const attributes = { ...before.attributes };
