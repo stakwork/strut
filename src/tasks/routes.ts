@@ -76,14 +76,31 @@
  *   → `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat },
  *   payouts }`, newest first, each with `stale` (still out a day after it
  *   was sent: it waits for a person). With no ledger: the defaults and none
- * - `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }`
+ * - `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats, inviteSats? }`
  *   → `{ settings }` with `changedBy` and `changedAt`: the whole row;
- *   `minSats` at least 1, each cap at least `minSats`
+ *   `minSats` at least 1, each cap at least `minSats`; `inviteSats` (an
+ *   invite's default starting sats, §5.8) 1 to 100,000, 100 when left out
  * - `POST /tasks/payouts/:key/read` → `{ payout, state, msat, feeMsat, … }`:
  *   read it now through the payer it went out through
  * - `POST /tasks/payouts/:key/resolve { action: "paid" | "drop", feeMsat? }`
  *   → `{ payout, action }`: a person settles one by hand — `paid` with the
  *   fee they give (else 0), `drop` fails it and gives its reserve back
+ *
+ * The INVITE routes (plans/human-steps.md §5.8): a new worker's one link,
+ * made through the payer (the daemon pays the mixer for an invite) and
+ * kept by the daemon alone.
+ *
+ * - `POST /tasks/invites { sats?, app? }` → `{ code, link, sats, status,
+ *   app }`: `link` is `https://<public view>/public/join#<the invite>&a=<the
+ *   worker app's URL>`; `sats` the worker's starting balance (the payout
+ *   settings' `inviteSats` when left out); `app` one of the apps the task
+ *   types name that are in the public view (needed when there are several:
+ *   `409 pick_app`; none, `409 no_worker_app`)
+ * - `GET /tasks/invites[?app=]` → `{ invites, apps, app?, sats, why? }`: the
+ *   daemon's invites newest first, each link opening `app` (or the one
+ *   worker app); `why` says the server cannot invite (`no_pay_credential`,
+ *   `no_invites`)
+ * - `POST /tasks/invites/:code/cancel` → `{ code, status }`
  */
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
@@ -94,6 +111,7 @@ import { PAYOUT_STATES, type PayoutState } from "../payments/ledger.js";
 import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/payouts.js";
 import { WithdrawError } from "../payments/withdrawals.js";
 import { entryView } from "../payments/earnings-routes.js";
+import { InviteError, type Invites } from "../payments/invites.js";
 
 export interface TaskRoutesDeps {
   isFull: (c: Context) => Promise<boolean>;
@@ -118,6 +136,11 @@ export interface TaskRoutesDeps {
   /** §8.2: a worker's withdrawals and their settings (src/payments/payouts.ts).
    *  Absent: the payout routes answer 501. */
   payouts?: Pick<Payouts, "list" | "saveSettings" | "read" | "resolve">;
+  /** §5.8: worker invites (src/payments/invites.ts), and the base their
+   *  links are on: the share links' (createStrut: `lastBase` for a staff
+   *  page's in-process request). Absent: the invite routes answer 501. */
+  invites?: Invites;
+  publicUrl?: (c: Context) => string;
 }
 
 const PAYOUT_STATUS: Partial<Record<PayoutErrorCode, 400 | 404 | 409>> = { bad_request: 400, unknown_payout: 404 };
@@ -204,11 +227,21 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
   app.put("/tasks/payouts/settings", (c) =>
     payoutAnswer(c, async (p) => {
       const b = await body(c);
-      const extra = Object.keys(b).filter((k) => !["on", "minSats", "workerDaySats", "serverDaySats"].includes(k));
-      if (extra.length) throw new TaskError("bad_request", `the settings are on, minSats, workerDaySats and serverDaySats; not ${extra.join(", ")}`);
+      const extra = Object.keys(b).filter((k) => !["on", "minSats", "workerDaySats", "serverDaySats", "inviteSats"].includes(k));
+      if (extra.length) throw new TaskError("bad_request", `the settings are on, minSats, workerDaySats, serverDaySats and inviteSats; not ${extra.join(", ")}`);
       if (typeof b["on"] !== "boolean") throw new TaskError("bad_request", "on is true or false");
       for (const k of ["minSats", "workerDaySats", "serverDaySats"]) if (typeof b[k] !== "number") throw new TaskError("bad_request", `${k} is a whole number of sats`);
-      const settings = await p.saveSettings({ on: b["on"], minSats: b["minSats"] as number, workerDaySats: b["workerDaySats"] as number, serverDaySats: b["serverDaySats"] as number }, (await by(c)).by);
+      if (b["inviteSats"] !== undefined && typeof b["inviteSats"] !== "number") throw new TaskError("bad_request", "inviteSats is a whole number of sats");
+      const settings = await p.saveSettings(
+        {
+          on: b["on"],
+          minSats: b["minSats"] as number,
+          workerDaySats: b["workerDaySats"] as number,
+          serverDaySats: b["serverDaySats"] as number,
+          ...(b["inviteSats"] !== undefined ? { inviteSats: b["inviteSats"] as number } : {}),
+        },
+        (await by(c)).by,
+      );
       return { settings };
     }),
   );
@@ -231,6 +264,35 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       return { ...(await p.resolve(key, { action, ...(b["feeMsat"] !== undefined ? { feeMsat: b["feeMsat"] as number } : {}) }, (await by(c)).by)) };
     }),
   );
+
+  // ── invites (§5.8): before `/tasks/:id`, which would take `invites` for an id ──
+  const inviteAnswer = async (c: Context, fn: (i: Invites, base: string) => Promise<Record<string, unknown>>) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.invites || !deps.publicUrl) return c.json({ error: "this server makes no worker invites", code: "not_available" }, 501);
+    try {
+      return c.json(await fn(deps.invites, deps.publicUrl(c)));
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      if (err instanceof InviteError) return c.json({ error: err.message, code: err.code }, err.status);
+      throw err;
+    }
+  };
+
+  app.post("/tasks/invites", (c) =>
+    inviteAnswer(c, async (i, base) => {
+      const b = await body(c);
+      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "app");
+      if (extra.length) throw new TaskError("bad_request", `an invite takes sats and app; not ${extra.join(", ")}`);
+      if (b["sats"] !== undefined && typeof b["sats"] !== "number") throw new TaskError("bad_request", "sats is a whole number of sats");
+      if (b["app"] !== undefined && typeof b["app"] !== "string") throw new TaskError("bad_request", "app is an app's name");
+      return { ...(await i.create({ base, ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["app"] ? { app: b["app"] as string } : {}) })) };
+    }),
+  );
+
+  app.get("/tasks/invites", (c) => inviteAnswer(c, async (i, base) => ({ ...(await i.list({ base, ...(c.req.query("app") ? { app: c.req.query("app")! } : {}) })) })));
+
+  app.post("/tasks/invites/:code/cancel", (c) => inviteAnswer(c, async (i) => ({ ...(await i.cancel(c.req.param("code") ?? "")) })));
 
   app.get("/tasks/types", (c) => answer(c, async () => ({ types: await tasks.types() })));
 

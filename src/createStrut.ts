@@ -56,6 +56,7 @@ import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
+import { createInvites } from "./payments/invites.js";
 import { WORKER_ADDRESS } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -6525,6 +6526,22 @@ export async function createStrut<TServices = unknown>(
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
+    // A new worker's invite (§5.8): the daemon's, through the payer; its
+    // link on the base the share links use, opening the worker app — an app
+    // the task types name that is in the public view.
+    invites: createInvites({
+      payer: () => payments.payer(),
+      inviteSats: async () => (await payouts.settings()).inviteSats,
+      workerApps: async () => {
+        const [types, surface] = await Promise.all([(hostTasks ?? tasks.capability).types(), publicSurface.get()]);
+        const shown = new Set(surface.apps.map((a) => a.name));
+        return [...new Set(types.map((t) => t.app))].filter((a) => shown.has(a)).sort();
+      },
+    }),
+    // The share links' base (`baseOfRequest`, with a mount path): a staff
+    // page's in-process request is `http://strut.invalid`, so it takes where
+    // the page's own request came (`lastBase`), as staff/types' share does.
+    publicUrl: (c) => (inProcessOf(c) && lastBase) || baseOfRequest(c),
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {

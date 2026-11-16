@@ -957,6 +957,122 @@ Not taken:
   fires a `foreach` of `human` steps), but N is a guess: tasks pile up and
   expire when nobody works, and workers hear "none" between fires.
 
+### 5.8 Onboarding: inviting a worker
+
+**Built: stakwork/strut#711** (strut's side). Peel Android's side is
+stakwork/peel-android's and the daemon's routes stakwork/sphinx's, built
+beside it.
+
+The goal is the simplest onboarding there can be, for a new Peel user and
+an existing one alike: staff tap **Invite**, send one link, and the worker
+is doing tasks a minute later. The worker app is already in the Stadeum's
+public view (§5.4), and a task type is open by default (ruling 9), so a
+worker who signs in is let in on their first `task/next`. What was missing
+is the person: someone without Peel or a Sphinx account has no way in, and
+the shared layer that admits a worker is an invite on the Sphinx mixer
+Stakwork runs (ruling 5).
+
+Invite sits beside SHARE (§9.5), in the same block for each public worker
+app. Share's links are for a worker who already has Peel and a Sphinx
+account (or a browser): free, reusable, `peel://open?url=<link>`. An
+invite is for someone who has neither: one use, paid for, and it ends at
+the very same `link`.
+
+#### The flow
+
+```
+staff (strut/staff, a worker app's Share block → Invite)
+  └─ staff/invite { sats?, app } ─▶ POST /tasks/invites ─▶ the payer ─▶ POST /invite { sats } ─▶ the treasury daemon ─▶ the mixer
+  ◀─ { code, link, sats, status, app, qrSvg }
+staff send the link (SMS, WhatsApp, a QR code in person):
+  https://<public view>/public/join#action=i&d=…&c=…&a=<the app's share link, percent-encoded>
+worker taps it on Android ─▶ /public/join (static; the invite after # never reaches a server)
+  └─ "Open in Peel": intent://?action=i&…&a=…#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<newest APK>;end
+       ├─ Peel installed, new user:      signs up with the invite (its starting sats), then opens a=
+       ├─ Peel installed, existing user: opens a= at once
+       └─ no Peel: Chrome downloads the APK; installed, "Installed Peel? Continue" fires the intent again
+worker app (a= : <public view>/?app=<name>&solo=1&public=1) ─▶ sign in with Peel (sphinx, root key): one tap
+  └─ task/next ─▶ the open type lets them in (a grant by "open"), and they work
+```
+
+1. **Invite.** In a worker app's Share block (the Queue, or a type's
+   page), staff may change the starting sats, then tap **Make an invite
+   link**. Strut calls the daemon's `POST /invite` through the payer: an
+   invite is paid for (the starting sats, and the mixer's price on top), so
+   it takes the PAY token, which only the payer holds and no services bag
+   carries. The answer is the invite's code, the join link, its sats and
+   its status (`sending` while the daemon pays the mixer, then `ready`),
+   with a QR code of the link. The Workers tab lists every invite with its
+   status, and Cancel while one is unused.
+2. **Send.** The link is https, so SMS and WhatsApp make it tappable; they
+   do not for a custom scheme like `sphinx.chat://`. Copy, Share in
+   WhatsApp, or the QR code in person.
+3. **Join.** `/public/join` reads the invite from `location.hash`. On
+   Android its "Open in Peel" is Chrome's `intent://` form of
+   `sphinx.chat://?<the invite>` for Peel's package, with the newest APK on
+   stakwork/peel-android's GitHub releases as the fallback; anywhere else
+   it says to open the link on an Android phone and shows a QR code of
+   itself. Peel signs a new user up with the invite, then opens the worker
+   app; an existing user goes straight there.
+4. **Work.** The worker app signs in with `sphinx` and the root key (§5.4):
+   for a Peel user, one tap. Their first `task/next` enters the app's open
+   types (ruling 9). An invite-only type still needs a staff grant, as
+   before.
+
+#### The `a=` section
+
+`a=` is new, strut's own, and lives ONLY in the link: strut appends it
+after the daemon's invite. Its value is the worker app's share `link`
+(`publicAppLinks`), `<base>/?app=<name>&solo=1&public=1`, the address
+Share's `peel://open?url=` opens for that app, percent-encoded whole so its
+own `&` and `=` stay inside the section. The mixer keeps only code →
+starting sats; the core's parser (`parse_invite_qr`,
+`sphinx/src/ping/invite.rs`) splits on `&`, finds `d=`, `c=` and `t=`, and
+ignores a section it does not know. So nothing on the mixer or in the core
+changes, and Peel reads `a=` beside the invite.
+
+The WORKER APP is an app the task types name that is in the public view:
+the link must have somewhere to open. None is `no_worker_app`; the Share
+block names its app, and a call that names none when there are several is
+`pick_app`. The link is on the share links' base: `STRUT_PUBLIC_URL`, else
+where the staff page's own request came, with any mount path (`/lab`).
+The route's in-process request is `http://strut.invalid`, so it takes that
+base as staff/types' share does (`lastBase`).
+
+#### The daemon's routes
+
+specs/LIGHTNING.md "Invites" is the contract (fields may be added, none
+renamed or removed), all with the pay or admin token:
+
+| Route | Answers |
+| --- | --- |
+| `POST /invite { sats }` | `{ code, link, sats, status }` (and `createdAt`) |
+| `GET /invites` | `{ invites: [{ code, link, sats, status, createdAt }] }` |
+| `POST /invite/:code/cancel` | `{ code, status }` |
+
+`status` is `sending`, `ready`, `failed`, `used` or `cancelled`. `sats` is
+the worker's starting balance; the mixer's invite price is paid on top.
+`scripts/fake-sphinx-daemon.ts` answers the three for a local strut and
+the tests.
+
+#### What strut keeps
+
+Nothing new. The daemon keeps the invites, and the task store nothing: no
+invite table, no pending worker, no grant made ahead. An invite's default
+sats is a MONEY SETTING (§9.9): `inviteSats` on the payout settings, 100
+sats, 1 to 100,000, edited beside the caps in the Payouts tab.
+
+#### Not decided, not built
+
+- **The Play Store.** Peel Android ships as an APK on its GitHub releases;
+  the fallback is that. A store listing would change the fallback alone.
+- **Deferring the words backup** in Peel's onboarding, so a new worker
+  reaches the work before writing down their words.
+- **Per-invite grants**: an invite that grants an invite-only type, or
+  marks the worker as invited by whom. The link carries the app alone, and
+  any open type lets them in.
+- **iPhone.** The page says to open the link on an Android phone.
+
 ## 6. Task types and staff
 
 Routes, full scope only (specs/API.md gets a section):
@@ -3310,8 +3426,9 @@ Actions: "Save type", "Don't".
 
 ### 9.9 Money settings
 
-A type's pay and hold (item 5a) and the payout caps and switch (item 5b)
-are money settings.
+A type's pay and hold (item 5a), the payout caps and switch (item 5b) and
+an invite's default starting sats (§5.8, `inviteSats` on the payout
+settings) are money settings.
 
 - An admin sets them in this app directly: the admin is the person whose
   yes a proposal would ask for.
@@ -3486,6 +3603,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
 | 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
+| Invites | **Inviting a worker** (§5.8): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite in each worker app's Share block, the invite list on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.8) |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.

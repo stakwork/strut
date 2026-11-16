@@ -325,6 +325,9 @@ export interface PayoutSettings {
   minSats: number;
   workerDaySats: number;
   serverDaySats: number;
+  /** An invite's starting sats when staff name none (§5.8); absent on a
+   *  strut from before. */
+  inviteSats?: number;
   changedBy?: string;
   changedAt?: number;
 }
@@ -334,3 +337,28 @@ export interface PayoutsAnswer {
   today: { day: string; paidMsat: number; outMsat: number; count: number; serverLeftMsat: number };
   payouts: Payout[];
 }
+
+export type InviteStatus = "sending" | "ready" | "failed" | "used" | "cancelled";
+
+/** One worker invite, as `GET /tasks/invites` lists it (src/payments/invites.ts). */
+export interface Invite {
+  code: string;
+  /** `https://<public view>/public/join#…`: what the worker is sent. */
+  link?: string;
+  sats: number;
+  status: InviteStatus;
+  createdAt?: string;
+}
+
+export interface InvitesAnswer {
+  invites: Invite[];
+  /** The worker apps: the apps task types name that are in the public view. */
+  apps: string[];
+  app?: string;
+  /** What an invite gives when it names none. */
+  sats: number;
+  why?: "no_pay_credential" | "no_invites";
+}
+
+/** `staff/invite`'s answer: the invite, its app and its link as a QR code (an SVG). */
+export type MadeInvite = Invite & { app: string; qrSvg?: string };

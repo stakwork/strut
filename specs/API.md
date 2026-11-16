@@ -2483,12 +2483,15 @@ the host as `ui/open-link`, so its address bar follows.
   group), JSON, and a preview in `TaskForm`; it writes only what the store
   checks. Pay, Tests and Copies sections; the workers who hold it, with
   Revoke and Grant.
-- **Workers**: `new` first, several granted at once; each with their status,
+- **Workers**: the workers, `new` first, several granted at once; each with their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
   `standing` too), the week, their newest leases with each answer's
   verdict and links to their answers to review and their rejected ones,
   standing (with how many of its window are rejected answers), and what
-  they earned, hold and may withdraw.
+  they earned, hold and may withdraw. Below them, once there is one, every
+  invite the wallet keeps (`plans/human-steps.md` §5.8) with its status,
+  Copy and Cancel while it may be used (read every 3 s while one is
+  `sending`).
 - **Tasks**: filtered by type, status, run, who answered and review (the
   review queue: not reviewed, marked ok, rejected), with a Review column;
   a task with what it showed and its files, its leases (a copy's answer,
@@ -2542,6 +2545,9 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/test-file { id, path, base64 }` | `PUT /tasks/tests/:id/files/<path>` (the bytes) | `{ test }` |
 | `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
 | `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
+| `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
+| `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
+| `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
@@ -2552,7 +2558,11 @@ block for each public app a type is answered in (`sharedApps`): the QR of
 its `peelLink` (an iPhone camera opens it in Peel) and Copy buttons for
 `peelLink` (Peel) and `link` (a browser). A type's page shows its app's
 block, or says the app is not in the public view; the page makes nothing
-public (that stays the Public view dialog or `app/make-public`).
+public (that stays the Public view dialog or `app/make-public`). Each block
+ends with **Invite**, for someone new to Peel (`plans/human-steps.md` §5.8):
+the starting sats (blank: the payout settings' `inviteSats`) make a
+one-use link to that app, shown with its QR code, Copy and Share in
+WhatsApp; a wallet that cannot invite says why.
 
 ### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
 
@@ -3694,6 +3704,8 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Installed Peel? Continue" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
 version, 1 today) — its public apps may be hosted by any strut UI, its `POST
@@ -5456,7 +5468,7 @@ the shared bag, no proposal, no YAML, not `task/set-type`):
 | Route | Answers |
 | --- | --- |
 | `GET /tasks/payouts?state=&worker=&before=&limit=` | `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat }, payouts }` newest first; `state` is `out`, `stale`, `paid` or `failed`; `before` a payout's `seq`. Each payout: `{ seq, key, worker, address, msat, maxFeeMsat, state, at, day, feeMsat?, paymentHash?, ended?, why?, by?, stale }`. With no ledger: the defaults and none |
-| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }` | `{ settings }` with `changedBy` and `changedAt`: the whole row. `minSats` at least 1, each cap at least `minSats`, whole sats; anything else `400 bad_request` |
+| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats, inviteSats? }` | `{ settings }` with `changedBy` and `changedAt`: the whole row. `minSats` at least 1, each cap at least `minSats`, whole sats; `inviteSats` (an invite's starting sats when staff name none, "Inviting a worker" below) 1 to 100,000, 100 when left out; anything else `400 bad_request` |
 | `POST /tasks/payouts/:key/read` | `{ payout, state, paymentHash, msat, feeMsat, maxFeeMsat, error?, entry?, existing? }`: read it now through the wallet it went out through, as `POST /earnings/withdrawals/:paymentHash/read` (§19) |
 | `POST /tasks/payouts/:key/resolve { action: "paid" \| "drop", feeMsat? }` | `{ payout, action }`: `paid` settles it — the worker charged the amount and the fee given (else 0) up to its cap; `drop` fails it and gives its reserve back |
 
@@ -5473,6 +5485,47 @@ The payout's KEY — 32 random bytes strut makes before it sends — is the
 treasury daemon's idempotency key (`POST /keysend { id, address, msat,
 max_fee_msat }`, `GET /keysend/:id`, specs/LIGHTNING.md), the pending send's
 key, and the `withdrawal` entry's `ref`.
+
+### Inviting a worker (`plans/human-steps.md` §5.8)
+
+Staff send a new worker ONE https link. Strut asks the treasury daemon for a
+Sphinx invite through the payer (the daemon pays the mixer for it: the
+starting sats, and the mixer's price on top; specs/LIGHTNING.md "Invites"),
+and answers the link on the base the share links use (§17.2
+`publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
+proxy's headers and mount path honored; a staff page's in-process request
+takes where the page's own request came):
+
+```
+https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker app URL>
+```
+
+After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
+`a=`, strut's own section, the worker app's share `link`
+(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user)
+encoded whole. `/public/join` (§17.2)
+turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
+new user up with the invite and then opens `a=` (an existing user goes there
+at once). The mixer keeps only code → starting sats, and the core's parser
+ignores a section it does not know. The WORKER APP is an app the task types
+name that is in the public view. Strut keeps nothing: the daemon keeps the
+invites, and an open type (the default) lets the worker in on their first
+`task/next`.
+
+Full scope, beside the rest; `strut/staff` reaches them through
+`staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):
+
+| Route | Answers |
+| --- | --- |
+| `POST /tasks/invites { sats?, app? }` | `{ code, link, sats, status, app }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `app` one of the worker apps — needed when there are several (`409 pick_app` names them), `400` for another; none at all is `409 no_worker_app`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
+| `GET /tasks/invites?app=` | `{ invites: [{ code, link?, sats, status, createdAt? }], apps, app?, sats, why? }`: the daemon's invites, newest first, each `link` opening `app` (or the one worker app; with several and none asked, no `link`); `apps` the worker apps; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
+| `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
+
+`status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
+new account took it) or `cancelled`. Refusals: `409 no_pay_credential`
+(no pay token), `501 no_invites` (a wallet that is not a Sphinx daemon, or
+one without the routes), `502 wallet_unavailable`, `409 wallet_refused` with
+the daemon's words; `501 not_available` on a server built without them.
 
 ### Tests, grading and standing (`plans/human-steps.md` §7)
 

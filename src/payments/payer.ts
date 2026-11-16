@@ -19,6 +19,10 @@
  * throws a `LightningError` carrying the wallet's own code. And for a
  * worker's payout, `keysend` an amount to a Sphinx address and
  * `keysendStatus`, which only reads (the daemon's; NWC has no route hints).
+ * And a Sphinx INVITE for a new worker (plans/human-steps.md §5.8): the
+ * daemon pays the mixer for it, so it is the pay token's too — `invite`,
+ * `invites` and `cancelInvite`, which only the staff's `/tasks/invites`
+ * routes call (src/payments/invites.ts).
  */
 
 import { createHash } from "node:crypto";
@@ -130,6 +134,38 @@ export interface Payer {
    *  route throws `wallet_refused` with walletCode `no_keysend_cancel`; a
    *  keysend it cannot cancel, `not_cancellable`. */
   keysendCancel?(req: { id: string }): Promise<KeysendResult>;
+  /** A Sphinx invite for a new worker, `sats` their starting balance (the
+   *  mixer's price is paid on top). The daemon's alone; one without the
+   *  route throws `wallet_refused` with walletCode `no_invites`. */
+  invite?(req: { sats: number }): Promise<WalletInvite>;
+  /** Every invite the daemon keeps. */
+  invites?(): Promise<WalletInvite[]>;
+  /** Cancel an invite: where it stands after. One the daemon does not know
+   *  throws `wallet_refused` with walletCode `not_found`. */
+  cancelInvite?(req: { code: string }): Promise<{ code: string; status: InviteStatus }>;
+}
+
+/** The walletCode a payer throws for a daemon with no invite routes. */
+export const NO_INVITES = "no_invites";
+
+/** A worker invite's state at the daemon (plans/human-steps.md §5.8):
+ *  `sending` while it pays the mixer for it, `ready` to be used, `failed`
+ *  when that payment failed, `used` once a new account took it,
+ *  `cancelled` by staff. */
+export const INVITE_STATUSES = ["sending", "ready", "failed", "used", "cancelled"] as const;
+export type InviteStatus = (typeof INVITE_STATUSES)[number];
+
+/** One invite, as the daemon keeps it. */
+export interface WalletInvite {
+  code: string;
+  /** The Sphinx invite, `sphinx.chat://?action=i&d=…&c=…`, when the daemon
+   *  gave one. */
+  link?: string;
+  /** The new account's starting balance; the mixer's price was on top. */
+  sats: number;
+  status: InviteStatus;
+  /** ISO, when the daemon said. */
+  createdAt?: string;
 }
 
 /** The walletCode a payer throws for a wallet with no keysend route. */
@@ -324,9 +360,97 @@ export class SphinxDaemonPayer implements Payer {
     return daemonKeysend(this.#daemon(), "CANCEL", req.id);
   }
 
+  /** `POST /invite { sats }` (plans/human-steps.md §5.8). */
+  async invite(req: { sats: number }): Promise<WalletInvite> {
+    if (!req || !Number.isSafeInteger(req.sats) || req.sats <= 0) throw new LightningError("bad_request", "an invite's sats is a whole number above 0");
+    return inviteOf(await daemonInviteCall(this.#daemon(), "POST", "/invite", { sats: req.sats }), "POST /invite");
+  }
+
+  /** `GET /invites`. */
+  async invites(): Promise<WalletInvite[]> {
+    const b = await daemonInviteCall(this.#daemon(), "GET", "/invites");
+    if (!Array.isArray(b["invites"])) throw new LightningError("wallet_bad_answer", "the daemon's GET /invites has no invites list");
+    return (b["invites"] as unknown[]).map((v, i) => inviteOf(v, `GET /invites' invite ${i}`));
+  }
+
+  /** `POST /invite/:code/cancel`. */
+  async cancelInvite(req: { code: string }): Promise<{ code: string; status: InviteStatus }> {
+    if (!req || typeof req.code !== "string" || !INVITE_CODE.test(req.code)) throw new LightningError("bad_request", "an invite's code is 1 to 128 letters, digits, - or _");
+    const b = await daemonInviteCall(this.#daemon(), "POST", `/invite/${req.code}/cancel`);
+    return { code: req.code, status: statusOf(b["status"], "POST /invite/:code/cancel") };
+  }
+
   #daemon() {
     return { url: this.#url, token: this.#token, http: this.#http, timeoutMs: this.#timeoutMs };
   }
+}
+
+// ── invites, for a new worker (plans/human-steps.md §5.8) ─────────────────
+
+/** An invite's code as it may ride in a path: the daemon's (hex today). */
+export const INVITE_CODE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function statusOf(v: unknown, what: string): InviteStatus {
+  if (typeof v !== "string" || !(INVITE_STATUSES as readonly string[]).includes(v)) {
+    throw new LightningError("wallet_bad_answer", `the daemon's ${what} status ${JSON.stringify(v)} is not one of ${INVITE_STATUSES.join(", ")}`);
+  }
+  return v as InviteStatus;
+}
+
+/** A time the daemon wrote — unix seconds, ms, or ISO — as ISO; else none. */
+function isoOrNone(v: unknown): string | undefined {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return new Date(v < 1e12 ? v * 1000 : v).toISOString();
+  if (typeof v === "string" && v && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  return undefined;
+}
+
+function inviteOf(v: unknown, what: string): WalletInvite {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new LightningError("wallet_bad_answer", `the daemon's ${what} is not an object`);
+  const r = v as Record<string, unknown>;
+  if (typeof r["code"] !== "string" || !INVITE_CODE.test(r["code"])) throw new LightningError("wallet_bad_answer", `the daemon's ${what} has no code`);
+  const sats = typeof r["sats"] === "string" && /^\d+$/.test(r["sats"]) ? Number(r["sats"]) : r["sats"];
+  if (typeof sats !== "number" || !Number.isSafeInteger(sats) || sats < 0) throw new LightningError("wallet_bad_answer", `the daemon's ${what} sats is not a whole number`);
+  const createdAt = isoOrNone(r["createdAt"] ?? r["created_at"]);
+  return {
+    code: r["code"],
+    ...(typeof r["link"] === "string" && r["link"] ? { link: r["link"] } : {}),
+    sats,
+    status: statusOf(r["status"], what),
+    ...(createdAt ? { createdAt } : {}),
+  };
+}
+
+/** One call to the daemon's invite routes with the pay token: its JSON
+ *  object, or a `LightningError` — `no_invites` for a daemon that predates
+ *  them, `not_found` for a code it does not know, its own `code` else. */
+async function daemonInviteCall(o: { url: string; token: string; http: HttpCapability }, method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const route = `${method} ${path.replace(/^\/invite\/[^/]+\/cancel$/, "/invite/:code/cancel")}`;
+  const timeout = 20_000;
+  let res: HttpResponse;
+  try {
+    res = await o.http(`${o.url}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${o.token}`, accept: "application/json" },
+      ...(body ? { body } : {}),
+      timeout,
+    });
+  } catch (err) {
+    const why = err instanceof Error ? (err.name === "TimeoutError" ? `no answer in ${timeout / 1000} s` : err.message) : String(err);
+    throw new LightningError("wallet_unavailable", `the Sphinx daemon at ${o.url} did not answer ${route}: ${why}`);
+  }
+  const said = res.body && typeof res.body === "object" && !Array.isArray(res.body) ? (res.body as Record<string, unknown>) : {};
+  if (!res.ok) {
+    const message = typeof said["error"] === "string" ? said["error"] : typeof res.body === "string" && res.body ? res.body.slice(0, 200) : `HTTP ${res.status}`;
+    const walletCode = typeof said["code"] === "string" ? said["code"] : undefined;
+    if (res.status === 401 || res.status === 403) throw new LightningError("wallet_unauthorized", `the Sphinx daemon refused the pay token on ${route}: ${message}`, walletCode);
+    if (res.status >= 500) throw new LightningError("wallet_unavailable", `the Sphinx daemon failed ${route}: ${message}`, walletCode);
+    if (res.status === 404 && /^no route /.test(message)) {
+      throw new LightningError("wallet_refused", `the Sphinx daemon at ${o.url} has no ${route}: it predates worker invites (specs/LIGHTNING.md)`, NO_INVITES);
+    }
+    throw new LightningError("wallet_refused", `the Sphinx daemon refused ${route}: ${message}`, walletCode ?? (res.status === 404 ? "not_found" : undefined));
+  }
+  if (!res.body || typeof res.body !== "object" || Array.isArray(res.body)) throw new LightningError("wallet_bad_answer", `the daemon answered ${route} with no JSON object`);
+  return said;
 }
 
 // ── keysend, for a worker's payout (plans/human-steps.md §8.2) ─────────────

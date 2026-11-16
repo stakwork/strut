@@ -15,7 +15,9 @@ This file is the contract each provider is built against:
   and `POST /pay`, `POST /keysend`, `GET /keysend/:id` and
   `POST /keysend/:id/cancel` for the payer, built in the sphinx repo
   (`wasm/daemon/src/http.ts`, stakwork/sphinx#428; the keysend routes,
-  stakwork/sphinx#431).
+  stakwork/sphinx#431), and the three INVITE routes for a new worker
+  (`POST /invite`, `GET /invites`, `POST /invite/:code/cancel`; "Invites"
+  below), being built in the sphinx repo as strut's side lands.
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
   that answer exactly this.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
@@ -296,6 +298,44 @@ word, then answers the keysend as it stands, with `cancelled`:
 - **The LSP must know the cancel** (the mixer's `cancelpay`,
   stakwork/sphinx#433). One that does not gives no answer: the keysend
   stays `pending` with `cancel_unconfirmed`, and a person decides.
+
+### Invites — a new worker's Sphinx account (the payer)
+
+plans/human-steps.md §5.8. Staff invite a new worker with one link; the
+daemon makes the Sphinx invite, paying the mixer for it, so these take the
+PAY token (or the admin token, which strut never holds), never the receive
+token (`403`). Only the staff's `/tasks/invites` routes call them, through
+the payer (`invite`, `invites`, `cancelInvite`), with 20 s each. Fields may
+be added; none is renamed or removed.
+
+```
+POST /invite { "sats": 100 }
+→ { "code": "<the invite's code>", "link": "sphinx.chat://?action=i&d=…&c=…", "sats": 100, "status": "sending", "createdAt": 1794787200 }
+
+GET /invites
+→ { "invites": [ { "code", "link", "sats", "status", "createdAt" }, … ] }
+
+POST /invite/:code/cancel
+→ { "code": "<code>", "status": "cancelled" }
+```
+
+- **`sats`** is the new account's starting balance. The mixer's invite price
+  is paid on top of it, from the daemon's balance.
+- **`status`** is one of `sending` (the daemon is paying the mixer for it),
+  `ready` (it can be used), `failed` (that payment failed), `used` (a new
+  account took it) or `cancelled`.
+- **`link`** is the core's `invite_qr` (`sphinx/src/ping/invite.rs`):
+  `sphinx.chat://?action=i&d=<URL-safe base64 of the code's 32 bytes and the
+  mixer's host>`, with `c=` (the inviter) and `t=` (a tribe) when there are
+  any. Strut takes `sphinx.chat://?` off and puts the rest after `#` in its
+  join link, then adds `a=`, a section only the link carries; the core's
+  `parse_invite_qr` ignores a section it does not know.
+- **`code`** rides in the cancel's path: letters, digits, `-` and `_`, 1 to
+  128 of them (hex today).
+- **`createdAt`** is unix seconds; strut also reads ms and ISO.
+- **A `404 { code: "not_found" }`** on the cancel is a code the daemon does
+  not know (`unknown_invite` to staff). A `404 no route …` on any of the
+  three is a daemon from before them (`no_invites`).
 
 ## NWC (NIP-47)
 
