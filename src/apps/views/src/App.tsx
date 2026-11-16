@@ -423,7 +423,7 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "WorkerTask",
-    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own — what it pays, what it asks (show.ask and show's other plain fields, its image files), the photos its type takes (TaskPhotos: Take a photo in the host's camera, or Choose one), and the answer's fields (TaskForm). WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/worker is that page.",
+    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own, phone first — what it pays, what it asks (show.ask and show's other plain fields, its image files), then for a type that takes photos the camera's stage (TaskPhotos: Take a photo in the host's camera, or Choose one), then the answer's fields (TaskForm: yes or no, a short list and a 1–5 range as buttons to tap), with Skip and Send in a bar at the bottom. WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/worker is that page.",
     grants: "grants.steps: task/next, task/submit, task/skip (task/file for a task's files) · permissions: camera",
     usage: `export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />  // or: const { task, submit, skip } = useTask();  task && <WorkerTask task={task} submit={submit} skip={skip} />`,
     demo: () => <WorkerTaskDemo />,
@@ -541,23 +541,76 @@ const TASK_ANSWER = {
 };
 const BOX_ANSWER = { type: "object", properties: { box: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 } }, required: ["box"] };
 
-/** A photo task, as a standing type hands one out (plans/human-steps.md §5.7). */
-const PHOTO_TASK = {
-  lease: "demo-photo",
-  type: "label-photo",
-  show: { ask: "Photograph a nutrition label: the whole panel, flat, in good light.", where: "Any packaged food" },
-  files: [],
-  expires: Date.now() + 600_000,
-  answer: { type: "object", properties: { product: { type: "string", title: "Product", maxLength: 120 } } },
-  payMsat: 50_000,
-  attachments: { max: 2, min: 1, types: ["image/*"] },
+/** Tasks as WorkerTask draws them: a photo type camera first, the rest form
+ *  first (plans/human-steps.md §5.7). */
+const WORKER_TASKS = {
+  photo: {
+    lease: "demo-photo",
+    type: "label-photo",
+    show: { ask: "Photograph a nutrition label: the whole panel, flat, in good light.", where: "Any packaged food" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { product: { type: "string", title: "Product", maxLength: 120 } } },
+    payMsat: 50_000,
+    attachments: { max: 2, min: 1, types: ["image/*"] },
+  },
+  "yes or no": {
+    lease: "demo-spam",
+    type: "spam-check",
+    show: { ask: "Is this post spam?", post: "FREE BTC giveaway!! Send 0.01 to the address in my bio and get 0.1 back, today only", posted_by: "@crypto_lucky_drop" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { spam: { type: "boolean", title: "Spam?" } }, required: ["spam"] },
+    payMsat: 5_000,
+  },
+  pick: {
+    lease: "demo-category",
+    type: "categorize",
+    show: { ask: "Pick the category this product belongs in.", product: "Stainless steel French press, 1 litre" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: {
+      type: "object",
+      properties: { category: { type: "string", title: "Category", oneOf: [{ const: "kitchen", title: "Kitchen & dining" }, { const: "electronics", title: "Electronics" }, { const: "garden", title: "Home & garden" }, { const: "other", title: "None of these" }] } },
+      required: ["category"],
+    },
+    payMsat: 8_000,
+  },
+  rate: {
+    lease: "demo-rate",
+    type: "rate-reply",
+    show: { ask: "How helpful is this reply?", reply: "Unplug it for 30 seconds, plug it back in, and wait for the lights to settle." },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { score: { type: "integer", title: "Helpfulness", minimum: 1, maximum: 5 } }, required: ["score"] },
+    payMsat: 10_000,
+  },
+  write: {
+    lease: "demo-summary",
+    type: "summarize",
+    show: { ask: "Write a one-line summary of this notice.", notice: "The Main Street branch closes for renovation from March 3 to April 18; returns go to Elm Park." },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { summary: { type: "string", title: "Summary" } }, required: ["summary"] },
+    payMsat: 20_000,
+  },
 };
 
 function WorkerTaskDemo() {
+  const [kind, setKind] = useState<keyof typeof WORKER_TASKS>("photo");
   const [sent, setSent] = useState<unknown>(null);
   return (
-    <div className="grid max-w-xl gap-2">
-      <WorkerTask task={PHOTO_TASK} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+    <div className="grid max-w-md gap-3">
+      <div className="flex flex-wrap gap-1">
+        {(Object.keys(WORKER_TASKS) as Array<keyof typeof WORKER_TASKS>).map((k) => (
+          <button key={k} type="button" onClick={() => (setKind(k), setSent(null))} className={cn("rounded-md border px-2.5 py-1 text-xs", kind === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {k}
+          </button>
+        ))}
+      </div>
+      <div className="flex min-h-[640px] flex-col rounded-3xl border p-4">
+        <WorkerTask key={kind} task={WORKER_TASKS[kind]} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+      </div>
       {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
     </div>
   );
