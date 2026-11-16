@@ -2547,6 +2547,27 @@ Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
 line on what workers are owed). It launches nothing.
 
+### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
+
+A worker app strut seeds on every server (`src/apps/worker/`,
+`src/apps/worker-seed.ts`, after `strut/views`: it is `WorkerPage`),
+titled "Worker", for any task type whose answer is plain fields and photos:
+a type names `strut/worker` as its `app`, and no app is built for it. It is
+NOT an admin's: anyone with the deployment's key or a member lists it, and
+nobody outside reaches it until an admin puts it in the public view (`PUT
+/public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
+Its page signs a worker in, then takes the tasks of every type it draws one
+after another (`useTask()`), each drawn by `WorkerTask`: what it pays, what
+it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
+photo or Choose one when the type takes files (held to its `attachments`
+rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
+one earned. Strut's account widget (`account:`) shows the balance and
+Withdraw. Grants `task/next`, `task/submit`, `task/skip`, `task/file`,
+`task/me` and `task/withdraw`; `permissions: [camera]`. First-party, but a
+visitor's page gets no first-party rights, and its grants are the worker's
+steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
+`"worker": false` seeds nothing.
+
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
 A page takes its look from its host: the kit's stylesheet reads the MCP
@@ -5108,8 +5129,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 Refusals are step errors whose message begins with a code: `not_active`
 (the worker is `suspended` or `banned`, or `new` with nothing they may
 enter here: only `task/me` answers), `not_granted` (a type they do not
-hold: invite-only, revoked, or a paid open type short of tests for a
-newcomer — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
+hold: invite-only, revoked, or a paid open type that asks newcomers to
+qualify and is short of ready tests — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
 `lease_closed`, `lease_expired`, `task_closed`, `bad_answer`,
 `not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`, and
 `task/withdraw`'s own ("Withdraw" below).
@@ -5136,14 +5157,14 @@ with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
 `bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
 `unknown_task`, `unknown_test`, `not_listed`, `no_file`, `no_answer`),
-`409` (`in_use`, `released`, `final`, `needs_tests`); `501 not_available` for the
+`409` (`in_use`, `released`, `final`); `501 not_available` for the
 take-back, the review, the test routes, the queue and a task's file on a
 server whose task store is its host's (which answers none of them).
 
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files). `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). A PAID open type needs its tests on, `tests.qualify` (K) at least 1 and K ready tests: else `409 needs_tests`, its message naming the shortfall ("Open task types") |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
@@ -5174,6 +5195,7 @@ server whose task store is its host's (which answers none of them).
   "copies": {                       // absent: a step asks one worker (see "Copies")
     "max": 3, "agree": 2, "compare": "equal", "onDisagree": "more"
   },
+  // "standing": { "workflow": "…" }  — absent, as here: a human step makes its tasks (see "Standing task types")
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,
@@ -5283,20 +5305,50 @@ server whose task store is its host's (which answers none of them).
 - **Invite-only.** `open: false`: a worker takes it only with a staff
   grant, as before (`not_active` for a `new` worker, `not_granted` for an
   active one).
-- **A paid open type qualifies every newcomer.** Signing in proves nothing
-  about a person, so a PAID open type (`paySats` > 0) needs its tests on,
-  `tests.qualify` (K) at least 1 and at least K READY tests (not retired,
-  every file in place) when it is saved — else `409 needs_tests`, whose
-  message says what is short and the way out: save it invite-only or
-  unpaid until the tests are ready, then open it. So a new paid type is
-  saved invite-only first: its tests need the type. An unpaid open type
-  needs no tests.
-- **Short of tests later.** When a paid open type's ready tests fall under
-  K after it was saved (one retired), it takes NO newcomer until they are
-  back: a worker with no grant of it is treated as for an invite-only type
-  and told why (`not_granted`, or `not_active` for a `new` worker: "takes
-  new workers while it has K ready tests … ask again later"), and
-  `task/me` does not offer it. A worker already in keeps their grant.
+- **Whether a paid open type qualifies newcomers is the admin's**
+  (`plans/human-steps.md` ruling 12). Saved with its tests off or
+  `tests.qualify` (K) 0, anyone signed in earns from their first answer:
+  the `task/set-type` card and the staff editor say so, and nothing is
+  refused.
+- **Short of tests.** A paid open type that asks for K and has fewer than
+  K READY tests (not retired, every file in place) — saved so, or one
+  retired since — takes NO newcomer until they are: a worker with no grant
+  of it is treated as for an invite-only type and told why (`not_granted`,
+  or `not_active` for a `new` worker: "takes new workers while it has K
+  ready tests … ask again later"), and `task/me` does not offer it. A
+  worker already in keeps their grant. An unpaid open type grants K 0 when
+  short, as a staff grant does.
+
+### Standing task types (`plans/human-steps.md` §5.7)
+
+For work a worker starts: a photo of something they found. A type saved
+with `standing: { workflow }` has work whenever a worker asks.
+
+- **The ask makes the task.** With nothing a run made waiting for them,
+  `task/next` makes a task of a standing type they may take and their
+  lease on it in one write — any number of workers at once, one each. The
+  task is keyed by the workflow, a run id chosen at the ask and the path of
+  the workflow's first step; its `show` is that step's, resolved with the
+  workflow's input defaults and params; it has no files. Tests are drawn in
+  its place at the type's rate, as for any type.
+- **The answer starts the run.** `task/submit` checks the answer, saves its
+  files in the run's artifacts under that run id, settles the task and
+  books its pay, then launches the workflow under that run id with input
+  `{}` and no actor, billed to the workflow's owner (as an automation's
+  fire). Its `human` step finds its task answered and returns at once. A
+  launch that fails is retried by the minute's sweep; a run already on file
+  under the id is never started again.
+- **A skip or a lease run out closes it** (`expired`): no run is made, and
+  `GET /tasks/stats` counts it as a skipped or lost lease, never an expired
+  task. A standing task is never handed to anyone else.
+- **The workflow** must exist and be on, start with a `human` step of this
+  type (no `depends`, no `files`, a `show` reading only `input` and
+  `params`), validate its input with none given, and — where runs must have
+  someone to bill — have an owner. Checked when the type is saved (`400
+  bad_request: standing: …`) and at each ask (nothing is handed out while
+  it fails; the server logs it once).
+- **`withinHours` and `copies` do not apply**: a standing task lives as long
+  as its lease, and each answer is its own task.
 
 ### Pay (`plans/human-steps.md` §8.1)
 
@@ -5656,12 +5708,13 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   proposal is made. A grader step is checked when the type is saved.
 - **Merged over the type.** A field left out keeps its value, never the
   default; `tests` and `copies` objects merge over the type's own rules (or
-  the defaults), and `null` turns them off. A new type needs `answer`
+  the defaults), `standing` replaces the type's, and `null` turns any of
+  them off. A new type needs `answer`
   (`bad_request:` on accept otherwise; the card says so first).
 - **Open unless asked otherwise.** A new type left without `open` is open
-  ("Open task types"), so a new PAID type must be asked for `open: false`:
-  it has no tests yet, and accepting it open fails `needs_tests:` — the
-  card says so first.
+  ("Open task types"). A new PAID open type has no tests yet, so anyone
+  signed in earns from their first answer: the card's **Who takes it** says
+  so as a danger, and the admin's accept saves it.
 - **What it cannot do.** It grants no worker, deletes no type and changes
   no worker: those are an admin's, in `strut/staff` (§14.15).
 - **Seeds.** Only the `builder` workflow grants `task/types` and
@@ -5676,13 +5729,14 @@ does not grant `task/next` and `task/submit`, the queue's `appProblem`),
 **The answer** (one line per field — `same ("The same pet?"): yes or no,
 required` — or "needs the app's own view" with the schema, when it is not a
 form `TaskForm` draws), **Lease**, **Expires after**, **On**, **Who takes
-it** (open or invite-only; a paid open type short of ready tests is a
-danger, "refused:" with the shortfall); for a change,
+it** (open or invite-only; a paid open type with no qualifying, or short
+of its K ready tests, is a danger saying so); for a change,
 **What changes** (each field before and after) and **Open tasks** (with a
 new shape, that their answers are checked against it); **Workers** (how
 many hold it; a new open type's, that a worker holds it from their first
 ask); **Pay** (sats and dollars at the rate, held how long, and
 what the last week's answers would have cost; a RISE is a danger);
 **Tests** and **Copies** (their settings; a merge the save would refuse is
-a danger). It reads a type's rules, never a test: no expected answer is on
+a danger); **Files**; **Standing** (the workflow each answer starts, or
+no). It reads a type's rules, never a test: no expected answer is on
 it.

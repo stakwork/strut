@@ -1,0 +1,16 @@
+{
+  "//": "Type-checks strut/worker (src/apps/worker, plans/human-steps.md §5) against the kit and strut/views (WorkerPage): `strut/views` from its sources, @/ from strut/views' then the kit's; bare packages from the kit's install. `npx tsc -p kit/tsconfig.worker.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "strut/views": ["../src/apps/views/src/index.ts"],
+      "@/*": ["../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/worker/src/**/*"]
+}

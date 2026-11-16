@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
@@ -422,6 +422,13 @@ const ENTRIES: Entry[] = [
     demo: () => <TaskFormDemo />,
   },
   {
+    name: "WorkerTask",
+    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own — what it pays, what it asks (show.ask and show's other plain fields, its image files), the photos its type takes (TaskPhotos: Take a photo in the host's camera, or Choose one), and the answer's fields (TaskForm). WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/worker is that page.",
+    grants: "grants.steps: task/next, task/submit, task/skip (task/file for a task's files) · permissions: camera",
+    usage: `export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />  // or: const { task, submit, skip } = useTask();  task && <WorkerTask task={task} submit={submit} skip={skip} />`,
+    demo: () => <WorkerTaskDemo />,
+  },
+  {
     name: "RunList",
     what: "A workflow's runs, newest first, live while one is in flight; where each came from.",
     grants: "grants.workflows: the workflow",
@@ -533,6 +540,28 @@ const TASK_ANSWER = {
   required: ["same", "confidence"],
 };
 const BOX_ANSWER = { type: "object", properties: { box: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 } }, required: ["box"] };
+
+/** A photo task, as a standing type hands one out (plans/human-steps.md §5.7). */
+const PHOTO_TASK = {
+  lease: "demo-photo",
+  type: "label-photo",
+  show: { ask: "Photograph a nutrition label: the whole panel, flat, in good light.", where: "Any packaged food" },
+  files: [],
+  expires: Date.now() + 600_000,
+  answer: { type: "object", properties: { product: { type: "string", title: "Product", maxLength: 120 } } },
+  payMsat: 50_000,
+  attachments: { max: 2, min: 1, types: ["image/*"] },
+};
+
+function WorkerTaskDemo() {
+  const [sent, setSent] = useState<unknown>(null);
+  return (
+    <div className="grid max-w-xl gap-2">
+      <WorkerTask task={PHOTO_TASK} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+      {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
+    </div>
+  );
+}
 
 function TaskFormDemo() {
   const [sent, setSent] = useState<unknown>(null);

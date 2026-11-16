@@ -1,0 +1,18 @@
+title: Worker
+description: >-
+  Work for this server, from any phone (plans/human-steps.md §5): a worker
+  signs in, takes the tasks of every task type that names this app, one after
+  another, and answers each — the photos its type asks for, then its fields —
+  for what the type pays. It draws any task with no view of its own
+  (strut/views' WorkerPage), so a type whose answer is a photo and plain
+  fields needs no app built for it: name `strut/worker` as its app. Strut
+  ships it and seeds it on every server; nobody outside sees it until an
+  admin puts it in the public view.
+icon: hammer
+permissions: [camera]
+# Strut's account widget: who is signed in, what they earned, and Withdraw.
+account:
+  corner: top-right
+grants:
+  workflows: []
+  steps: [task/next, task/submit, task/skip, task/file, task/me, task/withdraw]

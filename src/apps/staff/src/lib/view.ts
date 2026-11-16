@@ -262,14 +262,15 @@ export function liveTypesText(w: Pick<Worker, "grants">): string {
   return w.grants.filter((g) => g.revokedAt === undefined).map((g) => (g.by === OPEN_GRANT_BY ? `${g.type} (open)` : g.type)).join(", ");
 }
 
-/** Why a PAID OPEN type cannot be saved yet, or null (ruling 9; the
- *  server's `openPayProblem` decides): tests on, K at least 1, K ready.
- *  `ready` undefined: not counted here, so nothing is said. */
+/** What a PAID OPEN type means for who earns, or null (ruling 12: the
+ *  admin's call, said and never refused; the server's `openPayWarning` and
+ *  `openPayProblem`): no qualifying lets anyone earn from their first
+ *  answer, and one short of its K ready tests takes no newcomer. `ready`
+ *  undefined: not counted here, so a shortfall is not said. */
 export function openPayHint(d: { open: boolean; paySats: number; testsOn: boolean; qualify: number }, ready: number | undefined): string | null {
-  if (!d.open || !(d.paySats > 0) || ready === undefined) return null;
-  if (!d.testsOn) return "Paid and open: a newcomer qualifies on its tests first, so turn tests on and make them ready, or make it invite-only until they are.";
-  if (!(d.qualify >= 1)) return "Paid and open: set Tests to qualify to 1 or more, or make it invite-only.";
-  if (ready < d.qualify) return `Paid and open: it needs ${d.qualify} ready tests to qualify newcomers on and has ${ready}. Make it invite-only until they are ready.`;
+  if (!d.open || !(d.paySats > 0)) return null;
+  if (!d.testsOn || !(d.qualify >= 1)) return "Paid and open with no qualifying tests: anyone signed in earns from their first answer, and your review is the only check.";
+  if (ready !== undefined && ready < d.qualify) return `Paid and open: it qualifies newcomers on ${d.qualify} tests and has ${ready} ready, so it takes no new worker until they are.`;
   return null;
 }
 

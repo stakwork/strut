@@ -172,8 +172,10 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         <h2 className="text-base font-semibold">{was ? was.name : "New task type"}</h2>
         {was && !was.enabled && <Badge variant="outline">off</Badge>}
         {was && was.open === false && <Badge variant="outline">invite-only</Badge>}
+        {was?.standing && <Badge variant="outline">standing</Badge>}
         {was?.changedBy && <Note>last saved by {was.changedBy}</Note>}
       </div>
+      {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}. Saving here keeps it.</Note>}
 
       <div className="grid gap-4 md:grid-cols-2">
         {!was && (

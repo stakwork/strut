@@ -127,6 +127,11 @@ export const DEFAULT_TEST_RULES: Readonly<TestRules> = Object.freeze({
   gradeCapUsd: 0.05,
 });
 
+/** A standing type's rule (§5.7): the workflow each answer launches. */
+export interface StandingRule {
+  workflow: string;
+}
+
 /** The admin's record for a kind of task (§4.2), its pay (§8.1) and its
  *  tests (§7). */
 export interface TaskType {
@@ -156,6 +161,10 @@ export interface TaskType {
   copies?: CopiesRule;
   /** The files an answer carries (§5.6); absent: none. */
   attachments?: AttachmentRule;
+  /** A STANDING type (§5.7): a worker's ask makes its task, and each answer
+   *  launches this workflow, whose first step is the type's `human` step.
+   *  Absent: a `human` step makes its tasks. */
+  standing?: StandingRule;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;
@@ -198,6 +207,11 @@ export interface TaskRecord {
    *  What the grader said is the test routes' alone (`TestInstance.note`). */
   grade?: GradeResult;
   gradedAt?: number;
+  /** A STANDING type's task (§5.7): made by a worker's ask with their
+   *  lease, closed with it, its run launched only once it is answered —
+   *  `launchedAt` when it was. */
+  standing?: true;
+  launchedAt?: number;
 }
 
 export interface Lease {
@@ -532,6 +546,22 @@ export interface TaskStore {
    *  task `task`, leased to them as `lease`, the test's `served` counted.
    *  Undefined when there is none. */
   takeTest(o: { worker: string; type: string; lease: string; task: string; now: number; pick: (n: number) => number }): Promise<Lease | undefined>;
+
+  // ── standing types (§5.7) ─────────────────────────────────────────────
+  /** One guarded write: while `worker` holds no live lease and the type is
+   *  enabled and standing, a task of it made as `task` — keyed by
+   *  `workflow`, `runId` and `path`, with `show`, no files, one copy, due
+   *  when its lease ends — and leased to them as `lease`, the type's pay
+   *  stamped. Undefined when the guard failed. It lives as long as that
+   *  lease: skipped or run out, it closes `expired` (never heard by
+   *  `onSettle`: no run waits on it). */
+  takeStanding(o: { worker: string; type: string; lease: string; task: string; workflow: string; runId: string; path: string; show: unknown; now: number }): Promise<Lease | undefined>;
+  /** A settled standing task's run was launched. Once. */
+  launched(task: string, at: number): Promise<void>;
+  /** Settled standing tasks whose run is not launched yet, oldest answer
+   *  first, at most `limit`: what the sweep launches. */
+  unlaunched(limit: number): Promise<TaskRecord[]>;
+
   putTest(t: NewTest): Promise<TestRecord>;
   test(id: string): Promise<TestRecord | undefined>;
   /** Oldest first; of one type, retired or not, when asked. */
@@ -727,6 +757,9 @@ export class MemoryTaskStore implements TaskStore {
     const holding = leases.filter((l) => live(l, o.now)).length;
     const types = o.types.map((type): QueueCounts => {
       const real = [...this.tasks.values()].filter((t) => t.type === type && t.test === undefined);
+      // A standing task (§5.7) ends with its lease: counted as a skipped or
+      // lost lease, never an expired task.
+      const runMade = real.filter((t) => !t.standing);
       const ids = new Set(real.map((t) => t.id));
       const mine = leases.filter((l) => l.type === type);
       const held = new Set(mine.filter((l) => live(l, o.now)).map((l) => l.task));
@@ -741,7 +774,7 @@ export class MemoryTaskStore implements TaskStore {
         windows[w] = {
           answered: given.length,
           // A task past due counts as expired at its due before the sweep marks it.
-          expired: left("expired") + real.filter((t) => t.status === "open" && t.due <= o.now && t.due >= from).length,
+          expired: runMade.filter((t) => t.status === "expired" && (t.settledAt ?? 0) >= from).length + runMade.filter((t) => t.status === "open" && t.due <= o.now && t.due >= from).length,
           cancelled: left("cancelled"),
           disputed: left("disputed"),
           skipped: answers.filter((l) => l.status === "skipped" && (l.closed ?? 0) >= from).length,
@@ -784,7 +817,7 @@ export class MemoryTaskStore implements TaskStore {
     if (leases.some((l) => l.worker === o.worker && live(l, o.now))) return undefined;
     const types = new Set(o.types);
     for (const t of this.tasks.values()) {
-      if (t.test !== undefined || t.status !== "open" || t.due <= o.now || !types.has(t.type)) continue;
+      if (t.test !== undefined || t.standing || t.status !== "open" || t.due <= o.now || !types.has(t.type)) continue;
       if (!this.kinds.get(t.type)?.enabled) continue;
       const mine = leases.filter((l) => l.task === t.id);
       if (mine.some((l) => l.worker === o.worker)) continue;
@@ -894,13 +927,13 @@ export class MemoryTaskStore implements TaskStore {
 
   async cancel(which: { id: string } | { workflow: string; runId: string }, now: number): Promise<TaskSettled[]> {
     const hit = [...this.tasks.values()].filter(
-      (t) => t.status === "open" && t.test === undefined && ("id" in which ? t.id === which.id : t.workflow === which.workflow && t.runId === which.runId),
+      (t) => t.status === "open" && t.test === undefined && !t.standing && ("id" in which ? t.id === which.id : t.workflow === which.workflow && t.runId === which.runId),
     );
     return hit.map((t) => this.close(t, "cancelled", now));
   }
 
   async sweep(now: number): Promise<{ leases: number; expired: TaskSettled[] }> {
-    const expired = [...this.tasks.values()].filter((t) => t.status === "open" && t.test === undefined && t.due <= now).map((t) => this.close(t, "expired", now));
+    const expired = [...this.tasks.values()].filter((t) => t.status === "open" && t.test === undefined && !t.standing && t.due <= now).map((t) => this.close(t, "expired", now));
     let leases = 0;
     for (const l of this.leases.values()) {
       if (l.status === "open" && l.expires <= now) {
@@ -969,6 +1002,49 @@ export class MemoryTaskStore implements TaskStore {
     this.byKeys.set(keyOf("", rec.runId, ""), rec.id);
     test.served += 1;
     return clone(this.lease_(o.lease, rec, o.worker, o.now));
+  }
+
+  // ── standing types (§5.7) ─────────────────────────────────────────────
+
+  async takeStanding(o: Parameters<TaskStore["takeStanding"]>[0]): Promise<Lease | undefined> {
+    if ([...this.leases.values()].some((l) => l.worker === o.worker && live(l, o.now))) return undefined;
+    const kind = this.kinds.get(o.type);
+    if (!kind?.enabled || !kind.standing) return undefined;
+    const key = keyOf(o.workflow, o.runId, o.path);
+    if (this.byKeys.has(key)) return undefined;
+    const rec: TaskRecord = {
+      id: o.task,
+      seq: ++this.seq,
+      type: o.type,
+      workflow: o.workflow,
+      runId: o.runId,
+      path: o.path,
+      show: clone(o.show),
+      files: [],
+      root: "run",
+      status: "open",
+      created: o.now,
+      // It lives as long as its one lease.
+      due: o.now + kind.leaseSeconds * 1000,
+      copies: 1,
+      standing: true,
+    };
+    this.tasks.set(rec.id, rec);
+    this.byKeys.set(key, rec.id);
+    return clone(this.lease_(o.lease, rec, o.worker, o.now));
+  }
+
+  async launched(task: string, at: number): Promise<void> {
+    const t = this.tasks.get(task);
+    if (t?.standing && t.launchedAt === undefined) t.launchedAt = at;
+  }
+
+  async unlaunched(limit: number): Promise<TaskRecord[]> {
+    return [...this.tasks.values()]
+      .filter((t) => t.standing && t.status === "settled" && t.launchedAt === undefined)
+      .sort((a, b) => (a.settledAt ?? 0) - (b.settledAt ?? 0))
+      .slice(0, Math.max(0, limit))
+      .map(clone);
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {
@@ -1118,11 +1194,11 @@ export class MemoryTaskStore implements TaskStore {
     return [...this.reviewRows.values()].filter((r) => ids.has(r.task)).map(clone);
   }
 
-  /** An open instance whose lease is no longer live closes as `expired`
-   *  (§7.1): it never reopens for anyone. */
+  /** An open instance (§7.1) or standing task (§5.7) whose lease is no
+   *  longer live closes as `expired`: it never reopens for anyone. */
   private closeInstances(now: number): void {
     for (const t of this.tasks.values()) {
-      if (t.test === undefined || t.status !== "open") continue;
+      if ((t.test === undefined && !t.standing) || t.status !== "open") continue;
       if ([...this.leases.values()].some((l) => l.task === t.id && live(l, now))) continue;
       Object.assign(t, { status: "expired", settledAt: now });
       for (const l of this.leases.values()) if (l.task === t.id && l.status === "open") Object.assign(l, { status: "expired", closed: now, reason: "task expired" });

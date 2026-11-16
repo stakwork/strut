@@ -550,7 +550,25 @@ the page they answer in. The task type — the app that draws it and the
 answer's schema — is an admin's (the server's `/tasks` routes); a workflow
 names a type, never its shape, and you ask an admin for a new one with
 `task/set-type` (the `Workflow Builder` page). One app usually draws several types, a view
-each. Grant the worker's steps:
+each.
+
+Every server has a worker app already, `strut/worker`: it draws any task
+whose answer is plain fields and photos (strut/views' `WorkerPage`). A type
+that needs nothing more names it and no app is built. Build your own only
+for a view it cannot draw, and start from the same pieces:
+
+```tsx
+import { WorkerPage, WorkerTask, TaskPhotos, TaskForm } from "strut/views";
+// The whole page — sign in, tasks one after another, what each earned:
+export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />;
+// Or your own around one task: what it pays and asks, its photos, its fields.
+const { task, submit, skip } = useTask("label-photo");
+task && <WorkerTask task={task} submit={submit} skip={skip} />;
+```
+
+`TaskPhotos` alone is the photos an answer carries (Take a photo in the
+host's camera, or Choose one from the device, held to the type's rule);
+`TaskForm` alone is the answer's fields. Grant the worker's steps:
 
 ```yaml
 grants:
@@ -634,6 +652,12 @@ balance (say so before they confirm). It goes to the worker's own Sphinx
 account, which the server picks: the page sends an amount and never an
 address. It reads `useWorker()` again when it answers, then every 5 s while
 `out` is there.
+
+A STANDING type (the worker starts the work: a photo of something they
+found) always has a task for a worker who may take it: `useTask` hands one
+over as soon as the page asks, and each answer starts the type's workflow.
+Draw it as a call to act ("Snap a label"), never as a queue that may be
+empty; a worker who leaves lets it go with nothing started.
 
 Workers are signed-in visitors of the public view (or the server's own
 members). Once the app is published and draws its task types, ask for it

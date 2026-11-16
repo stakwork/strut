@@ -59,20 +59,25 @@ export function testRulesOf(raw: unknown, graderProblem: (step: string) => strin
   return { ...r, grade: gradeRuleOf(r.grade, graderProblem) };
 }
 
-/** Ruling 9: why a type cannot be saved PAID and OPEN with `ready` ready
- *  tests, or undefined. A stranger may take an open type with no grant, and
- *  signing in proves nothing about a person (ruling 6), so a paid one
- *  qualifies every newcomer first: its tests on, K (`qualify`) at least 1,
- *  and at least K of them ready. An unpaid type, or one invite-only, needs
- *  none. The message names the shortfall and the way out. */
-export function openPayProblem(t: { name: string; open: boolean; paySats?: number; tests?: Pick<TestRules, "qualify"> }, ready: number): string | undefined {
-  if (!t.open || !(t.paySats && t.paySats > 0)) return undefined;
-  const lead = `task type ${t.name} is paid and open to any signed-in worker, so a newcomer qualifies on its tests before any real task`;
-  const way = "save it invite-only (open: false) or unpaid until they are ready, then open it";
-  if (!t.tests) return `${lead}: turn its tests on (qualify ${DEFAULT_TEST_RULES.qualify} by default) and make that many ready tests, or ${way}`;
-  if (t.tests.qualify < 1) return `${lead}: its tests qualify nobody (qualify 0); set qualify to 1 or more, or ${way}`;
-  if (ready < t.tests.qualify) return `${lead}: it needs ${t.tests.qualify} ready tests and has ${ready}, ${t.tests.qualify - ready} short; ${way}`;
-  return undefined;
+type OpenPaid = { name: string; open: boolean; paySats?: number; tests?: Pick<TestRules, "qualify"> };
+const paidOpen = (t: OpenPaid) => t.open && !!t.paySats && t.paySats > 0;
+
+/** Ruling 12: why a PAID OPEN type that asks newcomers to qualify on K
+ *  tests takes no newcomer with `ready` ready, or undefined. Whether it
+ *  asks is the admin's (its tests off or K 0: `openPayWarning`); one that
+ *  asks never lets a stranger in unqualified for want of tests. An unpaid
+ *  type, or one invite-only, is never short: a grant records K 0. */
+export function openPayProblem(t: OpenPaid, ready: number): string | undefined {
+  if (!paidOpen(t) || !t.tests || t.tests.qualify < 1 || ready >= t.tests.qualify) return undefined;
+  return `task type ${t.name} is paid and qualifies newcomers on ${t.tests.qualify} tests, and has ${ready} ready, ${t.tests.qualify - ready} short: it takes no new worker until they are`;
+}
+
+/** Ruling 12: what a PAID OPEN type with no qualifying (its tests off, or K
+ *  0) means, or undefined — said on the `task/set-type` card and in the
+ *  staff editor, never refused. */
+export function openPayWarning(t: OpenPaid): string | undefined {
+  if (!paidOpen(t) || (t.tests && t.tests.qualify >= 1)) return undefined;
+  return "paid and open with no qualifying tests: anyone signed in earns from their first answer, and staff review is the only check";
 }
 
 /** A grade rule as saved (§7.4, ruling 5): `equal`, or a registry step that

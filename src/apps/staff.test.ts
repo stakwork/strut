@@ -131,6 +131,9 @@ describe("strut/staff: the type editor's draft", () => {
     // A server from before open types: no choice shown, and nothing sent, so its own default holds.
     const { open: _o, ...older } = type;
     assert.equal("open" in (saveOf(draftOf(older), { pay: true, tests: true, copies: true }, older) as { input: Record<string, unknown> }).input, false);
+    // A standing type (plans/human-steps.md §5.7): not edited here, kept.
+    const standing = { ...type, standing: { workflow: "nutrition-label" } };
+    assert.deepEqual((saveOf(draftOf(standing), all, standing) as { input: Record<string, unknown> }).input["standing"], { workflow: "nutrition-label" });
   });
 
   it("tests and copies turned off are sent as null; a new type starts from the store's defaults; a changed shape is seen", () => {
@@ -260,15 +263,16 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(owedLine({ workers: workers(20_000), wallet: { balance: { msat: 5_000 }, coverMsat: -15_000 } })!.short, true);
   });
 
-  it("an open grant and a paid open type's shortfall, in words (ruling 9)", () => {
+  it("an open grant and what a paid open type means for who earns, in words (rulings 9 and 12)", () => {
     assert.equal(grantedBy({ by: "ada" }), "by ada");
     assert.equal(grantedBy({ by: "open" }), "by themselves: the type is open");
     assert.equal(liveTypesText({ grants: [{ type: "a", at: 0, by: "open" }, { type: "b", at: 0, by: "ada" }, { type: "c", at: 0, by: "open", revokedAt: 1 }] }), "a (open), b");
     const paid = { open: true, paySats: 5, testsOn: true, qualify: 10 };
     assert.equal(openPayHint(paid, 10), null);
-    assert.match(openPayHint(paid, 7)!, /needs 10 ready tests to qualify newcomers on and has 7/);
-    assert.match(openPayHint({ ...paid, testsOn: false }, 0)!, /turn tests on/);
-    assert.match(openPayHint({ ...paid, qualify: 0 }, 9)!, /qualify to 1 or more/);
+    assert.match(openPayHint(paid, 7)!, /qualifies newcomers on 10 tests and has 7 ready, so it takes no new worker until they are/);
+    // No qualifying is the admin's call: said, whatever is counted.
+    assert.match(openPayHint({ ...paid, testsOn: false }, 0)!, /no qualifying tests: anyone signed in earns from their first answer/);
+    assert.match(openPayHint({ ...paid, qualify: 0 }, undefined)!, /no qualifying tests/);
     assert.equal(openPayHint({ ...paid, open: false }, 0), null, "invite-only");
     assert.equal(openPayHint({ ...paid, paySats: 0 }, 0), null, "unpaid");
     assert.equal(openPayHint(paid, undefined), null, "not counted here: the server says");
