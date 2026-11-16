@@ -49,10 +49,9 @@ export function adminDoorOf(ctx: StepContext | undefined, type: string, key: str
  *  not the in-process one. */
 export function inProcessDoor(send: (req: Request, actor?: string) => Promise<Response>, reaches: RegExp, what: string, publicUrl?: string): AdminDoor {
   let forwarded: Record<string, string> = {};
-  if (publicUrl) {
-    const u = new URL(publicUrl);
-    forwarded = { "x-forwarded-proto": u.protocol.replace(/:$/, ""), "x-forwarded-host": u.host };
-  }
+  // A base that does not parse (a Host header no browser sends) forwards nothing.
+  const u = publicUrl ? URL.parse(publicUrl) : null;
+  if (u) forwarded = { "x-forwarded-proto": u.protocol.replace(/:$/, ""), "x-forwarded-host": u.host };
   return Object.freeze({
     call: async (method: string, path: string, body?: unknown, actor?: string) => {
       if (!reaches.test(path)) throw new Error(`the ${what} door reaches its own routes alone, not ${path}`);
