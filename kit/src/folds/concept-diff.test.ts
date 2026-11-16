@@ -182,6 +182,15 @@ describe("concept diff — source two: a pending proposal over the page now", ()
     assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", node_data: {} } }, null), null);
   });
 
+  it("an edit by `edits`: each quoted text replaced over the page; one that does not apply draws nothing", () => {
+    const e = proposalEntry({ step: "knowledge/edit-page", input: { ref_id: "ref-nda", edits: [{ old: "line two", new: "line 2\nline three" }, { property: "description", old: "Old", new: "Older" }] } }, current)!;
+    assert.equal(e.after!.docs, "line one\nline 2\nline three");
+    assert.equal(e.after!.attributes["description"], "Older.");
+    assert.equal(foldConceptDiff([e]).pages[0]!.status, "edited");
+    assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", edits: [{ old: "not there", new: "x" }] } }, current), null);
+    assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", edits: [{ old: "line", new: "x" }] } }, current), null, "occurs twice");
+  });
+
   it("a move along PARENT_OF: the parent it names swapped, or its only one", () => {
     const named = proposalEntry({ step: "graph/move-node", input: { ref_id: "ref-nda", edge_type: "PARENT_OF", direction: "reverse", from_ref_id: "ref-contracts", to_ref_id: "ref-privacy" } }, current, nameOf)!;
     assert.deepEqual(named.after!.parents, ["Privacy"]);

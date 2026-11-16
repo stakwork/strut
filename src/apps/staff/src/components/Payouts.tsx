@@ -1,7 +1,7 @@
 // Payouts (plans/human-steps.md §8.2): workers' withdrawals to their own
 // Sphinx address, with nobody's yes per payment. The switch that lets them
 // happen, the caps with today's use against them (and an invite's default
-// sats, §5.7, another money setting), the wallet's cover (a
+// sats, §5.8, another money setting), the wallet's cover (a
 // withdrawal is refused while it is short), and the list: each payout, its
 // state, and for a stale one — out a day, the wallet silent — Read again,
 // Record as paid and Drop. Shown only when `/tasks/payouts` answers.

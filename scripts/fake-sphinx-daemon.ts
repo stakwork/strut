@@ -21,7 +21,7 @@
  * makes the next pay or keysend fail, or stay pending until `POST /settle/:x`
  * (a payment hash, or a keysend's id).
  *
- * INVITES, with the pay token alone (plans/human-steps.md §5.7): `POST
+ * INVITES, with the pay token alone (plans/human-steps.md §5.8): `POST
  * /invite { sats }` debits `sats` and the mixer's price (`INVITE_PRICE_SATS`)
  * and answers `{ code, link, sats, status, createdAt }`, `link` a
  * `sphinx.chat://?action=i&d=…` the core reads; `ready` at once, or as

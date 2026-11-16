@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
 export type Tab = (typeof TABS)[number];
@@ -262,14 +262,15 @@ export function liveTypesText(w: Pick<Worker, "grants">): string {
   return w.grants.filter((g) => g.revokedAt === undefined).map((g) => (g.by === OPEN_GRANT_BY ? `${g.type} (open)` : g.type)).join(", ");
 }
 
-/** Why a PAID OPEN type cannot be saved yet, or null (ruling 9; the
- *  server's `openPayProblem` decides): tests on, K at least 1, K ready.
- *  `ready` undefined: not counted here, so nothing is said. */
+/** What a PAID OPEN type means for who earns, or null (ruling 12: the
+ *  admin's call, said and never refused; the server's `openPayWarning` and
+ *  `openPayProblem`): no qualifying lets anyone earn from their first
+ *  answer, and one short of its K ready tests takes no newcomer. `ready`
+ *  undefined: not counted here, so a shortfall is not said. */
 export function openPayHint(d: { open: boolean; paySats: number; testsOn: boolean; qualify: number }, ready: number | undefined): string | null {
-  if (!d.open || !(d.paySats > 0) || ready === undefined) return null;
-  if (!d.testsOn) return "Paid and open: a newcomer qualifies on its tests first, so turn tests on and make them ready, or make it invite-only until they are.";
-  if (!(d.qualify >= 1)) return "Paid and open: set Tests to qualify to 1 or more, or make it invite-only.";
-  if (ready < d.qualify) return `Paid and open: it needs ${d.qualify} ready tests to qualify newcomers on and has ${ready}. Make it invite-only until they are ready.`;
+  if (!d.open || !(d.paySats > 0)) return null;
+  if (!d.testsOn || !(d.qualify >= 1)) return "Paid and open with no qualifying tests: anyone signed in earns from their first answer, and your review is the only check.";
+  if (ready !== undefined && ready < d.qualify) return `Paid and open: it qualifies newcomers on ${d.qualify} tests and has ${ready} ready, so it takes no new worker until they are.`;
   return null;
 }
 
@@ -388,7 +389,21 @@ export function errorText(err: unknown): string {
   return raw.replace(/^step_run(?: refused)?: /, "");
 }
 
-// ── Invites (plans/human-steps.md §5.7) ─────────────────────────────────────
+// ── sharing a worker app (§9.5) ─────────────────────────────────────────────
+
+/** Each public worker app once, with the types its workers answer. */
+export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[] }> {
+  const out = new Map<string, { app: string; share: TypeShare; types: string[] }>();
+  for (const t of types ?? []) {
+    if (!t.share?.public || !t.share.peelLink) continue;
+    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [] };
+    row.types.push(t.name);
+    out.set(t.app, row);
+  }
+  return [...out.values()];
+}
+
+// ── Invites (plans/human-steps.md §5.8) ─────────────────────────────────────
 
 /** An invite's status in words. */
 export const INVITE_WORDS: Record<InviteStatus, string> = {

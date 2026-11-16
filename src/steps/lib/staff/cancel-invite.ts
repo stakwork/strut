@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { seg, staffCall } from "./_door.js";
 
-/** `staff/cancel-invite` (plans/human-steps.md §5.7). */
+/** `staff/cancel-invite` (plans/human-steps.md §5.8). */
 export default defineStep({
   type: "staff/cancel-invite",
   effect: "write",

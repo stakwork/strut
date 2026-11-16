@@ -772,7 +772,7 @@ for (const impl of impls) {
       assert.deepEqual(await store.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
       assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100 }, "ruled");
       const saved = await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
-      // An invite's sats left out: the default (plans/human-steps.md §5.7).
+      // An invite's sats left out: the default (plans/human-steps.md §5.8).
       assert.deepEqual(saved, { ...ON, inviteSats: 100, changedBy: "admin-1", changedAt: T0 });
       assert.deepEqual(await store.payoutSettings(), saved);
       assert.equal((await store.setPayoutSettings({ ...ON, inviteSats: 250 })).inviteSats, 250);
@@ -1154,7 +1154,7 @@ describe("the ledger file", () => {
     }
   });
 
-  it("a settings row saved before invites (plans/human-steps.md §5.7) gains invite_sats: the default until saved", async () => {
+  it("a settings row saved before invites (plans/human-steps.md §5.8) gains invite_sats: the default until saved", async () => {
     const one = await openLedger({ dataDir: dir });
     await one.setPayoutSettings({ on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, by: "bo", at: T0 });
     await one.close();

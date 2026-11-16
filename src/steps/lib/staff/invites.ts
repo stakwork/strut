@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { query, staffCall } from "./_door.js";
 
-/** `staff/invites` (plans/human-steps.md §5.7): the invites the daemon keeps. */
+/** `staff/invites` (plans/human-steps.md §5.8): the invites the daemon keeps. */
 export default defineStep({
   type: "staff/invites",
   effect: "read",

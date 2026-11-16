@@ -545,10 +545,11 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
 
   // After the tests that read `other` as drawing nothing, before the budgets spend the address's requests.
   it("an open type end to end: a new signed-in visitor's page takes and answers a parked run's task through /public/mcp with no grant (ruling 9)", async () => {
-    // A paid open type with no tests is refused; unpaid, open is the default.
+    // A paid open type with no tests saves: whether it qualifies newcomers is the admin's (ruling 12).
     const paid = await staff("PUT", "/tasks/types/open-paid", { app: "other", answer: MATCH, paySats: 5 });
-    assert.equal(paid.status, 409);
-    assert.deepEqual(((await paid.json()) as { code: string }).code, "needs_tests");
+    assert.equal(paid.status, 200, await paid.clone().text());
+    assert.equal((await staff("DELETE", "/tasks/types/open-paid")).status, 200);
+    // Unpaid, open is the default.
     const put = await staff("PUT", "/tasks/types/open-match", { app: "other", answer: MATCH });
     assert.equal(put.status, 200, await put.clone().text());
     assert.equal(((await put.json()) as { type: { open: boolean } }).type.open, true);

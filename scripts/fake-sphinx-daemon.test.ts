@@ -126,7 +126,7 @@ describe("the stand-in Sphinx daemon", () => {
     await assert.rejects(payer.pay({ invoice: own.invoice, maxFeeMsat: 5_000 }), code("wallet_refused", "own_invoice"));
   });
 
-  it("INVITES (plans/human-steps.md §5.7): made, listed and cancelled with the pay token; its sats and price held, given back on a cancel", async () => {
+  it("INVITES (plans/human-steps.md §5.8): made, listed and cancelled with the pay token; its sats and price held, given back on a cancel", async () => {
     const before = await balance();
     const made = await payer.invite({ sats: 100 });
     assert.equal(made.status, "ready");

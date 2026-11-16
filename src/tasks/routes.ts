@@ -7,10 +7,10 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   open, `tests`, `copies` and `attachments` off). A paid open type with fewer ready
- *   tests than its K is refused, `409 needs_tests` (ruling 9)
+ *   open, `tests`, `copies`, `attachments` and `standing` off). Whether a
+ *   paid open type qualifies newcomers is the admin's (ruling 12)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
@@ -79,14 +79,14 @@
  * - `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats, inviteSats? }`
  *   → `{ settings }` with `changedBy` and `changedAt`: the whole row;
  *   `minSats` at least 1, each cap at least `minSats`; `inviteSats` (an
- *   invite's default starting sats, §5.7) 1 to 100,000, 100 when left out
+ *   invite's default starting sats, §5.8) 1 to 100,000, 100 when left out
  * - `POST /tasks/payouts/:key/read` → `{ payout, state, msat, feeMsat, … }`:
  *   read it now through the payer it went out through
  * - `POST /tasks/payouts/:key/resolve { action: "paid" | "drop", feeMsat? }`
  *   → `{ payout, action }`: a person settles one by hand — `paid` with the
  *   fee they give (else 0), `drop` fails it and gives its reserve back
  *
- * The INVITE routes (plans/human-steps.md §5.7): a new worker's one link,
+ * The INVITE routes (plans/human-steps.md §5.8): a new worker's one link,
  * made through the payer (the daemon pays the mixer for an invite) and
  * kept by the daemon alone.
  *
@@ -136,7 +136,7 @@ export interface TaskRoutesDeps {
   /** §8.2: a worker's withdrawals and their settings (src/payments/payouts.ts).
    *  Absent: the payout routes answer 501. */
   payouts?: Pick<Payouts, "list" | "saveSettings" | "read" | "resolve">;
-  /** §5.7: worker invites (src/payments/invites.ts), and the public view's
+  /** §5.8: worker invites (src/payments/invites.ts), and the public view's
    *  base their links are on. Absent: the invite routes answer 501. */
   invites?: Invites;
   publicUrl?: (c: Context) => string;
@@ -157,7 +157,6 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   no_answer: 404,
   in_use: 409,
   final: 409,
-  needs_tests: 409,
 };
 
 export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
@@ -265,7 +264,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     }),
   );
 
-  // ── invites (§5.7): before `/tasks/:id`, which would take `invites` for an id ──
+  // ── invites (§5.8): before `/tasks/:id`, which would take `invites` for an id ──
   const inviteAnswer = async (c: Context, fn: (i: Invites, base: string) => Promise<Record<string, unknown>>) => {
     const refused = await refuse(c);
     if (refused) return refused;
@@ -311,6 +310,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
         ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
+        ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),

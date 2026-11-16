@@ -1,5 +1,5 @@
 /**
- * WORKER INVITES (plans/human-steps.md §5.7): staff invite a new worker with
+ * WORKER INVITES (plans/human-steps.md §5.8): staff invite a new worker with
  * one https link. Strut asks the treasury daemon for a Sphinx invite (the
  * daemon pays the mixer for it, so it goes through the payer, which alone
  * holds the pay token) and hands staff

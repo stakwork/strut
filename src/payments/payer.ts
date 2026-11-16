@@ -19,7 +19,7 @@
  * throws a `LightningError` carrying the wallet's own code. And for a
  * worker's payout, `keysend` an amount to a Sphinx address and
  * `keysendStatus`, which only reads (the daemon's; NWC has no route hints).
- * And a Sphinx INVITE for a new worker (plans/human-steps.md §5.7): the
+ * And a Sphinx INVITE for a new worker (plans/human-steps.md §5.8): the
  * daemon pays the mixer for it, so it is the pay token's too — `invite`,
  * `invites` and `cancelInvite`, which only the staff's `/tasks/invites`
  * routes call (src/payments/invites.ts).
@@ -148,7 +148,7 @@ export interface Payer {
 /** The walletCode a payer throws for a daemon with no invite routes. */
 export const NO_INVITES = "no_invites";
 
-/** A worker invite's state at the daemon (plans/human-steps.md §5.7):
+/** A worker invite's state at the daemon (plans/human-steps.md §5.8):
  *  `sending` while it pays the mixer for it, `ready` to be used, `failed`
  *  when that payment failed, `used` once a new account took it,
  *  `cancelled` by staff. */
@@ -360,7 +360,7 @@ export class SphinxDaemonPayer implements Payer {
     return daemonKeysend(this.#daemon(), "CANCEL", req.id);
   }
 
-  /** `POST /invite { sats }` (plans/human-steps.md §5.7). */
+  /** `POST /invite { sats }` (plans/human-steps.md §5.8). */
   async invite(req: { sats: number }): Promise<WalletInvite> {
     if (!req || !Number.isSafeInteger(req.sats) || req.sats <= 0) throw new LightningError("bad_request", "an invite's sats is a whole number above 0");
     return inviteOf(await daemonInviteCall(this.#daemon(), "POST", "/invite", { sats: req.sats }), "POST /invite");
@@ -385,7 +385,7 @@ export class SphinxDaemonPayer implements Payer {
   }
 }
 
-// ── invites, for a new worker (plans/human-steps.md §5.7) ─────────────────
+// ── invites, for a new worker (plans/human-steps.md §5.8) ─────────────────
 
 /** An invite's code as it may ride in a path: the daemon's (hex today). */
 export const INVITE_CODE = /^[A-Za-z0-9_-]{1,128}$/;

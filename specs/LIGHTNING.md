@@ -301,7 +301,7 @@ word, then answers the keysend as it stands, with `cancelled`:
 
 ### Invites — a new worker's Sphinx account (the payer)
 
-plans/human-steps.md §5.7. Staff invite a new worker with one link; the
+plans/human-steps.md §5.8. Staff invite a new worker with one link; the
 daemon makes the Sphinx invite, paying the mixer for it, so these take the
 PAY token (or the admin token, which strut never holds), never the receive
 token (`403`). Only the staff's `/tasks/invites` routes call them, through

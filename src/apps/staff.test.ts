@@ -21,13 +21,14 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
 import statsStep from "../steps/lib/staff/stats.js";
 import saveTestStep from "../steps/lib/staff/save-test.js";
+import { qrSvg } from "../move/link.js";
 
 /**
  * `strut/staff` (plans/human-steps.md §9, §9.11): the task store's staff
@@ -132,6 +133,9 @@ describe("strut/staff: the type editor's draft", () => {
     // A server from before open types: no choice shown, and nothing sent, so its own default holds.
     const { open: _o, ...older } = type;
     assert.equal("open" in (saveOf(draftOf(older), { pay: true, tests: true, copies: true }, older) as { input: Record<string, unknown> }).input, false);
+    // A standing type (plans/human-steps.md §5.7): not edited here, kept.
+    const standing = { ...type, standing: { workflow: "nutrition-label" } };
+    assert.deepEqual((saveOf(draftOf(standing), all, standing) as { input: Record<string, unknown> }).input["standing"], { workflow: "nutrition-label" });
   });
 
   it("tests and copies turned off are sent as null; a new type starts from the store's defaults; a changed shape is seen", () => {
@@ -251,7 +255,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(mostByOneWorkerToday([], day), 0);
   });
 
-  it("Invite on the Workers tab (§5.7): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
+  it("Invite on the Workers tab (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
     assert.deepEqual(inviteSatsOf(""), {}, "blank is the settings' default");
     assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
@@ -275,15 +279,16 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(owedLine({ workers: workers(20_000), wallet: { balance: { msat: 5_000 }, coverMsat: -15_000 } })!.short, true);
   });
 
-  it("an open grant and a paid open type's shortfall, in words (ruling 9)", () => {
+  it("an open grant and what a paid open type means for who earns, in words (rulings 9 and 12)", () => {
     assert.equal(grantedBy({ by: "ada" }), "by ada");
     assert.equal(grantedBy({ by: "open" }), "by themselves: the type is open");
     assert.equal(liveTypesText({ grants: [{ type: "a", at: 0, by: "open" }, { type: "b", at: 0, by: "ada" }, { type: "c", at: 0, by: "open", revokedAt: 1 }] }), "a (open), b");
     const paid = { open: true, paySats: 5, testsOn: true, qualify: 10 };
     assert.equal(openPayHint(paid, 10), null);
-    assert.match(openPayHint(paid, 7)!, /needs 10 ready tests to qualify newcomers on and has 7/);
-    assert.match(openPayHint({ ...paid, testsOn: false }, 0)!, /turn tests on/);
-    assert.match(openPayHint({ ...paid, qualify: 0 }, 9)!, /qualify to 1 or more/);
+    assert.match(openPayHint(paid, 7)!, /qualifies newcomers on 10 tests and has 7 ready, so it takes no new worker until they are/);
+    // No qualifying is the admin's call: said, whatever is counted.
+    assert.match(openPayHint({ ...paid, testsOn: false }, 0)!, /no qualifying tests: anyone signed in earns from their first answer/);
+    assert.match(openPayHint({ ...paid, qualify: 0 }, undefined)!, /no qualifying tests/);
     assert.equal(openPayHint({ ...paid, open: false }, 0), null, "invite-only");
     assert.equal(openPayHint({ ...paid, paySats: 0 }, 0), null, "unpaid");
     assert.equal(openPayHint(paid, undefined), null, "not counted here: the server says");
@@ -558,6 +563,27 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.match((await admin("staff/review", { task: id, verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
     assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
+  });
+
+  it("staff/types answers each type's share: not public, then public with its links on the request's base and a QR of the Peel link", async () => {
+    const cookie = await signIn("ada", "admin");
+    // As mcp's /lab proxies it: another host, a mount path.
+    const lab = { cookie, "x-forwarded-host": "box.example", "x-forwarded-proto": "https", "x-forwarded-prefix": "/lab" };
+    const types = async () => {
+      const r = await door("/mcp", lab, "staff/types");
+      assert.equal(r.error, undefined, r.error);
+      return r.result.types.find((t: { name: string }) => t.name === "pets") as TaskType;
+    };
+    assert.deepEqual((await types()).share, { public: false }, "workers is not in the public view: no links");
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }] }) });
+    assert.equal(put.status, 200, await put.clone().text());
+    const share = (await types()).share!;
+    const link = "https://box.example/lab/?app=workers&solo=1&public=1";
+    assert.deepEqual([share.public, share.link, share.peelLink], [true, link, `peel://open?url=${encodeURIComponent(link)}`]);
+    assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
+    const shared = sharedApps([await types()]);
+    assert.deepEqual(shared.map((a) => [a.app, a.types]), [["workers", ["pets"]]], "the Queue's block: each public worker app once");
+    await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {

@@ -1,4 +1,4 @@
-// Workers (plans/human-steps.md §9.5): Invite (§5.7, ./Invite) — a new
+// Workers (plans/human-steps.md §9.5): Invite (§5.8, ./Invite) — a new
 // worker's one link — then the workers, `new` first: the people who signed
 // in and wait, then the rest. Several new ones may be granted a type at
 // once (one door call each; the page says which failed); an open type's

@@ -45,7 +45,7 @@ export function adminDoorOf(ctx: StepContext | undefined, type: string, key: str
  *  body goes as the raw bytes (a test's file), anything else as JSON.
  *  `publicUrl`, the base the page's own request came on, rides as
  *  `x-forwarded-proto` / `x-forwarded-host`, so a route that hands out a
- *  link (a worker invite's, plans/human-steps.md §5.7) names that host and
+ *  link (a worker invite's, plans/human-steps.md §5.8) names that host and
  *  not the in-process one. */
 export function inProcessDoor(send: (req: Request, actor?: string) => Promise<Response>, reaches: RegExp, what: string, publicUrl?: string): AdminDoor {
   let forwarded: Record<string, string> = {};

@@ -104,7 +104,7 @@ describe("app/make-public: the merge and the card", () => {
     assert.doesNotMatch(card.summary!, /fails/);
   });
 
-  it("the card's dangers: an outside read, a live version that moves, no sign-in, a served box, a seed, no app", () => {
+  it("the card's dangers: an outside read, a live version that moves, no sign-in, a served box, no app; a seed is not held and is no danger", () => {
     const needs: PublicViewNeeds = { ...NEEDS, workflows: [], reads: [{ name: "sheets/get-values", checked: true, note: "calls Google Sheets with this server's credentials: anything that account can open, by id, a visitor's page can read" }] };
     const card = makePublicCard({ name: "workers", version: "v1" }, { needs, version: "v1", live: { version: "v2", held: true }, listed: true, visitors: { signIn: [], set: true }, served: "acme/x" });
     const f = (label: string) => card.fields!.find((x) => x.label === label);
@@ -115,7 +115,8 @@ describe("app/make-public: the merge and the card", () => {
     assert.match(card.summary!, /in the public view already/);
     assert.match(card.summary!, /Accepting it fails: this strut server serves acme\/x, whose serve\.yaml writes the public view/);
     const seeded = makePublicCard({ name: "strut/views" }, { needs, version: "v1", live: { version: "v1", held: false }, seeded: true, listed: false, visitors: { signIn: ["sphinx"], set: false } });
-    assert.match(seeded.summary!, /Accepting it fails: strut seeds strut\/views/);
+    assert.doesNotMatch(seeded.summary!, /Accepting it fails/, "a seeded app is added, not held");
+    assert.deepEqual(seeded.fields!.find((x) => x.label === "Held at"), { label: "Held at", value: "not held: strut seeds this app, so it follows strut's releases" });
     const none = makePublicCard({ name: "nope" }, { needs: { error: 'no app "nope" on this strut server' }, listed: false, visitors: { signIn: ["sphinx"], set: false } });
     assert.deepEqual(none.fields, [{ label: "App", value: 'nope — no app "nope" on this strut server', danger: true }]);
     assert.equal(none.input, undefined, "nothing to pin");
@@ -311,6 +312,8 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
       version: "v2",
       added: { workflows: ["pets"], steps: ["demo/score"], reads: ["demo/read"], concepts: [] },
       signIn: ["sphinx"],
+      link: "http://localhost/?app=workers&solo=1&public=1",
+      peelLink: `peel://open?url=${encodeURIComponent("http://localhost/?app=workers&solo=1&public=1")}`,
     });
     const s = await view();
     assert.deepEqual(s, { ...emptySurface(), workflows: [{ name: "pets", runs: true }], steps: ["demo/score"], apps: [{ name: "workers", reads: ["demo/read"] }] });
@@ -348,6 +351,29 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.deepEqual(s.workflows, [{ name: "other", runs: true }, { name: "pets", runs: true }]);
     assert.deepEqual(s.apps, [{ name: "workers", reads: ["demo/read"] }]);
     assert.deepEqual(s.visitors, { signIn: ["lnurl", "sphinx"], visitorKey: "domain" }, "the sign-in as it was");
+  });
+
+  it("a seeded app is made public without a hold: it follows strut's releases", async () => {
+    const dir = join(root, "apps", "seeded");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "app.yaml"), "title: Seeded\ngrants:\n  steps: [task/next, task/submit]\n");
+    await writeFile(join(dir, "src", "App.tsx"), "export default function App() { return <p>seeded</p>; }\n");
+    const r = await strut.apps.publish(dir, "strut/seeded", { surface: "person", source: "seed" });
+    assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
+    const out = (await ask({ name: "strut/seeded" })) as { proposal: string };
+    const rec = await record(out.proposal);
+    assert.doesNotMatch(rec.card!.summary!, /Accepting it fails/);
+    const admin = await decide(out.proposal, { cookie: await signIn("ada", "admin") });
+    assert.equal(admin.body.status, "applied", JSON.stringify(admin.body.result));
+    assert.ok((await view()).apps.some((a) => a.name === "strut/seeded"));
+    assert.equal(await liveOf("strut/seeded"), "latest", "not held");
+    // The result carries the share links, for the agent to hand the person.
+    const link = "http://localhost/?app=strut%2Fseeded&solo=1&public=1";
+    assert.deepEqual(
+      [(admin.body.result?.output as { link?: string })?.link, (admin.body.result?.output as { peelLink?: string })?.peelLink],
+      [link, `peel://open?url=${encodeURIComponent(link)}`],
+      JSON.stringify(admin.body.result),
+    );
   });
 });
 

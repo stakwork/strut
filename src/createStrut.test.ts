@@ -1441,7 +1441,7 @@ describe("the API key gate", () => {
         continue;
       }
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
-      // A worker invite's page (plans/human-steps.md §5.7) is static: the
+      // A worker invite's page (plans/human-steps.md §5.8) is static: the
       // invite rides after `#`, so it holds nothing but its own script.
       if (path === "/public/join" || path === "/public/join/qrcode.js") {
         assert.equal(res.status, 200, route);
@@ -1485,7 +1485,7 @@ describe("the API key gate", () => {
     // hold the expected answers (§7.1); the queue and a task's file (§9.4).
     // And the Concept branches (plans/concept-evals.md items b, d): a branch
     // does not cross to another strut, nor does its compare with main. And
-    // the worker invites (plans/human-steps.md §5.7), each a link to money.
+    // the worker invites (plans/human-steps.md §5.8), each a link to money.
     const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).

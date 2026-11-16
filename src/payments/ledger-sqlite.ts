@@ -312,7 +312,7 @@ export class SqliteLedgerStore implements LedgerStore {
     if (!(db.prepare("PRAGMA table_info(payees)").all() as Row[]).some((c) => c.name === "out")) {
       db.exec("ALTER TABLE payees ADD COLUMN out integer not null default 0");
     }
-    // plans/human-steps.md §5.7: an invite's default sats, on a settings row
+    // plans/human-steps.md §5.8: an invite's default sats, on a settings row
     // a strut from before saved (null there: the default).
     if (!(db.prepare("PRAGMA table_info(payout_settings)").all() as Row[]).some((c) => c.name === "invite_sats")) {
       db.exec("ALTER TABLE payout_settings ADD COLUMN invite_sats integer");

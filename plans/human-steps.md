@@ -40,6 +40,8 @@
 | 9 | Who may take a task type's tasks | **Task types are open to any signed-in worker by default; a paid open type needs at least K ready tests** (ruled 2026-11-13). Staff can still make a type invite-only, and then grants work as before. An unpaid open type needs no tests |
 | 10 | Item 5b (withdraw) | **The ten questions all as recommended; a payout pays the worker's Sphinx address from sign-in by keysend, not an invoice** (ruled 2026-11-13). §8.2's "Ruled (2026-11-13)" |
 | 11 | A payout still out a day after it was sent | **Cancelled through the daemon** (ruled 2026-11-15): strut asks the wallet to cancel it. Cancelled, it fails and the reserve goes back with nobody's yes. A person decides only when the wallet cannot cancel. §8.2's "Built differently (ruling 11)" |
+| 12 | Whether a paid open type must qualify newcomers | **The admin's call** (ruled 2026-11-16; replaces ruling 9's "a paid open type needs at least K ready tests"). A paid open type saves with its tests off or K 0, and anyone signed in earns from their first answer: the `task/set-type` card and the staff editor say so, and accepting it is the deliberate step. A type that asks for K still takes a newcomer only while K tests are ready |
+| 13 | Work a worker starts | **Standing task types** (ruled 2026-11-16, §5.7): a worker's ask makes the task, and the type's workflow runs only when they answer. Nothing exists before someone picks it up, and any number of workers work at once |
 
 ## Problem
 
@@ -102,6 +104,7 @@ reachable by non-members; the workflow, its runs and Jamie stay private.
 | Wake | Resuming a parked run because what it waited on happened |
 | Test task | A task whose answer is known, mixed in to score a worker (§7) |
 | Standing | A worker's rolling test score for one task type (§7) |
+| Standing type | A task type with work whenever a worker asks: their ask makes the task, and its workflow runs when they answer (§5.7). Unrelated to a worker's standing |
 
 ## 2. Parked runs
 
@@ -872,7 +875,89 @@ dropped; staff reading an answer's file; the agent's list (exactly those
 files, a path outside the run refused, over the caps a failure); and the
 door's cap as ruled.
 
-### 5.7 Onboarding: inviting a worker
+### 5.7 Standing task types (item 9)
+
+Some work has no subject until a worker brings one: a photo of a nutrition
+label, a receipt, a shelf's prices. No run is waiting for a person, so no
+`human` step can make the task first. A STANDING type has work whenever a
+worker asks: their ask makes the task, and the type's workflow runs when
+they answer (ruling 13).
+
+```
+PUT /tasks/types/nutrition-label
+{ "app": "labels", "answer": { … }, "paySats": 50,
+  "attachments": { "min": 1 },
+  "standing": { "workflow": "nutrition-label" } }
+```
+
+```yaml
+name: nutrition-label
+steps:
+  # The first step: the task a worker picks up.
+  - id: photo
+    type: human
+    config:
+      task: nutrition-label
+      show: { ask: "Photograph a nutrition label: the whole panel, flat, in good light." }
+  - id: read
+    type: agent
+    config:
+      attachments: "{{ photo.attachments }}"
+      prompt: Read the nutrition facts off this label.
+```
+
+| When | What happens |
+| --- | --- |
+| A worker asks (`task/next`) | Tasks that runs made come first. With none for them, a standing type they may take makes ONE task and their lease on it in one write (`takeStanding`, as `takeTest` makes an instance). The task is keyed by the type's workflow, a run id chosen now and the path of the workflow's first step; its `show` is that step's, resolved with the workflow's input defaults and params. No run exists yet |
+| They answer (`task/submit`) | As any task: the answer checked, its files saved in the run's artifacts under the chosen run id (writing a file needs no run), the task settled, the pay booked and held. Then strut LAUNCHES the workflow under that run id, where a run-made task would wake its run. The run's `human` step finds its task by key, already answered, and returns at once: it never parks |
+| They skip, or the lease runs out | The task closes with its lease (`expired`), as a test instance does. There is no run, so nothing is cancelled and nothing fails. Staff's numbers count it as a skipped or lost lease, never as an expired task |
+| Several workers at once | Each ask makes its own task. A worker holds one lease at a time, as always; the type has no cap |
+
+- **The run is the client's.** Launched with no actor, as an
+  automation's fire is: billed to the workflow's OWNER (ruling 2), with
+  input `{}` (the workflow's defaults). It is an ordinary run of the
+  workflow; the worker is never its actor and reaches nothing of it.
+- **Launched once.** The task records when its run was launched
+  (`launchedAt`). A launch that fails (the workflow turned off, the server
+  draining) leaves it unlaunched, and the minute's sweep launches it, as it
+  books an earning `submit` did not. A run already on file under that id
+  counts as launched, so a crash between the launch and the record never
+  starts two.
+- **What a standing workflow must be**, checked when the type is saved
+  and again at each pick-up (no task is made when it fails; logged once):
+  it exists and is on; its FIRST step is a `human` step of this type, with
+  no `files` (no run has files yet); its `show` reads only `input` and
+  `params`; its input validates with none given; and where a run must have
+  someone to bill, it has an owner.
+- **Tests mix in** as on any type: a qualifying worker is served tests
+  first, and a qualified one is served a test in place of a pick-up at the
+  type's rate.
+- **`withinHours` and `copies` do not apply.** A standing task lives as
+  long as its lease, and each answer is its own task.
+- **A worker app every server has.** `strut/worker` (specs/API.md §14.16),
+  seeded like `strut/staff`, draws any task whose answer is plain fields and
+  photos with strut/views' new worker pieces: `WorkerPage` (sign in, tasks
+  one after another, what the last one earned), `WorkerTask` (what a task
+  pays and asks, its photos, its fields) and `TaskPhotos` (Take a photo or
+  Choose one, held to the type's rule). A standing photo type names it, an
+  admin makes it public, and workers open it in Peel (`peel://open?url=…`)
+  and sign in with Sphinx: no app is built for the open-ended photo task.
+- **Set by an admin**, on `PUT /tasks/types/:name`, `staff/save-type` and
+  `task/set-type` (replaced whole, kept when left out, `null` turns it
+  off). The card names the workflow each answer starts. The staff editor
+  marks a standing type and keeps it when it saves the type whole; it does
+  not set it.
+
+Not taken:
+
+- **Launching at the ask.** The run would start before anyone held the
+  task, so a task nobody took sat in a waiting run until it expired and
+  failed it.
+- **Filling the queue on a schedule.** It works with no code (an automation
+  fires a `foreach` of `human` steps), but N is a guess: tasks pile up and
+  expire when nobody works, and workers hear "none" between fires.
+
+### 5.8 Onboarding: inviting a worker
 
 **Built: stakwork/strut#711** (strut's side). Peel Android's side is
 stakwork/peel-android's and the daemon's routes stakwork/sphinx's, built
@@ -1018,6 +1103,13 @@ opened; `task/set-type`'s card marks it first ("Who takes it", a danger).
 /tasks/stats` does per type. In `strut/staff` the Types editor has Open /
 Invite-only with the paid shortfall as its hint; Workers marks an open
 grant.
+
+**Changed by ruling 12 (#710):** the save refuses nothing for want of
+tests: `needs_tests` is gone. A paid open type with its tests off or K 0
+saves, and the card's "Who takes it" and the editor's hint warn that anyone
+signed in earns from their first answer. A paid open type that asks for K
+but has fewer ready also saves; it takes no newcomer until they are, as
+before, and the card and the hint say so.
 
 ## 7. Tests, copies and standing (item 4)
 
@@ -3327,7 +3419,7 @@ Actions: "Save type", "Don't".
 ### 9.9 Money settings
 
 A type's pay and hold (item 5a), the payout caps and switch (item 5b) and
-an invite's default starting sats (§5.7, `inviteSats` on the payout
+an invite's default starting sats (§5.8, `inviteSats` on the payout
 settings) are money settings.
 
 - An admin sets them in this app directly: the admin is the person whose
@@ -3450,7 +3542,8 @@ directory, so past one process the answer is another strut.
 
 - Lease-scoped file links. (Uploads from a worker's page are item 8, §5.6.)
 - Invitation codes behind the qualifying tests.
-- A default worker app for task types that need only `TaskForm`.
+- ~~A default worker app for task types that need only `TaskForm`.~~
+  Built in #710: `strut/worker` (§5.7), strut/views' `WorkerPage`.
 - A check at submit (§5.6.7, question 1): a sealed step that sees the answer
   and its files and refuses a bad photo before it earns.
 - Other things that park: a timer, a proposal awaited in a run, a wait on
@@ -3500,8 +3593,9 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
-| Invites | **Inviting a worker** (§5.7): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.7) |
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
+| 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
+| Invites | **Inviting a worker** (§5.8): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.8) |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.

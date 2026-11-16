@@ -3,7 +3,7 @@ import { defineStep, type StepContext } from "../../../core.js";
 import { qrSvg } from "../../../move/link.js";
 import { staffCall } from "./_door.js";
 
-/** `staff/invite` (plans/human-steps.md §5.7): a new worker's one link. */
+/** `staff/invite` (plans/human-steps.md §5.8): a new worker's one link. */
 export default defineStep({
   type: "staff/invite",
   effect: "write",

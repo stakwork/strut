@@ -66,6 +66,12 @@ steps:
     type: graph/edit-node
     config: { ref_id: "{{ input.ref }}", node_data: "{{ input.data }}" }
 `,
+  "c-docs": `name: c-docs
+steps:
+  - id: edit
+    type: graph/edit-node
+    config: { ref_id: "{{ input.ref }}", edits: "{{ input.edits }}" }
+`,
   "c-move": `name: c-move
 steps:
   - id: move
@@ -180,6 +186,11 @@ for (const tb of testBackends()) {
     const fileAt = (s: Strut, id: string, path: string) => git(s, ["show", `${id}:${path}`]);
     const ref = async (name: string) =>
       ((await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { name: "$name" })} WHERE ${backend.dialect.live("c")} RETURN c.ref_id AS r`, { name }))[0]?.["r"] as string | undefined);
+    /** New docs over a page's own, as every writer gives them: one edit quoting the old (a Concept refuses whole docs in node_data). */
+    const redoc = async (refId: string, text: string) => {
+      const [row] = await backend.query(`MATCH ${backend.dialect.node("c", "Concept")} WHERE c.ref_id = $r RETURN c.docs AS d`, { r: refId });
+      return { ref: refId, edits: [{ old: String(row?.["d"] ?? ""), new: text }] };
+    };
     const run = async (s: Strut, wf: string, input: Record<string, unknown>, actor = "ada") => {
       const r = await s.run(wf, input, { actor });
       assert.equal(r.status, "success", JSON.stringify(r.error ?? r.output));
@@ -233,7 +244,7 @@ for (const tb of testBackends()) {
       assert.equal(await fileAt(s, log[0]!.id, "concepts/concept-contracts.md"), "---\nname: Contracts\ndescription: Contract law\nparents:\n  - Law\n---\nOffer and acceptance.\n");
 
       const contracts = (await ref("Contracts"))!;
-      const edited = await run(s, "c-edit", { ref: contracts, data: { docs: "Offer, acceptance, consideration." } });
+      const edited = await run(s, "c-docs", await redoc(contracts, "Offer, acceptance, consideration."));
       log = await commits(s);
       assert.equal(log.length, base + 2);
       assert.match(log[0]!.body, new RegExp(`^run ${edited.runId}\\n\\nRun: ${edited.runId}$`));
@@ -252,7 +263,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(await changed(s, log[0]!.id), [["D", "concepts/concept-contracts.md"]]);
 
       // Rewriting a node as it is: nothing to commit.
-      await run(s, "c-edit", { ref: (await ref("Law"))!, data: { docs: "Law." } });
+      await run(s, "c-docs", await redoc((await ref("Law"))!, "Law."));
       assert.equal((await commits(s)).length, base + 4);
     });
 
@@ -287,7 +298,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(await changed(s, log[0]!.id), [["A", "concepts/concept-evidencelaw.md"]]);
 
       const proposals = (s.services as { proposals: { propose(p: unknown): Promise<{ id: string }> } }).proposals;
-      const p = await proposals.propose({ step: "graph/edit-node", input: { ref_id: (await ref("Evidence Law"))!, node_data: { docs: "Hearsay, and its exceptions." } }, title: "Edit a page.", by: { workflow: "wf", runId: "r9", path: "wf/turn/001" } });
+      const p = await proposals.propose({ step: "graph/edit-node", input: { ref_id: (await ref("Evidence Law"))!, edits: (await redoc((await ref("Evidence Law"))!, "Hearsay, and its exceptions.")).edits }, title: "Edit a page.", by: { workflow: "wf", runId: "r9", path: "wf/turn/001" } });
       const res = await s.app.request(`/proposals/${p.id}/decide`, json({ action: "accept" }));
       assert.equal(res.status, 200, await res.text());
       log = await commits(s);
@@ -632,7 +643,7 @@ for (const tb of testBackends()) {
         // `main` is the history's own branch, never a Concept branch's name.
         assert.match(JSON.stringify(await post(s, "/branches", { name: "main" }, 400)), /history's own branch/);
 
-        const edited = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        const edited = await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Branch guide."));
         let log = await commitsOf(s, "refs/heads/try");
         assert.equal(log[0]!.subject, `run ${edited.runId}`);
         assert.match(log[0]!.body, new RegExp(`\\nRun: ${edited.runId}$`));
@@ -652,14 +663,14 @@ for (const tb of testBackends()) {
         assert.equal(await tip(s, "refs/heads/main"), fork);
         assert.equal((await fileAt(s, fork, "concepts/concept-guide.md")).trim().split("\n").pop(), "Main guide.");
         // Rewriting a page as it is: nothing to commit.
-        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Tone"), data: { docs: "Main tone." } });
+        await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Tone"), "Main tone."));
         assert.equal((await commitsOf(s, "refs/heads/try"))[0]!.id, log[0]!.id);
       });
 
       it("a write on main leaves the branch alone; main against the branch is exactly the pages apart, the branch's commits listable, its fork point found", async () => {
         const { s, fork } = await tree();
         await post(s, "/branches", { name: "try" });
-        const one = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        const one = await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Branch guide."));
         await s.history!.settle();
         const two = await runOn(s, "try", "c-instance", { type: "Concept", data: { name: "Branch Only", docs: "Here alone." } });
         const head = (await commitsOf(s, "refs/heads/try"))[0]!.id;
@@ -699,11 +710,11 @@ for (const tb of testBackends()) {
       it("reads a time on a branch as that branch's commit then, and a page there", async () => {
         const { s, fork } = await tree();
         await post(s, "/branches", { name: "try" });
-        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "First on the branch." } });
+        await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "First on the branch."));
         const first = (await commitsOf(s, "refs/heads/try"))[0]!;
         const firstTime = Number((await git(s, ["log", "-1", "--format=%ct", first.id])).trim());
         await new Promise((r) => setTimeout(r, 1100));
-        await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Second on the branch." } });
+        await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Second on the branch."));
         const between = new Date(firstTime * 1000 + 500).toISOString();
         const shown = await read(s, { action: "show", path: "concepts/concept-guide.md", at: between, branch: "try" });
         assert.equal(shown.at, first.id);
@@ -743,7 +754,7 @@ for (const tb of testBackends()) {
         const proposals = (s.services as { proposals: { propose(p: unknown): Promise<{ id: string }> } }).proposals;
         const p = await proposals.propose({
           step: "graph/edit-node",
-          input: { ref_id: await pageIn("branch-try", "Tone"), node_data: { docs: "Proposed on the branch." } },
+          input: { ref_id: await pageIn("branch-try", "Tone"), edits: (await redoc(await pageIn("branch-try", "Tone"), "Proposed on the branch.")).edits },
           title: "Edit a page.",
           by: { workflow: "wf", runId: "r9", path: "wf/turn/001", branch: "try" },
         });
@@ -759,7 +770,7 @@ for (const tb of testBackends()) {
         const { s, fork } = await tree();
         await post(s, "/branches", { name: "try" });
         // Not settled: the run's touch waits on the debounce when the drop comes.
-        const last = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Tried." } });
+        const last = await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Tried."));
         const dropped = await drop(s, "try");
         assert.equal(dropped["pages"], 2);
         assert.match(dropped["kept"].ref, /^refs\/dropped\/try\/\d{8}T\d{9}Z$/);
@@ -786,7 +797,7 @@ for (const tb of testBackends()) {
         const first = await tree();
         const dir = first.s.dataDir;
         await post(first.s, "/branches", { name: "try" });
-        await runOn(first.s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Before the restart." } });
+        await runOn(first.s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Before the restart."));
         const before = (await commitsOf(first.s, "refs/heads/try"))[0]!.id;
         await first.s.close();
         struts.splice(struts.indexOf(first.s), 1);
@@ -794,7 +805,7 @@ for (const tb of testBackends()) {
         const again = await boot({}, dir);
         await again.rebuildRegistry();
         assert.equal(await tip(again, "refs/heads/try"), before, "boot commits nothing on a branch that has not moved");
-        const after = await runOn(again, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "After the restart." } });
+        const after = await runOn(again, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "After the restart."));
         const log = await commitsOf(again, "refs/heads/try");
         assert.equal(log[0]!.subject, `run ${after.runId}`);
         assert.equal(log[1]!.id, before);
@@ -828,7 +839,7 @@ for (const tb of testBackends()) {
       it("a caller who cannot read the graph's own pages sees no branch: not listed, not readable, its commits not in a log", async () => {
         const { s } = await tree();
         await post(s, "/branches", { name: "try" });
-        const edited = await runOn(s, "try", "c-edit", { ref: await pageIn("branch-try", "Guide"), data: { docs: "Branch guide." } });
+        const edited = await runOn(s, "try", "c-docs", await redoc(await pageIn("branch-try", "Guide"), "Branch guide."));
         const hidden = { ...(s.services as object), graph: scopedBackend(backend, { namespaces: ["acme"] }) };
         assert.deepEqual((await read(s, { action: "branches" }, hidden)).branches.map((b: { name: string }) => b.name), ["main"]);
         await assert.rejects(read(s, { action: "log", branch: "try" }, hidden), /no branch "try"/);

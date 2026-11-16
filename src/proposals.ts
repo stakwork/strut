@@ -92,7 +92,8 @@ export interface ProposalBrief {
 export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by">;
 
 export interface ProposalFilter {
-  job?: string;
+  /** One job's, or any of several (the jobs a conversation page's turns started). */
+  job?: string | string[];
   session?: string;
   /** Only those a run of this workflow made (`by.workflow`): the dream's, for the Knowledge app. */
   workflow?: string;
@@ -316,10 +317,11 @@ async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]
   await loadIndex(root);
   const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
   const runIds = filter.runId === undefined ? undefined : new Set(Array.isArray(filter.runId) ? filter.runId : [filter.runId]);
+  const jobs = filter.job === undefined ? undefined : new Set(Array.isArray(filter.job) ? filter.job : [filter.job]);
   const { viewer } = filter;
   let hits = [...indexOf(root).entries.values()].filter(
     (e) =>
-      (filter.job === undefined || e.by.job === filter.job) &&
+      (!jobs || (e.by.job !== undefined && jobs.has(e.by.job))) &&
       (filter.session === undefined || e.by.session === filter.session) &&
       (filter.workflow === undefined || e.by.workflow === filter.workflow) &&
       (!runIds || runIds.has(e.by.runId)) &&

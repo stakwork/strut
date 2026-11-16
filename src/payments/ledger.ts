@@ -569,7 +569,7 @@ export interface PayoutSettings {
   /** The most all workers' payouts may come to in a UTC day, sats. */
   serverDaySats: number;
   /** A new worker's starting sats on an invite staff make when they name
-   *  none (plans/human-steps.md §5.7). The mixer's invite price is paid on
+   *  none (plans/human-steps.md §5.8). The mixer's invite price is paid on
    *  top. */
   inviteSats: number;
   /** Who saved them last, and when (epoch ms); absent for the defaults. */

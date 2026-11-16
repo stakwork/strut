@@ -8,13 +8,14 @@ import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { fmtDuration, owedLine, queueWarnings, type Place } from "../lib/view";
-import type { Books, TaskStats } from "../lib/types";
+import { fmtDuration, owedLine, queueWarnings, sharedApps, type Place } from "../lib/view";
+import type { Books, TaskStats, TaskType } from "../lib/types";
 import { Empty, ErrorLine, Figure, Loading, Note, Section } from "./bits";
+import { ShareBlock } from "./Share";
 
 export const STATS_EVERY_MS = 10_000;
 
-export function Queue(props: { go: (p: Place) => void }) {
+export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
   const client = useStrutClient();
   // React Query refetches on the interval only while the page is visible.
   const stats = useQuery({ queryKey: ["staff", "stats"], queryFn: () => client.run<TaskStats>("staff/stats", {}), refetchInterval: STATS_EVERY_MS });
@@ -26,10 +27,16 @@ export function Queue(props: { go: (p: Place) => void }) {
   if (stats.error) return <ErrorLine error={stats.error} />;
   if (!s) return <Loading>Reading the queue…</Loading>;
   const warnings = queueWarnings(s);
+  // How workers get in: each public worker app's links and QR, first.
+  const shared = sharedApps(props.types);
   const p = (x: { p50: number; p90: number } | undefined) => (x ? `${fmtDuration(x.p50)} · ${fmtDuration(x.p90)}` : "—");
 
   return (
     <>
+      {shared.map((a) => (
+        <ShareBlock key={a.app} app={a.app} share={a.share} types={a.types} />
+      ))}
+
       {warnings.length > 0 && (
         <ul className="flex flex-col gap-1.5" aria-label="Needs a person">
           {warnings.map((w) => (

@@ -251,7 +251,7 @@ What else a paid flow needs, each learned the hard way:
   `strut/staff`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
   1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
   `inviteSats` beside them is an invite's default, 100 when left out).
-- **Inviting a worker** (plans/human-steps.md §5.7): the Workers tab's
+- **Inviting a worker** (plans/human-steps.md §5.8): the Workers tab's
   Invite, or `POST /tasks/invites {}`, asks the stand-in's `POST /invite`
   (with the pay token; it debits the sats and its price, `INVITE_PRICE_SATS`,
   10) and answers the join link. It needs a task type whose app is in the

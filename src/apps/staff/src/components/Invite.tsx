@@ -1,4 +1,4 @@
-// Invite (plans/human-steps.md §5.7), on the Workers tab: one link for a new
+// Invite (plans/human-steps.md §5.8), on the Workers tab: one link for a new
 // worker. The wallet's Sphinx daemon makes a Sphinx invite (it pays the
 // mixer for it: the starting sats and the mixer's price), and strut hands
 // back `https://<public view>/public/join#…`, which opens Peel on Android:

@@ -1,5 +1,5 @@
 /**
- * `GET /public/join` (plans/human-steps.md §5.7): the page a worker invite's
+ * `GET /public/join` (plans/human-steps.md §5.8): the page a worker invite's
  * link opens, `https://<public view>/public/join#action=i&d=…&c=…&a=…`. One
  * static page, answered without the key like the rest of `/public/*`. The
  * invite rides after `#`, which a browser never sends, so no server — this

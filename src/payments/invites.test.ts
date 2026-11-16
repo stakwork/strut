@@ -1,5 +1,5 @@
 /**
- * Worker invites (plans/human-steps.md §5.7): the join link's shape, the
+ * Worker invites (plans/human-steps.md §5.8): the join link's shape, the
  * service's rules over a stand-in payer, the `/tasks/invites` routes and the
  * `staff/*` steps on a server whose wallet is the stand-in Sphinx daemon
  * (scripts/fake-sphinx-daemon.ts) over HTTP, and `/public/join` — the page
@@ -31,7 +31,7 @@ import { createInvites, InviteError, joinLink, workerAppUrl } from "./invites.js
 const D = "AAAA_-zz"; // a `d=` section's URL-safe base64, as the core writes it
 const INVITE = `sphinx.chat://?action=i&d=${D}&c=BBBB`;
 
-describe("the join link (§5.7)", () => {
+describe("the join link (§5.8)", () => {
   it("is the invite after # with sphinx.chat:// taken off, then a= the worker app's URL encoded whole", () => {
     const app = workerAppUrl("https://stadeum.example/", "acme/workers");
     assert.equal(app, "https://stadeum.example/?app=acme%2Fworkers&solo=1&public=1");
@@ -86,7 +86,7 @@ function invitePayer(opts: { noRoute?: boolean } = {}) {
 
 const refused = (code: string, status?: number) => (err: unknown) => err instanceof InviteError && err.code === code && (status === undefined || err.status === status);
 
-describe("createInvites (§5.7)", () => {
+describe("createInvites (§5.8)", () => {
   const BASE = "https://s.example";
 
   it("an invite: the settings' sats when it names none, the one worker app, its link on the base", async () => {
@@ -139,7 +139,7 @@ describe("createInvites (§5.7)", () => {
   });
 });
 
-describe("worker invites on a server (§5.7)", () => {
+describe("worker invites on a server (§5.8)", () => {
   const KEY = "invites-key";
   const PAY = "invites-pay";
   let dir: string;
@@ -314,7 +314,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown }
   return { els, appended, fetched, drawn, href };
 }
 
-describe("the join page's script (§5.7)", () => {
+describe("the join page's script (§5.8)", () => {
   const ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36";
   const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1";
   const app = encodeURIComponent("https://s.example/?app=workers&solo=1&public=1");
