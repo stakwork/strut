@@ -220,7 +220,7 @@ export function createRetention(deps: RetentionDeps): Retainer {
         return held;
       } catch (err) {
         failed = true;
-        console.warn(`[archive] an upload failed, so this sweep archives and evicts nothing more: ${errorText(err)}`);
+        console.warn(`[archive] the bucket failed, so this sweep archives and evicts nothing more: ${errorText(err)}`);
         return null;
       }
     };

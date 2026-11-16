@@ -106,6 +106,16 @@ describe("run archive live (STRUT_TEST_S3_BUCKET)", { skip: bucket ? false : "ST
       assert.equal((await store.getRunEvents("live", "1")).length, 7);
       assert.ok((await readFile(file)).equals(log));
       assert.equal((await store.getRunSummary("live", "1"))?.logEvicted, undefined);
+
+      // Asked again, the bucket still holds it: no second upload. Deleted
+      // from the bucket (a lifecycle rule), it is uploaded again.
+      const puts = written.size;
+      assert.deepEqual(await store.archiveRun("live", "1", old), { archive: s.archive });
+      await archive.objects.delete(s.archive!.key);
+      const again = await store.archiveRun("live", "1", new Date().toISOString());
+      assert.deepEqual([again?.archive?.key, again?.archive?.bytes], [s.archive!.key, log.length]);
+      assert.deepEqual(await archive.objects.head(s.archive!.key), { size: again!.archive!.size });
+      assert.equal(written.size, puts, "the same key");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

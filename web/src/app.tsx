@@ -873,8 +873,9 @@ function Shell() {
       const accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
       if (ctrl.signal.aborted) return;
       setEvents([...accumulated]);
-      // The read restored an archived log: the list's "archived" badge goes.
-      if (accumulated.length && runs.find((r) => r.runId === selectedRun)?.logEvicted) refreshRuns();
+      // The read restored an archived log: the list is read again, so its
+      // "archived" badge and the restoring note go (even for an empty log).
+      if (runs.find((r) => r.runId === selectedRun)?.archive) refreshRuns();
       const result = await api.streamRun(selectedWf, selectedRun, (event) => {
         if (ctrl.signal.aborted) return;
         accumulated.push(event);

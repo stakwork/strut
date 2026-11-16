@@ -271,7 +271,7 @@ describe("the run archive: a bucket that fails", () => {
     for (const id of ["1", "2", "3"]) await seed(w.store, id, summary(id, 5));
     const sweep = await quiet(() => sweeper(w, "1h").sweep());
     assert.equal(sweep.result, 1); // 3 went (newest first), 2 failed, 1 was not tried
-    assert.deepEqual(sweep.warnings, ["[archive] an upload failed, so this sweep archives and evicts nothing more: connect ECONNREFUSED 10.0.0.9:9000"]);
+    assert.deepEqual(sweep.warnings, ["[archive] the bucket failed, so this sweep archives and evicts nothing more: connect ECONNREFUSED 10.0.0.9:9000"]);
     assert.equal((await w.store.getRunSummary("w", "3"))?.logEvicted, true);
     for (const id of ["1", "2"]) {
       assert.ok(await hasLog(w, id), id);
@@ -292,9 +292,22 @@ describe("the run archive: a bucket that fails", () => {
     await seed(w.store, "1", summary("1", 5));
     const sweep = await quiet(() => sweeper(w, "1h").sweep());
     assert.equal(sweep.result, 0);
-    assert.match(sweep.warnings[0]!, /an upload failed.*events\.jsonl\.gz" is \d+ bytes after an upload of \d+/);
+    assert.match(sweep.warnings[0]!, /the bucket failed.*events\.jsonl\.gz" is \d+ bytes after an upload of \d+/);
     assert.ok(await hasLog(w, "1"));
     assert.equal((await w.store.getRunSummary("w", "1"))?.archive, undefined);
+  });
+
+  it("a log the bucket lost after its upload (a lifecycle rule, a delete) is uploaded again before it is evicted", async () => {
+    const w = await world();
+    await seed(w.store, "1", summary("1", 0.5));
+    await quiet(() => sweeper(w, "1h").sweep()); // uploaded, not due yet
+    const key = (await w.store.getRunSummary("w", "1"))!.archive!.key;
+    w.objects.objects.delete(key);
+    // Due now: the sweep asks the bucket again before it takes the record's word.
+    assert.equal((await quiet(() => sweeper(w, "1h", { now: () => NOW + 2 * HOUR }).sweep())).result, 1);
+    assert.equal(puts(w).length, 2);
+    assert.equal(await hasLog(w, "1"), false);
+    assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
   });
 
   it("the store itself refuses to drop a log the bucket does not hold", async () => {

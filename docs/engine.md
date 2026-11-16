@@ -245,8 +245,11 @@ and the child env is scrubbed by construction).
     `ARCHIVE_LOCAL_WINDOW` (7 days). A log goes only when the bucket holds
     it: `FileRunStore.evictRun` itself refuses unless `archive.bytes` equals
     the local log's size (a log only grows, so equal size is the same log).
-    A crashed run is uploaded, then evicted with its `crashed` summary
-    carrying `archive`.
+    For a log uploaded on an earlier sweep the sweep asks the bucket again
+    first (a HEAD of the recorded key and size, in `archiveRun`): an object
+    a lifecycle rule expired or someone deleted is uploaded again, never
+    trusted. A crashed run is uploaded, then evicted with its `crashed`
+    summary carrying `archive`.
   - **A run that goes on.** The record lives on the summary, and a durable
     resume drops the summary before it appends (`clearRunSummary`), so a
     resumed run has no record and is uploaded again, over the same key, once
@@ -282,7 +285,9 @@ and the child env is scrubbed by construction).
     `<prefix>/archive.json`, written the first time): when it fails the
     sweep uploads and evicts nothing and says so in one line
     (`[archive] the bucket does not answer, so this sweep archives and
-    evicts nothing: …`); an upload that fails stops the sweep the same way.
+    evicts nothing: …`); an upload or a check that fails mid-sweep stops it
+    the same way (`[archive] the bucket failed, so this sweep archives and
+    evicts nothing more: …`).
     Boot says once `[archive] on: finished runs' logs go to s3://… before
     they are evicted`, or that the bucket does not work.
   - **One store.** `createStrut` gives the archive to the run store it has

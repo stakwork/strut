@@ -320,7 +320,8 @@ export interface RunStore {
    *  not on this disk restores it first. Optional, with the two below: a
    *  store that keeps no files has no archive. */
   useArchive?(archive: RunArchive): void;
-  /** Upload the run's log unless the bucket already holds this very log,
+  /** Upload the run's log unless the bucket holds this very log (asked
+   *  again each call, so a recorded upload the bucket lost is made again),
    *  and record it on the summary (`archive`). Resolves to what the summary
    *  now carries: `{ archive }`, or `{}` for a run with no log on this disk.
    *  A run with no summary (it died with its process) is uploaded and
@@ -666,7 +667,13 @@ export class FileRunStore implements RunStore {
     const before = await this.getRunSummary(workflow, runId);
     const local = await this.localLogSize(workflow, runId);
     if (local === null) return {};
-    if (before?.archive?.bytes === local) return { archive: before.archive };
+    if (before?.archive?.bytes === local) {
+      // Recorded on an earlier sweep, and the caller is about to evict on
+      // this answer: ask the bucket again. An object a lifecycle rule
+      // expired, or one written over, is uploaded again.
+      const held = await archive.objects.head(before.archive.key);
+      if (held?.size === before.archive.size) return { archive: before.archive };
+    }
     const key = logKey(archive, workflow, runId);
     const log: ArchivedLog = { key, ...(await uploadLog(archive.objects, key, this.logFile(workflow, runId))), at };
     // A resume may have cleared the summary and gone on while the log was

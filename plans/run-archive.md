@@ -118,8 +118,11 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
 - **Evict.** By `retain:`, else `STRUT_RUN_RETENTION`, else 7 days. Only a
   run whose upload was recorded, and the store itself enforces it:
   `evictRun` refuses unless `archive.bytes` equals the local log's size. A
-  log only grows, so the same size is the same log. A crashed run is
-  uploaded, then evicted.
+  log only grows, so the same size is the same log. A log uploaded on an
+  earlier sweep is looked up in the bucket again right before it is
+  evicted, and uploaded again if the object is gone or another size (an
+  expiry rule shorter than the local window, a manual delete). A crashed
+  run is uploaded, then evicted.
 - **A run that goes on.** The record lives on the summary, and a durable
   resume drops the summary before it appends. So a resumed run has no
   record, is uploaded again when it finishes (over the same key), and an
@@ -139,9 +142,9 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
   archive back onto the disk. Scans use `localRuns(store)`, where an
   archived run reads as an evicted one (what they saw before): the
   version counts, step stats, a package build's suggestions; the public
-  view's index of what a workflow's runs reported skips an evicted run. `logSize`
-  and `logWrittenAt` never restore either: boot's resume scan asks them
-  of every run.
+  view's index of what a workflow's runs reported skips an evicted run.
+  `logSize` and `logWrittenAt` never restore either: boot's resume scan
+  asks `logWrittenAt` of every run.
 - **A bucket that fails.** Strut boots and runs. Each sweep asks a probe
   first (`<prefix>/archive.json`); when it fails, or an upload fails, the
   sweep uploads and evicts nothing more and says so in one line. Boot says
