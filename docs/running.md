@@ -36,6 +36,18 @@ STRUT_WORKSPACE_BACKEND=ladybug npm run dev   # the workspace on one LadybugDB f
 docker run -d --name strut-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/struttest neo4j:5.19.0
 STRUT_TEST_NEO4J_URI=bolt://localhost:7688 STRUT_TEST_NEO4J_PASSWORD=struttest npm run test:graph
 
+# Run archive live test: the S3 client against a real S3-compatible store.
+# Skipped unless STRUT_TEST_S3_BUCKET is set. It writes under
+# strut-test/<random>/ in the bucket and deletes what it wrote. Without
+# STRUT_TEST_S3_ENDPOINT it talks to AWS S3 (the key pair, or the default chain).
+docker run -d --name strut-minio-test -p 9100:9000 -e MINIO_ROOT_USER=struttest -e MINIO_ROOT_PASSWORD=struttest123 minio/minio server /data
+docker exec strut-minio-test mc alias set local http://localhost:9000 struttest struttest123
+docker exec strut-minio-test mc mb local/strut-test
+STRUT_TEST_S3_ENDPOINT=http://localhost:9100 STRUT_TEST_S3_BUCKET=strut-test STRUT_TEST_S3_ACCESS_KEY_ID=struttest STRUT_TEST_S3_SECRET_ACCESS_KEY=struttest123 npm run test:archive
+# The same MinIO serves a local strut: STRUT_ARCHIVE_S3_ENDPOINT / _BUCKET /
+# _PREFIX / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY, with STRUT_RUN_RETENTION=1m
+# to see a log leave (the sweep runs at boot, then hourly).
+
 # Speech-to-text live test — needs the sherpa addon (optionalDependency,
 # installed by `npm install` on supported platforms) and downloads the 57 MB
 # kroko model into STRUT_TEST_STT_MODEL_DIR (temp dir when unset).

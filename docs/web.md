@@ -20,6 +20,12 @@ index. A change in this area updates this file, not AGENTS.md.
   (`handleSetRetain` in app.tsx; disabled while the canvas has unpublished
   edits). A run whose summary has `logEvicted` shows a "log evicted" badge in
   the runs list (a run that died with its process, `crashed`, also gets a red "crashed" badge), and its view (no events) a note saying only the summary is kept.
+  With `archive` on the summary too (plans/run-archive.md) the badge is
+  "archived" and the run opens like any other: the events read restores the
+  log on the server, the canvas says "Restoring this run's log from the
+  archive…" until it answers, and the runs list is read again so the badge
+  goes. A log the bucket cannot give back shows the server's reason in that
+  note (`runLogError` in app.tsx, the 503's `error`).
 - **Flyout has two modes**: when no run is selected, clicking a
   canvas node opens the step editor (edit id, type, config). When
   a run is selected, it opens run results (input, output, error,
