@@ -2547,6 +2547,27 @@ Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
 line on what workers are owed). It launches nothing.
 
+### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
+
+A worker app strut seeds on every server (`src/apps/worker/`,
+`src/apps/worker-seed.ts`, after `strut/views`: it is `WorkerPage`),
+titled "Worker", for any task type whose answer is plain fields and photos:
+a type names `strut/worker` as its `app`, and no app is built for it. It is
+NOT an admin's: anyone with the deployment's key or a member lists it, and
+nobody outside reaches it until an admin puts it in the public view (`PUT
+/public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
+Its page signs a worker in, then takes the tasks of every type it draws one
+after another (`useTask()`), each drawn by `WorkerTask`: what it pays, what
+it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
+photo or Choose one when the type takes files (held to its `attachments`
+rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
+one earned. Strut's account widget (`account:`) shows the balance and
+Withdraw. Grants `task/next`, `task/submit`, `task/skip`, `task/file`,
+`task/me` and `task/withdraw`; `permissions: [camera]`. First-party, but a
+visitor's page gets no first-party rights, and its grants are the worker's
+steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
+`"worker": false` seeds nothing.
+
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
 A page takes its look from its host: the kit's stylesheet reads the MCP

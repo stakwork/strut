@@ -934,6 +934,14 @@ steps:
   type's rate.
 - **`withinHours` and `copies` do not apply.** A standing task lives as
   long as its lease, and each answer is its own task.
+- **A worker app every server has.** `strut/worker` (specs/API.md §14.16),
+  seeded like `strut/staff`, draws any task whose answer is plain fields and
+  photos with strut/views' new worker pieces: `WorkerPage` (sign in, tasks
+  one after another, what the last one earned), `WorkerTask` (what a task
+  pays and asks, its photos, its fields) and `TaskPhotos` (Take a photo or
+  Choose one, held to the type's rule). A standing photo type names it, an
+  admin makes it public, and workers open it in Peel (`peel://open?url=…`)
+  and sign in with Sphinx: no app is built for the open-ended photo task.
 - **Set by an admin**, on `PUT /tasks/types/:name`, `staff/save-type` and
   `task/set-type` (replaced whole, kept when left out, `null` turns it
   off). The card names the workflow each answer starts. The staff editor
@@ -3425,7 +3433,8 @@ directory, so past one process the answer is another strut.
 
 - Lease-scoped file links. (Uploads from a worker's page are item 8, §5.6.)
 - Invitation codes behind the qualifying tests.
-- A default worker app for task types that need only `TaskForm`.
+- ~~A default worker app for task types that need only `TaskForm`.~~
+  Built in #710: `strut/worker` (§5.7), strut/views' `WorkerPage`.
 - A check at submit (§5.6.7, question 1): a sealed step that sees the answer
   and its files and refuses a bad photo before it earns.
 - Other things that park: a timer, a proposal awaited in a run, a wait on
@@ -3476,7 +3485,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
-| 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
+| 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.

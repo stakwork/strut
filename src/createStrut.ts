@@ -127,6 +127,7 @@ import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
+import { seedWorkerApp } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -586,6 +587,11 @@ export interface StrutOptions<TServices = unknown> {
    *  first-party, ADMIN-ONLY app — the `/tasks` routes as a page. Seeded
    *  after `strut/views` (it imports `TaskForm`). `false` seeds nothing. */
   staff?: false;
+  /** `strut/worker` (`src/apps/worker-seed.ts`, plans/human-steps.md §5): a
+   *  worker app for any task type whose answer is a photo and plain fields
+   *  (strut/views' `WorkerPage`). Seeded after `strut/views`; nobody outside
+   *  sees it until an admin makes it public. `false` seeds nothing. */
+  worker?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -2112,6 +2118,16 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[staff] seeded app: strut/staff @ ${r.version}`);
     } catch (err) {
       console.warn(`[staff] could not seed strut/staff:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/worker` (src/apps/worker-seed.ts, plans/human-steps.md §5): the
+  // worker app every server has, after strut/views (it is WorkerPage).
+  if (opts.worker !== false) {
+    try {
+      const r = await seedWorkerApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[worker] seeded app: strut/worker @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[worker] could not seed strut/worker:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {

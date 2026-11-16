@@ -150,7 +150,10 @@ index. A change in this area updates this file, not AGENTS.md.
   lease, not an expired task. The save checks the workflow (`400
   bad_request: standing: …`) and each ask checks it again (nothing handed
   out, logged once). `task/set-type` takes `standing` (replaced whole,
-  `null` off) and its card names the workflow; the staff editor keeps it.
+  `null` off) and its card names the workflow; the staff editor keeps it. `strut/worker`
+  (docs/apps.md, specs/API.md §14.16) draws such a task with no app built:
+  a type names it, an admin makes it public, and a worker in Peel picks a
+  task up and answers it with a photo.
 - **Files from a worker** (`plans/human-steps.md` §5.6, item 8;
   `answer-files.ts`). Some answers are a file: a photo of a court paper. A
   type opts in with `attachments: { max, min, types }` (an admin's, as the
