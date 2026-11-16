@@ -161,8 +161,11 @@ index. A change in this area updates this file, not AGENTS.md.
   fee, at most its cap; the payout leaves their balance when it is
   RESERVED. A suspended or banned worker may withdraw (ruled): status stops
   new work, never money already released. A payout still pending a day after
-  it was sent is stale and waits for staff (`paid` with the fee they give,
-  or `drop`, which gives the reserve back). `task/me`'s `payout` says
+  it was sent is stale and is cancelled (ruling 11): the minute's check asks
+  the daemon once (`POST /keysend/:id/cancel`) and reads it from then on;
+  cancelled, it fails and the reserve goes back with nobody's yes. Only when
+  the wallet cannot cancel does it wait for staff (`paid` with the fee they
+  give, or `drop`, which gives the reserve back). `task/me`'s `payout` says
   whether withdrawing is open and how much; on a host's own store it is
   `not_here`. A `sphinx` sign-in keeps the address (`keptSphinxAddress`,
   src/visitors.ts) when its pubkey is the key that signed; any other

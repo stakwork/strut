@@ -26,6 +26,8 @@ export interface PendingSend {
   otherWallet: boolean;
   answered?: boolean;
   lastError?: string;
+  /** A worker's payout, a day old: when the wallet took the ask to cancel it. */
+  cancelAt?: number;
 }
 
 /** Why Withdraw is off, or null when it may be pressed. */
@@ -55,6 +57,7 @@ export function walletLine(w: WalletInfo | undefined): string {
 export function pendingState(p: PendingSend): string {
   if (p.reading) return "being read now";
   if (p.otherWallet) return `went out through another wallet (${p.payer || "an earlier one"})`;
+  if (p.stale && p.cancelAt !== undefined) return "stale: the wallet was asked to cancel it, and it is read every minute until the wallet says how it ended";
   if (p.stale) return "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it";
   if (p.answered) return "sent, not settled yet: read again every minute";
   return "the wallet never answered: read it now";

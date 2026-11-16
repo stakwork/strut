@@ -319,11 +319,13 @@ function PendingRow(props: { p: api.PendingWithdrawal; onChanged: () => void }) 
     ? "being read now"
     : p.otherWallet
       ? `went out through another wallet (${p.payer || "an earlier one"}): set it back to read it`
-      : p.stale
-        ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
-        : p.answered
-          ? "sent, not settled yet: read again every minute"
-          : "the wallet never answered: read it now";
+      : p.stale && p.cancelAt !== undefined
+        ? "stale: the wallet was asked to cancel it, and it is read every minute until the wallet says how it ended"
+        : p.stale
+          ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
+          : p.answered
+            ? "sent, not settled yet: read again every minute"
+            : "the wallet never answered: read it now";
   const decide = p.stale || p.otherWallet;
   return (
     <div class={`earnings-pending-item${decide ? " is-stale" : ""}`}>

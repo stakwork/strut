@@ -3306,6 +3306,9 @@ export interface PendingWithdrawal {
   otherWallet: boolean;
   lastError?: string;
   checkedAt?: number;
+  /** A worker's payout, a day old: epoch ms, when the wallet took the ask to
+   *  cancel it. It is read every minute until the wallet says how it ended. */
+  cancelAt?: number;
 }
 export interface EarningsView {
   from?: string;
