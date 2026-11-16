@@ -5606,15 +5606,15 @@ export async function createStrut<TServices = unknown>(
   // This strut as the phone book and the crawler behind it (src/packages/
   // index.ts): the rows are a person's (full scope), the card and the
   // search are anyone's — open in the gate, as the public catalog is.
+  /** The scheme the request was made with, a proxy's header honored. */
+  const requestProto = (c: Context) => c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(c.req.url).protocol.replace(/:$/, "");
   /** The base a caller OUTSIDE the UI is handed links on: `STRUT_PUBLIC_URL`
    *  (`opts.publicUrl`), else the request's own origin (a proxy's headers
    *  honored) — the MCP doors' links, the index door's store links. */
   const publicUrlOf = (c: Context) => {
     if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
-    const url = new URL(c.req.url);
-    const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
-    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
-    return `${proto}://${host}`;
+    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || new URL(c.req.url).host;
+    return `${requestProto(c)}://${host}`;
   };
   /** The index's requests desk, when this strut is an index. */
   let requestsDesk: RequestsDesk | undefined;
@@ -10168,14 +10168,16 @@ export async function createStrut<TServices = unknown>(
         // and draws the app alone. `?shell=1` with the key is strut's own UI.
         if (serveRef && !(c.req.query("shell") === "1" && carriesApiKey(c))) return c.html(servedHtml(html, served?.page() ?? null, publicUrlOf(c)));
         // A custom domain (plans/public-surface.md §9): a host a public app
-        // lists answers with that app alone, as a served box's `/` does.
-        const domainApp = appOfDomain(await publicSurface.get(), requestHost(c));
+        // lists answers with that app alone, as a served box's `/` does. Its
+        // links name the domain, never STRUT_PUBLIC_URL; an app that cannot
+        // be read is "nothing served here", never strut's own UI.
+        const host = requestHost(c);
+        const domainApp = appOfDomain(await publicSurface.get(), host);
         if (domainApp && !(c.req.query("shell") === "1" && carriesApiKey(c))) {
           const info = await publicAppInfo(domainApp).catch(() => null);
-          if (info) {
-            const icon = info.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
-            return c.html(servedHtml(html, { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) }, publicUrlOf(c)));
-          }
+          const icon = info?.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
+          const page = info ? { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) } : null;
+          return c.html(servedHtml(html, page, `${requestProto(c)}://${host}`));
         }
         return c.html(html);
       } catch {

@@ -39,6 +39,8 @@ describe("a custom domain at /", () => {
     await writeFile(join(root, "web", "index.html"), PAGE);
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
+      // As a Stadeum box sets STRUT_PUBLIC_URL: a domain's links still name the domain.
+      publicUrl: "https://strut.box.example",
       workspace, store: new MemoryRunStore(), registry: await createRegistry([]), kit, webDist: join(root, "web"), scheduler: false, views: false,
       job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
@@ -51,7 +53,7 @@ describe("a custom domain at /", () => {
     const put = await strut.app.request("/public-view", {
       method: "PUT",
       headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ apps: [{ name: "bench", domains: ["bench.example.com"] }] }),
+      body: JSON.stringify({ apps: [{ name: "bench", domains: ["bench.example.com"] }, { name: "gone", domains: ["gone.example.com"] }] }),
     });
     assert.equal(put.status, 200, await put.clone().text());
   });
@@ -62,13 +64,20 @@ describe("a custom domain at /", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("a listed host gets the app alone, with its title; a forwarded host counts", async () => {
-    for (const headers of [{ host: "bench.example.com" }, { host: "edge.internal", "x-forwarded-host": "Bench.Example.com:443" }]) {
+  it("a listed host gets the app alone, with its title, its links on the domain; a forwarded host counts", async () => {
+    for (const headers of [{ host: "bench.example.com", "x-forwarded-proto": "https" }, { host: "edge.internal", "x-forwarded-host": "Bench.Example.com:443", "x-forwarded-proto": "https" }]) {
       const html = await (await strut.app.request("/", { headers })).text();
       assert.match(html, /<meta name="strut-serve" content="bench" \/>/);
       assert.match(html, /<title>Bench<\/title>/);
       assert.match(html, /<meta name="description" content="A bench\." \/>/);
+      assert.match(html, /<meta property="og:url" content="https:\/\/bench\.example\.com\/" \/>/);
     }
+  });
+
+  it("a listed app that cannot be read is nothing served, never strut's own UI", async () => {
+    const html = await (await strut.app.request("/", { headers: { host: "gone.example.com" } })).text();
+    assert.match(html, /<meta name="strut-serve" content="" \/>/);
+    assert.match(html, /<title>strut<\/title>/);
   });
 
   it("another host gets the page as before; ?shell=1 with the key is strut's own UI", async () => {
