@@ -91,6 +91,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   let openFirst = "";
   /** A page from git the stand-in tender changes in place of adding one (its ref_id), and what it was last sent. */
   let editSeeded = "";
+  /** The first line of that page's docs, which the dream's edit quotes. */
+  let editSeededLine = "";
   let tendLast = "";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
@@ -120,7 +122,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           if (turn === 0) return say("knowledge_add_claim", { concept: "Personal", text: CLAIM });
           if (turn === 1) return say("knowledge_add_evidence", { claim, workflow: "orchestrator", run, said: SAID, by: "evan" });
           // A page whose text comes from git: the tool answers for it.
-          if (turn === 2 && editSeeded) return say("knowledge_edit_page", { ref_id: editSeeded, node_data: { docs: NEW_DOCS }, rationale: "Summaries run long." });
+          if (turn === 2 && editSeeded) return say("knowledge_edit_page", { ref_id: editSeeded, edits: [{ old: editSeededLine, new: `${NEW_DOCS}\n${editSeededLine}` }], rationale: "Summaries run long." });
           // The root is never edited: the lesson goes on a page under it.
           if (turn === 2)
             return say("knowledge_add_page", {
@@ -362,6 +364,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     // `Assistant Conversations`, a page strut ships under `Dream` (not a root): from git.
     const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
     editSeeded = String(seeded["r"]);
+    editSeededLine = String(seeded["d"]).split("\n")[0]!;
     for (const review of [false, true]) {
       await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
       await say(SAID);
@@ -404,6 +407,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
       const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
       editSeeded = String(seeded["r"]);
+      editSeededLine = String(seeded["d"]).split("\n")[0]!;
       const ids: string[] = [];
       for (const review of [false, true]) {
         await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
@@ -418,9 +422,10 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       }
       const done = await post(`/proposals/${ids[0]}/decide`, { action: "accept" });
       assert.equal(done["status"], "applied", JSON.stringify(done["result"]).slice(0, 600));
-      assert.equal(await docsOf("Assistant Conversations"), NEW_DOCS);
+      // Only the line the edit quoted changed: the rest of the page is as git had it.
+      assert.equal(await docsOf("Assistant Conversations"), `${NEW_DOCS}\n${seeded["d"]}`);
       const file = await readFile(join(repo, "src", "concepts", "Assistant Conversations.md"), "utf-8");
-      assert.ok(file.endsWith(`---\n${NEW_DOCS}\n`) && file.includes("parent: Dream"), file);
+      assert.ok(file.endsWith(`---\n${NEW_DOCS}\n${seeded["d"]}\n`) && file.includes("parent: Dream"), file);
       assert.match(git("status", "--porcelain"), /Assistant Conversations\.md/);
     } finally {
       STRUT_CONCEPTS.dir = shipped.strut;
