@@ -22,7 +22,7 @@ export { RunTimeline, type RunTimelineProps } from "./components/RunTimeline";
 export { Transcript, type TranscriptProps } from "./components/Transcript";
 export { LaunchForm, type LaunchFormProps, type InputField } from "./components/LaunchForm";
 export { TaskForm, type TaskFormProps } from "./components/TaskForm";
-export { WorkerPage, WorkerTask, TaskPhotos, taskAsk, shownFields, satsText, type WorkerPageProps, type WorkerTaskProps, type TaskPhotosProps } from "./components/WorkerTask";
+export { WorkerPage, WorkerTask, TaskPhotos, PayPill, taskAsk, shownFields, satsText, type WorkerPageProps, type WorkerTaskProps, type TaskPhotosProps } from "./components/WorkerTask";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";
