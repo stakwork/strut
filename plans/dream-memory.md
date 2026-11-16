@@ -91,11 +91,44 @@ Proposal: one set of rules for every writer of concepts.
 The other way, the assistant only noting the lesson and the next dream
 applying it, keeps one writer but leaves the person waiting a cycle.
 
+## Old conversations in the graph
+
+After `/new` the assistant keeps facts and concepts, but cannot find an
+earlier conversation. Checked on Peel's graph file (2026-11-16): 568
+`StrutRun` nodes, 24 `StrutJob`, and no `StrutChat`, `StrutTurn` or
+`StrutAgentSession`; no `IN_CHAT` or `SPAWNED` edge table. A run carries
+`input_preview` / `output_preview` (cut short) and a `log_ref`, and its
+`search_text` is only the workflow and status, so a search for what was
+said finds nothing. The assistant is not granted `conversation/list`
+either.
+
+Why: ruling 6 of `ladybug-backend.md` (2026-10-14) dropped the chat and
+agent-session types from the file. They were swarm bookkeeping, nothing on
+the desktop read them, and the conversation store stays the store of
+record. The projector still has the chat projection and skips it only
+because the types are missing.
+
+There is now a use: recall across `/new`, the dream's view of a source,
+and a fact pointing at the turn it came from. Proposal:
+
+- **Put `StrutChat` and `StrutTurn` back on Ladybug** (a partial reversal
+  of ruling 6), so the projector writes each assistant conversation and its
+  turns' words, searchable as on Neo4j. `StrutAgentSession` and
+  `StrutToolCall` stay out.
+- **A fact asserted in a conversation points at its turn**, not only at
+  its run.
+- **Later, the dream writes a summary on the `StrutChat`** (who and what
+  it was about), so search finds the conversation by its subject, not only
+  by its words.
+
 ## Open for Evan
 
 - Peel's memory saving: move into the dream, or keep it for facts only?
 - The assistant's concept edits: through the dream's doors and rules (the
   proposal above), or only noted for the next dream?
+- Conversations on Ladybug: put `StrutChat` and `StrutTurn` back (part of
+  ladybug-backend.md ruling 6), and who may read them (the assistant reads
+  `private` without the Strut domain excluded; jobs, apps and peers do not)?
 - How a concept names a fact: an edge from the concept to the fact, or a
   line of text? An edge would let a superseded fact mark the concept's
   claims for a fresh look.
