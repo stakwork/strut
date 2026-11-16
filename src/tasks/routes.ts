@@ -7,10 +7,10 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   open, `tests`, `copies` and `attachments` off). A paid open type with fewer ready
- *   tests than its K is refused, `409 needs_tests` (ruling 9)
+ *   open, `tests`, `copies`, `attachments` and `standing` off). Whether a
+ *   paid open type qualifies newcomers is the admin's (ruling 12)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
  * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
@@ -135,7 +135,6 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   no_answer: 404,
   in_use: 409,
   final: 409,
-  needs_tests: 409,
 };
 
 export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
@@ -250,6 +249,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
         ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
+        ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),

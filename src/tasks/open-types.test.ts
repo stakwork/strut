@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTasks, memoryTaskStores, openTaskStores, OPEN_GRANT_BY, tasksPath, TaskError, type TaskErrorCode, type TasksService, type WorkerTask } from "./tasks.js";
 import { memoryTestFiles } from "./test-files.js";
-import { openPayProblem } from "./task-tests.js";
+import { openPayProblem, openPayWarning } from "./task-tests.js";
 
 /**
  * Open task types (plans/human-steps.md ruling 9): any signed-in worker who
@@ -28,13 +28,20 @@ const RULE = { qualify: 2, window: 4, minGraded: 2, threshold: 0.5 };
 
 const refused = (code: TaskErrorCode, re?: RegExp) => (e: unknown) => e instanceof TaskError && e.code === code && (!re || re.test(e.message));
 
-describe("openPayProblem: a paid open type qualifies every newcomer", () => {
+describe("openPayProblem and openPayWarning: whether a paid open type qualifies newcomers is the admin's (ruling 12)", () => {
   it("an unpaid or invite-only type needs nothing; a paid open one its tests on, K at least 1 and K ready", () => {
     assert.equal(openPayProblem({ name: "t", open: true }, 0), undefined, "unpaid: no tests needed");
     assert.equal(openPayProblem({ name: "t", open: false, paySats: 5 }, 0), undefined, "invite-only: staff grant each worker");
-    assert.match(openPayProblem({ name: "t", open: true, paySats: 5 }, 0)!, /turn its tests on \(qualify 10 by default\)/);
-    assert.match(openPayProblem({ name: "t", open: true, paySats: 5, tests: { qualify: 0 } }, 9)!, /qualify nobody \(qualify 0\)/);
-    assert.match(openPayProblem({ name: "t", open: true, paySats: 5, tests: { qualify: 10 } }, 7)!, /needs 10 ready tests and has 7, 3 short; save it invite-only \(open: false\) or unpaid/);
+    // No qualifying asked for: never short, but said.
+    assert.equal(openPayProblem({ name: "t", open: true, paySats: 5 }, 0), undefined);
+    assert.equal(openPayProblem({ name: "t", open: true, paySats: 5, tests: { qualify: 0 } }, 0), undefined);
+    assert.match(openPayWarning({ name: "t", open: true, paySats: 5 })!, /no qualifying tests: anyone signed in earns from their first answer/);
+    assert.match(openPayWarning({ name: "t", open: true, paySats: 5, tests: { qualify: 0 } })!, /no qualifying tests/);
+    assert.equal(openPayWarning({ name: "t", open: true, paySats: 5, tests: { qualify: 1 } }), undefined);
+    assert.equal(openPayWarning({ name: "t", open: true }), undefined, "unpaid");
+    assert.equal(openPayWarning({ name: "t", open: false, paySats: 5 }), undefined, "invite-only");
+    // Qualifying asked for: short of K ready tests, no newcomer.
+    assert.match(openPayProblem({ name: "t", open: true, paySats: 5, tests: { qualify: 10 } }, 7)!, /qualifies newcomers on 10 tests, and has 7 ready, 3 short: it takes no new worker until they are/);
     assert.equal(openPayProblem({ name: "t", open: true, paySats: 5, tests: { qualify: 10 } }, 10), undefined);
   });
 });
@@ -192,19 +199,24 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.equal((await take("ann", { app: "workers" })).type, "ballots");
     });
 
-    it("a paid open type with fewer than K ready tests is refused when saved; short of them later, it takes no newcomer until they are back", async () => {
+    it("ruling 12: a paid open type saves with no qualifying, and anyone enters it; one that asks for K takes no newcomer while short of them", async () => {
       const base = { app: "workers", answer: MATCH, paySats: 5 };
-      await assert.rejects(tasks().setType("pets", base, "staff"), refused("needs_tests", /turn its tests on/));
-      await assert.rejects(tasks().setType("pets", { ...base, tests: { ...RULE, qualify: 0 } }, "staff"), refused("needs_tests", /qualify 0/));
-      await assert.rejects(tasks().setType("pets", { ...base, tests: RULE }, "staff"), refused("needs_tests", /needs 2 ready tests and has 0, 2 short/));
-      assert.deepEqual(await tasks().types(), [], "nothing saved");
+      // No tests, or K 0: the admin's call, saved, and a stranger earns at once.
+      const labels = { ...base, app: "labelers" };
+      assert.equal((await tasks().setType("labels", labels, "staff")).open, true);
+      await real("labels");
+      const cat = await take("cat", { type: "labels", app: "labelers" });
+      assert.equal((await behind(cat.lease)).test, undefined, "a real task first: no qualifying");
+      assert.equal(cat.payMsat, 5000);
+      assert.equal((await tasks().setType("labels", { ...labels, tests: { ...RULE, qualify: 0 } }, "staff")).tests?.qualify, 0);
       assert.equal((await tasks().setType("free", { app: "workers", answer: MATCH, tests: RULE }, "staff")).open, true, "unpaid: open with no tests");
-      await tasks().setType("pets", { ...base, open: false, tests: RULE }, "staff");
+      // K asked for and none ready: saved all the same.
+      assert.equal((await tasks().setType("pets", { ...base, tests: RULE }, "staff")).open, true);
       const [t1] = await ready("pets", 2);
-      assert.equal((await tasks().setType("pets", { ...base, tests: RULE }, "staff")).open, true, "open once K are ready");
       assert.equal((await tasks().stats({ type: "pets" })).types[0]!.readyTests, 2);
       // A raise of K past the ready tests is a save like any other.
-      await assert.rejects(tasks().setType("pets", { ...base, tests: { ...RULE, qualify: 3 } }, "staff"), refused("needs_tests", /needs 3 ready tests and has 2, 1 short/));
+      assert.equal((await tasks().setType("pets", { ...base, tests: { ...RULE, qualify: 3 } }, "staff")).tests?.qualify, 3);
+      await tasks().setType("pets", { ...base, tests: RULE }, "staff");
 
       // Ann gets in while it has them.
       await answerTests("ann", 2, YES);

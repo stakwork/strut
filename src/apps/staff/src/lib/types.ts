@@ -44,6 +44,10 @@ export interface TaskType {
   copies?: CopiesRule;
   /** The files an answer carries (plans/human-steps.md §5.6); absent: none. */
   attachments?: AttachmentRule;
+  /** A standing type (plans/human-steps.md §5.7): a worker's ask makes the
+   *  task, and each answer starts this workflow. Absent: a human step makes
+   *  its tasks. */
+  standing?: { workflow: string };
   changedAt: number;
   changedBy?: string;
 }
