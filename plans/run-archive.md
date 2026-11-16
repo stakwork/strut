@@ -183,8 +183,10 @@ has restored it), and a run opened while the bucket was down.
   IMDS, which needs nothing in the env. The SDK's other sources (ECS,
   EKS) read `AWS_*` from `process.env`, which the default server empties:
   name them in `STRUT_ENV_KEEP`.
-- Expiry, if ever wanted, is a bucket lifecycle rule. Strut never expires
-  an archived log.
+- Expiry, if ever wanted, is a bucket lifecycle rule on current
+  versions. Strut never expires an archived log, and an object the bucket
+  expired is a log that is gone: once the local copy is evicted nothing
+  can restore it. (Before the eviction strut notices and uploads again.)
 
 ## 2. Later phases (proposed)
 
