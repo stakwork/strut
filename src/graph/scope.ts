@@ -11,7 +11,9 @@
  *     `assistant.workflows`, the frame sealed (B's rule, strut#385);
  *   - `builder` — the chat builder's `graph_query`, `graph_get`, `graph_walk`;
  *   - `jobs` — every other step, and `ctx.services.graph` itself;
- *   - `apps` — an app's calls (`ctx.app`);
+ *   - `apps` — an app's calls (`ctx.app`), but for the own call of a page
+ *     strut ships shown to a person (`AppRef.firstParty`): that page acts as
+ *     its viewer, so it reads as `ui`. A run the page launched does not;
  *   - `peers` — another strut on `/graph/*`;
  *   - `ui` — a person's credential on `/graph/*`.
  *
@@ -90,16 +92,20 @@ export function listFor(readers: GraphReaders | undefined, kind: ReaderKind): Re
 export interface ReaderCtx {
   agentTool?: boolean;
   aiAuthored?: boolean;
-  app?: unknown;
+  app?: { firstParty?: true };
   workflow?: string;
   path?: string;
   frame?: { workflow: string; sealed?: boolean };
 }
 
+/** The workflow name of one step run on its own, a page's call among them: `RUN_STEP_FLOW` (src/run-step.ts), kept
+ *  here as text since this file imports nothing at runtime; scope.test.ts holds the two equal. */
+export const PAGE_CALL = "__run_step__";
+
 export function readerKindOf(ctx: ReaderCtx | undefined, readers: GraphReaders | undefined): ReaderKind {
-  if (ctx?.app) return "apps";
-  const listed = readers?.assistant?.workflows ?? [];
   const run = ctx?.workflow ?? ctx?.path?.split("/")[0];
+  if (ctx?.app) return ctx.app.firstParty === true && run === PAGE_CALL ? "ui" : "apps";
+  const listed = readers?.assistant?.workflows ?? [];
   if (
     ctx?.agentTool && !ctx.aiAuthored && run && listed.includes(run) &&
     ctx.frame?.sealed && listed.includes(ctx.frame.workflow)

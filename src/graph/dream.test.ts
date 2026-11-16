@@ -438,9 +438,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     for (const ctx of [{}, { workflow: "some-flow", app: ADMIN_PAGE.app }, page({ admin: false }), page({ firstParty: false }), { workflow: RUN_STEP_FLOW }]) {
       await assert.rejects(async () => cyclesAs(ctx), /knowledge\/cycles is an admin's/, JSON.stringify(ctx));
     }
-    // Where a page may not read the tree's namespace (a personal strut), it is refused as the claims are.
-    if (readers) await assert.rejects(async () => cyclesAs(ADMIN_PAGE), /may not read "private", where the Concept tree is kept/);
-    else assert.deepEqual((await cyclesAs(ADMIN_PAGE)).map((c) => [c["run"], c["lessons"].length]), [[run["runId"], 1]]);
+    // On a personal strut too: strut's own page reads the tree's namespace as its viewer (graph/scope.ts).
+    assert.deepEqual((await cyclesAs(ADMIN_PAGE)).map((c) => [c["run"], c["lessons"].length]), [[run["runId"], 1]]);
   });
 
   it("a run the rule is not about is left unjudged: nothing is recorded, and the next run that opens the page is judged in its place", async () => {
@@ -559,6 +558,10 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     else assert.equal(((await pageStep.run(pageStep.input.parse({ name: "Personal" }), fromApp)) as { name: string }).name, "Personal");
     if (readers) await assert.rejects(async () => claimsStep.run({}, fromApp), /knowledge\/claims: this caller may not read "private"/);
     else assert.equal(((await claimsStep.run({}, fromApp)) as { concepts: unknown[] }).concepts.length, 2);
+    // Strut's own page reads as its viewer (graph/scope.ts), so the Knowledge app shows the tree where an app may not.
+    const fromOwn = { services: strut!.services, app: { name: "strut/knowledge", version: "v1", firstParty: true }, workflow: RUN_STEP_FLOW, path: RUN_STEP_FLOW } as never;
+    assert.equal(((await pageStep.run(pageStep.input.parse({ name: "Personal" }), fromOwn)) as { name: string }).name, "Personal");
+    assert.equal(((await claimsStep.run({}, fromOwn)) as { concepts: unknown[] }).concepts.length, 2);
 
     // One run adds at most so many claims.
     for (let i = 0; i < KNOWLEDGE_CLAIMS_PER_RUN; i++) assert.ok("ok" in (await knowledge.addClaim({ concept: "Personal", text: `rule ${i}` }, { runId: "r2" })));
