@@ -21,7 +21,8 @@ import contextConcept from "../steps/lib/context/concept.js";
 import graphGet from "../steps/lib/graph/graph-get.js";
 import jobGet from "../steps/lib/job/get.js";
 import verifyJobStep from "../steps/lib/meta/verify-job.js";
-import { MemoryRunStore } from "../store.js";
+import { FileRunStore, MemoryRunStore } from "../store.js";
+import { MemoryObjectStore } from "../object-store.js";
 import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { CLAIMS_OFF, personSubjectSchema, subjectSchema } from "../claims-schemas.js";
@@ -680,6 +681,30 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const executed = await rows(`MATCH ${n("run", "StrutRun", { run_id: "$r" })}-[:EXECUTED]->${n("v", "StrutStepVersion")} RETURN run.workflow_name AS wf, v.content_hash AS h`, { r: r.runId });
     assert.deepEqual(executed, [{ wf: "step:clip/compute-times", h: (await ws.getActiveStepHashes())["clip/compute-times"] }]);
     assert.ok(!(await ws.listWorkflows()).some((w) => w.name.startsWith("step:")));
+  });
+
+  it("a run whose log was archived and evicted is verified again, not skipped as unknown (plans/run-archive.md)", async () => {
+    await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "bounds" })]);
+    const runs = new FileRunStore(await mkdtemp(join(dir, "archived-runs-")));
+    const archive = { objects: new MemoryObjectStore(), prefix: "box", label: "memory" };
+    const booted = await createStrut({ workspace: ws, store: runs, archive, registry, dataDir: dir, serveUi: false, enableChat: false, stt: false, scheduler: false });
+    const post = (runId: string) => booted.app.request(`/workflows/clipper/runs/${runId}/verify`, { method: "POST" });
+    try {
+      const run = await booted.run("clipper", { start: 5, len: 19 });
+      assert.equal((await post(run.runId)).status, 200); // joins the detached pass
+      assert.ok(await runs.archiveRun("clipper", run.runId, new Date().toISOString()));
+      assert.equal(await runs.evictRun("clipper", run.runId, new Date().toISOString()), true);
+      assert.equal(await runs.logWrittenAt("clipper", run.runId), null, "the log is in the bucket, not here");
+
+      const again = await post(run.runId);
+      assert.equal(again.status, 200, "an evicted run with no archive is a 404 here (`unknown-run`)");
+      const result = (await again.json()) as VerifyResult;
+      assert.equal(result.skipped, undefined);
+      assert.deepEqual(result.checks.map((k) => k.path), ["clipper/times"]);
+      assert.notEqual(await runs.logWrittenAt("clipper", run.runId), null, "the pass restored it");
+    } finally {
+      await booted.close();
+    }
   });
 
   it("a `claims:` block in the YAML is recorded at boot (the seeder's path) and applied by the HTTP publish door, stamped `person`", async () => {

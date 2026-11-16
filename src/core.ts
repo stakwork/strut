@@ -961,10 +961,24 @@ export interface RunResult {
 /** How a run stands once its runner returned. */
 export type RunStatus = "success" | "error" | "cancelled" | "waiting";
 
+/** A run's event log in the archive (`src/run-archive.ts`). */
+export interface ArchivedLog {
+  /** The object's key in the bucket, prefix included. */
+  key: string;
+  /** The log's size when it was uploaded. The object is this very log
+   *  while the local one is exactly this long (a log only grows). */
+  bytes: number;
+  /** The object's size (the log gzipped). */
+  size: number;
+  /** When it was uploaded. */
+  at: string;
+}
+
 /** Run summary written to run.json. */
 export interface RunSummary {
   /** The retention sweep dropped this run's event log and directory
-   *  (`src/retention.ts`); this summary is what is left. */
+   *  (`src/retention.ts`); this summary is what is left — and, with
+   *  `archive`, the bucket's copy, which the next read of the log restores. */
   logEvicted?: boolean;
   /** The run died with its process and never wrote a summary; retention
    *  wrote this one when it evicted the log (`src/retention.ts`). */
@@ -972,6 +986,12 @@ export interface RunSummary {
   /** The run's parent, when it was a child run. */
   parentRunId?: string;
   evictedAt?: string;
+  /** The bucket holds this run's log (plans/run-archive.md). A resume drops
+   *  it with the summary, so a run that went on is uploaded again. */
+  archive?: ArchivedLog;
+  /** When a read last restored the log from the archive; the sweep leaves
+   *  it for a day, then evicts it again. */
+  restoredAt?: string;
   runId: string;
   workflow: string;
   startedAt: string;

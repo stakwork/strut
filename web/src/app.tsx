@@ -236,6 +236,8 @@ function Shell() {
   // has its steps and events (`openJobRun`).
   const [pendingFlyout, setPendingFlyout] = useState<string | null>(null);
   const [events, setEvents] = useState<api.RunEvent[]>([]);
+  /** Why the selected run's log could not be read, when it could not. */
+  const [runLogError, setRunLogError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   // Bumped after a durable resume so the run-view effect re-tails the log
   // (the prior tail closed at the old terminal event).
@@ -866,10 +868,13 @@ function Shell() {
     // Aborted on run-switch/unmount so pollers don't leak.
     const ctrl = new AbortController();
     setEvents([]);
+    setRunLogError(null);
     (async () => {
       const accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
       if (ctrl.signal.aborted) return;
       setEvents([...accumulated]);
+      // The read restored an archived log: the list's "archived" badge goes.
+      if (accumulated.length && runs.find((r) => r.runId === selectedRun)?.logEvicted) refreshRuns();
       const result = await api.streamRun(selectedWf, selectedRun, (event) => {
         if (ctrl.signal.aborted) return;
         accumulated.push(event);
@@ -878,7 +883,12 @@ function Shell() {
       // A live-tailed run just finished → refresh the sidebar status
       // (runs list + workflow ordering, which sorts by last run).
       if (result != null && !ctrl.signal.aborted) { refreshRuns(); refreshWorkflows(); }
-    })().catch((e) => { if ((e as Error)?.name !== "AbortError") console.error(e); });
+    })().catch((e) => {
+      if ((e as Error)?.name === "AbortError" || ctrl.signal.aborted) return;
+      console.error(e);
+      // What the server said (an archived log the bucket could not give back).
+      setRunLogError((e as Error)?.message?.replace(/^\S+: /, "") || "The run's log could not be read");
+    });
     return () => ctrl.abort();
   }, [selectedRun, runEpoch]);
 
@@ -1655,7 +1665,9 @@ function Shell() {
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
                           {run.crashed && <span class="badge badge-danger" title="The run died with its process">crashed</span>}
-                          {run.logEvicted && <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>}
+                          {run.logEvicted && (run.archive
+                            ? <span class="badge" title={`Log archived${run.archive.at ? ` at ${run.archive.at}` : ""}: opening the run restores it`}>archived</span>
+                            : <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>)}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
@@ -2115,9 +2127,11 @@ function Shell() {
             : <div class="empty">Loading job…</div>
         ) : canvas
           ? <>
-            {selectedRunSummary?.logEvicted && !isRunView && (
-              <div class="run-evicted-note">This run's log was evicted by retention{selectedRunSummary.evictedAt ? ` (${selectedRunSummary.evictedAt})` : ""}; only its summary is kept.</div>
-            )}
+            {selectedRun && !isRunView && runLogError
+              ? <div class="run-evicted-note is-error">{runLogError}</div>
+              : selectedRunSummary?.logEvicted && !isRunView && (selectedRunSummary.archive
+                ? <div class="run-evicted-note">Restoring this run's log from the archive…</div>
+                : <div class="run-evicted-note">This run's log was evicted by retention{selectedRunSummary.evictedAt ? ` (${selectedRunSummary.evictedAt})` : ""}; only its summary is kept.</div>)}
             <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's

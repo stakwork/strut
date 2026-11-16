@@ -924,11 +924,17 @@ export interface RunSummary {
    *  resumes it; `waitingOn` says on what. */
   status: string;
   waitingOn?: string[];
-  /** Retention dropped this run's log; the summary is what is left. */
+  /** Retention dropped this run's log; the summary is what is left — and,
+   *  with `archive`, the bucket's copy, which opening the run restores. */
   logEvicted?: boolean;
   /** The run died with its process (no summary of its own). */
   crashed?: boolean;
   evictedAt?: string;
+  /** The run's log is in the archive (plans/run-archive.md): `bytes` of log
+   *  as a `size`-byte object, uploaded `at`. */
+  archive?: { key: string; bytes: number; size: number; at: string };
+  /** When a read last restored the log from the archive. */
+  restoredAt?: string;
   input?: unknown;
   output?: unknown;
   error?: { message: string };

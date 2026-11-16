@@ -1,7 +1,8 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { McpServer, ModelUsage, RunEvent, RunOrigin, RunSummary, StepCounts } from "./core.js";
+import type { ArchivedLog, McpServer, ModelUsage, RunEvent, RunOrigin, RunSummary, StepCounts } from "./core.js";
 import { addUsage, emptyUsage } from "./pricing.js";
+import { RunArchiveError, downloadLog, errorText, forgetLogs, logKey, uploadLog, type RunArchive } from "./run-archive.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -259,11 +260,13 @@ export interface RunStore {
   getRunEvents(workflow: string, runId: string): Promise<RunEvent[]>;
   /** The size of the event log in bytes — what `getRunEvents` would read —
    *  without reading it: a resume refuses a log the process cannot hold
-   *  (`STRUT_RESUME_MAX_LOG_BYTES`). 0 for an unknown run. */
+   *  (`STRUT_RESUME_MAX_LOG_BYTES`). An archived log's size is the one its
+   *  summary recorded: asking never restores it. 0 for an unknown run. */
   logSize(workflow: string, runId: string): Promise<number>;
   /** When the event log was last written (epoch ms), without reading it —
    *  never before its last event's `ts`: the boot scan skips a run nothing
-   *  wrote to since the previous boot by this alone. Null for an unknown run. */
+   *  wrote to since the previous boot by this alone. Null for an unknown run,
+   *  and for one whose log is not on this disk (evicted, archived or not). */
   logWrittenAt(workflow: string, runId: string): Promise<number | null>;
   /** The run's `run.start` event (its first line), reading only the head of
    *  the log: who launched it, for what, under which app — what a listing
@@ -308,8 +311,26 @@ export interface RunStore {
   /** Retention (`src/retention.ts`): drop a run's event log and everything
    *  else in its directory but the summary, which is rewritten with
    *  `logEvicted: true` + `evictedAt`. A run with no summary (it died with
-   *  its process) gets `fallback` as its summary; without one, nothing to do. */
-  evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void>;
+   *  its process) gets `fallback` as its summary; without one, nothing to do.
+   *  A store with an archive drops only a log the bucket holds (the
+   *  summary's `archive` names this very log). True when the log went. */
+  evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<boolean>;
+  /** Give the store its archive (plans/run-archive.md): from then on
+   *  `archiveRun` uploads, and a read of a log that is in the bucket and
+   *  not on this disk restores it first. Optional, with the two below: a
+   *  store that keeps no files has no archive. */
+  useArchive?(archive: RunArchive): void;
+  /** Upload the run's log unless the bucket already holds this very log,
+   *  and record it on the summary (`archive`). Resolves to what the summary
+   *  now carries: `{ archive }`, or `{}` for a run with no log on this disk.
+   *  A run with no summary (it died with its process) is uploaded and
+   *  nothing is recorded: the caller puts the answer on the summary it
+   *  writes. Null when the run went on while its log was uploaded. Rejects
+   *  when the bucket fails. */
+  archiveRun?(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedLog } | null>;
+  /** This store reading only what is on this disk: an archived log is not
+   *  restored and reads as an evicted one. See `localRuns`. */
+  local?(): RunStore;
   /** The last events of the log, read from at most its last `maxBytes`
    *  (complete lines only, oldest first) — never the whole log, which a
    *  crashed run may have grown to a gigabyte. Empty for an unknown run. */
@@ -317,6 +338,13 @@ export interface RunStore {
   /** When the run was last written (epoch ms): its log's mtime, else its
    *  directory's. Null for an unknown run. */
   runWrittenAt(workflow: string, runId: string): Promise<number | null>;
+}
+
+/** The store for a scan over MANY runs (a backfill, a count, a listing):
+ *  what is on this disk, so the scan cannot page the whole archive back in.
+ *  A read of one run someone asked for uses the store itself. */
+export function localRuns(store: RunStore): RunStore {
+  return store.local?.() ?? store;
 }
 
 /**
@@ -540,9 +568,24 @@ export function stepTypeOfRunKey(key: string): string | null {
  */
 export class FileRunStore implements RunStore {
   private workspaceRoot: string;
+  private archive: RunArchive | undefined;
+  /** False on the `local()` view: nothing is restored. */
+  private restores = true;
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
+  }
+
+  useArchive(archive: RunArchive): void {
+    this.archive = archive;
+  }
+
+  local(): RunStore {
+    if (!this.archive) return this;
+    const view = new FileRunStore(this.workspaceRoot);
+    view.archive = this.archive;
+    view.restores = false;
+    return view;
   }
 
   private runsDir(key: string): string {
@@ -556,11 +599,86 @@ export class FileRunStore implements RunStore {
   }
 
   async deleteRuns(workflow: string): Promise<void> {
+    // The records go, so their logs in the bucket go too: read the keys first.
+    const keys: string[] = [];
+    if (this.archive) {
+      for (const id of await this.listRuns(workflow)) {
+        const key = (await this.getRunSummary(workflow, id))?.archive?.key;
+        if (key) keys.push(key);
+      }
+    }
     await rm(this.runsDir(workflow), { recursive: true, force: true });
+    if (this.archive && keys.length) void forgetLogs(this.archive, keys);
   }
 
   private runDir(workflow: string, runId: string): string {
     return join(this.runsDir(workflow), runId);
+  }
+
+  private logFile(workflow: string, runId: string): string {
+    return join(this.runDir(workflow, runId), "events.jsonl");
+  }
+
+  /** The log's size on this disk, or null when it is not here. */
+  private async localLogSize(workflow: string, runId: string): Promise<number | null> {
+    try {
+      return (await stat(this.logFile(workflow, runId))).size;
+    } catch {
+      return null;
+    }
+  }
+
+  /** One change at a time to a run's summary and whether its log is here:
+   *  an eviction, a restore, the record of an upload and a resume's clear
+   *  each read the summary and act on it, and must not cross. */
+  private oneAtATime<T>(workflow: string, runId: string, fn: () => Promise<T>): Promise<T> {
+    return serially(this.runDir(workflow, runId), fn);
+  }
+
+  /** Before a read of the log: bring it back when the bucket has it and
+   *  this disk does not. One restore at a time per run; the readers that
+   *  waited find the file. The summary says "not evicted" before the
+   *  download, so a process that dies between the two leaves a run the next
+   *  read restores, and never a log the sweep cannot see. */
+  private async ensureLog(workflow: string, runId: string): Promise<void> {
+    const archive = this.archive;
+    if (!archive || !this.restores) return;
+    if ((await this.localLogSize(workflow, runId)) !== null) return;
+    await this.oneAtATime(workflow, runId, async () => {
+      const summary = await this.getRunSummary(workflow, runId);
+      if (!summary?.archive || (await this.localLogSize(workflow, runId)) !== null) return;
+      const { logEvicted: _gone, evictedAt: _at, ...rest } = summary;
+      await this.finalize(workflow, runId, { ...rest, restoredAt: new Date().toISOString() });
+      try {
+        await downloadLog(archive.objects, summary.archive, this.logFile(workflow, runId));
+      } catch (err) {
+        // The summary as it was, unless the run's records went meanwhile.
+        if (await this.getRunSummary(workflow, runId)) await this.finalize(workflow, runId, summary);
+        throw new RunArchiveError(`The log of run ${runId} of "${workflow}" is archived in ${archive.label} and could not be restored: ${errorText(err)}`);
+      }
+      console.log(`[archive] restored the log of ${workflow}/${runId} from ${archive.label}`);
+    });
+  }
+
+  async archiveRun(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedLog } | null> {
+    const archive = this.archive;
+    if (!archive) throw new Error("this run store has no archive");
+    const before = await this.getRunSummary(workflow, runId);
+    const local = await this.localLogSize(workflow, runId);
+    if (local === null) return {};
+    if (before?.archive?.bytes === local) return { archive: before.archive };
+    const key = logKey(archive, workflow, runId);
+    const log: ArchivedLog = { key, ...(await uploadLog(archive.objects, key, this.logFile(workflow, runId))), at };
+    // A resume may have cleared the summary and gone on while the log was
+    // uploaded: record only an upload of the log as it still is, on the
+    // summary of the same finish.
+    return this.oneAtATime(workflow, runId, async () => {
+      if ((await this.localLogSize(workflow, runId)) !== log.bytes) return null;
+      const now = await this.getRunSummary(workflow, runId);
+      if (!now !== !before || now?.finishedAt !== before?.finishedAt) return null;
+      if (now) await this.finalize(workflow, runId, { ...now, archive: log });
+      return { archive: log };
+    });
   }
 
   async setRunCallback(workflow: string, runId: string, url: string): Promise<void> {
@@ -657,10 +775,11 @@ export class FileRunStore implements RunStore {
   }
 
   async clearRunSummary(workflow: string, runId: string): Promise<void> {
-    await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
+    await this.oneAtATime(workflow, runId, () => rm(join(this.runDir(workflow, runId), "run.json"), { force: true }));
   }
 
   async readLogTail(workflow: string, runId: string, maxBytes: number): Promise<RunEvent[]> {
+    await this.ensureLog(workflow, runId);
     let fh;
     try {
       fh = await open(join(this.runDir(workflow, runId), "events.jsonl"), "r");
@@ -698,13 +817,21 @@ export class FileRunStore implements RunStore {
     }
   }
 
-  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void> {
-    const summary = (await this.getRunSummary(workflow, runId)) ?? fallback;
-    if (!summary) return;
-    const dir = this.runDir(workflow, runId);
-    await mkdir(dir, { recursive: true });
-    for (const entry of await readdir(dir)) if (entry !== "run.json") await rm(join(dir, entry), { recursive: true, force: true });
-    await this.finalize(workflow, runId, { ...summary, logEvicted: true, evictedAt });
+  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<boolean> {
+    return this.oneAtATime(workflow, runId, async () => {
+      const summary = (await this.getRunSummary(workflow, runId)) ?? fallback;
+      if (!summary) return false;
+      if (this.archive) {
+        // The log goes only when the bucket holds this very log.
+        const local = await this.localLogSize(workflow, runId);
+        if (local !== null && summary.archive?.bytes !== local) return false;
+      }
+      const dir = this.runDir(workflow, runId);
+      await mkdir(dir, { recursive: true });
+      for (const entry of await readdir(dir)) if (entry !== "run.json") await rm(join(dir, entry), { recursive: true, force: true });
+      await this.finalize(workflow, runId, { ...summary, logEvicted: true, evictedAt });
+      return true;
+    });
   }
 
   /**
@@ -727,6 +854,7 @@ export class FileRunStore implements RunStore {
     runId: string,
     opts: TailOpts = {},
   ): AsyncGenerator<RunEvent> {
+    await this.ensureLog(workflow, runId);
     const file = join(this.runDir(workflow, runId), "events.jsonl");
     // `run.error`/`run.cancelled` are no longer unconditionally terminal: a
     // later `run.resumed` reopens the stream (historical tails scan ahead;
@@ -741,6 +869,7 @@ export class FileRunStore implements RunStore {
    *  unparseable. Drop everything after the last newline; the fragment
    *  belongs to an incomplete unit by definition. */
   async repairLog(workflow: string, runId: string): Promise<boolean> {
+    await this.ensureLog(workflow, runId);
     const file = join(this.runDir(workflow, runId), "events.jsonl");
     let fh;
     try {
@@ -785,6 +914,7 @@ export class FileRunStore implements RunStore {
    *  the run stuck (unresumable, unlistable), and a corrupt line never
    *  belongs to a completed unit. */
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {
+    await this.ensureLog(workflow, runId);
     const file = join(this.runDir(workflow, runId), "events.jsonl");
     let raw: string;
     try {
@@ -802,11 +932,9 @@ export class FileRunStore implements RunStore {
   }
 
   async logSize(workflow: string, runId: string): Promise<number> {
-    try {
-      return (await stat(join(this.runDir(workflow, runId), "events.jsonl"))).size;
-    } catch {
-      return 0;
-    }
+    const local = await this.localLogSize(workflow, runId);
+    if (local !== null || !this.archive || !this.restores) return local ?? 0;
+    return (await this.getRunSummary(workflow, runId))?.archive?.bytes ?? 0;
   }
 
   async logWrittenAt(workflow: string, runId: string): Promise<number | null> {
@@ -820,6 +948,7 @@ export class FileRunStore implements RunStore {
   /** The first line, read in blocks up to its newline. The runner writes
    *  `run.start` first; a log that begins otherwise is read whole. */
   async getRunStart(workflow: string, runId: string): Promise<RunEvent | null> {
+    await this.ensureLog(workflow, runId);
     const file = join(this.runDir(workflow, runId), "events.jsonl");
     let fh;
     try {
@@ -906,15 +1035,16 @@ export class MemoryRunStore implements RunStore {
     return this.logWrittenAt(workflow, runId);
   }
 
-  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<void> {
+  async evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<boolean> {
     const k = this.key(workflow, runId);
     const summary = this.summaries.get(k) ?? fallback;
-    if (!summary) return;
+    if (!summary) return false;
     this.events.delete(k);
     this.callbacks.delete(k);
     this.mcp.delete(k);
     this.jobCallbacks.delete(k);
     this.summaries.set(k, { ...summary, logEvicted: true, evictedAt });
+    return true;
   }
 
   async deleteRuns(workflow: string): Promise<void> {

@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 
 import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
-import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
+import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, summarizeFromEvents } from "./store.js";
+import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
   FileChatStore,
@@ -205,7 +206,7 @@ import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
-import { createRetention, formatRetention, parseRetention } from "./retention.js";
+import { ARCHIVE_LOCAL_WINDOW, createRetention, formatRetention, parseRetention, type Retainer } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
@@ -286,6 +287,12 @@ export interface StrutOptions<TServices = unknown> {
    *  rooted at the workspace path. Pass `new MemoryRunStore()` for
    *  ephemeral / test environments. */
   store?: RunStore;
+
+  /** Where finished runs' logs are archived before retention evicts them
+   *  (plans/run-archive.md). Default: the bucket `STRUT_ARCHIVE_S3_*`
+   *  names, and none when no bucket is set. Given to `store` when it can
+   *  take one (`RunStore.useArchive`: a `FileRunStore` can). */
+  archive?: RunArchive;
 
   /** Consumer-defined capabilities bag exposed to every step via
    *  `ctx.services`. Use this to inject environment-specific
@@ -851,6 +858,11 @@ export interface Strut<TServices = unknown> {
    *  remove / preview / fire. Ticks by itself unless `scheduler: false`. */
   automations: Automations;
 
+  /** The run-retention sweep (src/retention.ts), which with an archive
+   *  uploads before it evicts. Sweeps by itself, at boot then hourly,
+   *  unless `scheduler: false`: a host that owns the clock calls `sweep()`. */
+  retention: Retainer;
+
   /** Packages (plans/marketplace.md), in process: what `POST
    *  /packages/install` and `DELETE /packages/…` do, one write at a time
    *  with them — plus the distro's door (`door: "distro"`, §12), which
@@ -1110,6 +1122,21 @@ export async function createStrut<TServices = unknown>(
   /** `fn` as one commit under its own cause (an install, an uninstall). */
   const recorded = <T,>(fn: () => Promise<T>, touchOf: (r: T | undefined) => HistoryTouch): Promise<T> => (history ? history.hold(fn, touchOf) : fn());
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
+  // The archive tier for run logs (plans/run-archive.md): the store uploads
+  // through it and restores from it; the retention sweep (below) drives it.
+  const archive = ((): RunArchive | undefined => {
+    const configured = opts.archive ?? archiveFromEnv(bootEnv());
+    if (!configured) return undefined;
+    if (!store.useArchive || !store.archiveRun) {
+      console.warn(`[archive] ${configured.label} is configured, but this run store keeps no files to archive: the archive is off`);
+      return undefined;
+    }
+    store.useArchive(configured);
+    return configured;
+  })();
+  /** For a scan over many runs: it reads what is on this disk and never
+   *  restores from the archive. */
+  const localStore = localRuns(store);
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   // The voice service a person's call is handed to (src/voice.ts); half a
@@ -2749,7 +2776,19 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/workflows/:name/runs/:runId/events", async (c) => {
     const { name, runId } = c.req.param();
-    const events = await store.getRunEvents(name, runId);
+    // An archived log is restored by this read; a bucket that cannot give
+    // it back is said so, never served as an empty run.
+    const events = await store.getRunEvents(name, runId).catch((err) => {
+      if (err instanceof RunArchiveError) return err;
+      throw err;
+    });
+    if (events instanceof RunArchiveError) return c.json({ error: events.message }, 503);
+    if (!events.length && !archive) {
+      // A log an archive holds, on a strut that has none now (its bucket
+      // was unset, or its data moved here): say so, not "no events".
+      const held = (await store.getRunSummary(name, runId))?.archive;
+      if (held) return c.json({ error: `The log of run ${runId} of "${name}" is in a run archive (${held.key}), and this strut has no archive configured (STRUT_ARCHIVE_S3_BUCKET)` }, 503);
+    }
     return c.json(events.map((e) => withTranscriptLink(name, e)));
   });
 
@@ -3592,7 +3631,7 @@ export async function createStrut<TServices = unknown>(
       const summary = await store.getRunSummary(name, runId);
       if (!summary) return; // in flight — counted once it finishes
       const hash =
-        summary.workflowHash ?? ((await store.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
+        summary.workflowHash ?? ((await localStore.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
       const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
       const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
       if (!v) { unattributed++; return; }
@@ -3631,7 +3670,11 @@ export async function createStrut<TServices = unknown>(
         ...(flow.peer ? { peer: flow.peer } : {}),
         // The workflow's own `retain:` and the fleet default, both as text (`1h`, `runs:20`).
         ...(flow.retain ? { retain: formatRetention(flow.retain) } : {}),
-        ...(fleetRetention ? { fleetRetention: formatRetention(fleetRetention), fleetRetentionEnv: "STRUT_RUN_RETENTION" } : {}),
+        ...(fleetRetention
+          ? { fleetRetention: formatRetention(fleetRetention), fleetRetentionEnv: "STRUT_RUN_RETENTION" }
+          : archive
+            ? { fleetRetention: formatRetention(ARCHIVE_LOCAL_WINDOW), fleetRetentionEnv: "archived first" }
+            : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -5000,7 +5043,7 @@ export async function createStrut<TServices = unknown>(
     suggested: built.suggested,
   });
   /** A build reads the runs too, for what the workflows wrote and read (`suggested`). */
-  const buildDeps = { ...packageDeps, runs: store };
+  const buildDeps = { ...packageDeps, runs: localStore };
   app.post("/packages/build", async (c) => {
     const { dryRun, ...body } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
     if (dryRun !== undefined && typeof dryRun !== "boolean") return c.json({ error: "dryRun is true or false" }, 400);
@@ -6997,7 +7040,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/steps/:type{.+}/stats", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
-    return c.json(await stepStats(workspace, store, type));
+    return c.json(await stepStats(workspace, localStore, type));
   });
 
   // Source code for a step. In-code steps (injected via createRegistry) carry
@@ -8274,13 +8317,23 @@ export async function createStrut<TServices = unknown>(
   // has no controller and no summary and would look crashed.
   let settleResume: () => void = () => {};
   const resumeSettled = new Promise<void>((resolve) => (settleResume = resolve));
+  // With an archive a log is uploaded before it goes, and a workflow with
+  // no policy keeps its logs here for `ARCHIVE_LOCAL_WINDOW`.
   const retention = createRetention({
     store,
     isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     resumeSettled,
     workspace,
-    ...(fleetRetention ? { fallback: fleetRetention } : {}),
+    ...(fleetRetention ? { fallback: fleetRetention } : archive ? { fallback: ARCHIVE_LOCAL_WINDOW } : {}),
+    ...(archive ? { archive: { check: () => checkArchive(archive) } } : {}),
   });
+  if (archive) {
+    // Said once at boot, when the bucket has answered or refused.
+    void checkArchive(archive).then(
+      () => console.log(`[archive] on: finished runs' logs go to ${archive.label} before they are evicted`),
+      (err) => console.warn(`[archive] on, and ${archive.label} does not work: ${errorText(err)}. Nothing is evicted until it does`),
+    );
+  }
   const automations = createAutomations({
     workspace,
     store,
@@ -10517,6 +10570,7 @@ export async function createStrut<TServices = unknown>(
     upgrade,
     channels,
     automations,
+    retention,
     packages,
     subscriptions,
     serve: served,
