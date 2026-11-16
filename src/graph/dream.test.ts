@@ -15,7 +15,8 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphBackend } from "./backend.js";
@@ -23,6 +24,7 @@ import { projectionsSettled } from "./projector.js";
 import { parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
+import { PERSONAL_CONCEPTS, STRUT_CONCEPTS } from "../concept-seed.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { CONCEPT_CHECK_WORKFLOW, KNOWLEDGE_CLAIMS_PER_RUN, type KnowledgeCapability } from "../knowledge.js";
 import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
@@ -369,6 +371,62 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       assert.equal(await docsOf("Assistant Conversations"), seeded["d"]);
       assert.match(tendLast, /\\+"status\\+":\\+"skipped\\+"/);
       assert.match(tendLast, /comes from git \(strut\/concepts\/Assistant Conversations\.md\)/);
+    }
+  });
+
+  it("in dev mode (a strut run from a git checkout of its pages, STRUT_DEV_CONCEPTS=1) that change is a proposal into the checkout instead, whatever the review says; accepted, the file is written and the page reloaded", async () => {
+    // Strut's own pages in a scratch checkout: never this repository's src/concepts/.
+    const repo = join(dir, "checkout");
+    await cp(STRUT_CONCEPTS.dir, join(repo, "src", "concepts"), { recursive: true });
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: repo, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout;
+    };
+    git("init", "--quiet");
+    git("add", ".");
+    git("commit", "--quiet", "-m", "pages");
+    const shipped = { strut: STRUT_CONCEPTS.dir, personal: PERSONAL_CONCEPTS.dir };
+    const savedDev = process.env["STRUT_DEV_CONCEPTS"];
+    STRUT_CONCEPTS.dir = `${join(repo, "src", "concepts")}/`;
+    PERSONAL_CONCEPTS.dir = `${join(repo, "src", "concepts", "personal")}/`;
+    process.env["STRUT_DEV_CONCEPTS"] = "1";
+    try {
+      await strut!.close();
+      strut = await createStrut({
+        workspace: new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") }),
+        store: new MemoryRunStore(),
+        dataDir: dir,
+        serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false,
+        job: false, builder: false, orchestrator: {}, concepts: { personal: true },
+        ...(readers ? { graphReaders: readers } : {}),
+      });
+      await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
+      const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
+      editSeeded = String(seeded["r"]);
+      const ids: string[] = [];
+      for (const review of [false, true]) {
+        await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
+        await say(SAID);
+        const run = await dream({ review });
+        // One proposal of the checkout's write, never one of the graph's edit; the page as git has it until a yes.
+        const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
+        assert.deepEqual(proposals.map((p) => [p["step"], p["status"], p["input"]?.checkout, p["input"]?.pages?.map((x: any) => x.name)]), [["knowledge/write-pages", "pending", "strut", ["Assistant Conversations"]]]);
+        assert.match(tendLast, /\\+"status\\+":\\+"pending\\+"/);
+        assert.equal(await docsOf("Assistant Conversations"), seeded["d"]);
+        ids.push(proposals[0]!["id"]);
+      }
+      const done = await post(`/proposals/${ids[0]}/decide`, { action: "accept" });
+      assert.equal(done["status"], "applied", JSON.stringify(done["result"]).slice(0, 600));
+      assert.equal(await docsOf("Assistant Conversations"), NEW_DOCS);
+      const file = await readFile(join(repo, "src", "concepts", "Assistant Conversations.md"), "utf-8");
+      assert.ok(file.endsWith(`---\n${NEW_DOCS}\n`) && file.includes("parent: Dream"), file);
+      assert.match(git("status", "--porcelain"), /Assistant Conversations\.md/);
+    } finally {
+      STRUT_CONCEPTS.dir = shipped.strut;
+      PERSONAL_CONCEPTS.dir = shipped.personal;
+      if (savedDev === undefined) delete process.env["STRUT_DEV_CONCEPTS"];
+      else process.env["STRUT_DEV_CONCEPTS"] = savedDev;
     }
   });
 

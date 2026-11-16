@@ -5,7 +5,8 @@
 > discussion with Paul and Tom is ongoing. Work item (a) is built (this
 > file's first PR, #669), item (b) is built (#677), item (c) is built
 > (#683), item (d) is built (#696), and the dream is automatic by default
-> ("Automatic by default", below). Item (e) is not started. Everything marked
+> ("Automatic by default", below). Item (e) is built ("(e) What was built",
+> below; its rulings are Evan's of 2026-11-15). Everything marked
 > *mine* was chosen by the session that built it, not ruled; it is open to
 > a ruling. Companions: `claims.md` (claims, checks, evidence),
 > `job-claims.md`, `concept-history.md` (the history in git), and
@@ -149,7 +150,7 @@ Ruled: checks first. One PR each, against main.
 | b | A branch you can create, run on and drop (2, 3, 10) | built (below) |
 | c | The branch recorded in git (2) | built (below) |
 | d | Claims following a page onto a branch, and a compare read (4) | built (#696, below) |
-| e | Merge as proposals (8) | not started |
+| e | Merge, and the rule for pages from git (8; rulings of 2026-11-15) | built (below) |
 | — | The `Dream` Concept (7) | another session, in parallel |
 | — | The type list (6) | deferred |
 
@@ -480,3 +481,201 @@ and, dropped and made again, the branch reading `unknown`.
 
 **Not built here:** merge (e); the type list; any view of the compare; a
 per-branch status for steps, workflows and jobs.
+
+## (e) What was built
+
+### Evan's rulings (2026-11-15)
+
+Ruling 8 said a branch's diff becomes proposals on main; "Automatic by
+default" (2026-11-13) said the merge may be automatic too. These settle it:
+
+1. **The merge.** What the branch changed since its fork (`base..<branch>`
+   over `concepts/`: pages edited, added or removed, and their `PARENT_OF`
+   links) is applied onto main. Then the branch is dropped; the drop keeps
+   its git history under `refs/dropped/`.
+2. **Automatic by default; a person's yes is a setting.** With the setting
+   on, the merge is a proposal that waits for a yes: "automatic now,
+   person's yes is a setting you can set".
+3. **Who triggers a merge:** a person (a route) or an eval workflow (a
+   step), for example after `knowledge/compare` says `better`. strut never
+   merges on a score by itself.
+4. **Main changed the same page since the fork:** the merge is refused and
+   names those pages; the trial is run again on a fresh branch. Pages only
+   main changed stay as they are.
+5. **A page whose text comes from git is never changed automatically,
+   neither by a merge nor by the dream:** "seeded ones are just never
+   automatic, but non-seeded ones are". A page is from git when main's node
+   carries a seed or package stamp (`unique_source_id`): strut's own sets
+   (`strut/concepts/`, `strut/concepts/personal/`, the legacy
+   `lab/builder/concepts/` and `lab/job/concepts/`) and any package's
+   `conceptPrefix(pkg)`. `Workflow Builder`, `App` and `Game` are not
+   special; they only hold more text.
+6. **Split** ("Yes, split it"). For a branch that changed both kinds,
+   ordinary pages land on main at once; the git-sourced pages' changes
+   become ONE proposal per checkout, because they were measured together;
+   where strut has no writable checkout for them they are skipped and
+   listed in the merge's answer. A page the branch ADDS is ordinary and
+   lands at once, even under a seeded parent.
+7. **Writable checkout.** Accepting the proposal writes the pages' files
+   there, in the form that source's seeder or install reads, and reloads
+   them from there: (a) DEV MODE, the env flag `STRUT_DEV_CONCEPTS=1`,
+   honoured only when strut's own pages folder is inside a git checkout
+   (under `npm run dev`, the checkout's `src/concepts/`); the person makes
+   the PR with their own git, strut never commits or pushes there; (b) a
+   package OPENED AS A REPO (its working copy), whose existing Commit makes
+   the branch and the PR; (c) anything else is skipped: strut's pages on a
+   deployed strut, a package installed from an index or a `git+` ref that is
+   not an opened repo.
+8. **The dream follows the same rule (5–7), whatever its `review` says.**
+   Before, the automatic dream could edit a seeded page that is not a root
+   (`Assistant Conversations`, `App`) and the next boot silently put git's
+   text back. Now that edit is a proposal in dev or an opened repo, skipped
+   elsewhere, and the dream's answer says so.
+9. The branch's evidence stays on the branch. Main's new page versions
+   start unmeasured.
+
+### What was built
+
+**The merge** (`src/branch-merge.ts`; `branches.merge`, src/branches.ts):
+inside the branch's lock, refused while a run on it is in flight. The
+history is settled and synced (main's commit is the live tree), the fork
+point is `merge-base main <branch>`, the branch's changes are `git diff
+--name-status --no-renames base <branch> -- concepts/` and main's `git diff
+--name-only base main`. A path both changed is a conflict unless main's
+file is now the branch's: `merge_conflict:` (409) names every such page
+and nothing is written. Each edited or removed page's main node is asked
+whether its text comes from git. The ordinary pages land through the
+backend — an edit as `nodes.update` (attributes the branch dropped
+removed), an add as an `upsert`, then the links (the `parents` a page
+gained since the base written, the ones it lost deleted), then removals
+(`deleteNode`) — and the history is touched once: one commit, `merge
+<name>`. The pages from git go to `conceptSources.propose`. Then the
+branch is dropped as `DELETE /branches/:name` drops it, the answer's
+`dropped` carrying `kept`. `dryRun` answers the same without writing and
+keeps the branch.
+
+**Its doors:** `POST /branches/:name/merge { dryRun? }` (full scope, like
+every branch route; a person's act, merged at once) and the step
+`knowledge/merge { branch, review? }` (`effect: write`, `approver: admin`,
+granted to nothing). `review: true` makes the merge a proposal of that very
+step, its card from a dry run (what lands, what is proposed into which
+checkout, what is skipped); a conflict refuses before anything is proposed.
+
+**Pages from git** (`src/concept-sources.ts`, `ctx.services.conceptSources`):
+`fromGit` / `fromGitByRef` read main's live nodes and parse the stamp
+(`<prefix><file>@<hash>`) into `{ set, file, checkout?, why? }`; `propose`
+makes one `knowledge/write-pages` proposal per checkout (`approver: admin`,
+a card naming the checkout, the pages, the cause) and lists the rest as
+`skipped` with why. `knowledge/write-pages { checkout, pages: [{ name, set,
+file, text? }], cause }` is sealed and runs ONLY as an accepted proposal;
+its door (`conceptSources.write`) checks the accepted record on disk for
+this very input, as `package/commit` does, resolves the checkout again,
+writes each page's file under the name its stamp gives, in its form
+(`fileText`), removes the file of a removed page, then reloads the set
+(`seedConcepts`; a removed page is retired) and touches the history
+(`proposal <id>`). `devConcepts` decides dev mode once at boot; createStrut
+logs it.
+
+**The dream** changes the tree with `knowledge/edit-page` and
+`knowledge/add-page`, which take `graph/edit-node`'s and
+`graph/create-triplet`'s own inputs and run them, with the rule in front.
+An edit of a page from git becomes a `knowledge/write-pages` proposal (dev,
+an opened repo) or is skipped; its answer's `note` says which, and the
+prompt and the lesson's `change` description ask for it in the lesson. A
+triplet that would change a page from git is refused. A generic hook,
+`StepDef.answerGated` (core.ts; agent.ts calls it before `proposeCall`),
+lets a gated step answer a call itself: under `review: true`, an edit of a
+page from git is answered the same way, never proposed as a graph edit.
+The Knowledge app (`learning.ts`) and the kit's concept diff read the two
+steps as the graph steps they wrap, so a reviewed tree draws their
+proposals as before.
+
+**Checked end to end** (two scratch struts on Ladybug files, 2026-11-15):
+(i) a branch editing `Guide` (ordinary) and `App` (strut's), adding a page
+under `App` and removing `Tone`, merged on a strut with no checkout: three
+pages landed as one `merge try` commit, `App` skipped and listed with why,
+the branch dropped and kept under `refs/dropped/try/…`; (v) a branch and
+main both editing `Guide`: 409 naming `Guide`, nothing merged, the branch
+kept; (iii) a package with a Concept, opened as a repo from a local bare
+remote: the merge proposed `Notes` into `acme/notes`, accepting it wrote
+the working copy's `concepts/concept-notes.md` and reloaded the page, the
+repo listed it as an edit, and Commit pushed a branch holding it; (ii) the
+same merge on a strut run (`tsx src/server.ts`) from a SCRATCH clone of
+this branch with `STRUT_DEV_CONCEPTS=1`: one proposal for `strut`;
+accepting it rewrote the clone's `src/concepts/App.md`, its front matter
+untouched, and reloaded `App`; (iv) `knowledge/edit-page` on `Assistant
+Conversations`: skipped on the first strut, a proposal on the dev one, and
+accepted, a one-line diff of its description in the clone. The same five
+are tests on both engines (src/graph/branch-merge.test.ts), and the dream
+itself, played by a stand-in model, skips such an edit and, in dev mode,
+proposes it, with review off and on (src/graph/dream.test.ts).
+
+*Mine*, every one open to a ruling:
+- **Where the setting lives:** on the step, `knowledge/merge`'s input
+  `review`, set by the eval workflow from its own input or params, as the
+  dream's `review` is an input on its automation. The route is a person's
+  act and merges at once; its `dryRun` shows what would happen.
+- **Names:** the route `POST /branches/:name/merge`; the steps
+  `knowledge/merge`, `knowledge/write-pages`, `knowledge/edit-page`,
+  `knowledge/add-page`; the flag `STRUT_DEV_CONCEPTS`, the checkout name
+  `strut`. `knowledge/merge` is not sealed (an eval workflow, even one the
+  builder wrote, may hold it) and is granted to nothing; the other three
+  are sealed. Both proposals are an ADMIN's yes.
+- **How the dream's gate became per page:** two steps of its own over the
+  graph steps, plus the generic `answerGated` hook, rather than a guard in
+  the graph layer: `graph/edit-node` stays as it was for every other
+  workflow (the repo flow's builder edits a package's page through it, as
+  app-repos.md §3.2 says), and the rule is visible where the dream calls
+  it. `knowledge/add-page` refuses a triplet that would change a page from
+  git (naming it inline, or `target_ref_id` moving it); a rename of a page
+  from git is skipped (its file would keep the old name).
+- **The conflict check covers every page, git-sourced included:** a
+  proposal built on an old base would write over main's newer text in the
+  checkout. Both sides ending with the same file is no conflict.
+- **"From git" is any stamp,** a seeder strut does not know included (a
+  host's own set): skipped, with why. Strut's sets are matched by their
+  prefix and `legacyPrefixes`.
+- **The merge needs the history,** and is refused without it; a branch
+  made `from: "empty"` is refused (against its fork it removes every page
+  main has); so is one whose git branch was made after it (the history was
+  off then: its fork point is not known).
+- **One commit on main, one parent,** `merge <name>`, not a two-parent git
+  merge: main's log stays main's writes, and the branch's commits stay
+  reachable under `refs/dropped/`.
+- **A rename on the branch is a removal and an addition** (`--no-renames`;
+  a page's file is its node key). The claims on the old name stay on its
+  removed node.
+- **The branch is dropped even when pages were skipped:** their text is in
+  the kept git branch, and the answer names each with why.
+- **The proposal carries each page as a new-form page**, and the file's form
+  is decided when it is accepted, against the file then: its front matter
+  kept byte for byte when its values did not change (an edit of the docs is
+  a diff of the docs), the old `<Name>.md` form where the file is named by
+  the page and still fits it (`description`, one `parent`), else the new
+  form.
+- **The reload is the whole set from the checkout,** as a start or an
+  install reads it (strut's own set; a repo's with the repo door's
+  `keepEdited` and `adopt`), so a parent link the page dropped goes too. In
+  dev mode that also picks up the person's other edits there, as a
+  restart would. A repo waiting on a merge refuses the write.
+- **Dev mode** is per set: `git ls-files` lists pages in that folder (so a
+  build's `build/concepts/`, an image's or a git dependency's copy never
+  is). Boot says it in one line, and says why when the flag is set and not
+  honoured.
+- **Who a proposal is by:** the run that asked (an eval workflow's, the
+  dream's), else, from the route, no workflow and `merge-<name>-<time>`: it
+  belongs to no conversation, so an admin sees it (`pageSees`).
+- **The dream's answer** says it through the tool's `note` and the lesson's
+  `change`; no new field on the answer.
+- **The merge writes main through the backend** and touches the history
+  itself (cause `merge <name>`, the run's `Run:` when a step merged); the
+  live graph-change feed does not hear it.
+- **A dry run settles and syncs the history** (a `sync` commit when main
+  had writes it had not heard).
+
+**Not built:** a view of the merge or the compare; the Knowledge app does
+not draw a `knowledge/write-pages` proposal over its page (it lists by
+ref_id; this one names pages); a merge's ordinary pages are not proposals
+under review page by page (the review setting holds the whole merge); the
+type list (ruling 6 of 2026-11-12).
+

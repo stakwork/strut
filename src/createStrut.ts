@@ -1170,11 +1170,6 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
-  // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
-  // named copy of the Concept tree in a graph namespace of its own, which a
-  // launch's `branch` points a run at. One is dropped only with no run on
-  // it in flight here. Each is a git branch of the same name in the history
-  // (item c): made from main's commit, kept aside when dropped.
   // Which Concept pages' text comes from git (src/concept-sources.ts,
   // plans/concept-evals.md item e): never changed automatically, by a merge
   // or the dream; a change to one is a proposal into its checkout — strut's
@@ -1194,6 +1189,12 @@ export async function createStrut<TServices = unknown>(
         ...(history ? { history } : {}),
       })
     : undefined;
+  // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
+  // named copy of the Concept tree in a graph namespace of its own, which a
+  // launch's `branch` points a run at. One is dropped only with no run on
+  // it in flight here. Each is a git branch of the same name in the history
+  // (item c): made from main's commit, kept aside when dropped. A merge
+  // (item e) applies what one changed onto main, then drops it.
   const branchesCap: BranchesCapability | undefined = graph
     ? createBranches({
         dataDir,
