@@ -91,7 +91,14 @@ index. A change in this area updates this file, not AGENTS.md.
   disk for that name and input, the admin's edits included, and saves the
   change MERGED over the type with that admin as `changedBy`. It grants no
   worker, deletes no type and changes no worker. Only the `builder` seed
-  grants and gates it.
+  grants and gates it. An object field the model sends as JSON TEXT
+  (`answer`, `tests`, `copies`, `attachments`, `standing`) is parsed
+  before its check, so the record and the accept hold the object; the
+  tool's schema says `answer` is an object. A NEW type with no `answer`
+  takes the empty object (`EMPTY_ANSWER`, `{ type: "object", properties:
+  {} }`): a files-only task, photos and nothing else; the card reads "no
+  fields: only the files sent with it", and a missing answer is never a
+  failure.
 - **The review verdict** (`plans/human-steps.md` §9.6, ruled §9.12 4 and
   5; `review` on the service, `PUT /tasks/:id/review`, `staff/review`). A
   person marks one ANSWER — the task and the worker who gave it, so a
@@ -137,11 +144,14 @@ index. A change in this area updates this file, not AGENTS.md.
   the path of the workflow's first step, a `human` step of the type, its
   `show` resolved with the workflow's input defaults and params
   (`standingTask`, read through createStrut's `deps.standing`, which also
-  checks the workflow is on and has an owner to bill). No run exists yet;
+  checks the workflow is on and, where every run needs someone to bill
+  (`STRUT_MOTHERSHIP_REQUIRED`), has someone: its owner, else the actor
+  who published its active version; refused only with neither). No run exists yet;
   any number of workers hold one each. `task/submit` settles it as any task
   (files saved under the run id, pay booked), then LAUNCHES the workflow
   under that run id instead of waking a run (`deps.launch`: createStrut's
-  `launchDetached`, input `{}`, no actor, billed to the owner; a run on
+  `launchDetached`, input `{}`, no actor, billed to the owner, else to
+  the active version's publisher; a run on
   file under the id is launched already) and records `launchedAt`; the
   run's `human` step finds its task answered by key and returns at once. A
   failed launch is the sweep's (`unlaunched`, `UNLAUNCHED_BATCH`), logged

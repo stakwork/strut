@@ -37,6 +37,8 @@ unless the task needs a view of its own (a box drawn on a photo, two images
 side by side); then build a worker app from strut/views' pieces. Workers
 reach a worker app only in the PUBLIC VIEW: when the app the type names is
 not there yet, ask for it with `app/make-public` and say so in your reply.
+Once the app is public, give the person the `peelLink` from the result
+(`link` for a browser); never build a URL by hand.
 
 A type is OPEN unless you ask for `open: false`: anyone signed in to its
 app takes its tasks with no grant. Whether a PAID open type first tests

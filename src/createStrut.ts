@@ -1663,8 +1663,8 @@ export async function createStrut<TServices = unknown>(
       if (!flow) return { problem: `no workflow ${workflow} here` };
       const disabled = await workflowDisabled(workspace, workflow);
       if (disabled) return { problem: disabled };
-      if (principalRequired() && !(await principalFor(workflow))) {
-        return { problem: `workflow "${workflow}" has no owner, so its runs would have nobody to bill; claim the workflow first` };
+      if (principalRequired() && !(await standingPayer(workflow))) {
+        return { problem: `workflow "${workflow}" has no owner and its active version no publisher, so its runs would have nobody to bill; claim the workflow first` };
       }
       return standingTask(flow, type);
     },
@@ -1674,7 +1674,11 @@ export async function createStrut<TServices = unknown>(
       if (draining) throw new Error(draining);
       const disabled = await workflowDisabled(workspace, t.workflow);
       if (disabled) throw new Error(disabled);
-      launchDetached(await workspace.getWorkflow(t.workflow), { runId: t.runId, input: {} });
+      // Billed to the owner by the principal rule; an ownerless workflow to
+      // whoever published its active version.
+      const owner = await principalFor(t.workflow);
+      const payer = owner ? undefined : await standingPayer(t.workflow);
+      launchDetached(await workspace.getWorkflow(t.workflow), { runId: t.runId, input: {} }, payer ? { principal: payer } : undefined);
     },
     runId: generateRunId,
     ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
@@ -1922,6 +1926,12 @@ export async function createStrut<TServices = unknown>(
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
+  };
+  /** Who a run with no actor is billed to: the workflow's owner, else the
+   *  actor who published its active version (a standing type's runs). */
+  const standingPayer = async (workflow: string): Promise<string | undefined> => {
+    const meta = await workspace.getWorkflowMetadata(workflow).catch(() => null);
+    return meta?.owner ?? meta?.versions[meta.active]?.actor;
   };
   /** A workflow with no owner is adopted by the first actor who publishes it. */
   const adoptWorkflow = async (name: string, actor: string | undefined) => {
@@ -2406,6 +2416,13 @@ export async function createStrut<TServices = unknown>(
   // 2.8 MB took 7 s raw (swarm38, 2026-09-30). SSE is skipped by content
   // type, so the streams flush event by event as before.
   app.use(compress());
+  /** Where the last request reached this server (`baseOfRequest`): the base
+   *  of a link made outside a request, an accepted `app/make-public`'s. */
+  let lastBase: string | undefined;
+  app.use("*", async (c, next) => {
+    lastBase = baseOfRequest(c);
+    await next();
+  });
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   //
@@ -3959,6 +3976,7 @@ export async function createStrut<TServices = unknown>(
   });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
+    baseOf: (c) => baseOfRequest(c),
     visitorAddress,
     // An ACTIVE worker's requests count against the worker, not the address
     // (plans/human-steps.md §5.2): a room of workers shares one address. A
@@ -4100,6 +4118,9 @@ export async function createStrut<TServices = unknown>(
     for (const a of next.apps) {
       if (before.has(a.name) || o.holdAt?.[a.name]) continue;
       try {
+        // A seeded app follows strut's releases: nothing to hold.
+        const rec = await workspace.getApp(a.name).catch(() => null);
+        if (rec?.versions[rec.active]?.source === "seed") continue;
         const rel = await apps.releases(a.name);
         if (!rel || rel.live !== "latest") continue;
         const dir = await apps.versionDir(a.name);
@@ -4183,6 +4204,7 @@ export async function createStrut<TServices = unknown>(
         served: () => serveRef?.ref,
         proposal: (id) => readProposal(proposalsRoot(dataDir), id),
         save: savePublicView,
+        base: () => lastBase,
       }),
     );
   }
@@ -5651,6 +5673,15 @@ export async function createStrut<TServices = unknown>(
   // search are anyone's — open in the gate, as the public catalog is.
   /** The scheme the request was made with, a proxy's header honored. */
   const requestProto = (c: Context) => c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(c.req.url).protocol.replace(/:$/, "");
+  /** Where people reach this server, mount path included (mcp's `/lab`):
+   *  `STRUT_PUBLIC_URL`, else the request's origin and its
+   *  `x-forwarded-prefix`. A public app's share links (public-routes.ts
+   *  `publicAppLinks`). */
+  function baseOfRequest(c: Context): string {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+    const prefix = c.req.header("x-forwarded-prefix")?.split(",")[0]?.trim().replace(/\/+$/, "") ?? "";
+    return `${publicUrlOf(c)}${prefix}`;
+  }
   /** The base a caller OUTSIDE the UI is handed links on: `STRUT_PUBLIC_URL`
    *  (`opts.publicUrl`), else the request's own origin (a proxy's headers
    *  honored) — the MCP doors' links, the index door's store links. */
