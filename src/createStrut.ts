@@ -217,7 +217,7 @@ import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { appOfDomain, createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
 import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
@@ -10167,6 +10167,16 @@ export async function createStrut<TServices = unknown>(
         // its meta, title, icon and link preview — `pickPage` reads the meta
         // and draws the app alone. `?shell=1` with the key is strut's own UI.
         if (serveRef && !(c.req.query("shell") === "1" && carriesApiKey(c))) return c.html(servedHtml(html, served?.page() ?? null, publicUrlOf(c)));
+        // A custom domain (plans/public-surface.md §9): a host a public app
+        // lists answers with that app alone, as a served box's `/` does.
+        const domainApp = appOfDomain(await publicSurface.get(), requestHost(c));
+        if (domainApp && !(c.req.query("shell") === "1" && carriesApiKey(c))) {
+          const info = await publicAppInfo(domainApp).catch(() => null);
+          if (info) {
+            const icon = info.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
+            return c.html(servedHtml(html, { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) }, publicUrlOf(c)));
+          }
+        }
         return c.html(html);
       } catch {
         return c.text("UI not built. Run: cd web && npm run build", 404);

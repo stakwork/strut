@@ -260,6 +260,12 @@ const unique = <T>(list: T[], key: (t: T) => string): T[] => {
   return list.filter((t) => (seen.has(key(t)) ? false : (seen.add(key(t)), true)));
 };
 
+/** The public app a request host belongs to (plans/public-surface.md §9): the
+ *  first app whose `domains` lists it. `host` as `hostOfRequest` writes it. */
+export function appOfDomain(surface: PublicSurface, host: string): string | undefined {
+  return host ? surface.apps.find((a) => a.domains?.includes(host))?.name : undefined;
+}
+
 /** A valid record with every list present, each name once (the first wins). */
 export function normalizeSurface(v: unknown): PublicSurface {
   const r = (v ?? {}) as Partial<PublicSurface>;

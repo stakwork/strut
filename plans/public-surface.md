@@ -469,7 +469,7 @@ already. A Concept does not: an edit overwrites the node
 
 `openlaw.ai` shows openlaw-benchmarks at `/`.
 
-- **At the origin.** A public app's `domains` (§2). A request whose host
+- **At the origin (built).** `appOfDomain` (src/public-surface.ts) and the UI catch-all in createStrut: a host a public app lists answers `/` with `servedHtml` for that app (its title, description and icon from its manifest); `?shell=1` with the key is still strut's own UI. A forged `X-Forwarded-Host` gains nothing: the page is public anyway. The edge below is not built. A public app's `domains` (§2). A request whose host
   (`Host`, or `X-Forwarded-Host` from the edge) is listed gets strut's UI
   with that app named in the page, rendered as §5's public solo page.
   `/public/*` and the UI's files serve as for any visitor; every other
