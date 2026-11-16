@@ -931,7 +931,7 @@ async function conceptFiles(
  *  `NOT_ATTRIBUTES` names), its parents by name, its docs — and the node
  *  key the file is named by. The one writer of a page, for a build and a
  *  snapshot alike. Null for a node with no name. */
-function conceptPageFile(schema: NodeSchema, props: Record<string, unknown>, parents: readonly string[]): { key: string; name: string; text: string } | null {
+export function conceptPageFile(schema: NodeSchema, props: Record<string, unknown>, parents: readonly string[]): { key: string; name: string; text: string } | null {
   const name = props["name"];
   if (typeof name !== "string" || !name) return null;
   const attributes = Object.fromEntries(

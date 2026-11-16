@@ -15,7 +15,8 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphBackend } from "./backend.js";
@@ -23,6 +24,7 @@ import { projectionsSettled } from "./projector.js";
 import { parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
+import { PERSONAL_CONCEPTS, STRUT_CONCEPTS } from "../concept-seed.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { CONCEPT_CHECK_WORKFLOW, KNOWLEDGE_CLAIMS_PER_RUN, type KnowledgeCapability } from "../knowledge.js";
 import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
@@ -87,6 +89,9 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
   let lesson = true;
   /** A page of its own guidance the stand-in tender opens first, by name. */
   let openFirst = "";
+  /** A page from git the stand-in tender changes in place of adding one (its ref_id), and what it was last sent. */
+  let editSeeded = "";
+  let tendLast = "";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
@@ -105,6 +110,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           calls.push("tend");
           const turn = body.messages.filter((m) => m.role === "assistant").length;
           if (turn === 0) [tendSystem, tendPrompt, tendTools] = [system, all, JSON.stringify(body.tools ?? [])];
+          tendLast = all;
           if (openFirst && turn === 0) return say("graph_graph_get", { node_type: "Concept", name: openFirst, children: "PARENT_OF" });
           if (!lesson) return say("final_answer", { lessons: [] });
           // The run whose work was corrected (turn 0's), the root's ref_id, and the claim once it is written.
@@ -113,9 +119,11 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
           const claim = /\\+"id\\+":\\+"([0-9a-z]{32})\\+"/.exec(all)?.[1];
           if (turn === 0) return say("knowledge_add_claim", { concept: "Personal", text: CLAIM });
           if (turn === 1) return say("knowledge_add_evidence", { claim, workflow: "orchestrator", run, said: SAID, by: "evan" });
+          // A page whose text comes from git: the tool answers for it.
+          if (turn === 2 && editSeeded) return say("knowledge_edit_page", { ref_id: editSeeded, node_data: { docs: NEW_DOCS }, rationale: "Summaries run long." });
           // The root is never edited: the lesson goes on a page under it.
           if (turn === 2)
-            return say("graph_create_triplet", {
+            return say("knowledge_add_page", {
               source_ref_id: root,
               edge_type: "PARENT_OF",
               target_type: "Concept",
@@ -162,6 +170,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     verdict = false;
     lesson = true;
     openFirst = "";
+    editSeeded = "";
+    tendLast = "";
     dir = join(tmpdir(), `strut-dream-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     strut = await createStrut({
@@ -243,7 +253,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     for (const s of ["You are the dream.", 'the \\"Dream\\" Concept', "## Where a lesson goes", "- Assistant Conversations — ", 'the \\"Assistant Conversations\\" Concept', "Look for the moments a person corrected the assistant"]) assert.ok(at(s) >= 0, s);
     assert.ok(at("You are the dream.") < at('the \\"Dream\\" Concept') && at("## Where a lesson goes") < at('the \\"Assistant Conversations\\" Concept'), "mechanics, the root, then the source");
     // Not reviewed: the tools that change the tree run, and none says it waits for a person.
-    assert.ok(tendTools.includes("graph_create_triplet") && tendTools.includes("graph_edit_node"), tendTools.slice(0, 300));
+    assert.ok(tendTools.includes("knowledge_add_page") && tendTools.includes("knowledge_edit_page"), tendTools.slice(0, 300));
     assert.ok(!tendTools.includes("PROPOSED") && !tendSystem.includes("nothing changes until"), "nothing waits");
     // The transcript the agent was handed: each turn with its run and the pages that run opened, then the root as a tender reads it.
     assert.match(tendPrompt, new RegExp(`\\[session c-1 · turn 0 · [^\\]]* · run orchestrator ${first["runId"]}[^\\]]*\\]\\\\+nOPENED: [^\\\\]*Personal`));
@@ -326,12 +336,12 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     const run = await dream({ review: true });
     // The tools that change the tree say the change waits; the dream's own words hold either way.
-    assert.match(tendTools, /graph_create_triplet[^]*PROPOSED, not run/);
+    assert.match(tendTools, /knowledge_add_page[^]*PROPOSED, not run/);
     assert.ok(tendSystem.includes("Where a person reviews this tree, the answer says the change"));
     assert.deepEqual([run["output"]["review"], run["output"]["lessons"].length], [true, 1]);
 
     const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
-    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["graph/create-triplet", "pending"]]);
+    assert.deepEqual(proposals.map((p) => [p["step"], p["status"]]), [["knowledge/add-page", "pending"]]);
     assert.equal(await docsOf("Personal"), docsBefore);
     assert.equal(await docsOf("Summaries"), undefined);
     assert.equal((await claimsOn("Personal"))[0]!["status"], "refuted");
@@ -346,6 +356,78 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.equal(await docsOf("Personal"), docsBefore);
     assert.equal(await docsOf("Summaries"), NEW_DOCS);
     assert.equal((await claimsOn("Personal"))[0]!["status"], "stale");
+  });
+
+  it("a page whose text comes from git is never changed by the dream, whatever the review says: on a strut with no checkout for it the change is skipped, and the tool says so", async () => {
+    // `Assistant Conversations`, a page strut ships under `Dream` (not a root): from git.
+    const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
+    editSeeded = String(seeded["r"]);
+    for (const review of [false, true]) {
+      await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
+      await say(SAID);
+      const run = await dream({ review });
+      // Skipped, in both modes: no proposal, the page as git has it, and the answer says why.
+      assert.deepEqual((await json<{ proposals: unknown[] }>(`/proposals?runId=${run["runId"]}`)).proposals, []);
+      assert.equal(await docsOf("Assistant Conversations"), seeded["d"]);
+      assert.match(tendLast, /\\+"status\\+":\\+"skipped\\+"/);
+      assert.match(tendLast, /comes from git \(strut\/concepts\/Assistant Conversations\.md\)/);
+    }
+  });
+
+  it("in dev mode (a strut run from a git checkout of its pages, STRUT_DEV_CONCEPTS=1) that change is a proposal into the checkout instead, whatever the review says; accepted, the file is written and the page reloaded", async () => {
+    // Strut's own pages in a scratch checkout: never this repository's src/concepts/.
+    const repo = join(dir, "checkout");
+    await cp(STRUT_CONCEPTS.dir, join(repo, "src", "concepts"), { recursive: true });
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: repo, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout;
+    };
+    git("init", "--quiet");
+    git("add", ".");
+    git("commit", "--quiet", "-m", "pages");
+    const shipped = { strut: STRUT_CONCEPTS.dir, personal: PERSONAL_CONCEPTS.dir };
+    const savedDev = process.env["STRUT_DEV_CONCEPTS"];
+    STRUT_CONCEPTS.dir = `${join(repo, "src", "concepts")}/`;
+    PERSONAL_CONCEPTS.dir = `${join(repo, "src", "concepts", "personal")}/`;
+    process.env["STRUT_DEV_CONCEPTS"] = "1";
+    try {
+      await strut!.close();
+      strut = await createStrut({
+        workspace: new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") }),
+        store: new MemoryRunStore(),
+        dataDir: dir,
+        serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false,
+        job: false, builder: false, orchestrator: {}, concepts: { personal: true },
+        ...(readers ? { graphReaders: readers } : {}),
+      });
+      await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
+      const seeded = (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns" })} WHERE c.name = 'Assistant Conversations' RETURN c.ref_id AS r, c.docs AS d`, { ns: backend.namespace }))[0]!;
+      editSeeded = String(seeded["r"]);
+      const ids: string[] = [];
+      for (const review of [false, true]) {
+        await say(review ? "summarise Thursday's notes" : "summarise my notes from Monday");
+        await say(SAID);
+        const run = await dream({ review });
+        // One proposal of the checkout's write, never one of the graph's edit; the page as git has it until a yes.
+        const { proposals } = await json<{ proposals: Array<Record<string, any>> }>(`/proposals?runId=${run["runId"]}`);
+        assert.deepEqual(proposals.map((p) => [p["step"], p["status"], p["input"]?.checkout, p["input"]?.pages?.map((x: any) => x.name)]), [["knowledge/write-pages", "pending", "strut", ["Assistant Conversations"]]]);
+        assert.match(tendLast, /\\+"status\\+":\\+"pending\\+"/);
+        assert.equal(await docsOf("Assistant Conversations"), seeded["d"]);
+        ids.push(proposals[0]!["id"]);
+      }
+      const done = await post(`/proposals/${ids[0]}/decide`, { action: "accept" });
+      assert.equal(done["status"], "applied", JSON.stringify(done["result"]).slice(0, 600));
+      assert.equal(await docsOf("Assistant Conversations"), NEW_DOCS);
+      const file = await readFile(join(repo, "src", "concepts", "Assistant Conversations.md"), "utf-8");
+      assert.ok(file.endsWith(`---\n${NEW_DOCS}\n`) && file.includes("parent: Dream"), file);
+      assert.match(git("status", "--porcelain"), /Assistant Conversations\.md/);
+    } finally {
+      STRUT_CONCEPTS.dir = shipped.strut;
+      PERSONAL_CONCEPTS.dir = shipped.personal;
+      if (savedDev === undefined) delete process.env["STRUT_DEV_CONCEPTS"];
+      else process.env["STRUT_DEV_CONCEPTS"] = savedDev;
+    }
   });
 
   it("knowledge/cycles answers strut's own page shown to an admin, and no one else: the lessons quote what people said", async () => {

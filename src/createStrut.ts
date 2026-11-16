@@ -164,6 +164,8 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
+import { MergeConflict, MergeRefused } from "./branch-merge.js";
+import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSources } from "./concept-sources.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
@@ -1168,13 +1170,39 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
+  // Which Concept pages' text comes from git (src/concept-sources.ts,
+  // plans/concept-evals.md item e): never changed automatically, by a merge
+  // or the dream; a change to one is a proposal into its checkout — strut's
+  // own in dev mode (STRUT_DEV_CONCEPTS=1, strut run from a git checkout),
+  // or a package opened here as a repo — and skipped where there is none.
+  const devSets = graph && opts.concepts !== false ? await devConcepts([STRUT_CONCEPTS, PERSONAL_CONCEPTS]) : undefined;
+  if (devSets && "sets" in devSets) console.log(`[concepts] dev: a change to strut's own pages is proposed into ${STRUT_CONCEPTS.dir} (${DEV_CONCEPTS_ENV}=1)`);
+  else if (devSets && bootEnv()[DEV_CONCEPTS_ENV] === "1") console.log(`[concepts] ${DEV_CONCEPTS_ENV}=1 is not honoured: ${devSets.off}`);
+  let reposForSources: Repos | undefined;
+  const conceptSources: ConceptSources | undefined = graph
+    ? createConceptSources({
+        graph,
+        dataDir,
+        dev: devSets && "sets" in devSets ? devSets.sets : [],
+        repos: () => reposForSources,
+        proposals: () => (services as Record<string, unknown>)["proposals"] as ProposalsCapability | undefined,
+        ...(history ? { history } : {}),
+      })
+    : undefined;
   // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
   // named copy of the Concept tree in a graph namespace of its own, which a
   // launch's `branch` points a run at. One is dropped only with no run on
   // it in flight here. Each is a git branch of the same name in the history
-  // (item c): made from main's commit, kept aside when dropped.
+  // (item c): made from main's commit, kept aside when dropped. A merge
+  // (item e) applies what one changed onto main, then drops it.
   const branchesCap: BranchesCapability | undefined = graph
-    ? createBranches({ dataDir, graph, inFlight: (name) => [...controllers.values()].some((c) => c.branch === name), ...(history ? { history } : {}) })
+    ? createBranches({
+        dataDir,
+        graph,
+        inFlight: (name) => [...controllers.values()].some((c) => c.branch === name),
+        ...(history ? { history } : {}),
+        ...(conceptSources ? { sources: conceptSources } : {}),
+      })
     : undefined;
   // Before anything reads: a read on main leaves the branches out while there are any.
   await branchesCap?.load();
@@ -1482,6 +1510,8 @@ export async function createStrut<TServices = unknown>(
     ...(graphChanges ? { graphChanges } : {}),
     // The Concept branches a run may be on (the runner checks its launch's).
     ...(branchesCap ? { branches: branchesCap } : {}),
+    // Which Concept pages come from git, and their proposals (item e).
+    ...(conceptSources ? { conceptSources } : {}),
     // The history `history/read` reads and a run's graph view tells
     // (src/history.ts): its reads and its touches, never `hold` or `close`.
     ...(history
@@ -5036,6 +5066,7 @@ export async function createStrut<TServices = unknown>(
     },
   });
   packages.repos = repos;
+  reposForSources = repos;
   // An OPEN repo's prefix takes new names (src/workspace.ts `OpenPackages`):
   // the author adds a workflow, step or app to the package from any door,
   // and the next Commit writes it. Every other installed package keeps the
@@ -8478,6 +8509,25 @@ export async function createStrut<TServices = unknown>(
     try {
       return c.json(await branchesCap!.drop(c.req.param("name")));
     } catch (err) {
+      return branchError(c, err);
+    }
+  });
+  // Merge (item e): what the branch changed since its fork lands on main —
+  // ordinary pages at once, pages from git as one proposal per checkout or
+  // skipped — and the branch is dropped. A person's act: made now. `dryRun`
+  // answers what it would do and keeps the branch. A page main changed too
+  // refuses it (409, `conflicts`).
+  app.post("/branches/:name/merge", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown> | null;
+    if (body && body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean") return c.json({ error: "body is { dryRun?: boolean }" }, 400);
+    try {
+      const by = await resolveActor(c);
+      return c.json(await branchesCap!.merge(c.req.param("name"), { ...(by ? { actor: by } : {}), ...(body?.["dryRun"] ? { dryRun: true } : {}) }));
+    } catch (err) {
+      if (err instanceof MergeConflict) return c.json({ error: err.message, conflicts: err.pages }, 409);
+      if (err instanceof MergeRefused) return c.json({ error: err.message }, err.status);
       return branchError(c, err);
     }
   });

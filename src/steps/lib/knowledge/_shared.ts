@@ -1,5 +1,6 @@
-import type { StepContext } from "../../../core.js";
+import { workflowOf, type StepContext } from "../../../core.js";
 import type { GraphBackend } from "../../../graph/backend.js";
+import type { Proposal } from "../../../proposals.js";
 import { boundsOf, graphFor, readsNamespace } from "../../../graph/scope.js";
 import type { KnowledgeCapability } from "../../../knowledge.js";
 
@@ -16,14 +17,36 @@ import type { KnowledgeCapability } from "../../../knowledge.js";
  * `shared` alone, and is refused here.
  */
 export function requireKnowledge(ctx: StepContext | undefined, step: string): KnowledgeCapability {
-  const services = ctx?.services as { knowledge?: KnowledgeCapability; graph?: GraphBackend } | undefined;
+  const services = ctx?.services as { knowledge?: KnowledgeCapability } | undefined;
   if (!services?.knowledge) throw new Error(`${step} needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on`);
-  if (services.graph) {
+  requireTree(ctx, step);
+  return services.knowledge;
+}
+
+/** Refused unless the caller may read the graph's own namespace, where the
+ *  Concept tree is kept (above). */
+export function requireTree(ctx: StepContext | undefined, step: string): void {
+  const services = ctx?.services as { graph?: GraphBackend } | undefined;
+  if (services?.graph) {
     const view = graphFor(services.graph, ctx);
     const bounds = boundsOf(view);
     if (bounds && !readsNamespace(bounds.list, view.namespace, view.namespace)) {
       throw new Error(`${step}: this caller may not read "${view.namespace}", where the Concept tree is kept${ctx?.app ? " (an app's page reads only what an app may)" : ""}`);
     }
   }
-  return services.knowledge;
+}
+
+/** Who a proposal a step makes is by: the run (or, applying an accepted
+ *  proposal, the run that proposed that one). Never a branch: what these
+ *  steps propose is main's. */
+export function proposerOf(ctx: StepContext): Proposal["by"] {
+  if (ctx.proposal) return { workflow: ctx.proposal.by.workflow, runId: ctx.proposal.by.runId, path: ctx.path, ...(ctx.actor ? { actor: ctx.actor } : {}) };
+  return {
+    workflow: workflowOf(ctx),
+    runId: ctx.runId,
+    path: ctx.path,
+    ...(ctx.job ? { job: ctx.job } : {}),
+    ...(ctx.actor ? { actor: ctx.actor } : {}),
+    ...(ctx.principal ? { principal: ctx.principal } : {}),
+  };
 }

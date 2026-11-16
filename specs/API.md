@@ -597,7 +597,7 @@ refused on every write to such a claim (the claim, its checks, attaching
 and detaching). Runs launched from those doors are still checked against
 these claims.
 
-### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` items b, c, d)
+### 5.7 Concept branches (`src/branches.ts`; `plans/concept-evals.md` items b–e)
 
 A BRANCH is a named copy of the Concept pages, in a graph namespace of its
 own (`branch-<name>`), that a run is pointed at with the launch's `branch`
@@ -624,6 +624,7 @@ for any other scope, and a 404 on a strut with no graph workspace.
 | POST   | `/branches`        | `{ name, from?: "main" \| "empty" }` | 201 `ConceptBranch` |
 | DELETE | `/branches/:name`  | — | 200 `{ name, pages, kept? }` |
 | GET    | `/branches/:name/compare?concept=\|tree=&works=` | — | 200 `KnowledgeCompare` |
+| POST   | `/branches/:name/merge` | `{ dryRun?: boolean }` | 200 `MergeResult` |
 
 `ConceptBranch` is `{ name, namespace, createdAt, createdBy?, from, pages,
 links }`: `from: "main"` (the default) copies every live Concept of the
@@ -667,6 +668,40 @@ verdicts on each side's current page, `unmeasured` while a side has none.
 branch: { supports, refutes } }`. 404 for no such branch, 400 for a tree
 main has no root of, 409 where the claims layer is off. The same read is
 the `knowledge/compare` step.
+
+`POST /branches/:name/merge` (`src/branch-merge.ts`, item e) applies what
+the branch changed since its fork onto main — `base..<name>` under
+`concepts/` in the history: pages edited, added or removed, and their
+`PARENT_OF` links (a page's `parents`) — then drops the branch as `DELETE`
+does. A person's act: made at once. `MergeResult` is `{ branch, base, head,
+main, landed, proposed, skipped, notes?, commit?, dryRun?, dropped? }`:
+`base` the fork point, `head` the branch's last commit, `main` main's commit
+the merge read; `landed` the ordinary pages, each `{ name, path, change:
+"added" | "edited" | "removed" }`, on main at once as ONE commit (`merge
+<name>`, `commit`); a page whose text comes FROM GIT (main's node carries a
+seed or a package stamp: one strut or a package ships) is never changed by
+a merge — `proposed` is one `knowledge/write-pages` proposal per writable
+checkout, `{ checkout, proposal, url, pages: [{ name, change }] }`, where
+`checkout` is `strut` (dev mode, `STRUT_DEV_CONCEPTS=1`) or a package opened
+here as a repo (§16), and `skipped` the rest, `{ name, change, source, why
+}` (`source`: `<set><file>`, where its text comes from). A page the branch
+ADDS is ordinary, even under a page from git. `notes` names a link not
+written (a parent main has no page of). `dropped` is the drop's answer.
+`dryRun: true` answers what it would do (`proposed` without ids), writes
+nothing and keeps the branch. 409 `{ error, conflicts }` when main changed
+one of the same pages since the fork (`merge_conflict:`, naming them;
+nothing is merged — run the trial again on a fresh branch; a page only main
+changed stays as it is, and both ending the same is no conflict); 409 while
+a run on the branch is in flight, for a branch made `from: "empty"`, and
+where the history is off (`merge_needs_history:`); 404 for no such branch.
+The branch's evidence stays on the branch: main's new page versions start
+unmeasured. The same merge is the `knowledge/merge` step (granted to
+nothing; an eval workflow's door), whose `review: true` makes it a proposal
+of that step an admin accepts first. Accepting a `knowledge/write-pages`
+proposal (`POST /proposals/:id/decide`, an admin's) writes each page's file
+into the checkout in the form its seeder or install reads and reloads it
+from there; its result is `{ checkout, dir, written, removed, reloaded,
+next }`.
 
 ## 6. Control a run
 

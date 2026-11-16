@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CONCEPT_PROPOSAL_STEPS,
   conceptPagePath, editEntry, foldConceptDiff, foldDiffLines, historyEntries, isConceptPagePath, lineDiff, proposalEntry, proposalRefs, textSimilarity,
   type ConceptDiffNode, type ConceptPage, type HistoryDiffEntry,
 } from "./concept-diff.js";
@@ -220,6 +221,14 @@ describe("concept diff — source two: a pending proposal over the page now", ()
     assert.equal(proposalEntry(triplet({ edge_type: "RELATES_TO" }), null, nameOf), null);
     assert.equal(proposalEntry(triplet({ target_type: "Person" }), null, nameOf), null);
     assert.equal(proposalEntry(triplet({ target_data: { description: "no name" } }), null, nameOf), null);
+  });
+
+  it("the dream's own steps (knowledge/edit-page, knowledge/add-page) read as graph/edit-node and graph/create-triplet", () => {
+    const edit = { input: { ref_id: "ref-nda", node_data: { description: "New." } } };
+    assert.deepEqual(proposalEntry({ step: "knowledge/edit-page", ...edit }, current, nameOf), proposalEntry({ step: "graph/edit-node", ...edit }, current, nameOf));
+    const add = { input: { source_ref_id: "ref-contracts", edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Leases", docs: "Term." } } };
+    assert.deepEqual(proposalEntry({ step: "knowledge/add-page", ...add }, null, nameOf), proposalEntry({ step: "graph/create-triplet", ...add }, null, nameOf));
+    assert.ok(CONCEPT_PROPOSAL_STEPS.includes("knowledge/edit-page") && CONCEPT_PROPOSAL_STEPS.includes("knowledge/add-page"));
   });
 });
 

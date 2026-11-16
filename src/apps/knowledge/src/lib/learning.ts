@@ -64,6 +64,9 @@ const CHANGES: Record<string, string> = {
   "graph/delete-node": "ref_id",
   // A page added under another: the parent's.
   "graph/create-triplet": "source_ref_id",
+  // The dream's own two (plans/concept-evals.md item e): the same inputs.
+  "knowledge/edit-page": "ref_id",
+  "knowledge/add-page": "source_ref_id",
 };
 
 /** The Concept a proposal changes (a new page: the one it goes under), or null. */
@@ -71,7 +74,7 @@ export function conceptOfChange(p: Pick<PendingChange, "step" | "input">): strin
   const field = CHANGES[p.step];
   const input = (p.input && typeof p.input === "object" ? p.input : {}) as Record<string, unknown>;
   if (!field || typeof input[field] !== "string") return null;
-  if (p.step === "graph/create-triplet") {
+  if (p.step === "graph/create-triplet" || p.step === "knowledge/add-page") {
     const target = String(input["target_type"] ?? "").toLowerCase();
     if (String(input["edge_type"] ?? "").toUpperCase() !== "PARENT_OF" || target !== "concept") return null;
   }
