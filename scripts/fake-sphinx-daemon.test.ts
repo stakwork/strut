@@ -1,8 +1,8 @@
 /**
  * The stand-in treasury daemon (scripts/fake-sphinx-daemon.ts) through
  * strut's own clients: `SphinxDaemonProvider` for payments in, and
- * `SphinxDaemonPayer` for payouts out, so a local strut and an end-to-end
- * test can lean on it.
+ * `SphinxDaemonPayer` for payouts out and worker invites, so a local strut
+ * and an end-to-end test can lean on it.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +12,7 @@ import { lspFeeFloorMsat } from "../src/payments/fee.js";
 import { LightningError } from "../src/payments/lightning.js";
 import { SphinxDaemonPayer } from "../src/payments/payer.js";
 import { SphinxDaemonProvider } from "../src/payments/sphinx-daemon.js";
-import { startFakeSphinxDaemon, type FakeSphinxDaemon } from "./fake-sphinx-daemon.js";
+import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from "./fake-sphinx-daemon.js";
 
 const TOKEN = "receive-1";
 const PAY = "pay-1";
@@ -124,6 +124,34 @@ describe("the stand-in Sphinx daemon", () => {
     assert.equal(await balance(), before - msat - fee, "paid once");
     const own = await wallet.makeInvoice({ msat: 10_000 });
     await assert.rejects(payer.pay({ invoice: own.invoice, maxFeeMsat: 5_000 }), code("wallet_refused", "own_invoice"));
+  });
+
+  it("INVITES (plans/human-steps.md §5.7): made, listed and cancelled with the pay token; its sats and price held, given back on a cancel", async () => {
+    const before = await balance();
+    const made = await payer.invite({ sats: 100 });
+    assert.equal(made.status, "ready");
+    assert.equal(made.sats, 100);
+    assert.match(made.link ?? "", /^sphinx\.chat:\/\/\?action=i&d=[A-Za-z0-9_-]+=*$/);
+    assert.equal(made.link!.split("d=")[1]!.length % 4, 0, "padded, as the core's URL_SAFE engine writes it");
+    // The core's invite: the code's 32 bytes, then the mixer's host.
+    const d = Buffer.from(made.link!.split("d=")[1]!, "base64url");
+    assert.equal(d.subarray(0, 32).toString("hex"), made.code);
+    assert.equal(await balance(), before - (100 + INVITE_PRICE_SATS) * 1000);
+    assert.ok(made.createdAt && Math.abs(Date.parse(made.createdAt) - Date.now()) < 5_000);
+    assert.deepEqual((await payer.invites()).map((i) => [i.code, i.status]), [[made.code, "ready"]]);
+    assert.deepEqual(await payer.cancelInvite({ code: made.code }), { code: made.code, status: "cancelled" });
+    assert.equal(await balance(), before);
+    // Sending until the mixer has it; a used one cannot be cancelled.
+    await post("/next-payout", { state: "pending" });
+    const slow = await payer.invite({ sats: 50 });
+    assert.equal(slow.status, "sending");
+    await post(`/settle/${slow.code}`);
+    assert.equal((await payer.invites()).find((i) => i.code === slow.code)?.status, "ready");
+    await post(`/use-invite/${slow.code}`);
+    await assert.rejects(payer.cancelInvite({ code: slow.code }), code("wallet_refused", "not_cancellable"));
+    await assert.rejects(payer.cancelInvite({ code: "f".repeat(64) }), code("wallet_refused", "not_found"));
+    const withReceive = new SphinxDaemonPayer({ url: daemon.url, payToken: TOKEN });
+    await assert.rejects(withReceive.invite({ sats: 100 }), code("wallet_unauthorized", "forbidden"));
   });
 
   it("GET /prices answers mempool's shape for STRUT_RATE_URL", async () => {

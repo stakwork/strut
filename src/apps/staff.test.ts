@@ -22,6 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
   fmtWhen, grantedBy, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -248,6 +249,20 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
       "a failed payout and another day count for nothing",
     );
     assert.equal(mostByOneWorkerToday([], day), 0);
+  });
+
+  it("Invite on the Workers tab (§5.7): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
+    assert.deepEqual(inviteSatsOf(""), {}, "blank is the settings' default");
+    assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
+    for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
+    assert.deepEqual((["sending", "ready", "failed", "used", "cancelled"] as const).filter((status) => inviteOpen({ status })), ["sending", "ready"]);
+    assert.equal(Object.keys(INVITE_WORDS).length, 5);
+    assert.match(inviteWhyText("no_pay_credential"), /pay token/);
+    assert.match(inviteWhyText("no_invites"), /invite routes/);
+    const link = "https://s.example/public/join#action=i&d=AA&a=https%3A%2F%2Fs.example%2F%3Fapp%3Dw";
+    const wa = new URL(whatsappUrl(link));
+    assert.equal(wa.origin, "https://wa.me");
+    assert.ok(wa.searchParams.get("text")!.endsWith(link), "the link whole, # and all");
   });
 
   it("the Queue's line on what workers are owed beside the wallet; none for a strut that never paid one", () => {

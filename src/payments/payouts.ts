@@ -309,7 +309,15 @@ export function createPayouts(deps: PayoutsDeps): Payouts {
     settings,
 
     async saveSettings(input, by) {
-      return (await deps.ledger()).setPayoutSettings({ on: input.on, minSats: input.minSats, workerDaySats: input.workerDaySats, serverDaySats: input.serverDaySats, ...(by ? { by } : {}), at: now() });
+      return (await deps.ledger()).setPayoutSettings({
+        on: input.on,
+        minSats: input.minSats,
+        workerDaySats: input.workerDaySats,
+        serverDaySats: input.serverDaySats,
+        ...(input.inviteSats !== undefined ? { inviteSats: input.inviteSats } : {}),
+        ...(by ? { by } : {}),
+        at: now(),
+      });
     },
 
     async list(q = {}) {

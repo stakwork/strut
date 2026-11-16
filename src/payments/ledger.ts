@@ -568,19 +568,27 @@ export interface PayoutSettings {
   workerDaySats: number;
   /** The most all workers' payouts may come to in a UTC day, sats. */
   serverDaySats: number;
+  /** A new worker's starting sats on an invite staff make when they name
+   *  none (plans/human-steps.md §5.7). The mixer's invite price is paid on
+   *  top. */
+  inviteSats: number;
   /** Who saved them last, and when (epoch ms); absent for the defaults. */
   changedBy?: string;
   changedAt?: number;
 }
 
 /** Ruled (plans/human-steps.md §8.2): off until an admin turns it on. */
-export const DEFAULT_PAYOUT_SETTINGS: Readonly<PayoutSettings> = Object.freeze({ on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 });
+export const DEFAULT_PAYOUT_SETTINGS: Readonly<PayoutSettings> = Object.freeze({ on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100 });
+/** The most one invite may start a worker with, sats. */
+export const INVITE_SATS_MAX = 100_000;
 
 export interface PayoutSettingsInput {
   on: boolean;
   minSats: number;
   workerDaySats: number;
   serverDaySats: number;
+  /** Left out: the default. */
+  inviteSats?: number;
   by?: string;
   at?: number;
 }
@@ -668,7 +676,8 @@ export function payoutMaxMsat(o: { withdrawableMsat: number; workerLeftMsat: num
 }
 
 /** The settings a save asks for, checked: whole sats, at least 1 a
- *  withdrawal, each cap at least the minimum. Throws a RangeError. */
+ *  withdrawal, each cap at least the minimum, an invite's sats 1 to
+ *  `INVITE_SATS_MAX`. Throws a RangeError. */
 export function payoutSettingsOf(input: PayoutSettingsInput): PayoutSettings {
   if (typeof input?.on !== "boolean") throw new RangeError("on must be true or false");
   positiveInt("minSats", input.minSats);
@@ -680,7 +689,10 @@ export function payoutSettingsOf(input: PayoutSettingsInput): PayoutSettings {
   if (input.minSats * 1000 > Number.MAX_SAFE_INTEGER || input.serverDaySats * 1000 > Number.MAX_SAFE_INTEGER || input.workerDaySats * 1000 > Number.MAX_SAFE_INTEGER) {
     throw new RangeError("a setting is too large to hold in msat");
   }
-  return { on: input.on, minSats: input.minSats, workerDaySats: input.workerDaySats, serverDaySats: input.serverDaySats };
+  const inviteSats = input.inviteSats ?? DEFAULT_PAYOUT_SETTINGS.inviteSats;
+  positiveInt("inviteSats", inviteSats);
+  if (inviteSats > INVITE_SATS_MAX) throw new RangeError(`inviteSats is at most ${INVITE_SATS_MAX}: ${inviteSats}`);
+  return { on: input.on, minSats: input.minSats, workerDaySats: input.workerDaySats, serverDaySats: input.serverDaySats, inviteSats };
 }
 
 /** The reserve's checks, in order, over what its transaction read (both

@@ -249,7 +249,18 @@ What else a paid flow needs, each learned the hard way:
   { "version": "vN" }`, which takes a new release and its lock.
 - **Worker payouts are off until an admin turns them on**: the Payouts tab in
   `strut/staff`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
-  1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four).
+  1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
+  `inviteSats` beside them is an invite's default, 100 when left out).
+- **Inviting a worker** (plans/human-steps.md §5.7): the Workers tab's
+  Invite, or `POST /tasks/invites {}`, asks the stand-in's `POST /invite`
+  (with the pay token; it debits the sats and its price, `INVITE_PRICE_SATS`,
+  10) and answers the join link. It needs a task type whose app is in the
+  public view (`no_worker_app` otherwise). The stand-in's invite is `ready`
+  at once (`/next-payout` `pending` holds it `sending` until `POST
+  /settle/:code`; `failed` fails it), `POST /use-invite/:code` marks it
+  used, and `GET /invites` and `POST /invite/:code/cancel` answer as the
+  daemon's do. Open the link's `/public/join` in a desktop browser for the
+  QR code, or with an Android user agent for Peel's `intent://`.
 - **A worker withdraws only to the Sphinx address their session carries**
   (docs/tasks.md, "Withdraw"; else `no_address`). A `sphinx` sign-in keeps
   it (`keptSphinxAddress`, src/visitors.ts): `POST /visitors/session

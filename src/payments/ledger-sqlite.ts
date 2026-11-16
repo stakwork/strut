@@ -312,6 +312,11 @@ export class SqliteLedgerStore implements LedgerStore {
     if (!(db.prepare("PRAGMA table_info(payees)").all() as Row[]).some((c) => c.name === "out")) {
       db.exec("ALTER TABLE payees ADD COLUMN out integer not null default 0");
     }
+    // plans/human-steps.md §5.7: an invite's default sats, on a settings row
+    // a strut from before saved (null there: the default).
+    if (!(db.prepare("PRAGMA table_info(payout_settings)").all() as Row[]).some((c) => c.name === "invite_sats")) {
+      db.exec("ALTER TABLE payout_settings ADD COLUMN invite_sats integer");
+    }
     if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     const p = (sql: string) => db.prepare(sql);
     this.s = {
@@ -459,9 +464,9 @@ export class SqliteLedgerStore implements LedgerStore {
       payeePaidOut: p("update payees set out = out - ?, withdrawn = withdrawn + ? where worker = ?"),
       settings: p("select * from payout_settings where id = 1"),
       saveSettings: p(
-        `insert into payout_settings (id, is_on, min_sats, worker_day_sats, server_day_sats, changed_by, changed_at) values (1, ?, ?, ?, ?, ?, ?)
+        `insert into payout_settings (id, is_on, min_sats, worker_day_sats, server_day_sats, invite_sats, changed_by, changed_at) values (1, ?, ?, ?, ?, ?, ?, ?)
          on conflict (id) do update set is_on = excluded.is_on, min_sats = excluded.min_sats, worker_day_sats = excluded.worker_day_sats,
-           server_day_sats = excluded.server_day_sats, changed_by = excluded.changed_by, changed_at = excluded.changed_at`,
+           server_day_sats = excluded.server_day_sats, invite_sats = excluded.invite_sats, changed_by = excluded.changed_by, changed_at = excluded.changed_at`,
       ),
     };
   }
@@ -947,7 +952,7 @@ export class SqliteLedgerStore implements LedgerStore {
     const at = input.at ?? Date.now();
     int("at", at);
     return this.tx(() => {
-      this.s.saveSettings.run(s.on ? 1 : 0, s.minSats, s.workerDaySats, s.serverDaySats, input.by ?? null, at);
+      this.s.saveSettings.run(s.on ? 1 : 0, s.minSats, s.workerDaySats, s.serverDaySats, s.inviteSats, input.by ?? null, at);
       return this.settingsNow();
     }, true);
   }
@@ -960,6 +965,7 @@ export class SqliteLedgerStore implements LedgerStore {
       minSats: r.min_sats as number,
       workerDaySats: r.worker_day_sats as number,
       serverDaySats: r.server_day_sats as number,
+      inviteSats: typeof r.invite_sats === "number" ? r.invite_sats : DEFAULT_PAYOUT_SETTINGS.inviteSats,
       ...(r.changed_by !== null && r.changed_by !== undefined ? { changedBy: r.changed_by as string } : {}),
       changedAt: r.changed_at as number,
     };

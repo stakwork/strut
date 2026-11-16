@@ -54,6 +54,7 @@ import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
+import { createInvites } from "./payments/invites.js";
 import { WORKER_ADDRESS } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -6449,6 +6450,19 @@ export async function createStrut<TServices = unknown>(
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
+    // A new worker's invite (§5.7): the daemon's, through the payer; its
+    // link on the public view's base, opening the worker app — an app the
+    // task types name that is in the public view.
+    invites: createInvites({
+      payer: () => payments.payer(),
+      inviteSats: async () => (await payouts.settings()).inviteSats,
+      workerApps: async () => {
+        const [types, surface] = await Promise.all([(hostTasks ?? tasks.capability).types(), publicSurface.get()]);
+        const shown = new Set(surface.apps.map((a) => a.name));
+        return [...new Set(types.map((t) => t.app))].filter((a) => shown.has(a)).sort();
+      },
+    }),
+    publicUrl: publicUrlOf,
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {
@@ -6472,7 +6486,9 @@ export async function createStrut<TServices = unknown>(
   // file, `PUT /tasks/tests/:id/files/<path>`).
   const sendInProcess = (req: Request, actor?: string) => Promise.resolve(app.fetch(inProcessRequest(req, actor)));
   const earningsAdminDoor: EarningsAdminDoor = inProcessDoor(sendInProcess, EARNINGS_ROUTES, "admin");
-  const staffAdminDoor: AdminDoor = inProcessDoor(sendInProcess, STAFF_ROUTES, "staff");
+  /** The staff door for one page's request: its links (a worker invite's,
+   *  §5.7) on the base that request came on. */
+  const staffAdminDoor = (publicUrl?: string): AdminDoor => inProcessDoor(sendInProcess, STAFF_ROUTES, "staff", publicUrl);
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
   // What this strut bought where, and what is still being paid: an admin's
@@ -9773,7 +9789,7 @@ export async function createStrut<TServices = unknown>(
      *  doors — hidden from a model, callable by a page whose host relays
      *  its tools/call here. The viewer is the connection's actor, an ADMIN
      *  when the connection holds full scope (plans/member-rights.md). */
-    const appDoor = async (actor: string | undefined, scope: Scope) => {
+    const appDoor = async (actor: string | undefined, scope: Scope, c: Context) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const appTools = buildAppTools({
         apps,
@@ -9781,7 +9797,7 @@ export async function createStrut<TServices = unknown>(
         services,
         ...(actor ? { actor } : {}),
         admin: scope === "full",
-        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor } } : {}),
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor(publicUrlOf(c)) } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
         // calls of the task store on that call's bag alone. A member's
         // session carries no Sphinx address: nothing to withdraw to (§8.2).
@@ -9972,7 +9988,7 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c))) };
+      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c), c)) };
     };
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
@@ -9983,7 +9999,7 @@ export async function createStrut<TServices = unknown>(
      *  Neither is an admin here. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
-      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
+      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c), c);
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
       return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };

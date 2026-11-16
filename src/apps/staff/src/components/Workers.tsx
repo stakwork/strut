@@ -1,5 +1,6 @@
-// Workers (plans/human-steps.md §9.5): `new` first — the people who signed
-// in and wait — then the rest. Several new ones may be granted a type at
+// Workers (plans/human-steps.md §9.5): Invite (§5.7, ./Invite) — a new
+// worker's one link — then the workers, `new` first: the people who signed
+// in and wait, then the rest. Several new ones may be granted a type at
 // once (one door call each; the page says which failed); an open type's
 // worker took it up themselves (ruling 9), and their grant says so. A worker shows
 // their status with its acts, their note, their grants (revoked ones with
@@ -21,6 +22,7 @@ import {
 } from "../lib/view";
 import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { Invite } from "./Invite";
 
 interface Props {
   go: (p: Place) => void;
@@ -35,7 +37,12 @@ export function Workers(props: Props) {
   if (props.error) return <ErrorLine error={props.error} />;
   if (!props.workers) return <Loading>Reading the workers…</Loading>;
   if (props.place.worker) return <WorkerDetail {...props} actor={props.place.worker} />;
-  return <WorkerList {...props} workers={props.workers} />;
+  return (
+    <>
+      <Invite />
+      <WorkerList {...props} workers={props.workers} />
+    </>
+  );
 }
 
 function WorkerList(props: Props & { workers: Worker[] }) {
@@ -68,7 +75,7 @@ function WorkerList(props: Props & { workers: Worker[] }) {
   return (
     <Section title="Workers" aside={<Note>{fresh.length ? `${fresh.length} new, waiting for a grant` : `${list.length} here`}</Note>}>
       {list.length === 0 ? (
-        <Empty>No worker has signed in yet. A worker is anyone who signed in to a worker app and asked for a task; they appear here as new. An open type lets them in on their first ask; an invite-only one, a grant.</Empty>
+        <Empty>No worker has signed in yet. A worker is anyone who signed in to a worker app and asked for a task (Invite above sends one the link); they appear here as new. An open type lets them in on their first ask; an invite-only one, a grant.</Empty>
       ) : (
         <>
           {fresh.length > 0 && (

@@ -21,9 +21,19 @@
  * makes the next pay or keysend fail, or stay pending until `POST /settle/:x`
  * (a payment hash, or a keysend's id).
  *
+ * INVITES, with the pay token alone (plans/human-steps.md §5.7): `POST
+ * /invite { sats }` debits `sats` and the mixer's price (`INVITE_PRICE_SATS`)
+ * and answers `{ code, link, sats, status, createdAt }`, `link` a
+ * `sphinx.chat://?action=i&d=…` the core reads; `ready` at once, or as
+ * `/next-payout` says (`pending` is `sending` until `POST /settle/:code`,
+ * `failed` gives the sats back). `GET /invites`, and `POST
+ * /invite/:code/cancel`, which gives back what an unused one held (`409
+ * not_cancellable` once used). `POST /use-invite/:code` marks one used, as
+ * a new account taking it would.
+ *
  * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
- * dollar is a fixed number of sats. `/prices`, `/settle` and `/next-payout`
- * are open: they are the test's, not strut's.
+ * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`
+ * and `/use-invite` are open: they are the test's, not strut's.
  *
  *   PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay SETTLE_AFTER_MS=3000 USD_PER_BTC=100000 \
  *     npx tsx scripts/fake-sphinx-daemon.ts
@@ -62,6 +72,11 @@ interface Inv { hash: string; preimage: string; msat: number; made: number; expi
 /** A pay (keyed by payment hash) or a keysend (keyed by its id). */
 interface Out { key: string; hash: string; preimage?: string; msat: number; state: State; fee: number; error?: string }
 
+/** What the stand-in's mixer charges for an invite, on top of its sats. */
+export const INVITE_PRICE_SATS = 10;
+type InviteStatus = "sending" | "ready" | "failed" | "used" | "cancelled";
+interface Invite { code: string; link: string; sats: number; status: InviteStatus; createdAt: number }
+
 const hex64 = /^[0-9a-f]{64}$/;
 const ADDRESS = /^0[23][0-9a-f]{64}_0[23][0-9a-f]{64}_\d+$/;
 const sha256 = (h: string) => createHash("sha256").update(Buffer.from(h, "hex")).digest("hex");
@@ -78,6 +93,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   const invoices = new Map<string, Inv>();
   const pays = new Map<string, Out>();
   const keysends = new Map<string, Out>();
+  const invites = new Map<string, Invite>();
   let nextPayout: "failed" | "pending" | undefined;
 
   /** Settled now? An invoice settles settleAfterMs after it was made (0: only by hand). */
@@ -89,7 +105,9 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   const balance = () => {
     const paidIn = [...invoices.values()].filter((i) => settled(i)).reduce((n, i) => n + i.msat, 0);
     const out = [...pays.values(), ...keysends.values()].filter((o) => o.state !== "failed").reduce((n, o) => n + o.msat + o.fee, 0);
-    return startMsat + paidIn - out;
+    // An invite holds its sats and the price until it fails or is cancelled.
+    const invited = [...invites.values()].filter((i) => i.status !== "failed" && i.status !== "cancelled").reduce((n, i) => n + (i.sats + INVITE_PRICE_SATS) * 1000, 0);
+    return startMsat + paidIn - out - invited;
   };
   /** Sends `o` (new, or a failed pay tried again): fails, holds or settles it. */
   const send = (o: Out) => {
@@ -142,6 +160,11 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           inv.settledAt ??= Date.now();
           return reply(res, 200, { settled: x });
         }
+        const sent = invites.get(x);
+        if (sent) {
+          if (sent.status === "sending") sent.status = "ready";
+          return reply(res, 200, { settled: x, status: sent.status });
+        }
         const o = pays.get(x) ?? keysends.get(x);
         if (!o) return reply(res, 404, { error: "no such invoice, payment or keysend", code: "not_found" });
         if (o.state === "pending") {
@@ -149,6 +172,13 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           o.fee = lspFeeFloorMsat(o.msat);
         }
         return reply(res, 200, { settled: x, state: o.state });
+      }
+      const useOne = /^\/use-invite\/([0-9a-f]{64})$/.exec(path);
+      if (req.method === "POST" && useOne) {
+        const i = invites.get(useOne[1]!);
+        if (!i || i.status !== "ready") return reply(res, 409, { error: "no ready invite with that code", code: "not_ready" });
+        i.status = "used";
+        return reply(res, 200, { code: i.code, status: i.status });
       }
       if (req.method === "POST" && path === "/next-payout") {
         const s = (await bodyOf(req))["state"];
@@ -160,7 +190,9 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
       const auth = req.headers.authorization;
       const pay = auth === `Bearer ${payToken}`;
       if (!pay && auth !== `Bearer ${token}`) return reply(res, 401, { error: "unauthorized", code: "unauthorized" });
-      const paying = (req.method === "POST" && (path === "/pay" || path === "/keysend")) || (req.method === "GET" && path.startsWith("/keysend/"));
+      const paying =
+        (req.method === "POST" && (path === "/pay" || path === "/keysend" || path === "/invite" || path.startsWith("/invite/"))) ||
+        (req.method === "GET" && (path.startsWith("/keysend/") || path === "/invites"));
       if (paying && !pay) return reply(res, 403, { error: "the receive token may not pay", code: "forbidden" });
 
       if (req.method === "POST" && path === "/invoice") {
@@ -238,6 +270,31 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
       if (req.method === "GET" && ks) {
         const o = keysends.get(ks[1]!);
         return o ? reply(res, 200, { id: o.key, ...outAnswer(o) }) : reply(res, 404, { error: `no keysend ${ks[1]}`, code: "not_found" });
+      }
+      if (req.method === "POST" && path === "/invite") {
+        const sats = (await bodyOf(req))["sats"];
+        if (typeof sats !== "number" || !Number.isSafeInteger(sats) || sats <= 0) return reply(res, 400, { error: "sats is a whole number above 0", code: "bad_request" });
+        const code = randomBytes(32).toString("hex");
+        // The core's `invite_qr`: the code's 32 bytes then the mixer's host, URL-safe base64 PADDED
+        // (its `URL_SAFE` engine writes `=` and decodes only canonical padding).
+        const d = Buffer.concat([Buffer.from(code, "hex"), Buffer.from("mixer.fake.invalid")]).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+        const room = balance() >= (sats + INVITE_PRICE_SATS) * 1000;
+        const outcome = nextPayout;
+        nextPayout = undefined;
+        const status: InviteStatus = !room || outcome === "failed" ? "failed" : outcome === "pending" ? "sending" : "ready";
+        const i: Invite = { code, link: `sphinx.chat://?action=i&d=${d}`, sats, status, createdAt: Math.floor(Date.now() / 1000) };
+        invites.set(code, i);
+        log(`invite ${sats} sats ${status} ${code.slice(0, 12)}…`);
+        return reply(res, 200, i);
+      }
+      if (req.method === "GET" && path === "/invites") return reply(res, 200, { invites: [...invites.values()] });
+      const cancelOne = /^\/invite\/([^/]+)\/cancel$/.exec(path);
+      if (req.method === "POST" && cancelOne) {
+        const i = invites.get(cancelOne[1]!);
+        if (!i) return reply(res, 404, { error: `no invite ${cancelOne[1]}`, code: "not_found" });
+        if (i.status === "used") return reply(res, 409, { error: "the invite was used", code: "not_cancellable" });
+        if (i.status === "sending" || i.status === "ready") i.status = "cancelled";
+        return reply(res, 200, { code: i.code, status: i.status });
       }
       return reply(res, 404, { error: `no route ${req.method} ${path}`, code: "not_found" });
     } catch (err) {

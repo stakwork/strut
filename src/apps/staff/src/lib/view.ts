@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
 export type Tab = (typeof TABS)[number];
@@ -386,4 +386,45 @@ export function jsonLine(v: unknown, max = 80): string {
 export function errorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw.replace(/^step_run(?: refused)?: /, "");
+}
+
+// ── Invites (plans/human-steps.md §5.7) ─────────────────────────────────────
+
+/** An invite's status in words. */
+export const INVITE_WORDS: Record<InviteStatus, string> = {
+  sending: "Sending: the wallet is paying the mixer for it",
+  ready: "Ready to send",
+  failed: "Failed: the wallet could not pay for it",
+  used: "Used: a worker signed up with it",
+  cancelled: "Cancelled",
+};
+
+/** Whether an invite may still be used, so shared or cancelled. */
+export function inviteOpen(i: Pick<Invite, "status">): boolean {
+  return i.status === "sending" || i.status === "ready";
+}
+
+/** Why this server cannot invite, in words. */
+export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
+  return why === "no_pay_credential"
+    ? "Inviting needs this server's wallet to pay: a Sphinx daemon with its pay token (the Earnings app's wallet settings)."
+    : "This server's wallet cannot make Sphinx invites: a Sphinx daemon whose version has the invite routes can.";
+}
+
+/** The words a worker is sent with the link. */
+export function inviteMessage(link: string): string {
+  return `You're invited to work with us. Open this on your Android phone to sign up with Peel: ${link}`;
+}
+
+/** The message as a WhatsApp share link (an https link a host opens). */
+export function whatsappUrl(link: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link))}`;
+}
+
+/** An invite's sats as typed: blank is the default; else a whole number 1 to 100,000. */
+export function inviteSatsOf(text: string): { sats?: number } | { problem: string } {
+  const t = text.trim();
+  if (!t) return {};
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }
