@@ -120,8 +120,11 @@ export async function downloadArtifact(path: string): Promise<void> {
 // Bearer`. A host that spawns strut (desktop app) hands the per-launch key to
 // the UI as `?key=` on first load; we stash it in sessionStorage and strip
 // it from the URL. A user can also paste one in Settings (localStorage),
-// for a server deployment. sessionStorage (this launch) wins.
+// for a server deployment. sessionStorage (this launch) wins. Beside the key
+// the host may name the person the UI is shown to (`&actor=`): sent with the
+// key as `x-strut-actor`, which strut honors from a request that carries it.
 const KEY_STORAGE = "strut/apiKey";
+const ACTOR_STORAGE = "strut/actor";
 
 function captureKeyFromUrl(): void {
   try {
@@ -129,7 +132,11 @@ function captureKeyFromUrl(): void {
     const key = url.searchParams.get("key");
     if (!key) return;
     sessionStorage.setItem(KEY_STORAGE, key);
+    const actor = url.searchParams.get("actor")?.trim();
+    if (actor) sessionStorage.setItem(ACTOR_STORAGE, actor);
+    else sessionStorage.removeItem(ACTOR_STORAGE);
     url.searchParams.delete("key");
+    url.searchParams.delete("actor");
     history.replaceState(history.state, "", url.pathname + url.search + url.hash);
   } catch {
     // no storage / no history API — the key just isn't remembered
@@ -245,7 +252,17 @@ export async function signOut(): Promise<void> {
 
 function authHeaders(): Record<string, string> {
   const key = getSession() ? "" : getApiKey();
-  return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+  return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}`, ...hostActor() } : {}) };
+}
+
+/** The person the host named beside the key it handed over, as the header strut reads. */
+function hostActor(): Record<string, string> {
+  try {
+    const actor = sessionStorage.getItem(KEY_STORAGE) ? sessionStorage.getItem(ACTOR_STORAGE) : null;
+    return actor ? { "x-strut-actor": actor } : {};
+  } catch {
+    return {};
+  }
 }
 
 /** The headers every UI request carries — the UI marker (the server's CSRF
