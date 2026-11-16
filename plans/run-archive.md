@@ -19,8 +19,8 @@ data folder:
 | run artifacts (`artifacts/<runId>/`) | 51 GB |
 | run logs (`events.jsonl`), in two workflows | 44 GB |
 | job directories (`jobs/`) | 22 GB |
-| `steps/` (kept `run_step` runs and step files) | 14 GB |
-| repo checkouts (`repos/`, `worktrees/`) | 13 GB |
+| under `steps/` (not broken down; it holds the `step:` run bucket) | 14 GB |
+| repository checkouts | 13 GB |
 
 Run retention landed the same day (`retain:`, `STRUT_RUN_RETENTION`,
 `src/retention.ts`, #693 and #698): an hourly sweep that DELETES a finished
