@@ -162,10 +162,14 @@ for (const tb of testBackends()) describe(`merging a Concept branch, on ${tb.nam
     ]);
     await backend.edges.write({ edge: "PARENT_OF", source_ref_id: guide!.ref_id, target_ref_id: tone!.ref_id });
   };
-  /** Edit a page of `branch` (or main) the way a run does: through its graph view, so the history hears it. */
+  /** Edit a page of `branch` (or main) the way a run does: through its graph view, so the history hears it.
+   *  A Concept refuses whole docs over its own in node_data, so new docs replace them in two steps: the
+   *  old ones removed, then the new set (an edit quoting them whole would carry a seeded page's `{{` into
+   *  the step's YAML config, a template). */
   const edit = async (strut: Strut, name: string, data: Record<string, unknown>, branch?: string) => {
     const page = await pageOf(name, branch ? `branch-${branch}` : backend.namespace);
     assert.ok(page, `${name} on ${branch ?? "main"}`);
+    if (typeof data["docs"] === "string" && page.docs) await step(strut, "graph/edit-node", { ref_id: page.ref_id, properties_to_be_deleted: ["docs"] }, branch);
     await step(strut, "graph/edit-node", { ref_id: page.ref_id, node_data: data }, branch);
   };
   const mainLog = (strut: Strut) => strut.history!.git(["log", "--format=%s", "refs/heads/main"]);
@@ -327,13 +331,13 @@ for (const tb of testBackends()) describe(`merging a Concept branch, on ${tb.nam
     let strut = await boot();
     await tree();
     const app = await pageOf("App");
-    const skipped = await step(strut, "knowledge/edit-page", { ref_id: app!.ref_id, node_data: { docs: "DREAM app docs." } });
+    const skipped = await step(strut, "knowledge/edit-page", { ref_id: app!.ref_id, edits: [{ old: app!.docs!.split("\n")[0]!, new: "DREAM app docs." }] });
     assert.equal(skipped.status, "skipped");
     assert.match(skipped.note, /comes from git \(strut\/concepts\/App\.md\)/);
     assert.equal((await pageOf("App"))?.docs, app!.docs);
     assert.deepEqual((await json(strut, "/proposals"))["proposals"], []);
     const guide = await pageOf("Guide");
-    const edited = await step(strut, "knowledge/edit-page", { ref_id: guide!.ref_id, node_data: { docs: "DREAM guide docs." } });
+    const edited = await step(strut, "knowledge/edit-page", { ref_id: guide!.ref_id, edits: [{ old: "MAIN guide", new: "DREAM guide" }] });
     assert.equal(edited.status, "Success");
     assert.equal((await pageOf("Guide"))?.docs, "DREAM guide docs.");
     // knowledge/add-page refuses a triplet that would change a page from git, and adds a new page under one.
@@ -360,5 +364,40 @@ for (const tb of testBackends()) describe(`merging a Concept branch, on ${tb.nam
     assert.ok(!/^name:/m.test(file), "still the old form");
     assert.match(git(repo, "status", "--porcelain"), /Assistant Conversations\.md/);
     assert.equal((await pageOf("Assistant Conversations"))?.docs, page!.docs);
+  });
+
+  it("(v) graph/edit-node's rules hold for every writer: edits change only the text quoted, whole docs over a page's own are refused, a page from git is not changed (plans/dream-memory.md)", async () => {
+    const strut = await boot();
+    await backend.nodes.writeMany([
+      { type: "Concept", data: { name: "Style", description: "how we write", docs: "Notes are casual.\nTribe posts: short, the PR link, tag the person." } },
+      { type: "Concept", data: { name: "Empty", description: "nothing yet" } },
+    ]);
+    const style = (await pageOf("Style"))!;
+    // Only the line quoted changes: the other stays as it was.
+    const ok = await step(strut, "graph/edit-node", { ref_id: style.ref_id, edits: [{ old: "Notes are casual.", new: "Notes are casual.\nLarger summaries: simple, concise, actionable." }] });
+    assert.equal(ok.status, "Success");
+    assert.deepEqual(ok.updated, ["docs"]);
+    assert.equal((await pageOf("Style"))?.docs, "Notes are casual.\nLarger summaries: simple, concise, actionable.\nTribe posts: short, the PR link, tag the person.");
+    // The whole text again is refused, so a line the writer failed to copy is never lost.
+    const whole = await step(strut, "graph/edit-node", { ref_id: style.ref_id, node_data: { docs: "Larger summaries: simple." } });
+    assert.match(String(whole), /already has docs.*edits/);
+    assert.match(String(await step(strut, "graph/edit-node", { ref_id: style.ref_id, edits: [{ old: "not on the page", new: "x" }] })), /edits\[0\]: `old` is not in docs/);
+    assert.match(String(await step(strut, "graph/edit-node", { ref_id: style.ref_id, edits: [{ old: "s", new: "x" }] })), /occurs more than once/);
+    assert.match(String(await step(strut, "graph/edit-node", { ref_id: style.ref_id, node_data: { docs: "x" }, edits: [{ old: "Notes", new: "N" }] })), /in both node_data and edits/);
+    assert.match((await pageOf("Style"))!.docs!, /^Notes are casual\./, "nothing refused was written");
+    // A page with no docs yet takes them whole; a one-line attribute too.
+    const empty = (await pageOf("Empty"))!;
+    assert.equal((await step(strut, "graph/edit-node", { ref_id: empty.ref_id, node_data: { docs: "First text.", description: "now something" } })).status, "Success");
+    assert.equal((await pageOf("Empty"))?.docs, "First text.");
+    // A page from git through the plain graph step: skipped on a strut with no checkout, as through edit-page.
+    const app = (await pageOf("App"))!;
+    const skipped = await step(strut, "graph/edit-node", { ref_id: app.ref_id, edits: [{ old: app.docs!.split("\n")[0]!, new: "ASSISTANT app docs." }] });
+    assert.equal(skipped.status, "skipped");
+    assert.equal((await pageOf("App"))?.docs, app.docs);
+    // Under review, a call the rules refuse is answered, never proposed; a good one is left to the proposal.
+    const { default: editNode } = await import("../steps/lib/graph/edit-node.js");
+    const ctx = { services: { graph: backend } } as never;
+    assert.match(String(await editNode.answerGated!({ ref_id: style.ref_id, edits: [{ old: "nope", new: "x" }] }, ctx)), /is not in docs/);
+    assert.equal(await editNode.answerGated!({ ref_id: style.ref_id, edits: [{ old: "Notes are casual.", new: "Notes are casual!" }] }, ctx), undefined);
   });
 });
