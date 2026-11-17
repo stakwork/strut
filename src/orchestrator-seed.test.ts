@@ -46,6 +46,8 @@ describe("the orchestrator workflow strut ships", () => {
     assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "graph_graph_get" });
     assert.ok(paramsOf(text).tools.includes("graph/graph-get"), "the tool the lists name is granted");
     assert.match(paramsOf(text).system, /open one yourself when you need what it says to talk with\s+the person/);
+    // The question is shown apart, under the reply (Jamie's box, Hive's line): the reply never asks it too.
+    assert.match(paramsOf(text).system, /put\s+the question in `ask`\. It is shown under your reply, set apart, so\s+`text` leads up to it and never asks it too: what you need from the\s+person — a decision, names, a yes — is said once, in `ask`\./);
     assert.match(paramsOf(text).system, /open its page in the second list \(`Worker Tasks`\)/, "work by people: the page the person's decisions are on, before the build");
     // A host that grants it too (stakgraph's lab, Peel) does not list it twice.
     const hosted = paramsOf(await orchestratorWorkflowYaml({ tools: ["graph/graph-get", "graph/graph-search"] })).tools;
@@ -56,6 +58,8 @@ describe("the orchestrator workflow strut ships", () => {
     // The person's own pages are this agent's to follow: their root's docs, and how to open one.
     assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.personalConcept }}", tool: "graph_graph_get" });
     const turn = flow.steps[6]!.config as Record<string, unknown>;
+    const ask = (turn["schema"] as { properties: { ask: { description: string } } }).properties.ask.description;
+    assert.match(ask, /shown under `text`, set apart, so `text` never asks it too/);
     // The person's standing (proposal/standing) heads the turn's message only
     // when strut's records say they are an admin: a member, a person token
     // (Peel, the daemon: a person, never a role) and a host's launch with the

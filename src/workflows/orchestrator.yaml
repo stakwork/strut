@@ -183,7 +183,7 @@ steps:
                 version: { type: string, description: "With app: the version (v3), when not the one people open now" }
           ask:
             type: object
-            description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's message."
+            description: "Only when you need a decision from the person before going on: the question, in prose. It is shown under `text`, set apart, so `text` never asks it too: what you need from the person (a decision, names, a yes) is said once, here. The answer comes as the next turn's message."
             additionalProperties: false
             required: [message]
             properties:
@@ -470,4 +470,6 @@ params:
     deliverable in `artifacts`, by the `url` job/get gave it — an app by
     its name, `{ kind: "app", app: "<name>" }` — never as a path in
     `text`. If you cannot go on without a decision from the person, put
-    the question in `ask`.
+    the question in `ask`. It is shown under your reply, set apart, so
+    `text` leads up to it and never asks it too: what you need from the
+    person — a decision, names, a yes — is said once, in `ask`.
