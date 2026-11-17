@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, SupportConversation, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
@@ -506,10 +506,47 @@ export function messageLine(m: SupportMessage): string {
     if (m.deleted) return "Message deleted";
     if (m.kind === "contact") return "Added Support as a contact";
     if (m.kind === "payment") return paymentLine(m);
-    if (m.kind === "file") return m.file?.mediaType?.startsWith("image/") ? "Photo" : m.file?.mediaType?.startsWith("audio/") ? "Voice note" : (m.file?.name ?? "File");
+    if (m.kind === "file") {
+      const what = m.file?.mediaType?.startsWith("image/") ? "Photo" : m.file?.mediaType?.startsWith("audio/") ? "Voice note" : (m.file?.name ?? "File");
+      return m.text ? `${what}: ${m.text}` : what;
+    }
     return m.text ?? "";
   })();
-  return m.fromMe && m.kind === "message" && !m.deleted ? `Support: ${body}` : body;
+  return m.fromMe && (m.kind === "message" || m.kind === "file") && !m.deleted ? `Support: ${body}` : body;
+}
+
+/** What strut sent on its own, as the bubble names it. */
+export const AUTO_LABELS: Record<NonNullable<SupportMessage["auto"]>, string> = { welcome: "Welcome", payout: "Payout", "heads-up": "Heads-up" };
+
+/** The list's filters (plans/support-chat.md §3, item 2), in order. */
+export const SUPPORT_FILTERS: ReadonlyArray<{ id: SupportFilter; label: string }> = [
+  { id: "open", label: "Open" },
+  { id: "mine", label: "Mine" },
+  { id: "unassigned", label: "Unassigned" },
+  { id: "done", label: "Done" },
+];
+
+/** The largest file staff send: the page's call is capped at 4 MB, base64 included. */
+export const SUPPORT_FILE_MAX_BYTES = 2.5 * 1024 * 1024;
+/** A photo staff send is shrunk to this many pixels on its longer side… */
+export const SUPPORT_PHOTO_SIDE = 1600;
+/** …and Support's own picture to this. */
+export const SUPPORT_AVATAR_SIDE = 512;
+
+/** Width and height that fit `max` on the longer side, never larger. */
+export function fitWithin(width: number, height: number, max: number): { width: number; height: number } {
+  const scale = Math.min(1, max / Math.max(width, height, 1));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/** Shrunk in the page: a photo that is not animated or drawn (GIF, SVG). */
+export function shrinkable(type: string): boolean {
+  return /^image\/(jpeg|png|webp|bmp|avif|heic|heif)$/i.test(type);
+}
+
+/** Why a file cannot be sent, or undefined: past 2.5 MB once shrunk. */
+export function attachProblem(o: { size: number }): string | undefined {
+  return o.size > SUPPORT_FILE_MAX_BYTES ? `Files up to ${fmtBytes(SUPPORT_FILE_MAX_BYTES)}: this one is ${fmtBytes(o.size)}.` : undefined;
 }
 
 /** Messages a worker wrote before Support followed the daemon (§6, the

@@ -56,6 +56,8 @@ for (const impl of impls) {
     let current: Payer | null;
     let payouts: ReturnType<typeof createPayouts>;
     let withdrawals: ReturnType<typeof createWithdrawals>;
+    /** What the `paid` hook was told: Support's payout lines (plans/support-chat.md §6). */
+    let paid: Array<{ key: string; worker: string; msat: number }>;
 
     beforeEach(async () => {
       dir = join(tmpdir(), `strut-payouts-${randomUUID()}`);
@@ -83,7 +85,9 @@ for (const impl of impls) {
           }
         },
         sweep: () => payouts.sweep(),
+        paid: (p) => void paid.push(p),
       });
+      paid = [];
       payouts = createPayouts({ ledger: async () => ledger, ledgerIfAny: async () => ledger, withdrawals, payer: async () => current, lightning: () => lightning, now: () => now });
     });
     afterEach(async () => {
@@ -116,6 +120,7 @@ for (const impl of impls) {
       assert.deepEqual(out, { state: "settled", key: out.key, msat: 2_000_000, feeMsat: 2_000, maxFeeMsat: 10_000 });
       assert.match(out.key, /^[0-9a-f]{64}$/);
       assert.deepEqual(payer.keysends(), [{ id: out.key, address: ADDRESS, msat: 2_000_000, state: "settled", feeMsat: 2_000 }]);
+      assert.deepEqual(paid, [{ key: out.key, worker: ACTOR, msat: 2_000_000 }], "Support's line is told once it is booked");
       const p = (await ledger.payoutOf(out.key))!;
       assert.deepEqual([p.state, p.worker, p.address, p.feeMsat], ["paid", ACTOR, ADDRESS, 2_000]);
       assert.match(p.paymentHash!, /^[0-9a-f]{64}$/, "the wallet's payment hash kept beside the key");
@@ -145,8 +150,10 @@ for (const impl of impls) {
       assert.ok(again instanceof PayoutError && again.code === "payout_out");
       assert.equal(again.detail.out?.key, out.key);
       assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "pending" }]);
+      assert.deepEqual(paid, [], "no line while it is on its way");
       payer.settle(out.key);
       assert.deepEqual(await withdrawals.check(), [{ paymentHash: out.key, state: "settled" }]);
+      assert.deepEqual(paid, [{ key: out.key, worker: ACTOR, msat: 3_000_000 }]);
       assert.deepEqual(payer.calls.map((c) => c.method), ["keysend", "keysendStatus", "keysendStatus"], "read, never sent again");
       assert.equal((await ledger.payoutOf(out.key))!.state, "paid");
       assert.equal(await total(), 10_000_000 - 3_003_000, "charged the fee taken, not its cap");

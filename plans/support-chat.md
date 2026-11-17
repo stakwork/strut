@@ -1,6 +1,6 @@
 # Support: a chat between workers and a Stadeum's staff
 
-> **Status (2026-11-16): ruled; item 1 built (#719), item 2 not started.**
+> **Status (2026-11-17): ruled; item 1 built (#719), item 2 built (#ITEM2, stacked on #719).**
 >
 > - **Written against:** strut `main` @425a9d06, stakwork/sphinx `master`
 >   @c1f55f11, peel-android @efbcccd and peel @78deb6e.
@@ -192,6 +192,34 @@ links to their page.
 | Done and assigned | Mark a conversation done; assign it; filter by mine or unassigned | — | Fields on the conversation | 2 |
 | Staff heads-up | §6 | — | — | 2 |
 
+**Built differently (#ITEM2):**
+- **Photos and files from staff** as the row says: a photo is shrunk in the
+  page to 1,600 px and sent as a JPEG (a GIF or SVG goes as a file); strut
+  keeps its copy under `<dataDir>/support/files/`, which Retry sends again.
+  The 2.5 MB stays, though #700 raised the app door's cap since
+  (`APP_DOOR_BODY_MAX_BYTES`, about 20 MB): one paste of a phone's PDF
+  could carry more, if that is wanted.
+- **Support's picture** is shrunk to 512 px in the page; strut keeps a copy
+  (`<dataDir>/support/photo`) to show it in settings, since the page cannot
+  load the memes URL (above).
+- **Delete** is a trash button on Support's own messages, asked in place
+  (an app frame has no modals), not a menu. A send that failed with nothing
+  sent has no Sphinx id: it is deleted in strut alone.
+- **Payout lines** go to the worker as a DM from Support, so Peel shows
+  them; the staff's thread labels them "Payout". Only to a worker who is a
+  contact (ruling 15), once per payout (its id made from the payout's key).
+  The hook is the withdrawals' `paid`, after `payoutSettled`.
+- **Assigned** means taken: Take it and Let go, no picking another admin,
+  since admins have no names (ruling 4). The routes keep the actor and
+  answer `assigned: "me" | "other"`. The list opens on Open, beside Mine,
+  Unassigned and Done.
+- **The heads-up**: strut keeps no admin's Sphinx address, so it goes to
+  each admin SUPPORT KNOWS: an actor who marked a conversation seen,
+  replied or took one, and is itself the key of one of Support's contacts
+  (`secp:` + a conversation's pubkey), so `POST /dm` reaches them (ruling
+  15). An admin a host signs in under another actor gets the tab's count
+  alone. No switch.
+
 **Not built, on purpose:**
 - tips or boosts from staff: money leaves only through Payouts and the payer;
 - calls, invoices, tribes and Sphinx threads.
@@ -242,7 +270,8 @@ for tasks and workers).
   without its first byte: Peel signs in with the root key, which is also its
   contact key (`src/visitors.ts`).
 - Fields: the peer's alias; `seenAt` (shared by the staff); `welcomedAt`; and in item 2, `status` (open or done) and
-  `assignee`.
+  `assignee`. **Built (#ITEM2):** two columns on `support_conversations`,
+  added to a file item 1 made.
 - Someone who has the contact but isn't a worker here still gets a
   conversation, marked "Not a worker here".
 
@@ -256,6 +285,8 @@ for tasks and workers).
 - The welcome text: empty until an admin writes one, and when it was last
   saved (ruling 8).
 - Payout lines on or off.
+- Support's picture: the URL the daemon answered (**built, #ITEM2**; the
+  bytes in `<dataDir>/support/photo`).
 
 **Also stored**
 - The follower's cursor.
@@ -299,6 +330,10 @@ Only a few test accounts have joined so far, so no bulk send is needed.
     DMs each admin whose Sphinx address strut knows: "3 messages waiting in
     Support". It carries no content and goes at most once an hour per admin.
   - Admins without an address get the count only.
+  - **Built differently (#ITEM2):** "whose Sphinx address strut knows" is
+    an admin whose actor is a Support contact's key and who has used
+    Support (§3's notes): strut keeps no admin's address. `POST /dm`
+    reaches existing contacts alone (ruling 15).
 - **Payouts in the thread:** one line from Support when a payout settles. On
   by default, with a switch in settings.
 - **Retention.**
@@ -403,6 +438,15 @@ token expires and to send the welcome.
 - Support's photo sent as `img` on every message.
 - `POST /dm/:id/delete`.
 
+**Built differently (#ITEM2, against the stand-in; the daemon's side is
+stakwork/sphinx, stacked on #435):** the shapes strut uses —
+`POST /dm { id, to, text?, reply?, file?: { data, type, name } }` (25 MiB,
+`413 too_large`; the feed then shows `kind: "file"` with `mediaType` and
+`fileName`); `PUT /dm/photo { data, type }` → `{ url }`, sent as `img` on
+every message, and `DELETE /dm/photo`; `POST /dm/:id/delete`, the
+account's own messages alone, the record then `deleted: true` under a new
+`seq`. specs/LIGHTNING.md, "Support's DMs".
+
 ## 8. What a host does
 
 A host that runs the treasury (Stadeum, in `stack/stadeum.yml`):
@@ -438,12 +482,13 @@ Strut keeps `LIGHTNING_DAEMON_MESSAGE_TOKEN` as it keeps the pay token:
 
 ## 10. Work items
 
-Each is its own PR against `main`, never stacked.
+Each is its own PR against `main`, never stacked. **Built differently:**
+item 2 (#ITEM2) is stacked on #719, which Evan allowed for this effort.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
 | 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Built (#719), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
-| 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins | 1; the daemon's item-2 routes | Not started |
+| 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins. Routes: `PUT /support/:worker`, `POST /support/:worker/delete`, `PUT` and `DELETE /support/photo`; `file` on `POST /support/:worker`, `payoutLines` on `PUT /support/settings`, `filter` on `GET /support`. Steps `staff/support-update`, `-delete`, `-photo` | 1; the daemon's item-2 routes | Built (#ITEM2, stacked on #719), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
 
 A stand-in for the new routes goes into `scripts/fake-sphinx-daemon.ts`,
 which already answers the wallet, keysend and invite routes. That way item 1

@@ -47,5 +47,8 @@ grants:
     - staff/support-file
     - staff/support-settings
     - staff/support-save-settings
+    - staff/support-update
+    - staff/support-delete
+    - staff/support-photo
     - app/list
     - earnings/read

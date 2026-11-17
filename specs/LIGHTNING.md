@@ -19,9 +19,10 @@ This file is the contract each provider is built against:
   (`POST /invite`, `GET /invites`, `POST /invite/:code/cancel`; "Invites"
   below), being built in the sphinx repo as strut's side lands.
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
-  that answer exactly this. And SUPPORT's three DM routes, with a token of
+  that answer exactly this. And SUPPORT's DM routes, with a token of
   their own ("Support's DMs" below, plans/support-chat.md §7;
-  stakwork/sphinx#435); `scripts/fake-sphinx-daemon.ts` answers them.
+  stakwork/sphinx#435, and item 2's file, picture and delete stacked on
+  it); `scripts/fake-sphinx-daemon.ts` answers them.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -348,7 +349,7 @@ plans/support-chat.md §7, built in stakwork/sphinx#435
 through a FOURTH token, `DAEMON_MESSAGE_TOKEN` — strut's
 `LIGHTNING_DAEMON_MESSAGE_TOKEN`, `messageToken` on the wallet, kept as the
 pay token is and refused when it equals the receive or the pay token. It
-opens the three routes below and nothing else: not tribes, join, leave,
+opens the routes below and nothing else: not tribes, join, leave,
 invoices, pay, keysend, invites or the admin routes. The only sats it can
 spend are what a DM to an existing contact costs: 0, or 1 sat a part while
 their key is unconfirmed. It never meets a new contact. Only strut's
@@ -365,8 +366,13 @@ GET /dms?after=<seq>&limit=100
 GET /dm/:id/file
 → the decrypted bytes; content-type the file's type; content-disposition the sender's name
 
-POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>" }
+POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>",
+           "file": { "data": "<base64>", "type": "image/jpeg", "name": "receipt.jpg" } }
 → the send's item, as the feed shows it: { "seq": 31, "id": "<sphinx id>", "clientId": "<strut's>", …, "status": "sent" }
+
+PUT /dm/photo { "data": "<base64>", "type": "image/jpeg" }      → { "url": "https://memes…/public/<muid>" }
+DELETE /dm/photo                                               → 200
+POST /dm/:id/delete                                            → 200
 ```
 
 - **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
@@ -419,6 +425,26 @@ POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "�
   message's JSON over 32 KiB, which strut refuses before it keeps
   anything), `503 not_connected` (no LSP: nothing was sent). Strut keeps a
   refused send `failed` with the daemon's `code: error`, and Retry.
+- **A file in `POST /dm`** (item 2): `file { data, type, name }`, `text`
+  then optional, its caption. The daemon encrypts it (RNCryptor v3, as
+  Peel's `MediaCrypto`), uploads it to memes `/file`, signs a media token
+  and sends a type-6 message; at most 25 MiB (`413 too_large`). The same
+  `id` rule holds: a failed one is tried again with the file it first had.
+  The feed then shows the send as `kind: "file"` with `mediaType` and
+  `fileName` (made from the type), and `GET /dm/:id/file` reads it back.
+  Strut sends at most 2.5 MiB (a page's call is capped at 4 MB) and keeps
+  its own copy in `<dataDir>/support/files/`, which Retry sends again.
+- **`PUT /dm/photo { data, type }`** (item 2): Support's picture, uploaded
+  to memes `/public`; answers `{ url }`, which the daemon sends as `img` on
+  every message from then on, so Peel shows it beside "Support". `DELETE
+  /dm/photo` clears it. Strut keeps a copy in `<dataDir>/support/photo` to
+  show staff (a page cannot load the memes host).
+- **`POST /dm/:id/delete`** (item 2): deletes one of the account's OWN
+  messages for both sides (a type-17 delete); `404 not_found` for any
+  other. The feed then shows that record `deleted: true` under a new
+  `seq`. Strut asks it for a message of Support's that has its Sphinx id
+  (from the send's answer, or the feed); a failed send that never went is
+  deleted in strut alone.
 - **The alias**: a changed `DAEMON_ALIAS` replaces the account's stored
   alias at start, so every message after carries the new name, which is
   what renames the contact in Peel.

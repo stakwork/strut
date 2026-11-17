@@ -240,12 +240,21 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   too_large` over 25 MiB, `410 deleted`) and `POST /dm` (`400
   not_a_contact`, `400 too_long`), answering the send's item; the same `id`
   never sends twice, a failed one is tried again. Play a worker with `POST /worker-dm { pubkey?, alias?,
-  text?, replyTo?, sats?, file?: { name, type, base64 } | { name, type,
+  text?, replyTo?, sats?, time?, file?: { name, type, base64 } | { name, type,
   size } }` (a new pubkey is a contact first), `POST /worker-contact
   { pubkey?, alias? }` (a key exchange alone: what fires the welcome),
   `POST /worker-delete/:id`; `POST /next-dm { "state": "failed" |
   "pending" }` makes the next send fail, or wait for `POST /settle/<id>`.
-  Then `?app=strut/staff&input=tab%3Dsupport`.
+  Item 2's: `POST /dm` with `file { data, type, name }` (`413 too_large`
+  over 25 MiB; the file then reads back through `GET /dm/:id/file`), `PUT
+  /dm/photo { data, type }` → `{ url }` and `DELETE /dm/photo` (`GET
+  /worker-photo`, open, says the `img` a worker now sees), `POST
+  /dm/:id/delete` for the account's own messages. `/worker-dm` takes
+  `time` (ISO), so a message can have waited 5 minutes for the heads-up.
+  Then `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the
+  admin a ticket names (`POST /auth/ticket { actor, role: "admin" }`), and
+  that admin gets the heads-up when their actor is `secp:` + a contact's
+  key without its first byte.
 - **The rate**: `GET /prices` answers mempool's `{ time, USD }`
   (`USD_PER_BTC`, default 100,000, so $1 is 1,000 sats).
 - In a test, `startFakeSphinxDaemon({ port: 0, … })` starts it in-process and

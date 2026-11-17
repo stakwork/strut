@@ -2520,9 +2520,16 @@ the host as `ui/open-link`, so its address bar follows.
   "Message deleted"; sats are a line; a task's id is a link to the task.
   The composer: Enter sends, Shift+Enter adds a line, Reply quotes a
   message above it; a reply shows a clock while it goes, ✓ once sent, and
-  ! with Retry when it failed. Every reply is from "Support". The gear
-  opens Support settings: the welcome's text alone. A worker's page has
-  **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
+  ! with Retry when it failed. Every reply is from "Support". Item 2:
+  staff attach a photo or file (the paperclip), paste it or drop it on the
+  thread — a photo is shrunk in the page to 1,600 px as a JPEG, any other
+  file goes up to 2.5 MB — with the text as its caption; Delete (on
+  Support's own messages, asked in place) takes one back for both sides;
+  **Take it** / **Let go** and **Done** / **Reopen** in the thread's
+  header, and the list filters Open, Mine, Unassigned and Done (a row says
+  Yours, Taken, Done). The gear opens Support settings: Support's picture
+  (shrunk to 512 px), payout lines on or off, and the welcome's text. A
+  worker's page has **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
 verdict shows only when the server answers for it: a host's own task store
 answers no test route and no review, so the page shows no Tests tab and no
 Review section or filter.
@@ -5848,7 +5855,14 @@ start; a record read again changes nothing); a record it cannot keep is
 skipped and said, never the page; a worker's file is fetched when it arrives, up to 25 MB
 (a larger one is a line saying so), into `<dataDir>/support/files/`. What
 was in the daemon's log before Support first followed it shows too,
-marked `earlier`.
+marked `earlier`. Each tick also sends the HEADS-UP (`plans/support-chat.md`
+§6): once a worker's message has waited unread 5 minutes, Support DMs each
+admin it knows the count — `"3 messages waiting in Support"`, no content —
+at most once an hour each. An admin Support knows is one who marked a
+conversation seen, replied or took one, and whose actor is the key of one
+of Support's contacts (a conversation): `POST /dm` reaches existing
+contacts alone (ruling 15), so any other admin has the count on the tab
+only.
 
 FULL SCOPE only, reads included: the deployment key or an admin's session;
 a member's session, a peer and a visitor are refused (`403`). With no
@@ -5858,45 +5872,66 @@ its first byte), one encoded segment.
 
 | Route | |
 | --- | --- |
-| `GET /support[?q=]` | `{ conversations }`: unread first, then the newest; `q` over names (the Sphinx alias, the worker's note), actors and text |
+| `GET /support[?q=&filter=]` | `{ conversations }`: unread first, then the newest; `q` over names (the Sphinx alias, the worker's note), actors and text; `filter` `all` (the default), `open`, `mine` (open, taken by the asker), `unassigned` (open, taken by no one) or `done` |
 | `GET /support/unread` | `{ unread, conversations }`: workers' messages no one marked seen, and the conversations they are in — for a host's navigation |
 | `GET /support/settings` | `{ settings }` |
-| `PUT /support/settings { welcome }` | `{ settings }` |
+| `PUT /support/settings { welcome?, payoutLines? }` | `{ settings }`: either or both |
+| `PUT /support/photo { base64, type }` | `{ settings }`: Support's picture through the daemon (`PUT /dm/photo`), `image/jpeg`, `png`, `webp` or `gif`, at most 1 MiB; `502 daemon_error` when the daemon refuses it |
+| `DELETE /support/photo` | `{ settings }`: no picture (`DELETE /dm/photo`) |
 | `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
-| `POST /support/:worker { text, replyTo? }` | `{ message }`: kept, then sent from "Support"; `{ retry: <key> }` sends a failed one again under the same id |
+| `PUT /support/:worker { status?, assignee? }` | `{ conversation }`: `status` `open` or `done`; `assignee` `"me"` takes it (an admin's session, or the key with `x-strut-actor`), `null` lets it go |
+| `POST /support/:worker { text?, replyTo?, file? }` | `{ message }`: kept, then sent from "Support"; `file` is `{ base64, type, name }`, at most 2.5 MiB, `text` then its caption; `{ retry: <key> }` sends a failed one again under the same id, its file with it |
+| `POST /support/:worker/delete { key }` | `{ message }`: one of Support's messages deleted for both sides (`POST /dm/:id/delete`); a failed one that never went is deleted here alone; `404 unknown_message` for a worker's, `400` while it is still sending |
 | `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
 | `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
 
 ```json
 { "conversations": [{ "worker": "secp:a1b2…", "pubkey": "02a1b2…", "alias": "Ana", "unread": 2,
     "last": { "key": 41, "id": "6f1c…", "fromMe": false, "kind": "message", "text": "When is it paid?", "at": 1794901800000 },
-    "seenAt": 1794890000000, "welcomedAt": 1794880000000 }] }
+    "seenAt": 1794890000000, "welcomedAt": 1794880000000, "status": "open", "assigned": "me" }] }
 ```
 
+A CONVERSATION's `status` is `open` or `done` (a worker writing again
+reopens it), and `assigned` says who took it relative to the asker, `me`
+or `other`: admins have no names (ruling 4), so the actor is kept and
+never answered.
+
 A MESSAGE is `{ key, id?, fromMe, kind, text?, replyTo?, sats?, deleted?,
-file?, status?, error?, at, earlier?, welcome? }`. `key` is strut's own
+file?, status?, error?, at, earlier?, auto? }`. `key` is strut's own
 order (what `before` and `retry` take); `id` the Sphinx id, what a reply
 quotes (`replyTo`). `kind` is `message`, `file`, `payment` (sats a worker
 sent: a line, not in the books) or `contact` (they added Support as a
 contact). A message the worker deleted is `deleted: true` with no text or
 file; strut keeps its row. `file` is `{ name?, mediaType?, size?, state,
 error? }`, `state` `fetching`, `kept`, `too_large` or `failed`. A send of
-Support's has `status` `sending`, `sent` or `failed` (with `error`). Who
-sent a reply is kept and never answered: every reply is from Support.
-`welcome: true` marks the automatic welcome. The page's thread polls the
+Support's has `status` `sending`, `sent` or `failed` (with `error`), and
+its `id` as soon as the daemon answers with one. A file of Support's is a
+`file` message too, `state: "kept"`, strut's own copy in
+`<dataDir>/support/files/`, read through the same route. Who sent a reply
+is kept and never answered: every reply is from Support. `auto` marks what
+strut sent on its own: `welcome`, `payout` (a payout's line) or
+`heads-up`. The page's thread polls the
 newest 200 and keeps what it read, with **Show earlier messages** for the
 pages before (`before`).
 
+**Payout lines** (`plans/support-chat.md` §6). When a worker's payout
+settles (§22, "Payouts"), Support writes to them `"Paid you 1,200 sats"`,
+once per payout, when they are a contact and `payoutLines` is on (the
+default). `settings.photo` is `{ url, mediaType, savedAt, savedBy?,
+base64? }`: the memes URL the daemon sends as `img` on every message, and
+strut's copy (`<dataDir>/support/photo`) to show, since a page cannot load
+the memes host.
+
 **The welcome** (`plans/support-chat.md` §5). `settings` is `{ welcome,
-since?, savedAt?, savedBy? }`. Empty, none is sent. Once saved, it goes
+since?, savedAt?, savedBy?, payoutLines, photo? }`. Empty, none is sent. Once saved, it goes
 automatically, from Support, to each worker whose key exchange (a
 `contact` record) is newer than `since`, once each (`welcomedAt`); saving
 again keeps `since`, clearing the text turns it off, and the next save
-starts again from then. `400` for a body with anything but `welcome`, or a
-welcome over 2,000 characters.
+starts again from then. `400` for a body with anything but `welcome` and
+`payoutLines`, or a welcome over 2,000 characters.
 
-A send is kept before it goes: `POST /dm { id, to, text, reply? }` to the
-daemon, `id` 64 hex strut made. One a past process left `sending` with no
+A send is kept before it goes: `POST /dm { id, to, text?, reply?, file? }`
+to the daemon, `id` 64 hex strut made; a file as `{ data, type, name }`. One a past process left `sending` with no
 word from the daemon is `failed` when Support next opens its store, so
 Retry shows. `text` is at most 32 KiB as the message's JSON with its quoted
 id, the daemon's own limit (`400 bad_request: too long` before anything is

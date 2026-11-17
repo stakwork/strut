@@ -387,8 +387,8 @@ export interface SupportMessage {
   at: number;
   /** Written before Support first followed the daemon. */
   earlier?: true;
-  /** The automatic welcome. */
-  welcome?: true;
+  /** Sent by strut on its own: the welcome, a payout's line, the staff's heads-up. */
+  auto?: "welcome" | "payout" | "heads-up";
 }
 
 export interface SupportConversation {
@@ -401,7 +401,14 @@ export interface SupportConversation {
   last?: SupportMessage;
   seenAt?: number;
   welcomedAt?: number;
+  /** `done` until the worker writes again. */
+  status: "open" | "done";
+  /** Who took it, relative to the viewer: no names (ruling 4). */
+  assigned?: "me" | "other";
 }
+
+/** Which conversations the list shows. */
+export type SupportFilter = "open" | "mine" | "unassigned" | "done";
 
 export interface SupportThread {
   conversation: SupportConversation;
@@ -414,6 +421,10 @@ export interface SupportSettings {
   since?: number;
   savedAt?: number;
   savedBy?: string;
+  /** "Paid you 1,200 sats" from Support when a payout settles. */
+  payoutLines: boolean;
+  /** Support's picture: the URL workers' Peel loads, and the bytes to show here. */
+  photo?: { url: string; mediaType: string; savedAt: number; base64?: string };
 }
 
 /** One piece of a worker's file (`staff/support-file`): `next` is where the
