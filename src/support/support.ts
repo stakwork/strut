@@ -16,15 +16,40 @@
  * new contact's key exchange newer than the welcome's save gets the welcome
  * (§5), once.
  *
- * A send is kept before it goes (`POST /dm { id, to, text, reply? }`), so a
- * failure shows with Retry, which resends the same `id`: the daemon sends
- * one id once.
+ * A send is kept before it goes (`POST /dm { id, to, text, reply?, file? }`),
+ * so a failure shows with Retry, which resends the same `id`: the daemon
+ * sends one id once.
+ *
+ * Item 2 (plans/support-chat.md §3, §6): a staff file (strut keeps its copy
+ * under `<dataDir>/support/files/`, then sends it), Support's picture (the
+ * daemon's `PUT /dm/photo`; strut keeps its copy at `<dataDir>/support/
+ * photo` to show), Delete for both sides (`POST /dm/:id/delete`), a line
+ * from Support when a payout settles (`paidOut`), a conversation's status
+ * and who took it, and the HEADS-UP: when a worker's message has waited
+ * unread `HEADS_UP_AFTER_MS`, Support DMs each admin it knows (`admins`) the
+ * count, at most once an hour each.
  */
-import { randomBytes } from "node:crypto";
-import { mkdir, open as openFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, open as openFile, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { readCapped } from "../packages/archive.js";
-import { fileNameOf, KINDS, type Dm, type SendStatus, type SupportConversation, type SupportKind, type SupportMessage, type SupportStore, type WelcomeSettings } from "./store.js";
+import {
+  fileNameOf,
+  FILTERS,
+  KINDS,
+  type ConversationStatus,
+  type Dm,
+  type OwnFile,
+  type SendStatus,
+  type SupportAuto,
+  type SupportConversation,
+  type SupportFilter,
+  type SupportKind,
+  type SupportMessage,
+  type SupportPhoto,
+  type SupportStore,
+  type WelcomeSettings,
+} from "./store.js";
 
 /** How often the follower reads the daemon (ruling 16). */
 export const SUPPORT_POLL_MS = 3_000;
@@ -51,14 +76,26 @@ const FILE_TIMEOUT_MS = 200_000;
 /** The daemon's limit on a message (sphinx-chat's `MAX_SEND_BYTES`): its
  *  content and the quoted id as the message's JSON, in bytes. */
 export const SUPPORT_SEND_MAX_BYTES = 32 * 1024;
+/** What the daemon counts for a file's own fields in that limit
+ *  (stakwork/sphinx#436, `MEDIA_FIELDS_BYTES`). */
+const FILE_FIELDS_BYTES = 1024;
 /** A file refusal that never changes (stakwork/sphinx#435): not tried again. */
 const FILE_REFUSED_FOR_GOOD = new Set(["not_found", "deleted", "host_not_allowed", "unreadable"]);
 /** The welcome's longest text. */
 export const WELCOME_MAX = 2_000;
+/** The largest file staff send (§3): the page's call is capped at 4 MB,
+ *  base64 included. The page shrinks a photo to 1,600 px first. */
+export const SUPPORT_SEND_FILE_MAX_BYTES = 2.5 * 1024 * 1024;
+/** Support's picture, as the page sends it (shrunk to 512 px). */
+export const SUPPORT_PHOTO_MAX_BYTES = 1024 * 1024;
+/** A worker's message unread this long sends the heads-up (§6)… */
+export const HEADS_UP_AFTER_MS = 5 * 60_000;
+/** …at most this often to each admin. */
+export const HEADS_UP_EVERY_MS = 60 * 60_000;
 /** The thread's page. */
 export const THREAD_PAGE = 200;
 
-export type SupportErrorCode = "not_available" | "bad_request" | "no_conversation" | "unknown_message" | "no_file" | "daemon_error";
+export type SupportErrorCode = "not_available" | "bad_request" | "no_conversation" | "unknown_message" | "no_file" | "not_yet" | "daemon_error";
 
 const STATUS: Record<SupportErrorCode, 400 | 404 | 409 | 501 | 502> = {
   not_available: 501,
@@ -66,6 +103,7 @@ const STATUS: Record<SupportErrorCode, 400 | 404 | 409 | 501 | 502> = {
   no_conversation: 404,
   unknown_message: 404,
   no_file: 404,
+  not_yet: 409,
   daemon_error: 502,
 };
 
@@ -89,30 +127,55 @@ export interface SupportDaemon {
   token: string;
 }
 
+/** Support's settings as the routes answer them: the welcome (§5), payout
+ *  lines (§6), Support's picture (its bytes, to show; the page cannot load
+ *  the memes URL, §3). */
+export type SupportSettings = WelcomeSettings & { payoutLines: boolean; photo?: SupportPhoto & { base64?: string } };
+
+/** A file a page sends: base64, its type and name. */
+export interface SendFile {
+  base64: string;
+  type: string;
+  name: string;
+}
+
 export interface SupportDeps {
   /** The daemon and its message token now, or null: no Support. */
   daemon: () => Promise<SupportDaemon | null>;
   /** The store, opened on first use (the task store's file). */
   open: () => Promise<SupportStore>;
-  /** Where workers' files are kept. */
+  /** Where workers' files, and the staff's, are kept. */
   filesDir: string;
+  /** Where Support's picture is kept. */
+  photoFile: string;
   fetch?: typeof fetch;
   now?: () => number;
   pollMs?: number;
 }
 
 export interface Support {
-  conversations(q?: string): Promise<{ conversations: SupportConversation[] }>;
+  /** `me`: the asker, whom `assigned` and `mine` are told relative to. */
+  conversations(q?: string, o?: { filter?: SupportFilter; me?: string }): Promise<{ conversations: SupportConversation[] }>;
   unread(): Promise<{ unread: number; conversations: number }>;
-  thread(worker: string, o?: { before?: number; limit?: number }): Promise<{ conversation: SupportConversation; messages: SupportMessage[]; more: boolean }>;
-  /** A message from Support (`text`, `replyTo`), or a failed one sent again (`retry`, its key). */
-  send(worker: string, body: { text?: string; replyTo?: string; retry?: number }, by: string | undefined): Promise<{ message: SupportMessage }>;
+  thread(worker: string, o?: { before?: number; limit?: number; me?: string }): Promise<{ conversation: SupportConversation; messages: SupportMessage[]; more: boolean }>;
+  /** A message from Support (`text`, `replyTo`, `file`), or a failed one sent again (`retry`, its key). */
+  send(worker: string, body: { text?: string; replyTo?: string; file?: SendFile; retry?: number }, by: string | undefined): Promise<{ message: SupportMessage }>;
+  /** One of Support's messages deleted for both sides (item 2). */
+  remove(worker: string, key: number): Promise<{ message: SupportMessage }>;
+  /** A conversation marked `done` or `open`, taken (`assignee: "me"`) or let go (`null`). */
+  update(worker: string, body: { status?: unknown; assignee?: unknown }, me: string | undefined): Promise<{ conversation: SupportConversation }>;
   seen(worker: string, by: string | undefined): Promise<{ conversation: SupportConversation }>;
   /** A worker's file, `SUPPORT_FILE_PIECE_BYTES` of it from `offset`;
    *  `next` is where the next piece starts, absent at the last. */
   file(worker: string, id: string, offset?: number): Promise<{ id: string; name?: string; mediaType: string; bytes: number; offset: number; base64: string; next?: number }>;
-  settings(): Promise<{ settings: WelcomeSettings }>;
-  saveSettings(body: { welcome: string }, by: string | undefined): Promise<{ settings: WelcomeSettings }>;
+  settings(): Promise<{ settings: SupportSettings }>;
+  saveSettings(body: { welcome?: unknown; payoutLines?: unknown }, by: string | undefined): Promise<{ settings: SupportSettings }>;
+  /** Support's picture set through the daemon (`photo`), or cleared (`null`). */
+  savePhoto(photo: { base64?: unknown; type?: unknown } | null, by: string | undefined): Promise<{ settings: SupportSettings }>;
+  /** A payout settled (plans/human-steps.md §8.2): its line from Support
+   *  to the worker, when they are a contact and payout lines are on. Once
+   *  per payout; never throws. */
+  paidOut(p: { key: string; worker: string; msat: number }): Promise<void>;
   /** One read of the daemon: the feed and the welcomes due; the files
    *  that came are fetched beside it, never holding the next read. */
   tick(): Promise<void>;
@@ -221,26 +284,34 @@ export function createSupport(deps: SupportDeps): Support {
     return { error: typeof b["error"] === "string" ? b["error"] : `HTTP ${res.status}`, ...(typeof b["code"] === "string" ? { code: b["code"] } : {}) };
   };
 
-  const conversationOf = (s: SupportStore, worker: string): SupportConversation => {
-    const c = s.conversation(worker);
+  const conversationOf = (s: SupportStore, worker: string, me?: string): SupportConversation => {
+    const c = s.conversation(worker, me);
     if (!c) throw new SupportError("no_conversation", `${worker} has no conversation with Support: Support writes only to a worker who added it as a contact (an invite does), plans/support-chat.md ruling 15`);
     return c;
   };
 
-  /** `POST /dm` for a message kept as sending; its answer kept unless the feed spoke first. */
-  const deliver = async (d: SupportDaemon, s: SupportStore, key: number, o: { clientId: string; pubkey: string; text: string; replyTo?: string }): Promise<SupportMessage> => {
+  /** `POST /dm` for a message kept as sending; its answer kept unless the
+   *  feed spoke first. A file goes as its bytes, read from strut's copy. */
+  const deliver = async (d: SupportDaemon, s: SupportStore, key: number, o: { clientId: string; pubkey: string; text?: string; replyTo?: string; file?: OwnFile }): Promise<SupportMessage> => {
+    let file: { data: string; type: string; name: string } | undefined;
+    try {
+      if (o.file) file = { data: (await readFile(o.file.path)).toString("base64"), type: o.file.mediaType, name: o.file.name };
+    } catch (err) {
+      s.answered(key, "failed", `the file is no longer on this server: ${err instanceof Error ? err.message : String(err)}`);
+      return s.message(key)!;
+    }
     try {
       // The daemon answers with the send as its feed shows it, once the LSP
       // has spoken or about 10 s have passed (then `sending`).
-      const res = await call(d, "POST", "/dm", { id: o.clientId, to: o.pubkey, text: o.text, ...(o.replyTo ? { reply: o.replyTo } : {}) }, SEND_TIMEOUT_MS);
+      const res = await call(d, "POST", "/dm", { id: o.clientId, to: o.pubkey, ...(o.text ? { text: o.text } : {}), ...(o.replyTo ? { reply: o.replyTo } : {}), ...(file ? { file } : {}) }, SEND_TIMEOUT_MS);
       if (!res.ok) {
         const r = await refusal(res);
         s.answered(key, "failed", r.code ? `${r.code}: ${r.error.replace(/^[a-z_]+: /, "")}` : r.error);
       } else {
         const b = (await res.json().catch(() => ({}))) as Record<string, unknown>;
         const status = statusOf(b["status"]);
-        if (status === "failed") s.answered(key, "failed", typeof b["error"] === "string" ? b["error"] : undefined);
-        else if (status === "sent") s.answered(key, "sent");
+        const id = typeof b["id"] === "string" && b["id"] ? b["id"] : undefined;
+        s.answered(key, status === "sending" ? undefined : status, typeof b["error"] === "string" ? b["error"] : undefined, id);
       }
     } catch (err) {
       s.answered(key, "failed", `the daemon did not answer: ${err instanceof Error ? err.message : String(err)}`);
@@ -248,11 +319,43 @@ export function createSupport(deps: SupportDeps): Support {
     return s.message(key)!;
   };
 
-  /** A message from Support to `pubkey`, kept, then sent. */
-  const sendNew = (d: SupportDaemon, s: SupportStore, o: { pubkey: string; text: string; replyTo?: string; by?: string }) => {
-    const clientId = randomBytes(32).toString("hex");
-    const m = s.addOwn({ ...o, clientId, at: now() });
-    return deliver(d, s, m.key, { clientId, ...o });
+  /** A message from Support to `pubkey`, kept, then sent; a file kept
+   *  first under the send's id. `clientId` given: once (a payout's line). */
+  const sendNew = async (d: SupportDaemon, s: SupportStore, o: { pubkey: string; text?: string; replyTo?: string; by?: string; file?: { bytes: Buffer; mediaType: string; name: string } }, clientId = randomBytes(32).toString("hex")) => {
+    let file: OwnFile | undefined;
+    if (o.file) {
+      const path = join(deps.filesDir, fileNameOf(clientId));
+      await keep(path, o.file.bytes);
+      file = { path, mediaType: o.file.mediaType, name: o.file.name, size: o.file.bytes.byteLength };
+    }
+    const { file: _bytes, ...rest } = o;
+    let m: SupportMessage;
+    try {
+      m = s.addOwn({ ...rest, ...(file ? { file } : {}), clientId, at: now() });
+    } catch (err) {
+      if (file) await rm(file.path, { force: true });
+      throw err;
+    }
+    return deliver(d, s, m.key, { clientId, pubkey: o.pubkey, ...(o.text ? { text: o.text } : {}), ...(o.replyTo ? { replyTo: o.replyTo } : {}), ...(file ? { file } : {}) });
+  };
+
+  /** Bytes written whole or not at all, owner-only. */
+  const keep = async (path: string, bytes: Buffer) => {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await writeFile(tmp, bytes, { mode: 0o600 });
+      await rename(tmp, path);
+    } catch (err) {
+      await rm(tmp, { force: true });
+      throw err;
+    }
+  };
+
+  const settingsOf = async (s: SupportStore): Promise<SupportSettings> => {
+    const photo = s.photo();
+    const base64 = photo ? await readFile(deps.photoFile).then((b) => b.toString("base64"), () => undefined) : undefined;
+    return { ...s.welcome(), payoutLines: s.payoutLines(), ...(photo ? { photo: { ...photo, ...(base64 ? { base64 } : {}) } } : {}) };
   };
 
   // ── the follower ─────────────────────────────────────────────────────────
@@ -310,16 +413,8 @@ export function createSupport(deps: SupportDeps): Support {
           }
           throw err;
         }
-        await mkdir(deps.filesDir, { recursive: true, mode: 0o700 });
         const path = join(deps.filesDir, fileNameOf(f.id));
-        const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
-        try {
-          await writeFile(tmp, bytes, { mode: 0o600 });
-          await rename(tmp, path);
-        } catch (err) {
-          await rm(tmp, { force: true });
-          throw err;
-        }
+        await keep(path, bytes);
         const type = res.headers.get("content-type")?.split(";")[0]?.trim();
         // The feed names a file by its type (a Sphinx file message carries no
         // name); the sender's own name comes with the bytes.
@@ -327,6 +422,20 @@ export function createSupport(deps: SupportDeps): Support {
       } catch (err) {
         s.fileFailed(f.key, f.tries + 1 >= FILE_TRIES ? "failed" : "fetching", err instanceof Error ? err.message : String(err));
       }
+    }
+  };
+
+  /** §6: a worker's message unread `HEADS_UP_AFTER_MS` — each admin Support
+   *  knows gets the count, no content, at most once an hour. */
+  const headsUps = async (d: SupportDaemon, s: SupportStore) => {
+    const w = s.waiting();
+    if (!w.unread || w.oldest === undefined || now() - w.oldest < HEADS_UP_AFTER_MS) return;
+    // One tick at a time, so due-then-sent sends each admin one; a send
+    // that failed leaves them due, tried on the next tick.
+    for (const a of s.admins()) {
+      if (!s.headsUpDue(a.actor, now(), HEADS_UP_EVERY_MS)) continue;
+      const m = await sendNew(d, s, { pubkey: a.pubkey, text: `${w.unread} message${w.unread === 1 ? "" : "s"} waiting in Support`, by: "heads-up" satisfies SupportAuto });
+      if (m.status !== "failed") s.headsUpSent(a.actor, now());
     }
   };
 
@@ -341,6 +450,7 @@ export function createSupport(deps: SupportDeps): Support {
         const s = await store();
         await follow(d, s);
         await welcomes(d, s);
+        await headsUps(d, s);
         // A file may take minutes to come: the next read never waits for it.
         filing ??= fetchFiles(d, s)
           .catch((err) => console.warn(`[support] the files could not be fetched: ${err instanceof Error ? err.message : String(err)}`))
@@ -363,9 +473,11 @@ export function createSupport(deps: SupportDeps): Support {
   let timer: ReturnType<typeof setInterval> | undefined;
 
   return {
-    async conversations(q) {
+    async conversations(q, o = {}) {
       const { s } = await ready();
-      return { conversations: s.conversations(q ?? "") };
+      if (o.filter !== undefined && !FILTERS.includes(o.filter)) throw new SupportError("bad_request", `filter is one of ${FILTERS.join(", ")}`);
+      if (o.filter === "mine" && !o.me) throw new SupportError("bad_request", "mine needs a signed-in admin's name");
+      return { conversations: s.conversations(q ?? "", { ...(o.filter ? { filter: o.filter } : {}), ...(o.me ? { me: o.me } : {}) }) };
     },
 
     async unread() {
@@ -375,7 +487,7 @@ export function createSupport(deps: SupportDeps): Support {
 
     async thread(worker, o = {}) {
       const { s } = await ready();
-      const conversation = conversationOf(s, worker);
+      const conversation = conversationOf(s, worker, o.me);
       const limit = Math.min(Math.max(1, o.limit ?? THREAD_PAGE), 500);
       return { conversation, ...s.messages(conversation.pubkey, { ...(o.before !== undefined ? { before: o.before } : {}), limit }) };
     },
@@ -385,25 +497,72 @@ export function createSupport(deps: SupportDeps): Support {
       const c = conversationOf(s, worker);
       if (body.retry !== undefined) {
         const own = s.own(c.pubkey, body.retry);
-        if (!own) throw new SupportError("unknown_message", `no message ${body.retry} of Support's in ${worker}'s conversation`);
+        if (!own || own.deleted) throw new SupportError("unknown_message", `no message ${body.retry} of Support's in ${worker}'s conversation`);
         // Only a failed one goes again, once however many ask, under the id
         // it first went with.
         if (!s.claimRetry(own.message.key)) return { message: own.message };
-        return { message: await deliver(d, s, own.message.key, { clientId: own.clientId, pubkey: c.pubkey, text: own.text, ...(own.message.replyTo ? { replyTo: own.message.replyTo } : {}) }) };
+        return {
+          message: await deliver(d, s, own.message.key, {
+            clientId: own.clientId,
+            pubkey: c.pubkey,
+            ...(own.text ? { text: own.text } : {}),
+            ...(own.message.replyTo ? { replyTo: own.message.replyTo } : {}),
+            ...(own.file ? { file: own.file } : {}),
+          }),
+        };
       }
-      const text = typeof body.text === "string" ? body.text : "";
-      if (!text.trim()) throw new SupportError("bad_request", "text is the message: a non-empty string");
+      const text = typeof body.text === "string" && body.text.trim() ? body.text : undefined;
+      const file = body.file === undefined ? undefined : fileOf(body.file);
+      if (!text && !file) throw new SupportError("bad_request", "text is the message: a non-empty string (or a file's caption)");
       // The daemon's own measure, refused here before anything is kept.
-      const size = Buffer.byteLength(JSON.stringify({ content: text, ...(body.replyTo ? { replyUuid: body.replyTo } : {}) }), "utf8");
+      const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(body.replyTo ? { replyUuid: body.replyTo } : {}) }), "utf8") + (file ? FILE_FIELDS_BYTES : 0);
       if (size > SUPPORT_SEND_MAX_BYTES) throw new SupportError("bad_request", `too long: ${size} bytes as a message, at most ${SUPPORT_SEND_MAX_BYTES}`);
-      return { message: await sendNew(d, s, { pubkey: c.pubkey, text, ...(body.replyTo ? { replyTo: body.replyTo } : {}), ...(by ? { by } : {}) }) };
+      return { message: await sendNew(d, s, { pubkey: c.pubkey, ...(text ? { text } : {}), ...(body.replyTo ? { replyTo: body.replyTo } : {}), ...(by ? { by } : {}), ...(file ? { file } : {}) }) };
+    },
+
+    async remove(worker, key) {
+      const { d, s } = await ready();
+      const c = conversationOf(s, worker);
+      const own = s.own(c.pubkey, key);
+      if (!own) throw new SupportError("unknown_message", `no message ${key} of Support's in ${worker}'s conversation: Support deletes only its own`);
+      if (own.deleted) return { message: own.message };
+      // A failed send was never sent (the daemon deletes none): strut's copy alone.
+      if (own.message.status === "failed") {
+        s.markDeleted(key);
+        return { message: s.message(key)! };
+      }
+      const id = own.message.id;
+      if (!id) throw new SupportError("not_yet", "still sending: try again in a moment");
+      const res = await call(d, "POST", `/dm/${encodeURIComponent(id)}/delete`);
+      if (!res.ok) {
+        const r = await refusal(res);
+        // A send the daemon has not settled yet (after its restart).
+        if (r.code === "not_deletable") throw new SupportError("not_yet", `the daemon cannot delete it yet: try again in a moment (${r.error})`);
+        throw new SupportError("daemon_error", `the daemon did not delete it: ${r.code ? `${r.code}: ` : ""}${r.error}`);
+      }
+      s.markDeleted(key);
+      return { message: s.message(key)! };
+    },
+
+    async update(worker, body, me) {
+      const { s } = await ready();
+      const c = conversationOf(s, worker);
+      if (body.status !== undefined && body.status !== "open" && body.status !== "done") throw new SupportError("bad_request", 'status is "open" or "done"');
+      if (body.assignee !== undefined && body.assignee !== null && body.assignee !== "me") throw new SupportError("bad_request", 'assignee is "me" (take it) or null (let it go)');
+      if (body.status === undefined && body.assignee === undefined) throw new SupportError("bad_request", "the body is { status?, assignee? }");
+      if (body.assignee === "me" && !me) throw new SupportError("bad_request", "taking a conversation needs a signed-in admin's name");
+      s.setConversation(c.pubkey, {
+        ...(body.status !== undefined ? { status: body.status as ConversationStatus } : {}),
+        ...(body.assignee !== undefined ? { assignee: body.assignee === "me" ? me! : null } : {}),
+      });
+      return { conversation: conversationOf(s, worker, me) };
     },
 
     async seen(worker, by) {
       const { s } = await ready();
       const c = conversationOf(s, worker);
       s.seen(c.pubkey, by, now());
-      return { conversation: conversationOf(s, worker) };
+      return { conversation: conversationOf(s, worker, by) };
     },
 
     async file(worker, id, offset = 0) {
@@ -446,14 +605,61 @@ export function createSupport(deps: SupportDeps): Support {
 
     async settings() {
       const { s } = await ready();
-      return { settings: s.welcome() };
+      return { settings: await settingsOf(s) };
     },
 
     async saveSettings(body, by) {
       const { s } = await ready();
-      if (typeof body.welcome !== "string") throw new SupportError("bad_request", 'welcome is the text, "" to send none');
-      if (body.welcome.length > WELCOME_MAX) throw new SupportError("bad_request", `the welcome is at most ${WELCOME_MAX} characters`);
-      return { settings: s.saveWelcome(body.welcome, by, now()) };
+      if (body.welcome === undefined && body.payoutLines === undefined) throw new SupportError("bad_request", "the settings are welcome and payoutLines");
+      if (body.welcome !== undefined && typeof body.welcome !== "string") throw new SupportError("bad_request", 'welcome is the text, "" to send none');
+      if (typeof body.welcome === "string" && body.welcome.length > WELCOME_MAX) throw new SupportError("bad_request", `the welcome is at most ${WELCOME_MAX} characters`);
+      if (body.payoutLines !== undefined && typeof body.payoutLines !== "boolean") throw new SupportError("bad_request", "payoutLines is true or false");
+      if (typeof body.welcome === "string") s.saveWelcome(body.welcome, by, now());
+      if (typeof body.payoutLines === "boolean") s.setPayoutLines(body.payoutLines);
+      return { settings: await settingsOf(s) };
+    },
+
+    async savePhoto(photo, by) {
+      const { d, s } = await ready();
+      if (photo === null) {
+        const res = await call(d, "DELETE", "/dm/photo");
+        if (!res.ok) {
+          const r = await refusal(res);
+          throw new SupportError("daemon_error", `the daemon did not clear the picture: ${r.code ? `${r.code}: ` : ""}${r.error}`);
+        }
+        s.setPhoto(undefined);
+        await rm(deps.photoFile, { force: true });
+        return { settings: await settingsOf(s) };
+      }
+      const type = typeof photo.type === "string" ? photo.type.toLowerCase() : "";
+      if (!/^image\/(jpeg|png|webp|gif)$/.test(type)) throw new SupportError("bad_request", "type is the picture's: image/jpeg, image/png, image/webp or image/gif");
+      const bytes = bytesOf(photo.base64, SUPPORT_PHOTO_MAX_BYTES, "the picture");
+      const res = await call(d, "PUT", "/dm/photo", { data: bytes.toString("base64"), type }, SEND_TIMEOUT_MS);
+      const b = res.ok ? ((await res.json().catch(() => ({}))) as Record<string, unknown>) : {};
+      if (!res.ok || typeof b["url"] !== "string" || !b["url"]) {
+        const r = res.ok ? { error: "it answered no url" } : await refusal(res);
+        throw new SupportError("daemon_error", `the daemon did not take the picture: ${"code" in r && r.code ? `${r.code}: ` : ""}${r.error}`);
+      }
+      await keep(deps.photoFile, bytes);
+      s.setPhoto({ url: b["url"], mediaType: type, savedAt: now(), ...(by ? { savedBy: by } : {}) });
+      return { settings: await settingsOf(s) };
+    },
+
+    async paidOut(p) {
+      try {
+        const d = await deps.daemon();
+        if (!d) return;
+        const s = await store();
+        const c = s.conversation(p.worker);
+        if (!c || !s.payoutLines()) return;
+        const sats = Math.round(p.msat / 1000);
+        // Its id made from the payout's: a second call keeps nothing new.
+        const clientId = createHash("sha256").update(`payout ${p.key}`).digest("hex");
+        if (s.hasClientId(clientId)) return;
+        await sendNew(d, s, { pubkey: c.pubkey, text: `Paid you ${sats.toLocaleString("en-US")} sat${sats === 1 ? "" : "s"}`, by: "payout" satisfies SupportAuto }, clientId);
+      } catch (err) {
+        console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
 
     tick,
@@ -482,6 +688,26 @@ export function createSupport(deps: SupportDeps): Support {
       if (open) (await open.catch(() => null))?.close();
     },
   };
+}
+
+/** Bytes a page sent as base64, at most `max`, not empty. */
+function bytesOf(v: unknown, max: number, what: string): Buffer {
+  if (typeof v !== "string" || !v || v.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(v)) throw new SupportError("bad_request", `${what} is base64`);
+  const bytes = Buffer.from(v, "base64");
+  if (!bytes.byteLength) throw new SupportError("bad_request", `${what} is empty`);
+  if (bytes.byteLength > max) throw new SupportError("bad_request", `${what} is ${bytes.byteLength} bytes, at most ${max}`);
+  return bytes;
+}
+
+/** A staff file (§3): its bytes, at most `SUPPORT_SEND_FILE_MAX_BYTES`; a
+ *  type such as `image/jpeg`; a name with no path in it. */
+function fileOf(v: unknown): { bytes: Buffer; mediaType: string; name: string } {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new SupportError("bad_request", "file is { base64, type, name }");
+  const f = v as Record<string, unknown>;
+  const type = typeof f["type"] === "string" ? f["type"].trim().toLowerCase() : "";
+  if (!/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(type)) throw new SupportError("bad_request", "file.type is its media type, such as image/jpeg or application/pdf");
+  const name = typeof f["name"] === "string" ? f["name"].replace(/[\\/\x00-\x1f\x7f]/g, "_").trim().slice(0, 200) : "";
+  return { bytes: bytesOf(f["base64"], SUPPORT_SEND_FILE_MAX_BYTES, "the file"), mediaType: type, name: name || "file" };
 }
 
 /** The sender's name of a file, as `content-disposition` carries it

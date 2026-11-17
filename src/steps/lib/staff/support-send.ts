@@ -7,8 +7,14 @@ export default defineStep({
   type: "staff/support-send",
   effect: "write",
   description:
-    "Send a worker a message from \"Support\" (POST /support/:worker): text, replyTo the Sphinx id of a message quoted; or retry, the key of a failed message, sent again under the same id. Answers { message }, kept before it went: status sending, sent or failed with error. Every reply is from Support; who sent it is kept and never shown. Only strut's own staff app, shown to an admin.",
-  input: z.object({ worker: z.string().min(1), text: z.string().optional(), replyTo: z.string().min(1).optional(), retry: z.number().int().positive().optional() }),
+    "Send a worker a message from \"Support\" (POST /support/:worker): text, replyTo the Sphinx id of a message quoted, file { base64, type, name } (at most 2.5 MiB; text is then its caption); or retry, the key of a failed message, sent again under the same id. Answers { message }, kept before it went: status sending, sent or failed with error. Every reply is from Support; who sent it is kept and never shown. Only strut's own staff app, shown to an admin.",
+  input: z.object({
+    worker: z.string().min(1),
+    text: z.string().optional(),
+    replyTo: z.string().min(1).optional(),
+    file: z.object({ base64: z.string().min(1), type: z.string().min(1), name: z.string() }).optional(),
+    retry: z.number().int().positive().optional(),
+  }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
     const { worker, ...body } = cfg;

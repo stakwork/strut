@@ -26,7 +26,9 @@ create table if not exists support_conversations (
   seen_by text,
   welcomed_at integer,
   welcome_due integer,
-  first_at integer not null
+  first_at integer not null,
+  status text not null default 'open' check (status in ('open', 'done')),
+  assignee text
 ) strict;
 
 create table if not exists support_messages (
@@ -62,9 +64,14 @@ create table if not exists support_state (
 `;
 
 /** Support's tables, inside the file's one migration transaction
- *  (`TaskDb.migrate`). Safe to run again. */
+ *  (`TaskDb.migrate`). Safe to run again. A file item 1 made gets item 2's
+ *  columns (plans/support-chat.md §4: a conversation's `status` and
+ *  `assignee`). */
 export function supportSchema(db: TaskDb): void {
   db.exec(SCHEMA);
+  const has = new Set((db.prepare("pragma table_info(support_conversations)").all() as Row[]).map((r) => r.name));
+  if (!has.has("status")) db.exec("alter table support_conversations add column status text not null default 'open' check (status in ('open', 'done'))");
+  if (!has.has("assignee")) db.exec("alter table support_conversations add column assignee text");
 }
 
 export const KINDS = ["message", "file", "payment", "contact"] as const;
@@ -72,8 +79,11 @@ export type SupportKind = (typeof KINDS)[number];
 export type SendStatus = "sending" | "sent" | "failed";
 export type FileState = "fetching" | "kept" | "too_large" | "failed";
 
-/** Who the automatic welcome is `by` (plans/support-chat.md §5): not an admin. */
-export const WELCOME_BY = "welcome";
+/** Who Support's automatic messages are `by`, never an admin's actor: the
+ *  welcome (§5), a payout's line and the staff's heads-up (§6). */
+export const AUTO = ["welcome", "payout", "heads-up"] as const;
+export type SupportAuto = (typeof AUTO)[number];
+export const WELCOME_BY: SupportAuto = "welcome";
 
 /** One record of the daemon's `GET /dms` as strut keeps it (§7). */
 export interface Dm {
@@ -120,8 +130,9 @@ export interface SupportMessage {
   at: number;
   /** Before Support first followed the daemon (§6, the backlog). */
   earlier?: true;
-  /** The automatic welcome (§5). */
-  welcome?: true;
+  /** Sent by strut on its own: the welcome (§5), a payout's line or the
+   *  staff's heads-up (§6). */
+  auto?: SupportAuto;
 }
 
 export interface SupportConversation {
@@ -134,7 +145,18 @@ export interface SupportConversation {
   /** When a person last marked it seen (shared by the staff). */
   seenAt?: number;
   welcomedAt?: number;
+  /** `done` until a worker writes again. */
+  status: ConversationStatus;
+  /** Who took it, as the asker sees it (ruling 4: no names): `me`, or
+   *  `other` for another admin. */
+  assigned?: "me" | "other";
 }
+
+export type ConversationStatus = "open" | "done";
+/** The conversations a list shows: `open` ones, the asker's (`mine`, open),
+ *  `unassigned` (open), `done`, or `all`. */
+export const FILTERS = ["all", "open", "mine", "unassigned", "done"] as const;
+export type SupportFilter = (typeof FILTERS)[number];
 
 export interface WelcomeSettings {
   /** The welcome's text; "" is none: no welcome goes (ruling 7). */
@@ -144,6 +166,23 @@ export interface WelcomeSettings {
   since?: number;
   savedAt?: number;
   savedBy?: string;
+}
+
+/** Support's picture as kept (the daemon's memes `/public` URL, sent as
+ *  `img` on every message), its bytes in `<dataDir>/support/photo`. */
+export interface SupportPhoto {
+  url: string;
+  mediaType: string;
+  savedAt: number;
+  savedBy?: string;
+}
+
+/** A file of strut's own sends: its copy, under `<dataDir>/support/files/`. */
+export interface OwnFile {
+  path: string;
+  mediaType: string;
+  name: string;
+  size: number;
 }
 
 /** The actor a Sphinx contact key signs in as (src/visitors.ts): `secp:`
@@ -161,6 +200,11 @@ export function fileNameOf(id: string): string {
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 const UNREAD = `m.from_me = 0 and m.kind != 'contact' and m.deleted = 0 and m.key > c.seen_key`;
+/** The admins Support knows (§6): who marked a conversation seen, replied or
+ *  took one. Their actors; with a conversation of their own, a contact. */
+const ADMIN_ACTORS = `select seen_by from support_conversations where seen_by is not null
+  union select by from support_messages where by is not null
+  union select assignee from support_conversations where assignee is not null`;
 
 export class SupportStore {
   private readonly s: Record<string, StatementSync>;
@@ -191,9 +235,25 @@ export class SupportStore {
         `update support_messages set id = coalesce(id, ?1), deleted = max(deleted, ?2), status = coalesce(?3, status),
            error = case when ?3 is null then error when ?3 = 'failed' then ?4 else null end where key = ?5`,
       ),
-      // What the daemon answered a POST /dm, while nothing newer has.
+      // Strut's own message kept before it goes: a text, or a file it keeps a copy of.
+      insertOwn: p(
+        `insert into support_messages (pubkey, client_id, from_me, kind, text, by, reply_to, media_type, file_name, file_size, file_path, file_state, status, at)
+         values (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sending', ?)`,
+      ),
+      // What the daemon answered a POST /dm, while nothing newer has; its id whenever it gives one.
       answered: p("update support_messages set status = ?, error = ? where key = ? and status = 'sending'"),
-      retry: p("update support_messages set status = 'sending', error = null where key = ? and status = 'failed'"),
+      answeredId: p("update support_messages set id = ? where key = ? and id is null and not exists (select 1 from support_messages where id = ?)"),
+      retry: p("update support_messages set status = 'sending', error = null where key = ? and status = 'failed' and deleted = 0"),
+      deleted: p("update support_messages set deleted = 1 where key = ?"),
+      reopen: p("update support_conversations set status = 'open' where pubkey = ? and status = 'done'"),
+      setStatus: p("update support_conversations set status = ? where pubkey = ?"),
+      setAssignee: p("update support_conversations set assignee = ? where pubkey = ?"),
+      // The admins Support knows (§6): who marked a conversation seen, replied
+      // or took one, whose own key is one of Support's contacts.
+      admins: p(`select actor, pubkey from support_conversations where actor in (${ADMIN_ACTORS}) order by actor`),
+      // What waits for the heads-up: workers' unread messages, an admin's own
+      // to Support left out (their answer to a heads-up is not news to them).
+      waiting: p(`select count(*) n, min(m.at) oldest from support_messages m join support_conversations c on c.pubkey = m.pubkey where ${UNREAD} and c.actor not in (${ADMIN_ACTORS})`),
       thread: p("select * from support_messages where pubkey = ? and key < ? order by key desc limit ?"),
       seen: p("update support_conversations set seen_key = coalesce((select max(key) from support_messages where pubkey = ?1), 0), seen_at = ?2, seen_by = ?3 where pubkey = ?1"),
       due: p("update support_conversations set welcome_due = 1 where pubkey = ? and welcomed_at is null"),
@@ -209,8 +269,10 @@ export class SupportStore {
              (select max(key) from support_messages m where m.pubkey = c.pubkey) last_key,
              (select count(*) from support_messages m where m.pubkey = c.pubkey and ${UNREAD}) unread
            from support_conversations c left join workers w on w.actor = c.actor
-           where ?1 = '%%' or c.alias like ?1 escape '\\' or c.actor like ?1 escape '\\' or w.note like ?1 escape '\\'
-             or exists (select 1 from support_messages m where m.pubkey = c.pubkey and m.deleted = 0 and m.text like ?1 escape '\\')
+           where (?1 = '%%' or c.alias like ?1 escape '\\' or c.actor like ?1 escape '\\' or w.note like ?1 escape '\\'
+             or exists (select 1 from support_messages m where m.pubkey = c.pubkey and m.deleted = 0 and m.text like ?1 escape '\\'))
+             and (?3 = 'all' or (?3 = 'done' and c.status = 'done')
+               or (?3 != 'done' and c.status = 'open' and (?3 = 'open' or (?3 = 'mine' and c.assignee = ?4) or (?3 = 'unassigned' and c.assignee is null))))
          )
          select * from conv order by (unread > 0) desc, last_key desc nulls last limit ?2`,
       ),
@@ -266,6 +328,49 @@ export class SupportStore {
     });
   }
 
+  /** Payout lines (§6): on until an admin turns them off. */
+  payoutLines(): boolean {
+    return this.state("payout lines") !== "off";
+  }
+
+  setPayoutLines(on: boolean): void {
+    this.s.setState.run("payout lines", on ? "on" : "off");
+  }
+
+  /** Support's picture, or undefined for none. */
+  photo(): SupportPhoto | undefined {
+    const raw = this.state("photo");
+    if (!raw) return undefined;
+    try {
+      const p = JSON.parse(raw) as SupportPhoto;
+      return p && typeof p.url === "string" && p.url ? p : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  setPhoto(p: SupportPhoto | undefined): void {
+    this.s.setState.run("photo", p ? JSON.stringify(p) : "");
+  }
+
+  /** A heads-up to `actor` is due (§6): none went to them in the last `everyMs`. */
+  headsUpDue(actor: string, now: number, everyMs: number): boolean {
+    const last = Number(this.state(`heads-up ${actor}`) ?? 0);
+    return !last || now - last >= everyMs;
+  }
+
+  /** A heads-up went to `actor`: the next is an hour on. */
+  headsUpSent(actor: string, now: number): void {
+    this.s.setState.run(`heads-up ${actor}`, String(now));
+  }
+
+  /** The admins Support knows, each with their key as Support's contact
+   *  (§6): who marked a conversation seen, replied or took one, and whose
+   *  actor is a conversation's — so `POST /dm` reaches them (ruling 15). */
+  admins(): Array<{ actor: string; pubkey: string }> {
+    return (this.s.admins.all() as Row[]).map((r) => ({ actor: r.actor as string, pubkey: r.pubkey as string }));
+  }
+
   // ── the follower ─────────────────────────────────────────────────────────
 
   /**
@@ -310,6 +415,8 @@ export class SupportStore {
       this.s.update.run(d.id ?? null, d.deleted ? 1 : 0, d.status ?? null, d.status === "failed" ? (d.error ?? "the daemon could not send it") : null, had.key as number);
       return;
     }
+    // A worker writing again reopens a conversation marked done (§3).
+    if (!d.fromMe && d.kind !== "contact" && !d.deleted) this.s.reopen.run(d.pubkey);
     this.s.insert.run(
       d.pubkey,
       d.id ?? null,
@@ -363,15 +470,25 @@ export class SupportStore {
 
   // ── sends ─────────────────────────────────────────────────────────────────
 
-  /** Strut's own message, kept before it is sent (§3: Retry resends it). */
-  addOwn(o: { pubkey: string; clientId: string; text: string; by?: string; replyTo?: string; at: number }): SupportMessage {
-    const key = Number(this.s.insert.run(o.pubkey, null, o.clientId, 1, "message", o.text, o.by ?? null, o.replyTo ?? null, null, 0, null, null, null, "sending", null, o.at, 0).lastInsertRowid);
+  /** Strut's own message, kept before it is sent (§3: Retry resends it):
+   *  a text, or a file strut keeps a copy of at `file.path` (item 2), its
+   *  text then a caption. Throws for a `clientId` it has (a payout's line
+   *  twice). */
+  addOwn(o: { pubkey: string; clientId: string; text?: string; by?: string; replyTo?: string; file?: OwnFile; at: number }): SupportMessage {
+    const f = o.file;
+    const key = Number(
+      this.s.insertOwn.run(o.pubkey, o.clientId, f ? "file" : "message", o.text ?? null, o.by ?? null, o.replyTo ?? null, f?.mediaType ?? null, f?.name ?? null, f?.size ?? null, f?.path ?? null, f ? "kept" : null, o.at).lastInsertRowid,
+    );
     return this.message(key)!;
   }
 
-  /** What the daemon answered a send, unless the feed already said. */
-  answered(key: number, status: "sent" | "failed", error?: string): void {
-    this.s.answered.run(status, status === "failed" ? (error ?? "the daemon could not send it") : null, key);
+  /** What the daemon answered a send, unless the feed already said; the
+   *  Sphinx id it gave, at once (what a reply quotes and Delete names). */
+  answered(key: number, status: "sent" | "failed" | undefined, error?: string, id?: string): void {
+    this.db.tx(() => {
+      if (status) this.s.answered.run(status, status === "failed" ? (error ?? "the daemon could not send it") : null, key);
+      if (id) this.s.answeredId.run(id, key, id);
+    });
   }
 
   /** A failed send made `sending` again: true for the one call that did. */
@@ -380,11 +497,36 @@ export class SupportStore {
   }
 
   /** One of strut's own sends in `pubkey`'s thread, with the id it went
-   *  under (a resend's). */
-  own(pubkey: string, key: number): { message: SupportMessage; clientId: string; text: string } | undefined {
+   *  under (a resend's), its text and its file. */
+  own(pubkey: string, key: number): { message: SupportMessage; clientId: string; text?: string; file?: OwnFile; deleted: boolean } | undefined {
     const r = this.s.message.get(key) as Row | undefined;
-    if (!r || r.pubkey !== pubkey || r.from_me !== 1 || !r.client_id || r.text === null) return undefined;
-    return { message: messageOf(r), clientId: r.client_id as string, text: r.text as string };
+    if (!r || r.pubkey !== pubkey || r.from_me !== 1 || !r.client_id || (r.text === null && !r.file_path)) return undefined;
+    return {
+      message: messageOf(r),
+      clientId: r.client_id as string,
+      ...(r.text !== null ? { text: r.text as string } : {}),
+      ...(r.file_path ? { file: { path: r.file_path as string, mediaType: (r.media_type as string) ?? "application/octet-stream", name: (r.file_name as string) ?? "file", size: Number(r.file_size ?? 0) } } : {}),
+      deleted: r.deleted === 1,
+    };
+  }
+
+  /** A send of strut's own under this id is kept already. */
+  hasClientId(clientId: string): boolean {
+    return this.s.byClientId.get(clientId) !== undefined;
+  }
+
+  /** A message deleted, for strut's copy (the daemon's said, or one that
+   *  never went). */
+  markDeleted(key: number): void {
+    this.s.deleted.run(key);
+  }
+
+  /** A conversation marked open or done, taken by an admin or let go. */
+  setConversation(pubkey: string, o: { status?: ConversationStatus; assignee?: string | null }): void {
+    this.db.tx(() => {
+      if (o.status) this.s.setStatus.run(o.status, pubkey);
+      if (o.assignee !== undefined) this.s.setAssignee.run(o.assignee, pubkey);
+    });
   }
 
   /** Folds the file's WAL into it (this connection's). */
@@ -394,18 +536,20 @@ export class SupportStore {
 
   // ── reads ─────────────────────────────────────────────────────────────────
 
-  conversation(actor: string): SupportConversation | undefined {
+  /** `me`: the asker, whom `assigned` is told relative to. */
+  conversation(actor: string, me?: string): SupportConversation | undefined {
     const row = this.s.conversation.get(actor) as Row | undefined;
-    return row ? this.conversationOf(row) : undefined;
+    return row ? this.conversationOf(row, me) : undefined;
   }
 
-  /** Unread first, then the newest; `q` over names, actors and text. Their
-   *  last messages in one read. */
-  conversations(q = "", limit = 500): SupportConversation[] {
-    const rows = this.s.list.all(like(q.trim()), limit) as Row[];
+  /** Unread first, then the newest; `q` over names, actors and text;
+   *  `filter` by status and who took it (`me` is the asker). Their last
+   *  messages in one read. */
+  conversations(q = "", o: { filter?: SupportFilter; me?: string; limit?: number } = {}): SupportConversation[] {
+    const rows = this.s.list.all(like(q.trim()), o.limit ?? 500, o.filter ?? "all", o.me ?? null) as Row[];
     const keys = rows.map((r) => r.last_key).filter((k) => k !== null && k !== undefined);
     const last = new Map((this.s.byKeys.all(JSON.stringify(keys)) as Row[]).map((m) => [m.key as number, messageOf(m)]));
-    return rows.map((r) => this.conversationOf(r, last));
+    return rows.map((r) => this.conversationOf(r, o.me, last));
   }
 
   /** The thread's newest `limit` before `before` (a key), oldest first. */
@@ -433,6 +577,13 @@ export class SupportStore {
     return { unread: Number(r.n), conversations: Number(r.c) };
   }
 
+  /** Workers' unread messages and when the oldest was written: the
+   *  heads-up's (§6), an admin's own left out. */
+  waiting(): { unread: number; oldest?: number } {
+    const r = this.s.waiting.get() as Row;
+    return { unread: Number(r.n), ...(r.oldest !== null && r.oldest !== undefined ? { oldest: Number(r.oldest) } : {}) };
+  }
+
   /** Marked seen by `by`, up to its newest message. */
   seen(pubkey: string, by: string | undefined, now: number): void {
     this.s.seen.run(pubkey, now, by ?? null);
@@ -456,7 +607,7 @@ export class SupportStore {
     this.s.fileFailed.run(state, error, key);
   }
 
-  private conversationOf(r: Row, lasts?: Map<number, SupportMessage>): SupportConversation {
+  private conversationOf(r: Row, me: string | undefined, lasts?: Map<number, SupportMessage>): SupportConversation {
     const key = r.last_key === null || r.last_key === undefined ? undefined : Number(r.last_key);
     const last = key === undefined ? undefined : lasts ? lasts.get(key) : this.message(key);
     return {
@@ -467,6 +618,8 @@ export class SupportStore {
       ...(last ? { last } : {}),
       ...(r.seen_at !== null && r.seen_at !== undefined ? { seenAt: Number(r.seen_at) } : {}),
       ...(r.welcomed_at !== null && r.welcomed_at !== undefined ? { welcomedAt: Number(r.welcomed_at) } : {}),
+      status: r.status === "done" ? "done" : "open",
+      ...(r.assignee ? { assigned: me !== undefined && r.assignee === me ? ("me" as const) : ("other" as const) } : {}),
     };
   }
 }
@@ -498,6 +651,6 @@ function messageOf(r: Row): SupportMessage {
     ...(r.status === "failed" && r.error ? { error: r.error as string } : {}),
     at: Number(r.at),
     ...(r.earlier === 1 ? { earlier: true as const } : {}),
-    ...(r.by === WELCOME_BY ? { welcome: true as const } : {}),
+    ...(AUTO.includes(r.by as SupportAuto) ? { auto: r.by as SupportAuto } : {}),
   };
 }

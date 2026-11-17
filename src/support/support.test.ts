@@ -1,5 +1,5 @@
 /**
- * Support (plans/support-chat.md, item 1): the store over a file in memory,
+ * Support (plans/support-chat.md, items 1 and 2): the store over a file in memory,
  * the feed's records as strut reads them, and the `/support` routes and the
  * `staff/support-*` steps on a server whose wallet is the stand-in Sphinx
  * daemon (scripts/fake-sphinx-daemon.ts) over HTTP, its message token set
@@ -27,7 +27,11 @@ import supportSeen from "../steps/lib/staff/support-seen.js";
 import supportFile from "../steps/lib/staff/support-file.js";
 import supportSettings from "../steps/lib/staff/support-settings.js";
 import supportSaveSettings from "../steps/lib/staff/support-save-settings.js";
-import { actorOfPubkey, SupportStore, type Dm } from "./store.js";
+import supportUpdate from "../steps/lib/staff/support-update.js";
+import supportDelete from "../steps/lib/staff/support-delete.js";
+import supportPhoto from "../steps/lib/staff/support-photo.js";
+import { TaskDb } from "../tasks/db.js";
+import { actorOfPubkey, SupportStore, supportSchema, type Dm } from "./store.js";
 import { dmOf, fileNameIn } from "./support.js";
 
 const PK = (n: number) => `02${n.toString(16).padStart(64, "0")}`;
@@ -152,7 +156,7 @@ describe("the store (§4)", () => {
     );
     assert.deepEqual(s.dueWelcomes(), [PK(4)], "only the contact newer than the save that turned it on (400)");
     const m = s.startWelcome(PK(4), "f".repeat(64), 500)!;
-    assert.deepEqual([m.text, m.welcome, m.status], ["Back", true, "sending"]);
+    assert.deepEqual([m.text, m.auto, m.status], ["Back", "welcome", "sending"]);
     assert.equal(s.startWelcome(PK(4), "0".repeat(64), 501), undefined, "once per worker");
     assert.deepEqual(s.dueWelcomes(), []);
     // Due, then cleared before it went: it goes no more.
@@ -172,6 +176,37 @@ describe("the store (§4)", () => {
     // Unread first: Bo's message is the only one unread, though newer ones (the welcomes above) are Support's.
     assert.deepEqual(s.conversations().map((c) => [c.alias, c.unread])[0], ["Bo", 1]);
     assert.equal(s.conversations()[0]!.last?.text, "my photo is blurry");
+  });
+  it("the heads-up's count leaves out an admin's own messages to Support; a heads-up is due again an hour after the last", () => {
+    const admin = PK(40);
+    s.ingest([dm({ seq: 400, id: "adm-1", pubkey: admin, text: "ok, looking", at: 1 }), dm({ seq: 401, id: "wk-1", pubkey: PK(41), text: "help", at: 2 })], URL, 401, 0);
+    const before = s.waiting();
+    s.seen(PK(41), actorOfPubkey(admin), 5);
+    assert.ok(s.admins().some((a) => a.actor === actorOfPubkey(admin) && a.pubkey === admin), "who marked a conversation seen, and is a contact");
+    s.ingest([dm({ seq: 402, id: "wk-2", pubkey: PK(41), text: "still?", at: 3 })], URL, 402, 0);
+    const after = s.waiting();
+    assert.equal(after.unread, before.unread - 1, "the admin's own and the one seen left out, the new one counted");
+    assert.equal(s.headsUpDue(actorOfPubkey(admin), 1_000, 3_600_000), true);
+    s.headsUpSent(actorOfPubkey(admin), 1_000);
+    assert.deepEqual([s.headsUpDue(actorOfPubkey(admin), 3_000_000, 3_600_000), s.headsUpDue(actorOfPubkey(admin), 3_601_000, 3_600_000)], [false, true]);
+  });
+
+});
+
+describe("item 2's columns on a file item 1 made (§4)", () => {
+  it("a conversation's status and assignee are added to an older file's table, its rows open", () => {
+    const db = TaskDb.open(TASKS_IN_MEMORY);
+    try {
+      db.exec("create table workers (actor text primary key, note text) strict");
+      db.exec("create table support_conversations (pubkey text primary key, actor text not null unique, alias text, seen_key integer not null default 0, seen_at integer, seen_by text, welcomed_at integer, welcome_due integer, first_at integer not null) strict");
+      db.exec(`insert into support_conversations (pubkey, actor, first_at) values ('${PK(1)}', '${actorOfPubkey(PK(1))}', 1)`);
+      db.migrate(() => supportSchema(db));
+      const s = new SupportStore(db);
+      assert.deepEqual([s.conversation(actorOfPubkey(PK(1)))?.status, s.conversation(actorOfPubkey(PK(1)))?.assigned], ["open", undefined]);
+      db.migrate(() => supportSchema(db));
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -229,8 +264,9 @@ describe("Support on a server (§3, §5, §8)", () => {
     await strut.support.settled();
   };
   const w = (pubkey: string) => encodeURIComponent(actorOfPubkey(pubkey));
-  type Msg = { key: number; id?: string; kind: string; text?: string; status?: string; error?: string; deleted?: true; welcome?: true; sats?: number; replyTo?: string; file?: { state: string; name?: string; mediaType?: string; size?: number } };
-  type Thread = { conversation: { worker: string; alias?: string; unread: number; welcomedAt?: number }; messages: Msg[]; more: boolean };
+  type Msg = { key: number; id?: string; kind: string; text?: string; status?: string; error?: string; deleted?: true; auto?: string; sats?: number; replyTo?: string; file?: { state: string; name?: string; mediaType?: string; size?: number } };
+  type Conversation = { worker: string; alias?: string; unread: number; welcomedAt?: number; status: string; assigned?: string };
+  type Thread = { conversation: Conversation; messages: Msg[]; more: boolean };
   const staffCtx = () => ({
     app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true },
     actor: "admin-1",
@@ -369,7 +405,7 @@ describe("Support on a server (§3, §5, §8)", () => {
     await follow();
     await follow();
     const t = await get<Thread>(`/support/${w(late.pubkey)}`);
-    assert.deepEqual(t.messages.map((m) => [m.kind, m.text, m.welcome ?? false, m.status]), [["contact", undefined, false, undefined], ["message", "Welcome! This is Support.", true, "sent"]]);
+    assert.deepEqual(t.messages.map((m) => [m.kind, m.text, m.auto, m.status]), [["contact", undefined, undefined, undefined], ["message", "Welcome! This is Support.", "welcome", "sent"]]);
     assert.ok(t.conversation.welcomedAt);
     assert.equal((await get<Thread>(`/support/${w(early.pubkey)}`)).messages.length, 1, "the backlog gets none");
     // Cleared: off.
@@ -379,5 +415,159 @@ describe("Support on a server (§3, §5, §8)", () => {
     assert.equal((await get<Thread>(`/support/${w(off.pubkey)}`)).messages.length, 1);
     const bad = await req("/support/settings", { method: "PUT", headers: keyed, body: JSON.stringify({ welcome: "x", payouts: true }) });
     assert.equal(bad.status, 400);
+  });
+
+  // ── item 2 ────────────────────────────────────────────────────────────────
+
+  /** A file the account sent, as the worker's Peel downloads it (the stand-in's open route). */
+  const daemonFile = async (id: string) => Buffer.from(await (await fetch(`${daemon.url}/worker-file/${encodeURIComponent(id)}`)).arrayBuffer());
+
+  it("staff send a file: strut keeps its copy and sends it through the daemon, a caption beside it; Retry resends it; more than 2.5 MiB is refused", async () => {
+    const eve = await worker({ alias: "Eve", text: "Can I see the rules?" });
+    await follow();
+    const pdf = Buffer.from("%PDF-1.4 the rules\n%%EOF");
+    const ctx = staffCtx() as never;
+    const sent = (await supportSend.run({ worker: actorOfPubkey(eve.pubkey), text: "Here they are", file: { base64: pdf.toString("base64"), type: "application/pdf", name: "../Rules.pdf" } }, ctx)) as { message: Msg };
+    assert.deepEqual([sent.message.kind, sent.message.text, sent.message.status, sent.message.file], ["file", "Here they are", "sent", { name: ".._Rules.pdf", mediaType: "application/pdf", size: pdf.byteLength, state: "kept" }]);
+    assert.ok(sent.message.id, "the daemon's id, from its answer: a reply may quote it and Delete name it at once");
+    assert.ok((await daemonFile(sent.message.id!)).equals(pdf), "the worker gets the bytes");
+    // The daemon serves only files the account received (stakwork/sphinx#436): strut keeps its own.
+    assert.equal((await fetch(`${daemon.url}/dm/${encodeURIComponent(sent.message.id!)}/file`, { headers: { authorization: `Bearer ${MESSAGE}` } })).status, 404);
+    await follow();
+    const t = await get<Thread>(`/support/${w(eve.pubkey)}`);
+    assert.equal(t.messages.filter((m) => m.kind === "file").length, 1, "the feed's copy is the same message");
+    const read = (await supportFile.run({ worker: actorOfPubkey(eve.pubkey), id: sent.message.id! }, ctx)) as { base64: string; name: string };
+    assert.deepEqual([Buffer.from(read.base64, "base64").equals(pdf), read.name], [true, ".._Rules.pdf"]);
+
+    // A photo alone, failed, then Retry: the same file under the same id.
+    const jpeg = Buffer.from("ffd8ffe000104a464946", "hex");
+    await fetch(`${daemon.url}/next-dm`, { method: "POST", headers: json, body: JSON.stringify({ state: "failed" }) });
+    const failed = await post<{ message: Msg }>(`/support/${w(eve.pubkey)}`, { file: { base64: jpeg.toString("base64"), type: "image/jpeg", name: "photo.jpg" } });
+    assert.deepEqual([failed.message.status, failed.message.text, failed.message.file?.state], ["failed", undefined, "kept"]);
+    // The daemon keeps no bytes: Retry sends the file again from strut's copy.
+    const again = await post<{ message: Msg }>(`/support/${w(eve.pubkey)}`, { retry: failed.message.key });
+    assert.equal(again.message.status, "sent");
+    assert.ok((await daemonFile(again.message.id!)).equals(jpeg));
+
+    const big = Buffer.alloc(2.5 * 1024 * 1024 + 1).toString("base64");
+    // A file's own fields count 1 KiB toward the daemon's 32 KiB: refused here first.
+    const nearly = "x".repeat(32 * 1024 - 1024);
+    for (const body of [{ file: { base64: big, type: "application/pdf", name: "big.pdf" } }, { text: nearly, file: { base64: jpeg.toString("base64"), type: "image/jpeg", name: "p.jpg" } }, { file: { base64: "not base64!", type: "image/png", name: "x.png" } }, { file: { base64: "AAAA", type: "nonsense", name: "x" } }, { text: " " }]) {
+      const res = await req(`/support/${w(eve.pubkey)}`, { method: "POST", headers: keyed, body: JSON.stringify(body) });
+      assert.equal(res.status, 400, JSON.stringify(body).slice(0, 80));
+    }
+  });
+
+  it("Delete: one of Support's messages, for both sides; never a worker's; one that never went, strut's copy alone", async () => {
+    const fay = await worker({ alias: "Fay", text: "hi" });
+    await follow();
+    const ctx = staffCtx() as never;
+    const sent = (await supportSend.run({ worker: actorOfPubkey(fay.pubkey), text: "Wrong worker, sorry" }, ctx)) as { message: Msg };
+    const gone = (await supportDelete.run({ worker: actorOfPubkey(fay.pubkey), key: sent.message.key }, ctx)) as { message: Msg };
+    assert.deepEqual([gone.message.deleted, gone.message.text], [true, undefined]);
+    const feed = (await (await fetch(`${daemon.url}/dms?after=0&limit=1000`, { headers: { authorization: `Bearer ${MESSAGE}` } })).json()) as { dms: Array<{ id: string | null; deleted: boolean }> };
+    assert.equal(feed.dms.find((r) => r.id === sent.message.id)?.deleted, true, "the daemon deleted it");
+    await follow();
+    assert.equal((await get<Thread>(`/support/${w(fay.pubkey)}`)).messages.find((m) => m.key === sent.message.key)?.deleted, true);
+    // Hers is not Support's to delete.
+    const hers = (await get<Thread>(`/support/${w(fay.pubkey)}`)).messages.find((m) => m.text === "hi")!;
+    await assert.rejects(supportDelete.run({ worker: actorOfPubkey(fay.pubkey), key: hers.key }, ctx), /^Error: unknown_message: /);
+    // Failed with nothing sent: no id, deleted here alone; Retry finds nothing.
+    await fetch(`${daemon.url}/next-dm`, { method: "POST", headers: json, body: JSON.stringify({ state: "failed" }) });
+    const failed = (await supportSend.run({ worker: actorOfPubkey(fay.pubkey), text: "never went" }, ctx)) as { message: Msg };
+    assert.equal((await supportDelete.run({ worker: actorOfPubkey(fay.pubkey), key: failed.message.key }, ctx).then((r) => (r as { message: Msg }).message.deleted)), true);
+    await assert.rejects(supportSend.run({ worker: actorOfPubkey(fay.pubkey), retry: failed.message.key }, ctx), /^Error: unknown_message: /);
+  });
+
+  it("Support's picture is set through the daemon, which sends it as img; strut keeps a copy to show; cleared", async () => {
+    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001", "hex");
+    const ctx = staffCtx() as never;
+    type Settings = { settings: { payoutLines: boolean; photo?: { url: string; mediaType: string; base64?: string; savedBy?: string } } };
+    const set = (await supportPhoto.run({ photo: { base64: png.toString("base64"), type: "image/png" } }, ctx)) as Settings;
+    assert.match(set.settings.photo?.url ?? "", /^https:\/\/memes\.fake\.invalid\/public\//);
+    assert.deepEqual([set.settings.photo?.mediaType, set.settings.photo?.base64, set.settings.photo?.savedBy], ["image/png", png.toString("base64"), "admin-1"]);
+    assert.deepEqual(((await supportSettings.run({}, ctx)) as Settings).settings.photo, set.settings.photo);
+    assert.equal(((await (await fetch(`${daemon.url}/worker-photo`)).json()) as { img: string | null }).img, set.settings.photo!.url);
+    const cleared = (await supportPhoto.run({ photo: null }, ctx)) as Settings;
+    assert.equal(cleared.settings.photo, undefined);
+    assert.equal(((await (await fetch(`${daemon.url}/worker-photo`)).json()) as { img: string | null }).img, null);
+    const res = await req("/support/photo", { method: "PUT", headers: keyed, body: JSON.stringify({ base64: png.toString("base64"), type: "application/pdf" }) });
+    assert.equal(res.status, 400);
+  });
+
+  it("a payout's line: from Support when it settles, once; none with payout lines off, or to someone who is not a contact", async () => {
+    const gus = await worker({ alias: "Gus", text: "when do I get paid?" });
+    await follow();
+    const key = "a".repeat(64);
+    await strut.support.paidOut({ key, worker: actorOfPubkey(gus.pubkey), msat: 1_200_000 });
+    await strut.support.paidOut({ key, worker: actorOfPubkey(gus.pubkey), msat: 1_200_000 });
+    await follow();
+    const lines = (await get<Thread>(`/support/${w(gus.pubkey)}`)).messages.filter((m) => m.auto === "payout");
+    assert.deepEqual(lines.map((m) => [m.text, m.status]), [["Paid you 1,200 sats", "sent"]]);
+    assert.equal(((await get<{ settings: { payoutLines: boolean } }>("/support/settings")).settings.payoutLines), true, "on by default");
+    await supportSaveSettings.run({ payoutLines: false }, staffCtx() as never);
+    await strut.support.paidOut({ key: "b".repeat(64), worker: actorOfPubkey(gus.pubkey), msat: 5_000 });
+    await strut.support.paidOut({ key: "c".repeat(64), worker: actorOfPubkey(PK(77)), msat: 5_000 });
+    assert.equal((await get<Thread>(`/support/${w(gus.pubkey)}`)).messages.filter((m) => m.auto === "payout").length, 1);
+    const both = await post<{ settings: { welcome: string; payoutLines: boolean } }>("/support/settings", { payoutLines: true }, "PUT");
+    assert.equal(both.settings.payoutLines, true);
+  });
+
+  it("done and assigned: taken by an admin, told relative to who asks; filtered by mine and unassigned; a worker writing again reopens it", async () => {
+    const hal = await worker({ alias: "Hal", text: "my photo was rejected" });
+    await follow();
+    const ctx = staffCtx() as never;
+    const taken = (await supportUpdate.run({ worker: actorOfPubkey(hal.pubkey), assignee: "me" }, ctx)) as { conversation: Conversation };
+    assert.deepEqual([taken.conversation.status, taken.conversation.assigned], ["open", "me"]);
+    const asOther = await (await req(`/support/${w(hal.pubkey)}`, { headers: { ...keyed, "x-strut-actor": "admin-2" } })).json() as Thread;
+    assert.equal(asOther.conversation.assigned, "other", "no names: another admin's");
+    const names = async (filter: string, actor = "admin-1") =>
+      ((await (await req(`/support?filter=${filter}`, { headers: { ...keyed, "x-strut-actor": actor } })).json()) as { conversations: Conversation[] }).conversations.map((c) => c.alias);
+    assert.ok((await names("mine")).includes("Hal"));
+    assert.ok(!(await names("mine", "admin-2")).includes("Hal"));
+    assert.ok(!(await names("unassigned")).includes("Hal"));
+    assert.ok((await names("unassigned")).includes("Gus"));
+    await supportUpdate.run({ worker: actorOfPubkey(hal.pubkey), status: "done" }, ctx);
+    assert.ok(!(await names("open")).includes("Hal"));
+    assert.ok(!(await names("mine")).includes("Hal"), "mine is the open ones");
+    assert.deepEqual(await names("done"), ["Hal"]);
+    assert.ok((await names("all")).includes("Hal"));
+    await worker({ pubkey: hal.pubkey, text: "still waiting" });
+    await follow();
+    assert.ok((await names("open")).includes("Hal"), "a worker writing again reopens it");
+    assert.equal((await supportUpdate.run({ worker: actorOfPubkey(hal.pubkey), assignee: null }, ctx).then((r) => (r as { conversation: Conversation }).conversation.assigned)), undefined);
+    for (const body of [{ status: "closed" }, { assignee: "admin-9" }, {}]) {
+      const res = await req(`/support/${w(hal.pubkey)}`, { method: "PUT", headers: keyed, body: JSON.stringify(body) });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    assert.equal((await req("/support?filter=everything", { headers: keyed })).status, 400);
+  });
+
+  it("the heads-up: a message unread 5 minutes sends each admin Support knows the count, no content, once an hour; an admin who is not a contact gets none", async () => {
+    // An admin whose own key is Support's contact, who has used Support.
+    const admin = await worker({ alias: "Ida (staff)" }, "/worker-contact");
+    await follow();
+    const ida = actorOfPubkey(admin.pubkey);
+    await req(`/support/${w(admin.pubkey)}/seen`, { method: "POST", headers: { ...keyed, "x-strut-actor": ida } });
+    const headsUps = async () => (await get<Thread>(`/support/${w(admin.pubkey)}`)).messages.filter((m) => m.auto === "heads-up");
+    // A message only a minute old: nothing yet.
+    await worker({ alias: "Jo", text: "fresh", time: new Date(Date.now() - 60_000).toISOString() });
+    await follow();
+    assert.deepEqual(await headsUps(), []);
+    // One waiting six minutes: the count goes, once.
+    await worker({ alias: "Kim", text: "the secret words", time: new Date(Date.now() - 6 * 60_000).toISOString() });
+    await follow();
+    await follow();
+    const sent = await headsUps();
+    assert.equal(sent.length, 1);
+    assert.match(sent[0]!.text ?? "", /^\d+ messages? waiting in Support$/);
+    assert.equal(sent[0]!.status, "sent");
+    // Ida answers it from Peel, long ago by the clock: her own message is not news to her.
+    await worker({ pubkey: admin.pubkey, text: "on it", time: new Date(Date.now() - 6 * 60_000).toISOString() });
+    await follow();
+    assert.equal((await get<Thread>(`/support/${w(admin.pubkey)}`)).messages.filter((m) => m.text === "on it").length, 1);
+    assert.equal((await headsUps()).length, 1, "once an hour");
+    // admin-1, who replied all along, is no contact of Support's: the count on the tab alone.
+    assert.ok(!(await get<{ conversations: Conversation[] }>("/support")).conversations.some((c) => c.worker === "admin-1"));
   });
 });

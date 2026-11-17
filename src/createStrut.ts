@@ -1764,6 +1764,9 @@ export async function createStrut<TServices = unknown>(
     owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
     balance: () => walletBalanceMsat(payments.lightning(), 5_000),
     sweep: () => payouts.sweep(),
+    // A line from Support to the worker (plans/support-chat.md §6), on its
+    // own: the payout is booked whatever becomes of it.
+    paid: (p) => void support.paidOut(p),
   });
   // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
   // the payer's THIRD door — a keysend to the Sphinx address the worker's
@@ -6582,6 +6585,7 @@ export async function createStrut<TServices = unknown>(
     },
     open: async () => new SupportStore(await openTaskDb(store instanceof MemoryRunStore ? TASKS_IN_MEMORY : tasksPath(dataDir))),
     filesDir: join(dataDir, "support", "files"),
+    photoFile: join(dataDir, "support", "photo"),
     ...(opts.support?.fetch ? { fetch: opts.support.fetch } : {}),
     ...(opts.support?.pollMs ? { pollMs: opts.support.pollMs } : {}),
   });

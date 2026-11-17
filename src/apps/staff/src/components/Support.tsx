@@ -5,18 +5,44 @@
 // the thread are read again every few seconds (ruling 16). Every reply is
 // from "Support" (ruling 4); a worker's photo shows inline, a voice note
 // plays, any other file downloads; a deleted message is a line (ruling 12);
-// a task's id is a link to it. Settings holds the welcome alone (§5).
+// a task's id is a link to it. Item 2: staff attach, paste or drop a photo
+// (shrunk here to 1,600 px) or a file (up to 2.5 MB); Delete takes one of
+// Support's messages back on both sides; a conversation is taken and marked
+// done, and the list filters by mine and unassigned. Settings holds
+// Support's picture, payout lines and the welcome (§5, §6).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowUp, Check, Clock, Download, Loader2, Reply, Search, Settings, X } from "lucide-react";
+import { AlertCircle, ArrowUp, Check, CheckCheck, Clock, Download, FileText, Loader2, Paperclip, Reply, RotateCcw, Search, Settings, Trash2, UserCheck, UserPlus, X } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { balanceCells, earlierEnd, fmtBytes, fmtWhen, initialsOf, liveTypesText, messageLine, paymentLine, supportName, textPieces, type Place, type Shown } from "../lib/view";
-import type { SupportConversation, SupportFile, SupportMessage, SupportSettings, SupportThread, Worker, WorkerActivity } from "../lib/types";
+import {
+  attachProblem,
+  AUTO_LABELS,
+  balanceCells,
+  earlierEnd,
+  fmtBytes,
+  fmtWhen,
+  initialsOf,
+  jpgName,
+  liveTypesText,
+  messageLine,
+  paymentLine,
+  shrinkable,
+  SUPPORT_AVATAR_SIDE,
+  SUPPORT_FILTERS,
+  SUPPORT_PHOTO_SIDE,
+  supportName,
+  textPieces,
+  type Place,
+  type Shown,
+} from "../lib/view";
+import { base64Of, shrinkImage } from "../lib/shrink";
+import type { SupportConversation, SupportFile, SupportFilter, SupportMessage, SupportSettings, SupportThread, Worker, WorkerActivity } from "../lib/types";
 import { Back, ErrorLine, Field, Loading, Note } from "./bits";
 
 /** How often the list and the open thread are read again (ruling 16). */
@@ -91,6 +117,7 @@ export function Support(props: Props) {
 function ConversationList(props: { active?: string; workerOf: Map<string, Worker>; onOpen: (worker: string) => void; onSettings: () => void }) {
   const client = useStrutClient();
   const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<SupportFilter>("open");
   // Searched once the typing pauses, not per key.
   const [asked, setAsked] = useState("");
   useEffect(() => {
@@ -98,8 +125,8 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
     return () => clearTimeout(t);
   }, [q]);
   const list = useQuery({
-    queryKey: ["staff", "support", "list", asked],
-    queryFn: () => client.run<{ conversations: SupportConversation[] }>("staff/support-list", asked ? { q: asked } : {}),
+    queryKey: ["staff", "support", "list", asked, filter],
+    queryFn: () => client.run<{ conversations: SupportConversation[] }>("staff/support-list", { filter, ...(asked ? { q: asked } : {}) }),
     refetchInterval: POLL_MS,
   });
   const rows = list.data?.conversations ?? [];
@@ -123,11 +150,27 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
           <Settings />
         </Button>
       </div>
+      <div className="flex shrink-0 gap-1 border-b px-2 py-1.5" role="tablist" aria-label="Which conversations">
+        {SUPPORT_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            role="tab"
+            aria-selected={filter === f.id}
+            onClick={() => setFilter(f.id)}
+            className={cn("rounded-full px-2.5 py-0.5 text-xs", filter === f.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {list.error ? <ErrorLine error={list.error} className="m-2" /> : null}
         {!list.data && !list.error && <div className="p-3"><Loading /></div>}
         {list.data && rows.length === 0 && (
-          <p className="p-4 text-sm text-muted-foreground">{asked ? "No conversation matches." : "No worker has written to Support yet."}</p>
+          <p className="p-4 text-sm text-muted-foreground">
+            {asked ? "No conversation matches." : filter === "open" ? "No open conversation: every worker who wrote has an answer, or none has written yet." : filter === "mine" ? "None is yours: take one from its thread." : filter === "done" ? "None is done yet." : "Every open conversation is taken."}
+          </p>
         )}
         {rows.map((c) => {
           const worker = props.workerOf.get(c.worker);
@@ -150,7 +193,9 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
                   <span className={cn("min-w-0 flex-1 truncate text-xs", c.unread > 0 ? "text-foreground" : "text-muted-foreground")}>{c.last ? messageLine(c.last) : ""}</span>
                   {c.unread > 0 && <span className="grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">{c.unread}</span>}
                 </span>
-                {!worker && <span className="text-[11px] text-muted-foreground">Not a worker here</span>}
+                {(!worker || c.assigned || c.status === "done") && (
+                  <span className="text-[11px] text-muted-foreground">{[!worker && "Not a worker here", c.assigned === "me" ? "Yours" : c.assigned === "other" ? "Taken" : "", c.status === "done" && "Done"].filter(Boolean).join(" · ")}</span>
+                )}
               </span>
             </button>
           );
@@ -170,6 +215,16 @@ function Initials(props: { name: string; className?: string }) {
 
 // ── the thread ──────────────────────────────────────────────────────────────
 
+/** A file ready to go: shrunk when it is a photo, as base64. */
+interface Attached {
+  name: string;
+  type: string;
+  size: number;
+  base64: string;
+  /** A photo's own bytes as a data URL, to show before it goes. */
+  preview?: string;
+}
+
 function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) => void; narrow: boolean; onBack: () => void }) {
   const client = useStrutClient();
   const qc = useQueryClient();
@@ -181,6 +236,9 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   });
   const [replyTo, setReplyTo] = useState<SupportMessage | null>(null);
   const [sendError, setSendError] = useState<unknown>(null);
+  const [attached, setAttached] = useState<Attached | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const data = thread.data;
@@ -239,7 +297,37 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
     return () => seen.disconnect();
   }, [!!data]);
 
-  const send = async (body: { text: string; replyTo?: string } | { retry: number }) => {
+  /** A file attached, picked, pasted or dropped: a photo shrunk to 1,600 px
+   *  (sent as it is when this browser cannot read it), anything else up to
+   *  2.5 MB. */
+  const attach = async (file: File) => {
+    setSendError(null);
+    setAttaching(true);
+    try {
+      let blob: Blob = file;
+      let type = file.type || "application/octet-stream";
+      let name = file.name || "file";
+      if (shrinkable(type)) {
+        try {
+          blob = await shrinkImage(file, SUPPORT_PHOTO_SIDE);
+          type = "image/jpeg";
+          name = jpgName(name);
+        } catch {
+          // Not readable here: sent as it is, if it fits.
+        }
+      }
+      const problem = attachProblem({ size: blob.size });
+      if (problem) throw new Error(problem);
+      const base64 = await base64Of(blob);
+      setAttached({ name, type, size: blob.size, base64, ...(type.startsWith("image/") ? { preview: `data:${type};base64,${base64}` } : {}) });
+    } catch (err) {
+      setSendError(err);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  const send = async (body: { text?: string; replyTo?: string; file?: { base64: string; type: string; name: string } } | { retry: number }) => {
     setSendError(null);
     try {
       await client.run("staff/support-send", { worker: props.worker, ...body });
@@ -251,6 +339,19 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
       return false;
     }
   };
+  /** A write about the conversation or a message; its refusal shown above the composer. */
+  const act = async (step: string, body: Record<string, unknown>) => {
+    setSendError(null);
+    try {
+      await client.run(step, { worker: props.worker, ...body });
+      refresh();
+    } catch (err) {
+      setSendError(err);
+    }
+  };
+  const c = data?.conversation;
+  /** A button's words: beside its icon, or for a screen reader alone on a phone. */
+  const words = (text: string) => (props.narrow ? <span className="sr-only">{text}</span> : text);
 
   const header = (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
@@ -262,7 +363,29 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
       )}
       {data && <Initials name={name} className="size-7 text-[10px]" />}
       <span className="min-w-0 flex-1 truncate text-sm font-semibold">{name}</span>
-      {data?.conversation.seenAt !== undefined && <span className="hidden text-xs text-muted-foreground sm:inline">Seen {fmtWhen(data.conversation.seenAt)}</span>}
+      {c?.seenAt !== undefined && <span className="hidden text-xs text-muted-foreground xl:inline">Seen {fmtWhen(c.seenAt)}</span>}
+      {c && (
+        <>
+          {c.assigned === "me" ? (
+            <Button variant="secondary" size={props.narrow ? "icon-sm" : "xs"} title="Yours: let it go" onClick={() => void act("staff/support-update", { assignee: null })}>
+              <UserCheck /> {words("Yours · Let go")}
+            </Button>
+          ) : (
+            <Button variant="ghost" size={props.narrow ? "icon-sm" : "xs"} title={c.assigned === "other" ? "Another admin took it: take it yourself" : "Make it yours"} onClick={() => void act("staff/support-update", { assignee: "me" })}>
+              <UserPlus /> {words(c.assigned === "other" ? "Taken · Take it" : "Take it")}
+            </Button>
+          )}
+          {c.status === "done" ? (
+            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Open it again" onClick={() => void act("staff/support-update", { status: "open" })}>
+              <RotateCcw /> {words("Reopen")}
+            </Button>
+          ) : (
+            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Answered: off the open list until they write again" onClick={() => void act("staff/support-update", { status: "done" })}>
+              <CheckCheck /> {words("Done")}
+            </Button>
+          )}
+        </>
+      )}
       {props.narrow && (
         <Button variant="ghost" size="sm" onClick={() => props.go({ tab: "workers", worker: props.worker })}>
           Their page
@@ -291,7 +414,24 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   }
 
   return (
-    <section aria-label="Conversation" className="flex min-w-0 flex-1 flex-col">
+    <section
+      aria-label="Conversation"
+      className={cn("relative flex min-w-0 flex-1 flex-col", dragging && "ring-2 ring-primary ring-inset")}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return;
+        e.preventDefault();
+        setDragging(false);
+        void attach(e.dataTransfer.files[0]!);
+      }}
+    >
       {header}
       <div
         ref={scroller}
@@ -315,7 +455,15 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
               {i === 0 || new Date(messages[i - 1]!.at).toDateString() !== new Date(m.at).toDateString() ? (
                 <div className="my-2 text-center text-[11px] text-muted-foreground">{new Date(m.at).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</div>
               ) : null}
-              <Line m={m} worker={props.worker} quoted={m.replyTo ? byId.get(m.replyTo) : undefined} go={props.go} onReply={() => setReplyTo(m)} onRetry={() => void send({ retry: m.key })} />
+              <Line
+                m={m}
+                worker={props.worker}
+                quoted={m.replyTo ? byId.get(m.replyTo) : undefined}
+                go={props.go}
+                onReply={() => setReplyTo(m)}
+                onRetry={() => void send({ retry: m.key })}
+                onDelete={() => act("staff/support-delete", { key: m.key })}
+              />
               {i === earlier && (
                 <div className="my-2 flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span className="h-px flex-1 bg-border" /> Above: written before Support was set up <span className="h-px flex-1 bg-border" />
@@ -325,53 +473,108 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
           ))}
         </div>
       </div>
-      <Composer key={props.worker} replyTo={replyTo} onClearReply={() => setReplyTo(null)} error={sendError} onSend={(text) => send({ text, ...(replyTo?.id ? { replyTo: replyTo.id } : {}) }).then((ok) => (ok && setReplyTo(null), ok))} />
+      {dragging && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/70 text-sm font-medium">Drop to attach</div>}
+      <Composer
+        key={props.worker}
+        replyTo={replyTo}
+        onClearReply={() => setReplyTo(null)}
+        error={sendError}
+        attached={attached}
+        attaching={attaching}
+        onAttach={(f) => void attach(f)}
+        onClearAttached={() => setAttached(null)}
+        onSend={async (text) => {
+          const ok = await send({
+            ...(text.trim() ? { text } : {}),
+            ...(replyTo?.id ? { replyTo: replyTo.id } : {}),
+            ...(attached ? { file: { base64: attached.base64, type: attached.type, name: attached.name } } : {}),
+          });
+          if (ok) {
+            setReplyTo(null);
+            setAttached(null);
+          }
+          return ok;
+        }}
+      />
     </section>
   );
 }
 
-/** One message: a bubble, or a line (a contact, sats, a deletion). */
-function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessage; go: (p: Place) => void; onReply: () => void; onRetry: () => void }) {
+/** One message: a bubble, or a line (a contact, sats, a deletion). Support's
+ *  own may be deleted for both sides, asked first in place (an app frame
+ *  has no modals). */
+function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessage; go: (p: Place) => void; onReply: () => void; onRetry: () => void; onDelete: () => Promise<void> }) {
   const { m } = props;
+  const [asking, setAsking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   if (m.kind === "contact" || m.kind === "payment") {
     return <div className="my-1 text-center text-xs text-muted-foreground">{m.kind === "contact" ? "Added Support as a contact" : paymentLine(m)} · {fmtWhen(m.at)}</div>;
   }
   const mine = m.fromMe;
+  const deletable = mine && !m.deleted && (!!m.id || m.status === "failed");
   return (
-    <div className={cn("group flex items-end gap-1", mine ? "flex-row-reverse" : "flex-row")}>
-      <div className={cn("flex max-w-[78%] min-w-0 flex-col gap-1 rounded-2xl px-3 py-2 text-sm", mine ? "rounded-br-sm bg-primary text-primary-foreground" : "rounded-bl-sm bg-muted", m.deleted && "bg-transparent text-muted-foreground italic ring-1 ring-border")}>
-        {m.replyTo && !m.deleted && (
-          <div className={cn("truncate border-l-2 pl-2 text-xs opacity-80", mine ? "border-primary-foreground/60" : "border-foreground/30")}>
-            {props.quoted ? `${props.quoted.fromMe ? "Support" : "They"}: ${messageLine(props.quoted).replace(/^Support: /, "")}` : "An earlier message"}
-          </div>
+    <div className={cn("flex flex-col gap-1", mine ? "items-end" : "items-start")}>
+      <div className={cn("group flex w-full items-end gap-1", mine ? "flex-row-reverse" : "flex-row")}>
+        <div className={cn("flex max-w-[78%] min-w-0 flex-col gap-1 rounded-2xl px-3 py-2 text-sm", mine ? "rounded-br-sm bg-primary text-primary-foreground" : "rounded-bl-sm bg-muted", m.deleted && "bg-transparent text-muted-foreground italic ring-1 ring-border")}>
+          {m.replyTo && !m.deleted && (
+            <div className={cn("truncate border-l-2 pl-2 text-xs opacity-80", mine ? "border-primary-foreground/60" : "border-foreground/30")}>
+              {props.quoted ? `${props.quoted.fromMe ? "Support" : "They"}: ${messageLine(props.quoted).replace(/^Support: /, "")}` : "An earlier message"}
+            </div>
+          )}
+          {m.deleted ? (
+            <span>Message deleted</span>
+          ) : (
+            <>
+              {m.file && <FileView worker={props.worker} m={m} />}
+              {m.text ? <Text text={m.text} go={props.go} mine={mine} /> : null}
+            </>
+          )}
+          <span className={cn("flex items-center gap-1 self-end text-[10px]", mine && !m.deleted ? "text-primary-foreground/70" : "text-muted-foreground")}>
+            {m.auto && `${AUTO_LABELS[m.auto]} · `}
+            {fmtWhen(m.at)}
+            {mine && !m.deleted && m.status === "sending" && <Clock className="size-3" aria-label="Sending" />}
+            {mine && !m.deleted && m.status === "sent" && <Check className="size-3" aria-label="Sent" />}
+          </span>
+        </div>
+        {mine && !m.deleted && m.status === "failed" && (
+          <span className="flex shrink-0 items-center gap-1 text-xs text-destructive" title={m.error}>
+            <AlertCircle className="size-4" aria-label="Not sent" />
+            <Button size="xs" variant="outline" onClick={props.onRetry}>
+              Retry
+            </Button>
+          </span>
         )}
-        {m.deleted ? (
-          <span>Message deleted</span>
-        ) : (
-          <>
-            {m.file && <FileView worker={props.worker} m={m} />}
-            {m.text ? <Text text={m.text} go={props.go} mine={mine} /> : null}
-          </>
-        )}
-        <span className={cn("flex items-center gap-1 self-end text-[10px]", mine ? "text-primary-foreground/70" : "text-muted-foreground")}>
-          {m.welcome && "Welcome · "}
-          {fmtWhen(m.at)}
-          {mine && m.status === "sending" && <Clock className="size-3" aria-label="Sending" />}
-          {mine && m.status === "sent" && <Check className="size-3" aria-label="Sent" />}
-        </span>
-      </div>
-      {mine && m.status === "failed" && (
-        <span className="flex shrink-0 items-center gap-1 text-xs text-destructive" title={m.error}>
-          <AlertCircle className="size-4" aria-label="Not sent" />
-          <Button size="xs" variant="outline" onClick={props.onRetry}>
-            Retry
+        {m.id && !m.deleted && (
+          <Button size="icon-sm" variant="ghost" className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100" title="Reply" onClick={props.onReply}>
+            <Reply />
           </Button>
-        </span>
-      )}
-      {m.id && !m.deleted && (
-        <Button size="icon-sm" variant="ghost" className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100" title="Reply" onClick={props.onReply}>
-          <Reply />
-        </Button>
+        )}
+        {deletable && !asking && (
+          <Button size="icon-sm" variant="ghost" className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100" title="Delete for both sides" onClick={() => setAsking(true)}>
+            <Trash2 />
+          </Button>
+        )}
+      </div>
+      {asking && (
+        <div className="flex items-center gap-1 text-xs" role="alertdialog" aria-label="Delete this message">
+          <span className="text-muted-foreground">{m.id ? "Delete it for both sides? Their Peel shows “Message deleted”." : "Delete it? It never went."}</span>
+          <Button
+            size="xs"
+            variant="destructive"
+            disabled={deleting}
+            onClick={async () => {
+              setDeleting(true);
+              await props.onDelete();
+              setDeleting(false);
+              setAsking(false);
+            }}
+          >
+            {deleting && <Loader2 className="animate-spin" />} Delete
+          </Button>
+          <Button size="xs" variant="ghost" onClick={() => setAsking(false)}>
+            Cancel
+          </Button>
+        </div>
       )}
     </div>
   );
@@ -419,6 +622,8 @@ function FileView(props: { worker: string; m: SupportMessage }) {
     staleTime: Infinity,
   });
   const label = `${f.name ?? "File"}${f.size !== undefined ? ` · ${fmtBytes(f.size)}` : ""}`;
+  // Support's own, before the daemon gave it an id (or it never went): its name.
+  if (!props.m.id) return <span className="flex items-center gap-1.5 text-xs"><FileText className="size-3.5" /> {label}</span>;
   if (f.state === "fetching") return <span className="flex items-center gap-1.5 text-xs opacity-80"><Loader2 className="size-3 animate-spin" /> Fetching {f.name ?? "the file"}…</span>;
   if (f.state === "too_large") return <span className="text-xs opacity-80">{f.name ?? "A file"} was too large to keep (over 25 MB).</span>;
   if (f.state === "failed") return <span className="text-xs opacity-80" title={f.error}>{f.name ?? "A file"} could not be fetched.</span>;
@@ -453,16 +658,28 @@ function FileView(props: { worker: string; m: SupportMessage }) {
   );
 }
 
-/** Enter sends, Shift+Enter adds a line; a quoted reply above (§3). */
-function Composer(props: { replyTo: SupportMessage | null; onClearReply: () => void; onSend: (text: string) => Promise<boolean>; error: unknown }) {
+/** Enter sends, Shift+Enter adds a line; a quoted reply above (§3); a file
+ *  attached, pasted or dropped above that, its text then a caption. */
+function Composer(props: {
+  replyTo: SupportMessage | null;
+  onClearReply: () => void;
+  onSend: (text: string) => Promise<boolean>;
+  error: unknown;
+  attached: Attached | null;
+  attaching: boolean;
+  onAttach: (file: File) => void;
+  onClearAttached: () => void;
+}) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (props.replyTo) area.current?.focus();
   }, [props.replyTo]);
+  const ready = (!!text.trim() || !!props.attached) && !props.attaching;
   const submit = async () => {
-    if (!text.trim() || busy) return;
+    if (!ready || busy) return;
     setBusy(true);
     const ok = await props.onSend(text);
     setBusy(false);
@@ -481,15 +698,53 @@ function Composer(props: { replyTo: SupportMessage | null; onClearReply: () => v
           </Button>
         </div>
       )}
+      {(props.attached || props.attaching) && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border bg-muted/50 p-1.5 text-xs" aria-label="Attached">
+          {props.attaching ? (
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          ) : props.attached?.preview ? (
+            <img src={props.attached.preview} alt="" className="size-10 rounded object-cover" />
+          ) : (
+            <FileText className="size-5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{props.attaching ? "Getting it ready…" : `${props.attached!.name} · ${fmtBytes(props.attached!.size)}`}</span>
+          {props.attached && (
+            <Button variant="ghost" size="icon-xs" title="Remove" onClick={props.onClearAttached}>
+              <X />
+            </Button>
+          )}
+        </div>
+      )}
       <div className="flex items-end gap-2">
+        <Button variant="ghost" size="icon" title="Attach a photo or file (or paste, or drop it here)" disabled={busy || props.attaching} onClick={() => picker.current?.click()}>
+          <Paperclip />
+        </Button>
+        <input
+          ref={picker}
+          type="file"
+          className="hidden"
+          aria-label="Attach a file"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) props.onAttach(f);
+            e.target.value = "";
+          }}
+        />
         <Textarea
           ref={area}
           rows={1}
           value={text}
-          placeholder="Write as Support"
+          placeholder={props.attached ? "Add a caption (optional)" : "Write as Support"}
           aria-label="Message"
           className="max-h-40 min-h-9 flex-1 resize-none"
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            const f = e.clipboardData.files[0];
+            if (f) {
+              e.preventDefault();
+              props.onAttach(f);
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -498,7 +753,7 @@ function Composer(props: { replyTo: SupportMessage | null; onClearReply: () => v
             if (e.key === "Escape" && props.replyTo) props.onClearReply();
           }}
         />
-        <Button size="icon" disabled={!text.trim() || busy} title="Send (Enter)" onClick={() => void submit()}>
+        <Button size="icon" disabled={!ready || busy} title="Send (Enter)" onClick={() => void submit()}>
           {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
         </Button>
       </div>
@@ -568,36 +823,85 @@ function Fact(props: { label: string; children: ReactNode }) {
   );
 }
 
-// ── settings: the welcome (§5) ──────────────────────────────────────────────
+// ── settings: Support's picture, payout lines, the welcome (§3, §5, §6) ─────
 
 function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
   const client = useStrutClient();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["staff", "support", "settings"], queryFn: () => client.run<{ settings: SupportSettings }>("staff/support-settings", {}) });
   const [draft, setDraft] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"welcome" | "lines" | "photo" | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const s = q.data?.settings;
   const text = draft ?? s?.welcome ?? "";
-  const save = async () => {
-    setBusy(true);
+  const save = async (what: "welcome" | "lines" | "photo", fn: () => Promise<unknown>) => {
+    setBusy(what);
     setError(null);
     try {
-      await client.run("staff/support-save-settings", { welcome: text });
-      setDraft(null);
+      await fn();
       await qc.invalidateQueries({ queryKey: ["staff", "support", "settings"] });
+      return true;
     } catch (err) {
       setError(err);
+      return false;
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
+  /** Support's picture: shrunk here to 512 px, then through the daemon. */
+  const pick = (file: File) =>
+    save("photo", async () => {
+      const blob = await shrinkImage(file, SUPPORT_AVATAR_SIDE);
+      await client.run("staff/support-photo", { photo: { base64: await base64Of(blob), type: "image/jpeg" } });
+    });
   return (
-    <section aria-label="Support settings" className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+    <section aria-label="Support settings" className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
       <Back onClick={props.onBack}>{props.narrow ? "Conversations" : "Close"}</Back>
       <h2 className="text-base font-semibold">Support settings</h2>
       {q.error ? <ErrorLine error={q.error} /> : !s ? <Loading /> : (
         <>
+          <Field label="Picture" hint="Workers see it on every message from Support, in Peel: it tells this Support from another Stadeum's.">
+            <div className="flex flex-wrap items-center gap-3">
+              <Avatar className="size-16">
+                {s.photo?.base64 && <AvatarImage src={`data:${s.photo.mediaType};base64,${s.photo.base64}`} alt="Support's picture" className="object-cover" />}
+                <AvatarFallback className="text-sm font-semibold">SU</AvatarFallback>
+              </Avatar>
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => picker.current?.click()}>
+                {busy === "photo" && <Loader2 className="animate-spin" />} {s.photo ? "Change" : "Choose a picture"}
+              </Button>
+              {s.photo && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void save("photo", () => client.run("staff/support-photo", { photo: null }))}>
+                  Remove
+                </Button>
+              )}
+              <input
+                ref={picker}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                aria-label="Support's picture"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void pick(f);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          </Field>
+          <div className="flex items-start gap-3">
+            <Switch
+              id="support-payout-lines"
+              className="mt-0.5"
+              checked={s.payoutLines}
+              disabled={busy !== null}
+              onCheckedChange={(c) => void save("lines", () => client.run("staff/support-save-settings", { payoutLines: c }))}
+            />
+            <label htmlFor="support-payout-lines" className="grid gap-0.5">
+              <span className="text-sm font-medium">Payout lines</span>
+              <span className="text-xs text-muted-foreground">When a worker's payout settles, Support writes to them: “Paid you 1,200 sats”.</span>
+            </label>
+          </div>
           <Field
             label="Welcome"
             htmlFor="support-welcome"
@@ -617,8 +921,12 @@ function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
             />
           </Field>
           <div className="flex items-center gap-2">
-            <Button size="sm" disabled={busy || draft === null || draft === s.welcome} onClick={() => void save()}>
-              {busy && <Loader2 className="animate-spin" />} Save
+            <Button
+              size="sm"
+              disabled={busy !== null || draft === null || draft === s.welcome}
+              onClick={() => void save("welcome", () => client.run("staff/support-save-settings", { welcome: text })).then((ok) => ok && setDraft(null))}
+            >
+              {busy === "welcome" && <Loader2 className="animate-spin" />} Save
             </Button>
             {s.savedAt !== undefined && <Note>Last saved {fmtWhen(s.savedAt)}</Note>}
           </div>

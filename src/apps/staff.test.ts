@@ -24,6 +24,11 @@ import {
   fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
   earlierEnd, fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
+  fitWithin,
+  shrinkable,
+  attachProblem,
+  SUPPORT_FILTERS,
+  jpgName,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -258,6 +263,20 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.deepEqual([fmtBytes(820), fmtBytes(14_000), fmtBytes(3_400_000)], ["820 B", "14 KB", "3.2 MB"]);
     assert.equal(earlierEnd([{ earlier: true }, { earlier: true }, {}]), 1);
     assert.equal(earlierEnd([{}, {}]), -1);
+  });
+
+  it("Support's item 2 (plans/support-chat.md §3): a staff file in a line, a photo's size once shrunk, what may be sent", () => {
+    const m = { key: 1, fromMe: true, at: 0 };
+    assert.equal(messageLine({ ...m, kind: "file", file: { state: "kept", mediaType: "image/jpeg" } }), "Support: Photo");
+    assert.equal(messageLine({ ...m, kind: "file", text: "the rules", file: { state: "kept", name: "Rules.pdf", mediaType: "application/pdf" } }), "Support: Rules.pdf: the rules");
+    assert.deepEqual(fitWithin(4032, 3024, 1600), { width: 1600, height: 1200 });
+    assert.deepEqual(fitWithin(900, 1600, 1600), { width: 900, height: 1600 }, "never larger");
+    assert.deepEqual(fitWithin(3000, 100, 512), { width: 512, height: 17 });
+    assert.deepEqual([shrinkable("image/jpeg"), shrinkable("image/PNG"), shrinkable("image/gif"), shrinkable("image/svg+xml"), shrinkable("application/pdf")], [true, true, false, false, false]);
+    assert.equal(attachProblem({ size: 2.5 * 1024 * 1024 }), undefined);
+    assert.match(attachProblem({ size: 2.5 * 1024 * 1024 + 1 }) ?? "", /^Files up to 2\.5 MB/);
+    assert.deepEqual(SUPPORT_FILTERS.map((f) => f.id), ["open", "mine", "unassigned", "done"]);
+    assert.deepEqual([jpgName("IMG_0042.HEIC"), jpgName("scan"), jpgName(".png")], ["IMG_0042.jpg", "scan.jpg", "photo.jpg"]);
   });
 
   it("the Payouts tab: its deep links, an address and a state in words, the cover, the worker cap's use", () => {

@@ -202,6 +202,10 @@ export interface WithdrawalsDeps {
   /** Run first in every check: payouts.ts's sweep of a payout reserved and
    *  never sent. */
   sweep?: () => Promise<unknown>;
+  /** A worker's payout settled and booked: Support's line to them
+   *  (plans/support-chat.md §6). Called once it is in the books; never
+   *  waited on. */
+  paid?: (payout: { key: string; worker: string; msat: number }) => void;
 }
 
 export interface Withdrawals {
@@ -291,19 +295,20 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
   const record = async (p: PendingWithdrawal, feeMsat: number, o: { walletHash?: string; by?: string } = {}) => {
     const usd = await usdOf(p.msat);
     const ledger = await deps.ledger();
-    const entry =
+    const settled =
       p.purpose === "worker"
-        ? (
-            await ledger.payoutSettled({
-              key: p.paymentHash,
-              feeMsat,
-              ...(o.walletHash ? { paymentHash: o.walletHash } : {}),
-              ...(usd !== undefined ? { usd } : {}),
-              ...(o.by ? { by: o.by } : {}),
-              at: now(),
-            })
-          ).entry
-        : await ledger.withdrawal({
+        ? await ledger.payoutSettled({
+            key: p.paymentHash,
+            feeMsat,
+            ...(o.walletHash ? { paymentHash: o.walletHash } : {}),
+            ...(usd !== undefined ? { usd } : {}),
+            ...(o.by ? { by: o.by } : {}),
+            at: now(),
+          })
+        : undefined;
+    const entry = settled
+      ? settled.entry
+      : await ledger.withdrawal({
             msat: p.msat,
             feeMsat,
             paymentHash: p.paymentHash,
@@ -313,6 +318,13 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
             at: now(),
           });
     await drop(p.paymentHash);
+    if (settled) {
+      try {
+        deps.paid?.({ key: settled.payout.key, worker: settled.payout.worker, msat: settled.payout.msat });
+      } catch (err) {
+        console.warn(`[withdrawals] after payout ${settled.payout.key}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     return entry;
   };
   /** A send that failed or never went, off the pending list — a payout
