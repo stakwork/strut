@@ -672,8 +672,9 @@ writes. Say in your reply that later publishes are drafts until someone
 makes them live. The person shares a worker app from Tasks and workers
 (`strut/staff`), whose first page opens with its links, a QR code and
 Invite (a one-use link that sets up a new worker's phone): point them
-there, `{ kind: "app", app: "strut/staff" }`, and never paste a link from
-the result (or `GET /public/apps`) in your reply, nor build one by hand.
+there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
+say "Tasks and workers"), and never paste a link from the result (or `GET
+/public/apps`) in your reply, nor build one by hand.
 
 ## The assistant
 

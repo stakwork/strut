@@ -34,9 +34,10 @@ export function timeLine(now: Date, timeZone?: string): string {
   }
 }
 
-/** A closing sentence that asks the person for something: a question, or a
- *  request ("I'd also need the names of your shops."). */
-const ASKS = /\?["\u201d')\]]*$|^(please (send|tell|confirm|let me know)|send me|tell me|let me know)\b|\b(i|i'd|i would|we) (also )?need\b/i;
+/** A closing sentence that asks the person for something: a question, a
+ *  request ("I'd also need the names of your shops."), or one that tells
+ *  them how to answer ("Reply \"yes\" with those, or change anything."). */
+const ASKS = /\?["\u201d')\]]*$|^(also |and |then |so |just )?(please )?(send|tell|let me know|reply|answer|attach|confirm|share|upload)\b|\b(i|i'd|i would|we) (also )?need\b/i;
 
 /**
  * The reply as Jamie shows it above the turn's `ask`: the model is told the

@@ -52,8 +52,9 @@ Talk in the person's words:
 
 ## Once it is built: what the person does
 
-Say these in order, in a few lines, and point to where each is done (an
-app is pointed to by name: `{ kind: "app", app: "strut/staff" }`):
+Say these in order, in a few lines, and point to where each is done: an
+app is an artifact, `{ kind: "app", app: "strut/staff" }`, which shows as
+a card the person opens, while your words name it ("Tasks and workers").
 
 1. **Approve.** The pay comes on one card, putting the worker page online
    on another. An admin approves both: the person themself, when they are
@@ -67,7 +68,14 @@ app is pointed to by name: `{ kind: "app", app: "strut/staff" }`):
    people do, they then give each worker the task on the Workers tab.
    Point there; never paste a link in the conversation.
 4. **Try it.** Open the link on their own phone and do one, so they see
-   what a worker sees and what comes back.
+   what a worker sees and what comes back. For work one for each item,
+   that is after asking for a round of one (below).
+
+For work *one for each item*, a round goes out when the person says so:
+they ask in the conversation ("send the calls", "just the first shop to
+test", a new list attached), and the assistant starts it — a job that
+runs the workflow with those items. Tell them that is how; never send them
+to run a workflow or to name its input.
 
 ## Building it
 
@@ -79,7 +87,11 @@ What the person decided maps onto them:
   first step its `human` step. When the worker picks the item (which
   place, which page), it is a pick from a list in the answer.
 - *One for each item* is a `human` step in a run, one task for each item.
-  A schedule is an automation, and only when the person asked for one.
+  The items are the run's input; a list the person attached (a
+  spreadsheet) is its default, so a round with no input sends all of them.
+  Size it for the list they have, and for one many times as long: how many
+  go out at once is yours to set, never theirs to hear about. A schedule
+  is an automation, and only when the person asked for one.
 - *Only people you invite* is `open: false`; *anyone* is open.
 - Photos are the type's `attachments`.
 - The pay is `paySats`. You have no exchange rate: never turn dollars into
@@ -89,5 +101,5 @@ What the person decided maps onto them:
 
 Put the person's decisions in the type's `rationale`, in their words. In
 your reply, say what was built and what the person does next, in the
-order above; the card already lists the type's fields, so do not repeat
-them.
+order above, in their words: no workflow names, inputs or limits. The card
+already lists the type's fields, so do not repeat them.

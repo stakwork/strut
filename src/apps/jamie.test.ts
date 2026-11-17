@@ -50,6 +50,15 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(withoutAsk(`${plan}\n\nI need two things from you: the names and addresses of your 6 shops, and whether $4 is right.`, ask), plan);
     assert.equal(withoutAsk(`${plan}\n\nIs that OK, or what would you change?`, ask), plan);
     assert.equal(withoutAsk(`${plan}\n\nTwo things I need from you: the names of the 6 shops, and whether $4 suits you.`, ask), plan);
+    assert.equal(
+      withoutAsk(`${plan}\n\nI need one thing from you. Please attach the spreadsheet, with the shop name and phone number. Also tell me whether workers should say anything specific, such as a short pitch.`, ask),
+      plan,
+    );
+    // And one that tells them how to answer.
+    assert.equal(
+      withoutAsk(`${plan}\n\nTo build it I need two things from you: your spreadsheet (attach it, or tell me the column names), and a couple of lines on what the caller should say. Reply "yes" with those, or change anything above.`, ask),
+      plan,
+    );
     // Only the CLOSING asks: a statement before them stays.
     assert.equal(withoutAsk("Built it. The pay is $4. Want me to change it?", ask), "Built it. The pay is $4.");
     // Left as it is: no ask; a reply that does not ask; a list; one that would be empty.
