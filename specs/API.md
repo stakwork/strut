@@ -5862,7 +5862,8 @@ at most once an hour each. An admin Support knows is one who marked a
 conversation seen, replied or took one, and whose actor is the key of one
 of Support's contacts (a conversation): `POST /dm` reaches existing
 contacts alone (ruling 15), so any other admin has the count on the tab
-only.
+only. An admin's own messages to Support do not count as waiting, and a
+heads-up that failed to send is tried again on the next read.
 
 FULL SCOPE only, reads included: the deployment key or an admin's session;
 a member's session, a peer and a visitor are refused (`403`). With no

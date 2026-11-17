@@ -28,8 +28,8 @@ import {
   shrinkable,
   attachProblem,
   SUPPORT_FILTERS,
+  jpgName,
 } from "./staff/src/lib/view.js";
-import { jpgName } from "./staff/src/lib/shrink.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
 import statsStep from "../steps/lib/staff/stats.js";

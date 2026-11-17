@@ -28,6 +28,7 @@ import {
   fmtBytes,
   fmtWhen,
   initialsOf,
+  jpgName,
   liveTypesText,
   messageLine,
   paymentLine,
@@ -40,7 +41,7 @@ import {
   type Place,
   type Shown,
 } from "../lib/view";
-import { base64Of, jpgName, shrinkImage } from "../lib/shrink";
+import { base64Of, shrinkImage } from "../lib/shrink";
 import type { SupportConversation, SupportFile, SupportFilter, SupportMessage, SupportSettings, SupportThread, Worker, WorkerActivity } from "../lib/types";
 import { Back, ErrorLine, Field, Loading, Note } from "./bits";
 

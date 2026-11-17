@@ -218,7 +218,8 @@ links to their page.
   replied or took one, and is itself the key of one of Support's contacts
   (`secp:` + a conversation's pubkey), so `POST /dm` reaches them (ruling
   15). An admin a host signs in under another actor gets the tab's count
-  alone. No switch.
+  alone. An admin's own messages to Support are not counted as waiting.
+  No switch.
 
 **Not built, on purpose:**
 - tips or boosts from staff: money leaves only through Payouts and the payer;

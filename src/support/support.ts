@@ -289,8 +289,14 @@ export function createSupport(deps: SupportDeps): Support {
   /** `POST /dm` for a message kept as sending; its answer kept unless the
    *  feed spoke first. A file goes as its bytes, read from strut's copy. */
   const deliver = async (d: SupportDaemon, s: SupportStore, key: number, o: { clientId: string; pubkey: string; text?: string; replyTo?: string; file?: OwnFile }): Promise<SupportMessage> => {
+    let file: { data: string; type: string; name: string } | undefined;
     try {
-      const file = o.file ? { data: (await readFile(o.file.path)).toString("base64"), type: o.file.mediaType, name: o.file.name } : undefined;
+      if (o.file) file = { data: (await readFile(o.file.path)).toString("base64"), type: o.file.mediaType, name: o.file.name };
+    } catch (err) {
+      s.answered(key, "failed", `the file is no longer on this server: ${err instanceof Error ? err.message : String(err)}`);
+      return s.message(key)!;
+    }
+    try {
       // The daemon answers with the send as its feed shows it, once the LSP
       // has spoken or about 10 s have passed (then `sending`).
       const res = await call(d, "POST", "/dm", { id: o.clientId, to: o.pubkey, ...(o.text ? { text: o.text } : {}), ...(o.replyTo ? { reply: o.replyTo } : {}), ...(file ? { file } : {}) }, SEND_TIMEOUT_MS);
@@ -420,9 +426,12 @@ export function createSupport(deps: SupportDeps): Support {
   const headsUps = async (d: SupportDaemon, s: SupportStore) => {
     const w = s.waiting();
     if (!w.unread || w.oldest === undefined || now() - w.oldest < HEADS_UP_AFTER_MS) return;
+    // One tick at a time, so due-then-sent sends each admin one; a send
+    // that failed leaves them due, tried on the next tick.
     for (const a of s.admins()) {
-      if (!s.claimHeadsUp(a.actor, now(), HEADS_UP_EVERY_MS)) continue;
-      await sendNew(d, s, { pubkey: a.pubkey, text: `${w.unread} message${w.unread === 1 ? "" : "s"} waiting in Support`, by: "heads-up" satisfies SupportAuto });
+      if (!s.headsUpDue(a.actor, now(), HEADS_UP_EVERY_MS)) continue;
+      const m = await sendNew(d, s, { pubkey: a.pubkey, text: `${w.unread} message${w.unread === 1 ? "" : "s"} waiting in Support`, by: "heads-up" satisfies SupportAuto });
+      if (m.status !== "failed") s.headsUpSent(a.actor, now());
     }
   };
 

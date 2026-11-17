@@ -177,6 +177,20 @@ describe("the store (§4)", () => {
     assert.deepEqual(s.conversations().map((c) => [c.alias, c.unread])[0], ["Bo", 1]);
     assert.equal(s.conversations()[0]!.last?.text, "my photo is blurry");
   });
+  it("the heads-up's count leaves out an admin's own messages to Support; a heads-up is due again an hour after the last", () => {
+    const admin = PK(40);
+    s.ingest([dm({ seq: 400, id: "adm-1", pubkey: admin, text: "ok, looking", at: 1 }), dm({ seq: 401, id: "wk-1", pubkey: PK(41), text: "help", at: 2 })], URL, 401, 0);
+    const before = s.waiting();
+    s.seen(PK(41), actorOfPubkey(admin), 5);
+    assert.ok(s.admins().some((a) => a.actor === actorOfPubkey(admin) && a.pubkey === admin), "who marked a conversation seen, and is a contact");
+    s.ingest([dm({ seq: 402, id: "wk-2", pubkey: PK(41), text: "still?", at: 3 })], URL, 402, 0);
+    const after = s.waiting();
+    assert.equal(after.unread, before.unread - 1, "the admin's own and the one seen left out, the new one counted");
+    assert.equal(s.headsUpDue(actorOfPubkey(admin), 1_000, 3_600_000), true);
+    s.headsUpSent(actorOfPubkey(admin), 1_000);
+    assert.deepEqual([s.headsUpDue(actorOfPubkey(admin), 3_000_000, 3_600_000), s.headsUpDue(actorOfPubkey(admin), 3_601_000, 3_600_000)], [false, true]);
+  });
+
 });
 
 describe("item 2's columns on a file item 1 made (§4)", () => {
@@ -543,6 +557,11 @@ describe("Support on a server (§3, §5, §8)", () => {
     assert.equal(sent.length, 1);
     assert.match(sent[0]!.text ?? "", /^\d+ messages? waiting in Support$/);
     assert.equal(sent[0]!.status, "sent");
+    // Ida answers it from Peel, long ago by the clock: her own message is not news to her.
+    await worker({ pubkey: admin.pubkey, text: "on it", time: new Date(Date.now() - 6 * 60_000).toISOString() });
+    await follow();
+    assert.equal((await get<Thread>(`/support/${w(admin.pubkey)}`)).messages.filter((m) => m.text === "on it").length, 1);
+    assert.equal((await headsUps()).length, 1, "once an hour");
     // admin-1, who replied all along, is no contact of Support's: the count on the tab alone.
     assert.ok(!(await get<{ conversations: Conversation[] }>("/support")).conversations.some((c) => c.worker === "admin-1"));
   });

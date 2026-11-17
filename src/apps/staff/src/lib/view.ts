@@ -544,6 +544,12 @@ export function shrinkable(type: string): boolean {
   return /^image\/(jpeg|png|webp|bmp|avif|heic|heif)$/i.test(type);
 }
 
+/** A name with its extension made `.jpg`, for a photo shrunk to a JPEG. */
+export function jpgName(name: string): string {
+  const base = name.replace(/\.[^./\\]*$/, "") || "photo";
+  return `${base}.jpg`;
+}
+
 /** Why a file cannot be sent, or undefined: past 2.5 MB once shrunk. */
 export function attachProblem(o: { size: number }): string | undefined {
   return o.size > SUPPORT_FILE_MAX_BYTES ? `Files up to ${fmtBytes(SUPPORT_FILE_MAX_BYTES)}: this one is ${fmtBytes(o.size)}.` : undefined;

@@ -1,6 +1,7 @@
 // A photo shrunk in the page before it goes (plans/support-chat.md §3, item
 // 2): drawn on a canvas at most `side` px on its longer side, as a JPEG, so a
 // phone's 12 MP photo fits the page's 4 MB call. A file as base64.
+import { fileData } from "@strut/kit";
 import { fitWithin } from "./view";
 
 /** `blob` as a JPEG at most `side` px on its longer side; a transparent PNG
@@ -26,16 +27,7 @@ export async function shrinkImage(blob: Blob, side: number): Promise<Blob> {
   }
 }
 
-/** A blob's bytes as base64, in pieces (a long spread overflows the stack). */
+/** A blob's bytes as base64: the kit's `fileData`. */
 export async function base64Of(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-
-/** A name with its extension made `.jpg`, for a photo shrunk to a JPEG. */
-export function jpgName(name: string): string {
-  const base = name.replace(/\.[^./\\]*$/, "") || "photo";
-  return `${base}.jpg`;
+  return (await fileData(new File([blob], "file", { type: blob.type }))).data;
 }

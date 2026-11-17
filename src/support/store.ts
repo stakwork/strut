@@ -200,6 +200,11 @@ export function fileNameOf(id: string): string {
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 const UNREAD = `m.from_me = 0 and m.kind != 'contact' and m.deleted = 0 and m.key > c.seen_key`;
+/** The admins Support knows (§6): who marked a conversation seen, replied or
+ *  took one. Their actors; with a conversation of their own, a contact. */
+const ADMIN_ACTORS = `select seen_by from support_conversations where seen_by is not null
+  union select by from support_messages where by is not null
+  union select assignee from support_conversations where assignee is not null`;
 
 export class SupportStore {
   private readonly s: Record<string, StatementSync>;
@@ -245,13 +250,10 @@ export class SupportStore {
       setAssignee: p("update support_conversations set assignee = ? where pubkey = ?"),
       // The admins Support knows (§6): who marked a conversation seen, replied
       // or took one, whose own key is one of Support's contacts.
-      admins: p(
-        `select actor, pubkey from support_conversations where actor in (
-           select seen_by from support_conversations where seen_by is not null
-           union select by from support_messages where by is not null
-           union select assignee from support_conversations where assignee is not null)
-         order by actor`,
-      ),
+      admins: p(`select actor, pubkey from support_conversations where actor in (${ADMIN_ACTORS}) order by actor`),
+      // What waits for the heads-up: workers' unread messages, an admin's own
+      // to Support left out (their answer to a heads-up is not news to them).
+      waiting: p(`select count(*) n, min(m.at) oldest from support_messages m join support_conversations c on c.pubkey = m.pubkey where ${UNREAD} and c.actor not in (${ADMIN_ACTORS})`),
       thread: p("select * from support_messages where pubkey = ? and key < ? order by key desc limit ?"),
       seen: p("update support_conversations set seen_key = coalesce((select max(key) from support_messages where pubkey = ?1), 0), seen_at = ?2, seen_by = ?3 where pubkey = ?1"),
       due: p("update support_conversations set welcome_due = 1 where pubkey = ? and welcomed_at is null"),
@@ -260,7 +262,7 @@ export class SupportStore {
       undue: p("update support_conversations set welcome_due = null where pubkey = ?"),
       abandoned: p("update support_messages set status = 'failed', error = ? where from_me = 1 and status = 'sending' and id is null"),
       byKeys: p("select * from support_messages where key in (select value from json_each(?))"),
-      unread: p(`select count(*) n, count(distinct m.pubkey) c, min(m.at) oldest from support_messages m join support_conversations c on c.pubkey = m.pubkey where ${UNREAD}`),
+      unread: p(`select count(*) n, count(distinct m.pubkey) c from support_messages m join support_conversations c on c.pubkey = m.pubkey where ${UNREAD}`),
       list: p(
         `with conv as (
            select c.*,
@@ -351,15 +353,15 @@ export class SupportStore {
     this.s.setState.run("photo", p ? JSON.stringify(p) : "");
   }
 
-  /** A heads-up to `actor` claimed (§6): true when none went to them in the
-   *  last `everyMs`, and then the time is kept. */
-  claimHeadsUp(actor: string, now: number, everyMs: number): boolean {
-    return this.db.tx(() => {
-      const last = Number(this.state(`heads-up ${actor}`) ?? 0);
-      if (last && now - last < everyMs) return false;
-      this.s.setState.run(`heads-up ${actor}`, String(now));
-      return true;
-    });
+  /** A heads-up to `actor` is due (§6): none went to them in the last `everyMs`. */
+  headsUpDue(actor: string, now: number, everyMs: number): boolean {
+    const last = Number(this.state(`heads-up ${actor}`) ?? 0);
+    return !last || now - last >= everyMs;
+  }
+
+  /** A heads-up went to `actor`: the next is an hour on. */
+  headsUpSent(actor: string, now: number): void {
+    this.s.setState.run(`heads-up ${actor}`, String(now));
   }
 
   /** The admins Support knows, each with their key as Support's contact
@@ -575,9 +577,10 @@ export class SupportStore {
     return { unread: Number(r.n), conversations: Number(r.c) };
   }
 
-  /** The unread messages and when the oldest was written: the heads-up's (§6). */
+  /** Workers' unread messages and when the oldest was written: the
+   *  heads-up's (§6), an admin's own left out. */
   waiting(): { unread: number; oldest?: number } {
-    const r = this.s.unread.get() as Row;
+    const r = this.s.waiting.get() as Row;
     return { unread: Number(r.n), ...(r.oldest !== null && r.oldest !== undefined ? { oldest: Number(r.oldest) } : {}) };
   }
 
