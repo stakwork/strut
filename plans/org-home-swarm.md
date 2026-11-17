@@ -107,7 +107,8 @@ own token (§1.3): a Stadeum box signs people in itself. What is open:
 - **Tribes and the Jamie daemon** (§4): not in Stadeum's order yet. The
   daemon's service (Hive's tribes routes today) needs a home: strut
   (a workflow or a few routes) or stadeum-ui. By Stadeum's rule 1, strut,
-  unless it needs the org key.
+  unless it needs the org key. *2026-11-17:* neither. The box's treasury
+  daemon is the host and uses strut's existing APIs: `jamie-in-tribes.md`.
 - **The directory and Peel's pairing** (§1.2): how Peel finds a person's
   org boxes once Hive's device flow is gone.
 - **Provisioning and payment** (§1.4): a box in the org's own cloud needs
