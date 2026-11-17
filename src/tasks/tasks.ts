@@ -109,6 +109,7 @@ import {
   type Verdict,
   type TaskListQuery,
   type TaskRecord,
+  type LeaseStatus,
   type TaskSettled,
   type TaskStore,
   type TaskType,
@@ -423,13 +424,47 @@ export interface WorkerView {
    *  answer earns now, msat (0: unpaid), and whether they are qualifying
    *  for it (§7.5, ruling 3): served only tests until they qualify. No
    *  score is shown. */
-  types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
+  types: Array<WorkerTypeView>;
+  /** The task in their hand now, of a type in `types`: what Continue opens
+   *  (`task/next` refuses another type while they hold it). */
+  holding?: { type: string; expires: number };
   /** What they are owed here (§8.1): zeros with nothing earned. A payout
    *  on its way is no longer in it (§8.2). */
   balance: PayeeBalance;
   /** Whether they may withdraw now, and how much (§8.2): strut's own
    *  store's (the `task/me` step says `not_here` for a store without it). */
   payout?: PayoutView;
+}
+
+/** A type on the worker's dashboard: what an answer earns now, msat (0:
+ *  unpaid); whether they are qualifying (§7.5, ruling 3); whether it is
+ *  STANDING (§5.7: work whenever they ask, nothing waits); and how many of
+ *  its tasks wait that they could take (`TaskStore.waitingFor`). */
+export interface WorkerTypeView {
+  name: string;
+  app: string;
+  payMsat: number;
+  qualifying: boolean;
+  standing: boolean;
+  waiting: number;
+}
+
+/** One of a worker's tasks as THEY read it (`task/history`): the type, when
+ *  they took it and when it left their hand, how it ended (`open`: in hand;
+ *  `submitted`: answered; `skipped`; `expired`: ran out or was closed), and
+ *  for a paid answer what it earned — when the hold ends and whether it was
+ *  taken back. Never the run, the task's other answers, whether it was a
+ *  test, or why anything was taken back (§7.2: a worker cannot tell a test). */
+export interface WorkerHistoryItem {
+  lease: string;
+  type: string;
+  /** What the task asked, as they saw it: its `show.ask`, else `show.title`,
+   *  else a `show` that is itself a string; at most 200 characters. */
+  ask?: string;
+  taken: number;
+  closed?: number;
+  status: LeaseStatus;
+  earned?: { msat: number; releases: number; takenBack?: true };
 }
 
 /** An answer's earning as staff read it (§8.1): booked in the ledger. */
@@ -646,8 +681,13 @@ export interface TasksCapability {
   /** Who the worker is here, what they may take, what they are owed, and
    *  whether they may withdraw (`address`: the Sphinx address their session
    *  carries, §8.2); the first call writes them as `new`. `invite`, as on
-   *  `next`, first. */
-  me(actor: string, o?: { app?: string; address?: string; invite?: string }): Promise<WorkerView>;
+   *  `next`, first — for `inviteApp`, the app its link opened, when the
+   *  list spans `apps`. */
+  me(actor: string, o?: { app?: string; apps?: string[]; address?: string; invite?: string; inviteApp?: string }): Promise<WorkerView>;
+  /** The worker's own newest tasks here (of the app's types, or of the
+   *  `apps`' types, when given), newest first, at most `RECENT_LEASES`:
+   *  their dashboard's history. */
+  history(actor: string, o?: { app?: string; apps?: string[] }): Promise<{ items: WorkerHistoryItem[] }>;
 
   // Staff's.
   types(): Promise<TaskType[]>;
@@ -755,6 +795,8 @@ export interface TasksService {
  *  own store (`task/withdraw` answers `not_here`). */
 export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "skip" | "file" | "me"> & {
   withdraw?(actor: string, o: { address?: string; msat: number }): Promise<PayoutAnswer>;
+  /** Strut's own store's; a host's may have none (`task/history` answers no items). */
+  history?: TasksCapability["history"];
 };
 
 /** What the shared services bag carries (§9.2): the `human` step's call. */
@@ -1542,16 +1584,18 @@ export function createTasks(deps: TasksDeps): TasksService {
       const seen = await worker(actor);
       const s = seen.s;
       // §5.8: an invite's link gives its worker the app's invite-only types.
-      const w = await enterInvite(s, seen.w, o.app, o.invite);
+      const w = await enterInvite(s, seen.w, o.app ?? o.inviteApp, o.invite);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
-      const inApp = (k: TaskType | undefined): k is TaskType => !!k && k.enabled && (o.app === undefined || k.app === o.app);
+      const inApp = (k: TaskType | undefined): k is TaskType => !!k && k.enabled && drawnBy(k, o);
       const held = liveGrants(w).map((name) => kinds.get(name)).filter(inApp);
       // Ruling 3: a qualifying type is marked, with no score.
       const grants = grantsOf(w);
       const rows = await standingRows(s, w.actor, held, grants);
+      const at = now();
+      const shown = (k: TaskType, qualifying: boolean) => ({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying, standing: !!k.standing, waiting: 0 });
       const types = held.map((k) => {
         const row = rows.get(k.name);
-        return { name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying: !!(k.tests && row) && phaseOf(row!, grants.get(k.name)!) !== "qualified" };
+        return shown(k, !!(k.tests && row) && phaseOf(row!, grants.get(k.name)!) !== "qualified");
       });
       // Ruling 9: the open types they may enter, as their first ask would —
       // qualifying first when the grant would record a K. Read, not entered.
@@ -1560,15 +1604,45 @@ export function createTasks(deps: TasksDeps): TasksService {
         for (const k of [...kinds.values()].filter(inApp)) {
           if (!k.open || known.has(k.name)) continue;
           const e = await entry(s, k);
-          if ("qualify" in e) types.push({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying: e.qualify > 0 });
+          if ("qualify" in e) types.push(shown(k, e.qualify > 0));
         }
       }
+      // The dashboard: what waits for them of each, and the task in hand.
+      const waiting = types.length ? await s.tasks.waitingFor({ worker: w.actor, types: types.map((t) => t.name), now: at }) : {};
+      for (const t of types) t.waiting = waiting[t.name] ?? 0;
+      const live = await s.tasks.heldBy(w.actor, at);
+      const holding = live && types.some((t) => t.name === live.type) ? { type: live.type, expires: live.expires } : undefined;
       // A worker's status touches no earning (§8.1): a suspended worker
       // still sees what they are owed, and may withdraw what passed its
       // hold (§8.2).
       const balance = await balanceOf(w.actor);
       const payout = deps.payouts ? await deps.payouts.view(w.actor, { balance, ...(o.address ? { address: o.address } : {}) }) : undefined;
-      return { actor: w.actor, status: w.status, types, balance, ...(payout ? { payout } : {}) };
+      return { actor: w.actor, status: w.status, types, ...(holding ? { holding } : {}), balance, ...(payout ? { payout } : {}) };
+    },
+
+    async history(actor, o = {}) {
+      count(actor);
+      const { s, w } = await worker(actor);
+      const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
+      // A type gone, or drawn by another app, is not this app's to show.
+      const leases = (await s.tasks.recentLeases(w.actor, RECENT_LEASES)).filter((l) => {
+        const k = kinds.get(l.type);
+        return k && drawnBy(k, o);
+      });
+      const shown = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, askOf(t.show)]));
+      const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);
+      const ledger = paid.length ? await deps.ledgerIfAny?.() : undefined;
+      const earned = ledger ? new Map((await ledger.payFor([...new Set(paid.map((l) => l.task))])).map((e) => [e.lease, e])) : new Map<string, Earning>();
+      return {
+        items: leases.map((l): WorkerHistoryItem => {
+          const e = earned.get(l.id);
+          // An answer not booked yet is booked by the next sweep: its hold
+          // runs from when it was answered, as booking will set it.
+          const pay = l.status === "submitted" && l.payMsat ? { msat: e?.msat ?? l.payMsat, releases: holdEnd(l, kinds.get(l.type), e), ...(e?.takenBack !== undefined ? { takenBack: true as const } : {}) } : undefined;
+          const ask = shown.get(l.task);
+          return { lease: l.id, type: l.type, ...(ask ? { ask } : {}), taken: l.taken, ...(l.closed !== undefined ? { closed: l.closed } : {}), status: l.status, ...(pay ? { earned: pay } : {}) };
+        }),
+      };
     },
 
     async types() {
@@ -2274,7 +2348,7 @@ export function createTasks(deps: TasksDeps): TasksService {
   return {
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure }),
-    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, withdraw }),
+    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
     isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {
       listeners.add(listener);
@@ -2388,6 +2462,23 @@ function holdOk(v: unknown): number {
     throw new TaskError("bad_request", `holdHours is a number of hours from ${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}: earnings wait before they can be withdrawn`);
   }
   return v;
+}
+
+/** What a task asks, in words, as a worker's page draws it (strut/views'
+ *  `taskAsk`): `show.ask`, else `show.title`, else a `show` that is a string;
+ *  at most `ASK_CHARS`. */
+const ASK_CHARS = 200;
+function askOf(show: unknown): string | undefined {
+  const o = show && typeof show === "object" && !Array.isArray(show) ? (show as Record<string, unknown>) : undefined;
+  const text = typeof show === "string" ? show : [o?.["ask"], o?.["title"]].find((v): v is string => typeof v === "string" && !!v.trim());
+  const t = text?.trim();
+  return t ? (t.length > ASK_CHARS ? `${t.slice(0, ASK_CHARS - 1)}…` : t) : undefined;
+}
+
+/** Whether type `k` is one a worker call reads: drawn by `app` when it names
+ *  one, and by one of `apps` when it lists them. */
+function drawnBy(k: TaskType, o: { app?: string; apps?: string[] }): boolean {
+  return (o.app === undefined || k.app === o.app) && (o.apps === undefined || o.apps.includes(k.app));
 }
 
 function leaseEarning(e: Earning): LeaseEarning {

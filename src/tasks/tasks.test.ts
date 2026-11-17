@@ -163,7 +163,7 @@ for (const impl of impls) {
       assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "new", types: [], balance: NOTHING });
       await assert.rejects(tasks().next("ann"), refused("not_active", /no task types yet/));
       await tasks().grant("ann", "t", "staff");
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a", payMsat: 0, qualifying: false }], balance: NOTHING });
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "active", types: [{ name: "t", app: "a", payMsat: 0, qualifying: false, standing: false, waiting: 0 }], balance: NOTHING });
       await tasks().revoke("ann", "t", { by: "staff", why: "quality" });
       const w = (await tasks().workers()).find((x) => x.actor === "ann")!;
       assert.equal(w.status, "active");
@@ -210,7 +210,7 @@ for (const impl of impls) {
       await tasks().grant("ann", "ballots");
       await tasks().ensure({ type: "pets", workflow: "w", runId: "r", path: "w/p", show: "pet" });
       await tasks().ensure({ type: "ballots", workflow: "w", runId: "r", path: "w/b", show: "ballot" });
-      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app", payMsat: 0, qualifying: false }]);
+      assert.deepEqual((await tasks().me("ann", { app: "ballot-app" })).types, [{ name: "ballots", app: "ballot-app", payMsat: 0, qualifying: false, standing: false, waiting: 1 }]);
       await assert.rejects(tasks().next("ann", { type: "pets", app: "ballot-app" }), refused("wrong_app"));
       await assert.rejects(tasks().next("bob", { type: "pets" }), refused("not_active"));
       await tasks().grant("bob", "ballots");
@@ -324,6 +324,23 @@ for (const impl of impls) {
       assert.deepEqual(view.leases.map((x) => [x.worker, x.status, x.reason]), [["ann", "skipped", "blurry"], ["bob", "open", undefined]]);
     });
 
+    it("me counts, per type, the tasks waiting that this worker could take, and names the one in their hand", async () => {
+      await setup({ n: 3 });
+      const waiting = async (actor: string) => (await tasks().me(actor)).types.map((t) => [t.name, t.standing, t.waiting]);
+      assert.deepEqual(await waiting("ann"), [["pet-match", false, 3]]);
+      const a = await take("ann");
+      const me = await tasks().me("ann");
+      assert.deepEqual(me.holding, { type: "pet-match", expires: a.expires }, "the task in hand");
+      assert.deepEqual(await waiting("ann"), [["pet-match", false, 2]], "the one in hand is not waiting");
+      assert.deepEqual(await waiting("bob"), [["pet-match", false, 2]], "nor for anyone else: it is held");
+      await tasks().skip("ann", { lease: a.lease });
+      assert.equal((await tasks().me("ann")).holding, undefined);
+      assert.deepEqual(await waiting("ann"), [["pet-match", false, 2]], "a task they skipped never comes back to them");
+      assert.deepEqual(await waiting("bob"), [["pet-match", false, 3]], "it is someone else's again");
+      clock += 49 * HOUR;
+      assert.deepEqual(await waiting("bob"), [["pet-match", false, 0]], "past due, nothing waits");
+    });
+
     // ── rule 6, §4.6: status read on every call ───────────────────────
 
     it("suspending a worker expires their open lease at once, and the task reopens; lifting it lets them work again", async () => {
@@ -332,7 +349,7 @@ for (const impl of impls) {
       await tasks().setWorker("ann", { status: "suspended", note: "check quality" }, "staff");
       await assert.rejects(tasks().submit("ann", { lease: l.lease, answer: [1, 2, 3, 4] }), refused("not_active", /suspended/));
       await assert.rejects(tasks().next("ann"), refused("not_active"));
-      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers", payMsat: 0, qualifying: false }], balance: NOTHING }, "me still answers");
+      assert.deepEqual(await tasks().me("ann"), { actor: "ann", status: "suspended", types: [{ name: "pet-match", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 0 }], balance: NOTHING }, "me still answers");
       const view = (await tasks().task(t.id))!;
       assert.equal(view.leases[0].status, "expired");
       assert.equal(view.leases[0].reason, "worker suspended");
@@ -678,7 +695,7 @@ for (const impl of earningsImpls) {
       assert.equal((await take("ann")).payMsat, 21_000, "the lease in hand keeps its own");
       assert.equal((await tasks().task(a!.id))!.leases[0]!.payMsat, 21_000);
       assert.equal((await tasks().task(b!.id))!.leases[0]!.payMsat, 50_000);
-      assert.deepEqual((await tasks().me("ann")).types, [{ name: "pet-match", app: "workers", payMsat: 50_000, qualifying: false }], "what the type pays now");
+      assert.deepEqual((await tasks().me("ann")).types, [{ name: "pet-match", app: "workers", payMsat: 50_000, qualifying: false, standing: false, waiting: 0 }], "what the type pays now");
       await tasks().submit("ann", { lease: ann.lease, answer: { same: true } });
       assert.equal((await svc.capability.me("ann")).balance.totalMsat, 21_000, "earns what its lease was stamped with");
     });
@@ -738,6 +755,51 @@ for (const impl of earningsImpls) {
       assert.equal((await svc.sweep()).booked, 0, "once");
       assert.equal((await (await ledger()).payOf(l.lease))!.msat, 21_000);
       assert.equal((await tasks().me("ann")).balance.totalMsat, 21_000);
+    });
+
+    it("history: the worker's own tasks, newest first, each with how it ended and what it earned — never another app's, never why", async () => {
+      const [a] = await paid({ paySats: 10, holdHours: 1, paths: ["pets/a", "pets/b", "pets/c"] });
+      await tasks().setType("ballot", { app: "ballots", answer: MATCH, open: false }, "staff");
+      await tasks().grant("ann", "ballot", "staff");
+      await tasks().ensure({ type: "ballot", workflow: "b", runId: "b1", path: "b/x", show: { ask: "Is it the same dog?", photo: "a.jpg" } });
+      /** Ann's next task of one app's types. */
+      const annIn = async (app: string) => (await tasks().next("ann", { app })) as WorkerTask;
+      const vote = await annIn("ballots");
+      await tasks().submit("ann", { lease: vote.lease, answer: { same: false } });
+      clock += MIN;
+      const one = await annIn("workers");
+      await tasks().submit("ann", { lease: one.lease, answer: { same: true } });
+      const answered = clock;
+      clock += MIN;
+      const two = await annIn("workers");
+      await tasks().skip("ann", { lease: two.lease, reason: "blurry" });
+      clock += MIN;
+      const three = await annIn("workers");
+      assert.equal((await take("bob")).lease !== two.lease, true, "bob takes the one ann skipped");
+      const items = (await tasks().history("ann", { app: "workers" })).items;
+      assert.deepEqual(
+        items.map((i) => [i.lease, i.status, i.earned]),
+        [
+          [three.lease, "open", undefined],
+          [two.lease, "skipped", undefined],
+          [one.lease, "submitted", { msat: 10_000, releases: answered + HOUR }],
+        ],
+      );
+      assert.equal(Object.hasOwn(items[1]!, "reason"), false, "why it was skipped stays staff's");
+      assert.equal(items[2]!.closed, answered);
+      assert.deepEqual((await tasks().history("bob", { app: "workers" })).items.map((i) => i.status), ["open"], "their own only");
+      await svc.takeBack({ task: a!.id, why: "the wrong dog", by: "admin-1" });
+      const back = (await tasks().history("ann", { app: "workers" })).items.at(-1)!;
+      assert.deepEqual(back.earned, { msat: 10_000, releases: answered + HOUR, takenBack: true });
+      assert.equal(JSON.stringify(back).includes("wrong dog"), false, "never why it was taken back");
+      assert.deepEqual((await tasks().history("ann", { app: "ballots" })).items.map((i) => [i.lease, i.type, i.ask, i.status]), [[vote.lease, "ballot", "Is it the same dog?", "submitted"]], "each app sees its own types' tasks, with what each asked");
+      // A dashboard across apps: the apps the caller can open, each type naming its app.
+      assert.deepEqual((await tasks().history("ann", { apps: ["workers", "ballots"] })).items.length, 4);
+      assert.deepEqual((await tasks().history("ann", { apps: ["workers"] })).items.length, 3, "an app the caller cannot open is left out");
+      const across = await tasks().me("ann", { apps: ["workers", "ballots"] });
+      assert.deepEqual(across.types.map((t) => [t.name, t.app]).sort(), [["ballot", "ballots"], ["pet-match", "workers"]]);
+      assert.deepEqual(across.holding, { type: "pet-match", expires: three.expires }, "the task in hand, whichever app draws it");
+      assert.deepEqual((await tasks().me("ann", { apps: ["ballots"] })).holding, undefined, "unless that app is not one of them");
     });
 
     it("me answers held, withdrawable and total as the clock passes the hold", async () => {

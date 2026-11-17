@@ -15,4 +15,4 @@ account:
   corner: top-right
 grants:
   workflows: []
-  steps: [task/next, task/submit, task/skip, task/file, task/me, task/withdraw]
+  steps: [task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]

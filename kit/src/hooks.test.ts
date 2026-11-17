@@ -13,7 +13,7 @@ import {
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
-  useTask, useWorker, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
+  useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -886,6 +886,29 @@ describe("a worker's page (plans/human-steps.md §5.3)", () => {
     assert.equal(h.result().none.fetchStatus, "idle");
     assert.deepEqual(calls.map((c) => c.type).sort(), ["task/file", "task/me"]);
     assert.deepEqual(calls.find((c) => c.type === "task/file")!.config, { lease: "l1", path: "found.jpg" });
+    await h.unmount();
+  });
+
+  it("useTaskHistory is task/history; a skip reads it and useWorker again, as an answer does", async () => {
+    let nexts = 0;
+    let skipped = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? TASK : new Promise(() => {})),
+      [TASK_STEPS.skip]: () => {
+        skipped++;
+        return { ok: true };
+      },
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 1 - skipped }], balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 } }),
+      [TASK_STEPS.history]: () => ({ items: skipped ? [{ lease: "l1", type: "pet-match", taken: 1, closed: 2, status: "skipped" }] : [] }),
+    });
+    const h = await renderHook(() => ({ t: useTask(), me: useWorker(), history: useTaskHistory() }), { client });
+    await until(() => h.result().t.task !== null && h.result().history.data !== undefined && h.result().me.data !== undefined, "a task, the worker and the history");
+    assert.deepEqual(h.result().history.data!.items, []);
+    await act(async () => { await h.result().t.skip(); });
+    await until(() => h.result().history.data?.items.length === 1, "the history read again");
+    await until(() => h.result().me.data?.types[0]?.waiting === 0, "the counts read again");
+    assert.equal(h.result().history.data!.items[0]!.status, "skipped");
+    assert.equal(calls.filter((c) => c.type === "task/history").length, 2);
     await h.unmount();
   });
 });
