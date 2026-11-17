@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, soloTheme, strutLink } from "./app-links";
+import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -115,6 +115,18 @@ describe("the app host", () => {
     assert.equal(isPreviewVersion("preview-0123456789ab"), true);
     for (const v of ["v3", "preview-xyz", undefined]) assert.equal(isPreviewVersion(v), false, String(v));
     assert.equal(parseAppKey("bench@preview-1"), null);
+  });
+
+  it("on a visitor's page, another public app opens in place: solo, public and theme kept, back to where it came from", () => {
+    const page = "https://strut.test/?app=strut%2Fworker&solo=1&public=1&theme=light";
+    const hop = new URL(publicAppHop({ app: "call-guide", input: "type=call-shop" }, "strut/worker", page)!);
+    assert.deepEqual(Object.fromEntries(hop.searchParams), { app: "call-guide", solo: "1", public: "1", theme: "light", input: "type=call-shop", back: "strut/worker" });
+    const home = new URL(publicAppHop({ app: "strut/worker" }, "call-guide", hop.href, { back: false })!);
+    assert.deepEqual(Object.fromEntries(home.searchParams), { app: "strut/worker", solo: "1", public: "1", theme: "light" }, "Back drops the input and the back");
+    assert.equal(publicAppHop({ app: "strut/worker" }, "strut/worker", page), null, "this app itself is the page's own link");
+    assert.equal(publicAppHop({ app: "@acme/guide" }, "strut/worker", page), null, "a peer's app is not this public view's");
+    assert.equal(publicAppHop({ app: "guide@v2" }, "strut/worker", page), null, "nor a pinned version");
+    assert.equal(publicAppHop({ wf: "x" }, "strut/worker", page), null);
   });
 
   it("a page's message names the app it is about", () => {

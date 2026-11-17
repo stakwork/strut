@@ -1901,6 +1901,20 @@ address bar (a reload closes it), and a visitor's page (`&public=1`) has
 none. The kit's `appLink(name, input)` builds the app link; a file's is
 `?artifact=<encodeURIComponent(path)>`.
 
+**Opening another app from a visitor's page.** On a visitor's page alone
+(`?app=<name>&solo=1&public=1`), a link to ANOTHER app of this server's
+public view (a plain name: not a peer's, not a pinned version) opens that
+app in place (`web/src/app-links.ts` `publicAppHop`): the same address
+with its `app` and `input`, `solo`, `public` and `theme` kept, and
+`&back=<the app it came from>` — a real navigation, so the browser's (or
+Peel's web view's) history and swipe-back go back through it, and the
+visitor stays signed in (the visitor's cookie is the origin's). A page with
+`&back=` draws a slim Back bar over the app, which goes back in history (or
+to the app it names, with no history). Any other link opens a new window,
+as before. The worker's dashboard (strut/worker) opens a task type of
+another app this way, `appLink(app, { type })`; strut/views' `WorkerPage`
+goes straight to work on the `type` input it is opened with.
+
 **The store front** (`plans/marketplace.md` §7; `web/src/components/Store.tsx`,
 `web/src/store-links.ts`). `?store=1` renders a third page alone: an index
 strut's public face, for anyone with no credential — the apps across the
@@ -2608,14 +2622,26 @@ a type names `strut/worker` as its `app`, and no app is built for it. It is
 NOT an admin's: anyone with the deployment's key or a member lists it, and
 nobody outside reaches it until an admin puts it in the public view (`PUT
 /public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
-Its page signs a worker in, then takes the tasks of every type it draws one
-after another (`useTask()`), each drawn by `WorkerTask`: what it pays, what
+Its page signs a worker in, then shows their DASHBOARD (`WorkHome`, from
+`task/me { all }` and `task/history { all }`): the server's one work link,
+across every app of the public view. The task in their hand (Continue), each
+kind of work they can do with its pay and whether there is work of it now
+("Any time" for a standing type, "3 waiting", "None right now"; a kind
+another app draws says "in <app>" and opens that app on it,
+`?app=<app>&input=type%3D<type>`, with a Back bar returning here — "Opening
+another app from a visitor's page", above), what they earned
+here (ready to withdraw, held), and their own tasks newest first with how
+each ended and what it earned. Choosing a kind (or Start working, any kind)
+takes its tasks one after another (`useTask(type)`), each drawn by
+`WorkerTask`: what it pays, what
 it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
 photo or Choose one when the type takes files (held to its `attachments`
 rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
-one earned. Strut's account widget (`account:`) shows the balance and
-Withdraw. Grants `task/next`, `task/submit`, `task/skip`, `task/file`,
-`task/me` and `task/withdraw`; `permissions: [camera]`. First-party, but a
+one earned, with Next task (only when there is more of that kind; no task is
+leased until it is pressed) and Back to your work. Strut's account widget
+(`account:`) shows the balance and Withdraw. Grants `task/next`,
+`task/submit`, `task/skip`, `task/file`, `task/me`, `task/history` and
+`task/withdraw`; `permissions: [camera]`. First-party, but a
 visitor's page gets no first-party rights, and its grants are the worker's
 steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
 `"worker": false` seeds nothing.
@@ -5131,7 +5157,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/me` | `{ all? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? } }] }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -5168,6 +5195,17 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   per lease). A booking that fails never fails the answer: the store's
   sweep books it within a minute, once.
 - **`task/skip`**: the task reopens for another worker, never this one.
+- **`task/history`**: the worker's own tasks of the types this app draws,
+  newest first, at most 50 — their dashboard's list. `ask` is what the task
+  asked as they saw it (`show.ask`, else `show.title`, else a string `show`;
+  at most 200 characters); `taken` and `closed` epoch ms; `status` how it
+  ended (`open`: in hand; `submitted`: answered; `skipped`; `expired`: ran
+  out or closed); `earned` on a paid answer: what it earned, when its hold
+  ends (`releases`), and `takenBack: true` once it was taken back. Never the
+  run, other workers' answers, whether it was a test, or why anything was
+  skipped, closed or taken back. `all: true` reads the tasks of every app
+  the caller can open here, as `task/me { all }` does. A host's own task
+  store without `history` answers `{ items: [] }`.
 - **`task/file`**: only a path on the task's `files` (`not_listed`
   whatever else the run holds), only through the caller's own live lease;
   read where the run's files are (the job's directory on a job run, else
@@ -5177,7 +5215,19 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   then this app's open types they may enter (none for a suspended or banned
   worker; only reading, so nothing is recorded), each with what an answer earns now (`payMsat`) and whether they are
   `qualifying` for it: every task they get of it is a test until they
-  qualify, so tasks arrive at once (a flag, never a score). `balance` is what they
+  qualify, so tasks arrive at once (a flag, never a score); whether it is
+  `standing` (work of it whenever they ask: their ask makes the task); and
+  how many of its tasks are `waiting` that they could take (open, not past
+  due, never held by them, wanting another answer — whatever they hold now;
+  0 for a standing type, whose tasks exist only once asked for).
+  `holding` is the task in their hand, of one of those types: `task/next`
+  hands it back before any other and refuses another type (`lease_held`)
+  until it is answered or skipped. With `all: true` the types (and
+  `holding`) are those of EVERY app the caller can open here, each naming
+  its `app`: on the public door, the public view's apps; on a member's door,
+  every app. strut/worker's dashboard lists them so; `task/next` still hands
+  out only the calling app's (`wrong_app`), so a type of another app is
+  worked by opening that app. `balance` is what they
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
   `heldMsat` is still in its hold and `withdrawableMsat` past it;
   `nextReleaseAt` (epoch ms) when the next held earning releases. Zeros

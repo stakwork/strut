@@ -61,7 +61,7 @@ import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
 import { createInvites } from "./payments/invites.js";
-import { WORKER_ADDRESS } from "./steps/lib/task/_shared.js";
+import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
@@ -1738,12 +1738,23 @@ export async function createStrut<TServices = unknown>(
   const workerTasks: WorkerTasksCapability | undefined = !hostTasks
     ? tasks.worker
     : (["next", "submit", "skip", "file", "me"] as const).every((k) => typeof hostTasks[k] === "function")
-      ? Object.freeze({ next: hostTasks.next.bind(hostTasks), submit: hostTasks.submit.bind(hostTasks), skip: hostTasks.skip.bind(hostTasks), file: hostTasks.file.bind(hostTasks), me: hostTasks.me.bind(hostTasks) })
+      ? Object.freeze({
+          next: hostTasks.next.bind(hostTasks),
+          submit: hostTasks.submit.bind(hostTasks),
+          skip: hostTasks.skip.bind(hostTasks),
+          file: hostTasks.file.bind(hostTasks),
+          me: hostTasks.me.bind(hostTasks),
+          ...(typeof hostTasks.history === "function" ? { history: hostTasks.history.bind(hostTasks) } : {}),
+        })
       : undefined;
   /** A worker step's own bag on an app door (§5.2): the worker's calls, and
    *  the Sphinx address the viewer's session carries — what `task/withdraw`
    *  pays (§8.2), handed by the door, never sent by the page. */
-  const workerServicesOf = (address: string | undefined) => (workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}) } } : {});
+  /** `apps`: the apps whose task types a list across apps may name (`task/me
+   *  { all }`) — the public view's for a visitor; left out on a member's
+   *  door, which opens every app. */
+  const workerServicesOf = (address: string | undefined, apps?: WorkerApps) =>
+    workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } } : {};
   /** The Sphinx address a visitor's session carries (plans/human-steps.md
    *  §8.2): kept by `POST /visitors/session` in the session's signed claims
    *  when it is the signing key's own. With none, `task/withdraw` answers
@@ -10084,7 +10095,7 @@ export async function createStrut<TServices = unknown>(
         // A worker's step (plans/human-steps.md §5.2): a signed-in visitor's
         // alone (the refusal below), the worker's calls on that call's bag,
         // with the address their session carries (§8.2).
-        ...workerServicesOf(sessionAddress(session)),
+        ...workerServicesOf(sessionAddress(session), async () => (await publicSurface.get()).apps.map((a) => a.name)),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
         visitor: {

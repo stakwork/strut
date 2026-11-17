@@ -121,11 +121,17 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   and none while the page is hidden; `task` is `{ lease, type, show, files,
   expires, answer, payMsat }`, `answer` the type's schema, `payMsat` what
   the answer earns, locked when it was taken; dropped when its lease runs
-  out or the server says it is gone, and the next asked for; `submit` reads
-  `useWorker()` again), `useWorker()` (`task/me`: `status`, the `types`
-  held in this app, each with its `payMsat`, and `balance` — `{ heldMsat,
+  out or the server says it is gone, and the next asked for; `submit` and
+  `skip` read `useWorker()` and `useTaskHistory()` again), `useWorker()`
+  (`task/me`: `status`, the `types` held in this app, each with its
+  `payMsat`, `standing` and `waiting` — how many wait that they could take —
+  `holding`, the task in their hand, and `balance` — `{ heldMsat,
   withdrawableMsat, totalMsat, nextReleaseAt? }`, what the worker is owed
-  here, `WorkerBalance`) and
+  here, `WorkerBalance`; `useWorker({ all: true })` lists every app's types
+  the viewer can open here, each with its `app`), `useTaskHistory()`
+  (`task/history`, `{ all }` likewise: their own
+  newest tasks here, each with its `ask`, how it ended and what it earned,
+  `WorkerHistoryItem`; grant `task/history`) and
   `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
   `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
   `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation

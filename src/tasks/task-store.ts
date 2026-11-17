@@ -492,6 +492,11 @@ export interface TaskStore {
    *  now, while `worker` holds no live lease — leased to them as `id`.
    *  Undefined when there is none. */
   take(o: { worker: string; types: string[]; id: string; now: number }): Promise<Lease | undefined>;
+  /** What `take` could hand `worker`, counted by type: the open tasks, not
+   *  past due, of `types` (enabled) that they never held and that want
+   *  another answer — whatever they hold now. A type with none is left out.
+   *  The worker's dashboard (`task/me`'s `waiting`). */
+  waitingFor(o: { worker: string; types: string[]; now: number }): Promise<Record<string, number>>;
   /** Rules 4 and 7, one guarded write: the lease, `worker`'s, live, becomes
    *  `submitted` and its task, open and not past due, `settled` with the
    *  answer. Undefined when the guard failed: nothing was written.
@@ -815,6 +820,11 @@ export class MemoryTaskStore implements TaskStore {
   private takeable(o: { worker: string; types: string[]; now: number }): TaskRecord | undefined {
     const leases = [...this.leases.values()];
     if (leases.some((l) => l.worker === o.worker && live(l, o.now))) return undefined;
+    return this.open_(o, leases).next().value ?? undefined;
+  }
+
+  /** The tasks `take` could hand `worker` were they holding nothing, oldest first. */
+  private *open_(o: { worker: string; types: string[]; now: number }, leases: Lease[]): Generator<TaskRecord> {
     const types = new Set(o.types);
     for (const t of this.tasks.values()) {
       if (t.test !== undefined || t.standing || t.status !== "open" || t.due <= o.now || !types.has(t.type)) continue;
@@ -823,9 +833,14 @@ export class MemoryTaskStore implements TaskStore {
       if (mine.some((l) => l.worker === o.worker)) continue;
       // Fewer live and submitted leases than the answers it wants (§7.6).
       if (mine.filter((l) => l.status === "submitted" || live(l, o.now)).length >= t.copies) continue;
-      return t;
+      yield t;
     }
-    return undefined;
+  }
+
+  async waitingFor(o: { worker: string; types: string[]; now: number }): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const t of this.open_(o, [...this.leases.values()])) out[t.type] = (out[t.type] ?? 0) + 1;
+    return out;
   }
 
   async take(o: { worker: string; types: string[]; id: string; now: number }): Promise<Lease | undefined> {

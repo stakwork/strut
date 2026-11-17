@@ -92,6 +92,7 @@ for (const impl of ["SQLite", "memory"] as const) {
 
     it("an ask makes the task and its lease together; several workers at once each get their own, and nothing waits unheld", async () => {
       await labels();
+      assert.deepEqual((await tasks().me("ann")).types.map((t) => [t.name, t.standing, t.waiting]), [["labels", true, 0]], "work whenever they ask, though nothing waits");
       const ann = await take("ann");
       const bob = await take("bob");
       assert.deepEqual(ann.show, SHOW);
