@@ -859,6 +859,14 @@ export const TASK_STEPS = {
   withdraw: "task/withdraw",
 } as const;
 
+/** The token a worker's invite link opened the app with (its tool input's
+ *  `invite`, plans/human-steps.md §5.8): `useTask` and `useWorker` send it,
+ *  and the server gives that worker the app's invite-only task types. */
+function useInvite(): string | undefined {
+  const invite = useToolInput<{ invite?: unknown }>()?.invite;
+  return typeof invite === "string" && invite ? invite : undefined;
+}
+
 /** `useWorker()`'s query: what `useTask().submit` reads again. */
 const WORKER_QUERY_KEY = ["strut", "task", "me"] as const;
 
@@ -1007,6 +1015,7 @@ export interface UseTaskOptions {
 export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
   const client = useStrutClient();
   const qc = useQueryClient();
+  const invite = useInvite();
   const [task, setTask] = useState<WorkerTask | null>(null);
   const [status, setStatus] = useState<TaskHookStatus>("waiting");
   const [error, setError] = useState<Error | null>(null);
@@ -1040,7 +1049,7 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
         await whenVisible(() => stopped);
         if (stopped) return;
         try {
-          const got = await client.run<WorkerTask | { none: true }>(TASK_STEPS.next, compact({ type, wait: TASK_WAIT_S }));
+          const got = await client.run<WorkerTask | { none: true }>(TASK_STEPS.next, compact({ type, wait: TASK_WAIT_S, invite }));
           if (stopped) return;
           setError(null);
           if ("none" in got) {
@@ -1065,7 +1074,7 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
       stopped = true;
       endPause?.();
     };
-  }, [client, type, round, enabled]);
+  }, [client, type, round, enabled, invite]);
 
   // A lease that ran out is someone else's task: let it go and ask again
   // (a clock ahead of the server's just gets the same lease back).
@@ -1115,9 +1124,10 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
  *  viewer the server has not seen as a `new` worker, for an admin to grant. */
 export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<WorkerInfo> {
   const client = useStrutClient();
+  const invite = useInvite();
   return useQuery({
-    queryKey: WORKER_QUERY_KEY,
-    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, {}),
+    queryKey: [...WORKER_QUERY_KEY, invite ?? ""],
+    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, compact({ invite })),
     enabled: opts.enabled ?? true,
   });
 }

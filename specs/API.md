@@ -5131,11 +5131,11 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
+| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{}` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/me` | `{ invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying }], balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -5548,15 +5548,26 @@ https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
 `a=`, strut's own section, the worker app's share `link`
-(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user)
-encoded whole. `/public/join` (§17.2)
+(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user) with
+`&input=invite%3D<token>` after it, encoded whole: the invite's own token
+(`strut-invite.<claims>.<hmac>`, auth.ts `inviteToken`, the daemon's code
+and the app, 90 days from the invite's creation), which the app is opened
+with as its tool input and the kit's `useTask` / `useWorker` send as
+`invite` on `task/next` / `task/me`. The worker who comes with it is given
+the app's INVITE-ONLY, enabled task types they hold no row of, by
+`invite:<code>` — one worker per invite (once a grant it made is held by
+another, revoked or not, it gives nothing), only while the daemon lists the
+invite `sending`, `ready` or `used`, never a type staff revoked from them,
+never to a suspended or banned worker; a token that does not hold, or opens
+another app, is ignored. So one invite lets someone in and gives them the
+work. `/public/join` (§17.2)
 turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
 new user up with the invite and then opens `a=` (an existing user goes there
 at once). The mixer keeps only code → starting sats, and the core's parser
 ignores a section it does not know. The WORKER APP is an app the task types
-name that is in the public view. Strut keeps nothing: the daemon keeps the
-invites, and an open type (the default) lets the worker in on their first
-`task/next`.
+name that is in the public view. Strut keeps no invite: the daemon keeps
+the invites, the task store the grants an invite made, and an open type
+(the default) lets the worker in on their first `task/next`.
 
 Full scope, beside the rest; `strut/staff` reaches them through
 `staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):

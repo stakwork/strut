@@ -57,7 +57,7 @@ function CopyLine(props: { label: string; value: string; hint: string }) {
 /** The block, for an admin who is not technical: how workers get in. An
  *  invite for someone new first; then, for someone who has Peel already,
  *  the code to scan and the link to send. */
-export function ShareBlock(props: { app: string; share: TypeShare; types?: string[] }) {
+export function ShareBlock(props: { app: string; share: TypeShare; types?: string[]; invited?: string[] }) {
   const { share } = props;
   if (!share.peelLink || !share.link) return null;
   const tasks = tasksWords(props.types);
@@ -69,7 +69,7 @@ export function ShareBlock(props: { app: string; share: TypeShare; types?: strin
         </h3>
         <Note>Workers do {tasks || "their tasks"} on their phone. Send each of them a way in.</Note>
       </div>
-      <InviteMaker app={props.app} />
+      <InviteMaker app={props.app} invited={props.invited ?? []} />
       <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-start sm:gap-5">
         {share.qrSvg && <Qr svg={share.qrSvg} label="QR code: opens the worker page in Peel" />}
         <div className="flex min-w-0 flex-1 flex-col gap-3">
@@ -77,7 +77,10 @@ export function ShareBlock(props: { app: string; share: TypeShare; types?: strin
             <h4 className="flex items-center gap-2 text-sm font-medium">
               <QrCode className="size-4 text-muted-foreground" /> Someone who has Peel already
             </h4>
-            <Note>They scan this code with their phone's camera, or you send them the link. It is the same for everyone, so it can go in a group chat.</Note>
+            <Note>
+              They scan this code with their phone's camera, or you send them the link. It is the same for everyone, so it can go in a group chat.
+              {props.invited?.length ? ` It does not give ${tasksWords(props.invited)}, which only invited people do: send them an invite instead, which works with Peel too.` : ""}
+            </Note>
           </div>
           <CopyLine label="Link" value={share.peelLink} hint="Opens the worker page in Peel, signed in." />
           <CopyLine label="In a browser" value={share.link} hint="The same page in any browser, for someone without Peel." />
@@ -88,7 +91,7 @@ export function ShareBlock(props: { app: string; share: TypeShare; types?: strin
 }
 
 /** For someone new to Peel: a one-use invite link (§5.8). */
-function InviteMaker(props: { app: string }) {
+function InviteMaker(props: { app: string; invited: string[] }) {
   const client = useStrutClient();
   const q = useInvites();
   const { act, busy, error } = useAct();
@@ -110,7 +113,8 @@ function InviteMaker(props: { app: string }) {
         <UserPlus className="size-4 text-muted-foreground" /> Someone new
       </h4>
       <Note>
-        An invite is a link for one person, used once. On an Android phone it installs Peel, the app workers use, sets up their account with a few sats to start, and opens the worker page. This server's wallet pays those sats and a small fee.
+        An invite is a link for one person, used once. On an Android phone it installs Peel, the app workers use, sets up their account with a few sats to start, and opens the worker page
+        {props.invited.length ? ` with ${tasksWords(props.invited)} already theirs: nothing more to do` : ""}. This server's wallet pays those sats and a small fee.
       </Note>
       {q.data?.why ? (
         <Note>{inviteWhyText(q.data.why)}</Note>
@@ -165,7 +169,7 @@ export function TypeShareLine(props: { type: TaskType }) {
   const { type } = props;
   const share = type.share;
   if (!share) return null;
-  if (share.public && share.peelLink) return <ShareBlock app={type.app} share={share} />;
+  if (share.public && share.peelLink) return <ShareBlock app={type.app} share={share} types={[type.name]} invited={type.open === false ? [type.name] : []} />;
   if (share.public) return <Note>The worker page is online; its links show here once this server has been opened at its web address.</Note>;
   return (
     <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground" data-testid="share-not-public">

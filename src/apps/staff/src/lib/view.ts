@@ -401,12 +401,14 @@ export function errorText(err: unknown): string {
 // ── sharing a worker app (§9.5) ─────────────────────────────────────────────
 
 /** Each public worker app once, with the types its workers answer. */
-export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[] }> {
-  const out = new Map<string, { app: string; share: TypeShare; types: string[] }>();
+export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[]; invited: string[] }> {
+  const out = new Map<string, { app: string; share: TypeShare; types: string[]; invited: string[] }>();
   for (const t of types ?? []) {
     if (!t.share?.public || !t.share.peelLink) continue;
-    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [] };
+    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [], invited: [] };
     row.types.push(t.name);
+    // The invite-only ones: what an invite gives its worker (§5.8).
+    if (t.open === false) row.invited.push(t.name);
     out.set(t.app, row);
   }
   return [...out.values()];

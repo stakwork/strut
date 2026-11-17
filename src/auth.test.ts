@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { inviteOf, inviteToken } from "./auth.js";
 import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
 
 /**
@@ -500,6 +501,44 @@ describe("sessions (the login)", () => {
     assert.equal(await (await scope.request("/x", { headers: { cookie, authorization: "Bearer peer" } })).text(), "full");
     assert.equal(await (await scope.request("/x", { headers: { authorization: "Bearer peer" } })).text(), "peer");
     delete process.env["STRUT_PEER_KEY"];
+  });
+});
+
+describe("worker invite tokens (plans/human-steps.md §5.8)", () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ["STRUT_API_KEY", "STRUT_SECRET_KEY"]) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    process.env["STRUT_API_KEY"] = "deploy-key";
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("names the daemon's invite and the worker app until its exp; expiry, tampering, another kind and another secret refuse it", () => {
+    const exp = Date.now() + 86_400_000;
+    const token = inviteToken("c0de", "workers", exp)!;
+    assert.match(token, /^strut-invite\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.deepEqual(inviteOf(token), { code: "c0de", app: "workers" });
+    assert.equal(inviteToken("c0de", "workers", exp), token, "fixed by its code, app and exp: a listing shows the link sent");
+    assert.equal(inviteOf(token, exp), undefined, "expired");
+    const [, payload, sig] = token.split(".") as [string, string, string];
+    const forged = Buffer.from(JSON.stringify({ c: "c0de", a: "other", exp })).toString("base64url");
+    assert.equal(inviteOf(`strut-invite.${forged}.${sig}`), undefined, "another app, same signature");
+    assert.equal(inviteOf(`strut-invite.${payload}.${sig.slice(1)}x`), undefined, "tampered");
+    // Another kind of strut token, with the same secret, is not an invite.
+    const ticket = channelTicket({ actor: "alice", app: "workers", version: "v1" }).ticket;
+    assert.equal(inviteOf(`strut-invite.${ticket.slice("strut-channel.".length)}`), undefined);
+    assert.equal(inviteOf("forged"), undefined);
+    process.env["STRUT_API_KEY"] = "another-key";
+    assert.equal(inviteOf(token), undefined, "another secret");
+    delete process.env["STRUT_API_KEY"];
+    assert.equal(inviteToken("c0de", "workers", exp), undefined, "no secret, no token: the link carries none");
   });
 });
 

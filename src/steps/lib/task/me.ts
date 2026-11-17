@@ -22,8 +22,10 @@ export default defineStep({
     "A WORKER's page asks who its viewer is here (the kit's useWorker): { actor, status, types, balance } — status new | active | suspended | banned, the task types they hold that this app draws (each with payMsat, what an answer earns now, and qualifying: true while every task they get of it is a test they qualify on), " +
     "and balance { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }: what they are owed here, earnings in their hold and those past it, " +
     "and payout { on, why?, minMsat, dayLeftMsat, maxMsat, out? }: whether they may withdraw now (why not: off | no_wallet | no_keysend | no_address — sign in with Peel — | not_here), the least and the most one withdrawal may ask, and a payout on its way (task/withdraw). " +
-    "A first call writes the viewer as a new worker, for staff to grant task types to. Only an app page's own call, as its viewer.",
-  input: z.object({}),
+    "A first call writes the viewer as a new worker, for staff to grant task types to — or, with the token their invite link opened the app with (`invite`), gives them the app's invite-only task types. Only an app page's own call, as its viewer.",
+  input: z.object({
+    invite: z.string().min(1).max(2000).optional().describe("The token the worker's invite link opened this app with (its tool input's `invite`). The kit's useWorker sends it."),
+  }),
   output: z.object({
     actor: z.string(),
     status: z.enum(["new", "active", "suspended", "banned"]),
@@ -38,9 +40,9 @@ export default defineStep({
       out: z.object({ key: z.string(), msat: z.number(), maxFeeMsat: z.number(), at: z.number(), stale: z.boolean() }).optional(),
     }),
   }),
-  async run(_cfg, ctx?: StepContext) {
+  async run(cfg, ctx?: StepContext) {
     const { tasks, actor, app, address } = workerCall("task/me", ctx);
-    const me = await tasks.me(actor, { app, ...(address ? { address } : {}) });
+    const me = await tasks.me(actor, { app, ...(address ? { address } : {}), ...(cfg.invite ? { invite: cfg.invite } : {}) });
     // A host's own store pays nobody: it says so, as strut's own would.
     return { ...me, payout: me.payout ?? { on: false, why: "not_here" as const, minMsat: DEFAULT_PAYOUT_SETTINGS.minSats * 1000, dayLeftMsat: 0, maxMsat: 0 } };
   },

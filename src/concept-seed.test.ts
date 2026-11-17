@@ -144,13 +144,13 @@ describe("concept files (pure)", () => {
     // built. Workspace-general: no one deployment's task.
     const work = await read("Worker Tasks.md");
     assert.deepEqual(work.parents, ["Workflow Builder"]);
-    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about"]) assert.ok(work.docs!.includes(must), must);
+    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about", "an invite is the one step"]) assert.ok(work.docs!.includes(must), must);
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
     // A worker app's links are shared from Tasks and workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.
     for (const c of [wb, app, work]) {
       assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Tasks and workers`);
-      assert.match(c.docs!, /never\s+paste a link/, `${c.name}: no link pasted in a reply`);
+      assert.match(c.docs!, /never\s+paste\s+a\s+link/, `${c.name}: no link pasted in a reply`);
       assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
     }
     // No job side of an app (retired 2026-10-22, with the `Job App` page):

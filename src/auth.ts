@@ -486,7 +486,7 @@ export function sessionTtlMs(): number {
 /** A signed token's kinds: a session cookie, a person token, a catalog
  *  read token, a channel ticket, a sign-in ticket, a visitor's challenge.
  *  The kind is in the HMAC input, so one is never accepted as another. */
-type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket" | "challenge";
+type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket" | "challenge" | "invite";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -582,6 +582,29 @@ const TICKET_PREFIX = "strut-ticket.";
 export const SIGN_IN_TICKET_MS = 60_000;
 /** The `jti`s redeemed, each until its ticket's `exp`. */
 const redeemedTickets = new Map<string, number>();
+
+// ── worker invites (plans/human-steps.md §5.8) ──────────────────────────
+
+const INVITE_PREFIX = "strut-invite.";
+
+/** The token a worker invite's link carries to the worker app it opens
+ *  (`input=invite=…`): the daemon's invite `code` and the `app`, signed, so
+ *  the worker who opens it with it is given that app's invite-only task
+ *  types (the task service's `enterInvite`) — one worker per invite, while
+ *  the daemon still has it. `exp` fixed by the caller, so a listing's link
+ *  is the one the worker was sent. Undefined with no secret to sign it. */
+export function inviteToken(code: string, app: string, exp: number): string | undefined {
+  const signed = signClaims("invite", { c: code, a: app, exp });
+  return signed ? `${INVITE_PREFIX}${signed}` : undefined;
+}
+
+/** The invite a token names, if it is strut's, signed here and not past its
+ *  `exp`; undefined otherwise. */
+export function inviteOf(token: string, now = Date.now()): { code: string; app: string } | undefined {
+  if (typeof token !== "string" || !token.startsWith(INVITE_PREFIX)) return undefined;
+  const claims = readClaims("invite", token.slice(INVITE_PREFIX.length), now);
+  return claims && typeof claims["c"] === "string" && typeof claims["a"] === "string" ? { code: claims["c"], app: claims["a"] } : undefined;
+}
 
 /** A sign-in ticket for `actor` as `role` (a member unless said),
  *  living `ttlMs` — or undefined with no secret to sign it. A `visitor`'s

@@ -637,6 +637,9 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
     const shared = sharedApps([await types()]);
     assert.deepEqual(shared.map((a) => [a.app, a.types]), [["workers", ["pets"]]], "the Queue's block: each public worker app once");
+    // An invite gives its worker the app's invite-only types (§5.8): the block names them.
+    assert.deepEqual(shared.map((a) => a.invited), [["pets"]], "pets is invite-only here");
+    assert.deepEqual(sharedApps([{ ...(await types()), open: true }]).map((a) => a.invited), [[]], "an open type needs no invite");
     await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 

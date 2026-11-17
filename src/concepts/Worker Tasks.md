@@ -63,10 +63,12 @@ a card the person opens, while your words name it ("Tasks and workers").
    they pay from their own wallet.
 3. **Bring workers in.** Tasks and workers (`strut/staff`) opens with the
    worker page's links once it is online: Invite makes a one-use link that
-   sets up a new worker's phone (it costs a few sats), and the Peel link
-   and its QR code are for someone already set up. For work only invited
-   people do, they then give each worker the task on the Workers tab.
-   Point there; never paste a link in the conversation.
+   sets up a new worker's phone (it costs a few sats) and gives them the
+   work only invited people do, so nothing more is needed; the Peel link
+   and its QR code are for someone already set up, and give that work
+   only once the person is given it on the Workers tab — so for
+   invite-only work, an invite is the one step. Point there; never paste
+   a link in the conversation.
 4. **Try it.** Open the link on their own phone and do one, so they see
    what a worker sees and what comes back. For work one for each item,
    that is after asking for a round of one (below).

@@ -234,10 +234,23 @@ index. A change in this area updates this file, not AGENTS.md.
   `/public/join` opens Peel on Android with Chrome's `intent://` form of
   `sphinx.chat://?action=i&…&a=…`, the newest APK as its fallback; Peel signs
   a new user up and opens `a=`, an existing user goes straight there, and
-  the first sign-in is one tap. Nothing new in the task store: the daemon
-  keeps the invites, and an open type lets the worker in on their first
-  `task/next` (ruling 9). `a=` lives only in the link; the mixer keeps code →
-  starting sats and the core ignores a section it does not know.
+  the first sign-in is one tap. ONE STEP for invite-only work: `a=` is the
+  share link with `input=invite=<token>` (payments/invites.ts
+  `invitedAppUrl`, auth.ts `inviteToken` / `inviteOf`: the daemon's code and
+  the app, signed, 90 days from the invite's creation, so a listing shows the
+  link sent), the app's tool input; the kit's `useTask` / `useWorker` send it
+  as `invite` on `task/next` / `task/me`, and the service's `enterInvite`
+  (deps `invite: { read, live }`, createStrut's: `inviteOf`, and the daemon
+  listing the invite `sending` / `ready` / `used`) gives that worker the
+  app's invite-only, enabled types they hold no row of, by `invite:<code>`
+  — one worker per invite (`WorkerStore.grantedBy`, revoked grants
+  included; two first asks with one link taken one after the other), never
+  a revoked type, never a suspended or banned worker; a token that does not
+  hold or opens another app is ignored (invite-grants.test.ts, both stores).
+  The task store keeps those grants and nothing else of an invite; an open
+  type lets anyone in on their first `task/next` (ruling 9). `a=` lives only
+  in the link; the mixer keeps code → starting sats and the core ignores a
+  section it does not know.
 - **Support: the staff's chat with workers** (`plans/support-chat.md`, item 1;
   `src/support/`; specs/API.md §22 "Support"). Workers DM the treasury
   daemon's account, "Support", from Peel; staff answer from the Support tab
