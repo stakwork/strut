@@ -49,7 +49,7 @@ namespace `src/steps/lib/x/`.
 | Packages, indexes, the store, serve mode | [docs/packages.md](docs/packages.md) | `packages/`, `package-lookup.ts`, `tar.ts`, `package/*` |
 | The public view, visitors, public runs and tools | [docs/public.md](docs/public.md) | `public-surface.ts`, `public-routes.ts`, `public-runs.ts`, `public-tools.ts`, `public-agents.ts`, `public-call.ts`, `public-runnable.ts`, `public-view.ts`, `visitors.ts`, `visitor-address.ts`, `guarded-http.ts` |
 | Payments: credit, the wallet, earnings, buying from another strut | [docs/payments.md](docs/payments.md) | `payments/`, `l402.ts`, `public-credit.ts`, `remote.ts`, `run-cap.ts`, `earnings/*`, `remote/*` |
-| Human steps and the task store | [docs/tasks.md](docs/tasks.md) | `tasks/`, the `human` core step, `task/*` |
+| Human steps, the task store, Support (the staff's chat with workers) | [docs/tasks.md](docs/tasks.md) | `tasks/`, `support/`, the `human` core step, `task/*` |
 | Speech, dictation, voice | [docs/audio.md](docs/audio.md) | `audio/`, `voice.ts`, `dictation/*`; `fixer/` at the root |
 | Private AI | [docs/privacy.md](docs/privacy.md) | `privacy/`, `privacy/*` |
 | The browser | [docs/browser.md](docs/browser.md) | `browser/`, `browser/*`; `images/browser/` at the root |

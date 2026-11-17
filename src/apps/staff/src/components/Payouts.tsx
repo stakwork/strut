@@ -1,6 +1,7 @@
 // Payouts (plans/human-steps.md §8.2): workers' withdrawals to their own
 // Sphinx address, with nobody's yes per payment. The switch that lets them
-// happen, the caps with today's use against them, the wallet's cover (a
+// happen, the caps with today's use against them (and an invite's default
+// sats, §5.8, another money setting), the wallet's cover (a
 // withdrawal is refused while it is short), and the list: each payout, its
 // state, and for a stale one — out a day, the wallet silent — Read again,
 // Record as paid and Drop. Shown only when `/tasks/payouts` answers.
@@ -90,8 +91,9 @@ function Switcher(props: { settings: PayoutSettings }) {
   const client = useStrutClient();
   const { act, busy, error } = useAct();
   const [asking, setAsking] = useState(false);
-  const { on, minSats, workerDaySats, serverDaySats } = props.settings;
-  const save = (next: boolean) => act("switch", () => client.run("staff/save-payouts", { on: next, minSats, workerDaySats, serverDaySats })).then(() => setAsking(false));
+  const { on, minSats, workerDaySats, serverDaySats, inviteSats } = props.settings;
+  const save = (next: boolean) =>
+    act("switch", () => client.run("staff/save-payouts", { on: next, minSats, workerDaySats, serverDaySats, ...(inviteSats !== undefined ? { inviteSats } : {}) })).then(() => setAsking(false));
   return (
     <section className="flex flex-col gap-2 rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -121,12 +123,20 @@ function Caps(props: { settings: PayoutSettings; today: PayoutsAnswer["today"]; 
   const client = useStrutClient();
   const { act, busy, error } = useAct();
   const s = props.settings;
-  const [d, setD] = useState({ minSats: String(s.minSats), workerDaySats: String(s.workerDaySats), serverDaySats: String(s.serverDaySats) });
-  useEffect(() => setD({ minSats: String(s.minSats), workerDaySats: String(s.workerDaySats), serverDaySats: String(s.serverDaySats) }), [s.minSats, s.workerDaySats, s.serverDaySats]);
-  const n = { minSats: Number(d.minSats), workerDaySats: Number(d.workerDaySats), serverDaySats: Number(d.serverDaySats) };
+  // A strut from before has no `inviteSats`: the field is not shown, nor sent.
+  const draftOf = () => ({ minSats: String(s.minSats), workerDaySats: String(s.workerDaySats), serverDaySats: String(s.serverDaySats), inviteSats: String(s.inviteSats ?? "") });
+  const [d, setD] = useState(draftOf);
+  useEffect(() => setD(draftOf()), [s.minSats, s.workerDaySats, s.serverDaySats, s.inviteSats]);
+  const n = { minSats: Number(d.minSats), workerDaySats: Number(d.workerDaySats), serverDaySats: Number(d.serverDaySats), ...(s.inviteSats !== undefined ? { inviteSats: Number(d.inviteSats) } : {}) };
   const whole = Object.values(n).every((v) => Number.isInteger(v) && v >= 1);
-  const problem = !whole ? "Each is a whole number of sats, at least 1." : n.workerDaySats < n.minSats || n.serverDaySats < n.minSats ? "Each cap is at least the minimum." : undefined;
-  const changed = n.minSats !== s.minSats || n.workerDaySats !== s.workerDaySats || n.serverDaySats !== s.serverDaySats;
+  const problem = !whole
+    ? "Each is a whole number of sats, at least 1."
+    : n.workerDaySats < n.minSats || n.serverDaySats < n.minSats
+      ? "Each cap is at least the minimum."
+      : (n.inviteSats ?? 0) > 100_000
+        ? "An invite starts a worker with at most 100,000 sats."
+        : undefined;
+  const changed = n.minSats !== s.minSats || n.workerDaySats !== s.workerDaySats || n.serverDaySats !== s.serverDaySats || n.inviteSats !== s.inviteSats;
   const used = props.today.paidMsat + props.today.outMsat;
   const field = (k: keyof typeof d, label: string, hint: string) => (
     <Field label={label} hint={hint} htmlFor={`payout-${k}`}>
@@ -135,10 +145,11 @@ function Caps(props: { settings: PayoutSettings; today: PayoutsAnswer["today"]; 
   );
   return (
     <Section title="Caps" aside={<Note>UTC day {props.today.day} · {props.today.count} payout{props.today.count === 1 ? "" : "s"} today</Note>}>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
         {field("minSats", "Least one withdrawal (sats)", "A worker asks for at least this.")}
         {field("workerDaySats", "One worker a day (sats)", props.payouts ? `Most by one worker today: ${fmtSats(mostByOneWorkerToday(props.payouts, props.today.day))}, of those listed.` : "Each worker, in a UTC day.")}
         {field("serverDaySats", "All workers a day (sats)", `Today: ${fmtSats(used)} paid or on its way; ${fmtSats(props.today.serverLeftMsat)} left.`)}
+        {s.inviteSats !== undefined && field("inviteSats", "A new worker's invite (sats)", "What a Share block's Invite starts a worker with when it names none; the mixer's price is paid on top.")}
       </div>
       {problem && changed && <Note className="text-destructive">{problem}</Note>}
       {changed && (
@@ -146,7 +157,7 @@ function Caps(props: { settings: PayoutSettings; today: PayoutsAnswer["today"]; 
           <Button size="sm" disabled={!!problem || busy !== null} onClick={() => void act("caps", () => client.run("staff/save-payouts", { on: s.on, ...n }))}>
             Save caps
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setD({ minSats: String(s.minSats), workerDaySats: String(s.workerDaySats), serverDaySats: String(s.serverDaySats) })}>
+          <Button size="sm" variant="ghost" onClick={() => setD(draftOf())}>
             Cancel
           </Button>
         </div>
@@ -236,7 +247,7 @@ function Stale(props: { p: Payout }) {
   const feeBad = !Number.isFinite(feeMsat) || feeMsat < 0;
   return (
     <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
-      <Note>On its way for over a day and the wallet does not say. Only the worker's wallet knows whether the sats arrived: look there before you decide. Recording it paid when it did not loses the sats; dropping it when it did pays the worker twice.</Note>
+      <Note>On its way for over a day. The wallet is asked to cancel it: if it had not arrived it fails by itself and the sats are the worker's again, and if it had it is recorded paid. Decide by hand only when the wallet cannot cancel or does not say. Only the worker's wallet knows whether the sats arrived: look there first. Recording it paid when it did not loses the sats; dropping it when it did pays the worker twice.</Note>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void act("read", () => client.run<{ state?: string }>("staff/payout-read", { key })).then((r) => setSaid(r ? `Read again: ${r.state ?? "no answer"}.` : null))}>
           Read again

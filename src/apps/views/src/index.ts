@@ -12,7 +12,8 @@
  * and `graph/graph-search` in `grants.steps` for the graph views, `sheets/get-values` for SheetView
  * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow; ConceptDiff reads
  * `history/read` (and `proposal/get` + `graph/graph-get-batched` for a proposal); TaskForm only draws a task's answer
- * schema — the page's `useTask().submit` sends it (`task/submit` in grants.steps). The folds they draw are
+ * schema — the page's `useTask().submit` sends it (`task/submit` in grants.steps); WorkerPage, WorkerTask and TaskPhotos are a worker app's pieces
+ * (`task/next`, `task/submit`, `task/skip`, and `camera` in `permissions:` for a photo). The folds they draw are
  * `@strut/kit`'s. Its own page is the gallery: every component over fixtures.
  */
 export { RunStatus } from "./components/RunStatus";
@@ -21,6 +22,7 @@ export { RunTimeline, type RunTimelineProps } from "./components/RunTimeline";
 export { Transcript, type TranscriptProps } from "./components/Transcript";
 export { LaunchForm, type LaunchFormProps, type InputField } from "./components/LaunchForm";
 export { TaskForm, type TaskFormProps } from "./components/TaskForm";
+export { WorkerPage, WorkerTask, TaskPhotos, PayPill, taskAsk, shownFields, satsText, type WorkerPageProps, type WorkerTaskProps, type TaskPhotosProps } from "./components/WorkerTask";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";

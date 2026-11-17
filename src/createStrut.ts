@@ -36,6 +36,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
+import { principalRequired } from "./auth.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
@@ -47,14 +48,19 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
+import { createSupport, type Support } from "./support/support.js";
+import { supportRoutes } from "./support/routes.js";
+import { SupportStore } from "./support/store.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
+import { standingTask } from "./tasks/standing.js";
 import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
+import { createInvites } from "./payments/invites.js";
 import { WORKER_ADDRESS } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -64,7 +70,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -126,6 +132,7 @@ import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
+import { seedWorkerApp } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -218,7 +225,7 @@ import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { appOfDomain, createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
 import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
@@ -432,6 +439,10 @@ export interface StrutOptions<TServices = unknown> {
    *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
    *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
   tasks?: { now?: () => number; principal?: string };
+  /** Support (plans/support-chat.md, src/support/): `pollMs`, how often the
+   *  follower reads the daemon's DMs (3 s); `fetch`, how it reaches the
+   *  daemon (a test's). */
+  support?: { pollMs?: number; fetch?: typeof fetch };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -591,6 +602,11 @@ export interface StrutOptions<TServices = unknown> {
    *  first-party, ADMIN-ONLY app — the `/tasks` routes as a page. Seeded
    *  after `strut/views` (it imports `TaskForm`). `false` seeds nothing. */
   staff?: false;
+  /** `strut/worker` (`src/apps/worker-seed.ts`, plans/human-steps.md §5): a
+   *  worker app for any task type whose answer is a photo and plain fields
+   *  (strut/views' `WorkerPage`). Seeded after `strut/views`; nobody outside
+   *  sees it until an admin makes it public. `false` seeds nothing. */
+  worker?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -934,6 +950,12 @@ export interface Strut<TServices = unknown> {
    *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
    *  every minute, closed by `close()`. */
   tasks: TasksService;
+
+  /** SUPPORT (plans/support-chat.md, src/support/): the staff's chat with
+   *  workers over the treasury daemon's DMs. Its follower reads the daemon
+   *  every few seconds while the wallet has a message token; `tick()` reads
+   *  it now. Closed by `close()`. */
+  support: Support;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -1671,6 +1693,35 @@ export async function createStrut<TServices = unknown>(
     // Withdraw (plans/human-steps.md §8.2): the payer's third door, built
     // below beside the withdrawals it sends through.
     payouts: { pay: (actor, o) => payouts.pay(actor, o), view: (actor, o) => payouts.view(actor, o) },
+    // Standing types (plans/human-steps.md §5.7): a pick-up is read off the
+    // type's workflow — on, with someone to bill, its first step the type's
+    // `human` step — and each answer launches that workflow under the run id
+    // the pick-up chose, as an automation's fire launches: no actor, billed
+    // to the workflow's owner, input `{}`. A run on file under that id is
+    // launched already (a crash between the launch and its record).
+    standing: async (type, workflow) => {
+      const flow = await workspace.getWorkflow(workflow).catch(() => null);
+      if (!flow) return { problem: `no workflow ${workflow} here` };
+      const disabled = await workflowDisabled(workspace, workflow);
+      if (disabled) return { problem: disabled };
+      if (principalRequired() && !(await standingPayer(workflow))) {
+        return { problem: `workflow "${workflow}" has no owner and its active version no publisher, so its runs would have nobody to bill; claim the workflow first` };
+      }
+      return standingTask(flow, type);
+    },
+    launch: async (t) => {
+      if (controllers.has(`${t.workflow}/${t.runId}`) || (await store.logWrittenAt(t.workflow, t.runId)) !== null) return;
+      const draining = drain.refusal();
+      if (draining) throw new Error(draining);
+      const disabled = await workflowDisabled(workspace, t.workflow);
+      if (disabled) throw new Error(disabled);
+      // Billed to the owner by the principal rule; an ownerless workflow to
+      // whoever published its active version.
+      const owner = await principalFor(t.workflow);
+      const payer = owner ? undefined : await standingPayer(t.workflow);
+      launchDetached(await workspace.getWorkflow(t.workflow), { runId: t.runId, input: {} }, payer ? { principal: payer } : undefined);
+    },
+    runId: generateRunId,
     ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
   });
   // On the shared bag, the `human` step's `ensure` alone (plans/human-steps.md
@@ -1740,6 +1791,9 @@ export async function createStrut<TServices = unknown>(
     owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
     balance: () => walletBalanceMsat(payments.lightning(), 5_000),
     sweep: () => payouts.sweep(),
+    // A line from Support to the worker (plans/support-chat.md §6), on its
+    // own: the payout is booked whatever becomes of it.
+    paid: (p) => void support.paidOut(p),
   });
   // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
   // the payer's THIRD door — a keysend to the Sphinx address the worker's
@@ -1916,6 +1970,12 @@ export async function createStrut<TServices = unknown>(
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
+  };
+  /** Who a run with no actor is billed to: the workflow's owner, else the
+   *  actor who published its active version (a standing type's runs). */
+  const standingPayer = async (workflow: string): Promise<string | undefined> => {
+    const meta = await workspace.getWorkflowMetadata(workflow).catch(() => null);
+    return meta?.owner ?? meta?.versions[meta.active]?.actor;
   };
   /** A workflow with no owner is adopted by the first actor who publishes it. */
   const adoptWorkflow = async (name: string, actor: string | undefined) => {
@@ -2112,6 +2172,16 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[staff] seeded app: strut/staff @ ${r.version}`);
     } catch (err) {
       console.warn(`[staff] could not seed strut/staff:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/worker` (src/apps/worker-seed.ts, plans/human-steps.md §5): the
+  // worker app every server has, after strut/views (it is WorkerPage).
+  if (opts.worker !== false) {
+    try {
+      const r = await seedWorkerApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[worker] seeded app: strut/worker @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[worker] could not seed strut/worker:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
@@ -2390,6 +2460,15 @@ export async function createStrut<TServices = unknown>(
   // 2.8 MB took 7 s raw (swarm38, 2026-09-30). SSE is skipped by content
   // type, so the streams flush event by event as before.
   app.use(compress());
+  /** Where the last request reached this server (`baseOfRequest`): the base
+   *  of a link made outside a request, an accepted `app/make-public`'s. */
+  let lastBase: string | undefined;
+  app.use("*", async (c, next) => {
+    // A request strut made to itself (an admin door's, app/look's) is
+    // `http://strut.invalid`, not where anyone reaches this server.
+    if (!inProcessOf(c)) lastBase = baseOfRequest(c);
+    await next();
+  });
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   //
@@ -3961,6 +4040,7 @@ export async function createStrut<TServices = unknown>(
   });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
+    baseOf: (c) => baseOfRequest(c),
     visitorAddress,
     // An ACTIVE worker's requests count against the worker, not the address
     // (plans/human-steps.md §5.2): a room of workers shares one address. A
@@ -4102,6 +4182,9 @@ export async function createStrut<TServices = unknown>(
     for (const a of next.apps) {
       if (before.has(a.name) || o.holdAt?.[a.name]) continue;
       try {
+        // A seeded app follows strut's releases: nothing to hold.
+        const rec = await workspace.getApp(a.name).catch(() => null);
+        if (rec?.versions[rec.active]?.source === "seed") continue;
         const rel = await apps.releases(a.name);
         if (!rel || rel.live !== "latest") continue;
         const dir = await apps.versionDir(a.name);
@@ -4185,6 +4268,7 @@ export async function createStrut<TServices = unknown>(
         served: () => serveRef?.ref,
         proposal: (id) => readProposal(proposalsRoot(dataDir), id),
         save: savePublicView,
+        base: () => lastBase,
       }),
     );
   }
@@ -5651,15 +5735,24 @@ export async function createStrut<TServices = unknown>(
   // This strut as the phone book and the crawler behind it (src/packages/
   // index.ts): the rows are a person's (full scope), the card and the
   // search are anyone's — open in the gate, as the public catalog is.
+  /** The scheme the request was made with, a proxy's header honored. */
+  const requestProto = (c: Context) => c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(c.req.url).protocol.replace(/:$/, "");
+  /** Where people reach this server, mount path included (mcp's `/lab`):
+   *  `STRUT_PUBLIC_URL`, else the request's origin and its
+   *  `x-forwarded-prefix`. A public app's share links (public-routes.ts
+   *  `publicAppLinks`). */
+  function baseOfRequest(c: Context): string {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+    const prefix = c.req.header("x-forwarded-prefix")?.split(",")[0]?.trim().replace(/\/+$/, "") ?? "";
+    return `${publicUrlOf(c)}${prefix}`;
+  }
   /** The base a caller OUTSIDE the UI is handed links on: `STRUT_PUBLIC_URL`
    *  (`opts.publicUrl`), else the request's own origin (a proxy's headers
    *  honored) — the MCP doors' links, the index door's store links. */
   const publicUrlOf = (c: Context) => {
     if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
-    const url = new URL(c.req.url);
-    const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
-    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
-    return `${proto}://${host}`;
+    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || new URL(c.req.url).host;
+    return `${requestProto(c)}://${host}`;
   };
   /** The index's requests desk, when this strut is an index. */
   let requestsDesk: RequestsDesk | undefined;
@@ -6494,6 +6587,22 @@ export async function createStrut<TServices = unknown>(
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
+    // A new worker's invite (§5.8): the daemon's, through the payer; its
+    // link on the base the share links use, opening the worker app — an app
+    // the task types name that is in the public view.
+    invites: createInvites({
+      payer: () => payments.payer(),
+      inviteSats: async () => (await payouts.settings()).inviteSats,
+      workerApps: async () => {
+        const [types, surface] = await Promise.all([(hostTasks ?? tasks.capability).types(), publicSurface.get()]);
+        const shown = new Set(surface.apps.map((a) => a.name));
+        return [...new Set(types.map((t) => t.app))].filter((a) => shown.has(a)).sort();
+      },
+    }),
+    // The share links' base (`baseOfRequest`, with a mount path): a staff
+    // page's in-process request is `http://strut.invalid`, so it takes where
+    // the page's own request came (`lastBase`), as staff/types' share does.
+    publicUrl: (c) => (inProcessOf(c) && lastBase) || baseOfRequest(c),
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {
@@ -6507,10 +6616,35 @@ export async function createStrut<TServices = unknown>(
     },
   });
 
+  // ── Support (plans/support-chat.md; src/support/) ──────────────────────
+  // The staff's chat with workers over the treasury's Sphinx DMs, through
+  // the daemon's MESSAGE token: held here and by the follower alone, never
+  // on a bag. No token, or an NWC wallet: every route says `not_available`.
+  // Its tables are in the task store's file, on a connection of its own;
+  // memory where the run store is.
+  const support = createSupport({
+    daemon: async () => {
+      if (payments.injected) return null;
+      const w = await payments.settings.wallet();
+      return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
+    },
+    open: async () => new SupportStore(await openTaskDb(store instanceof MemoryRunStore ? TASKS_IN_MEMORY : tasksPath(dataDir))),
+    filesDir: join(dataDir, "support", "files"),
+    photoFile: join(dataDir, "support", "photo"),
+    ...(opts.support?.fetch ? { fetch: opts.support.fetch } : {}),
+    ...(opts.support?.pollMs ? { pollMs: opts.support.pollMs } : {}),
+  });
+  supportRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    support,
+  });
+
   // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
   // in-process request, the viewer's own, for the steps strut's own admin
   // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
-  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks alone).
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks, and
+  // /support, plans/support-chat.md).
   // Handed to the app door's bag for a first-party page shown to an admin,
   // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
   // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
@@ -10222,6 +10356,18 @@ export async function createStrut<TServices = unknown>(
         // its meta, title, icon and link preview — `pickPage` reads the meta
         // and draws the app alone. `?shell=1` with the key is strut's own UI.
         if (serveRef && !(c.req.query("shell") === "1" && carriesApiKey(c))) return c.html(servedHtml(html, served?.page() ?? null, publicUrlOf(c)));
+        // A custom domain (plans/public-surface.md §9): a host a public app
+        // lists answers with that app alone, as a served box's `/` does. Its
+        // links name the domain, never STRUT_PUBLIC_URL; an app that cannot
+        // be read is "nothing served here", never strut's own UI.
+        const host = requestHost(c);
+        const domainApp = appOfDomain(await publicSurface.get(), host);
+        if (domainApp && !(c.req.query("shell") === "1" && carriesApiKey(c))) {
+          const info = await publicAppInfo(domainApp).catch(() => null);
+          const icon = info?.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
+          const page = info ? { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) } : null;
+          return c.html(servedHtml(html, page, `${requestProto(c)}://${host}`));
+        }
         return c.html(html);
       } catch {
         return c.text("UI not built. Run: cd web && npm run build", 404);
@@ -10362,6 +10508,7 @@ export async function createStrut<TServices = unknown>(
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
     tasks.stop();
+    support.stop();
     publicTools.close();
     withdrawals.stop();
     deposits.stop();
@@ -10389,8 +10536,9 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
-    // And the task store's.
+    // And the task store's, and Support's connection to it.
     await tasks.close();
+    await support.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -10526,6 +10674,9 @@ export async function createStrut<TServices = unknown>(
   // minute, wherever a store is — dead leases let go, tasks past their time
   // expired.
   tasks.start();
+  // Support's follower (plans/support-chat.md ruling 16): the daemon's DMs
+  // read every few seconds while a message token is set; idle otherwise.
+  support.start();
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
@@ -10583,6 +10734,7 @@ export async function createStrut<TServices = unknown>(
     remote,
     ledger,
     tasks,
+    support,
     claims,
     verifier,
     listen,

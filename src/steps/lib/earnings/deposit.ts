@@ -19,7 +19,8 @@ export default defineStep({
 });
 
 /** A BOLT11 invoice as a QR code a wallet scans: `lightning:` and upper
- *  case (alphanumeric mode), as an SVG data URL an <img> takes. */
+ *  case (alphanumeric mode), as an SVG data URL an <img> takes. `qrSvg`
+ *  already carries the xmlns an <img> needs; a second one is a parse error. */
 export function qrDataUrl(invoice: string): string {
-  return `data:image/svg+xml;base64,${Buffer.from(qrSvg(`lightning:${invoice}`.toUpperCase()).replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ')).toString("base64")}`;
+  return `data:image/svg+xml;base64,${Buffer.from(qrSvg(`lightning:${invoice}`.toUpperCase())).toString("base64")}`;
 }

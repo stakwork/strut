@@ -226,7 +226,7 @@ export function createPayouts(deps: PayoutsDeps): Payouts {
     const said: Record<PayoutRefusal, string> = {
       payouts_off: "withdrawing is turned off on this server",
       below_minimum: `the least one withdrawal may ask is ${sats(o.settings.minSats * 1000)}.${max}`,
-      payout_out: `your withdrawal of ${sats(out?.msat ?? 0)} (payout ${out?.key ?? "?"}) is still on its way: one at a time${out?.stale ? "; it waits for staff to look at it" : ""}`,
+      payout_out: `your withdrawal of ${sats(out?.msat ?? 0)} (payout ${out?.key ?? "?"}) is still on its way: one at a time${out?.stale ? "; it is over a day old, so it is being cancelled, and staff look at it if the wallet cannot say" : ""}`,
       over_balance: `${sats(o.msat)} and a fee of up to ${sats(o.maxFeeMsat)} is more than you may withdraw now.${max}`,
       over_worker_day: `that is over what one worker may withdraw in a day here.${max}`,
       over_server_day: `that is over what this server pays workers in a day.${max}`,
@@ -309,7 +309,15 @@ export function createPayouts(deps: PayoutsDeps): Payouts {
     settings,
 
     async saveSettings(input, by) {
-      return (await deps.ledger()).setPayoutSettings({ on: input.on, minSats: input.minSats, workerDaySats: input.workerDaySats, serverDaySats: input.serverDaySats, ...(by ? { by } : {}), at: now() });
+      return (await deps.ledger()).setPayoutSettings({
+        on: input.on,
+        minSats: input.minSats,
+        workerDaySats: input.workerDaySats,
+        serverDaySats: input.serverDaySats,
+        ...(input.inviteSats !== undefined ? { inviteSats: input.inviteSats } : {}),
+        ...(by ? { by } : {}),
+        at: now(),
+      });
     },
 
     async list(q = {}) {

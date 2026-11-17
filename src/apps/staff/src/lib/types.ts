@@ -44,8 +44,26 @@ export interface TaskType {
   copies?: CopiesRule;
   /** The files an answer carries (plans/human-steps.md §5.6); absent: none. */
   attachments?: AttachmentRule;
+  /** A standing type (plans/human-steps.md §5.7): a worker's ask makes the
+   *  task, and each answer starts this workflow. Absent: a human step makes
+   *  its tasks. */
+  standing?: { workflow: string };
   changedAt: number;
   changedBy?: string;
+  /** Where its workers answer it (§9.5): whether its app is in the public
+   *  view, and then its links and a QR of the Peel one. Absent on a server
+   *  whose public view has no share read. */
+  share?: TypeShare;
+}
+
+export interface TypeShare {
+  public: boolean;
+  /** The visitor's page in a browser. */
+  link?: string;
+  /** The same page opened in Peel. */
+  peelLink?: string;
+  /** `peelLink` as a QR code, an SVG. */
+  qrSvg?: string;
 }
 
 export interface AttachmentRule {
@@ -307,6 +325,9 @@ export interface PayoutSettings {
   minSats: number;
   workerDaySats: number;
   serverDaySats: number;
+  /** An invite's starting sats when staff name none (§5.8); absent on a
+   *  strut from before. */
+  inviteSats?: number;
   changedBy?: string;
   changedAt?: number;
 }
@@ -315,4 +336,105 @@ export interface PayoutsAnswer {
   settings: PayoutSettings;
   today: { day: string; paidMsat: number; outMsat: number; count: number; serverLeftMsat: number };
   payouts: Payout[];
+}
+
+export type InviteStatus = "sending" | "ready" | "failed" | "used" | "cancelled";
+
+/** One worker invite, as `GET /tasks/invites` lists it (src/payments/invites.ts). */
+export interface Invite {
+  code: string;
+  /** `https://<public view>/public/join#…`: what the worker is sent. */
+  link?: string;
+  sats: number;
+  status: InviteStatus;
+  createdAt?: string;
+}
+
+export interface InvitesAnswer {
+  invites: Invite[];
+  /** The worker apps: the apps task types name that are in the public view. */
+  apps: string[];
+  app?: string;
+  /** What an invite gives when it names none. */
+  sats: number;
+  why?: "no_pay_credential" | "no_invites";
+}
+
+/** `staff/invite`'s answer: the invite, its app and its link as a QR code (an SVG). */
+export type MadeInvite = Invite & { app: string; qrSvg?: string };
+
+// ── Support (plans/support-chat.md) ─────────────────────────────────────────
+
+export type SupportKind = "message" | "file" | "payment" | "contact";
+export type SendStatus = "sending" | "sent" | "failed";
+
+/** One message of a conversation (`GET /support/:worker`): a deleted one
+ *  without its text or file; never who sent it (every reply is Support's). */
+export interface SupportMessage {
+  /** Strut's own order. */
+  key: number;
+  /** The Sphinx id, once the daemon gave one: what a reply quotes. */
+  id?: string;
+  fromMe: boolean;
+  kind: SupportKind;
+  text?: string;
+  replyTo?: string;
+  sats?: number;
+  deleted?: true;
+  file?: { name?: string; mediaType?: string; size?: number; state: "fetching" | "kept" | "too_large" | "failed"; error?: string };
+  status?: SendStatus;
+  error?: string;
+  at: number;
+  /** Written before Support first followed the daemon. */
+  earlier?: true;
+  /** Sent by strut on its own: the welcome, a payout's line, the staff's heads-up. */
+  auto?: "welcome" | "payout" | "heads-up";
+}
+
+export interface SupportConversation {
+  /** The worker's actor. */
+  worker: string;
+  pubkey: string;
+  /** Their Sphinx name. */
+  alias?: string;
+  unread: number;
+  last?: SupportMessage;
+  seenAt?: number;
+  welcomedAt?: number;
+  /** `done` until the worker writes again. */
+  status: "open" | "done";
+  /** Who took it, relative to the viewer: no names (ruling 4). */
+  assigned?: "me" | "other";
+}
+
+/** Which conversations the list shows. */
+export type SupportFilter = "open" | "mine" | "unassigned" | "done";
+
+export interface SupportThread {
+  conversation: SupportConversation;
+  messages: SupportMessage[];
+  more: boolean;
+}
+
+export interface SupportSettings {
+  welcome: string;
+  since?: number;
+  savedAt?: number;
+  savedBy?: string;
+  /** "Paid you 1,200 sats" from Support when a payout settles. */
+  payoutLines: boolean;
+  /** Support's picture: the URL workers' Peel loads, and the bytes to show here. */
+  photo?: { url: string; mediaType: string; savedAt: number; base64?: string };
+}
+
+/** One piece of a worker's file (`staff/support-file`): `next` is where the
+ *  next piece starts; the pieces' base64 joins as one. */
+export interface SupportFile {
+  id: string;
+  name?: string;
+  mediaType: string;
+  bytes: number;
+  offset: number;
+  base64: string;
+  next?: number;
 }

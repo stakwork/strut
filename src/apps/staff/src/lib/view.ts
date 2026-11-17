@@ -1,18 +1,19 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
-export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
+export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
 
-export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts" };
+export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts", support: "Support" };
 
 /** Where the page is: a tab and what is open in it. */
 export interface Place {
   tab: Tab;
   type?: string;
-  /** On the Payouts tab: only this worker's payouts. */
+  /** On the Payouts tab: only this worker's payouts; on Support, their
+   *  conversation. */
   worker?: string;
   task?: string;
   /** On the Payouts tab: one payout, by its key. */
@@ -34,7 +35,8 @@ export const REVIEW_FILTERS: readonly ReviewFilter[] = ["none", "ok", "rejected"
  * Where a deep link opens (§9.1): `input` takes one of `tab=queue|types|
  * workers|tasks|tests|payouts`, `type=<name>`, `worker=<actor>`, `task=<id>`,
  * `test=<id>`, `payout=<key>` (one payout), `tab=payouts&worker=<actor>`
- * (that worker's payouts), `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
+ * (that worker's payouts), `tab=support&worker=<actor>` (their conversation
+ * with Support, plans/support-chat.md §3), `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
  * answered), `review=none|ok|rejected` (the review queue, §9.6; with `by`,
  * that worker's). A thing named opens its tab; with nothing named, the
  * Queue.
@@ -46,6 +48,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   const review = REVIEW_FILTERS.find((r) => r === str("review"));
   if (str("payout")) return { tab: "payouts", payout: str("payout")! };
   if (named === "payouts") return { tab: "payouts", ...(str("worker") ? { worker: str("worker")! } : {}) };
+  if (named === "support") return { tab: "support", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (str("task")) return { tab: "tasks", task: str("task")! };
   if (str("run")) return { tab: "tasks", run: str("run")! };
   if (review) return { tab: "tasks", review, ...(str("by") ? { by: str("by")! } : {}) };
@@ -60,6 +63,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
 export function inputOf(p: Place): Record<string, string> {
   if (p.payout) return { payout: p.payout };
   if (p.tab === "payouts") return { tab: "payouts", ...(p.worker ? { worker: p.worker } : {}) };
+  if (p.tab === "support") return { tab: "support", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.task) return { task: p.task };
   if (p.run) return { run: p.run };
   if (p.review) return { review: p.review, ...(p.by ? { by: p.by } : {}) };
@@ -131,9 +135,13 @@ export interface Shown {
   /** Item 5b: the Payouts tab and a worker's link to theirs — `/tasks/payouts`
    *  answers (a host's own store answers `not_available`). */
   payouts: boolean;
+  /** The Support tab and Message on a worker's page (plans/support-chat.md
+   *  §8): `/support` answers — the wallet is a Sphinx daemon with its
+   *  message token; otherwise `not_available`. */
+  support: boolean;
 }
 
-export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown"; payoutsAnswer?: "yes" | "no" | "unknown" }): Shown {
+export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown"; payoutsAnswer?: "yes" | "no" | "unknown"; supportAnswer?: "yes" | "no" | "unknown" }): Shown {
   const types = o.types ?? [];
   const workers = o.workers ?? [];
   const tests = o.testsAnswer === "yes";
@@ -146,6 +154,7 @@ export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer
     review: tests,
     open: types.every((t) => t.open !== undefined),
     payouts: o.payoutsAnswer === "yes",
+    support: o.supportAnswer === "yes",
     earnings: workers.some((w) => w.balance !== undefined) && (types.some((t) => (t.paySats ?? 0) > 0) || workers.some((w) => (w.balance?.totalMsat ?? 0) > 0)),
   };
 }
@@ -262,14 +271,15 @@ export function liveTypesText(w: Pick<Worker, "grants">): string {
   return w.grants.filter((g) => g.revokedAt === undefined).map((g) => (g.by === OPEN_GRANT_BY ? `${g.type} (open)` : g.type)).join(", ");
 }
 
-/** Why a PAID OPEN type cannot be saved yet, or null (ruling 9; the
- *  server's `openPayProblem` decides): tests on, K at least 1, K ready.
- *  `ready` undefined: not counted here, so nothing is said. */
+/** What a PAID OPEN type means for who earns, or null (ruling 12: the
+ *  admin's call, said and never refused; the server's `openPayWarning` and
+ *  `openPayProblem`): no qualifying lets anyone earn from their first
+ *  answer, and one short of its K ready tests takes no newcomer. `ready`
+ *  undefined: not counted here, so a shortfall is not said. */
 export function openPayHint(d: { open: boolean; paySats: number; testsOn: boolean; qualify: number }, ready: number | undefined): string | null {
-  if (!d.open || !(d.paySats > 0) || ready === undefined) return null;
-  if (!d.testsOn) return "Paid and open: a newcomer qualifies on its tests first, so turn tests on and make them ready, or make it invite-only until they are.";
-  if (!(d.qualify >= 1)) return "Paid and open: set Tests to qualify to 1 or more, or make it invite-only.";
-  if (ready < d.qualify) return `Paid and open: it needs ${d.qualify} ready tests to qualify newcomers on and has ${ready}. Make it invite-only until they are ready.`;
+  if (!d.open || !(d.paySats > 0)) return null;
+  if (!d.testsOn || !(d.qualify >= 1)) return "Paid and open with no qualifying tests: anyone signed in earns from their first answer, and your review is the only check.";
+  if (ready !== undefined && ready < d.qualify) return `Paid and open: it qualifies newcomers on ${d.qualify} tests and has ${ready} ready, so it takes no new worker until they are.`;
   return null;
 }
 
@@ -386,4 +396,171 @@ export function jsonLine(v: unknown, max = 80): string {
 export function errorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw.replace(/^step_run(?: refused)?: /, "");
+}
+
+// ── sharing a worker app (§9.5) ─────────────────────────────────────────────
+
+/** Each public worker app once, with the types its workers answer. */
+export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[] }> {
+  const out = new Map<string, { app: string; share: TypeShare; types: string[] }>();
+  for (const t of types ?? []) {
+    if (!t.share?.public || !t.share.peelLink) continue;
+    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [] };
+    row.types.push(t.name);
+    out.set(t.app, row);
+  }
+  return [...out.values()];
+}
+
+// ── Invites (plans/human-steps.md §5.8) ─────────────────────────────────────
+
+/** An invite's status in words. */
+export const INVITE_WORDS: Record<InviteStatus, string> = {
+  sending: "Sending: the wallet is paying the mixer for it",
+  ready: "Ready to send",
+  failed: "Failed: the wallet could not pay for it",
+  used: "Used: a worker signed up with it",
+  cancelled: "Cancelled",
+};
+
+/** Whether an invite may still be used, so shared or cancelled. */
+export function inviteOpen(i: Pick<Invite, "status">): boolean {
+  return i.status === "sending" || i.status === "ready";
+}
+
+/** Why this server cannot invite, in words. */
+export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
+  return why === "no_pay_credential"
+    ? "Inviting needs this server's wallet to pay: a Sphinx daemon with its pay token (the Earnings app's wallet settings)."
+    : "This server's wallet cannot make Sphinx invites: a Sphinx daemon whose version has the invite routes can.";
+}
+
+/** The words a worker is sent with the link. */
+export function inviteMessage(link: string): string {
+  return `You're invited to work with us. Open this on your Android phone to sign up with Peel: ${link}`;
+}
+
+/** The message as a WhatsApp share link (an https link a host opens). */
+export function whatsappUrl(link: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link))}`;
+}
+
+/** An invite's sats as typed: blank is the default; else a whole number 1 to 100,000. */
+export function inviteSatsOf(text: string): { sats?: number } | { problem: string } {
+  const t = text.trim();
+  if (!t) return {};
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
+}
+
+// ── Support (plans/support-chat.md) ─────────────────────────────────────────
+
+/** Who a conversation is with, to staff: the worker's name as staff wrote it
+ *  (their note's first line), else their Sphinx name, else the actor
+ *  shortened. */
+export function supportName(c: Pick<SupportConversation, "worker" | "alias">, worker?: Pick<Worker, "actor" | "note">): string {
+  const noted = worker?.note?.split("\n")[0]?.trim();
+  return noted || c.alias || shortActor(c.worker);
+}
+
+/** Two letters for a name's circle (ruling 13: initials, no pictures yet). */
+export function initialsOf(name: string): string {
+  const words = name.replace(/^secp:/, "").split(/[\s._-]+/).filter(Boolean);
+  const letters = words.length > 1 ? `${words[0]![0]}${words[1]![0]}` : (words[0] ?? "?").slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/** A task's id in a message (32 hex, src/tasks/tasks.ts): drawn as a link. */
+const TASK_ID = /\b[0-9a-f]{32}\b/g;
+
+/** A message's text in pieces, each task id its own (§3, task links). */
+export function textPieces(text: string): Array<{ text: string } | { task: string }> {
+  const out: Array<{ text: string } | { task: string }> = [];
+  let at = 0;
+  for (const m of text.matchAll(TASK_ID)) {
+    if (m.index! > at) out.push({ text: text.slice(at, m.index) });
+    out.push({ task: m[0] });
+    at = m.index! + m[0].length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at) });
+  return out;
+}
+
+/** A byte count, short: `820 B`, `14 KB`, `3.2 MB`. */
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${Math.round((n / 1024 / 1024) * 10) / 10} MB`;
+}
+
+/** Sats in a payment line: from the worker "Sent you 100 sats" (Support is
+ *  "you"), from Support "Support sent 100 sats". Not in the books. */
+export function paymentLine(m: Pick<SupportMessage, "fromMe" | "sats">): string {
+  const sats = `${(m.sats ?? 0).toLocaleString("en-US")} sat${m.sats === 1 ? "" : "s"}`;
+  return m.fromMe ? `Support sent ${sats}` : `Sent you ${sats}`;
+}
+
+/** A message in one line, for the conversation list and a quote. */
+export function messageLine(m: SupportMessage): string {
+  const body = (() => {
+    if (m.deleted) return "Message deleted";
+    if (m.kind === "contact") return "Added Support as a contact";
+    if (m.kind === "payment") return paymentLine(m);
+    if (m.kind === "file") {
+      const what = m.file?.mediaType?.startsWith("image/") ? "Photo" : m.file?.mediaType?.startsWith("audio/") ? "Voice note" : (m.file?.name ?? "File");
+      return m.text ? `${what}: ${m.text}` : what;
+    }
+    return m.text ?? "";
+  })();
+  return m.fromMe && (m.kind === "message" || m.kind === "file") && !m.deleted ? `Support: ${body}` : body;
+}
+
+/** What strut sent on its own, as the bubble names it. */
+export const AUTO_LABELS: Record<NonNullable<SupportMessage["auto"]>, string> = { welcome: "Welcome", payout: "Payout", "heads-up": "Heads-up" };
+
+/** The list's filters (plans/support-chat.md §3, item 2), in order. */
+export const SUPPORT_FILTERS: ReadonlyArray<{ id: SupportFilter; label: string }> = [
+  { id: "open", label: "Open" },
+  { id: "mine", label: "Mine" },
+  { id: "unassigned", label: "Unassigned" },
+  { id: "done", label: "Done" },
+];
+
+/** The largest file staff send: the page's call is capped at 4 MB, base64 included. */
+export const SUPPORT_FILE_MAX_BYTES = 2.5 * 1024 * 1024;
+/** A photo staff send is shrunk to this many pixels on its longer side… */
+export const SUPPORT_PHOTO_SIDE = 1600;
+/** …and Support's own picture to this. */
+export const SUPPORT_AVATAR_SIDE = 512;
+
+/** Width and height that fit `max` on the longer side, never larger. */
+export function fitWithin(width: number, height: number, max: number): { width: number; height: number } {
+  const scale = Math.min(1, max / Math.max(width, height, 1));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/** Shrunk in the page: a photo that is not animated or drawn (GIF, SVG). */
+export function shrinkable(type: string): boolean {
+  return /^image\/(jpeg|png|webp|bmp|avif|heic|heif)$/i.test(type);
+}
+
+/** A name with its extension made `.jpg`, for a photo shrunk to a JPEG. */
+export function jpgName(name: string): string {
+  const base = name.replace(/\.[^./\\]*$/, "") || "photo";
+  return `${base}.jpg`;
+}
+
+/** Why a file cannot be sent, or undefined: past 2.5 MB once shrunk. */
+export function attachProblem(o: { size: number }): string | undefined {
+  return o.size > SUPPORT_FILE_MAX_BYTES ? `Files up to ${fmtBytes(SUPPORT_FILE_MAX_BYTES)}: this one is ${fmtBytes(o.size)}.` : undefined;
+}
+
+/** Messages a worker wrote before Support followed the daemon (§6, the
+ *  backlog): where the line saying so goes, or -1. */
+export function earlierEnd(messages: readonly Pick<SupportMessage, "earlier">[]): number {
+  let last = -1;
+  messages.forEach((m, i) => {
+    if (m.earlier) last = i;
+  });
+  return last;
 }

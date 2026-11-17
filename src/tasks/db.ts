@@ -25,8 +25,11 @@ export type Row = Record<string, unknown>;
 export class TaskDb {
   private closed = false;
 
-  /** Opens (and makes) the file; its folder is created owner-only. */
+  /** Opens (and makes) the file; its folder is created owner-only.
+   *  `:memory:` (tasks.ts's `TASKS_IN_MEMORY`) is a file in memory, gone
+   *  with the process: Support's, beside a task store in memory. */
   static open(file: string): TaskDb {
+    if (file === ":memory:") return new TaskDb(new DatabaseSync(file), file);
     const dir = dirname(file);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     else if ((statSync(dir).mode & 0o077) !== 0 && !warned.has(dir)) {

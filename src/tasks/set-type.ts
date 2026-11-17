@@ -10,7 +10,8 @@
  *   model before any proposal is made.
  * - `mergeType`: the change merged over the type when there is one (ruled,
  *   §9.12): a field left out keeps its value, and a `tests` or `copies`
- *   object is merged over the type's own rules. A new type needs `answer`.
+ *   object is merged over the type's own rules. A new type with no `answer`
+ *   takes the empty object (`EMPTY_ANSWER`: a files-only task).
  * - `createTaskTypes`: `ctx.services.taskTypes` on the shared bag (§9.2) —
  *   `list()` (each type with its open tasks, how many workers hold it and
  *   its answers over the last week), the card's two reads, and `save`,
@@ -27,8 +28,8 @@ import type { Proposal } from "../proposals.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleLine, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
-import { openPayProblem, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
-import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type TaskType, type TestRules } from "./task-store.js";
+import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
+import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
   DEFAULT_WITHIN_HOURS,
@@ -36,7 +37,6 @@ import {
   HOLD_HOURS_MIN,
   LEASE_SECONDS_MAX,
   PAY_SATS_MAX,
-  TaskError,
   TYPE_NAME_MAX,
   TYPE_NAME_RE,
   WITHIN_HOURS_MAX,
@@ -45,6 +45,9 @@ import {
 } from "./tasks.js";
 
 export const SET_TYPE_STEP = "task/set-type";
+
+/** A new type's answer when none is given: no fields (files only). */
+export const EMPTY_ANSWER = { type: "object", properties: {} } as const;
 
 /** A grader is checked when the type is saved (the registry's); here only
  *  the rules' shape. */
@@ -60,6 +63,18 @@ function ruleIssue(c: z.RefinementCtx, check: () => unknown): void {
   }
 }
 
+/** An object field a model sent as JSON TEXT (it did, twice, for `answer`):
+ *  parsed, so the field's own check reads the object. Text that does not
+ *  parse is left as it is, for that check's own refusal. */
+function fromJsonText(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+}
+
 /** The step's input: what `PUT /tasks/types/:name` takes, the name beside
  *  it, every field optional but `app`, each checked as the store checks it. */
 export const typeChangeInput = z.object({
@@ -70,16 +85,22 @@ export const typeChangeInput = z.object({
     .describe("The task type's name, as a `human` step's `task` names it (pet-match, acme/pet-match). An existing type is changed; a new name makes a new type."),
   app: z.string().min(1).describe("The app that draws its tasks: the worker app, which must grant task/next and task/submit (task/* covers them)."),
   answer: z
-    .any()
-    .optional()
-    .superRefine((v, c) => {
-      if (v === undefined) return;
-      const problem = answerSchemaProblem(v);
-      if (problem) c.addIssue({ code: "custom", message: `answer: ${problem}` });
-    })
+    .preprocess(
+      fromJsonText,
+      z
+        .any()
+        .optional()
+        .superRefine((v, c) => {
+          if (v === undefined) return;
+          const problem = answerSchemaProblem(v);
+          if (problem) c.addIssue({ code: "custom", message: `answer: ${problem}` });
+        }),
+    )
+    // The tool's JSON schema says "object", so the model sends one.
+    .meta({ type: "object" })
     .describe(
       "The answer's shape, a JSON Schema in the subset strut checks: `type` on every schema; `properties` + `required`; `items`, `minItems`, `maxItems`; `enum`; `minimum`, `maximum`; `minLength`, `maxLength`; `title`, `description`. " +
-        "An object of plain fields (text, numbers, yes or no, a pick from an enum) is drawn by strut/views' TaskForm; anything else needs the app's own view. Required for a new type; left out, a type keeps its shape.",
+        "An object of plain fields (text, numbers, yes or no, a pick from an enum) is drawn by strut/views' TaskForm; anything else needs the app's own view. Left out, a type keeps its shape, and a new type takes the empty object { type: \"object\", properties: {} }: a files-only task (photos and nothing else) needs no fields.",
     ),
   leaseSeconds: z.number().int().min(1).max(LEASE_SECONDS_MAX).optional().describe("How long a worker holds a task once taken, in seconds (600 for a new type)."),
   withinHours: z.number().positive().max(WITHIN_HOURS_MAX).optional().describe("How long a task may wait unanswered before it expires, in hours (72 for a new type); a `human` step may set its own."),
@@ -100,23 +121,38 @@ export const typeChangeInput = z.object({
     .describe("What one accepted answer earns its worker, in sats (0: unpaid, a new type's default). A rise is shown to the admin as a danger."),
   holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 72 for a new type).`),
   tests: z
-    .record(z.string(), z.any())
-    .nullable()
-    .optional()
-    .superRefine((v, c) => ruleIssue(c, () => testRulesOf(v, shapeOnly)))
+    .preprocess(
+      fromJsonText,
+      z
+        .record(z.string(), z.any())
+        .nullable()
+        .optional()
+        .superRefine((v, c) => ruleIssue(c, () => testRulesOf(v, shapeOnly))),
+    )
     .describe("Test tasks mixed among its tasks to qualify and score workers: { rate, newRate, newTasks, qualify, window, minGraded, threshold, grade, gradeCapUsd }, merged over the type's own (or the defaults); null turns them off. The tests themselves are an admin's, in strut/staff."),
   copies: z
-    .record(z.string(), z.any())
-    .nullable()
-    .optional()
-    .superRefine((v, c) => ruleIssue(c, () => copiesRuleOf(v, shapeOnly)))
+    .preprocess(
+      fromJsonText,
+      z
+        .record(z.string(), z.any())
+        .nullable()
+        .optional()
+        .superRefine((v, c) => ruleIssue(c, () => copiesRuleOf(v, shapeOnly))),
+    )
     .describe("How many workers a `human` step may ask one task, each paid: { max, agree, compare, onDisagree }, merged over the type's own (or the defaults: 3, 2, \"equal\", \"more\"); null: one worker a task."),
   attachments: z
-    .record(z.string(), z.any())
-    .nullable()
-    .optional()
-    .superRefine((v, c) => ruleIssue(c, () => attachmentRuleOf(v)))
+    .preprocess(
+      fromJsonText,
+      z
+        .record(z.string(), z.any())
+        .nullable()
+        .optional()
+        .superRefine((v, c) => ruleIssue(c, () => attachmentRuleOf(v))),
+    )
     .describe("The files a worker sends with each answer — a photo of a document, a signed form: { max, min, types }, merged over the type's own (or the defaults: 1, 0, [\"image/*\", \"application/pdf\"]); max at most 10, types media types (`image/*` a family); null: none. They are saved in the task's run, and the `human` step's output names them as `attachments`."),
+  standing: z
+    .preprocess(fromJsonText, z.object({ workflow: z.string().min(1) }).strict().nullable().optional())
+    .describe("A STANDING type, for work a worker starts — a photo of something they found: { workflow }. A worker's ask makes the task whenever they like, any number of workers at once, and each answer starts `workflow`, whose FIRST step must be this type's `human` step (its show reading only input and params, no files). The workflow runs only once someone answers, billed to its owner. null: not standing — a `human` step in a run makes its tasks."),
 });
 
 /** What `task/set-type` asks, as its schema parsed it. */
@@ -156,14 +192,16 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 /** `change` merged over `existing` (ruled, §9.12): what is left out keeps
  *  its value; `tests`, `copies` and `attachments` merge over the type's own
- *  rules, `null` turns them off. A new type needs `answer` (`bad_request`). */
+ *  rules, `standing` replaces it, and `null` turns any of them off. A new
+ *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
-  const answer = change.answer !== undefined ? change.answer : existing?.answer;
-  if (answer === undefined) throw new TaskError("bad_request", `task type ${name} is new: it needs answer, the shape of its answer`);
+  // A new type with no shape given takes the empty object: a files-only
+  // task (photos and nothing else) needs none.
+  const answer = change.answer !== undefined ? change.answer : (existing?.answer ?? EMPTY_ANSWER);
   const rules = <T extends object>(was: T | undefined, given: Record<string, unknown> | null | undefined): Partial<T> | null | undefined =>
     given === undefined ? was : given === null ? null : ({ ...(was ?? {}), ...given } as Partial<T>);
   const out: TaskTypeInput = { app: change.app ?? existing?.app ?? "", answer };
@@ -185,6 +223,9 @@ export function mergeType(
   if (tests !== undefined) out.tests = tests;
   if (copies !== undefined) out.copies = copies;
   if (attachments !== undefined) out.attachments = attachments;
+  // Standing (§5.7) is whole: given, it replaces; null turns it off.
+  const standing = change.standing === undefined ? existing?.standing : change.standing;
+  if (standing !== undefined) out.standing = standing;
   return out;
 }
 
@@ -251,6 +292,7 @@ interface Planned {
   tests?: TestRules;
   copies?: CopiesRule;
   attachments?: AttachmentRule;
+  standing?: StandingRule;
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
@@ -265,26 +307,18 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   ...(t.tests ? { tests: t.tests } : {}),
   ...(t.copies ? { copies: t.copies } : {}),
   ...(t.attachments ? { attachments: t.attachments } : {}),
+  ...(t.standing ? { standing: t.standing } : {}),
 });
 
 interface Problems {
-  answer?: string;
   tests?: string;
   copies?: string;
   attachments?: string;
-  /** Ruling 9: paid and open with too few ready tests (`openPayProblem`). */
-  open?: string;
 }
 
-function plan(name: string, existing: TaskTypeRow | undefined, change: TypeFields): { planned: Planned; problems: Problems } {
+function plan(name: string, existing: TaskTypeRow | undefined, change: TypeFields): { planned: Planned; problems: Problems; openWarning?: string } {
   const problems: Problems = {};
-  let merged: TaskTypeInput;
-  try {
-    merged = mergeType(name, existing, change);
-  } catch (err) {
-    problems.answer = err instanceof Error ? err.message.replace(/^bad_request: /, "") : String(err);
-    merged = { ...mergeType(name, existing, { ...change, answer: null }), answer: undefined };
-  }
+  const merged = mergeType(name, existing, change);
   const rule = <T>(key: "tests" | "copies" | "attachments", check: () => T | undefined): T | undefined => {
     try {
       return check();
@@ -297,13 +331,14 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   const copies = rule("copies", () => copiesRuleOf(merged.copies, shapeOnly));
   const attachments = rule("attachments", () => attachmentRuleOf(merged.attachments));
   const pay = merged.paySats && merged.paySats > 0 ? Math.round(merged.paySats * 1000) / 1000 : 0;
-  // A new type has no tests yet; a host's store that counts none is not checked here.
+  // Ruling 12: who a paid open type lets in is the admin's, so this is
+  // said, never refused. A new type has no tests yet; a host's store that
+  // counts none is not counted here.
   const ready = existing ? existing.readyTests : 0;
-  if (!problems.tests && ready !== undefined) {
-    const short = openPayProblem({ name, open: merged.open ?? true, paySats: pay, ...(tests ? { tests } : {}) }, ready);
-    if (short) problems.open = short;
-  }
+  const paid = { name, open: merged.open ?? true, paySats: pay, ...(tests ? { tests } : {}) };
+  const openWarning = problems.tests ? undefined : (openPayWarning(paid) ?? (ready === undefined ? undefined : openPayProblem(paid, ready)));
   return {
+    ...(openWarning ? { openWarning } : {}),
     planned: {
       app: merged.app,
       answer: merged.answer,
@@ -316,6 +351,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       ...(tests ? { tests } : {}),
       ...(copies ? { copies } : {}),
       ...(attachments ? { attachments } : {}),
+      ...(merged.standing ? { standing: merged.standing } : {}),
     },
     problems,
   };
@@ -382,6 +418,7 @@ function fieldLine(key: string, p: Record<string, unknown>, required: boolean): 
 /** The answer as the card says it: one line per field, or what the app must
  *  draw itself, with the schema. */
 export function answerText(schema: unknown): string {
+  if (sameJson(schema, EMPTY_ANSWER)) return "no fields: only the files sent with it";
   const problem = formProblem(schema);
   if (problem) return `needs the app's own view (${problem}):\n${JSON.stringify(schema)}`;
   const s = schema as { properties: Record<string, Record<string, unknown>>; required?: unknown };
@@ -429,7 +466,11 @@ function rulesDiff(label: string, before: object | undefined, after: object | un
   return keys.length ? `${label}: ${keys.map((k) => `${k} ${ruleValue(b[k])} → ${ruleValue(a[k])}`).join(", ")}` : undefined;
 }
 
+/** What the save would refuse, first by field: the card's "Accepting it fails". */
+const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments;
+
 const onOff = (on: boolean) => (on ? "on" : "off");
+const standingWord = (r: StandingRule | undefined) => (r ? `starts ${r.workflow}` : "off");
 
 /**
  * The card (§9.8): what the type would be, and for a change what changes;
@@ -439,7 +480,7 @@ const onOff = (on: boolean) => (on ? "on" : "off");
 export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProblem?: string; usdPerBtc?: number } = {}): ProposalDescription {
   const { name, ...change } = cfg;
   const { existing, appProblem, usdPerBtc } = o;
-  const { planned: after, problems } = plan(name, existing, change);
+  const { planned: after, problems, openWarning } = plan(name, existing, change);
   const before = existing ? plannedOf(existing) : undefined;
   const turnsOff = !!before?.enabled && !after.enabled;
   const title = !existing ? `New task type ${name}` : turnsOff ? `Turn off task type ${name}` : `Change task type ${name}`;
@@ -468,6 +509,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
       const d = rulesDiff("files", before.attachments, after.attachments);
       if (d) changes.push(d);
     }
+    if (before.standing?.workflow !== after.standing?.workflow) changes.push(`standing: ${standingWord(before.standing)} → ${standingWord(after.standing)}`);
   }
   const shapeChanged = !!before && after.answer !== undefined && !sameJson(before.answer, after.answer);
   const payBefore = before?.paySats ?? 0;
@@ -476,23 +518,15 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const fields: CardField[] = [];
   fields.push({ label: "Drawn by", value: appProblem ? `${after.app} — ${appProblem}` : after.app, ...(appProblem ? { danger: true } : {}) });
   fields.push(
-    after.answer === undefined
-      ? { label: "The answer", value: `none given — ${problems.answer ?? "a new type needs one"}`, danger: true }
-      : { label: "The answer", value: answerText(after.answer) },
+    { label: "The answer", value: answerText(after.answer) },
   );
   fields.push({ label: "Lease", value: secondsText(after.leaseSeconds) });
   fields.push({ label: "Expires after", value: `${plural(after.withinHours, "hour")} unanswered` });
   fields.push({ label: "On", value: onOff(after.enabled) });
-  fields.push(
-    problems.open
-      ? { label: "Who takes it", value: `refused: ${problems.open}`, danger: true }
-      : {
-          label: "Who takes it",
-          value: after.open
-            ? `open: any signed-in worker of ${after.app} who is not suspended or banned, with no grant${after.tests?.qualify ? `, after qualifying on ${plural(after.tests.qualify, "test")}` : ""}`
-            : "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)",
-        },
-  );
+  const who = after.open
+    ? `open: any signed-in worker of ${after.app} who is not suspended or banned, with no grant${after.tests?.qualify ? `, after qualifying on ${plural(after.tests.qualify, "test")}` : ""}`
+    : "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)";
+  fields.push({ label: "Who takes it", value: openWarning ? `${who} — ${openWarning}` : who, ...(openWarning ? { danger: true } : {}) });
   if (before) {
     fields.push({ label: "What changes", value: changes.length ? changes.join("\n") : "nothing: the type is already so" });
     const open = existing?.openTasks;
@@ -532,10 +566,20 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   fields.push(problems.tests ? { label: "Tests", value: `refused: ${problems.tests}`, danger: true } : { label: "Tests", value: testsText(after.tests) });
   fields.push(problems.copies ? { label: "Copies", value: `refused: ${problems.copies}`, danger: true } : { label: "Copies", value: copiesText(after.copies) });
   fields.push(problems.attachments ? { label: "Files", value: `refused: ${problems.attachments}`, danger: true } : { label: "Files", value: attachmentsText(after.attachments) });
+  fields.push({
+    label: "Standing",
+    value: after.standing
+      ? `yes: a worker starts one whenever they ask, any number at once, and each answer starts the workflow ${after.standing.workflow} (billed to its owner)`
+      : "no: a human step in a run makes its tasks",
+  });
 
   const lines: string[] = [];
   if (!existing) {
-    lines.push(`A new task type ${name}, drawn by the app ${after.app}: a \`human\` step that names it makes a task a worker answers there.`);
+    lines.push(
+      after.standing
+        ? `A new standing task type ${name}, drawn by the app ${after.app}: a worker starts one there whenever they ask, and each answer starts the workflow ${after.standing.workflow}.`
+        : `A new task type ${name}, drawn by the app ${after.app}: a \`human\` step that names it makes a task a worker answers there.`,
+    );
     lines.push(after.open ? "It is open: any signed-in worker of the app may take its tasks, with no grant." : "It grants it to no worker: an admin does, in Tasks and workers.");
   } else if (turnsOff) {
     lines.push(`Turns off the task type ${name}: a \`human\` step can make no new task of it, and its open tasks are not handed out and expire when due.`);
@@ -544,7 +588,8 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   }
   if (appProblem) lines.push(`Workers cannot answer it yet: ${appProblem}.`);
   if (rises) lines.push(`Its pay rises from ${payBefore ? satsText(payBefore) : "nothing"} to ${satsText(after.paySats)} an answer${dollars(after.paySats)}.`);
-  const fails = problems.answer ?? problems.tests ?? problems.copies ?? problems.attachments ?? problems.open;
+  if (openWarning) lines.push(`Who takes it: ${openWarning}.`);
+  const fails = failureOf(problems);
   if (fails) lines.push(`Accepting it fails: ${fails}.`);
   return { title, summary: lines.join(" "), fields, actions: { accept: "Save type", reject: "Don't" }, full: true };
 }

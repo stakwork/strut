@@ -23,8 +23,8 @@ description: Reads the new turns of the conversations with the assistant and kee
 #
 # A page whose text comes from GIT (one strut or a package ships: main's
 # node carries its seed or package stamp) is never changed by the dream,
-# whatever `review` says (plans/concept-evals.md item e). knowledge/edit-page
-# answers such a change itself: a proposal that writes the page's file into
+# whatever `review` says (plans/concept-evals.md item e). graph/edit-node,
+# which knowledge/edit-page runs, answers such a change itself: a proposal that writes the page's file into
 # its checkout where strut has one (dev mode, or a package opened as a
 # repo), skipped elsewhere, its note saying which; the lesson's change says
 # so. knowledge/add-page refuses a triplet that would change one.
@@ -99,10 +99,12 @@ params:
     - knowledge_edit_page and knowledge_add_page change the tree, once per
       change. Where a person reviews this tree, the answer says the change
       waits for their yes: go on, and never make the same call again.
-      knowledge_edit_page takes the page's ref_id from knowledge_page:
-      `node_data: { docs }` is the WHOLE new text, so copy the page's docs
-      and change only what you mean to; `node_data: { description }` is its
-      one line. knowledge_add_page adds a page under its parent:
+      knowledge_edit_page takes the page's ref_id from knowledge_page and
+      changes its docs with `edits`: each quotes the text as it is now
+      (`old`, exactly as knowledge_page shows it, found once) and what it
+      becomes (`new`); the rest of the page stays as it is.
+      `node_data: { description }` is its one line; `node_data: { docs }`
+      only for a page that has none yet. knowledge_add_page adds a page under its parent:
       source_ref_id the parent's, edge_type PARENT_OF, target_type Concept,
       target_data { name, description, docs }.
     - A page whose text comes from git is not changed in the graph: the

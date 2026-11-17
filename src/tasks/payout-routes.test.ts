@@ -129,7 +129,7 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
     }
     assert.equal((await (await strut.ledger()).payoutSettings()).on, false, "nothing a refused caller sent was saved");
     const list = (await (await req("/tasks/payouts", { headers: await session("admin") })).json()) as Record<string, unknown>;
-    assert.deepEqual(list, { settings: { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 }, today: { day: "2026-11-13", paidMsat: 0, outMsat: 0, count: 0, serverLeftMsat: 10_000_000_000 }, payouts: [] });
+    assert.deepEqual(list, { settings: { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100 }, today: { day: "2026-11-13", paidMsat: 0, outMsat: 0, count: 0, serverLeftMsat: 10_000_000_000 }, payouts: [] });
   });
 
   it("settings: saved whole by an admin with who and when; refused when a cap is under the minimum or a field is not one of the four", async () => {
@@ -138,9 +138,9 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
     const ok = await put(ON);
     assert.equal(ok.status, 200);
     const { settings } = (await ok.json()) as { settings: Record<string, unknown> };
-    assert.deepEqual(settings, { ...ON, changedBy: "admin-1", changedAt: settings["changedAt"] });
+    assert.deepEqual(settings, { ...ON, inviteSats: 100, changedBy: "admin-1", changedAt: settings["changedAt"] });
     assert.equal(typeof settings["changedAt"], "number");
-    for (const bad of [{ ...ON, minSats: 0 }, { ...ON, workerDaySats: 10 }, { ...ON, on: "yes" }, { ...ON, extra: 1 }, { on: true }]) {
+    for (const bad of [{ ...ON, minSats: 0 }, { ...ON, workerDaySats: 10 }, { ...ON, on: "yes" }, { ...ON, extra: 1 }, { on: true }, { ...ON, inviteSats: 0 }, { ...ON, inviteSats: "100" }]) {
       const res = await put(bad);
       assert.equal(res.status, 400, JSON.stringify(bad));
       assert.equal(((await res.json()) as { code: string }).code, "bad_request");

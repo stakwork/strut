@@ -319,11 +319,13 @@ function PendingRow(props: { p: api.PendingWithdrawal; onChanged: () => void }) 
     ? "being read now"
     : p.otherWallet
       ? `went out through another wallet (${p.payer || "an earlier one"}): set it back to read it`
-      : p.stale
-        ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
-        : p.answered
-          ? "sent, not settled yet: read again every minute"
-          : "the wallet never answered: read it now";
+      : p.stale && p.cancelAt !== undefined
+        ? "stale: the wallet was asked to cancel it, and it is read every minute until the wallet says how it ended"
+        : p.stale
+          ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
+          : p.answered
+            ? "sent, not settled yet: read again every minute"
+            : "the wallet never answered: read it now";
   const decide = p.stale || p.otherWallet;
   return (
     <div class={`earnings-pending-item${decide ? " is-stale" : ""}`}>
@@ -444,6 +446,7 @@ function WalletForm(props: { onSaved: () => void }) {
               <span class="auto-hint">{info.url ?? info.relays?.join(", ")}</span>
               <span class={`badge ${info.receive ? "badge-ok" : ""}`}>{info.receive ? "receives" : "cannot receive"}</span>
               <span class={`badge ${info.pay ? "badge-ok" : "badge-warning"}`}>{info.pay ? "can pay" : "cannot pay"}</span>
+              {info.messages && <span class="badge badge-ok">Support</span>}
               {info.check && (info.check.ok ? <span class="auto-hint">answers: {fmtSats(info.check.msat)}</span> : <span class="auto-hint earnings-blocked">{info.check.error}</span>)}
             </>
           )}
@@ -481,6 +484,7 @@ function WalletForm(props: { onSaved: () => void }) {
               {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury.sphinx:8095", false)}
               {field("token", "Receive token", sameProvider ? "keep as it is" : "the daemon's receive token")}
               {field("payToken", "Pay token", info?.pay && sameProvider ? "keep as it is" : "the daemon's pay token — Withdraw needs it")}
+              {field("messageToken", "Message token", info?.messages && sameProvider ? "keep as it is" : "the daemon's message token — Support (the staff's chat with workers) needs it")}
             </>
           ) : (
             <>

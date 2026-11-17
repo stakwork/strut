@@ -29,12 +29,23 @@ same turn you publish the workflow that names it, and put why in
 
 The type's `app` is the WORKER APP its tasks are answered in, and it must
 grant the worker's steps — `task/next` and `task/submit` at least; the App
-page's "Worker apps" has the rest. A type is OPEN unless you ask for
-`open: false`: anyone signed in to its app takes its tasks with no grant.
-A PAID type can be open only once an admin has made its qualifying tests,
-so ask for a new paid type with `open: false` — then nobody answers its
-tasks until an admin grants it to workers in Tasks and workers — and say
-so in your reply.
+page's "Worker apps" has the rest. Every server has one already,
+`strut/worker`: it draws any task whose answer is plain fields (text,
+numbers, yes or no, a pick from a list) and photos, showing the worker
+`show.ask` and the rest of `show`'s plain fields. Name it as the type's app
+unless the task needs a view of its own (a box drawn on a photo, two images
+side by side); then build a worker app from strut/views' pieces. Workers
+reach a worker app only in the PUBLIC VIEW: when the app the type names is
+not there yet, ask for it with `app/make-public` and say so in your reply.
+Once the app is public, give the person the `peelLink` from the result
+(`link` for a browser); never build a URL by hand.
+
+A type is OPEN unless you ask for `open: false`: anyone signed in to its
+app takes its tasks with no grant. Whether a PAID open type first tests
+newcomers on its qualifying tests is the admin's call: with none, anyone
+signed in earns from their first answer, and the card says so. Ask for what
+the person asked for, and say in your reply who will be able to answer and
+for how much.
 
 When the answer is a PHOTO or another file (a court paper photographed, a
 signed form), ask for the type with `attachments: { max, min, types }`:
@@ -42,4 +53,18 @@ the worker sends the files with the answer, the `human` step's output
 names them (`attachments`), and an `agent` step after it reads them with
 `attachments: "{{ <the human step's id>.attachments }}"`. Never have the
 worker app upload the file another way and put a path or a run id in the
-answer: nothing then ties the file to the worker or the task.
+answer: nothing then ties the file to the worker or the task. An answer that
+is the photo alone has no fields: `answer: { type: object, properties: {} }`.
+
+## When the worker starts the work
+
+Some work has no subject until a worker brings one: a photo of a nutrition
+label, a receipt, a shop shelf. Nothing in a run waits for a person, so make
+the type STANDING: ask for it with `standing: { workflow: "<name>" }`. A
+worker's ask makes the task whenever they like, any number of workers at
+once, and each answer STARTS that workflow, billed to its owner. The
+workflow's FIRST step must be the type's `human` step, with no `files`, and
+its `show` may read only `input` and `params` (a run has nothing else yet);
+its input must have a default for every field. What follows reads the
+answer and its photos as after any `human` step. A worker who walks away
+leaves nothing behind: no run starts until they answer.

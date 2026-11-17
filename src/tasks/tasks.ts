@@ -79,8 +79,10 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
+import type { TaskDb } from "./db.js";
 import type { RunFile } from "../runs.js";
 import type { RunAttachment } from "../core.js";
+import { generateRunId } from "../store.js";
 import { ZERO_BALANCE, type Earning, type LedgerStore, type PayeeBalance } from "../payments/ledger.js";
 import { PayoutError, type PayoutAnswer, type Payouts, type PayoutView } from "../payments/payouts.js";
 import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-schema.js";
@@ -103,6 +105,7 @@ import {
   type Lease,
   type ReviewRecord,
   type StandingRow,
+  type StandingRule,
   type Verdict,
   type TaskListQuery,
   type TaskRecord,
@@ -170,6 +173,8 @@ export const GRADE_ERRORS_LOGGED = 3;
 /** §7.6: how many copies tasks left with all their answers and no decision
  *  one sweep queues. */
 export const UNDECIDED_BATCH = 100;
+/** §5.7: how many answered standing tasks with no run one sweep launches. */
+export const UNLAUNCHED_BATCH = 100;
 /** §9.6: how a take-back a review's rejection made begins its `why`, so
  *  `ok` undoes that one alone. */
 export const REVIEW_TAKE_BACK = "review: ";
@@ -204,24 +209,41 @@ export function tasksPath(dataDir: string): string {
 /** Both sides on one file, its folder owner-only. `node:sqlite` is imported
  *  here, on first use, never at boot. */
 export async function openTaskStores(o: { dataDir: string } | { file: string }): Promise<TaskStores> {
-  const [{ TaskDb }, { SqliteTaskStore, taskSchema }, { SqliteWorkerStore, workerSchema }] = await Promise.all([
-    import("./db.js"),
+  const [db, { SqliteTaskStore }, { SqliteWorkerStore }] = await Promise.all([
+    openTaskDb("file" in o ? o.file : tasksPath(o.dataDir)),
     import("./task-store-sqlite.js"),
     import("./worker-store-sqlite.js"),
   ]);
-  const db = TaskDb.open("file" in o ? o.file : tasksPath(o.dataDir));
-  // Both sides' tables made, or an older file's brought to version 2, in
-  // one transaction (plans/human-steps.md §7.7).
+  return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
+}
+
+/** A task store file in memory (`openTaskDb`, `TaskDb.open`): Support's,
+ *  beside a task store in memory. */
+export const TASKS_IN_MEMORY = ":memory:";
+
+/** The task store's file opened (`TASKS_IN_MEMORY`: one in memory) with every table
+ *  made, or an older file's brought to version 2, in one transaction
+ *  (plans/human-steps.md §7.7): both sides' and Support's
+ *  (plans/support-chat.md §4), which opens a connection of its own on it. */
+export async function openTaskDb(file: string): Promise<TaskDb> {
+  const [{ TaskDb }, { taskSchema }, { workerSchema }, { supportSchema }] = await Promise.all([
+    import("./db.js"),
+    import("./task-store-sqlite.js"),
+    import("./worker-store-sqlite.js"),
+    import("../support/store.js"),
+  ]);
+  const db = TaskDb.open(file);
   try {
     db.migrate(() => {
       taskSchema(db);
       workerSchema(db);
+      supportSchema(db);
     });
   } catch (err) {
     db.close();
     throw err;
   }
-  return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
+  return db;
 }
 
 export function memoryTaskStores(): TaskStores {
@@ -254,8 +276,7 @@ export type TaskErrorCode =
   | "unknown_test"
   | "bad_grader"
   | "no_answer"
-  | "final"
-  | "needs_tests";
+  | "final";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -313,8 +334,9 @@ export interface TaskTypeInput {
   withinHours?: number;
   enabled?: boolean;
   /** Open to any signed-in worker with no grant (ruling 9); true when left
-   *  out. A PAID open type needs its tests on and at least K of them ready
-   *  (`needs_tests` otherwise, `openPayProblem`). */
+   *  out. Whether a PAID open type qualifies newcomers on tests is the
+   *  admin's (ruling 12): one that asks for K takes a newcomer only while K
+   *  are ready (`openPayProblem`). */
   open?: boolean;
   /** What one accepted answer earns, in sats to the msat (§8.1), at most
    *  `PAY_SATS_MAX`; absent or 0: unpaid. */
@@ -332,6 +354,17 @@ export interface TaskTypeInput {
   /** The files an answer carries (§5.6): one, none required, images and
    *  PDFs, with these over them; absent or null: none. */
   attachments?: Partial<AttachmentRule> | null;
+  /** A STANDING type (§5.7): a worker's ask makes the task, and each answer
+   *  launches `workflow`, whose first step must be this type's `human`
+   *  step (`deps.standing` checks it); absent or null: not standing. */
+  standing?: { workflow: string } | null;
+}
+
+/** §5.7: what a standing type's pick-up is made of — its workflow's first
+ *  step's path and its `show`, resolved with the workflow's defaults. */
+export interface StandingTask {
+  path: string;
+  show: unknown;
 }
 
 /** What a settled task's answer earned (§8.1): the lease's stamp, and the
@@ -706,7 +739,7 @@ export interface TasksService {
    *  not booked, queues every answered test not graded (§7.4: after a
    *  restart) and every copies task with all its answers and no decision
    *  (§7.6, `deciding`). Opens the store. */
-  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number; grading: number; deciding: number }>;
+  sweep(): Promise<{ leases: number; expired: TaskSettled[]; booked: number; grading: number; deciding: number; launched: number }>;
   /** The sweep at once and every minute, while a store is open or on file. */
   start(): void;
   stop(): void;
@@ -770,6 +803,19 @@ export interface TasksDeps {
   /** §7.12, 1: who a step grader is billed to; else the admin who last
    *  saved the type; else nobody, and it cannot run. */
   principal?: string;
+  /** §5.7: what a pick-up of standing type `type`, whose rule names
+   *  `workflow`, is made of — or why its workflow cannot be one now (it is
+   *  missing or off, its first step is not this type's `human` step, its
+   *  `show` reads more than `input` and `params`, it has nobody to bill).
+   *  Asked when the type is saved and at each pick-up. Left out: no type
+   *  may be standing here. */
+  standing?(type: string, workflow: string): Promise<StandingTask | { problem: string }>;
+  /** §5.7: a settled standing task's run launched — its workflow under its
+   *  run id — or nothing when a run is on file under that id already.
+   *  Throws when it cannot be launched now; the sweep tries again. */
+  launch?(task: TaskRecord): Promise<void>;
+  /** A new run id (createStrut's `generateRunId`): a pick-up's. */
+  runId?(): string;
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -932,6 +978,22 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
       const taken = await s.tasks.take({ worker: actor, types: open, id: randomId(), now: at });
       if (taken) return { got: await workerTask(s, taken), types };
+      // §5.7: nothing a run made is waiting for them, so a standing type
+      // they may take makes its task now — a test in its place at the
+      // type's rate, as for any task.
+      for (const name of open) {
+        const kind = kinds.get(name)!;
+        if (!kind.standing) continue;
+        if (kind.tests) {
+          const answered = rows.get(kind.name)?.real ?? 0;
+          if (random() < (answered < kind.tests.newTasks ? kind.tests.newRate : kind.tests.rate)) {
+            const got = await s.tasks.takeTest({ worker: actor, type: kind.name, lease: randomId(), task: randomId(), now: at, pick });
+            if (got) return { got: await workerTask(s, got), types };
+          }
+        }
+        const got = await pickUp(s, actor, kind, at);
+        if (got) return { got: await workerTask(s, got), types };
+      }
     }
     // Another call of the same worker may have taken one meanwhile.
     const raced = await s.tasks.heldBy(actor, at);
@@ -983,21 +1045,16 @@ export function createTasks(deps: TasksDeps): TasksService {
   /** Whether a worker who never held open type `k` may enter it now, with
    *  the K their grant records — as a staff grant records it (§7.5): the
    *  type's when it has that many ready tests, else 0 — or why not: a PAID
-   *  open type takes a newcomer only while `openPayProblem` passes, so a
-   *  stranger always qualifies first. Its tests running short after it was
-   *  saved (one retired) makes it invite-only for newcomers until they are
-   *  back; a worker already in keeps their grant. */
+   *  open type that asks for K takes a newcomer only while K are ready
+   *  (`openPayProblem`), so it never pays a stranger it meant to qualify.
+   *  Whether it asks is the admin's (ruling 12): with its tests off or K 0,
+   *  anyone enters. Its tests running short after it was saved (one
+   *  retired) makes it invite-only for newcomers until they are back; a
+   *  worker already in keeps their grant. */
   const entry = async (s: TaskStores, k: TaskType): Promise<{ qualify: number } | { why: string }> => {
     const want = k.tests?.qualify ?? 0;
     const ready = want > 0 ? await s.tasks.readyTests(k.name) : 0;
-    if (openPayProblem(k, ready)) {
-      return {
-        why:
-          want > 0
-            ? `task type ${k.name} takes new workers while it has ${want} ready tests to qualify them on, and has ${ready} now: ask again later`
-            : `task type ${k.name} is paid and has no qualifying tests, so it takes new workers only by a staff grant`,
-      };
-    }
+    if (openPayProblem(k, ready)) return { why: `task type ${k.name} takes new workers while it has ${want} ready tests to qualify them on, and has ${ready} now: ask again later` };
     return { qualify: ready >= want ? want : 0 };
   };
   /** Ruling 9: records the grant (`grantOpen`, by `OPEN_GRANT_BY`) of each
@@ -1189,6 +1246,68 @@ export function createTasks(deps: TasksDeps): TasksService {
     });
   };
 
+  // ── standing types (§5.7) ─────────────────────────────────────────────
+  /** A type's `standing` as saved, or null (off), or a `bad_request`
+   *  naming why its workflow cannot be one. */
+  const standingRuleOf = async (type: string, raw: TaskTypeInput["standing"]): Promise<StandingRule | null> => {
+    if (raw === undefined || raw === null) return null;
+    const keys = typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw) : [];
+    const workflow = (raw as { workflow?: unknown }).workflow;
+    if (typeof workflow !== "string" || !workflow || keys.some((k) => k !== "workflow")) {
+      throw new TaskError("bad_request", "standing is { workflow }: the workflow each answer starts, or null");
+    }
+    if (!deps.standing) throw new TaskError("bad_request", "standing: this server starts no workflow from a task type");
+    const r = await deps.standing(type, workflow);
+    if ("problem" in r) throw new TaskError("bad_request", `standing: ${r.problem}`);
+    return { workflow };
+  };
+  /** Standing types whose pick-up failed, logged once each until one lands. */
+  const pickUpFailing = new Set<string>();
+  /** §5.7: a pick-up of standing type `kind` for `actor` — the task and
+   *  their lease, one write — or undefined (they hold one, or its workflow
+   *  cannot be one now: logged once). */
+  const pickUp = async (s: TaskStores, actor: string, kind: TaskType, at: number): Promise<Lease | undefined> => {
+    if (!kind.standing || !deps.standing) return undefined;
+    let made: StandingTask | { problem: string };
+    try {
+      made = await deps.standing(kind.name, kind.standing.workflow);
+    } catch (err) {
+      made = { problem: err instanceof Error ? err.message : String(err) };
+    }
+    const bytes = "problem" in made ? undefined : jsonBytes(made.show);
+    if (!("problem" in made) && (bytes === undefined || bytes > SHOW_MAX_BYTES)) made = { problem: `its human step's show is ${bytes ?? "not"} JSON; at most ${SHOW_MAX_BYTES} bytes` };
+    if ("problem" in made) {
+      if (!pickUpFailing.has(kind.name)) console.warn(`[tasks] standing type ${kind.name} hands out nothing: ${made.problem}`);
+      pickUpFailing.add(kind.name);
+      return undefined;
+    }
+    pickUpFailing.delete(kind.name);
+    const runId = deps.runId?.() ?? generateRunId();
+    return s.tasks.takeStanding({ worker: actor, type: kind.name, lease: randomId(), task: randomId(), workflow: kind.standing.workflow, runId, path: made.path, show: made.show, now: at });
+  };
+  /** Standing tasks whose launch is in flight, and those whose launch
+   *  failed (logged once each). */
+  const launching = new Set<string>();
+  const launchFailed = new Set<string>();
+  /** §5.7: a settled standing task's run launched, then recorded. True when
+   *  it was; a failure is logged once and left for the sweep. */
+  const launchStanding = async (s: TaskStores, t: TaskRecord): Promise<boolean> => {
+    if (!deps.launch || launching.has(t.id)) return false;
+    launching.add(t.id);
+    try {
+      await deps.launch(t);
+      await s.tasks.launched(t.id, now());
+      launchFailed.delete(t.id);
+      return true;
+    } catch (err) {
+      if (!launchFailed.has(t.id)) console.error(`[tasks] standing task ${t.id}'s run (${t.workflow} ${t.runId}) did not launch; the sweep tries again each minute:`, err instanceof Error ? err.message : err);
+      launchFailed.add(t.id);
+      return false;
+    } finally {
+      launching.delete(t.id);
+    }
+  };
+
   const capability: TasksCapability = {
     async ensure(input, o = {}) {
       const refused = deps.refusal?.(o.control);
@@ -1331,6 +1450,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       // step in the queue; any other copy's answer waits for the rest.
       else if (r.decision) decided(settled, r.answers ?? [], r.decision);
       else if (r.answers) queueDecide(settled.id);
+      // §5.7: no run waits on a standing task: its answer starts one.
+      else if (settled.standing) await launchStanding(s, settled);
       else if (settled.status !== "open") tell([settledOf(settled)]);
       return { ok: true };
     },
@@ -1421,10 +1542,10 @@ export function createTasks(deps: TasksDeps): TasksService {
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
       const attachments = ruled(() => attachmentRuleOf(input.attachments));
+      const standing = await standingRuleOf(name, input.standing);
       const s = await stores();
-      // Ruling 9: a paid open type qualifies every newcomer on K ready tests.
-      const short = openPayProblem({ name, open, ...(paySats ? { paySats } : {}), ...(tests ? { tests } : {}) }, tests && open && paySats ? await s.tasks.readyTests(name) : 0);
-      if (short) throw new TaskError("needs_tests", short);
+      // Ruling 12: whether a paid open type qualifies newcomers is the
+      // admin's; nothing here refuses one for want of tests.
       const saved = await s.tasks.putType({
         name,
         app,
@@ -1438,6 +1559,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(tests ? { tests } : {}),
         ...(copies ? { copies } : {}),
         ...(attachments ? { attachments } : {}),
+        ...(standing ? { standing } : {}),
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
@@ -2068,7 +2190,11 @@ export function createTasks(deps: TasksDeps): TasksService {
     // died while a step compared them, or the step failed — is queued again.
     const undecided = await s.tasks.undecided(UNDECIDED_BATCH);
     for (const t of undecided) queueDecide(t.id);
-    return { ...swept, booked, grading: ungraded.length, deciding: undecided.length };
+    // §5.7: an answered standing task whose run did not launch — its
+    // launch failed, or its process died between the answer and the launch.
+    let launched = 0;
+    if (deps.launch) for (const t of await s.tasks.unlaunched(UNLAUNCHED_BATCH)) if (await launchStanding(s, t)) launched++;
+    return { ...swept, booked, grading: ungraded.length, deciding: undecided.length, launched };
   };
 
   let timer: ReturnType<typeof setInterval> | undefined;

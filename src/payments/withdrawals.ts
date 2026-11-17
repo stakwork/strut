@@ -44,7 +44,14 @@
  * /keysend/:id` 404) or dropped by a person → `payoutFailed` (the reserve
  * back to the worker). A keysend is read with `keysendStatus`, which never
  * sends, so the minute's check reads every one; it is stale a day after it
- * was sent (`KEYSEND_STALE_MS`), having no expiry to count from.
+ * was sent (`KEYSEND_STALE_MS`), having no expiry to count from. A stale
+ * one is CANCELLED (ruling 11): the check asks the wallet once
+ * (`keysendCancel`), which keeps the ask until the keysend ends, and reads
+ * it every minute from then on. Cancelled is the one `failed` that is
+ * certain nothing was paid, so the reserve goes back with nobody's yes; a
+ * cancel that came too late ends `settled`. Only a wallet that cannot
+ * cancel (an older daemon, a keysend it did not send async) leaves a stale
+ * payout to a person, as an invoice's is.
  *
  * RULING 7 (plans/human-steps.md §8.2): every send that is not a worker's —
  * an admin's Withdraw, an accepted `remote/buy-credit` — is refused when the
@@ -60,7 +67,7 @@ import { dirname, join } from "node:path";
 import { Bolt11Error, decodeBolt11 } from "./bolt11.js";
 import { LightningError, isLightningError } from "./lightning.js";
 import type { LedgerEntry, LedgerStore, SendPurpose } from "./ledger.js";
-import { defaultMaxFeeMsat, NO_KEYSEND, type KeysendResult, type Payer, type PayResult, type PaymentState } from "./payer.js";
+import { defaultMaxFeeMsat, NO_KEYSEND, NO_KEYSEND_CANCEL, type KeysendResult, type Payer, type PayResult, type PaymentState } from "./payer.js";
 import { shortOfWorkers } from "./withdraw-reading.js";
 
 /** The pending sends, under the data directory. */
@@ -74,6 +81,8 @@ export const STALE_AFTER_EXPIRY_MS = 60 * 60_000;
 /** A keysend still pending this long after it was sent is stale
  *  (plans/human-steps.md §8.2): it has no expiry to count from. */
 export const KEYSEND_STALE_MS = 24 * 60 * 60_000;
+/** What the check says of a stale keysend the wallet cannot cancel. */
+const STALE_KEYSEND = "stale: still pending a day after it was sent; record it as paid or drop it";
 
 /** A payment that went out (or may have) and has not settled or failed. */
 export interface PendingWithdrawal {
@@ -107,6 +116,10 @@ export interface PendingWithdrawal {
   lastError?: string;
   /** What the payer read before it was sent (the fee booked). */
   balanceBeforeMsat?: number;
+  /** A stale keysend: epoch ms, when the wallet took the ask to cancel it.
+   *  The wallet asks again by itself until the keysend ends, and the
+   *  minute's check reads it until then. */
+  cancelAt?: number;
 }
 
 /** A pending payment as a route shows it. */
@@ -189,6 +202,10 @@ export interface WithdrawalsDeps {
   /** Run first in every check: payouts.ts's sweep of a payout reserved and
    *  never sent. */
   sweep?: () => Promise<unknown>;
+  /** A worker's payout settled and booked: Support's line to them
+   *  (plans/support-chat.md §6). Called once it is in the books; never
+   *  waited on. */
+  paid?: (payout: { key: string; worker: string; msat: number }) => void;
 }
 
 export interface Withdrawals {
@@ -278,19 +295,20 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
   const record = async (p: PendingWithdrawal, feeMsat: number, o: { walletHash?: string; by?: string } = {}) => {
     const usd = await usdOf(p.msat);
     const ledger = await deps.ledger();
-    const entry =
+    const settled =
       p.purpose === "worker"
-        ? (
-            await ledger.payoutSettled({
-              key: p.paymentHash,
-              feeMsat,
-              ...(o.walletHash ? { paymentHash: o.walletHash } : {}),
-              ...(usd !== undefined ? { usd } : {}),
-              ...(o.by ? { by: o.by } : {}),
-              at: now(),
-            })
-          ).entry
-        : await ledger.withdrawal({
+        ? await ledger.payoutSettled({
+            key: p.paymentHash,
+            feeMsat,
+            ...(o.walletHash ? { paymentHash: o.walletHash } : {}),
+            ...(usd !== undefined ? { usd } : {}),
+            ...(o.by ? { by: o.by } : {}),
+            at: now(),
+          })
+        : undefined;
+    const entry = settled
+      ? settled.entry
+      : await ledger.withdrawal({
             msat: p.msat,
             feeMsat,
             paymentHash: p.paymentHash,
@@ -300,6 +318,13 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
             at: now(),
           });
     await drop(p.paymentHash);
+    if (settled) {
+      try {
+        deps.paid?.({ key: settled.payout.key, worker: settled.payout.worker, msat: settled.payout.msat });
+      } catch (err) {
+        console.warn(`[withdrawals] after payout ${settled.payout.key}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     return entry;
   };
   /** A send that failed or never went, off the pending list — a payout
@@ -407,6 +432,23 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
     } catch (err) {
       return failedCall(p, err, true);
     }
+  };
+  /** Ask the wallet to cancel a stale keysend. Its answer is the keysend as
+   *  it stands: `failed` (cancelled: the reserve goes back), `settled`, or
+   *  still `pending`. Any answer means the wallet took the ask and keeps it,
+   *  so `cancelAt` is set and the minute's check reads from then on. A
+   *  wallet that cannot cancel leaves it as it was, for a person. */
+  const cancelOp = (cancel: NonNullable<Payer["keysendCancel"]>, p: PendingWithdrawal) => async () => {
+    let r: KeysendResult;
+    try {
+      r = await cancel({ id: p.paymentHash });
+    } catch (err) {
+      if (isLightningError(err) && (err.walletCode === NO_KEYSEND_CANCEL || err.walletCode === "not_cancellable")) {
+        throw new WithdrawError(409, err.code, err.message, err.walletCode);
+      }
+      return failedCall(p, err, true);
+    }
+    return settle({ ...p, cancelAt: now() }, keysendAsPay(p, r));
   };
   const otherWallet = (p: PendingWithdrawal, payer: Payer) =>
     new WithdrawError(409, "other_wallet", `this payment went out through another wallet (${p.payer || "an earlier one"}), not ${payer.id}: set that wallet back to read it, or record it as paid or drop it`);
@@ -586,8 +628,26 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
             unread("it went out through another wallet");
             continue;
           }
-          if (isStale(p)) {
-            unread(p.kind === "keysend" ? "stale: still pending a day after it was sent; record it as paid or drop it" : "stale: past its invoice's expiry; record it as paid or drop it");
+          if (isStale(p) && p.kind !== "keysend") {
+            unread("stale: past its invoice's expiry; record it as paid or drop it");
+            continue;
+          }
+          if (isStale(p) && p.cancelAt === undefined) {
+            // A payout still out after a day is cancelled (ruling 11): the
+            // wallet is asked once, and keeps the ask until the keysend ends.
+            if (!payer.keysendCancel) {
+              unread(STALE_KEYSEND);
+              continue;
+            }
+            try {
+              const a = await once(p.paymentHash, cancelOp(payer.keysendCancel.bind(payer), p));
+              out.push({ paymentHash: p.paymentHash, state: a.state, ...(a.error ? { error: a.error } : {}) });
+            } catch (err) {
+              const dropped = !(await find(p.paymentHash));
+              // A daemon that cannot cancel it: a person decides, as before.
+              const cannot = err instanceof WithdrawError && (err.walletCode === NO_KEYSEND_CANCEL || err.walletCode === "not_cancellable");
+              out.push({ paymentHash: p.paymentHash, state: dropped ? "failed" : "unread", error: cannot ? `${STALE_KEYSEND} (${err.message})` : err instanceof Error ? err.message : String(err) });
+            }
             continue;
           }
           // A keysend is read with a GET that never sends: always.

@@ -1,5 +1,6 @@
 /**
- * The STAFF's door (plans/human-steps.md §9.3): the `/tasks…` routes as
+ * The STAFF's door (plans/human-steps.md §9.3): the `/tasks…` routes, and
+ * Support's `/support…` (plans/support-chat.md), as
  * an in-process request in the admin's own name, for the `staff/*` steps
  * strut's own staff app (`strut/staff`) calls. The check and the door are
  * `../_admin-door.ts`'s, shared with `earnings/*`: only a first-party page
@@ -15,7 +16,7 @@
 import type { StepContext } from "../../../core.js";
 import { adminDoorOf, bodyOrThrow } from "../_admin-door.js";
 
-/** One `/tasks…` route through the door: its answer, or its refusal thrown. */
+/** One `/tasks…` or `/support…` route through the door: its answer, or its refusal thrown. */
 export async function staffCall(ctx: StepContext | undefined, type: string, method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
   const door = adminDoorOf(ctx, type, "staffAdmin", "staff");
   return bodyOrThrow(await door.call(method, path, body, ctx?.actor));

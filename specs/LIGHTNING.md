@@ -12,10 +12,17 @@ thing in strut that sends sats out, which is never on the services bag.
 This file is the contract each provider is built against:
 
 - **The Sphinx daemon** (`src/payments/sphinx-daemon.ts`): four routes,
-  and `POST /pay`, `POST /keysend` and `GET /keysend/:id` for the payer, built in the sphinx repo
-  (`wasm/daemon/src/http.ts`, stakwork/sphinx#428).
+  and `POST /pay`, `POST /keysend`, `GET /keysend/:id` and
+  `POST /keysend/:id/cancel` for the payer, built in the sphinx repo
+  (`wasm/daemon/src/http.ts`, stakwork/sphinx#428; the keysend routes,
+  stakwork/sphinx#431), and the three INVITE routes for a new worker
+  (`POST /invite`, `GET /invites`, `POST /invite/:code/cancel`; "Invites"
+  below), being built in the sphinx repo as strut's side lands.
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
-  that answer exactly this.
+  that answer exactly this. And SUPPORT's DM routes, with a token of
+  their own ("Support's DMs" below, plans/support-chat.md §7;
+  stakwork/sphinx#435, and item 2's file, picture and delete in
+  stakwork/sphinx#436); `scripts/fake-sphinx-daemon.ts` answers them.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -256,6 +263,209 @@ know.
 **The one way to pay twice** is a daemon that lost its ledger: it reads an
 `id` it sent as never taken, and strut then fails the payout and gives the
 reserve back. Back the daemon's ledger up with its state.
+
+A `pending` answer may carry `reason`: what the daemon knows of why it is
+not settled or failed yet (`lsp_unconfirmed: …`, `cancel_too_late: …`,
+`cancel_unconfirmed: …`). `pending` means unknown, never failed. strut
+keeps the reason of a read or a cancel as the send's `lastError`; a send's
+own answer, which goes to the worker, leaves it out.
+
+### `POST /keysend/:id/cancel` — cancel a keysend the LSP still holds
+
+With the PAY token, no body. strut calls it for a payout still `pending` a
+day after it was sent (plans/human-steps.md §8.2, ruling 11). It never
+sends. It asks the LSP to cancel the keysend and waits up to 10 s for its
+word, then answers the keysend as it stands, with `cancelled`:
+
+```json
+{ "id": "<64 hex>", "state": "failed", "payment_hash": "<hex>", "fee_msat": 0, "error": "cancelled: the payer cancelled it before it was paid", "cancelled": true }
+{ "id": "<64 hex>", "state": "pending", "payment_hash": "<hex>", "fee_msat": 0, "reason": "cancel_too_late: …", "cancelled": false }
+```
+
+- **Cancelled** is `failed` with an `error` that starts `cancelled:`. The
+  LSP removed the payment in the write that marked it cancelled, so nothing
+  was paid and nothing can be. It is the one end of a pending keysend that
+  strut takes as certain: the payout fails and the reserve goes back to the
+  worker with nobody's yes.
+- **Too late** (the LSP had taken it for paying) and **no answer** stay
+  `pending`, with `reason`. The daemon keeps the cancel in its ledger and
+  asks it again every minute until the keysend ends, so strut asks once and
+  reads with the GET from then on.
+- **An ended keysend** is answered as it stands. An `id` the daemon never
+  took is `404 { code: "not_found" }`, read as `failed`, as on the GET.
+- **`409 { code: "not_cancellable" }`**: a keysend the daemon did not send
+  async, which the LSP does not hold.
+- **A `404 no route …`** is a daemon that keysends but predates the cancel
+  (`no_keysend_cancel`). With either of these two the payout stays stale,
+  and a person records it as paid or drops it.
+- **The LSP must know the cancel** (the mixer's `cancelpay`,
+  stakwork/sphinx#433). One that does not gives no answer: the keysend
+  stays `pending` with `cancel_unconfirmed`, and a person decides.
+
+### Invites — a new worker's Sphinx account (the payer)
+
+plans/human-steps.md §5.8. Staff invite a new worker with one link; the
+daemon makes the Sphinx invite, paying the mixer for it, so these take the
+PAY token (or the admin token, which strut never holds), never the receive
+token (`403`). Only the staff's `/tasks/invites` routes call them, through
+the payer (`invite`, `invites`, `cancelInvite`), with 20 s each. Fields may
+be added; none is renamed or removed.
+
+```
+POST /invite { "sats": 100 }
+→ { "code": "<the invite's code>", "link": "sphinx.chat://?action=i&d=…&c=…", "sats": 100, "status": "sending", "createdAt": 1794787200 }
+
+GET /invites
+→ { "invites": [ { "code", "link", "sats", "status", "createdAt" }, … ] }
+
+POST /invite/:code/cancel
+→ { "code": "<code>", "status": "cancelled" }
+```
+
+- **`sats`** is the new account's starting balance. The mixer's invite price
+  is paid on top of it, from the daemon's balance.
+- **`status`** is one of `sending` (the daemon is paying the mixer for it),
+  `ready` (it can be used), `failed` (that payment failed), `used` (a new
+  account took it) or `cancelled`.
+- **`link`** is the core's `invite_qr` (`sphinx/src/ping/invite.rs`):
+  `sphinx.chat://?action=i&d=<URL-safe base64 of the code's 32 bytes and the
+  mixer's host>`, with `c=` (the inviter) and `t=` (a tribe) when there are
+  any. Strut takes `sphinx.chat://?` off and puts the rest after `#` in its
+  join link, then adds `a=`, a section only the link carries; the core's
+  `parse_invite_qr` ignores a section it does not know.
+- **`code`** rides in the cancel's path: letters, digits, `-` and `_`, 1 to
+  128 of them (hex today).
+- **`createdAt`** is unix seconds; strut also reads ms and ISO.
+- **A `404 { code: "not_found" }`** on the cancel is a code the daemon does
+  not know (`unknown_invite` to staff). A `404 no route …` on any of the
+  three is a daemon from before them (`no_invites`).
+
+### Support's DMs — the MESSAGE token
+
+plans/support-chat.md §7, built in stakwork/sphinx#435
+(`wasm/daemon/src/dms.ts`). Workers write to the treasury's account, named
+"Support" (`DAEMON_ALIAS`), from Peel; staff answer from strut
+(specs/API.md §22, "Support"). The daemon gives strut its 1:1 messages
+through a FOURTH token, `DAEMON_MESSAGE_TOKEN` — strut's
+`LIGHTNING_DAEMON_MESSAGE_TOKEN`, `messageToken` on the wallet, kept as the
+pay token is and refused when it equals the receive or the pay token. It
+opens the routes below and nothing else: not tribes, join, leave,
+invoices, pay, keysend, invites or the admin routes. The only sats it can
+spend are what a DM to an existing contact costs: 0, or 1 sat a part while
+their key is unconfirmed. It never meets a new contact. Only strut's
+follower and its `/support` routes call them (`src/support/support.ts`).
+Fields may be added; none is renamed or removed.
+
+```
+GET /dms?after=<seq>&limit=100
+→ { "dms": [ { "seq": 12, "id": "<sphinx id>", "time": "2026-11-16T10:00:00.250Z", "fromMe": false,
+               "peer": { "pubkey": "02…", "address": "02…_03…_123", "alias": "Ana" },
+               "kind": "message", "text": "When is it paid?", "replyTo": null, "sats": 0,
+               "deleted": false, "mediaType": null, "fileName": null }, … ] }
+
+GET /dm/:id/file
+→ the decrypted bytes; content-type the file's type; content-disposition the sender's name
+
+POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>",
+           "file": { "data": "<standard base64>", "type": "image/jpeg", "name": "receipt.jpg" } }
+→ the send's item, as the feed shows it: { "seq": 31, "id": "<sphinx id>", "clientId": "<strut's>", …, "status": "sent" }
+
+PUT /dm/photo { "data": "<base64>", "type": "image/jpeg" }      → { "url": "https://memes…/public/<muid>" }
+DELETE /dm/photo                                               → { "url": null }
+POST /dm/:id/delete                                            → the item, "deleted": true, "text": null
+```
+
+- **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
+  `after` (0 by default), at most `limit` (1 to 1,000; 100 by default).
+  `seq` is the feed's own, kept by the daemon in `<home>/dms.jsonl` (the
+  server's `index` is missing on the account's own sends, so it cannot be
+  the cursor); its first start numbers the log's backlog (`messages.jsonl`),
+  oldest first. **A record that changes comes again under a new, higher
+  `seq`**: a send's `status` moving, a message its sender deleted. Strut
+  keeps one row per record — its own send by `clientId`, anything else by
+  `id` — and its cursor per daemon URL. It reads every 3 s, and the next
+  page at once while one comes back full. 10 s each.
+- **The fields**: `seq`; `id`, the Sphinx id — null only on a send that
+  failed before anything went out; `clientId`, only on a send made through
+  `POST /dm` (the `id` strut gave); `time` (ISO; strut also reads unix
+  seconds and ms); `fromMe`; `peer { pubkey, address, alias }` (`pubkey` 66
+  hex, the contact's key, which is also the key Peel signs in with);
+  `kind`: `message`, `file`, `payment`, or `contact` (a key exchange someone
+  sent the account, as a worker's Peel does when joining with an invite;
+  what marks the invite `used`); `text` (null on a contact); `replyTo` (the
+  quoted message's id, or null); `sats` (on every record: a payment's
+  amount, a send's cost); `deleted`; `mediaType` and `fileName` on a file
+  (`fileName` is made from the type, `image.jpg`, `file.pdf`: a Sphinx file
+  message carries no name); `status` on every message the account sent —
+  `sending` until the LSP has it (the LSP's PENDING, holding a sat for
+  someone offline, counts as `sent`), then `sent`, or `failed` — and
+  `error` on a failed one. Never a file's key. Strut skips a record of
+  another kind, or with no pubkey.
+- **`GET /dm/:id/file`**: a file a contact sent, downloaded from the memes
+  server and decrypted as for a tribe mention, without shrinking, within
+  180 s; the sender's own name in `content-disposition` (RFC 6266), which
+  strut keeps over the feed's. At most 25 MiB. Strut fetches each file when
+  it arrives (a media token expires), beside its reads of the feed, never
+  holding them, with 200 s. Refusals: `413 too_large` (strut's "too large"
+  line, ruling 10, never asked again), `404 not_found`, `410 deleted`, `403
+  host_not_allowed` (the daemon opens no files, `DAEMON_MEMES_HOSTS`), `422
+  unreadable` — each for good — and `502 memes_failed`, which strut tries
+  again on its next 4 reads.
+- **`POST /dm`**: a text to an existing contact, by pubkey — never a tribe,
+  never someone the account has not met. `id` is 1 to 128 printable
+  characters (strut sends 64 hex); `reply` quotes a message by its id. The
+  answer is the send's item as the feed shows it, once the LSP has spoken
+  or about 10 s have passed (then `sending`): strut waits 30 s. **The same
+  `id` answers the send as it stands and never sends it twice** — across
+  restarts too — **except a `failed` one, which is tried again with the
+  text it first had**: that is strut's Retry. A send whose publish threw
+  partway stays `sending` (the daemon asks the LSP by its parts' tags every
+  minute), so it is never sent twice. Refusals: `400 bad_request`, `400
+  not_a_contact`, `400 too_long` (the content and quoted id as the
+  message's JSON over 32 KiB, which strut refuses before it keeps
+  anything), `503 not_connected` (no LSP: nothing was sent). Strut keeps a
+  refused send `failed` with the daemon's `code: error`, and Retry.
+- **A file in `POST /dm`** (item 2, stakwork/sphinx#436): `file { data,
+  type, name? }` (standard base64; without `name` one is made from the
+  type), `text` then optional, its caption. The daemon encrypts it
+  (RNCryptor v3, as Peel's `MediaCrypto`), uploads it to the first host in
+  `DAEMON_MEMES_HOSTS`, signs a media token (a year) and sends a type-6
+  message; an upload the memes server refuses ends the send `failed`, with
+  nothing sent. The answer and the feed show it as `kind: "file"` with
+  `mediaType` and `fileName`. **The daemon keeps no bytes**: a failed file
+  send is tried again under its `id` only with `file` again (`400
+  bad_request` without), keeping its first type and name — strut's Retry
+  sends it from its own copy in `<dataDir>/support/files/`; and `GET
+  /dm/:id/file` serves files the account RECEIVED alone (`404` on its own).
+  Refusals before anything goes: `400 bad_request`, `400 too_long` (the
+  caption and quoted id as JSON plus 1 KiB for the file's fields, over 32
+  KiB: strut counts the same and refuses first), `413 too_large` (over 25
+  MiB), `400 not_a_contact`, `403 host_not_allowed`, `503 not_connected`.
+  Strut sends at most 2.5 MiB (a page's call).
+- **`PUT /dm/photo { data, type }`** (item 2): Support's picture, uploaded
+  to memes `/public`, NOT resized (the page shrinks it to 512 px); `type`
+  `image/jpeg` (or `image/jpg`), `png`, `gif` or `webp`, the bytes of that
+  format, at most 5 MiB. Answers `{ url }`, which the daemon sends as `img`
+  on every message through sphinx-chat's `sendText` from then on (kept in
+  its `config.json`), so Peel shows it beside "Support". Refusals: `400
+  bad_request`, `413 too_large`, `403 host_not_allowed`, `502
+  memes_failed`. `DELETE /dm/photo` answers `{ url: null }`. Strut keeps a
+  copy in `<dataDir>/support/photo` to show staff (a page cannot load the
+  memes host).
+- **`POST /dm/:id/delete`** (item 2): one of the account's OWN messages or
+  files deleted for both sides (a type-17 delete, a DM's cost); answers
+  the item, `deleted: true` and `text: null`, which also comes again in
+  the feed under a new `seq`; one already deleted is answered as it
+  stands. Refusals: `403 not_own`, `404 not_found`, `409 not_deletable` (a
+  failed send — it never went — a payment or a contact record, or a send
+  not settled yet after a restart), `503 not_connected`, `502
+  send_failed`. Strut asks it for a message of Support's that has its
+  Sphinx id (from the send's answer, or the feed); a failed send is
+  deleted in strut alone; `not_deletable` on a send is shown as "try again
+  in a moment".
+- **The alias**: a changed `DAEMON_ALIAS` replaces the account's stored
+  alias at start, so every message after carries the new name, which is
+  what renames the contact in Peel.
 
 ## NWC (NIP-47)
 

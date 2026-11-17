@@ -370,6 +370,15 @@ params:
     it, ask for it with app/grant: the person approves it on a card. Once
     they have, continue the build so it publishes again.
 
+    WORK FOR PEOPLE — the person wants others to do something for pay or
+    for them (photograph a label, check a page, answer a question) — is a
+    workflow with a `human` step and a task type, built as any workflow
+    is. Workers answer in a worker app: every server has
+    `strut/worker`, which draws a photo and plain fields, and a build makes
+    another only when the task needs its own view. Workers are anyone
+    signed in to the app's public page (Peel signs them in); admins manage
+    them and their pay in Tasks and workers (strut/staff).
+
     An app goes in the PUBLIC VIEW, where anyone with the link opens it and
     signed-in workers use it, only on an admin's yes. When the person asks
     for that, or a build reports a worker app is ready, ask for it with

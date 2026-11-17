@@ -44,7 +44,7 @@ import type { ArtifactRef } from "./artifact-refs.js";
 import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
-import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
+import { briefOf, listProposals, proposalsRoot, type Proposal, type ProposalBrief } from "./proposals.js";
 import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
 import { localRuns, type RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
@@ -856,18 +856,43 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const end = Math.max(0, Math.min(rec.turns.length, q.before ?? rec.turns.length));
       const start = Math.max(0, end - limit);
       const page = rec.turns.slice(start, end);
+      const reads: Array<Omit<ConversationTurn, "turn" | "proposals">> = [];
+      for (let i = page.length - 1; i >= 0; i--) reads.unshift(await readTurn(page[i]!));
       const runIds = new Set(page.map((t) => t.runId));
-      // Only this page's runs, and only what the reader may see: decided on
-      // the index, so a read never opens another conversation's records.
-      const proposals = await listProposals(proposalsRoot(deps.dataDir), {
-        runId: [...runIds],
-        viewer: { scope: (by.person ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) },
-      }).catch(() => []);
+      const jobs = [...new Set(reads.flatMap((r) => r.jobs.map((j) => j.job)))];
+      // This page's runs' proposals, and those of the jobs its turns started
+      // (a `builder` job's): only what the reader may see, decided on the
+      // index, so a read never opens another conversation's records.
+      const root = proposalsRoot(deps.dataDir);
+      const viewer = { scope: (by.person ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) };
+      const [own, ofJobs] = await Promise.all([
+        listProposals(root, { runId: [...runIds], viewer }).catch(() => []),
+        jobs.length ? listProposals(root, { job: jobs, viewer }).catch(() => []) : Promise.resolve([]),
+      ]);
+      // Each on the turn whose run made it, else on the turn that started
+      // (or continued) the job run that made it, under that job's card. A
+      // proposal shows only where it was made (ruled 11-02): a job's other
+      // run counts as here only when its thread is this conversation.
+      const turnOf = (p: Proposal): number | undefined => {
+        const mine = page.findIndex((t) => t.runId === p.by.runId);
+        if (mine >= 0) return mine;
+        const started = reads.findIndex((r) => r.jobs.some((j) => j.runId === p.by.runId));
+        if (started >= 0) return started;
+        if (!p.by.job || p.by.conversation !== rec!.id) return undefined;
+        const holding = reads.flatMap((r, i) => (r.jobs.some((j) => j.job === p.by.job) ? [i] : []));
+        return holding.filter((i) => page[i]!.at <= p.createdAt).pop() ?? holding[0];
+      };
+      const byTurn = new Map<number, Proposal[]>();
+      const seen = new Set<string>();
+      for (const p of [...own, ...ofJobs].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        const i = turnOf(p);
+        if (i !== undefined) byTurn.set(i, [...(byTurn.get(i) ?? []), p]);
+      }
       const turns: ConversationTurn[] = [];
       for (let i = page.length - 1; i >= 0; i--) {
-        const t = page[i]!;
-        const read = await readTurn(t);
-        turns.push({ turn: start + i, ...read, proposals: proposals.filter((p) => p.by.runId === t.runId).reverse().map(briefOf) });
+        turns.push({ turn: start + i, ...reads[i]!, proposals: (byTurn.get(i) ?? []).map(briefOf) });
       }
       return {
         conversation,

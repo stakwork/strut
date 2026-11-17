@@ -1441,6 +1441,12 @@ describe("the API key gate", () => {
         continue;
       }
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
+      // A worker invite's page (plans/human-steps.md §5.8) is static: the
+      // invite rides after `#`, so it holds nothing but its own script.
+      if (path === "/public/join" || path === "/public/join/qrcode.js") {
+        assert.equal(res.status, 200, route);
+        continue;
+      }
       if (!["/public", "/public/workflows", "/public/steps", "/public/concepts", "/public/apps"].includes(path)) assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
     for (const route of publicPosts.filter((r) => r !== visitorDoor)) {
@@ -1478,8 +1484,10 @@ describe("the API key gate", () => {
     // (plans/human-steps.md §6): types, workers, tasks, and the tests, which
     // hold the expected answers (§7.1); the queue and a task's file (§9.4).
     // And the Concept branches (plans/concept-evals.md items b, d): a branch
-    // does not cross to another strut, nor does its compare with main.
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /branches", "GET /branches/x/compare"];
+    // does not cross to another strut, nor does its compare with main. And
+    // the worker invites (plans/human-steps.md §5.8), each a link to money.
+    // And Support's conversations with workers (plans/support-chat.md §9).
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

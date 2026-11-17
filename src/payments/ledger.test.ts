@@ -770,11 +770,15 @@ for (const impl of impls) {
 
     it("payout settings: off until an admin saves them, saved whole with who and when, refused with a cap under the minimum", async () => {
       assert.deepEqual(await store.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
-      assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 }, "ruled");
+      assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100 }, "ruled");
       const saved = await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
-      assert.deepEqual(saved, { ...ON, changedBy: "admin-1", changedAt: T0 });
+      // An invite's sats left out: the default (plans/human-steps.md §5.8).
+      assert.deepEqual(saved, { ...ON, inviteSats: 100, changedBy: "admin-1", changedAt: T0 });
       assert.deepEqual(await store.payoutSettings(), saved);
-      for (const bad of [{ minSats: 0 }, { minSats: 1.5 }, { workerDaySats: 999 }, { serverDaySats: 999 }, { on: "yes" as never }]) {
+      assert.equal((await store.setPayoutSettings({ ...ON, inviteSats: 250 })).inviteSats, 250);
+      assert.equal((await store.payoutSettings()).inviteSats, 250);
+      await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
+      for (const bad of [{ minSats: 0 }, { minSats: 1.5 }, { workerDaySats: 999 }, { serverDaySats: 999 }, { on: "yes" as never }, { inviteSats: 0 }, { inviteSats: 100_001 }, { inviteSats: 2.5 }]) {
         await assert.rejects(store.setPayoutSettings({ ...ON, ...bad }), RangeError, JSON.stringify(bad));
       }
       assert.deepEqual(await store.payoutSettings(), saved, "a refused save changes nothing");
@@ -1145,6 +1149,28 @@ describe("the ledger file", () => {
       assert.equal((await three.payoutSettings()).changedBy, "bo");
       assert.deepEqual((await three.payouts({ state: "out" })).map((p) => p.worker), ["ann"]);
       assert.equal((await three.payeeBalance("ann", { now: T0 + 1 })).totalMsat, 995_000);
+    } finally {
+      await three.close();
+    }
+  });
+
+  it("a settings row saved before invites (plans/human-steps.md §5.8) gains invite_sats: the default until saved", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.setPayoutSettings({ on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, by: "bo", at: T0 });
+    await one.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec("alter table payout_settings drop column invite_sats");
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.deepEqual(await two.payoutSettings(), { on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100, changedBy: "bo", changedAt: T0 });
+      assert.equal((await two.setPayoutSettings({ on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 300 })).inviteSats, 300);
+    } finally {
+      await two.close();
+    }
+    const three = await openLedger({ dataDir: dir });
+    try {
+      assert.equal((await three.payoutSettings()).inviteSats, 300);
     } finally {
       await three.close();
     }

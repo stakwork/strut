@@ -7,7 +7,9 @@
  *
  * It holds the WALLET: which provider, its receive credential, and its pay
  * credential when there is one (kept here for the payer, item 7; never
- * handed to `ctx.services.lightning`). And `L402_ROOT` (§4.2): the 32 bytes
+ * handed to `ctx.services.lightning`). A Sphinx daemon's MESSAGE token too
+ * (plans/support-chat.md §8), kept as the pay token is: only Support's
+ * follower and the `/support` routes use it (src/support/). And `L402_ROOT` (§4.2): the 32 bytes
  * every credit token's root key is derived from, minted when the first
  * priced item is saved. It must be backed up with the ledger: without it no
  * outstanding token verifies.
@@ -40,19 +42,22 @@ export const WALLET_ENV = [
   "LIGHTNING_DAEMON_URL",
   "LIGHTNING_DAEMON_TOKEN",
   "LIGHTNING_DAEMON_PAY_TOKEN",
+  "LIGHTNING_DAEMON_MESSAGE_TOKEN",
   "LIGHTNING_NWC_URL",
   "LIGHTNING_NWC_PAY_URL",
 ] as const;
 
 export type WalletProviderKind = "sphinx" | "nwc";
 
-/** The Sphinx daemon (the treasury): its URL, its RECEIVE token, and its PAY
- *  token for the payer. */
+/** The Sphinx daemon (the treasury): its URL, its RECEIVE token, its PAY
+ *  token for the payer, and its MESSAGE token for Support (the DMs alone,
+ *  plans/support-chat.md §7). */
 export interface SphinxWallet {
   provider: "sphinx";
   url: string;
   token: string;
   payToken?: string;
+  messageToken?: string;
 }
 
 /** An NWC wallet: a receive-only connection URL, and one that may pay. */
@@ -78,6 +83,9 @@ export interface WalletInfo {
   receive: boolean;
   /** A pay credential is on file: Withdraw (item 7) can pay. */
   pay: boolean;
+  /** A Sphinx daemon's message token is on file: Support answers
+   *  (plans/support-chat.md §8). Only on a Sphinx wallet that has one. */
+  messages?: true;
   /** The daemon's URL (no credential in it). Sphinx only: an NWC URL is one. */
   url?: string;
   /** The NWC connection's relays, by host (no credential in them). */
@@ -99,13 +107,17 @@ export class PaymentsSettings {
     this.#store = store;
   }
 
+  /** The unreadable value last warned about: said once, not at every read
+   *  (Support's follower reads the wallet every few seconds). */
+  #warned: string | null = null;
   async wallet(): Promise<WalletSettings | null> {
     const raw = await this.#store.get(PAYMENTS_KEYS.wallet);
     if (!raw) return null;
     try {
       return checkStored(JSON.parse(raw));
     } catch (err) {
-      console.warn(`[payments] the wallet on file in ${PAYMENTS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}); no wallet is set`);
+      if (this.#warned !== raw) console.warn(`[payments] the wallet on file in ${PAYMENTS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}); no wallet is set`);
+      this.#warned = raw;
       return null;
     }
   }
@@ -168,7 +180,9 @@ export function checkCredentials(o: Record<string, unknown>): WalletCredentials 
     if (!token) throw new Error("the Sphinx daemon's receive token is required");
     const payToken = str(o["payToken"]);
     if (payToken && payToken === token) throw new Error("the pay token is the receive token: give the daemon's pay token, or leave it out");
-    return { provider: "sphinx", url: daemonUrl(url), token, ...(payToken ? { payToken } : {}) };
+    const messageToken = str(o["messageToken"]);
+    if (messageToken && (messageToken === token || messageToken === payToken)) throw new Error("the message token is the receive or the pay token: give the daemon's message token, or leave it out");
+    return { provider: "sphinx", url: daemonUrl(url), token, ...(payToken ? { payToken } : {}), ...(messageToken ? { messageToken } : {}) };
   }
   if (o["provider"] === "nwc") {
     const url = str(o["url"]);
@@ -186,28 +200,34 @@ export function checkCredentials(o: Record<string, unknown>): WalletCredentials 
 
 /** Two sets of credentials are the same wallet. */
 export function sameCredentials(a: WalletCredentials, b: WalletCredentials): boolean {
-  if (a.provider === "sphinx" && b.provider === "sphinx") return a.url === b.url && a.token === b.token && a.payToken === b.payToken;
+  if (a.provider === "sphinx" && b.provider === "sphinx") return a.url === b.url && a.token === b.token && a.payToken === b.payToken && a.messageToken === b.messageToken;
   if (a.provider === "nwc" && b.provider === "nwc") return a.url === b.url && a.payUrl === b.payUrl;
   return false;
 }
 
 /**
  * The wallet the environment names at boot, or null when it names none.
- * `LIGHTNING_DAEMON_URL` + `LIGHTNING_DAEMON_TOKEN` (+ `_PAY_TOKEN`) is the
- * Sphinx daemon; `LIGHTNING_NWC_URL` (+ `LIGHTNING_NWC_PAY_URL`) is NWC.
+ * `LIGHTNING_DAEMON_URL` + `LIGHTNING_DAEMON_TOKEN` (+ `_PAY_TOKEN`,
+ * `_MESSAGE_TOKEN`) is the Sphinx daemon; `LIGHTNING_NWC_URL` (+ `LIGHTNING_NWC_PAY_URL`) is NWC.
  * Both, or a pay credential with no receive one, throws: a bad value fails
  * the boot, like `STRUT_PEERS`.
  */
 export function walletFromEnv(env: Record<string, string | undefined>): WalletCredentials | null {
   const set = (k: (typeof WALLET_ENV)[number]) => str(env[k]);
-  const daemon = set("LIGHTNING_DAEMON_URL") || set("LIGHTNING_DAEMON_TOKEN") || set("LIGHTNING_DAEMON_PAY_TOKEN");
+  const daemon = set("LIGHTNING_DAEMON_URL") || set("LIGHTNING_DAEMON_TOKEN") || set("LIGHTNING_DAEMON_PAY_TOKEN") || set("LIGHTNING_DAEMON_MESSAGE_TOKEN");
   const nwc = set("LIGHTNING_NWC_URL") || set("LIGHTNING_NWC_PAY_URL");
   if (daemon && nwc) throw new Error("LIGHTNING_DAEMON_* and LIGHTNING_NWC_* are both set: the server has one wallet");
   try {
     if (daemon) {
-      if (!set("LIGHTNING_DAEMON_URL")) throw new Error("LIGHTNING_DAEMON_URL is required with LIGHTNING_DAEMON_TOKEN or LIGHTNING_DAEMON_PAY_TOKEN");
+      if (!set("LIGHTNING_DAEMON_URL")) throw new Error("LIGHTNING_DAEMON_URL is required with LIGHTNING_DAEMON_TOKEN, LIGHTNING_DAEMON_PAY_TOKEN or LIGHTNING_DAEMON_MESSAGE_TOKEN");
       if (!set("LIGHTNING_DAEMON_TOKEN")) throw new Error("LIGHTNING_DAEMON_TOKEN (the daemon's receive token) is required with LIGHTNING_DAEMON_URL");
-      return checkCredentials({ provider: "sphinx", url: set("LIGHTNING_DAEMON_URL"), token: set("LIGHTNING_DAEMON_TOKEN"), payToken: set("LIGHTNING_DAEMON_PAY_TOKEN") });
+      return checkCredentials({
+        provider: "sphinx",
+        url: set("LIGHTNING_DAEMON_URL"),
+        token: set("LIGHTNING_DAEMON_TOKEN"),
+        payToken: set("LIGHTNING_DAEMON_PAY_TOKEN"),
+        messageToken: set("LIGHTNING_DAEMON_MESSAGE_TOKEN"),
+      });
     }
     if (nwc) {
       if (!set("LIGHTNING_NWC_URL")) throw new Error("LIGHTNING_NWC_URL (a receive connection) is required with LIGHTNING_NWC_PAY_URL");
@@ -225,14 +245,14 @@ export function walletFromEnv(env: Record<string, string | undefined>): WalletCr
  * credentials to write, or `null` to remove the wallet. `{ provider: null }`
  * removes it. For the provider already on file, a field left out keeps what
  * is on file (a pay credential added without typing the receive one again)
- * and `null` removes a pay credential; a new provider needs every field.
+ * and `null` removes a pay or message credential; a new provider needs every field.
  * Throws a sentence for anything else.
  */
 export function checkWalletUpdate(body: unknown, current: WalletCredentials | null): WalletCredentials | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("the body is { provider, … }");
   const b = body as Record<string, unknown>;
   if (b["provider"] === null) return null;
-  const fields = b["provider"] === "sphinx" ? ["url", "token", "payToken"] : b["provider"] === "nwc" ? ["url", "payUrl"] : null;
+  const fields = b["provider"] === "sphinx" ? ["url", "token", "payToken", "messageToken"] : b["provider"] === "nwc" ? ["url", "payUrl"] : null;
   if (!fields) throw new Error('provider must be "sphinx", "nwc", or null to remove the wallet');
   const unknown = Object.keys(b).filter((k) => k !== "provider" && !fields.includes(k));
   if (unknown.length) throw new Error(`a ${b["provider"]} wallet takes ${fields.join(", ")}; not ${unknown.join(", ")}`);
@@ -250,7 +270,7 @@ export function checkWalletUpdate(body: unknown, current: WalletCredentials | nu
 export function walletInfo(settings: WalletSettings | null): WalletInfo {
   if (!settings) return { provider: null, receive: false, pay: false };
   const common = { receive: true, from: settings.from, setAt: settings.setAt };
-  if (settings.provider === "sphinx") return { provider: "sphinx", ...common, pay: !!settings.payToken, url: settings.url };
+  if (settings.provider === "sphinx") return { provider: "sphinx", ...common, pay: !!settings.payToken, ...(settings.messageToken ? { messages: true as const } : {}), url: settings.url };
   // The relays' hosts only: a relay URL may carry a query of its own.
   return { provider: "nwc", ...common, pay: !!settings.payUrl, relays: parseNwcUrl(settings.url).relays.map((r) => new URL(r).host) };
 }

@@ -2469,7 +2469,8 @@ seeds nothing. The page is only a face: the routes decide.
 Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
 workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
 `test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`, `review=none|ok|rejected`
-(the review queue; with `by`, that worker's). Each move goes back to
+(the review queue; with `by`, that worker's), `tab=support&worker=<actor>`
+(a worker's conversation with Support). Each move goes back to
 the host as `ui/open-link`, so its address bar follows.
 
 - **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
@@ -2483,12 +2484,15 @@ the host as `ui/open-link`, so its address bar follows.
   group), JSON, and a preview in `TaskForm`; it writes only what the store
   checks. Pay, Tests and Copies sections; the workers who hold it, with
   Revoke and Grant.
-- **Workers**: `new` first, several granted at once; each with their status,
+- **Workers**: the workers, `new` first, several granted at once; each with their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
   `standing` too), the week, their newest leases with each answer's
   verdict and links to their answers to review and their rejected ones,
   standing (with how many of its window are rejected answers), and what
-  they earned, hold and may withdraw.
+  they earned, hold and may withdraw. Below them, once there is one, every
+  invite the wallet keeps (`plans/human-steps.md` §5.8) with its status,
+  Copy and Cancel while it may be used (read every 3 s while one is
+  `sending`).
 - **Tasks**: filtered by type, status, run, who answered and review (the
   review queue: not reviewed, marked ok, rejected), with a Review column;
   a task with what it showed and its files, its leases (a copy's answer,
@@ -2500,15 +2504,39 @@ the host as `ui/open-link`, so its address bar follows.
 - **Tests**: a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
-
-A part of items 4 (tests, standing, copies), 5a (pay, earnings) and the
+- **Support** (`plans/support-chat.md`, §22 "Support"): the chat with
+  workers, shown only when `/support` answers (the wallet is a Sphinx
+  daemon with its message token). The tab carries the unread count
+  (`staff/support-unread`, every 5 s). Conversations on the left — each
+  worker's initials, name (their note's first line, else their Sphinx
+  name), last line, time and unread count, unread first, searchable, "Not
+  a worker here" for a contact who is none — and the thread on the right,
+  with the worker beside it on a wide screen (status, types, the task they
+  hold, the week's answers, what they are owed, their note, links to their
+  page, answers and payouts); on a phone the list opens a thread and Back
+  returns. The list and the open thread are read every 3 s; an open thread
+  is marked seen. A worker's photo shows inline (tap for full size), a
+  voice note plays, any other file downloads; a deleted message is
+  "Message deleted"; sats are a line; a task's id is a link to the task.
+  The composer: Enter sends, Shift+Enter adds a line, Reply quotes a
+  message above it; a reply shows a clock while it goes, ✓ once sent, and
+  ! with Retry when it failed. Every reply is from "Support". Item 2:
+  staff attach a photo or file (the paperclip), paste it or drop it on the
+  thread — a photo is shrunk in the page to 1,600 px as a JPEG, any other
+  file goes up to 2.5 MB — with the text as its caption; Delete (on
+  Support's own messages, asked in place) takes one back for both sides;
+  **Take it** / **Let go** and **Done** / **Reopen** in the thread's
+  header, and the list filters Open, Mine, Unassigned and Done (a row says
+  Yours, Taken, Done). The gear opens Support settings: Support's picture
+  (shrunk to 512 px), payout lines on or off, and the welcome's text. A
+  worker's page has **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
 verdict shows only when the server answers for it: a host's own task store
 answers no test route and no review, so the page shows no Tests tab and no
 Review section or filter.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
-(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` route — no
-other path — in process and in the admin's name (`inProcessRequest`), so a
+(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` or `/support…`
+route — no other path — in process and in the admin's name (`inProcessRequest`), so a
 grant's `by`, a type's `changedBy`, a take-back's `takenBackBy` and a
 verdict's `by` name the admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
 the `earnings/*` steps share: only strut's own page shown to an admin of
@@ -2523,7 +2551,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | Step | The route | Answers |
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
-| `staff/types` | `GET /tasks/types` | `{ types }` |
+| `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
 | `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
@@ -2542,10 +2570,53 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/test-file { id, path, base64 }` | `PUT /tasks/tests/:id/files/<path>` (the bytes) | `{ test }` |
 | `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
 | `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
+| `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
+| `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
+| `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
+| `staff/support-list { q? }` | `GET /support` | `{ conversations }` |
+| `staff/support-unread` | `GET /support/unread` | `{ unread, conversations }` |
+| `staff/support-thread { worker, before?, limit? }` | `GET /support/:worker` | `{ conversation, messages, more }` |
+| `staff/support-send { worker, text?, replyTo?, retry? }` | `POST /support/:worker` | `{ message }` |
+| `staff/support-seen { worker }` | `POST /support/:worker/seen` | `{ conversation }` |
+| `staff/support-file { worker, id, offset? }` | `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, offset, base64, next? }` — one 3 MB piece |
+| `staff/support-settings` | `GET /support/settings` | `{ settings }` |
+| `staff/support-save-settings { welcome }` | `PUT /support/settings` | `{ settings }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
 line on what workers are owed). It launches nothing.
+
+**Sharing the worker app.** The Queue opens with a "Share with workers"
+block for each public app a type is answered in (`sharedApps`): the QR of
+its `peelLink` (an iPhone camera opens it in Peel) and Copy buttons for
+`peelLink` (Peel) and `link` (a browser). A type's page shows its app's
+block, or says the app is not in the public view; the page makes nothing
+public (that stays the Public view dialog or `app/make-public`). Each block
+ends with **Invite**, for someone new to Peel (`plans/human-steps.md` §5.8):
+the starting sats (blank: the payout settings' `inviteSats`) make a
+one-use link to that app, shown with its QR code, Copy and Share in
+WhatsApp; a wallet that cannot invite says why.
+
+### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
+
+A worker app strut seeds on every server (`src/apps/worker/`,
+`src/apps/worker-seed.ts`, after `strut/views`: it is `WorkerPage`),
+titled "Worker", for any task type whose answer is plain fields and photos:
+a type names `strut/worker` as its `app`, and no app is built for it. It is
+NOT an admin's: anyone with the deployment's key or a member lists it, and
+nobody outside reaches it until an admin puts it in the public view (`PUT
+/public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
+Its page signs a worker in, then takes the tasks of every type it draws one
+after another (`useTask()`), each drawn by `WorkerTask`: what it pays, what
+it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
+photo or Choose one when the type takes files (held to its `attachments`
+rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
+one earned. Strut's account widget (`account:`) shows the balance and
+Withdraw. Grants `task/next`, `task/submit`, `task/skip`, `task/file`,
+`task/me` and `task/withdraw`; `permissions: [camera]`. First-party, but a
+visitor's page gets no first-party rights, and its grants are the worker's
+steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
+`"worker": false` seeds nothing.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
@@ -3663,9 +3734,11 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
-| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account? }]` — each at the version the public view serves; `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
+| `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Installed Peel? Continue" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
 version, 1 today) — its public apps may be hosted by any strut UI, its `POST
@@ -4401,9 +4474,10 @@ connection. Its credentials live in `payments.json`, an encrypted file of
 their own beside `peers.json`, which no step reads (decision 20); its
 RECEIVE side is `ctx.services.lightning` (`src/payments/lightning.ts`) while
 one is set. Set from the environment at boot (`LIGHTNING_DAEMON_URL`,
-`LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`, or
-`LIGHTNING_NWC_URL`, `LIGHTNING_NWC_PAY_URL`; the environment sets it again
-at every boot) or here. What strut expects of each wallet is
+`LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`,
+`LIGHTNING_DAEMON_MESSAGE_TOKEN`, or `LIGHTNING_NWC_URL`,
+`LIGHTNING_NWC_PAY_URL`; the environment sets it again at every boot) or
+here. What strut expects of each wallet is
 `specs/LIGHTNING.md`.
 
 FULL SCOPE only: the deployment key or an admin's session. A member's
@@ -4423,7 +4497,9 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 
 `provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
 `receive`: a receive credential is on file, so the server can sell. `pay`:
-a pay credential is on file, so Withdraw can pay (§19). `url` is the
+a pay credential is on file, so Withdraw can pay (§19). `messages: true`,
+on a Sphinx daemon only: its message token is on file, so Support answers
+(§22, "Support"). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
 `api`. `env: true` (with a `note` saying so) when the environment names
@@ -4436,17 +4512,21 @@ refuses the save.
 `PUT` bodies:
 
 ```json
-{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>", "messageToken": "<message token>" }
 { "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
 { "provider": null }
 ```
 
 For the provider already on file, a field left out keeps what is on file
 (a pay credential added without typing the receive one again) and `null`
-removes a pay credential (`payToken`, `payUrl`); another provider needs
-every field. `400` for a body that is not one of these, a daemon URL that
-is not http(s) or carries a credential, an NWC URL that does not parse, or
-a pay credential equal to the receive one; what is on file stays.
+removes a pay credential (`payToken`, `payUrl`) or the message token
+(`messageToken`); another provider needs every field. `400` for a body that
+is not one of these, a daemon URL that is not http(s) or carries a
+credential, an NWC URL that does not parse, a pay credential equal to the
+receive one, or a message token equal to the receive or the pay token;
+what is on file stays. The message token is kept as the pay token is:
+never on the services bag, read only by Support's follower and the
+`/support` routes.
 
 `PUT /secrets/LIGHTNING_…` is refused (`400`): a wallet credential never
 goes in the deployment's secrets, and the secrets capability answers
@@ -4570,6 +4650,11 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   Sphinx mixer keeps the debit of a payment its LSP never answered and
   never refunds it, so the daemon answers `pending` forever — and no longer
   polled: a person reads it once more, or records it as paid or drops it.
+  A worker's payout (`purpose: "worker"`) is stale a day after it was sent,
+  and is then cancelled, not left: `cancelAt` is when the wallet took the
+  ask, and it is read every minute until the wallet says how it ended
+  (plans/human-steps.md §8.2, ruling 11). With no `cancelAt` the wallet
+  could not cancel it, and a person decides as above.
   `reading`: a read is in flight. `lastError`: what the last read said.
 - `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
   payer), the balance at the rate of the moment (or `error`), and the
@@ -5103,8 +5188,8 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 Refusals are step errors whose message begins with a code: `not_active`
 (the worker is `suspended` or `banned`, or `new` with nothing they may
 enter here: only `task/me` answers), `not_granted` (a type they do not
-hold: invite-only, revoked, or a paid open type short of tests for a
-newcomer — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
+hold: invite-only, revoked, or a paid open type that asks newcomers to
+qualify and is short of ready tests — the message says which), `wrong_app`, `lease_held`, `no_lease` (not the caller's),
 `lease_closed`, `lease_expired`, `task_closed`, `bad_answer`,
 `not_listed`, `no_file`, `unknown_type`, `bad_request`, `too_many`, and
 `task/withdraw`'s own ("Withdraw" below).
@@ -5131,14 +5216,14 @@ with a `/` (`acme/pet-match`) is one encoded segment (`acme%2Fpet-match`).
 A refusal answers `{ error, code }`: `400` (`bad_request`, `bad_schema`,
 `bad_answer`, `bad_grader`), `404` (`unknown_type`, `unknown_worker`,
 `unknown_task`, `unknown_test`, `not_listed`, `no_file`, `no_answer`),
-`409` (`in_use`, `released`, `final`, `needs_tests`); `501 not_available` for the
+`409` (`in_use`, `released`, `final`); `501 not_available` for the
 take-back, the review, the test routes, the queue and a task's file on a
 server whose task store is its host's (which answers none of them).
 
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files). `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). A PAID open type needs its tests on, `tests.qualify` (K) at least 1 and K ready tests: else `409 needs_tests`, its message naming the shortfall ("Open task types") |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
@@ -5169,6 +5254,7 @@ server whose task store is its host's (which answers none of them).
   "copies": {                       // absent: a step asks one worker (see "Copies")
     "max": 3, "agree": 2, "compare": "equal", "onDisagree": "more"
   },
+  // "standing": { "workflow": "…" }  — absent, as here: a human step makes its tasks (see "Standing task types")
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,
@@ -5278,20 +5364,50 @@ server whose task store is its host's (which answers none of them).
 - **Invite-only.** `open: false`: a worker takes it only with a staff
   grant, as before (`not_active` for a `new` worker, `not_granted` for an
   active one).
-- **A paid open type qualifies every newcomer.** Signing in proves nothing
-  about a person, so a PAID open type (`paySats` > 0) needs its tests on,
-  `tests.qualify` (K) at least 1 and at least K READY tests (not retired,
-  every file in place) when it is saved — else `409 needs_tests`, whose
-  message says what is short and the way out: save it invite-only or
-  unpaid until the tests are ready, then open it. So a new paid type is
-  saved invite-only first: its tests need the type. An unpaid open type
-  needs no tests.
-- **Short of tests later.** When a paid open type's ready tests fall under
-  K after it was saved (one retired), it takes NO newcomer until they are
-  back: a worker with no grant of it is treated as for an invite-only type
-  and told why (`not_granted`, or `not_active` for a `new` worker: "takes
-  new workers while it has K ready tests … ask again later"), and
-  `task/me` does not offer it. A worker already in keeps their grant.
+- **Whether a paid open type qualifies newcomers is the admin's**
+  (`plans/human-steps.md` ruling 12). Saved with its tests off or
+  `tests.qualify` (K) 0, anyone signed in earns from their first answer:
+  the `task/set-type` card and the staff editor say so, and nothing is
+  refused.
+- **Short of tests.** A paid open type that asks for K and has fewer than
+  K READY tests (not retired, every file in place) — saved so, or one
+  retired since — takes NO newcomer until they are: a worker with no grant
+  of it is treated as for an invite-only type and told why (`not_granted`,
+  or `not_active` for a `new` worker: "takes new workers while it has K
+  ready tests … ask again later"), and `task/me` does not offer it. A
+  worker already in keeps their grant. An unpaid open type grants K 0 when
+  short, as a staff grant does.
+
+### Standing task types (`plans/human-steps.md` §5.7)
+
+For work a worker starts: a photo of something they found. A type saved
+with `standing: { workflow }` has work whenever a worker asks.
+
+- **The ask makes the task.** With nothing a run made waiting for them,
+  `task/next` makes a task of a standing type they may take and their
+  lease on it in one write — any number of workers at once, one each. The
+  task is keyed by the workflow, a run id chosen at the ask and the path of
+  the workflow's first step; its `show` is that step's, resolved with the
+  workflow's input defaults and params; it has no files. Tests are drawn in
+  its place at the type's rate, as for any type.
+- **The answer starts the run.** `task/submit` checks the answer, saves its
+  files in the run's artifacts under that run id, settles the task and
+  books its pay, then launches the workflow under that run id with input
+  `{}` and no actor, billed to the workflow's owner (as an automation's
+  fire). Its `human` step finds its task answered and returns at once. A
+  launch that fails is retried by the minute's sweep; a run already on file
+  under the id is never started again.
+- **A skip or a lease run out closes it** (`expired`): no run is made, and
+  `GET /tasks/stats` counts it as a skipped or lost lease, never an expired
+  task. A standing task is never handed to anyone else.
+- **The workflow** must exist and be on, start with a `human` step of this
+  type (no `depends`, no `files`, a `show` reading only `input` and
+  `params`), validate its input with none given, and — where runs must have
+  someone to bill — have an owner. Checked when the type is saved (`400
+  bad_request: standing: …`) and at each ask (nothing is handed out while
+  it fails; the server logs it once).
+- **`withinHours` and `copies` do not apply**: a standing task lives as long
+  as its lease, and each answer is its own task.
 
 ### Pay (`plans/human-steps.md` §8.1)
 
@@ -5392,7 +5508,7 @@ the shared bag, no proposal, no YAML, not `task/set-type`):
 | Route | Answers |
 | --- | --- |
 | `GET /tasks/payouts?state=&worker=&before=&limit=` | `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat }, payouts }` newest first; `state` is `out`, `stale`, `paid` or `failed`; `before` a payout's `seq`. Each payout: `{ seq, key, worker, address, msat, maxFeeMsat, state, at, day, feeMsat?, paymentHash?, ended?, why?, by?, stale }`. With no ledger: the defaults and none |
-| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats }` | `{ settings }` with `changedBy` and `changedAt`: the whole row. `minSats` at least 1, each cap at least `minSats`, whole sats; anything else `400 bad_request` |
+| `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats, inviteSats? }` | `{ settings }` with `changedBy` and `changedAt`: the whole row. `minSats` at least 1, each cap at least `minSats`, whole sats; `inviteSats` (an invite's starting sats when staff name none, "Inviting a worker" below) 1 to 100,000, 100 when left out; anything else `400 bad_request` |
 | `POST /tasks/payouts/:key/read` | `{ payout, state, paymentHash, msat, feeMsat, maxFeeMsat, error?, entry?, existing? }`: read it now through the wallet it went out through, as `POST /earnings/withdrawals/:paymentHash/read` (§19) |
 | `POST /tasks/payouts/:key/resolve { action: "paid" \| "drop", feeMsat? }` | `{ payout, action }`: `paid` settles it — the worker charged the amount and the fee given (else 0) up to its cap; `drop` fails it and gives its reserve back |
 
@@ -5409,6 +5525,47 @@ The payout's KEY — 32 random bytes strut makes before it sends — is the
 treasury daemon's idempotency key (`POST /keysend { id, address, msat,
 max_fee_msat }`, `GET /keysend/:id`, specs/LIGHTNING.md), the pending send's
 key, and the `withdrawal` entry's `ref`.
+
+### Inviting a worker (`plans/human-steps.md` §5.8)
+
+Staff send a new worker ONE https link. Strut asks the treasury daemon for a
+Sphinx invite through the payer (the daemon pays the mixer for it: the
+starting sats, and the mixer's price on top; specs/LIGHTNING.md "Invites"),
+and answers the link on the base the share links use (§17.2
+`publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
+proxy's headers and mount path honored; a staff page's in-process request
+takes where the page's own request came):
+
+```
+https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker app URL>
+```
+
+After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
+`a=`, strut's own section, the worker app's share `link`
+(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user)
+encoded whole. `/public/join` (§17.2)
+turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
+new user up with the invite and then opens `a=` (an existing user goes there
+at once). The mixer keeps only code → starting sats, and the core's parser
+ignores a section it does not know. The WORKER APP is an app the task types
+name that is in the public view. Strut keeps nothing: the daemon keeps the
+invites, and an open type (the default) lets the worker in on their first
+`task/next`.
+
+Full scope, beside the rest; `strut/staff` reaches them through
+`staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):
+
+| Route | Answers |
+| --- | --- |
+| `POST /tasks/invites { sats?, app? }` | `{ code, link, sats, status, app }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `app` one of the worker apps — needed when there are several (`409 pick_app` names them), `400` for another; none at all is `409 no_worker_app`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
+| `GET /tasks/invites?app=` | `{ invites: [{ code, link?, sats, status, createdAt? }], apps, app?, sats, why? }`: the daemon's invites, newest first, each `link` opening `app` (or the one worker app; with several and none asked, no `link`); `apps` the worker apps; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
+| `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
+
+`status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
+new account took it) or `cancelled`. Refusals: `409 no_pay_credential`
+(no pay token), `501 no_invites` (a wallet that is not a Sphinx daemon, or
+one without the routes), `502 wallet_unavailable`, `409 wallet_refused` with
+the daemon's words; `501 not_available` on a server built without them.
 
 ### Tests, grading and standing (`plans/human-steps.md` §7)
 
@@ -5651,12 +5808,13 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   proposal is made. A grader step is checked when the type is saved.
 - **Merged over the type.** A field left out keeps its value, never the
   default; `tests` and `copies` objects merge over the type's own rules (or
-  the defaults), and `null` turns them off. A new type needs `answer`
+  the defaults), `standing` replaces the type's, and `null` turns any of
+  them off. A new type needs `answer`
   (`bad_request:` on accept otherwise; the card says so first).
 - **Open unless asked otherwise.** A new type left without `open` is open
-  ("Open task types"), so a new PAID type must be asked for `open: false`:
-  it has no tests yet, and accepting it open fails `needs_tests:` — the
-  card says so first.
+  ("Open task types"). A new PAID open type has no tests yet, so anyone
+  signed in earns from their first answer: the card's **Who takes it** says
+  so as a danger, and the admin's accept saves it.
 - **What it cannot do.** It grants no worker, deletes no type and changes
   no worker: those are an admin's, in `strut/staff` (§14.15).
 - **Seeds.** Only the `builder` workflow grants `task/types` and
@@ -5671,13 +5829,114 @@ does not grant `task/next` and `task/submit`, the queue's `appProblem`),
 **The answer** (one line per field — `same ("The same pet?"): yes or no,
 required` — or "needs the app's own view" with the schema, when it is not a
 form `TaskForm` draws), **Lease**, **Expires after**, **On**, **Who takes
-it** (open or invite-only; a paid open type short of ready tests is a
-danger, "refused:" with the shortfall); for a change,
+it** (open or invite-only; a paid open type with no qualifying, or short
+of its K ready tests, is a danger saying so); for a change,
 **What changes** (each field before and after) and **Open tasks** (with a
 new shape, that their answers are checked against it); **Workers** (how
 many hold it; a new open type's, that a worker holds it from their first
 ask); **Pay** (sats and dollars at the rate, held how long, and
 what the last week's answers would have cost; a RISE is a danger);
 **Tests** and **Copies** (their settings; a merge the save would refuse is
-a danger). It reads a type's rules, never a test: no expected answer is on
+a danger); **Files**; **Standing** (the workflow each answer starts, or
+no). It reads a type's rules, never a test: no expected answer is on
 it.
+
+### Support — the staff's chat with workers (`plans/support-chat.md`)
+
+Workers write to the treasury daemon's account, named "Support", from Peel,
+as to any contact; staff answer from the Support tab of `strut/staff`
+(§14.15). Strut reaches the daemon with its MESSAGE token (§18,
+`messageToken`; `specs/LIGHTNING.md`, "Support's DMs"), kept away from the
+services bag. Its FOLLOWER reads `GET /dms?after=<seq>` every 3 s
+(`createStrut({ support: { pollMs } })`) and keeps the conversations in the
+task store's file (`<dataDir>/tasks/tasks.db`, `src/support/store.ts`), the
+cursor with them, one per daemon URL (another daemon is read from its
+start; a record read again changes nothing); a record it cannot keep is
+skipped and said, never the page; a worker's file is fetched when it arrives, up to 25 MB
+(a larger one is a line saying so), into `<dataDir>/support/files/`. What
+was in the daemon's log before Support first followed it shows too,
+marked `earlier`. Each tick also sends the HEADS-UP (`plans/support-chat.md`
+§6): once a worker's message has waited unread 5 minutes, Support DMs each
+admin it knows the count — `"3 messages waiting in Support"`, no content —
+at most once an hour each. An admin Support knows is one who marked a
+conversation seen, replied or took one, and whose actor is the key of one
+of Support's contacts (a conversation): `POST /dm` reaches existing
+contacts alone (ruling 15), so any other admin has the count on the tab
+only. An admin's own messages to Support do not count as waiting, and a
+heads-up that failed to send is tried again on the next read.
+
+FULL SCOPE only, reads included: the deployment key or an admin's session;
+a member's session, a peer and a visitor are refused (`403`). With no
+message token, or an NWC wallet, every route answers `501 not_available`.
+`:worker` is the worker's actor (`secp:` and their Sphinx pubkey without
+its first byte), one encoded segment.
+
+| Route | |
+| --- | --- |
+| `GET /support[?q=&filter=]` | `{ conversations }`: unread first, then the newest; `q` over names (the Sphinx alias, the worker's note), actors and text; `filter` `all` (the default), `open`, `mine` (open, taken by the asker), `unassigned` (open, taken by no one) or `done` |
+| `GET /support/unread` | `{ unread, conversations }`: workers' messages no one marked seen, and the conversations they are in — for a host's navigation |
+| `GET /support/settings` | `{ settings }` |
+| `PUT /support/settings { welcome?, payoutLines? }` | `{ settings }`: either or both |
+| `PUT /support/photo { base64, type }` | `{ settings }`: Support's picture through the daemon (`PUT /dm/photo`, which does not resize it), `image/jpeg`, `png`, `webp` or `gif`, at most 1 MiB; `502 daemon_error` when the daemon refuses it (bytes not of that type, its memes server) |
+| `DELETE /support/photo` | `{ settings }`: no picture (`DELETE /dm/photo`) |
+| `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
+| `PUT /support/:worker { status?, assignee? }` | `{ conversation }`: `status` `open` or `done`; `assignee` `"me"` takes it (an admin's session, or the key with `x-strut-actor`), `null` lets it go |
+| `POST /support/:worker { text?, replyTo?, file? }` | `{ message }`: kept, then sent from "Support"; `file` is `{ base64, type, name }`, at most 2.5 MiB, `text` then its caption (with a file, the daemon's 32 KiB counts 1 KiB more); `{ retry: <key> }` sends a failed one again under the same id, its file again from strut's copy (the daemon keeps none) |
+| `POST /support/:worker/delete { key }` | `{ message }`: one of Support's messages deleted for both sides (`POST /dm/:id/delete`); a failed one never went and is deleted here alone; `404 unknown_message` for a worker's; `409 not_yet` ("try again in a moment") while it is still sending or the daemon has not settled it; `502 daemon_error` for the daemon's other refusals |
+| `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
+| `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
+
+```json
+{ "conversations": [{ "worker": "secp:a1b2…", "pubkey": "02a1b2…", "alias": "Ana", "unread": 2,
+    "last": { "key": 41, "id": "6f1c…", "fromMe": false, "kind": "message", "text": "When is it paid?", "at": 1794901800000 },
+    "seenAt": 1794890000000, "welcomedAt": 1794880000000, "status": "open", "assigned": "me" }] }
+```
+
+A CONVERSATION's `status` is `open` or `done` (a worker writing again
+reopens it), and `assigned` says who took it relative to the asker, `me`
+or `other`: admins have no names (ruling 4), so the actor is kept and
+never answered.
+
+A MESSAGE is `{ key, id?, fromMe, kind, text?, replyTo?, sats?, deleted?,
+file?, status?, error?, at, earlier?, auto? }`. `key` is strut's own
+order (what `before` and `retry` take); `id` the Sphinx id, what a reply
+quotes (`replyTo`). `kind` is `message`, `file`, `payment` (sats a worker
+sent: a line, not in the books) or `contact` (they added Support as a
+contact). A message the worker deleted is `deleted: true` with no text or
+file; strut keeps its row. `file` is `{ name?, mediaType?, size?, state,
+error? }`, `state` `fetching`, `kept`, `too_large` or `failed`. A send of
+Support's has `status` `sending`, `sent` or `failed` (with `error`), and
+its `id` as soon as the daemon answers with one. A file of Support's is a
+`file` message too, `state: "kept"`, strut's own copy in
+`<dataDir>/support/files/`, read through the same route. Who sent a reply
+is kept and never answered: every reply is from Support. `auto` marks what
+strut sent on its own: `welcome`, `payout` (a payout's line) or
+`heads-up`. The page's thread polls the
+newest 200 and keeps what it read, with **Show earlier messages** for the
+pages before (`before`).
+
+**Payout lines** (`plans/support-chat.md` §6). When a worker's payout
+settles (§22, "Payouts"), Support writes to them `"Paid you 1,200 sats"`,
+once per payout, when they are a contact and `payoutLines` is on (the
+default). `settings.photo` is `{ url, mediaType, savedAt, savedBy?,
+base64? }`: the memes URL the daemon sends as `img` on every message, and
+strut's copy (`<dataDir>/support/photo`) to show, since a page cannot load
+the memes host.
+
+**The welcome** (`plans/support-chat.md` §5). `settings` is `{ welcome,
+since?, savedAt?, savedBy?, payoutLines, photo? }`. Empty, none is sent. Once saved, it goes
+automatically, from Support, to each worker whose key exchange (a
+`contact` record) is newer than `since`, once each (`welcomedAt`); saving
+again keeps `since`, clearing the text turns it off, and the next save
+starts again from then. `400` for a body with anything but `welcome` and
+`payoutLines`, or a welcome over 2,000 characters.
+
+A send is kept before it goes: `POST /dm { id, to, text?, reply?, file? }`
+to the daemon, `id` 64 hex strut made; a file as `{ data, type, name }`. One a past process left `sending` with no
+word from the daemon is `failed` when Support next opens its store, so
+Retry shows. `text` is at most 32 KiB as the message's JSON with its quoted
+id, the daemon's own limit (`400 bad_request: too long` before anything is
+kept). A failed
+send keeps its `error`; Retry sends the same `id`, once however many ask.
+Support writes only to someone who has it as a contact (the daemon refuses
+anyone else): a worker who joined by an invite.

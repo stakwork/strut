@@ -26,6 +26,7 @@ import { z } from "zod";
 import type { CardField, ProposalDescription, StepRegistry } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { Proposal } from "./proposals.js";
+import { publicAppLinks } from "./public-routes.js";
 import { flowClosure, globToRegExp, walkSteps } from "./closure.js";
 import type { PublicConceptTree, PublicSurface, PublicVisitors } from "./public-surface.js";
 import { DEFAULT_SIGN_IN, signInOf, VISITOR_GRAPH_READS, VISITOR_RUN_READS } from "./public-surface.js";
@@ -262,6 +263,11 @@ export interface MadePublic {
   added: { workflows: string[]; steps: string[]; reads: string[]; concepts: string[] };
   /** Who may sign in now. */
   signIn: PublicVisitors["signIn"];
+  /** Its share links (`publicAppLinks`): the visitor's page, and the same
+   *  opened in Peel — what to hand the person. Absent when this server has
+   *  not yet seen where it is reached. */
+  link?: string;
+  peelLink?: string;
 }
 
 /** `ctx.services.publicView`: the card's read and `app/make-public`'s door. */
@@ -271,6 +277,17 @@ export interface PublicViewCapability {
    *  ACCEPTED `app/make-public` proposal on disk (an admin's) for that app
    *  and version. */
   addApp(name: string, version: string, o: { proposal: string; actor?: string }): Promise<MadePublic>;
+  /** Whether the app is in the public view, and its share links
+   *  (`publicAppLinks`) when it is and this server has seen where it is
+   *  reached: what strut/staff hands a task type's workers. A read. */
+  share(name: string): Promise<AppShare>;
+}
+
+/** A public view app's share (`PublicViewCapability.share`). */
+export interface AppShare {
+  public: boolean;
+  link?: string;
+  peelLink?: string;
 }
 
 /** The save `PUT /public-view` writes through (createStrut): its checks,
@@ -288,6 +305,9 @@ export interface PublicViewDoorDeps {
   /** A proposal's record on disk, or null. */
   proposal(id: string): Promise<Proposal | null>;
   save: PublicViewSave;
+  /** Where people reach this server (an origin plus any mount path), for
+   *  the share links; undefined when not known yet. */
+  base?(): string | undefined;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -312,6 +332,12 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
       };
     },
 
+    async share(name) {
+      const listed = (await deps.view()).apps.some((a) => a.name === name);
+      const base = listed ? deps.base?.() : undefined;
+      return { public: listed, ...(base ? publicAppLinks(base, name) : {}) };
+    },
+
     async addApp(name, version, o) {
       // The door: an ACCEPTED proposal of this very step, only an admin's to
       // accept, for this app and this version — the admin's edits merged as
@@ -330,9 +356,13 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
       const before = await deps.view();
       const next = withNeeds(before, needs);
       const by = rec.decision?.by ?? o.actor;
-      const out = await deps.save(next, { holdAt: { [name]: version }, ...(by ? { actor: by } : {}) });
+      // A seeded app is not held: only strut's seed writes it, so it follows
+      // strut's releases, and a hold has nothing to guard.
+      const seeded = (await deps.app(name, version).catch(() => null))?.seeded === true;
+      const out = await deps.save(next, { ...(seeded ? {} : { holdAt: { [name]: version } }), ...(by ? { actor: by } : {}) });
       if (out.status !== 200 || !out.body.surface) throw new Error(out.body.error ?? `the public view was not saved (${out.status})`);
       const saved = out.body.surface;
+      const base = deps.base?.();
       const was = (list: string[], n: string) => list.includes(n);
       const app = before.apps.find((a) => a.name === name);
       return {
@@ -345,6 +375,7 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
           concepts: needs.concepts.filter((c) => c.checked && !was(before.concepts, c.name)).map((c) => c.name),
         },
         signIn: signInOf(saved),
+        ...(base ? publicAppLinks(base, name) : {}),
       };
     },
   };
@@ -395,17 +426,16 @@ export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined
   }
   const app = needs.app!;
   const v = version ?? app.version;
-  if (plan.seeded) fails.push(`strut seeds ${cfg.name}: it always runs the version strut ships and cannot be held at one`);
 
   const fields: CardField[] = [{ label: "App", value: `${app.title} — ${app.name} ${v}` }];
   const moves = !!live && live.version !== v;
   fields.push({
     label: "Held at",
     value: plan.seeded
-      ? "not held: strut seeds this app"
+      ? "not held: strut seeds this app, so it follows strut's releases"
       : `${v}: a later publish is a draft until someone makes it live` +
         (moves ? `. Its live version moves from ${live!.version} to ${v}, for everyone who opens it` : live?.held ? " (already held there)" : ""),
-    ...(moves || plan.seeded ? { danger: true } : {}),
+    ...(moves && !plan.seeded ? { danger: true } : {}),
   });
   const section = <L extends NeedLine>(label: string, lines: L[], danger: (l: L) => boolean) => {
     if (!lines.length) return;

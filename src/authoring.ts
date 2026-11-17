@@ -915,6 +915,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           AI_PUBLISHER,
           { source: "agent", ...(by ? { actor: by } : {}) },
         );
+        // A workflow with no owner is adopted by the first actor who
+        // publishes it, as the HTTP routes and the chat builder do: its runs
+        // (a standing type's, an automation's) then have someone to bill.
+        if (by) {
+          const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+          if (meta && !meta.owner) await workspace.setWorkflowOwner(name, by).catch(() => {});
+        }
         return {
           ok: true,
           name,

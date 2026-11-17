@@ -55,6 +55,7 @@ import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_FILES
 import { parseAttachments, type Attachment } from "./ai/attachments.js";
 import type { PublicTools } from "./public-tools.js";
 import { defaultVisitorAddress } from "./visitor-address.js";
+import { JOIN_HEADERS, JOIN_PAGE, joinQrScript } from "./public-join.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -82,6 +83,9 @@ export interface PublicRouteDeps {
    *  `x-forwarded-for` read through the TRUSTED proxies createStrut was
    *  booted with. Absent: the default set. */
   visitorAddress?: (c: Context) => string;
+  /** This server's base as the request reached it (an origin plus any
+   *  mount path), for the apps' share links. Absent: the request's origin. */
+  baseOf?: (c: Context) => string;
   /** The apps in the public view, each at the version it serves: what a
    *  visitor's host lists and frames (plans/public-surface.md §5). */
   apps?: {
@@ -233,9 +237,21 @@ export interface PublicListing {
   runnable: ListedRunnable[];
 }
 
+/** A public app's share links on `base` (this server as the person reaches
+ *  it, with any mount path such as `/lab`): `link` the visitor's page
+ *  (web/src/page.ts `pickPage`: `?app=&solo=1&public=1`), `peelLink` the
+ *  same opened in Peel (its `PublicAppLink`). Never built by hand. */
+export function publicAppLinks(base: string, name: string): { link: string; peelLink: string } {
+  const link = `${base.replace(/\/+$/, "")}/?app=${encodeURIComponent(name)}&solo=1&public=1`;
+  return { link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
+}
+
 /** A public app as a visitor's host reads it. */
 export interface PublicAppInfo {
   name: string;
+  /** Its share links (`publicAppLinks`), from the request's base. */
+  link?: string;
+  peelLink?: string;
   /** The version the public view serves: the held release's. */
   version: string;
   title: string;
@@ -376,6 +392,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // One registration: Hono's `/public/*` matches `/public` too.
   app.use("/public/*", publicMiddleware);
 
+  // A worker invite's page (plans/human-steps.md §5.8, src/public-join.ts):
+  // static, the invite after `#` read by its own script and never sent.
+  app.get("/public/join", (c) => c.body(JOIN_PAGE, 200, { ...JOIN_HEADERS }));
+  app.get("/public/join/qrcode.js", async (c) =>
+    c.body(await joinQrScript(), 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }),
+  );
+
   /** The workflow when it is public, else the 404 to answer. */
   const publicWorkflow = async (c: Context) => {
     const name = c.req.param("name") ?? "";
@@ -478,17 +501,21 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
 
   // ── Apps ────────────────────────────────────────────────────────────────
 
-  const listedApps = async (): Promise<PublicAppInfo[]> => {
+  /** The base a share link is built on: the host's, else the request's origin. */
+  const baseOf = (c: Context): string => deps.baseOf?.(c) ?? new URL(c.req.url).origin;
+  const withLinks = (info: PublicAppInfo, c?: Context): PublicAppInfo => (c ? { ...info, ...publicAppLinks(baseOf(c), info.name) } : info);
+
+  const listedApps = async (c?: Context): Promise<PublicAppInfo[]> => {
     if (!deps.apps) return [];
     const out: PublicAppInfo[] = [];
     for (const a of (await surface.get()).apps) {
       const info = await deps.apps.info(a.name).catch(() => null);
-      if (info) out.push(info);
+      if (info) out.push(withLinks(info, c));
     }
     return out;
   };
 
-  app.get("/public/apps", async (c) => c.json(await listedApps()));
+  app.get("/public/apps", async (c) => c.json(await listedApps(c)));
 
   // The page itself: the document of the version the public view serves,
   // carrying the PUBLIC identity (it opens `POST /public/mcp` for this app
@@ -506,7 +533,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const name = c.req.param("name");
     if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
     const info = await deps.apps.info(name).catch(() => null);
-    return info ? c.json(info) : notPublic(c, `app "${name}"`);
+    return info ? c.json(withLinks(info, c)) : notPublic(c, `app "${name}"`);
   });
 
   // ── Workflows ───────────────────────────────────────────────────────────

@@ -225,9 +225,10 @@ takes payments IN and sends payouts OUT on a laptop or in an end-to-end
 test, with no mixer and no real sats:
 
 ```bash
-PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
+PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
 LIGHTNING_DAEMON_URL=http://127.0.0.1:3461 LIGHTNING_DAEMON_TOKEN=demo \
-LIGHTNING_DAEMON_PAY_TOKEN=demo-pay STRUT_RATE_URL=http://127.0.0.1:3461/prices \
+LIGHTNING_DAEMON_PAY_TOKEN=demo-pay LIGHTNING_DAEMON_MESSAGE_TOKEN=demo-message \
+STRUT_RATE_URL=http://127.0.0.1:3461/prices \
 STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
 ```
 
@@ -244,6 +245,31 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   (`lspFeeFloorMsat`), or fails `not enough balance`. `POST /next-payout
   { "state": "failed" | "pending" }` makes the next one fail, or stay pending
   until `POST /settle/:id` (a keysend's id, or a pay's payment hash).
+- **Support's DMs** (plans/support-chat.md §7, as stakwork/sphinx#435 built
+  them; the MESSAGE token alone, `MESSAGE_TOKEN`, default `demo-message`,
+  set as `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET
+  /dm/:id/file` (the sender's name in `content-disposition`; `413
+  too_large` over 25 MiB, `410 deleted`) and `POST /dm` (`400
+  not_a_contact`, `400 too_long`), answering the send's item; the same `id`
+  never sends twice, a failed one is tried again. Play a worker with `POST /worker-dm { pubkey?, alias?,
+  text?, replyTo?, sats?, time?, file?: { name, type, base64 } | { name, type,
+  size } }` (a new pubkey is a contact first), `POST /worker-contact
+  { pubkey?, alias? }` (a key exchange alone: what fires the welcome),
+  `POST /worker-delete/:id`; `POST /next-dm { "state": "failed" |
+  "pending" }` makes the next send fail, or wait for `POST /settle/<id>`.
+  Item 2's: `POST /dm` with `file { data, type, name }` (`413 too_large`
+  over 25 MiB; the file then reads back through `GET /dm/:id/file`), `PUT
+  /dm/photo { data, type }` → `{ url }` and `DELETE /dm/photo` (`GET
+  /worker-photo`, open, says the `img` a worker now sees), `POST
+  /dm/:id/delete` for the account's own messages, as stakwork/sphinx#436
+  answers them (no bytes kept: a failed file send is retried only with
+  its file; `GET /dm/:id/file` serves received files alone, so `GET
+  /worker-file/:id`, open, reads one the account sent). `/worker-dm` takes
+  `time` (ISO), so a message can have waited 5 minutes for the heads-up.
+  Then `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the
+  admin a ticket names (`POST /auth/ticket { actor, role: "admin" }`), and
+  that admin gets the heads-up when their actor is `secp:` + a contact's
+  key without its first byte.
 - **The rate**: `GET /prices` answers mempool's `{ time, USD }`
   (`USD_PER_BTC`, default 100,000, so $1 is 1,000 sats).
 - In a test, `startFakeSphinxDaemon({ port: 0, … })` starts it in-process and
@@ -261,7 +287,18 @@ What else a paid flow needs, each learned the hard way:
   { "version": "vN" }`, which takes a new release and its lock.
 - **Worker payouts are off until an admin turns them on**: the Payouts tab in
   `strut/staff`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
-  1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four).
+  1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
+  `inviteSats` beside them is an invite's default, 100 when left out).
+- **Inviting a worker** (plans/human-steps.md §5.8): a Share block's
+  Invite (the Queue, once a worker app is public), or `POST /tasks/invites {}`, asks the stand-in's `POST /invite`
+  (with the pay token; it debits the sats and its price, `INVITE_PRICE_SATS`,
+  10) and answers the join link. It needs a task type whose app is in the
+  public view (`no_worker_app` otherwise). The stand-in's invite is `ready`
+  at once (`/next-payout` `pending` holds it `sending` until `POST
+  /settle/:code`; `failed` fails it), `POST /use-invite/:code` marks it
+  used, and `GET /invites` and `POST /invite/:code/cancel` answer as the
+  daemon's do. Open the link's `/public/join` in a desktop browser for the
+  QR code, or with an Android user agent for Peel's `intent://`.
 - **A worker withdraws only to the Sphinx address their session carries**
   (docs/tasks.md, "Withdraw"; else `no_address`). A `sphinx` sign-in keeps
   it (`keptSphinxAddress`, src/visitors.ts): `POST /visitors/session

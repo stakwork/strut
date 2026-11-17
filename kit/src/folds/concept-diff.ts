@@ -199,7 +199,8 @@ export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "gr
  * names a node a move points at. Null when the proposal changes no page:
  * another step, another type, a move along another edge than the tree's.
  *
- *   graph/edit-node    node_data over the page (its name, its docs, its
+ *   graph/edit-node    `edits` (exact-match changes of its text), then
+ *                      node_data over the page (its name, its docs, its
  *                      attributes), properties_to_be_deleted taken out
  *   graph/move-node    PARENT_OF, reverse: the page's parent `from` → `to`
  *   graph/create-node  a Concept: an added page, no parents yet
@@ -239,7 +240,9 @@ export function proposalEntry(
       const attributes = { ...before.attributes };
       let name = before.name;
       let docs = before.docs;
-      for (const [k, v] of Object.entries(data)) {
+      const edited = applyEdits({ ...before.attributes, ...(docs !== undefined ? { docs } : {}) }, input["edits"]);
+      if (!edited) return null;
+      for (const [k, v] of Object.entries({ ...edited, ...data })) {
         if (k === "name") name = typeof v === "string" && v.trim() ? v : name;
         else if (k === "docs") docs = typeof v === "string" && v.trim() ? v.trim() : undefined;
         else if (v === null || v === undefined || v === "") delete attributes[k];
@@ -548,4 +551,21 @@ export function attributeText(v: unknown): string {
   if (v === undefined || v === null) return "";
   if (typeof v === "string") return v;
   return JSON.stringify(v);
+}
+
+/** `graph/edit-node`'s `edits` over a page's text (src/graph/text-edits.ts):
+ *  each `old` replaced where it occurs once, in order. Null when one does
+ *  not apply to the page as it is now, so no diff is drawn for it. */
+function applyEdits(props: Record<string, unknown>, edits: unknown): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  for (const e of Array.isArray(edits) ? edits : []) {
+    const { property, old, new: next } = (e ?? {}) as { property?: unknown; old?: unknown; new?: unknown };
+    const prop = typeof property === "string" && property ? property : "docs";
+    const now = prop in out ? out[prop] : props[prop];
+    if (typeof now !== "string" || typeof old !== "string" || !old || typeof next !== "string") return null;
+    const at = now.indexOf(old);
+    if (at < 0 || now.indexOf(old, at + 1) >= 0) return null;
+    out[prop] = now.slice(0, at) + next + now.slice(at + old.length);
+  }
+  return out;
 }

@@ -21,6 +21,8 @@ describe("the wallet's settings", () => {
       token: "rt",
       payToken: "pt",
     });
+    // Support's message token (plans/support-chat.md §8), kept as the pay token is.
+    assert.deepEqual(walletFromEnv({ LIGHTNING_DAEMON_URL: "http://t", LIGHTNING_DAEMON_TOKEN: "rt", LIGHTNING_DAEMON_MESSAGE_TOKEN: "mt" }), { provider: "sphinx", url: "http://t", token: "rt", messageToken: "mt" });
     assert.deepEqual(walletFromEnv({ LIGHTNING_NWC_URL: nwc() }), { provider: "nwc", url: nwc() });
     assert.deepEqual(walletFromEnv({ LIGHTNING_NWC_URL: nwc(), LIGHTNING_NWC_PAY_URL: nwc(PAY_SECRET) }), { provider: "nwc", url: nwc(), payUrl: nwc(PAY_SECRET) });
     const refused: Array<[Record<string, string>, RegExp]> = [
@@ -32,6 +34,10 @@ describe("the wallet's settings", () => {
       [{ LIGHTNING_DAEMON_URL: "ftp://t", LIGHTNING_DAEMON_TOKEN: "rt" }, /LIGHTNING_\*: .*http/],
       [{ LIGHTNING_NWC_URL: "nostr+walletconnect://nope" }, /LIGHTNING_\*/],
       [{ LIGHTNING_DAEMON_URL: "http://t", LIGHTNING_DAEMON_TOKEN: "same", LIGHTNING_DAEMON_PAY_TOKEN: "same" }, /pay token is the receive token/],
+      [{ LIGHTNING_DAEMON_MESSAGE_TOKEN: "mt" }, /LIGHTNING_DAEMON_URL/],
+      [{ LIGHTNING_DAEMON_URL: "http://t", LIGHTNING_DAEMON_TOKEN: "same", LIGHTNING_DAEMON_MESSAGE_TOKEN: "same" }, /message token is the receive or the pay token/],
+      [{ LIGHTNING_DAEMON_URL: "http://t", LIGHTNING_DAEMON_TOKEN: "rt", LIGHTNING_DAEMON_PAY_TOKEN: "same", LIGHTNING_DAEMON_MESSAGE_TOKEN: "same" }, /message token is the receive or the pay token/],
+      [{ LIGHTNING_NWC_URL: nwc(), LIGHTNING_DAEMON_MESSAGE_TOKEN: "mt" }, /both/],
     ];
     for (const [env, re] of refused) assert.throws(() => walletFromEnv(env), re, JSON.stringify(env));
     // A refusal names the field, never a value.
@@ -49,6 +55,10 @@ describe("the wallet's settings", () => {
     assert.throws(() => checkWalletUpdate({ provider: "sphinx", url: "http://t" }, null), /receive token/);
     assert.deepEqual(checkWalletUpdate({ provider: "sphinx", payToken: "pt" }, daemon), { ...daemon, payToken: "pt" }, "a pay token added without the receive one again");
     assert.deepEqual(checkWalletUpdate({ provider: "sphinx", payToken: null }, { ...daemon, payToken: "pt" }), daemon);
+    assert.deepEqual(checkWalletUpdate({ provider: "sphinx", messageToken: "mt" }, daemon), { ...daemon, messageToken: "mt" }, "a message token added alone");
+    assert.deepEqual(checkWalletUpdate({ provider: "sphinx", messageToken: null }, { ...daemon, messageToken: "mt" }), daemon);
+    assert.throws(() => checkWalletUpdate({ provider: "sphinx", messageToken: "rt" }, daemon), /message token is the receive or the pay token/);
+    assert.throws(() => checkWalletUpdate({ provider: "nwc", url: nwc(), messageToken: "mt" }, null), /not messageToken/, "an NWC wallet has no Support (ruling 11)");
     assert.throws(() => checkWalletUpdate({ provider: "nwc" }, daemon), /NWC connection url/, "another provider starts from nothing");
     assert.equal(checkWalletUpdate({ provider: null }, daemon), null);
     assert.throws(() => checkWalletUpdate({ provider: "sphinx", token: "rt", secret: "x" }, daemon), /not secret/);
@@ -61,6 +71,8 @@ describe("the wallet's settings", () => {
     const at = { from: "api" as const, setAt: "2026-11-10T00:00:00.000Z" };
     const sphinx: WalletSettings = { provider: "sphinx", url: "http://treasury:3000", token: "rt-secret", payToken: "pt-secret", ...at };
     assert.deepEqual(walletInfo(sphinx), { provider: "sphinx", receive: true, pay: true, url: "http://treasury:3000", ...at });
+    assert.equal(walletInfo({ ...sphinx, messageToken: "mt-secret" }).messages, true);
+    assert.ok(!JSON.stringify(walletInfo({ ...sphinx, messageToken: "mt-secret" })).includes("mt-secret"));
     const n: WalletSettings = { provider: "nwc", url: nwc(SECRET, "wss://relay.example.com/?auth=relay-secret"), ...at };
     const info = walletInfo(n);
     assert.deepEqual(info, { provider: "nwc", receive: true, pay: false, relays: ["relay.example.com"], ...at });
@@ -109,7 +121,17 @@ describe("the wallet's settings", () => {
     it("a wallet on file that no longer parses is no wallet, said once", async () => {
       const store = new MemorySecretStore();
       await store.set("WALLET", "{ not json");
-      assert.equal(await new PaymentsSettings(store).wallet(), null);
+      const settings = new PaymentsSettings(store);
+      const warned: string[] = [];
+      const warn = console.warn;
+      console.warn = (line: string) => void warned.push(line);
+      try {
+        // Read every few seconds by Support's follower: one line, not one a read.
+        for (let i = 0; i < 3; i++) assert.equal(await settings.wallet(), null);
+      } finally {
+        console.warn = warn;
+      }
+      assert.equal(warned.length, 1);
     });
   });
 

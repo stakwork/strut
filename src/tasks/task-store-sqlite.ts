@@ -28,7 +28,10 @@
  * the same way: null or 0 is open, so a type on file from before is open.
  * Files from a worker (§5.6, item 8) add `task_types.attachments` (the
  * type's rule, JSON, null takes none) and `leases.attachments` (what an
- * answer saved, JSON) the same way.
+ * answer saved, JSON) the same way. Standing types (§5.7, item 9) add
+ * `task_types.standing` (the rule, JSON, null: not standing),
+ * `tasks.standing` (1 on a standing type's task) and `tasks.launched_at`
+ * (when its run was launched) the same way.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -56,6 +59,7 @@ import {
   type LeaseStatus,
   type NewTask,
   type SettleResult,
+  type StandingRule,
   type TaskListQuery,
   type TaskRecord,
   type TaskSettled,
@@ -99,6 +103,8 @@ create table if not exists ${name} (
   grade text check (grade in ('pass', 'fail', 'error')),
   graded_at integer,
   grade_note text,
+  standing integer,
+  launched_at integer,
   unique (workflow, run_id, path),
   unique (test, served_to)
 ) strict;`;
@@ -121,7 +127,8 @@ create table if not exists task_types (
   tests text,
   copies text,
   invite_only integer,
-  attachments text
+  attachments text,
+  standing text
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -185,6 +192,9 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["leases", "agrees", "integer"],
   ["task_types", "attachments", "text"],
   ["leases", "attachments", "text"],
+  ["task_types", "standing", "text"],
+  ["tasks", "standing", "integer"],
+  ["tasks", "launched_at", "integer"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -208,6 +218,7 @@ create index if not exists tasks_settled on tasks(type, settled_at) where test i
 create index if not exists leases_type_closed on leases(type, closed);
 create index if not exists leases_worker_taken on leases(worker, taken);
 create index if not exists reviews_rejected on reviews(worker) where verdict = 'rejected';
+create index if not exists tasks_unlaunched on tasks(settled_at) where standing = 1 and status = 'settled' and launched_at is null;
 `;
 
 /** The task side's tables brought to version 2, inside the file's one
@@ -234,7 +245,7 @@ export function taskSchema(db: TaskDb): void {
  *  ?3 among the types ?4: shared by `take` and `peek`. A task is takeable
  *  while its live and submitted leases are fewer than the answers it wants
  *  (`copies`, §7.6): one copy, while nobody holds it. */
-const TAKEABLE = `t.status = 'open' and t.due > ?3 and ty.enabled = 1 and t.test is null
+const TAKEABLE = `t.status = 'open' and t.due > ?3 and ty.enabled = 1 and t.test is null and t.standing is null
             and t.type in (select value from json_each(?4))
             and not exists (select 1 from leases l where l.task = t.id and l.worker = ?2)
             and (select count(*) from leases l where l.task = t.id
@@ -251,12 +262,12 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
-           invite_only = excluded.invite_only, attachments = excluded.attachments`,
+           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -303,9 +314,9 @@ export class SqliteTaskStore implements TaskStore {
         `update leases set status = 'expired', closed = ?1, reason = ?2
           where worker = ?3 and status = 'open' and (?4 is null or type in (select value from json_each(?4)))`,
       ),
-      openById: p("select * from tasks where id = ? and status = 'open' and test is null"),
-      openByRun: p("select * from tasks where workflow = ? and run_id = ? and status = 'open' and test is null order by seq"),
-      due: p("select * from tasks where status = 'open' and due <= ? and test is null order by seq"),
+      openById: p("select * from tasks where id = ? and status = 'open' and test is null and standing is null"),
+      openByRun: p("select * from tasks where workflow = ? and run_id = ? and status = 'open' and test is null and standing is null order by seq"),
+      due: p("select * from tasks where status = 'open' and due <= ? and test is null and standing is null order by seq"),
       close: p("update tasks set status = ?, settled_at = ? where id = ? and status = 'open'"),
       closeLeases: p("update leases set status = 'expired', closed = ?, reason = ? where task = ? and status = 'open'"),
       staleLeases: p("update leases set status = 'expired', closed = ?1 where status = 'open' and expires <= ?1"),
@@ -333,12 +344,12 @@ export class SqliteTaskStore implements TaskStore {
       // the day's, ?4 the week's, ?5 now.
       queueLeft: p(
         `select status, sum(settled_at >= ?2) hour, sum(settled_at >= ?3) day, count(*) week
-           from tasks where type = ?1 and test is null and status in ('expired', 'cancelled', 'disputed') and settled_at >= ?4
+           from tasks where type = ?1 and test is null and standing is null and status in ('expired', 'cancelled', 'disputed') and settled_at >= ?4
           group by status`,
       ),
       queuePastDue: p(
         `select sum(due >= ?2) hour, sum(due >= ?3) day, count(*) week
-           from tasks where type = ?1 and status = 'open' and test is null and due <= ?5 and due >= ?4`,
+           from tasks where type = ?1 and status = 'open' and test is null and standing is null and due <= ?5 and due >= ?4`,
       ),
       queueLeases: p(
         `select case when l.status = 'expired' and l.reason is null then 'lost' else l.status end kind,
@@ -363,11 +374,20 @@ export class SqliteTaskStore implements TaskStore {
       ),
       booked: p("update leases set booked_at = ? where id = ? and booked_at is null"),
       unbooked: p("select * from leases where status = 'submitted' and pay_msat is not null and booked_at is null order by closed limit ?"),
-      // An open instance whose lease is no longer live closes (§7.1).
+      // An open instance (§7.1) or standing task (§5.7) whose lease is no
+      // longer live closes.
       deadInstances: p(
-        `select id from tasks where test is not null and status = 'open'
+        `select id from tasks where (test is not null or standing = 1) and status = 'open'
           and not exists (select 1 from leases l where l.task = tasks.id and l.status = 'open' and l.expires > ?1)`,
       ),
+      // §5.7: a standing task, made with its lease in `takeStanding`.
+      insertStanding: p(
+        `insert into tasks (id, type, workflow, run_id, path, show, files, root, status, created, due, standing)
+         values (?, ?, ?, ?, ?, ?, '[]', 'run', 'open', ?, ?, 1)
+         on conflict (workflow, run_id, path) do nothing`,
+      ),
+      launched: p("update tasks set launched_at = ? where id = ? and standing = 1 and launched_at is null"),
+      unlaunched: p("select * from tasks where standing = 1 and status = 'settled' and launched_at is null order by settled_at limit ?"),
       // §7.2's takeTest: the tests this worker may be served, least-served first.
       servable: p(
         `select * from tests x
@@ -481,6 +501,7 @@ export class SqliteTaskStore implements TaskStore {
         t.copies ? JSON.stringify(t.copies) : null,
         t.open === false ? 1 : null,
         t.attachments ? JSON.stringify(t.attachments) : null,
+        t.standing ? JSON.stringify(t.standing) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -783,6 +804,31 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
 
+  // ── standing types (§5.7) ─────────────────────────────────────────────
+
+  async takeStanding(o: Parameters<TaskStore["takeStanding"]>[0]): Promise<Lease | undefined> {
+    return this.db.tx(() => {
+      if (this.s.heldBy.get(o.worker, o.now)) return undefined;
+      const kind = this.s.type.get(o.type) as Row | undefined;
+      if (!kind || kind.enabled !== 1 || opt<string>(kind.standing) === undefined) return undefined;
+      // It lives as long as its one lease.
+      const expires = o.now + (kind.lease_seconds as number) * 1000;
+      const made = this.s.insertStanding.run(o.task, o.type, o.workflow, o.runId, o.path, JSON.stringify(o.show ?? null), o.now, expires).changes;
+      if (Number(made) !== 1) return undefined;
+      const pay = opt<number>(kind.pay_msat);
+      this.s.insertLease.run(o.lease, o.task, o.worker, o.type, o.now, expires, pay !== undefined && pay > 0 ? pay : null);
+      return leaseOf(this.s.lease.get(o.lease) as Row);
+    });
+  }
+
+  async launched(task: string, at: number): Promise<void> {
+    this.db.tx(() => this.s.launched.run(at, task));
+  }
+
+  async unlaunched(limit: number): Promise<TaskRecord[]> {
+    return (this.s.unlaunched.all(Math.max(0, Math.floor(limit))) as Row[]).map(taskOf);
+  }
+
   async putTest(t: NewTest): Promise<TestRecord> {
     return this.db.tx(() => {
       this.s.insertTest.run(
@@ -927,9 +973,9 @@ export class SqliteTaskStore implements TaskStore {
     return (this.s.reviewsOf.all(JSON.stringify(taskIds)) as Row[]).map(reviewOf);
   }
 
-  /** Inside a transaction: an open instance whose lease is no longer live
-   *  closes as `expired`, its open lease with it (§7.1). Never heard by
-   *  `onSettle`: no run waits on an instance. */
+  /** Inside a transaction: an open instance (§7.1) or standing task (§5.7)
+   *  whose lease is no longer live closes as `expired`, its open lease with
+   *  it. Never heard by `onSettle`: no run waits on either. */
   private closeInstances(now: number): void {
     for (const r of this.s.deadInstances.all(now) as Row[]) {
       this.s.close.run("expired", now, r.id as string);
@@ -967,6 +1013,8 @@ function typeOf(r: Row): TaskType {
   if (copies !== undefined) t.copies = JSON.parse(copies) as CopiesRule;
   const attachments = opt<string>(r.attachments);
   if (attachments !== undefined) t.attachments = JSON.parse(attachments) as AttachmentRule;
+  const standing = opt<string>(r.standing);
+  if (standing !== undefined) t.standing = JSON.parse(standing) as StandingRule;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;
@@ -1004,6 +1052,9 @@ function taskOf(r: Row): TaskRecord {
   if (grade !== undefined) t.grade = grade;
   const gradedAt = opt<number>(r.graded_at);
   if (gradedAt !== undefined) t.gradedAt = gradedAt;
+  if (opt<number>(r.standing) === 1) t.standing = true;
+  const launchedAt = opt<number>(r.launched_at);
+  if (launchedAt !== undefined) t.launchedAt = launchedAt;
   return t;
 }
 
