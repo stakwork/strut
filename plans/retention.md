@@ -2,8 +2,9 @@
 
 > **Status (2026-11-17): proposed, one part built.** Evan asked for it on
 > 2026-11-17: "everything should be included, artifacts, jobs, etc", in a
-> simple way, and took the shape below ("Plan + reshape #705"). The
-> rulings it still needs are in §8. Built: a run's log (#693, #698
+> simple way, and took the shape below ("Plan + reshape #705"). Ruled the
+> same day: with no bucket, artifacts are not deleted (§8). The rulings it
+> still needs are in §8. Built: a run's log (#693, #698
 > retention; #705 the archive, whose summary fields were changed to this
 > plan's shape before it merged, so nothing written needs migrating).
 > plans/run-archive.md is the record of that first part: the bucket, the
@@ -40,16 +41,18 @@ Everything strut stores is one of two things.
 One sweep (the retention sweep: at boot, then hourly, with the scheduler)
 applies two lines:
 
-> **A record at rest past its window: its parts leave the disk.** With a
-> bucket (`STRUT_ARCHIVE_S3_*`) they are uploaded first and the first read
-> of a part brings it back; with none they are deleted. The index stays and
-> says where each part is.
+> **A record at rest past its window: its parts go to the bucket and
+> leave the disk.** The first read of a part brings it back. The index
+> stays and says where each part is.
 >
 > **A copy unused past its TTL is deleted.**
 
-Retention is about this disk, never about the record. With a bucket
-nothing is lost; without one, what leaves is gone, which is why the
-default window is "keep everything" when there is no bucket (§3).
+**With no bucket, nothing new leaves.** A workflow run's log is deleted
+past its window, as it has been since #693, and every other part stays on
+the disk (ruled 2026-11-17 for artifacts, §8; "no bucket, no change" was
+#705's ruling of 2026-11-15). Retention is about this disk, never about
+the record: with a bucket nothing is lost, and without one strut deletes
+nothing it did not delete before.
 
 ## 2. The records
 
@@ -89,8 +92,8 @@ records can leave:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `retain:` on a workflow | (none) | How long that workflow's finished runs keep their parts on this disk: a window (`7d`) or a count (`{ runs: 20 }`) |
-| `STRUT_RETENTION` | `7d` with a bucket; with none, keep everything | The window for every record nothing else names: runs of workflows with no `retain:`, `step:` and `check:` runs, idle jobs, chats |
+| `retain:` on a workflow | (none) | How long that workflow's finished runs keep their parts on this disk: a window (`7d`) or a count (`{ runs: 20 }`). With no bucket, their logs only |
+| `STRUT_RETENTION` | `7d` with a bucket; with none, keep everything | The window for every record nothing else names: runs of workflows with no `retain:`, `step:` and `check:` runs, idle jobs, chats. With no bucket, workflow runs' logs only |
 | `STRUT_COPY_TTL` | `7d` | How long a copy unused stays: working copies, repository caches |
 | `STRUT_ARCHIVE_S3_*` | off | Where parts go (plans/run-archive.md §1.1, unchanged). Set: eviction loses nothing. Unset: eviction deletes |
 
@@ -101,7 +104,8 @@ A part a read restored stays one day, whatever the window (built,
 `RESTORED_KEEP_MS`); that is not a setting.
 
 The default differs with and without a bucket, and one sentence says why:
-strut picks a window for you only when leaving loses nothing.
+strut picks a window for you only when leaving loses nothing. A window
+set with no bucket deletes a workflow run's log and nothing else.
 
 ## 4. The copies
 
@@ -176,8 +180,10 @@ Bucket keys: `<prefix>/<kind>/<group>/<id>/<part>`:
   - a job's `files`: `job/dir`, `job/get`, the job file route.
   - a chat: its transcript read, its uploads route.
 - **References.** Retention skips a run whose artifacts another run's
-  summary names (`artifactReferences`), so no link breaks. With a bucket
-  the reader restores, so the skip applies only when eviction deletes.
+  summary names (`artifactReferences`), and today that holds the run's
+  log too. Artifacts themselves leave only to a bucket, where the reader
+  restores them, so no link to them can break and the skip is not needed
+  for them.
 - **A record that changes after it was uploaded** (a resumed run, a job
   used again) is uploaded again over the same key, as the log is today:
   the record lives on the index, a run's resume drops it with the
@@ -200,16 +206,21 @@ By what each frees, each a kind or a part added to the one sweep:
 5. **Repository caches (13 GB)**: copies, by last fetch.
 6. **Chats**: the `chat` kind, once measured.
 
-## 8. To rule
+## 8. Rulings
 
-1. **Without a bucket, a record's window deletes all its parts.** A
-   workflow with `retain: 1h` and no bucket loses its runs' artifacts
-   after an hour too, not only their logs. That is "everything included";
-   it is also a change for every workflow that has a `retain:` today.
-2. **A job a conversation comes back to months later.** With a bucket
-   `job/dir` restores its files. Without one they are gone after
-   `STRUT_RETENTION` idle. Is the fleet window right for jobs, or do jobs
-   need their own?
+Ruled by Evan, 2026-11-17:
+
+1. **With no bucket, artifacts are not deleted.** Asked: should a window
+   with no bucket delete a run's artifacts as well as its log ("No, only
+   with a bucket"). Read here as §1's rule for every part this plan adds:
+   with no bucket a job's files, a chat's parts and the `step:` / `check:`
+   runs stay too, and only a workflow run's log is deleted, as before.
+
+To rule:
+
+2. **The window for jobs.** A conversation may come back to a job months
+   later; with a bucket `job/dir` restores its files. Is the fleet window
+   right for jobs, or do jobs need their own?
 3. **`STRUT_COPY_TTL`**: the name, and that it replaces
    `STRUT_WORKDIR_TTL_DAYS`.
 4. **From #705, still open**: whether a public visitor's read of one
