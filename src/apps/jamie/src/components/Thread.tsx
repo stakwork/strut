@@ -33,9 +33,11 @@ export interface ThreadProps {
   onShowList?: () => void;
   /** Show this job's newest card (a click on it in the list). */
   focusJob?: { job: string; at: number };
+  /** What the person is looking at beside the chat, sent with each turn's context (`turnContext`). */
+  about?: string;
 }
 
-export function Thread({ session, draft, onStarted, onShowList, focusJob }: ThreadProps) {
+export function Thread({ session, draft, onStarted, onShowList, focusJob, about }: ThreadProps) {
   const host = useHost();
   const qc = useQueryClient();
   const conv = useConversation(draft ? null : session);
@@ -101,7 +103,7 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
       await send.mutateAsync({
         session,
         prompt: text || (files.length ? "See the attached files." : ""),
-        context: turnContext(new Date(), host.timeZone),
+        context: turnContext(new Date(), host.timeZone, about),
         ...(model ? { model } : {}),
         files,
       });

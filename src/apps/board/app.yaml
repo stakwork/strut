@@ -1,0 +1,53 @@
+title: Board
+description: >-
+  The plan as a map on one canvas: the initiatives in progress ringed round
+  the centre, and each initiative opening into a road through its milestones
+  with their features in plots beside it — done in green, being built in
+  blue, not started as an empty plot — and the brainstorms about its cards
+  on a shelf beside the road. It says what needs the viewer (the changes
+  waiting on their yes or no, the questions still open) and which of their
+  jobs are working now, and docks Jamie beside the map: the viewer's own
+  conversation, told which card they are looking at. The page reads the
+  graph with the generic graph steps; a person edits a card's details by
+  hand on it, and anything larger is a turn with Jamie. Strut ships it and seeds it on every
+  server; it acts as its viewer.
+icon: map
+grants:
+  # Jamie's thread (strut/jamie's components, compiled in) launches these.
+  workflows: [orchestrator, job, builder]
+  steps:
+    - graph/find
+    - graph/graph-edges
+    - graph/changes
+    # A person's edit to a card's details, on the types declared under `data`.
+    - graph/edit-node
+    # A card a person adds by hand: the node, then the edge from the card that holds it.
+    - graph/create-node
+    - graph/create-triplet
+    - job/list
+    - proposal/list
+    # What strut/jamie's thread and its cards call.
+    - conversation/list
+    - conversation/get
+    - conversation/update
+    - llm/models
+    - job/get
+    - job/updates
+    - job/verify
+    - job/evidence
+    - proposal/get
+    - proposal/decide
+    - sheets/get-values
+    - github/pr-status
+    - github/merge-pr
+    - secret/add
+# The types a person edits and adds by hand on the board. Each is declared
+# without attributes: the board adds nothing to their schemas, it writes the
+# nodes of a plan the graph already has types for.
+data:
+  graph:
+    types:
+      HiveInitiative: {}
+      HiveMilestone: {}
+      InitiativeFeature: {}
+      Question: {}

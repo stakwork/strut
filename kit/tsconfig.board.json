@@ -1,0 +1,17 @@
+{
+  "//": "Type-checks strut/board (src/apps/board) against the kit, strut/views and strut/jamie: its own src first for @/, then theirs, then the kit's; `strut/views` and `strut/jamie/<path>` from their sources; bare packages from the kit's install. `npx tsc -p kit/tsconfig.board.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "strut/views": ["../src/apps/views/src/index.ts"],
+      "strut/jamie/*": ["../src/apps/jamie/src/*"],
+      "@/*": ["../src/apps/board/src/*", "../src/apps/jamie/src/*", "../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/board/src/**/*"]
+}

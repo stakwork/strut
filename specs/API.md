@@ -2585,6 +2585,71 @@ visitor's page gets no first-party rights, and its grants are the worker's
 steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
 `"worker": false` seeds nothing.
 
+### 14.17 `strut/board` — the plan as a map
+
+The app strut seeds after `strut/views` (`src/apps/board/`,
+`src/apps/board-seed.ts`; `board: false` in `createStrut` or
+`STRUT_HOST_CONFIG` seeds none): the plan the graph holds, drawn as a map on
+one canvas that fills the page (`?app=strut/board&solo=1`). It opens on the
+home map, the initiatives in progress ringed round the centre with the rest
+behind "Show all"; an initiative opens into its own map, a road left to
+right through its milestones in `sequence` order, each milestone's features
+in a plot beside it. A card's status reads as one of four states — not
+started (a dashed outline), in progress (blue), done (green), blocked
+(amber) — and a road takes the state of the card it leads to.
+
+The brainstorms about a goal's cards sit on a shelf under its gate: every
+root question (`Question -ABOUT->` a plan card), the open ones first, each
+opening to its options (`PARENT_OF`) with what was chosen, what was passed
+over and the questions an option leads to. "Needs you" is the viewer's:
+their pending proposals (`proposal/list`, which answers each person their
+own) and the open questions — a count per initiative on the home map, the
+questions themselves inside one. Questions have no owner in the graph, so
+those are everyone's and the page says so. "Working now" shows only while
+one of the viewer's jobs is `busy` (`job/list`); a job is tied to a card
+when it wrote a question about it (the question's `job`), and that card
+pulses.
+
+Pressing a goal on its own map opens a sheet beside it: its brief (`HAS_BRIEF`), then its
+stories (`HAS_STORY`, oldest first, each split into who it is for, what they
+want and why when it is written "As a …, …, so that …") and each story's
+requirements (`HAS_REQUIREMENT`). A story or requirement not yet `accepted`
+is drawn in pencil. Picking a story or one requirement lights the work that
+answers it on the map (`SATISFIES`, work → requirement) with a thread to
+each and steps the rest back; picking work lights what it is for on the
+sheet. A requirement nothing answers, and work that answers no requirement,
+say so. It is read-only: the sheet changes when the graph does.
+
+"Ask Jamie" docks `strut/jamie`'s own thread beside the map (its components
+compiled in, so the board's manifest carries Jamie's grants): the viewer's
+conversation, new or continued, with what they have picked on the board sent
+in each turn's context after where the reply is read (`turnContext`'s
+`about`: the card's role, title and `ref_id`, and its initiative's). The
+thread's proposals are decided there. Without `strut/jamie` (`jamie: false`)
+the board is not seeded.
+
+The page's own reads use the generic graph steps, as its viewer, and write
+nothing: every node of the three plan types with `graph/find` (500 a page,
+3,000 a type at most, said on the page when cut), the edges among them with
+`graph/graph-edges`, and `graph/changes` (the kit's `useGraphChanges`) to
+read again when a write to one of those types lands through strut.
+Soft-deleted nodes (`deleted_at`, `is_deleted`) are never drawn. Which type
+plays which part is data (`Roles` in `src/lib/plan.ts`: goal, group, work
+and the edges that mean "contains"), today the plan Hive and the canvas
+write — `HiveInitiative` → `HAS_MILESTONE` → `HiveMilestone` →
+`HAS_FEATURE` → `InitiativeFeature`. The Map's positions are computed from
+the plan (`src/lib/map.ts`) and never stored. Free is a person's own
+arrangement of the same cards (`freeMap`): the places they dragged cards to
+are theirs alone, kept per board in `app/state` beside the board they had
+open, and Tidy drops them. Pressing a card shows what the graph holds on it,
+and a person edits its title, description, status, date and whether it is
+blocked by hand: one `graph/edit-node` per change, on the types the app
+declares (`data.graph.types`). A right-click adds a card by hand — an
+initiative on the desk, a milestone under an initiative, a feature under a
+milestone (`graph/create-node`, then `graph/create-triplet` from the card
+that holds it; `Roles.make` says each type's id, first status and edge) —
+or sends Jamie a turn about the card under the pointer.
+
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
 A page takes its look from its host: the kit's stylesheet reads the MCP

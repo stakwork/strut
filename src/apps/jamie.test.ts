@@ -54,6 +54,11 @@ describe("strut/jamie — the pure parts", () => {
     assert.ok(c.line.endsWith(c.where), "`line` carries the medium too: a person's turn reads `line` alone");
     assert.match(c.where, /assistant app/);
     assert.equal(turnContext(now).timeZone, undefined);
+    // Docked beside something else (strut/board): what the person is looking at follows where the reply is read.
+    const docked = turnContext(now, "America/New_York", ' On the board: looking at the milestone "Collect" (ref_id m1). ');
+    assert.equal(docked.line, `${c.line}On the board: looking at the milestone "Collect" (ref_id m1). `);
+    assert.equal(docked.where, c.where, "where the reply is read is unchanged");
+    assert.equal(turnContext(now, "America/New_York", "  ").line, c.line, "nothing picked: the line as it was");
   });
 
   it("the list's days: Today, Yesterday, a date, in the order the rows came", () => {

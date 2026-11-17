@@ -34,10 +34,13 @@ export function timeLine(now: Date, timeZone?: string): string {
   }
 }
 
-/** The orchestrator's `input.context` for a turn sent now. */
-export function turnContext(now: Date, timeZone?: string): { line: string; where: string; timeZone?: string } {
+/** The orchestrator's `input.context` for a turn sent now. `about` is what
+ *  the person is looking at where the chat is docked beside something else
+ *  (a card on `strut/board`): a sentence, added after where the reply is read. */
+export function turnContext(now: Date, timeZone?: string, about?: string): { line: string; where: string; timeZone?: string } {
   const zone = timeZone?.trim();
-  return { line: timeLine(now, zone) + WHERE, where: WHERE, ...(zone ? { timeZone: zone } : {}) };
+  const at = about?.trim();
+  return { line: timeLine(now, zone) + WHERE + (at ? `${at} ` : ""), where: WHERE, ...(zone ? { timeZone: zone } : {}) };
 }
 
 /** A local day's key: the list groups by the viewer's own days. */

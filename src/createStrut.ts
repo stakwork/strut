@@ -129,6 +129,7 @@ import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
 import { seedWorkerApp } from "./apps/worker-seed.js";
+import { seedBoardApp } from "./apps/board-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -593,6 +594,12 @@ export interface StrutOptions<TServices = unknown> {
    *  (strut/views' `WorkerPage`). Seeded after `strut/views`; nobody outside
    *  sees it until an admin makes it public. `false` seeds nothing. */
   worker?: false;
+  /** `strut/board` (`src/apps/board-seed.ts`): the plan as a map on one
+   *  canvas — initiatives, their milestones along a road, each milestone's
+   *  features beside it — as a first-party app, seeded at boot after
+   *  `strut/views` (it imports its graph reads; none without it). `false`
+   *  seeds nothing. */
+  board?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -2139,6 +2146,16 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[worker] seeded app: strut/worker @ ${r.version}`);
     } catch (err) {
       console.warn(`[worker] could not seed strut/worker:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/board` (src/apps/board-seed.ts): the plan as a map, read from the
+  // graph as its viewer. After strut/views, whose graph reads it imports.
+  if (opts.board !== false && !serveRef) {
+    try {
+      const r = await seedBoardApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[board] seeded app: strut/board @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[board] could not seed strut/board:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
