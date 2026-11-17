@@ -446,6 +446,7 @@ function WalletForm(props: { onSaved: () => void }) {
               <span class="auto-hint">{info.url ?? info.relays?.join(", ")}</span>
               <span class={`badge ${info.receive ? "badge-ok" : ""}`}>{info.receive ? "receives" : "cannot receive"}</span>
               <span class={`badge ${info.pay ? "badge-ok" : "badge-warning"}`}>{info.pay ? "can pay" : "cannot pay"}</span>
+              {info.messages && <span class="badge badge-ok">Support</span>}
               {info.check && (info.check.ok ? <span class="auto-hint">answers: {fmtSats(info.check.msat)}</span> : <span class="auto-hint earnings-blocked">{info.check.error}</span>)}
             </>
           )}
@@ -483,6 +484,7 @@ function WalletForm(props: { onSaved: () => void }) {
               {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury.sphinx:8095", false)}
               {field("token", "Receive token", sameProvider ? "keep as it is" : "the daemon's receive token")}
               {field("payToken", "Pay token", info?.pay && sameProvider ? "keep as it is" : "the daemon's pay token — Withdraw needs it")}
+              {field("messageToken", "Message token", info?.messages && sameProvider ? "keep as it is" : "the daemon's message token — Support (the staff's chat with workers) needs it")}
             </>
           ) : (
             <>

@@ -6,7 +6,8 @@
 // their status with its acts, their note, their grants (revoked ones with
 // when, who and why: an automatic revoke by `standing` too, §9.7), what they
 // did this week and their newest leases, and, when the server answers for
-// them, their standing (4) and what they earned (5a).
+// them, their standing (4) and what they earned (5a). Message opens their
+// conversation with Support (plans/support-chat.md §3) where Support answers.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStrutClient } from "@strut/kit";
@@ -227,6 +228,11 @@ function WorkerDetail(props: Props & { actor: string }) {
               Ban
             </Button>
           ))}
+        {props.shown.support && (
+          <Button size="sm" variant="outline" onClick={() => props.go({ tab: "support", worker: w.actor })} title="Their conversation with Support">
+            Message
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "tasks", by: w.actor })}>
           Their answers
         </Button>

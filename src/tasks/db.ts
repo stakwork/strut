@@ -16,6 +16,10 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
+/** A file in memory (`TaskDb.open(MEMORY)`): Support's, beside a task
+ *  store in memory (src/support/store.ts; tasks.ts's `TASKS_IN_MEMORY`). */
+export const MEMORY = ":memory:";
+
 /** The schema this strut writes: 2 since tests (plans/human-steps.md §7.7). */
 export const SCHEMA_VERSION = 2;
 const warned = new Set<string>();
@@ -25,8 +29,10 @@ export type Row = Record<string, unknown>;
 export class TaskDb {
   private closed = false;
 
-  /** Opens (and makes) the file; its folder is created owner-only. */
+  /** Opens (and makes) the file; its folder is created owner-only.
+   *  `:memory:` is a file in memory, gone with the process. */
   static open(file: string): TaskDb {
+    if (file === MEMORY) return new TaskDb(new DatabaseSync(MEMORY), MEMORY);
     const dir = dirname(file);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     else if ((statSync(dir).mode & 0o077) !== 0 && !warned.has(dir)) {

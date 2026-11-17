@@ -1,6 +1,6 @@
 # Support: a chat between workers and a Stadeum's staff
 
-> **Status (2026-11-16): ruled, nothing built.**
+> **Status (2026-11-16): ruled; item 1 built (#PRNUM), item 2 not started.**
 >
 > - **Written against:** strut `main` @425a9d06, stakwork/sphinx `master`
 >   @c1f55f11, peel-android @efbcccd and peel @78deb6e.
@@ -171,6 +171,13 @@ the right. On a phone, the list opens a thread and Back returns to the list.
 | Deleted by the worker | "Message deleted" | `deleted` in the feed (sphinx-chat already applies type 17) | Flag the row and hide it (ruling 12) | 1 |
 | Sats from a worker | "Sent you 100 sats" as a line | Payment records in the feed | A line; not in the books | 1 |
 | The worker beside the thread | Status, types held, lease now, answers this week, owed and paid, invite used, note; links to their page and tasks | — | `staff/worker` and `earnings/read`, already there | 1 |
+
+**Built differently (#PRNUM):** the worker beside the thread shows what they
+are owed (earned, held, withdrawable, from `staff/worker`) and links to
+their payouts, not a paid total, and no "invite used": an invite keeps no
+link to the worker who used it (ruling 9), so which one they used is not
+known. It shows on a wide screen (1024 px and over); on a phone the thread
+links to their page.
 | Task links | A task id in a message is a link to the task | — | Detected when drawn | 1 |
 | The welcome | §5 | `contact` records in the feed | The text in settings; sent automatically | 1 |
 | Photos and files from staff | Attach, paste or drop. Images shrunk to 1,600 px in the page; other files up to 2.5 MB | Encrypt, upload, sign, send a type-6 message | Composer attachments | 2 |
@@ -333,6 +340,11 @@ token expires and to send the welcome.
 - 1:1 records, sent and received, oldest first, under a sequence number of
   the daemon's own. The server's `index` is missing on the account's own
   sends, so it can't be the cursor.
+- **Built differently (#PRNUM):** the answer is `{ dms: [...] }`, and a
+  record that changes (a send's `status`, a message deleted) comes again
+  under a new `seq` with the same `id`, which is how `status` and `deleted`
+  reach strut; strut keeps one row per `id`. `status` is `pending`, `sent`
+  or `failed` (with `error`). specs/LIGHTNING.md, "Support's DMs".
 - Fields: `seq`, `id`, `clientId` (on the account's own sends), `time`,
   `fromMe`, `peer { pubkey, address, alias }`, `kind` (`message`,
   `file`, `payment` or `contact`, a new contact's key exchange), `text`,
@@ -343,13 +355,18 @@ token expires and to send the welcome.
 **`GET /dm/:id/file`**
 - The decrypted bytes, with their type, via `media.ts`'s download, without
   shrinking. 25 MB at most (ruling 10); a larger file is refused with a
-  code strut can show.
+  code strut can show. **Built differently (#PRNUM):** that refusal is
+  `413 { code: "too_large" }`; strut also stops reading past 25 MB.
 - The memes hosts allowed as for tribes.
 
 **`POST /dm { id, to, text, reply? }`**
 - `to` is the pubkey of an existing contact; never a tribe, never someone
   it hasn't met (ruling 15).
 - The same `id` returns the first send's answer and never sends twice.
+- **Built differently (#PRNUM):** a first send that FAILED is sent again
+  under the same `id`, as `POST /pay` sends a failed payment again: that is
+  what Retry needs. `id` is 64 hex, made by strut. The answer is `{ id,
+  status, error? }`; `to` not a contact is `409 { code: "not_a_contact" }`.
 
 **Also:**
 - A changed `DAEMON_ALIAS` replaces the stored alias at start.
@@ -402,7 +419,7 @@ Each is its own PR against `main`, never stacked.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
-| 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Not started |
+| 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Built (#PRNUM), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
 | 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins | 1; the daemon's item-2 routes | Not started |
 
 A stand-in for the new routes goes into `scripts/fake-sphinx-daemon.ts`,

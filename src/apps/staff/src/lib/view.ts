@@ -1,18 +1,19 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, SupportConversation, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
-export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts"] as const;
+export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
 
-export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts" };
+export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts", support: "Support" };
 
 /** Where the page is: a tab and what is open in it. */
 export interface Place {
   tab: Tab;
   type?: string;
-  /** On the Payouts tab: only this worker's payouts. */
+  /** On the Payouts tab: only this worker's payouts; on Support, their
+   *  conversation. */
   worker?: string;
   task?: string;
   /** On the Payouts tab: one payout, by its key. */
@@ -34,7 +35,8 @@ export const REVIEW_FILTERS: readonly ReviewFilter[] = ["none", "ok", "rejected"
  * Where a deep link opens (§9.1): `input` takes one of `tab=queue|types|
  * workers|tasks|tests|payouts`, `type=<name>`, `worker=<actor>`, `task=<id>`,
  * `test=<id>`, `payout=<key>` (one payout), `tab=payouts&worker=<actor>`
- * (that worker's payouts), `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
+ * (that worker's payouts), `tab=support&worker=<actor>` (their conversation
+ * with Support, plans/support-chat.md §3), `run=<workflow>/<runId>`, `by=<actor>` (the tasks they
  * answered), `review=none|ok|rejected` (the review queue, §9.6; with `by`,
  * that worker's). A thing named opens its tab; with nothing named, the
  * Queue.
@@ -46,6 +48,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   const review = REVIEW_FILTERS.find((r) => r === str("review"));
   if (str("payout")) return { tab: "payouts", payout: str("payout")! };
   if (named === "payouts") return { tab: "payouts", ...(str("worker") ? { worker: str("worker")! } : {}) };
+  if (named === "support") return { tab: "support", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (str("task")) return { tab: "tasks", task: str("task")! };
   if (str("run")) return { tab: "tasks", run: str("run")! };
   if (review) return { tab: "tasks", review, ...(str("by") ? { by: str("by")! } : {}) };
@@ -60,6 +63,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
 export function inputOf(p: Place): Record<string, string> {
   if (p.payout) return { payout: p.payout };
   if (p.tab === "payouts") return { tab: "payouts", ...(p.worker ? { worker: p.worker } : {}) };
+  if (p.tab === "support") return { tab: "support", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.task) return { task: p.task };
   if (p.run) return { run: p.run };
   if (p.review) return { review: p.review, ...(p.by ? { by: p.by } : {}) };
@@ -131,9 +135,13 @@ export interface Shown {
   /** Item 5b: the Payouts tab and a worker's link to theirs — `/tasks/payouts`
    *  answers (a host's own store answers `not_available`). */
   payouts: boolean;
+  /** The Support tab and Message on a worker's page (plans/support-chat.md
+   *  §8): `/support` answers — the wallet is a Sphinx daemon with its
+   *  message token; otherwise `not_available`. */
+  support: boolean;
 }
 
-export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown"; payoutsAnswer?: "yes" | "no" | "unknown" }): Shown {
+export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer: "yes" | "no" | "unknown"; payoutsAnswer?: "yes" | "no" | "unknown"; supportAnswer?: "yes" | "no" | "unknown" }): Shown {
   const types = o.types ?? [];
   const workers = o.workers ?? [];
   const tests = o.testsAnswer === "yes";
@@ -146,6 +154,7 @@ export function shownOf(o: { types?: TaskType[]; workers?: Worker[]; testsAnswer
     review: tests,
     open: types.every((t) => t.open !== undefined),
     payouts: o.payoutsAnswer === "yes",
+    support: o.supportAnswer === "yes",
     earnings: workers.some((w) => w.balance !== undefined) && (types.some((t) => (t.paySats ?? 0) > 0) || workers.some((w) => (w.balance?.totalMsat ?? 0) > 0)),
   };
 }
@@ -442,4 +451,73 @@ export function inviteSatsOf(text: string): { sats?: number } | { problem: strin
   if (!t) return {};
   const n = Number(t);
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
+}
+
+// ── Support (plans/support-chat.md) ─────────────────────────────────────────
+
+/** Who a conversation is with, to staff: the worker's name as staff wrote it
+ *  (their note's first line), else their Sphinx name, else the actor
+ *  shortened. */
+export function supportName(c: Pick<SupportConversation, "worker" | "alias">, worker?: Pick<Worker, "actor" | "note">): string {
+  const noted = worker?.note?.split("\n")[0]?.trim();
+  return noted || c.alias || shortActor(c.worker);
+}
+
+/** Two letters for a name's circle (ruling 13: initials, no pictures yet). */
+export function initialsOf(name: string): string {
+  const words = name.replace(/^secp:/, "").split(/[\s._-]+/).filter(Boolean);
+  const letters = words.length > 1 ? `${words[0]![0]}${words[1]![0]}` : (words[0] ?? "?").slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/** A task's id in a message (32 hex, src/tasks/tasks.ts): drawn as a link. */
+const TASK_ID = /\b[0-9a-f]{32}\b/g;
+
+/** A message's text in pieces, each task id its own (§3, task links). */
+export function textPieces(text: string): Array<{ text: string } | { task: string }> {
+  const out: Array<{ text: string } | { task: string }> = [];
+  let at = 0;
+  for (const m of text.matchAll(TASK_ID)) {
+    if (m.index! > at) out.push({ text: text.slice(at, m.index) });
+    out.push({ task: m[0] });
+    at = m.index! + m[0].length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at) });
+  return out;
+}
+
+/** A byte count, short: `820 B`, `14 KB`, `3.2 MB`. */
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${Math.round((n / 1024 / 1024) * 10) / 10} MB`;
+}
+
+/** Sats in a payment line: from the worker "Sent you 100 sats" (Support is
+ *  "you"), from Support "Support sent 100 sats". Not in the books. */
+export function paymentLine(m: Pick<SupportMessage, "fromMe" | "sats">): string {
+  const sats = `${(m.sats ?? 0).toLocaleString("en-US")} sat${m.sats === 1 ? "" : "s"}`;
+  return m.fromMe ? `Support sent ${sats}` : `Sent you ${sats}`;
+}
+
+/** A message in one line, for the conversation list and a quote. */
+export function messageLine(m: SupportMessage): string {
+  const body = (() => {
+    if (m.deleted) return "Message deleted";
+    if (m.kind === "contact") return "Added Support as a contact";
+    if (m.kind === "payment") return paymentLine(m);
+    if (m.kind === "file") return m.file?.mediaType?.startsWith("image/") ? "Photo" : m.file?.mediaType?.startsWith("audio/") ? "Voice note" : (m.file?.name ?? "File");
+    return m.text ?? "";
+  })();
+  return m.fromMe && m.kind === "message" && !m.deleted ? `Support: ${body}` : body;
+}
+
+/** Messages a worker wrote before Support followed the daemon (§6, the
+ *  backlog): where the line saying so goes, or -1. */
+export function earlierEnd(messages: readonly Pick<SupportMessage, "earlier">[]): number {
+  let last = -1;
+  messages.forEach((m, i) => {
+    if (m.earlier) last = i;
+  });
+  return last;
 }

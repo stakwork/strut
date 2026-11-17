@@ -362,3 +362,64 @@ export interface InvitesAnswer {
 
 /** `staff/invite`'s answer: the invite, its app and its link as a QR code (an SVG). */
 export type MadeInvite = Invite & { app: string; qrSvg?: string };
+
+// ── Support (plans/support-chat.md) ─────────────────────────────────────────
+
+export type SupportKind = "message" | "file" | "payment" | "contact";
+export type SendStatus = "sending" | "sent" | "failed";
+
+/** One message of a conversation (`GET /support/:worker`): a deleted one
+ *  without its text or file; never who sent it (every reply is Support's). */
+export interface SupportMessage {
+  /** Strut's own order. */
+  key: number;
+  /** The Sphinx id, once the daemon gave one: what a reply quotes. */
+  id?: string;
+  fromMe: boolean;
+  kind: SupportKind;
+  text?: string;
+  replyTo?: string;
+  sats?: number;
+  deleted?: true;
+  file?: { name?: string; mediaType?: string; size?: number; state: "fetching" | "kept" | "too_large" | "failed"; error?: string };
+  status?: SendStatus;
+  error?: string;
+  at: number;
+  /** Written before Support first followed the daemon. */
+  earlier?: true;
+  /** The automatic welcome. */
+  welcome?: true;
+}
+
+export interface SupportConversation {
+  /** The worker's actor. */
+  worker: string;
+  pubkey: string;
+  /** Their Sphinx name. */
+  alias?: string;
+  unread: number;
+  last?: SupportMessage;
+  seenAt?: number;
+  welcomedAt?: number;
+}
+
+export interface SupportThread {
+  conversation: SupportConversation;
+  messages: SupportMessage[];
+  more: boolean;
+}
+
+export interface SupportSettings {
+  welcome: string;
+  since?: number;
+  savedAt?: number;
+  savedBy?: string;
+}
+
+export interface SupportFile {
+  id: string;
+  name?: string;
+  mediaType: string;
+  bytes: number;
+  base64: string;
+}

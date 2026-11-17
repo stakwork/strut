@@ -47,6 +47,9 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
+import { createSupport, type Support } from "./support/support.js";
+import { supportRoutes } from "./support/routes.js";
+import { SupportStore } from "./support/store.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { standingTask } from "./tasks/standing.js";
@@ -66,7 +69,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -429,6 +432,10 @@ export interface StrutOptions<TServices = unknown> {
    *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
    *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
   tasks?: { now?: () => number; principal?: string };
+  /** Support (plans/support-chat.md, src/support/): `pollMs`, how often the
+   *  follower reads the daemon's DMs (3 s); `fetch`, how it reaches the
+   *  daemon (a test's). */
+  support?: { pollMs?: number; fetch?: typeof fetch };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -931,6 +938,12 @@ export interface Strut<TServices = unknown> {
    *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
    *  every minute, closed by `close()`. */
   tasks: TasksService;
+
+  /** SUPPORT (plans/support-chat.md, src/support/): the staff's chat with
+   *  workers over the treasury daemon's DMs. Its follower reads the daemon
+   *  every few seconds while the wallet has a message token; `tick()` reads
+   *  it now. Closed by `close()`. */
+  support: Support;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -6555,10 +6568,34 @@ export async function createStrut<TServices = unknown>(
     },
   });
 
+  // ── Support (plans/support-chat.md; src/support/) ──────────────────────
+  // The staff's chat with workers over the treasury's Sphinx DMs, through
+  // the daemon's MESSAGE token: held here and by the follower alone, never
+  // on a bag. No token, or an NWC wallet: every route says `not_available`.
+  // Its tables are in the task store's file, on a connection of its own;
+  // memory where the run store is.
+  const support = createSupport({
+    daemon: async () => {
+      if (payments.injected) return null;
+      const w = await payments.settings.wallet();
+      return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
+    },
+    open: async () => new SupportStore(await openTaskDb(store instanceof MemoryRunStore ? TASKS_IN_MEMORY : tasksPath(dataDir))),
+    filesDir: join(dataDir, "support", "files"),
+    ...(opts.support?.fetch ? { fetch: opts.support.fetch } : {}),
+    ...(opts.support?.pollMs ? { pollMs: opts.support.pollMs } : {}),
+  });
+  supportRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    support,
+  });
+
   // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
   // in-process request, the viewer's own, for the steps strut's own admin
   // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
-  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks alone).
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks, and
+  // /support, plans/support-chat.md).
   // Handed to the app door's bag for a first-party page shown to an admin,
   // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
   // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
@@ -10412,6 +10449,7 @@ export async function createStrut<TServices = unknown>(
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
     tasks.stop();
+    support.stop();
     publicTools.close();
     withdrawals.stop();
     deposits.stop();
@@ -10439,8 +10477,9 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
-    // And the task store's.
+    // And the task store's, and Support's connection to it.
     await tasks.close();
+    await support.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -10576,6 +10615,9 @@ export async function createStrut<TServices = unknown>(
   // minute, wherever a store is — dead leases let go, tasks past their time
   // expired.
   tasks.start();
+  // Support's follower (plans/support-chat.md ruling 16): the daemon's DMs
+  // read every few seconds while a message token is set; idle otherwise.
+  support.start();
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
@@ -10632,6 +10674,7 @@ export async function createStrut<TServices = unknown>(
     remote,
     ledger,
     tasks,
+    support,
     claims,
     verifier,
     listen,

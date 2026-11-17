@@ -19,7 +19,10 @@ This file is the contract each provider is built against:
   (`POST /invite`, `GET /invites`, `POST /invite/:code/cancel`; "Invites"
   below), being built in the sphinx repo as strut's side lands.
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
-  that answer exactly this.
+  that answer exactly this. And SUPPORT's three DM routes, with a token of
+  their own ("Support's DMs" below, plans/support-chat.md §7), being built
+  in the sphinx repo as strut's side lands; `scripts/fake-sphinx-daemon.ts`
+  answers them.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -336,6 +339,71 @@ POST /invite/:code/cancel
 - **A `404 { code: "not_found" }`** on the cancel is a code the daemon does
   not know (`unknown_invite` to staff). A `404 no route …` on any of the
   three is a daemon from before them (`no_invites`).
+
+### Support's DMs — the MESSAGE token
+
+plans/support-chat.md §7. Workers write to the treasury's account, named
+"Support" (`DAEMON_ALIAS`), from Peel; staff answer from strut
+(specs/API.md §22, "Support"). The daemon gives strut its 1:1 messages
+through a FOURTH token, `DAEMON_MESSAGE_TOKEN` — strut's
+`LIGHTNING_DAEMON_MESSAGE_TOKEN`, `messageToken` on the wallet, kept as the
+pay token is and refused when it equals the receive or the pay token. It
+opens the three routes below and nothing else: not tribes, join, leave,
+invoices, pay, keysend, invites or the admin routes. The only sats it can
+spend are what a DM to an existing contact costs: 0, or 1 sat a part while
+their key is unconfirmed. It never meets a new contact. Only strut's
+follower and its `/support` routes call them (`src/support/support.ts`),
+with 10 s each (60 s for a file). Fields may be added; none is renamed or
+removed.
+
+```
+GET /dms?after=<seq>&limit=100
+→ { "dms": [ { "seq": 12, "id": "<sphinx id>", "time": "2026-11-16T10:00:00.250Z", "fromMe": false,
+               "peer": { "pubkey": "02…", "address": "02…_03…_123", "alias": "Ana" },
+               "kind": "message", "text": "When is it paid?", "replyTo": null }, … ] }
+
+GET /dm/:id/file
+→ the decrypted bytes, content-type the file's type
+
+POST /dm { "id": "<64 hex, strut's>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>" }
+→ { "id": "<the same>", "status": "sent" }
+```
+
+- **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
+  `after` (0 for all), at most `limit`. `seq` is the daemon's own, strictly
+  increasing (the server's `index` is missing on the account's own sends,
+  so it cannot be the cursor). Strut keeps the newest `seq` it read and
+  reads the next page at once while one comes back full; every 3 s
+  otherwise. **A record that changes comes again under a new `seq`, with
+  the same `id`**: a send's `status`, a message its sender deleted. Strut
+  keeps one row per `id` (per `clientId` for its own sends).
+- **The fields**: `seq`, `id`, `clientId` (on the account's own sends made
+  through `POST /dm`: the `id` strut gave), `time` (ISO, or unix seconds;
+  strut reads ms too), `fromMe`, `peer { pubkey, address, alias }` (`pubkey`
+  66 hex, the contact's key, which is also the key Peel signs in with),
+  `kind` (`message`, `file`, `payment`, or `contact`: a new contact's key
+  exchange, which is what marks an invite `used`), `text`, `replyTo` (the
+  quoted message's id), `sats` (a payment), `deleted`, `mediaType` and
+  `fileName` (a file), `status` (the account's own sends: `pending`,
+  `sent` or `failed`, with `error`). Never a file's key. A record of
+  another kind, or with no pubkey, is skipped.
+- **`GET /dm/:id/file`**: a file a contact sent, downloaded and decrypted
+  as `media.ts` does for a tribe mention, without shrinking, from the
+  memes hosts allowed for tribes. At most 25 MB: a larger one is `413 {
+  code: "too_large" }`, which strut shows as a line and never asks again.
+  Strut fetches each file when it arrives (a media token expires), and
+  tries another refusal again on the next 4 reads before it gives up.
+- **`POST /dm`**: a text to an existing contact, by pubkey — never a tribe,
+  never someone the account has not met (`409 { code: "not_a_contact" }`).
+  `reply` quotes a message by its id. **Idempotent by `id`**: the same `id`
+  answers the first send's answer and never sends twice — unless that send
+  FAILED, when it is sent again under the same `id`, as `POST /pay` does a
+  failed payment: that is strut's Retry. The answer's `status` is as in the
+  feed; any 2xx not `failed` is going, until the feed says `sent`. A
+  non-2xx is a failed send, its `{ error, code }` shown with Retry.
+- **The alias**: a changed `DAEMON_ALIAS` replaces the account's stored
+  alias at start, so every message after carries the new name, which is
+  what renames the contact in Peel.
 
 ## NWC (NIP-47)
 

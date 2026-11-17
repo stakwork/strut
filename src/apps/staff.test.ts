@@ -23,6 +23,7 @@ import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKin
 import {
   fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
+  earlierEnd, fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
@@ -216,18 +217,47 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     const plain: TaskType = { name: "a", app: "w", answer: { type: "boolean" } as never, leaseSeconds: 600, withinHours: 72, enabled: true, changedAt: 0 };
     const worker: Worker = { actor: "w1", status: "active", firstSeen: 0, changedAt: 0, grants: [] };
     // A host's own store: no test routes, no pay on its types, no balance or standing on its workers, no open on its types.
-    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false, open: false, payouts: false });
+    assert.deepEqual(shownOf({ types: [plain], workers: [worker], testsAnswer: "no" }), { tests: false, standing: false, copies: false, pay: false, earnings: false, review: false, open: false, payouts: false, support: false });
     // This strut, before anything is tested or paid: the sections, not the empty columns.
     const here = shownOf({ types: [{ ...plain, holdHours: 72, open: true }], workers: [{ ...worker, balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true, open: true, payouts: false });
+    assert.deepEqual(here, { tests: true, standing: false, copies: true, pay: true, earnings: false, review: true, open: true, payouts: false, support: false });
     // A tested, paid type: the columns too.
     const busy = shownOf({ types: [{ ...plain, holdHours: 72, open: false, paySats: 5, tests: { qualify: 1 } as never }], workers: [{ ...worker, balance: { totalMsat: 5000, heldMsat: 5000, withdrawableMsat: 0 }, standing: {} }], testsAnswer: "yes" });
-    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true, open: true, payouts: false });
+    assert.deepEqual(busy, { tests: true, standing: true, copies: true, pay: true, earnings: true, review: true, open: true, payouts: false, support: false });
     assert.equal(shownOf({ types: [], workers: [], testsAnswer: "no", payoutsAnswer: "yes" }).payouts, true, "the Payouts tab: when /tasks/payouts answers");
     assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes" }).open, true, "no type yet: the choice is shown for the first");
     assert.equal(testsAnswerOf({ error: new Error("step_run: not_available: this server's task store is its host's") }), "no");
     assert.equal(testsAnswerOf({ error: new Error("network") }), "unknown");
     assert.equal(testsAnswerOf({ data: { tests: [] } }), "yes");
+  });
+
+  it("the Support tab (plans/support-chat.md §3): shown when /support answers, its deep link, how a conversation and a message read", () => {
+    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes", supportAnswer: "yes" }).support, true);
+    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes", supportAnswer: "no" }).support, false, "no message token, or an NWC wallet: not_available");
+    assert.deepEqual(placeOf({ tab: "support", worker: "secp:abc" }), { tab: "support", worker: "secp:abc" }, "not the worker's Workers page");
+    assert.deepEqual(placeOf({ tab: "support" }), { tab: "support" });
+    for (const p of [{ tab: "support" }, { tab: "support", worker: "secp:abc" }] as const) assert.deepEqual(placeOf(inputOf(p)), p);
+    // The name staff gave them first, then their Sphinx name, then the actor.
+    const c = { worker: "secp:0123456789abcdef", alias: "Ana" };
+    assert.equal(supportName(c, { actor: c.worker, note: "Ana Lopez\nlikes pets" }), "Ana Lopez");
+    assert.equal(supportName(c), "Ana");
+    assert.equal(supportName({ worker: c.worker }), "secp:0123…def");
+    assert.deepEqual([initialsOf("Ana Lopez"), initialsOf("bo"), initialsOf("secp:0123…def")], ["AL", "BO", "01"]);
+    const task = "0123456789abcdef0123456789abcdef";
+    assert.deepEqual(textPieces(`see ${task}, please`), [{ text: "see " }, { task }, { text: ", please" }]);
+    assert.deepEqual(textPieces("no task here"), [{ text: "no task here" }]);
+    const m = { key: 1, fromMe: false, at: 0 };
+    assert.equal(messageLine({ ...m, kind: "message", text: "hi" }), "hi");
+    assert.equal(messageLine({ ...m, fromMe: true, kind: "message", text: "hello" }), "Support: hello");
+    assert.equal(messageLine({ ...m, kind: "message", deleted: true }), "Message deleted");
+    assert.equal(messageLine({ ...m, kind: "file", file: { state: "kept", mediaType: "image/jpeg" } }), "Photo");
+    assert.equal(messageLine({ ...m, kind: "file", file: { state: "too_large", name: "a.mov" } }), "a.mov");
+    assert.equal(messageLine({ ...m, kind: "contact" }), "Added Support as a contact");
+    assert.equal(paymentLine({ fromMe: false, sats: 1200 }), "Sent you 1,200 sats");
+    assert.equal(paymentLine({ fromMe: true, sats: 1 }), "Support sent 1 sat");
+    assert.deepEqual([fmtBytes(820), fmtBytes(14_000), fmtBytes(3_400_000)], ["820 B", "14 KB", "3.2 MB"]);
+    assert.equal(earlierEnd([{ earlier: true }, { earlier: true }, {}]), 1);
+    assert.equal(earlierEnd([{}, {}]), -1);
   });
 
   it("the Payouts tab: its deep links, an address and a state in words, the cover, the worker cap's use", () => {

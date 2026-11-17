@@ -31,15 +31,31 @@
  * not_cancellable` once used). `POST /use-invite/:code` marks one used, as
  * a new account taking it would.
  *
- * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
- * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`
- * and `/use-invite` are open: they are the test's, not strut's.
+ * DMS, with the MESSAGE token alone (plans/support-chat.md §7; the other
+ * two are 403, and it opens nothing else): `GET /dms?after=<seq>&limit=`
+ * answers `{ dms }`, 1:1 records oldest first under a `seq` of its own — a
+ * record that changes (a send's status, a deletion) comes again under a new
+ * one, the same `id`. `GET /dm/:id/file` the file's bytes with its type,
+ * `413 too_large` over 25 MB. `POST /dm { id, to, text, reply? }` sends to a
+ * contact (`409 not_a_contact` otherwise), idempotent on `id` — a failed one
+ * is sent again, as `/pay` is; `sent` at once, or as `/next-dm { state:
+ * "failed" | "pending" }` says (`pending` until `POST /settle/<id>`).
+ * A WORKER is played through open routes: `POST /worker-dm { pubkey?, alias?,
+ * text?, replyTo?, sats?, file?: { name, type, base64 } | { name, type, size } }`
+ * (a new pubkey is a new contact first: its key exchange, `kind: "contact"`),
+ * `POST /worker-contact { pubkey?, alias? }`, `POST /worker-delete/:id`;
+ * `POST /use-invite/:code { pubkey?, alias? }` makes the contact too.
  *
- *   PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay SETTLE_AFTER_MS=3000 USD_PER_BTC=100000 \
+ * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
+ * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`,
+ * `/next-dm`, `/use-invite` and `/worker-*` are open: they are the test's,
+ * not strut's.
+ *
+ *   PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 USD_PER_BTC=100000 \
  *     npx tsx scripts/fake-sphinx-daemon.ts
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { pathToFileURL } from "node:url";
 import { decodeBolt11, encodeBolt11 } from "../src/payments/bolt11.js";
@@ -52,6 +68,8 @@ export interface FakeSphinxDaemonOptions {
   token?: string;
   /** The pay token: must differ from the receive token. Default `demo-pay`. */
   payToken?: string;
+  /** The message token (plans/support-chat.md §7): differs from both. Default `demo-message`. */
+  messageToken?: string;
   /** An invoice settles this long after it was made; 0 only by hand. Default 3000. */
   settleAfterMs?: number;
   /** What `GET /prices` answers. Default 100,000: $1 is 1,000 sats. */
@@ -72,6 +90,28 @@ interface Inv { hash: string; preimage: string; msat: number; made: number; expi
 /** A pay (keyed by payment hash) or a keysend (keyed by its id). */
 interface Out { key: string; hash: string; preimage?: string; msat: number; state: State; fee: number; error?: string }
 
+/** One 1:1 record of `GET /dms` (plans/support-chat.md §7). */
+interface DmRec {
+  seq: number;
+  id: string;
+  clientId?: string;
+  /** ISO, as the daemon's log writes it. */
+  time: string;
+  fromMe: boolean;
+  peer: { pubkey: string; address: string | null; alias: string | null };
+  kind: "message" | "file" | "payment" | "contact";
+  text?: string;
+  replyTo?: string;
+  sats?: number;
+  deleted?: boolean;
+  mediaType?: string;
+  fileName?: string;
+  status?: "pending" | "sent" | "failed";
+  error?: string;
+}
+/** The largest file `GET /dm/:id/file` gives (ruling 10). */
+export const DM_FILE_MAX_BYTES = 25 * 1024 * 1024;
+
 /** What the stand-in's mixer charges for an invite, on top of its sats. */
 export const INVITE_PRICE_SATS = 10;
 type InviteStatus = "sending" | "ready" | "failed" | "used" | "cancelled";
@@ -84,7 +124,9 @@ const sha256 = (h: string) => createHash("sha256").update(Buffer.from(h, "hex"))
 export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}): Promise<FakeSphinxDaemon> {
   const token = opts.token ?? "demo";
   const payToken = opts.payToken ?? "demo-pay";
+  const messageToken = opts.messageToken ?? "demo-message";
   if (token === payToken) throw new Error("the pay token must differ from the receive token, as strut's boot requires");
+  if (messageToken === token || messageToken === payToken) throw new Error("the message token must differ from the receive and pay tokens, as strut's boot requires");
   const settleAfterMs = opts.settleAfterMs ?? 3000;
   const usdPerBtc = opts.usdPerBtc ?? 100_000;
   const startMsat = (opts.startSats ?? 100_000) * 1000;
@@ -95,6 +137,33 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   const keysends = new Map<string, Out>();
   const invites = new Map<string, Invite>();
   let nextPayout: "failed" | "pending" | undefined;
+  // The DMs: each record by id, its seq bumped when it changes.
+  const dms = new Map<string, DmRec>();
+  const dmFiles = new Map<string, { bytes: Buffer; size: number }>();
+  const contacts = new Map<string, string | null>();
+  let seq = 0;
+  let nextDm: "failed" | "pending" | undefined;
+  const put = (r: Omit<DmRec, "seq">) => {
+    const rec = { ...r, seq: ++seq } as DmRec;
+    dms.set(rec.id, rec);
+    return rec;
+  };
+  const touch = (r: DmRec) => {
+    dms.delete(r.id);
+    r.seq = ++seq;
+    dms.set(r.id, r);
+  };
+  const someKey = () => `02${randomBytes(32).toString("hex")}`;
+  const peerOf = (pubkey: string) => ({ pubkey, address: `${pubkey}_${"03" + "1".repeat(64)}_1`, alias: contacts.get(pubkey) ?? null });
+  /** A new contact's key exchange, once per pubkey (an invite used, or a first DM). */
+  const contact = (pubkey: string, alias: string | null) => {
+    if (contacts.has(pubkey)) {
+      if (alias) contacts.set(pubkey, alias);
+      return;
+    }
+    contacts.set(pubkey, alias);
+    put({ id: randomUUID(), time: new Date().toISOString(), fromMe: false, peer: peerOf(pubkey), kind: "contact" });
+  };
 
   /** Settled now? An invoice settles settleAfterMs after it was made (0: only by hand). */
   const settled = (i: Inv, now = Date.now()) => {
@@ -160,6 +229,12 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           inv.settledAt ??= Date.now();
           return reply(res, 200, { settled: x });
         }
+        const dm = [...dms.values()].find((r) => r.clientId === x && r.status === "pending");
+        if (dm) {
+          dm.status = "sent";
+          touch(dm);
+          return reply(res, 200, { settled: x, status: dm.status });
+        }
         const sent = invites.get(x);
         if (sent) {
           if (sent.status === "sending") sent.status = "ready";
@@ -178,7 +253,54 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         const i = invites.get(useOne[1]!);
         if (!i || i.status !== "ready") return reply(res, 409, { error: "no ready invite with that code", code: "not_ready" });
         i.status = "used";
-        return reply(res, 200, { code: i.code, status: i.status });
+        // The new account's key exchange: it is a contact now.
+        const b = await bodyOf(req);
+        const pubkey = typeof b["pubkey"] === "string" ? b["pubkey"] : someKey();
+        contact(pubkey, typeof b["alias"] === "string" ? b["alias"] : null);
+        return reply(res, 200, { code: i.code, status: i.status, pubkey });
+      }
+      // A worker, played (plans/support-chat.md §7's records).
+      if (req.method === "POST" && (path === "/worker-dm" || path === "/worker-contact")) {
+        const b = await bodyOf(req);
+        const pubkey = typeof b["pubkey"] === "string" ? b["pubkey"] : someKey();
+        if (!/^0[23][0-9a-f]{64}$/.test(pubkey)) return reply(res, 400, { error: "pubkey is 66 hex characters", code: "bad_request" });
+        contact(pubkey, typeof b["alias"] === "string" ? b["alias"] : null);
+        if (path === "/worker-contact") return reply(res, 200, { pubkey });
+        const id = randomUUID();
+        const file = b["file"] as { name?: string; type?: string; base64?: string; size?: number } | undefined;
+        const sats = typeof b["sats"] === "number" ? b["sats"] : undefined;
+        if (file) {
+          const bytes = Buffer.from(file.base64 ?? "", "base64");
+          dmFiles.set(id, { bytes, size: file.size ?? bytes.byteLength });
+        }
+        const r = put({
+          id,
+          time: new Date().toISOString(),
+          fromMe: false,
+          peer: peerOf(pubkey),
+          kind: file ? "file" : sats ? "payment" : "message",
+          ...(typeof b["text"] === "string" ? { text: b["text"] } : {}),
+          ...(typeof b["replyTo"] === "string" ? { replyTo: b["replyTo"] } : {}),
+          ...(sats ? { sats } : {}),
+          ...(file ? { fileName: file.name ?? "file", mediaType: file.type ?? "application/octet-stream" } : {}),
+        });
+        log(`dm in ${r.kind} from ${pubkey.slice(0, 10)}…`);
+        return reply(res, 200, { id, pubkey, seq: r.seq });
+      }
+      const deleteOne = /^\/worker-delete\/([^/]+)$/.exec(path);
+      if (req.method === "POST" && deleteOne) {
+        const r = dms.get(decodeURIComponent(deleteOne[1]!));
+        if (!r || r.fromMe) return reply(res, 404, { error: "no worker's message with that id", code: "not_found" });
+        r.deleted = true;
+        delete r.text;
+        touch(r);
+        return reply(res, 200, { id: r.id, deleted: true });
+      }
+      if (req.method === "POST" && path === "/next-dm") {
+        const st = (await bodyOf(req))["state"];
+        if (st !== "failed" && st !== "pending") return reply(res, 400, { error: "state is failed or pending", code: "bad_request" });
+        nextDm = st;
+        return reply(res, 200, { next: st });
       }
       if (req.method === "POST" && path === "/next-payout") {
         const s = (await bodyOf(req))["state"];
@@ -189,6 +311,49 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
 
       const auth = req.headers.authorization;
       const pay = auth === `Bearer ${payToken}`;
+      const messaging = (req.method === "GET" && (path === "/dms" || /^\/dm\/[^/]+\/file$/.test(path))) || (req.method === "POST" && path === "/dm");
+      if (auth === `Bearer ${messageToken}`) {
+        if (!messaging) return reply(res, 403, { error: "the message token opens the DM routes alone", code: "forbidden" });
+        if (req.method === "GET" && path === "/dms") {
+          const after = Number(url.searchParams.get("after") ?? 0);
+          const limit = Math.min(Math.max(1, Number(url.searchParams.get("limit") ?? 100) || 100), 500);
+          const page = [...dms.values()].filter((r) => r.seq > after).sort((a, b) => a.seq - b.seq).slice(0, limit);
+          return reply(res, 200, { dms: page });
+        }
+        const fileOne = /^\/dm\/([^/]+)\/file$/.exec(path);
+        if (fileOne) {
+          const id = decodeURIComponent(fileOne[1]!);
+          const r = dms.get(id);
+          const f = dmFiles.get(id);
+          if (!r || !f || r.kind !== "file") return reply(res, 404, { error: `no file ${id}`, code: "not_found" });
+          if (f.size > DM_FILE_MAX_BYTES) return reply(res, 413, { error: `the file is ${f.size} bytes, over 25 MB`, code: "too_large" });
+          res.writeHead(200, { "content-type": r.mediaType ?? "application/octet-stream", "content-length": String(f.bytes.byteLength) });
+          return res.end(f.bytes);
+        }
+        // POST /dm
+        const b = await bodyOf(req);
+        const id = b["id"];
+        const to = b["to"];
+        if (typeof id !== "string" || !hex64.test(id)) return reply(res, 400, { error: "id is 64 lowercase hex characters", code: "bad_request" });
+        if (typeof b["text"] !== "string" || !b["text"]) return reply(res, 400, { error: "text is required", code: "bad_request" });
+        if (typeof to !== "string" || !contacts.has(to)) return reply(res, 409, { error: "to is not a contact of this account", code: "not_a_contact" });
+        const had = [...dms.values()].find((r) => r.clientId === id);
+        if (had && had.status !== "failed") return reply(res, 200, { id, status: had.status });
+        const outcome = nextDm;
+        nextDm = undefined;
+        const status = outcome === "failed" ? "failed" : outcome === "pending" ? "pending" : "sent";
+        const fields = { status, ...(status === "failed" ? { error: "the LSP did not take it" } : {}) } as const;
+        if (had) {
+          Object.assign(had, fields);
+          if (status !== "failed") delete had.error;
+          touch(had);
+        } else {
+          put({ id: randomUUID(), clientId: id, time: new Date().toISOString(), fromMe: true, peer: peerOf(to), kind: "message", text: b["text"], ...(typeof b["reply"] === "string" ? { replyTo: b["reply"] } : {}), ...fields });
+        }
+        log(`dm out ${status} to ${to.slice(0, 10)}…`);
+        return reply(res, 200, { id, ...fields });
+      }
+      if (messaging) return reply(res, auth === `Bearer ${token}` || pay ? 403 : 401, { error: "the DM routes take the message token", code: auth === `Bearer ${token}` || pay ? "forbidden" : "unauthorized" });
       if (!pay && auth !== `Bearer ${token}`) return reply(res, 401, { error: "unauthorized", code: "unauthorized" });
       const paying =
         (req.method === "POST" && (path === "/pay" || path === "/keysend" || path === "/invite" || path.startsWith("/invite/"))) ||
@@ -316,6 +481,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     ...(num("PORT") !== undefined ? { port: num("PORT")! } : {}),
     ...(env("TOKEN") ? { token: env("TOKEN")! } : {}),
     ...(env("PAY_TOKEN") ? { payToken: env("PAY_TOKEN")! } : {}),
+    ...(env("MESSAGE_TOKEN") ? { messageToken: env("MESSAGE_TOKEN")! } : {}),
     ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
     ...(num("USD_PER_BTC") !== undefined ? { usdPerBtc: num("USD_PER_BTC")! } : {}),
     ...(num("START_SATS") !== undefined ? { startSats: num("START_SATS")! } : {}),

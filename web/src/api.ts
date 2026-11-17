@@ -3293,6 +3293,8 @@ export interface WalletInfo {
   provider: "sphinx" | "nwc" | null;
   receive: boolean;
   pay: boolean;
+  /** A Sphinx daemon's message token is on file: Support answers (plans/support-chat.md §8). */
+  messages?: true;
   url?: string;
   relays?: string[];
   from?: "env" | "api";
