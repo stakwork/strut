@@ -4808,6 +4808,34 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   align-items: center;
   justify-content: center;
 }
+/* A visitor's page opened from another app of the public view (`&back=`,
+   components/SoloApp.tsx): a slim Back bar over the app, the app under it. */
+.app-solo.has-back {
+  flex-direction: column;
+}
+.app-solo.has-back > .app-host {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.app-solo-back {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-4);
+  padding-top: max(var(--sp-2), env(safe-area-inset-top));
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
 
 /* An app's page with a side panel beside it (components/AppWithPanel.tsx,
    plans/jamie-app.md §4): what the app hands its host with `ui/open-link`

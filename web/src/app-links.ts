@@ -81,6 +81,25 @@ export function panelTarget(params: Record<string, string>, onScreen: { name: st
   return { app, ...(params["input"] ? { input: params["input"] } : {}) };
 }
 
+/** Where a link to ANOTHER app of this server's public view goes from a
+ *  visitor's page alone (./components/SoloApp): this page's own address with
+ *  that app and its `input` in place of this one's — `solo`, `public` and
+ *  `theme` kept — and `back=<this app>` (none with `back: false`). Null for
+ *  a link that names no plain app of this server: a peer's (`@peer/name`), a
+ *  pinned version, or this app itself. Pure: `href` is the page's own. */
+export function publicAppHop(params: Record<string, string>, current: string, href: string, o: { back?: boolean } = {}): string | null {
+  const key = params["app"];
+  const to = key ? parseAppKey(key) : null;
+  if (!to || to.peer || to.version || to.name === current) return null;
+  const url = new URL(href);
+  url.searchParams.set("app", to.name);
+  if (params["input"]) url.searchParams.set("input", params["input"]);
+  else url.searchParams.delete("input");
+  if (o.back === false) url.searchParams.delete("back");
+  else url.searchParams.set("back", current);
+  return url.href;
+}
+
 /** Whether a link's `app` key names the app on screen — its name and peer,
  *  and its version when the key pins one. */
 export function namesApp(key: string | undefined, app: { name: string; version: string; peer?: string }): boolean {

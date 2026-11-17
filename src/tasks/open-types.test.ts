@@ -103,7 +103,7 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.equal(saved.open, true, "open unless staff say otherwise");
       await tasks().setType("elsewhere", { app: "other", answer: MATCH }, "staff");
       // Seen, not yet in: told what they may take, nothing recorded.
-      assert.deepEqual((await tasks().me("ann", { app: "workers" })).types, [{ name: "pets", app: "workers", payMsat: 0, qualifying: false }]);
+      assert.deepEqual((await tasks().me("ann", { app: "workers" })).types, [{ name: "pets", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 0 }]);
       assert.deepEqual([(await tasks().worker("ann"))!.status, (await tasks().worker("ann"))!.grants], ["new", []]);
       assert.equal(svc.isActiveWorker("ann"), false);
 
@@ -134,7 +134,7 @@ for (const impl of ["SQLite", "memory"] as const) {
       await ready("pets", 3);
       await tasks().setType("pets", { app: "workers", answer: MATCH, open: true, paySats: 5, tests: RULE }, "staff");
       await real("pets");
-      assert.deepEqual((await tasks().me("ann", { app: "workers" })).types, [{ name: "pets", app: "workers", payMsat: 5000, qualifying: true }], "told they qualify first, with no score");
+      assert.deepEqual((await tasks().me("ann", { app: "workers" })).types, [{ name: "pets", app: "workers", payMsat: 5000, qualifying: true, standing: false, waiting: 1 }], "told they qualify first, with no score");
 
       // Ann passes: tests only, then nothing until graded, then the real task.
       const first = await take("ann", { app: "workers" });

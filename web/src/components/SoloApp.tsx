@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
-import { appToolInput, namesApp } from "../app-links";
+import { appToolInput, namesApp, publicAppHop } from "../app-links";
 import { replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
@@ -34,6 +34,13 @@ import { AppWithPanel } from "./AppWithPanel";
 // implied). A `from` this host does not open says so, and never falls back
 // to an app of the same name here.
 //
+// On a visitor's page, a link to ANOTHER app of this server's public view
+// opens that app here, in place (`publicAppHop`): the same page, `solo` and
+// `public` kept, the address the browser's — or Peel's web view's — history
+// goes Back through, and `&back=<the app it came from>`, for which this page
+// draws a Back bar over the app. A worker's dashboard (strut/worker) lists
+// every app's task types and opens a type of another app this way.
+//
 // `&theme=light` (or `dark`): the theme the app is handed, for a host whose
 // own page is light; strut's UI is dark, the default. The page around it
 // matches while the app loads; what strut draws in the side panel's bar and
@@ -51,13 +58,21 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     ? visitorApp ? { name: visitorApp.name, version: visitorApp.version, title: visitorApp.title, ...(from ? { from } : {}) } : null
     : listed.app;
   const [input, setInput] = useState(props.input ?? null);
+  /** The app this page was opened from (`&back=`), on a visitor's page: Back returns there. */
+  const [back] = useState(() => (visitor && !from ? new URLSearchParams(location.search).get("back") : null));
   /** A link to this same app (the kit's `appLink`): its input, in place,
    *  with the address bar following (replaced, as the full UI does) — so a
    *  host that reads it has the link to what is on screen. A file or
    *  another app never gets here (the panel took it); anything else opens
    *  in a new tab. */
   const onNavigate = (params: Record<string, string>) => {
-    if (!shown || !namesApp(params["app"], shown)) return false;
+    if (!shown) return false;
+    if (!namesApp(params["app"], shown)) {
+      const hop = visitor && !from ? publicAppHop(params, shown.name, location.href) : null;
+      if (!hop) return false;
+      location.assign(hop);
+      return;
+    }
     const next = params["input"] ?? null;
     const url = new URL(location.href);
     if (next) url.searchParams.set("input", next);
@@ -90,8 +105,17 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   useEffect(() => {
     if (missing) reportReady();
   }, [missing]);
+  const goBack = () => {
+    if (history.length > 1) history.back();
+    else if (back) location.replace(publicAppHop({ app: back }, shown?.name ?? props.app, location.href, { back: false }) ?? location.href);
+  };
   return (
-    <div class="app-solo">
+    <div class={`app-solo${back && shown ? " has-back" : ""}`}>
+      {back && shown && (
+        <button type="button" class="app-solo-back" onClick={goBack}>
+          <span aria-hidden="true">←</span> Back
+        </button>
+      )}
       {shown
         ? <AppWithPanel
             app={shown}

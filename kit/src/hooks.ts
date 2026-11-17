@@ -847,7 +847,8 @@ export function useGraphChanges(types: readonly string[] | undefined, opts: UseG
 // worker the app's page shows takes it, answers it, and the run goes on. The
 // worker is always the page's viewer — the steps read it from the session,
 // never from the page. Grant `task/next`, `task/submit`, `task/skip`,
-// `task/file` and `task/me` in app.yaml's `grants.steps`.
+// `task/file` and `task/me` in app.yaml's `grants.steps` (`task/history` for
+// a list of what they did, `task/withdraw` to take their earnings out).
 
 /** The worker's steps. */
 export const TASK_STEPS = {
@@ -856,11 +857,14 @@ export const TASK_STEPS = {
   skip: "task/skip",
   file: "task/file",
   me: "task/me",
+  history: "task/history",
   withdraw: "task/withdraw",
 } as const;
 
-/** `useWorker()`'s query: what `useTask().submit` reads again. */
+/** `useWorker()`'s query: what an answer or a skip in `useTask` reads again. */
 const WORKER_QUERY_KEY = ["strut", "task", "me"] as const;
+/** `useTaskHistory()`'s: read again with it. */
+const HISTORY_QUERY_KEY = ["strut", "task", "history"] as const;
 
 /** How long `useTask` holds one `task/next`: the server's most. */
 export const TASK_WAIT_S = 25;
@@ -944,16 +948,50 @@ export interface WorkerBalance {
   nextReleaseAt?: number;
 }
 
+/** A task type on the worker's menu (`task/me`). */
+export interface WorkerType {
+  name: string;
+  app: string;
+  /** What an answer earns now, msat; 0 when unpaid. */
+  payMsat: number;
+  /** Every task they get of it is a test until they qualify, so tasks
+   *  arrive at once. A flag, never a score. */
+  qualifying: boolean;
+  /** There is work of it whenever they ask: their ask makes the task.
+   *  Absent from a server before the dashboard. */
+  standing?: boolean;
+  /** How many of its tasks wait that they could take. Absent from a server
+   *  before the dashboard. */
+  waiting?: number;
+}
+
+/** One of the viewer's tasks here (`task/history`), newest first. */
+export interface WorkerHistoryItem {
+  lease: string;
+  type: string;
+  /** What the task asked, as they saw it (`show.ask`, else `show.title`). */
+  ask?: string;
+  /** When they took it, and when it left their hand; epoch ms. */
+  taken: number;
+  closed?: number;
+  /** `open`: in hand; `submitted`: answered; `skipped`; `expired`: it ran
+   *  out, or was closed. */
+  status: "open" | "submitted" | "skipped" | "expired";
+  /** A paid answer: what it earned, when its hold ends (then it can be
+   *  withdrawn), and whether it was taken back. */
+  earned?: { msat: number; releases: number; takenBack?: true };
+}
+
 /** Who the viewer is as a worker here (`task/me`). */
 export interface WorkerInfo {
   actor: string;
   /** `new`: not granted anything yet; only `active` takes tasks. */
   status: "new" | "active" | "suspended" | "banned";
-  /** The task types they hold that this app draws: the app's menu, each
-   *  with what an answer earns now, msat (0: unpaid), and whether they are
-   *  qualifying for it — every task they get of it is a test until they
-   *  qualify, so tasks arrive at once. A flag, never a score. */
-  types: Array<{ name: string; app: string; payMsat: number; qualifying: boolean }>;
+  /** The task types they hold that this app draws: the app's menu. */
+  types: WorkerType[];
+  /** The task in their hand now: `useTask` hands it back before any other,
+   *  and asking for another type is refused until it is answered or skipped. */
+  holding?: { type: string; expires: number };
   /** What they are owed here: zeros with nothing earned. */
   balance: WorkerBalance;
   /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
@@ -1086,6 +1124,11 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
         await client.run(step, { lease: held.lease, ...config });
         setError(null);
         drop();
+        // An answer earned and a skip let one go: the balance and the
+        // waiting counts `useWorker()` shows moved, and `useTaskHistory()`
+        // has one more.
+        void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
+        void qc.invalidateQueries({ queryKey: HISTORY_QUERY_KEY });
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         setError(err);
@@ -1095,30 +1138,44 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
         throw err;
       }
     },
-    [client, drop],
+    [client, drop, qc],
   );
   const submit = useCallback(
     async (answer: unknown, files?: readonly File[]) => {
       const attachments = files?.length ? await Promise.all(files.map(fileData)) : undefined;
       await send(TASK_STEPS.submit, compact({ answer, attachments }));
-      // The answer earned: the balance `useWorker()` shows moved.
-      void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
     },
-    [send, qc],
+    [send],
   );
   const skip = useCallback((reason?: string) => send(TASK_STEPS.skip, compact({ reason })), [send]);
   return { task, submit, skip, status, error };
 }
 
 /** Who the page's viewer is as a worker here (`task/me`): their status and
- *  the task types they hold that this app draws. The first call writes a
+ *  the task types they hold that this app draws — with `all`, of every app
+ *  they can open here, each naming its `app` (`task/next` still hands out
+ *  only this app's: open the type's app for the rest). The first call writes a
  *  viewer the server has not seen as a `new` worker, for an admin to grant. */
-export function useWorker(opts: { enabled?: boolean } = {}): UseQueryResult<WorkerInfo> {
+export function useWorker(opts: { enabled?: boolean; all?: boolean } = {}): UseQueryResult<WorkerInfo> {
   const client = useStrutClient();
   return useQuery({
-    queryKey: WORKER_QUERY_KEY,
-    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, {}),
+    queryKey: opts.all ? [...WORKER_QUERY_KEY, "all"] : WORKER_QUERY_KEY,
+    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, opts.all ? { all: true } : {}),
     enabled: opts.enabled ?? true,
+  });
+}
+
+/** The viewer's own tasks here, newest first, at most 50 (`task/history`;
+ *  with `all`, of every app they can open here, each naming its type):
+ *  what they did, how each ended, and what each answer earned. Grant
+ *  `task/history`. An answer or a skip in `useTask` reads it again. */
+export function useTaskHistory(opts: { enabled?: boolean; all?: boolean } = {}): UseQueryResult<{ items: WorkerHistoryItem[] }> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: opts.all ? [...HISTORY_QUERY_KEY, "all"] : HISTORY_QUERY_KEY,
+    queryFn: () => client.run<{ items: WorkerHistoryItem[] }>(TASK_STEPS.history, opts.all ? { all: true } : {}),
+    enabled: opts.enabled ?? true,
+    retry: false,
   });
 }
 

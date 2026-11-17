@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Briefcase, Camera, Check, Clock, ImagePlus, Loader2, LogIn, Plus, RotateCcw, X, Zap } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronRight, Clock, ImagePlus, Loader2, LogIn, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  fieldsOf, formProblem, useAccountWidget, useCamera, useTask, useTaskFileUrl, useVisitor, type FormSchema, type UseTask, type WorkerTask as Task,
+  appLink, fieldsOf, formProblem, useAccountWidget, useApp, useCamera, useHost, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  type FormSchema, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -14,7 +15,9 @@ import { errorText } from "../lib/format";
 // with a view of its own composes `WorkerTask`, `TaskPhotos` and `TaskForm`.
 // The look is a phone's: a type that takes photos is camera first, any other
 // form first, and every state between tasks (signed out, waiting, sent with
-// what it earned, refused) a whole screen of its own.
+// what it earned, refused) a whole screen of its own. Signed in, the worker
+// lands on their dashboard (`WorkHome`): the work they can do, each kind with
+// what it pays and what waits, what they earned, and what they did.
 
 /** msat as a worker reads it: `1,234 sats` (the rest of a sat dropped). */
 export function satsText(msat: number): string {
@@ -326,7 +329,7 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
 }
 
 export interface WorkerPageProps {
-  /** One task type alone; left out, any type this app draws. */
+  /** One task type alone on the dashboard; left out, every type this app draws. */
   type?: string;
   /** The app's name, in the header. */
   title?: string;
@@ -336,6 +339,11 @@ export interface WorkerPageProps {
   icon?: ReactNode;
   /** What the work is, shown before sign-in (never once signed in: it asks them to sign in). */
   intro?: ReactNode;
+  /** The dashboard lists the task types of EVERY app the worker can open
+   *  here (`task/me { all }`), not this app's alone: a type another app
+   *  draws opens that app on it (`appLink(app, { type })`), whose Back
+   *  returns here. strut/worker's, the server's one work link. */
+  everyApp?: boolean;
   className?: string;
 }
 
@@ -349,25 +357,71 @@ interface Sent {
 
 /**
  * A worker app's whole page, phone first: a header with the app's mark, then
- * one screen at a time — sign in; the task in hand, drawn by `WorkerTask`
- * with its photos and sent with them; what the last answer earned (held
- * until it clears), with the answer as given and Next task; and while there
- * is no task, that it is looking, or why the viewer may take none here. The
- * app grants `task/next`, `task/submit` and `task/skip` (`task/file` to show
- * a task's files; `task/me` and `task/withdraw` for the account widget's
- * balance and Withdraw) and lists `camera` in `permissions:` for Take a photo.
+ * one screen at a time — sign in; the DASHBOARD (`WorkHome`: the work they
+ * can do, what they earned, what they did), where choosing a kind of work
+ * starts it; the task in hand, drawn by `WorkerTask` with its photos and sent
+ * with them; what the last answer earned (held until it clears), with the
+ * answer as given and Next task; and while there is no task, that it is
+ * looking, or why the viewer may take none here. Back returns to the
+ * dashboard; a task left in hand waits there as Continue. The app grants
+ * `task/next`, `task/submit`, `task/skip` and `task/me` (`task/file` to show
+ * a task's files; `task/history` for what they did; `task/withdraw` for the
+ * account widget's Withdraw) and lists `camera` in `permissions:` for Take a
+ * photo.
  */
-export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get paid", icon, intro, className }: WorkerPageProps) {
+export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get paid", icon, intro, everyApp = false, className }: WorkerPageProps) {
   const visitor = useVisitor();
   const account = useAccountWidget();
   const signedIn = !!visitor.actor;
-  const work = useTask(type, { enabled: signedIn });
+  const here = useApp()?.name;
+  const { openLink } = useHost();
+  /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
+  const [working, setWorking] = useState<string | null | undefined>(undefined);
+  // Opened on one kind of work (`appLink(app, { type })`, as another app's
+  // dashboard opens it): straight to it, once.
+  const opened = useToolInput<{ type?: string }>()?.type;
+  const openedOnce = useRef(false);
+  useEffect(() => {
+    if (!signedIn || !opened || openedOnce.current) return;
+    openedOnce.current = true;
+    setWorking(opened);
+  }, [signedIn, opened]);
+  /** From the moment an answer goes until Next task: no next task is
+   *  leased meanwhile, so a worker who stops here holds nothing. */
+  const [paused, setPaused] = useState(false);
+  const work = useTask(working ?? type, { enabled: signedIn && working !== undefined && !paused });
+  const me = useWorker({ enabled: signedIn, all: everyApp });
+  /** Work on a kind: here when this app draws it, else in the app that does. */
+  const start = (kind: string | null) => {
+    const app = kind === null ? undefined : me.data?.types.find((t) => t.name === kind)?.app;
+    if (app && here && app !== here) void openLink(appLink(app, { type: kind }));
+    else setWorking(kind);
+  };
   const [sent, setSent] = useState<Sent | null>(null);
   const submit: UseTask["submit"] = async (answer, files) => {
     const held = work.task;
-    await work.submit(answer, files);
+    setPaused(true);
+    try {
+      await work.submit(answer, files);
+    } catch (err) {
+      setPaused(false);
+      throw err;
+    }
     setSent({ msat: held?.payMsat ?? 0, answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
   };
+  const next = () => {
+    setSent(null);
+    setPaused(false);
+  };
+  const home = () => {
+    setSent(null);
+    setPaused(false);
+    setWorking(undefined);
+  };
+  /** Whether there is more of what they are working on: a standing type, or one with tasks waiting. */
+  const more = (me.data?.types ?? []).some(
+    (t) => (working == null || t.name === working) && (type === undefined || t.name === type) && (!here || t.app === here) && (t.standing || (t.waiting ?? 0) > 0),
+  );
   const mark = icon ?? <Briefcase className="size-4" />;
 
   let body: ReactNode;
@@ -388,8 +442,10 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
         }
       />
     );
+  } else if (working === undefined) {
+    body = <WorkHome only={type} all={everyApp} onStart={start} />;
   } else if (sent) {
-    body = <SentScreen sent={sent} next={!!work.task} onNext={() => setSent(null)} />;
+    body = <SentScreen sent={sent} next={more} onNext={next} onHome={home} />;
   } else if (work.task) {
     body = <WorkerTask key={work.task.lease} task={work.task} submit={submit} skip={work.skip} />;
   } else if (work.status === "inactive") {
@@ -403,6 +459,7 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
             <span className="mt-3 block text-[13px]">This page checks again on its own.</span>
           </>
         }
+        bar={<BackBar onBack={home} />}
       />
     );
   } else if (work.status === "error") {
@@ -419,6 +476,7 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
             </span>
           </>
         }
+        bar={<BackBar onBack={home} />}
       />
     );
   } else {
@@ -427,21 +485,258 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
         icon={<Loader2 className="size-10 animate-spin [animation-duration:2.4s]" />}
         heading="Looking for work…"
         text="No tasks right now. The next one shows up here."
+        bar={<BackBar onBack={home} />}
       />
     );
   }
 
+  const back = signedIn && working !== undefined && !sent;
   return (
     <div className={cn("mx-auto flex min-h-dvh w-full max-w-xl flex-col bg-background text-foreground", className)} data-testid="worker-page">
       <header className={cn("sticky top-0 z-20 flex items-center gap-2.5 bg-background/90 px-4 pt-3.5 pb-3 backdrop-blur", account.available && "pr-44")}>
-        <div className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-amber-400 text-amber-950 [&_svg]:size-4">{mark}</div>
+        {back ? (
+          <button type="button" aria-label="Back to your work" onClick={home} className="grid size-8 shrink-0 place-items-center rounded-[10px] border bg-card text-foreground [&_svg]:size-4">
+            <ArrowLeft />
+          </button>
+        ) : (
+          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-amber-400 text-amber-950 [&_svg]:size-4">{mark}</div>
+        )}
         <div className="min-w-0">
-          <div className="truncate text-[15px] leading-tight font-semibold">{title}</div>
-          {subtitle && <div className="truncate text-xs text-muted-foreground">{subtitle}</div>}
+          <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working) : title}</div>
+          {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
       <main className="flex flex-1 flex-col px-4 pt-1">{body}</main>
     </div>
+  );
+}
+
+/** A type's name as a worker reads it: its last segment, words spaced and
+ *  capitalised — `shops/photo-check` → "Photo check". */
+export function typeLabel(name: string): string {
+  return labelOf(name.split("/").pop() || name);
+}
+
+/** How long ago, in a few words: "just now", "5 min ago", "3 h ago", or the day. */
+function ago(ms: number, now = Date.now()): string {
+  const d = Math.max(0, now - ms);
+  if (d < 60_000) return "just now";
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)} min ago`;
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} h ago`;
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** When a hold ends, in a few words: "in 3 h", "Nov 20". */
+function until(ms: number, now = Date.now()): string {
+  const d = ms - now;
+  if (d < 3_600_000) return `in ${Math.max(1, Math.ceil(d / 60_000))} min`;
+  if (d < 86_400_000) return `in ${Math.ceil(d / 3_600_000)} h`;
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** How often the dashboard reads what waits again, while it is shown. */
+const HOME_POLL_MS = 15_000;
+
+/**
+ * The worker's DASHBOARD (plans/human-steps.md §5): the task in their hand
+ * (Continue), the kinds of work they can do here — each with what it pays
+ * and whether there is work of it now (any time, for a standing type; how
+ * many wait, for tasks a workflow made) — what they earned here, and their
+ * own tasks, newest first, with how each ended and what it earned. Choosing a
+ * kind starts it (`onStart(type)`); Start working takes any kind this app
+ * draws (`null`). With `all`, every app's kinds the worker can open here; one
+ * another app draws says so, and `onStart` is for the page to open that app.
+ */
+export function WorkHome({ only, all = false, onStart }: { only?: string; all?: boolean; onStart: (type: string | null) => void }) {
+  const here = useApp()?.name;
+  const me = useWorker({ all });
+  const history = useTaskHistory({ all });
+  const { refetch } = me;
+  const { refetch: reread } = history;
+  // Read both again on coming back (a task just taken is in neither), then
+  // what waits every little while.
+  useEffect(() => {
+    void refetch();
+    void reread();
+    const timer = setInterval(() => void refetch(), HOME_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refetch, reread]);
+
+  if (!me.data) {
+    return me.error ? (
+      <Screen tone="error" icon={<AlertTriangle className="size-10" />} heading="Can't reach the work" text={reason(me.error) || errorText(me.error)} />
+    ) : (
+      <Screen icon={<Loader2 className="size-10 animate-spin" />} heading="One moment…" />
+    );
+  }
+  const info: WorkerInfo = me.data;
+  const types = info.types.filter((t) => only === undefined || t.name === only);
+  if (info.status === "suspended" || info.status === "banned") {
+    return <Screen icon={<Clock className="size-10" />} heading="Your work here is paused" text="An admin has paused your account here. What you earned is still yours." />;
+  }
+  const holding = info.holding && types.some((t) => t.name === info.holding!.type) ? info.holding : undefined;
+  const items = history.data?.items.filter((i) => only === undefined || i.type === only) ?? [];
+  /** A kind another app draws: it opens there. */
+  const elsewhere = (t: WorkerType) => !!here && t.app !== here;
+  const mine = types.filter((t) => !elsewhere(t));
+  const any = mine.some((t) => t.standing || (t.waiting ?? 0) > 0);
+
+  return (
+    <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
+      {holding && (
+        <button
+          type="button"
+          onClick={() => onStart(holding.type)}
+          className="flex items-center gap-3 rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4 text-left"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">In your hand</div>
+            <div className="truncate text-base font-semibold">{typeLabel(holding.type)}</div>
+          </div>
+          <span className="inline-flex items-center gap-1 text-sm font-semibold">
+            Continue <ChevronRight className="size-4" />
+          </span>
+        </button>
+      )}
+
+      <section className="flex flex-col gap-2.5">
+        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Work you can do</h2>
+        {types.length === 0 ? (
+          <p className="rounded-2xl border bg-muted/40 px-4 py-5 text-center text-sm text-muted-foreground">
+            There's no work for you here yet. An admin decides who does which work; this page checks again on its own.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {types.map((t) => (
+              <li key={t.name}>
+                <TypeRow type={t} onStart={() => onStart(t.name)} blocked={!!holding && holding.type !== t.name} {...(elsewhere(t) ? { app: t.app } : {})} />
+              </li>
+            ))}
+          </ul>
+        )}
+        {mine.length > 1 && !holding && any && (
+          <Button className={cn("mt-1 h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={() => onStart(only ?? null)}>
+            Start working <span aria-hidden>→</span>
+          </Button>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-2.5">
+        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Earned here</h2>
+        <div className="grid grid-cols-2 gap-2">
+          <Stat label="Ready to withdraw" msat={info.balance.withdrawableMsat} />
+          <Stat
+            label="Held"
+            msat={info.balance.heldMsat}
+            {...(info.balance.nextReleaseAt ? { note: `next clears ${until(info.balance.nextReleaseAt)}` } : {})}
+          />
+        </div>
+      </section>
+
+      {!history.error && (
+        <section className="flex flex-col gap-2.5">
+          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Your work</h2>
+          {items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing yet. Tasks you do show up here.</p>
+          ) : (
+            <ul className="flex flex-col divide-y rounded-2xl border bg-card" data-testid="work-history">
+              {items.map((i) => (
+                <HistoryRow key={i.lease} item={i} />
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** One kind of work: its name, what an answer pays, and whether there is work
+ *  of it now. `blocked` while a task of another kind is in their hand: the
+ *  server hands out no other until it is answered or skipped. */
+function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; onStart: () => void; blocked?: boolean; app?: string }) {
+  const waiting = type.waiting ?? 0;
+  const status = blocked ? "Finish the task in your hand first" : type.standing ? "Any time" : waiting > 0 ? `${waiting} waiting` : "None right now";
+  // Another app draws it: where it opens.
+  const now = app && !blocked ? `${status} · in ${typeLabel(app)}` : status;
+  const ready = !blocked && (!!type.standing || waiting > 0);
+  return (
+    <button
+      type="button"
+      onClick={onStart}
+      disabled={blocked}
+      className="flex w-full items-center gap-3 rounded-2xl border bg-card p-4 text-left shadow-sm active:bg-muted/60 disabled:opacity-55"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-base font-semibold">{typeLabel(type.name)}</div>
+        <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>
+      </div>
+      {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
+      {app ? <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+    </button>
+  );
+}
+
+function Stat({ label, msat, note }: { label: string; msat: number; note?: string }) {
+  return (
+    <div className="rounded-2xl border bg-card p-3.5">
+      <div className="text-[13px] text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums">{satsText(msat)}</div>
+      {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
+    </div>
+  );
+}
+
+/** One of their tasks: the kind, when, how it ended and what it earned. */
+function HistoryRow({ item }: { item: WorkerHistoryItem }) {
+  const e = item.earned;
+  let badge: ReactNode;
+  if (item.status === "open") badge = <Badge tone="accent">In your hand</Badge>;
+  else if (item.status === "skipped") badge = <Badge>Skipped</Badge>;
+  else if (item.status === "expired") badge = <Badge>Not finished</Badge>;
+  else if (!e) badge = <Badge tone="done">Sent</Badge>;
+  else if (e.takenBack) badge = <Badge tone="error">Not paid</Badge>;
+  else if (e.releases > Date.now()) badge = <Badge>Held · clears {until(e.releases)}</Badge>;
+  else badge = <Badge tone="done">Cleared</Badge>;
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type)}</div>
+        <div className="truncate text-xs text-muted-foreground">
+          {item.ask ? `${typeLabel(item.type)} · ` : ""}
+          {ago(item.closed ?? item.taken)}
+        </div>
+      </div>
+      <div className="flex flex-col items-end gap-1">
+        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{satsText(e.msat)}</span>}
+        {badge}
+      </div>
+    </li>
+  );
+}
+
+function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "done" | "error" }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
+        !tone && "text-muted-foreground",
+        tone === "accent" && "border-amber-500/40 bg-amber-400/15 text-amber-700 dark:text-amber-300",
+        tone === "done" && "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+        tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Back to the dashboard, at the bottom of a screen between tasks. */
+function BackBar({ onBack }: { onBack: () => void }) {
+  return (
+    <Button variant="outline" className="h-12 w-full rounded-xl text-base" onClick={onBack}>
+      <ArrowLeft /> Back to your work
+    </Button>
   );
 }
 
@@ -481,7 +776,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon:
 
 /** After an answer: sent, what it earned (held until it clears), the answer
  *  as given, and Next task. */
-function SentScreen({ sent, next, onNext }: { sent: Sent; next: boolean; onNext: () => void }) {
+function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean; onNext: () => void; onHome: () => void }) {
   const rows = answerRows(sent.answer, sent.schema);
   const urls = useObjectUrls(sent.photos);
   return (
@@ -491,15 +786,22 @@ function SentScreen({ sent, next, onNext }: { sent: Sent; next: boolean; onNext:
       heading="Sent. Thank you!"
       text={sent.msat > 0 ? "Earned and held for a while, then it's yours to withdraw. Your balance is in the corner." : "Your answer is in."}
       bar={
-        <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={onNext}>
-          {next ? (
-            <>
-              Next task <span aria-hidden>→</span>
-            </>
-          ) : (
-            "Done"
+        <div className="flex flex-col gap-2">
+          <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={next ? onNext : onHome}>
+            {next ? (
+              <>
+                Next task <span aria-hidden>→</span>
+              </>
+            ) : (
+              "Done"
+            )}
+          </Button>
+          {next && (
+            <Button variant="ghost" className="h-10 w-full rounded-xl text-sm text-muted-foreground" onClick={onHome}>
+              Back to your work
+            </Button>
           )}
-        </Button>
+        </div>
       }
     >
       {sent.msat > 0 && (

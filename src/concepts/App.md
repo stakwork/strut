@@ -554,12 +554,17 @@ each.
 
 Every server has a worker app already, `strut/worker`: it draws any task
 whose answer is plain fields and photos (strut/views' `WorkerPage`). A type
-that needs nothing more names it and no app is built. Build your own only
-for a view it cannot draw, and start from the same pieces:
+that needs nothing more names it and no app is built. It is also every
+worker's DASHBOARD, the one link staff share: it lists the task types of
+every app in the public view, and a type your app draws opens your app on
+it (`?input=type=<the type>`; `WorkerPage` goes straight to it, and a page
+of your own reads `useToolInput().type`). Build your own only for a view it
+cannot draw, and start from the same pieces:
 
 ```tsx
 import { WorkerPage, WorkerTask, TaskPhotos, TaskForm } from "strut/views";
-// The whole page — sign in, tasks one after another, what each earned:
+// The whole page — sign in, a dashboard of the work they can do, what they
+// earned and what they did; then tasks of the kind they choose, one after another:
 export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />;
 // Or your own around one task: what it pays and asks, its photos, its fields.
 const { task, submit, skip } = useTask("label-photo");
@@ -572,7 +577,7 @@ host's camera, or Choose one from the device, held to the type's rule);
 
 ```yaml
 grants:
-  steps: [task/next, task/submit, task/skip, task/file, task/me, task/withdraw]
+  steps: [task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]
 ```
 
 The worker is always the page's signed-in viewer: the steps read it from
@@ -582,7 +587,9 @@ one; `active` takes tasks; `suspended`, `banned`), the `types` they hold
 or may take up in this app (an open type needs no grant; each with
 `payMsat`, what an answer earns, and `qualifying` — true while every task
 of that type they get is a test they qualify on: say so on the page, since
-those arrive at once and no score is shown) and their `balance` — `{ heldMsat,
+those arrive at once and no score is shown; `standing`, work of it whenever
+they ask; `waiting`, how many of its tasks wait that they could take), the
+task in their hand (`holding`) and their `balance` — `{ heldMsat,
 withdrawableMsat, totalMsat, nextReleaseAt? }`, in msat (1,000 to a sat):
 what they earned here, an earning held for the type's hold before it can
 be withdrawn. `useTask()`
@@ -591,8 +598,11 @@ hidden) and hands back `task` — `{ lease, type, show, files, expires,
 answer, payMsat, attachments? }`, `type` saying which view to draw, `show` what the
 workflow put there, `payMsat` what this answer earns, fixed when the task
 was taken — then `submit(answer)` (it must fit the type's `answer` schema)
-and `skip()` let it go and the next is asked for; `submit` reads
-`useWorker()` again, so a balance on the page moves as the answer goes in.
+and `skip()` let it go and the next is asked for; both read `useWorker()`
+and `useTaskHistory()` again, so a balance on the page moves as the answer
+goes in. `useTaskHistory()` (grant `task/history`) is what they did here,
+newest first: each task's `ask`, how it ended, what it earned and when it
+clears.
 Pay is the task type's, an admin's: no step sets it. `useTask("pet-match")` asks
 for one type alone. `useTaskFileUrl(task, path)` is one of `task.files`
 as a `blob:` URL for an `<img>`; nothing off that list opens. A type whose

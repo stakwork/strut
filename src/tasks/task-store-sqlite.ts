@@ -245,11 +245,14 @@ export function taskSchema(db: TaskDb): void {
  *  ?3 among the types ?4: shared by `take` and `peek`. A task is takeable
  *  while its live and submitted leases are fewer than the answers it wants
  *  (`copies`, §7.6): one copy, while nobody holds it. */
-const TAKEABLE = `t.status = 'open' and t.due > ?3 and ty.enabled = 1 and t.test is null and t.standing is null
+/** A task `take` could hand worker ?2 at ?3, of the types in ?4, were they
+ *  holding nothing: what the dashboard counts (`waitingFor`). */
+const OPEN_TO = `t.status = 'open' and t.due > ?3 and ty.enabled = 1 and t.test is null and t.standing is null
             and t.type in (select value from json_each(?4))
             and not exists (select 1 from leases l where l.task = t.id and l.worker = ?2)
             and (select count(*) from leases l where l.task = t.id
-                  and (l.status = 'submitted' or (l.status = 'open' and l.expires > ?3))) < t.copies
+                  and (l.status = 'submitted' or (l.status = 'open' and l.expires > ?3))) < t.copies`;
+const TAKEABLE = `${OPEN_TO}
             and not exists (select 1 from leases l where l.worker = ?2 and l.status = 'open' and l.expires > ?3)`;
 
 export class SqliteTaskStore implements TaskStore {
@@ -295,6 +298,7 @@ export class SqliteTaskStore implements TaskStore {
       ),
       // The same guard, read only: the type `take` would hand out (§7.2).
       peek: p(`select t.type from tasks t join task_types ty on ty.name = t.type where ${TAKEABLE} order by t.seq limit 1`),
+      waitingFor: p(`select t.type, count(*) n from tasks t join task_types ty on ty.name = t.type where ${OPEN_TO} group by t.type`),
       submit: p("update leases set status = 'submitted', closed = ?1, answer = ?4, attachments = ?5 where id = ?2 and worker = ?3 and status = 'open' and expires > ?1"),
       settle: p("update tasks set status = 'settled', settled_at = ?1, answer = ?2, by = ?3 where id = ?4 and status = 'open' and due > ?1"),
       // Copies (§7.6): the answers in the order given; a decision, each
@@ -678,6 +682,13 @@ export class SqliteTaskStore implements TaskStore {
       const changed = this.s.take.run(o.id, o.worker, o.now, JSON.stringify(o.types)).changes;
       return Number(changed) === 1 ? leaseOf(this.s.lease.get(o.id) as Row) : undefined;
     });
+  }
+
+  async waitingFor(o: { worker: string; types: string[]; now: number }): Promise<Record<string, number>> {
+    if (!o.types.length) return {};
+    const out: Record<string, number> = {};
+    for (const r of this.s.waitingFor.all(null, o.worker, o.now, JSON.stringify(o.types)) as Row[]) out[r.type as string] = Number(r.n);
+    return out;
   }
 
   async settle(o: Parameters<TaskStore["settle"]>[0]): Promise<SettleResult | undefined> {
