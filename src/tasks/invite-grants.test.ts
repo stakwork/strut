@@ -87,6 +87,15 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.deepEqual(await held("bo"), ["calls:invite:c2", "photos:open", "visits:invite:c2"]);
     });
 
+    it("on a dashboard across apps (task/me { all }), the invite still gives its own app's types, named by inviteApp", async () => {
+      const me = await tasks().me("cy", { apps: ["workers", "other"], invite: token("c3"), inviteApp: "workers" });
+      assert.deepEqual(await held("cy"), ["calls:invite:c3", "visits:invite:c3"], "the invite's app's, never another app's");
+      assert.deepEqual(me.types.map((t) => `${t.app}:${t.name}`).sort(), ["workers:calls", "workers:photos", "workers:visits"]);
+      // Without the app it opened, a token names no app here: nothing is given.
+      await tasks().me("di", { apps: ["workers", "other"], invite: token("c2") });
+      assert.deepEqual(await held("di"), []);
+    });
+
     it("one worker per invite: a second who opens the same link is given nothing", async () => {
       await tasks().me("ann", { app: "workers", invite: token("c1") });
       const cy = await tasks().me("cy", { app: "workers", invite: token("c1") });
