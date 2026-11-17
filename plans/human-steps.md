@@ -3304,6 +3304,7 @@ when the server answers for it, never an empty "coming soon".
 | 4, tests and standing (§7) | A **Tests** section in the type editor; a **Tests** tab; a **Standing** column on Workers and on a type's workers | The type's test settings, its test tasks (add, edit, retire; their answers and how they are graded), each worker's standing per type and their test history, and an automatic revoke shown in the grant history with its reason. Test tasks are read through new `staff/*` steps only: the sealed table never reaches a run or a worker |
 | 5a, earnings (§8) | A **Pay** section in the type editor; **Earned**, **Held** and **Withdrawable** columns on Workers; a line on Queue | The type's pay and hold; what each worker earned and is owed. Queue says what is owed to all workers beside what the wallet holds. The total owed also shows in `strut/earnings` beside the credit owed as service (§8, "Books") |
 | 5b, payouts | A **Payouts** tab | Withdrawals by workers (on their way, paid, failed), the caps per worker and per day, and a switch that stops every worker's withdrawals at once |
+| Support (`plans/support-chat.md`) | A **Support** tab; **Message** on a worker's page; **Send welcome** on Workers | A chat with workers over the treasury daemon's DMs: workers' pictures, photos and files, replies, the staff member's name on each reply, and a welcome message |
 
 **Built differently (#678): the places of items 4 and 5a came with PR 1.**
 §9.10 assumed item 6 would come first; items 4 and 5a were built before
@@ -3604,6 +3605,10 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
 | 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
 | Invites | **Inviting a worker** (§5.8): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite in each worker app's Share block, the invite list on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.8) |
+
+Support, a chat between workers and staff over the treasury's Sphinx DMs, is
+its own plan: `plans/support-chat.md` (ruled 2026-11-16, not started). It
+needs Invites and item 6.
 
 Items 1 and 2a can be built side by side. So can 4, 5a and 6 once 3 has
 merged.
