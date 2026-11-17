@@ -1486,7 +1486,8 @@ describe("the API key gate", () => {
     // And the Concept branches (plans/concept-evals.md items b, d): a branch
     // does not cross to another strut, nor does its compare with main. And
     // the worker invites (plans/human-steps.md §5.8), each a link to money.
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare"];
+    // And Support's conversations with workers (plans/support-chat.md §9).
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

@@ -2469,7 +2469,8 @@ seeds nothing. The page is only a face: the routes decide.
 Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
 workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
 `test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`, `review=none|ok|rejected`
-(the review queue; with `by`, that worker's). Each move goes back to
+(the review queue; with `by`, that worker's), `tab=support&worker=<actor>`
+(a worker's conversation with Support). Each move goes back to
 the host as `ui/open-link`, so its address bar follows.
 
 - **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
@@ -2503,15 +2504,32 @@ the host as `ui/open-link`, so its address bar follows.
 - **Tests**: a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
-
-A part of items 4 (tests, standing, copies), 5a (pay, earnings) and the
+- **Support** (`plans/support-chat.md`, §22 "Support"): the chat with
+  workers, shown only when `/support` answers (the wallet is a Sphinx
+  daemon with its message token). The tab carries the unread count
+  (`staff/support-unread`, every 5 s). Conversations on the left — each
+  worker's initials, name (their note's first line, else their Sphinx
+  name), last line, time and unread count, unread first, searchable, "Not
+  a worker here" for a contact who is none — and the thread on the right,
+  with the worker beside it on a wide screen (status, types, the task they
+  hold, the week's answers, what they are owed, their note, links to their
+  page, answers and payouts); on a phone the list opens a thread and Back
+  returns. The list and the open thread are read every 3 s; an open thread
+  is marked seen. A worker's photo shows inline (tap for full size), a
+  voice note plays, any other file downloads; a deleted message is
+  "Message deleted"; sats are a line; a task's id is a link to the task.
+  The composer: Enter sends, Shift+Enter adds a line, Reply quotes a
+  message above it; a reply shows a clock while it goes, ✓ once sent, and
+  ! with Retry when it failed. Every reply is from "Support". The gear
+  opens Support settings: the welcome's text alone. A worker's page has
+  **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
 verdict shows only when the server answers for it: a host's own task store
 answers no test route and no review, so the page shows no Tests tab and no
 Review section or filter.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
-(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` route — no
-other path — in process and in the admin's name (`inProcessRequest`), so a
+(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` or `/support…`
+route — no other path — in process and in the admin's name (`inProcessRequest`), so a
 grant's `by`, a type's `changedBy`, a take-back's `takenBackBy` and a
 verdict's `by` name the admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
 the `earnings/*` steps share: only strut's own page shown to an admin of
@@ -2548,6 +2566,14 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
 | `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
 | `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
+| `staff/support-list { q? }` | `GET /support` | `{ conversations }` |
+| `staff/support-unread` | `GET /support/unread` | `{ unread, conversations }` |
+| `staff/support-thread { worker, before?, limit? }` | `GET /support/:worker` | `{ conversation, messages, more }` |
+| `staff/support-send { worker, text?, replyTo?, retry? }` | `POST /support/:worker` | `{ message }` |
+| `staff/support-seen { worker }` | `POST /support/:worker/seen` | `{ conversation }` |
+| `staff/support-file { worker, id, offset? }` | `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, offset, base64, next? }` — one 3 MB piece |
+| `staff/support-settings` | `GET /support/settings` | `{ settings }` |
+| `staff/support-save-settings { welcome }` | `PUT /support/settings` | `{ settings }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
@@ -4441,9 +4467,10 @@ connection. Its credentials live in `payments.json`, an encrypted file of
 their own beside `peers.json`, which no step reads (decision 20); its
 RECEIVE side is `ctx.services.lightning` (`src/payments/lightning.ts`) while
 one is set. Set from the environment at boot (`LIGHTNING_DAEMON_URL`,
-`LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`, or
-`LIGHTNING_NWC_URL`, `LIGHTNING_NWC_PAY_URL`; the environment sets it again
-at every boot) or here. What strut expects of each wallet is
+`LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`,
+`LIGHTNING_DAEMON_MESSAGE_TOKEN`, or `LIGHTNING_NWC_URL`,
+`LIGHTNING_NWC_PAY_URL`; the environment sets it again at every boot) or
+here. What strut expects of each wallet is
 `specs/LIGHTNING.md`.
 
 FULL SCOPE only: the deployment key or an admin's session. A member's
@@ -4463,7 +4490,9 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 
 `provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
 `receive`: a receive credential is on file, so the server can sell. `pay`:
-a pay credential is on file, so Withdraw can pay (§19). `url` is the
+a pay credential is on file, so Withdraw can pay (§19). `messages: true`,
+on a Sphinx daemon only: its message token is on file, so Support answers
+(§22, "Support"). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
 `api`. `env: true` (with a `note` saying so) when the environment names
@@ -4476,17 +4505,21 @@ refuses the save.
 `PUT` bodies:
 
 ```json
-{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>", "messageToken": "<message token>" }
 { "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
 { "provider": null }
 ```
 
 For the provider already on file, a field left out keeps what is on file
 (a pay credential added without typing the receive one again) and `null`
-removes a pay credential (`payToken`, `payUrl`); another provider needs
-every field. `400` for a body that is not one of these, a daemon URL that
-is not http(s) or carries a credential, an NWC URL that does not parse, or
-a pay credential equal to the receive one; what is on file stays.
+removes a pay credential (`payToken`, `payUrl`) or the message token
+(`messageToken`); another provider needs every field. `400` for a body that
+is not one of these, a daemon URL that is not http(s) or carries a
+credential, an NWC URL that does not parse, a pay credential equal to the
+receive one, or a message token equal to the receive or the pay token;
+what is on file stays. The message token is kept as the pay token is:
+never on the services bag, read only by Support's follower and the
+`/support` routes.
 
 `PUT /secrets/LIGHTNING_…` is refused (`400`): a wallet credential never
 goes in the deployment's secrets, and the secrets capability answers
@@ -5800,3 +5833,74 @@ what the last week's answers would have cost; a RISE is a danger);
 a danger); **Files**; **Standing** (the workflow each answer starts, or
 no). It reads a type's rules, never a test: no expected answer is on
 it.
+
+### Support — the staff's chat with workers (`plans/support-chat.md`)
+
+Workers write to the treasury daemon's account, named "Support", from Peel,
+as to any contact; staff answer from the Support tab of `strut/staff`
+(§14.15). Strut reaches the daemon with its MESSAGE token (§18,
+`messageToken`; `specs/LIGHTNING.md`, "Support's DMs"), kept away from the
+services bag. Its FOLLOWER reads `GET /dms?after=<seq>` every 3 s
+(`createStrut({ support: { pollMs } })`) and keeps the conversations in the
+task store's file (`<dataDir>/tasks/tasks.db`, `src/support/store.ts`), the
+cursor with them, one per daemon URL (another daemon is read from its
+start; a record read again changes nothing); a record it cannot keep is
+skipped and said, never the page; a worker's file is fetched when it arrives, up to 25 MB
+(a larger one is a line saying so), into `<dataDir>/support/files/`. What
+was in the daemon's log before Support first followed it shows too,
+marked `earlier`.
+
+FULL SCOPE only, reads included: the deployment key or an admin's session;
+a member's session, a peer and a visitor are refused (`403`). With no
+message token, or an NWC wallet, every route answers `501 not_available`.
+`:worker` is the worker's actor (`secp:` and their Sphinx pubkey without
+its first byte), one encoded segment.
+
+| Route | |
+| --- | --- |
+| `GET /support[?q=]` | `{ conversations }`: unread first, then the newest; `q` over names (the Sphinx alias, the worker's note), actors and text |
+| `GET /support/unread` | `{ unread, conversations }`: workers' messages no one marked seen, and the conversations they are in — for a host's navigation |
+| `GET /support/settings` | `{ settings }` |
+| `PUT /support/settings { welcome }` | `{ settings }` |
+| `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
+| `POST /support/:worker { text, replyTo? }` | `{ message }`: kept, then sent from "Support"; `{ retry: <key> }` sends a failed one again under the same id |
+| `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
+| `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
+
+```json
+{ "conversations": [{ "worker": "secp:a1b2…", "pubkey": "02a1b2…", "alias": "Ana", "unread": 2,
+    "last": { "key": 41, "id": "6f1c…", "fromMe": false, "kind": "message", "text": "When is it paid?", "at": 1794901800000 },
+    "seenAt": 1794890000000, "welcomedAt": 1794880000000 }] }
+```
+
+A MESSAGE is `{ key, id?, fromMe, kind, text?, replyTo?, sats?, deleted?,
+file?, status?, error?, at, earlier?, welcome? }`. `key` is strut's own
+order (what `before` and `retry` take); `id` the Sphinx id, what a reply
+quotes (`replyTo`). `kind` is `message`, `file`, `payment` (sats a worker
+sent: a line, not in the books) or `contact` (they added Support as a
+contact). A message the worker deleted is `deleted: true` with no text or
+file; strut keeps its row. `file` is `{ name?, mediaType?, size?, state,
+error? }`, `state` `fetching`, `kept`, `too_large` or `failed`. A send of
+Support's has `status` `sending`, `sent` or `failed` (with `error`). Who
+sent a reply is kept and never answered: every reply is from Support.
+`welcome: true` marks the automatic welcome. The page's thread polls the
+newest 200 and keeps what it read, with **Show earlier messages** for the
+pages before (`before`).
+
+**The welcome** (`plans/support-chat.md` §5). `settings` is `{ welcome,
+since?, savedAt?, savedBy? }`. Empty, none is sent. Once saved, it goes
+automatically, from Support, to each worker whose key exchange (a
+`contact` record) is newer than `since`, once each (`welcomedAt`); saving
+again keeps `since`, clearing the text turns it off, and the next save
+starts again from then. `400` for a body with anything but `welcome`, or a
+welcome over 2,000 characters.
+
+A send is kept before it goes: `POST /dm { id, to, text, reply? }` to the
+daemon, `id` 64 hex strut made. One a past process left `sending` with no
+word from the daemon is `failed` when Support next opens its store, so
+Retry shows. `text` is at most 32 KiB as the message's JSON with its quoted
+id, the daemon's own limit (`400 bad_request: too long` before anything is
+kept). A failed
+send keeps its `error`; Retry sends the same `id`, once however many ask.
+Support writes only to someone who has it as a contact (the daemon refuses
+anyone else): a worker who joined by an invite.

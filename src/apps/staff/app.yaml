@@ -39,5 +39,13 @@ grants:
     - staff/invite
     - staff/invites
     - staff/cancel-invite
+    - staff/support-list
+    - staff/support-unread
+    - staff/support-thread
+    - staff/support-send
+    - staff/support-seen
+    - staff/support-file
+    - staff/support-settings
+    - staff/support-save-settings
     - app/list
     - earnings/read

@@ -19,7 +19,9 @@ This file is the contract each provider is built against:
   (`POST /invite`, `GET /invites`, `POST /invite/:code/cancel`; "Invites"
   below), being built in the sphinx repo as strut's side lands.
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
-  that answer exactly this.
+  that answer exactly this. And SUPPORT's three DM routes, with a token of
+  their own ("Support's DMs" below, plans/support-chat.md §7;
+  stakwork/sphinx#435); `scripts/fake-sphinx-daemon.ts` answers them.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -336,6 +338,90 @@ POST /invite/:code/cancel
 - **A `404 { code: "not_found" }`** on the cancel is a code the daemon does
   not know (`unknown_invite` to staff). A `404 no route …` on any of the
   three is a daemon from before them (`no_invites`).
+
+### Support's DMs — the MESSAGE token
+
+plans/support-chat.md §7, built in stakwork/sphinx#435
+(`wasm/daemon/src/dms.ts`). Workers write to the treasury's account, named
+"Support" (`DAEMON_ALIAS`), from Peel; staff answer from strut
+(specs/API.md §22, "Support"). The daemon gives strut its 1:1 messages
+through a FOURTH token, `DAEMON_MESSAGE_TOKEN` — strut's
+`LIGHTNING_DAEMON_MESSAGE_TOKEN`, `messageToken` on the wallet, kept as the
+pay token is and refused when it equals the receive or the pay token. It
+opens the three routes below and nothing else: not tribes, join, leave,
+invoices, pay, keysend, invites or the admin routes. The only sats it can
+spend are what a DM to an existing contact costs: 0, or 1 sat a part while
+their key is unconfirmed. It never meets a new contact. Only strut's
+follower and its `/support` routes call them (`src/support/support.ts`).
+Fields may be added; none is renamed or removed.
+
+```
+GET /dms?after=<seq>&limit=100
+→ { "dms": [ { "seq": 12, "id": "<sphinx id>", "time": "2026-11-16T10:00:00.250Z", "fromMe": false,
+               "peer": { "pubkey": "02…", "address": "02…_03…_123", "alias": "Ana" },
+               "kind": "message", "text": "When is it paid?", "replyTo": null, "sats": 0,
+               "deleted": false, "mediaType": null, "fileName": null }, … ] }
+
+GET /dm/:id/file
+→ the decrypted bytes; content-type the file's type; content-disposition the sender's name
+
+POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>" }
+→ the send's item, as the feed shows it: { "seq": 31, "id": "<sphinx id>", "clientId": "<strut's>", …, "status": "sent" }
+```
+
+- **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
+  `after` (0 by default), at most `limit` (1 to 1,000; 100 by default).
+  `seq` is the feed's own, kept by the daemon in `<home>/dms.jsonl` (the
+  server's `index` is missing on the account's own sends, so it cannot be
+  the cursor); its first start numbers the log's backlog (`messages.jsonl`),
+  oldest first. **A record that changes comes again under a new, higher
+  `seq`**: a send's `status` moving, a message its sender deleted. Strut
+  keeps one row per record — its own send by `clientId`, anything else by
+  `id` — and its cursor per daemon URL. It reads every 3 s, and the next
+  page at once while one comes back full. 10 s each.
+- **The fields**: `seq`; `id`, the Sphinx id — null only on a send that
+  failed before anything went out; `clientId`, only on a send made through
+  `POST /dm` (the `id` strut gave); `time` (ISO; strut also reads unix
+  seconds and ms); `fromMe`; `peer { pubkey, address, alias }` (`pubkey` 66
+  hex, the contact's key, which is also the key Peel signs in with);
+  `kind`: `message`, `file`, `payment`, or `contact` (a key exchange someone
+  sent the account, as a worker's Peel does when joining with an invite;
+  what marks the invite `used`); `text` (null on a contact); `replyTo` (the
+  quoted message's id, or null); `sats` (on every record: a payment's
+  amount, a send's cost); `deleted`; `mediaType` and `fileName` on a file
+  (`fileName` is made from the type, `image.jpg`, `file.pdf`: a Sphinx file
+  message carries no name); `status` on every message the account sent —
+  `sending` until the LSP has it (the LSP's PENDING, holding a sat for
+  someone offline, counts as `sent`), then `sent`, or `failed` — and
+  `error` on a failed one. Never a file's key. Strut skips a record of
+  another kind, or with no pubkey.
+- **`GET /dm/:id/file`**: a file a contact sent, downloaded from the memes
+  server and decrypted as for a tribe mention, without shrinking, within
+  180 s; the sender's own name in `content-disposition` (RFC 6266), which
+  strut keeps over the feed's. At most 25 MiB. Strut fetches each file when
+  it arrives (a media token expires), beside its reads of the feed, never
+  holding them, with 200 s. Refusals: `413 too_large` (strut's "too large"
+  line, ruling 10, never asked again), `404 not_found`, `410 deleted`, `403
+  host_not_allowed` (the daemon opens no files, `DAEMON_MEMES_HOSTS`), `422
+  unreadable` — each for good — and `502 memes_failed`, which strut tries
+  again on its next 4 reads.
+- **`POST /dm`**: a text to an existing contact, by pubkey — never a tribe,
+  never someone the account has not met. `id` is 1 to 128 printable
+  characters (strut sends 64 hex); `reply` quotes a message by its id. The
+  answer is the send's item as the feed shows it, once the LSP has spoken
+  or about 10 s have passed (then `sending`): strut waits 30 s. **The same
+  `id` answers the send as it stands and never sends it twice** — across
+  restarts too — **except a `failed` one, which is tried again with the
+  text it first had**: that is strut's Retry. A send whose publish threw
+  partway stays `sending` (the daemon asks the LSP by its parts' tags every
+  minute), so it is never sent twice. Refusals: `400 bad_request`, `400
+  not_a_contact`, `400 too_long` (the content and quoted id as the
+  message's JSON over 32 KiB, which strut refuses before it keeps
+  anything), `503 not_connected` (no LSP: nothing was sent). Strut keeps a
+  refused send `failed` with the daemon's `code: error`, and Retry.
+- **The alias**: a changed `DAEMON_ALIAS` replaces the account's stored
+  alias at start, so every message after carries the new name, which is
+  what renames the contact in Peel.
 
 ## NWC (NIP-47)
 

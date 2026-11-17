@@ -79,6 +79,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { RunControl } from "../run-control.js";
+import type { TaskDb } from "./db.js";
 import type { RunFile } from "../runs.js";
 import type { RunAttachment } from "../core.js";
 import { generateRunId } from "../store.js";
@@ -208,24 +209,41 @@ export function tasksPath(dataDir: string): string {
 /** Both sides on one file, its folder owner-only. `node:sqlite` is imported
  *  here, on first use, never at boot. */
 export async function openTaskStores(o: { dataDir: string } | { file: string }): Promise<TaskStores> {
-  const [{ TaskDb }, { SqliteTaskStore, taskSchema }, { SqliteWorkerStore, workerSchema }] = await Promise.all([
-    import("./db.js"),
+  const [db, { SqliteTaskStore }, { SqliteWorkerStore }] = await Promise.all([
+    openTaskDb("file" in o ? o.file : tasksPath(o.dataDir)),
     import("./task-store-sqlite.js"),
     import("./worker-store-sqlite.js"),
   ]);
-  const db = TaskDb.open("file" in o ? o.file : tasksPath(o.dataDir));
-  // Both sides' tables made, or an older file's brought to version 2, in
-  // one transaction (plans/human-steps.md §7.7).
+  return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
+}
+
+/** A task store file in memory (`openTaskDb`, `TaskDb.open`): Support's,
+ *  beside a task store in memory. */
+export const TASKS_IN_MEMORY = ":memory:";
+
+/** The task store's file opened (`TASKS_IN_MEMORY`: one in memory) with every table
+ *  made, or an older file's brought to version 2, in one transaction
+ *  (plans/human-steps.md §7.7): both sides' and Support's
+ *  (plans/support-chat.md §4), which opens a connection of its own on it. */
+export async function openTaskDb(file: string): Promise<TaskDb> {
+  const [{ TaskDb }, { taskSchema }, { workerSchema }, { supportSchema }] = await Promise.all([
+    import("./db.js"),
+    import("./task-store-sqlite.js"),
+    import("./worker-store-sqlite.js"),
+    import("../support/store.js"),
+  ]);
+  const db = TaskDb.open(file);
   try {
     db.migrate(() => {
       taskSchema(db);
       workerSchema(db);
+      supportSchema(db);
     });
   } catch (err) {
     db.close();
     throw err;
   }
-  return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
+  return db;
 }
 
 export function memoryTaskStores(): TaskStores {

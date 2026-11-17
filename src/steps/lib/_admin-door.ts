@@ -59,8 +59,9 @@ export function inProcessDoor(send: (req: Request, actor?: string) => Promise<Re
   });
 }
 
-/** What the `staff/*` door reaches (plans/human-steps.md §9.3): `/tasks…` alone. */
-export const STAFF_ROUTES = /^\/tasks(\/|\?|$)/;
+/** What the `staff/*` door reaches (plans/human-steps.md §9.3): `/tasks…`,
+ *  and `/support…` (plans/support-chat.md). */
+export const STAFF_ROUTES = /^\/(tasks|support)(\/|\?|$)/;
 /** What the `earnings/*` door reaches: `/earnings…`, `/remote/credit`, `/remote/purchases`. */
 export const EARNINGS_ROUTES = /^\/(earnings|remote\/credit|remote\/purchases)(\/|\?|$)/;
 

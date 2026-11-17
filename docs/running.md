@@ -213,9 +213,10 @@ takes payments IN and sends payouts OUT on a laptop or in an end-to-end
 test, with no mixer and no real sats:
 
 ```bash
-PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
+PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
 LIGHTNING_DAEMON_URL=http://127.0.0.1:3461 LIGHTNING_DAEMON_TOKEN=demo \
-LIGHTNING_DAEMON_PAY_TOKEN=demo-pay STRUT_RATE_URL=http://127.0.0.1:3461/prices \
+LIGHTNING_DAEMON_PAY_TOKEN=demo-pay LIGHTNING_DAEMON_MESSAGE_TOKEN=demo-message \
+STRUT_RATE_URL=http://127.0.0.1:3461/prices \
 STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
 ```
 
@@ -232,6 +233,19 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   (`lspFeeFloorMsat`), or fails `not enough balance`. `POST /next-payout
   { "state": "failed" | "pending" }` makes the next one fail, or stay pending
   until `POST /settle/:id` (a keysend's id, or a pay's payment hash).
+- **Support's DMs** (plans/support-chat.md §7, as stakwork/sphinx#435 built
+  them; the MESSAGE token alone, `MESSAGE_TOKEN`, default `demo-message`,
+  set as `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET
+  /dm/:id/file` (the sender's name in `content-disposition`; `413
+  too_large` over 25 MiB, `410 deleted`) and `POST /dm` (`400
+  not_a_contact`, `400 too_long`), answering the send's item; the same `id`
+  never sends twice, a failed one is tried again. Play a worker with `POST /worker-dm { pubkey?, alias?,
+  text?, replyTo?, sats?, file?: { name, type, base64 } | { name, type,
+  size } }` (a new pubkey is a contact first), `POST /worker-contact
+  { pubkey?, alias? }` (a key exchange alone: what fires the welcome),
+  `POST /worker-delete/:id`; `POST /next-dm { "state": "failed" |
+  "pending" }` makes the next send fail, or wait for `POST /settle/<id>`.
+  Then `?app=strut/staff&input=tab%3Dsupport`.
 - **The rate**: `GET /prices` answers mempool's `{ time, USD }`
   (`USD_PER_BTC`, default 100,000, so $1 is 1,000 sats).
 - In a test, `startFakeSphinxDaemon({ port: 0, … })` starts it in-process and
