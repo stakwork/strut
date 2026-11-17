@@ -1,6 +1,6 @@
 # Support: a chat between workers and a Stadeum's staff
 
-> **Status (2026-11-16): ruled; item 1 built (#PRNUM), item 2 not started.**
+> **Status (2026-11-16): ruled; item 1 built (#719), item 2 not started.**
 >
 > - **Written against:** strut `main` @425a9d06, stakwork/sphinx `master`
 >   @c1f55f11, peel-android @efbcccd and peel @78deb6e.
@@ -169,7 +169,7 @@ the right. On a phone, the list opens a thread and Back returns to the list.
 | Sent status | Clock while sending, ✓ once the LSP has it, ! with Retry if it failed | `status` on the account's own sends | Shown on the bubble | 1 |
 | Photos and files from workers | Images inline (tap for full size), voice notes playable, other files as a named download | `GET /dm/:id/file` | Fetched on arrival, up to 25 MB (ruling 10), kept under `dataDir`, read through `staff/support-file`. The 4 MB cap is on what a page sends, not on what it gets back | 1 |
 
-**Built differently (#PRNUM):** what a page gets back is capped too: a
+**Built differently (#719):** what a page gets back is capped too: a
 step's result is at most 5 MB (`STEP_RUN_RESULT_MAX_CHARS`, src/apps/tools.ts).
 So `staff/support-file` hands a file over in 3 MB pieces (`offset`, `next`),
 which the page joins.
@@ -177,7 +177,7 @@ which the page joins.
 | Sats from a worker | "Sent you 100 sats" as a line | Payment records in the feed | A line; not in the books | 1 |
 | The worker beside the thread | Status, types held, lease now, answers this week, owed and paid, invite used, note; links to their page and tasks | — | `staff/worker` and `earnings/read`, already there | 1 |
 
-**Built differently (#PRNUM):** the worker beside the thread shows what they
+**Built differently (#719):** the worker beside the thread shows what they
 are owed (earned, held, withdrawable, from `staff/worker`) and links to
 their payouts, not a paid total, and no "invite used": an invite keeps no
 link to the worker who used it (ruling 9), so which one they used is not
@@ -345,7 +345,7 @@ token expires and to send the welcome.
 - 1:1 records, sent and received, oldest first, under a sequence number of
   the daemon's own. The server's `index` is missing on the account's own
   sends, so it can't be the cursor.
-- **Built differently (stakwork/sphinx#435, strut #PRNUM):** the answer is
+- **Built differently (stakwork/sphinx#435, strut #719):** the answer is
   `{ dms: [...] }`; `after` defaults to 0, `limit` is 1 to 1,000 (100 by
   default). A record that changes (a send's `status` moving, a message
   deleted) comes again under a new, higher `seq`, so strut UPSERTS: its own
@@ -369,7 +369,7 @@ token expires and to send the welcome.
 - The decrypted bytes, with their type, via `media.ts`'s download, without
   shrinking. 25 MB at most (ruling 10); a larger file is refused with a
   code strut can show. **Built differently (stakwork/sphinx#435, strut
-  #PRNUM):** 25 MiB; that refusal is `413 too_large`, shown as ruling 10's
+  #719):** 25 MiB; that refusal is `413 too_large`, shown as ruling 10's
   "too large" line (strut also stops reading past 25 MiB). The others:
   `404 not_found`, `410 deleted`, `403 host_not_allowed`, `422 unreadable`
   (strut gives up at once) and `502 memes_failed` (strut tries again). The
@@ -381,7 +381,7 @@ token expires and to send the welcome.
 - `to` is the pubkey of an existing contact; never a tribe, never someone
   it hasn't met (ruling 15).
 - The same `id` returns the first send's answer and never sends twice.
-- **Built differently (stakwork/sphinx#435, strut #PRNUM):** a send that
+- **Built differently (stakwork/sphinx#435, strut #719):** a send that
   FAILED is tried again under the same `id`, with the text it first had:
   that is strut's Retry. A send whose publish failed partway stays
   `sending`, never `failed`, so it is never sent twice. The answer is the
@@ -442,7 +442,7 @@ Each is its own PR against `main`, never stacked.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
-| 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Built (#PRNUM), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
+| 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Built (#719), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
 | 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins | 1; the daemon's item-2 routes | Not started |
 
 A stand-in for the new routes goes into `scripts/fake-sphinx-daemon.ts`,
