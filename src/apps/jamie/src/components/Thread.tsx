@@ -252,9 +252,12 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
       {turn.jobs.map((j) => (
         <JobCard key={`${j.job}:${j.runId}`} job={j.job} runId={j.runId} {...(j.workflow ? { workflow: j.workflow } : {})} conversation={conversation} />
       ))}
-      {turn.proposals.map((p) => (
-        <ProposalCard key={p.id} brief={p} />
-      ))}
+      {/* A card a newer one replaced while it waited is gone: the newer one says it all. */}
+      {turn.proposals
+        .filter((p) => !p.replacedBy)
+        .map((p) => (
+          <ProposalCard key={p.id} brief={p} />
+        ))}
       {own.map(card)}
     </div>
   );

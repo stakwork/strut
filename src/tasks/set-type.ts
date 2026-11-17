@@ -27,7 +27,7 @@ import type { CardField, ProposalDescription } from "../core.js";
 import type { Proposal } from "../proposals.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
-import { attachmentRuleLine, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
+import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
 import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
@@ -157,6 +157,22 @@ export const typeChangeInput = z.object({
 
 /** What `task/set-type` asks, as its schema parsed it. */
 export type TypeChange = z.infer<typeof typeChangeInput>;
+
+/** A new ask built on the one still WAITING for the same name (its card not
+ *  approved yet, so no type of that name exists): every field the ask
+ *  leaves out is the waiting one's, `tests`, `copies` and `attachments`
+ *  merged key by key (`null` turns one off), `standing` replaced — the type
+ *  the person would get had they approved the first card and this one been
+ *  a change of it. */
+export function askOver(waiting: TypeChange, ask: TypeChange): TypeChange {
+  const out: Record<string, unknown> = { ...waiting };
+  for (const [k, v] of Object.entries(ask)) {
+    if (v === undefined) continue;
+    const was = (waiting as Record<string, unknown>)[k];
+    out[k] = (k === "tests" || k === "copies" || k === "attachments") && isRecord(v) && isRecord(was) ? { ...was, ...v } : v;
+  }
+  return out as TypeChange;
+}
 /** The fields to change, without the name: what `save` takes. */
 export type TypeFields = Omit<TypeChange, "name">;
 
@@ -440,11 +456,6 @@ export function testsText(r: TestRules | undefined): string {
   );
 }
 
-/** The files an answer carries (§5.6), for the card. */
-export function attachmentsText(a: AttachmentRule | undefined): string {
-  return a ? `${attachmentRuleLine(a)}, saved in the task's run` : "none: an answer is its JSON alone";
-}
-
 export function copiesText(c: CopiesRule | undefined): string {
   if (!c) return "off: a step asks one worker";
   return (
@@ -466,16 +477,73 @@ function rulesDiff(label: string, before: object | undefined, after: object | un
   return keys.length ? `${label}: ${keys.map((k) => `${k} ${ruleValue(b[k])} → ${ruleValue(a[k])}`).join(", ")}` : undefined;
 }
 
-/** What the save would refuse, first by field: the card's "Accepting it fails". */
+/** What the save would refuse, first by field: the card's "Approving it fails". */
 const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments;
 
-const onOff = (on: boolean) => (on ? "on" : "off");
-const standingWord = (r: StandingRule | undefined) => (r ? `starts ${r.workflow}` : "off");
+/** A hold in days when it is a whole number of them. */
+const holdText = (hours: number) => (hours % 24 === 0 ? plural(hours / 24, "day") : plural(hours, "hour"));
+
+/** "4 photos", "1 to 3 photos", "up to 2 files": what an answer carries, in
+ *  the person's words; "" for none. */
+function filesWords(a: AttachmentRule | undefined): string {
+  if (!a || a.max === 0) return "";
+  const photos = a.types.every((t) => t.startsWith("image/"));
+  const noun = (n: number) => (photos ? (n === 1 ? "photo" : "photos") : n === 1 ? "file" : "files");
+  if (a.min === a.max) return `${a.max} ${noun(a.max)}`;
+  if (a.min === 0) return `up to ${a.max} ${noun(a.max)}`;
+  return `${a.min} to ${a.max} ${noun(a.max)}`;
+}
+
+/** One question of the answer, as a worker reads it: its title (else its
+ *  key) and what they give. */
+function questionLine(key: string, p: Record<string, unknown>, required: boolean): string {
+  const title = typeof p["title"] === "string" && p["title"] ? p["title"] : `${key[0]!.toUpperCase()}${key.slice(1)}`;
+  let kind: string;
+  if (Array.isArray(p["enum"])) {
+    const opts = p["enum"].map(String);
+    kind = opts.length > 1 ? `${opts.slice(0, -1).join(", ")} or ${opts.at(-1)}` : opts.join("");
+  } else if (p["type"] === "boolean") kind = "yes or no";
+  else if (p["type"] === "number" || p["type"] === "integer") kind = typeof p["minimum"] === "number" && typeof p["maximum"] === "number" ? `${p["minimum"]} to ${p["maximum"]}` : "a number";
+  else if (p["type"] === "array") kind = "a few picks from a list";
+  else kind = "a few words";
+  return `• ${title} — ${kind}${required ? "" : " (optional)"}`;
+}
+
+/** What a worker hands in: the files, then the questions they answer. */
+function handInText(answer: unknown, a: AttachmentRule | undefined): string {
+  const files = filesWords(a);
+  if (answer === undefined || sameJson(answer, EMPTY_ANSWER)) return files || "nothing";
+  if (formProblem(answer)) return `${files ? `${files}, and ` : ""}an answer the worker app draws itself (see The answer under Details)`;
+  const s = answer as { properties: Record<string, Record<string, unknown>>; required?: unknown };
+  const required = new Set(Array.isArray(s.required) ? s.required : []);
+  const questions = Object.entries(s.properties).map(([k, p]) => questionLine(k, p, required.has(k)));
+  return `${files ? `${files}, and answers` : "Answers"}:\n${questions.join("\n")}`;
+}
+
+/** A change's line, in the card's plain labels. */
+const changeLabel: Record<string, string> = {
+  "drawn by": "worker app",
+  answer: "questions",
+  lease: "time to finish",
+  "expires after": "expiry",
+  "turned on": "turned on",
+  "turned off": "turned off",
+  "who takes it": "who can do it",
+  pay: "pay",
+  hold: "wait before withdrawing",
+  tests: "tests",
+  copies: "copies",
+  files: "photos",
+  when: "when",
+};
 
 /**
- * The card (§9.8): what the type would be, and for a change what changes;
- * the app's problem and a rise in pay marked as dangers. `existing` is the
- * type as `list()` reads it; `appProblem` and `usdPerBtc` the door's reads.
+ * The card (§9.8), for a person who is not technical: a sentence, then what
+ * a worker hands in, when, who can do it and the pay, in their words; the
+ * type's own settings under Details (`detail`). For a change, what changes.
+ * The app's problem, a rise in pay, a paid type anyone may take and what the
+ * save would refuse are dangers, never folded. `existing` is the type as
+ * `list()` reads it; `appProblem` and `usdPerBtc` the door's reads.
  */
 export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProblem?: string; usdPerBtc?: number } = {}): ProposalDescription {
   const { name, ...change } = cfg;
@@ -483,20 +551,25 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const { planned: after, problems, openWarning } = plan(name, existing, change);
   const before = existing ? plannedOf(existing) : undefined;
   const turnsOff = !!before?.enabled && !after.enabled;
-  const title = !existing ? `New task type ${name}` : turnsOff ? `Turn off task type ${name}` : `Change task type ${name}`;
-  const dollars = (sats: number) => (usdPerBtc ? ` (${usdText((roundMsat(sats) * usdPerBtc) / 1e8)})` : "");
+  const human = name.replace(/[-_]+/g, " ");
+  const title = !existing ? `New task: ${human}` : turnsOff ? `Turn off task: ${human}` : `Change task: ${human}`;
+  /** "$3.50 (5,500 sats)", or the sats alone with no rate. */
+  const money = (sats: number) => (!sats ? "unpaid" : usdPerBtc ? `${usdText((roundMsat(sats) * usdPerBtc) / 1e8)} (${satsText(sats)})` : satsText(sats));
+  const whoWords = (open: boolean) => (open ? "anyone signed in to the worker page" : "only people you invite");
+  const whenWords = (standing: StandingRule | undefined) => (standing ? "any time" : "when a workflow sends one");
 
-  // What changes, field by field.
+  // What changes, field by field, in the card's words.
   const changes: string[] = [];
   if (before) {
-    if (before.app !== after.app) changes.push(`drawn by: ${before.app} → ${after.app}`);
-    if (after.answer !== undefined && !sameJson(before.answer, after.answer)) changes.push("answer: a new shape (see The answer)");
-    if (before.leaseSeconds !== after.leaseSeconds) changes.push(`lease: ${secondsText(before.leaseSeconds)} → ${secondsText(after.leaseSeconds)}`);
-    if (before.withinHours !== after.withinHours) changes.push(`expires after: ${plural(before.withinHours, "hour")} → ${plural(after.withinHours, "hour")}`);
+    const line = (key: string, was: string, now: string) => changes.push(`${changeLabel[key] ?? key}: ${was} → ${now}`);
+    if (before.app !== after.app) line("drawn by", before.app, after.app);
+    if (after.answer !== undefined && !sameJson(before.answer, after.answer)) changes.push("questions: new ones (see A worker hands in)");
+    if (before.leaseSeconds !== after.leaseSeconds) line("lease", secondsText(before.leaseSeconds), secondsText(after.leaseSeconds));
+    if (before.withinHours !== after.withinHours) line("expires after", plural(before.withinHours, "hour"), plural(after.withinHours, "hour"));
     if (before.enabled !== after.enabled) changes.push(after.enabled ? "turned on" : "turned off");
-    if (before.open !== after.open) changes.push(after.open ? "who takes it: invite-only → open" : "who takes it: open → invite-only");
-    if (before.paySats !== after.paySats) changes.push(`pay: ${before.paySats ? satsText(before.paySats) : "unpaid"} → ${after.paySats ? satsText(after.paySats) : "unpaid"}`);
-    if (before.holdHours !== after.holdHours) changes.push(`hold: ${plural(before.holdHours, "hour")} → ${plural(after.holdHours, "hour")}`);
+    if (before.open !== after.open) line("who takes it", whoWords(before.open), whoWords(after.open));
+    if (before.paySats !== after.paySats) line("pay", money(before.paySats), money(after.paySats));
+    if (before.holdHours !== after.holdHours) line("hold", holdText(before.holdHours), holdText(after.holdHours));
     if (!problems.tests) {
       const d = rulesDiff("tests", before.tests, after.tests);
       if (d) changes.push(d);
@@ -505,30 +578,73 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
       const d = rulesDiff("copies", before.copies, after.copies);
       if (d) changes.push(d);
     }
-    if (!problems.attachments) {
-      const d = rulesDiff("files", before.attachments, after.attachments);
-      if (d) changes.push(d);
-    }
-    if (before.standing?.workflow !== after.standing?.workflow) changes.push(`standing: ${standingWord(before.standing)} → ${standingWord(after.standing)}`);
+    if (!problems.attachments && !sameJson(before.attachments, after.attachments)) line("files", filesWords(before.attachments) || "none", filesWords(after.attachments) || "none");
+    if (before.standing?.workflow !== after.standing?.workflow) line("when", whenWords(before.standing), whenWords(after.standing));
   }
   const shapeChanged = !!before && after.answer !== undefined && !sameJson(before.answer, after.answer);
   const payBefore = before?.paySats ?? 0;
   const rises = after.paySats > payBefore;
 
+  // Shown: what the person decides on, in their words.
   const fields: CardField[] = [];
-  fields.push({ label: "Drawn by", value: appProblem ? `${after.app} — ${appProblem}` : after.app, ...(appProblem ? { danger: true } : {}) });
+  if (before) fields.push({ label: "What changes", value: changes.length ? changes.join("\n") : "nothing: it is already so" });
   fields.push(
-    { label: "The answer", value: answerText(after.answer) },
+    problems.attachments
+      ? { label: "A worker hands in", value: `refused: ${problems.attachments}`, danger: true }
+      : { label: "A worker hands in", value: handInText(after.answer, after.attachments) },
   );
-  fields.push({ label: "Lease", value: secondsText(after.leaseSeconds) });
-  fields.push({ label: "Expires after", value: `${plural(after.withinHours, "hour")} unanswered` });
-  fields.push({ label: "On", value: onOff(after.enabled) });
+  fields.push({
+    label: "When",
+    value: after.standing
+      ? `Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow ${after.standing.workflow}.`
+      : "When a workflow sends one out: one for each thing it asks about.",
+  });
+  // A paid type anyone may take (ruling 12), in the person's words: no
+  // qualifying test, or too few of its test tasks ready.
+  const qualify = after.tests?.qualify ?? 0;
+  const ready = existing?.readyTests ?? 0;
+  const warn = !openWarning
+    ? undefined
+    : qualify
+      ? { who: `but only ${ready} of its ${plural(qualify, "test task")} are ready, so nobody new can start until ${qualify - ready} more are made`, summary: `Nobody new can start it until ${qualify - ready} more test tasks are made.` }
+      : { who: "and they are paid from their first one: there is no qualifying test, so only your own review of their answers checks them", summary: "Anyone signed in is paid from their first one, with no qualifying test." };
   const who = after.open
-    ? `open: any signed-in worker of ${after.app} who is not suspended or banned, with no grant${after.tests?.qualify ? `, after qualifying on ${plural(after.tests.qualify, "test")}` : ""}`
-    : "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)";
-  fields.push({ label: "Who takes it", value: openWarning ? `${who} — ${openWarning}` : who, ...(openWarning ? { danger: true } : {}) });
+    ? `Anyone signed in to the worker page${qualify ? `, after passing a test of ${plural(qualify, "task")}` : ""}${warn ? `, ${warn.who}` : ""}.`
+    : "Only people you invite: give it to each of them in Tasks and workers.";
+  fields.push({ label: "Who can do it", value: who, ...(warn ? { danger: true } : {}) });
+  let pay = after.paySats
+    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${holdText(after.holdHours)} later.`
+    : "Unpaid.";
+  if (before && payBefore !== after.paySats) pay += ` It is ${money(payBefore)} now.`;
+  const week = existing?.answeredWeek;
+  if (existing && week !== undefined && after.paySats) {
+    pay += !week
+      ? " None were done in the last week."
+      : ` The last week's ${plural(week, "answer")} would have cost ${money(week * after.paySats)}` + (payBefore !== after.paySats ? `, against ${money(week * payBefore)} at the pay now.` : ".");
+  }
+  fields.push({ label: "Pay", value: pay, ...(rises ? { danger: true } : {}) });
+
+  // Under Details: the type's own settings, for whoever wants them.
+  fields.push({ label: "Task type", value: appProblem ? `${name}, in the app ${after.app} — ${appProblem}` : `${name}, in the app ${after.app}`, ...(appProblem ? { danger: true } : { detail: true }) });
+  fields.push({ label: "The answer", value: answerText(after.answer), detail: true });
+  fields.push({
+    label: "Time limits",
+    value: `${secondsText(after.leaseSeconds)} to finish one once started${after.standing ? "" : `; one nobody takes expires after ${plural(after.withinHours, "hour")}`}`,
+    detail: true,
+  });
+  const workers = existing?.workers;
+  fields.push({
+    label: "Workers",
+    value: !existing
+      ? after.open
+        ? "none yet: anyone signed in holds it from their first ask"
+        : "none yet: you give it to each worker in Tasks and workers (strut/staff)"
+      : workers === undefined
+        ? "not counted on this server"
+        : `${workers} hold it`,
+    detail: true,
+  });
   if (before) {
-    fields.push({ label: "What changes", value: changes.length ? changes.join("\n") : "nothing: the type is already so" });
     const open = existing?.openTasks;
     fields.push({
       label: "Open tasks",
@@ -538,58 +654,29 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
           : turnsOff && open
             ? `${open}: not handed out once it is off; they expire when due`
             : shapeChanged && open
-              ? `${open}: their answers are checked against the new shape when submitted`
+              ? `${open}: their answers are checked against the new questions when handed in`
               : String(open),
+      detail: true,
     });
   }
-  const workers = existing?.workers;
-  fields.push({
-    label: "Workers",
-    value: !existing
-      ? after.open
-        ? "none yet: it is open, so a worker holds it from their first ask for its tasks"
-        : "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)"
-      : workers === undefined
-        ? "not counted on this server"
-        : `${workers} hold it`,
-  });
-  let pay = after.paySats ? `${satsText(after.paySats)} an answer${dollars(after.paySats)}, held ${plural(after.holdHours, "hour")} before it can be withdrawn` : "unpaid";
-  if (before && payBefore !== after.paySats) pay += `; now ${payBefore ? `${satsText(payBefore)}${dollars(payBefore)}` : "unpaid"}`;
-  const week = existing?.answeredWeek;
-  if (existing && week !== undefined) {
-    pay += !week
-      ? ". No answers in the last week"
-      : `. The last week's ${plural(week, "answer")} would have cost ${satsText(week * after.paySats)}${dollars(week * after.paySats)}` +
-        (payBefore !== after.paySats ? `, against ${satsText(week * payBefore)}${dollars(week * payBefore)} at the pay now` : "");
-  }
-  fields.push({ label: "Pay", value: pay, ...(rises ? { danger: true } : {}) });
-  fields.push(problems.tests ? { label: "Tests", value: `refused: ${problems.tests}`, danger: true } : { label: "Tests", value: testsText(after.tests) });
-  fields.push(problems.copies ? { label: "Copies", value: `refused: ${problems.copies}`, danger: true } : { label: "Copies", value: copiesText(after.copies) });
-  fields.push(problems.attachments ? { label: "Files", value: `refused: ${problems.attachments}`, danger: true } : { label: "Files", value: attachmentsText(after.attachments) });
-  fields.push({
-    label: "Standing",
-    value: after.standing
-      ? `yes: a worker starts one whenever they ask, any number at once, and each answer starts the workflow ${after.standing.workflow} (billed to its owner)`
-      : "no: a human step in a run makes its tasks",
-  });
+  fields.push(problems.tests ? { label: "Tests", value: `refused: ${problems.tests}`, danger: true } : { label: "Tests", value: testsText(after.tests), detail: true });
+  fields.push(problems.copies ? { label: "Copies", value: `refused: ${problems.copies}`, danger: true } : { label: "Copies", value: copiesText(after.copies), detail: true });
 
   const lines: string[] = [];
   if (!existing) {
-    lines.push(
-      after.standing
-        ? `A new standing task type ${name}, drawn by the app ${after.app}: a worker starts one there whenever they ask, and each answer starts the workflow ${after.standing.workflow}.`
-        : `A new task type ${name}, drawn by the app ${after.app}: a \`human\` step that names it makes a task a worker answers there.`,
-    );
-    lines.push(after.open ? "It is open: any signed-in worker of the app may take its tasks, with no grant." : "It grants it to no worker: an admin does, in Tasks and workers.");
+    const whoShort = after.open ? "Anyone signed in to the worker page" : "Only people you invite";
+    const whenShort = after.standing ? " whenever they like, as many as they like," : " when a workflow sends one out,";
+    lines.push(`${whoShort} can do the "${human}" task${whenShort} ${after.paySats ? `for ${money(after.paySats)} each, paid from this server's wallet` : "unpaid"}.`);
+    if (!after.enabled) lines.push("It starts switched off: nobody gets one until it is turned on.");
   } else if (turnsOff) {
-    lines.push(`Turns off the task type ${name}: a \`human\` step can make no new task of it, and its open tasks are not handed out and expire when due.`);
+    lines.push(`Turns off the "${human}" task: nobody gets a new one, and the open ones expire when due.`);
   } else {
-    lines.push(changes.length ? `Changes the task type ${name}: ${changes.map((c) => c.split(":")[0]).join(", ")}.` : `Changes nothing in the task type ${name}: it is already so.`);
+    lines.push(changes.length ? `Changes the "${human}" task: ${changes.map((c) => c.split(":")[0]).join(", ")}.` : `Changes nothing in the "${human}" task: it is already so.`);
   }
-  if (appProblem) lines.push(`Workers cannot answer it yet: ${appProblem}.`);
-  if (rises) lines.push(`Its pay rises from ${payBefore ? satsText(payBefore) : "nothing"} to ${satsText(after.paySats)} an answer${dollars(after.paySats)}.`);
-  if (openWarning) lines.push(`Who takes it: ${openWarning}.`);
+  if (appProblem) lines.push(`Workers cannot do it yet: ${appProblem}.`);
+  if (rises && existing) lines.push(`Its pay goes up from ${money(payBefore)} to ${money(after.paySats)} each.`);
+  if (warn) lines.push(warn.summary);
   const fails = failureOf(problems);
-  if (fails) lines.push(`Accepting it fails: ${fails}.`);
-  return { title, summary: lines.join(" "), fields, actions: { accept: "Save type", reject: "Don't" }, full: true };
+  if (fails) lines.push(`Approving it fails: ${fails}.`);
+  return { title, summary: lines.join(" "), fields, actions: { accept: "Approve", reject: "Don't" }, full: true };
 }

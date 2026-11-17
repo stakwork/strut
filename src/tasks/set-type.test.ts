@@ -30,7 +30,7 @@ import { jobWorkflowYaml } from "../job-seed.js";
 import { orchestratorWorkflowYaml } from "../orchestrator-seed.js";
 import { globToRegExp } from "../closure.js";
 import { formProblem as kitFormProblem } from "../../kit/src/folds/answer-form.js";
-import { answerText, formProblem, mergeType, typeCard, typeChangeInput, type TaskTypeRow, type TaskTypesCapability } from "./set-type.js";
+import { answerText, askOver, formProblem, mergeType, typeCard, typeChangeInput, type TaskTypeRow, type TaskTypesCapability, type TypeChange } from "./set-type.js";
 import type { TaskType } from "./task-store.js";
 
 const KEY = "set-type-key";
@@ -157,115 +157,137 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.match(answerText(BOX), /^needs the app's own view \(the answer is not an object of fields\):\n\{"type":"array"/);
   });
 
-  it("the card for a new type: its fields, open by default (nobody granted), no answer given is files only", () => {
+  it("the card for a new type, for a person who is not technical: a sentence, then what a worker hands in, when, who and the pay in their words; the type's settings under Details", () => {
     const card = typeCard({ name: "pet-match", app: "workers", answer: MATCH, withinHours: 48 });
-    assert.equal(card.title, "New task type pet-match");
-    assert.deepEqual(card.actions, { accept: "Save type", reject: "Don't" });
+    assert.equal(card.title, "New task: pet match");
+    assert.deepEqual(card.actions, { accept: "Approve", reject: "Don't" });
     assert.deepEqual(
-      card.fields!.map((f) => [f.label, f.value, !!f.danger]),
+      card.fields!.map((f) => [f.label, f.value, f.detail ? "detail" : f.danger ? "danger" : "shown"]),
       [
-        ["Drawn by", "workers", false],
-        ["The answer", 'same ("The same pet?"): yes or no, required\nnote: text up to 200 characters', false],
-        ["Lease", "10 minutes", false],
-        ["Expires after", "48 hours unanswered", false],
-        ["On", "on", false],
-        ["Who takes it", "open: any signed-in worker of workers who is not suspended or banned, with no grant", false],
-        ["Workers", "none yet: it is open, so a worker holds it from their first ask for its tasks", false],
-        ["Pay", "unpaid", false],
-        ["Tests", "off", false],
-        ["Copies", "off: a step asks one worker", false],
-        ["Files", "none: an answer is its JSON alone", false],
-        ["Standing", "no: a human step in a run makes its tasks", false],
+        ["A worker hands in", "Answers:\n• The same pet? — yes or no\n• Note — a few words (optional)", "shown"],
+        ["When", "When a workflow sends one out: one for each thing it asks about.", "shown"],
+        ["Who can do it", "Anyone signed in to the worker page.", "shown"],
+        ["Pay", "Unpaid.", "shown"],
+        ["Task type", "pet-match, in the app workers", "detail"],
+        ["The answer", 'same ("The same pet?"): yes or no, required\nnote: text up to 200 characters', "detail"],
+        ["Time limits", "10 minutes to finish one once started; one nobody takes expires after 48 hours", "detail"],
+        ["Workers", "none yet: anyone signed in holds it from their first ask", "detail"],
+        ["Tests", "off", "detail"],
+        ["Copies", "off: a step asks one worker", "detail"],
       ],
     );
-    // §5.6: the files an answer carries, merged over the defaults; a bad rule refused on the card.
+    assert.equal(card.summary, 'Anyone signed in to the worker page can do the "pet match" task when a workflow sends one out, unpaid.');
+    // §5.6: the files an answer carries, said as photos (or files), merged over the defaults; a bad rule refused on the card.
     const photo = typeCard({ name: "court-paper", app: "workers", answer: MATCH, attachments: { max: 4, min: 1, types: ["image/*"] } });
-    assert.equal(field(photo, "Files")!.value, "1 to 4 files (image/*) with each answer, saved in the task's run");
-    assert.equal(field(typeCard({ name: "court-paper", app: "workers", answer: MATCH, attachments: {} }), "Files")!.value, "0 to 1 file (image/*, application/pdf) with each answer, saved in the task's run");
+    assert.equal(field(photo, "A worker hands in")!.value, "1 to 4 photos, and answers:\n• The same pet? — yes or no\n• Note — a few words (optional)");
+    assert.match(field(typeCard({ name: "court-paper", app: "workers", answer: MATCH, attachments: {} }), "A worker hands in")!.value, /^up to 1 file, and answers:/);
     assert.equal(typeChangeInput.safeParse({ name: "court-paper", attachments: { max: 11 } }).success, false, "max past 10 is the model's error");
     assert.deepEqual(mergeType("court-paper", { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 72, enabled: true, holdHours: 72, attachments: { max: 4, min: 1, types: ["image/*"] } }, { attachments: { max: 2 } }).attachments, { max: 2, min: 1, types: ["image/*"] });
-    assert.match(card.summary!, /^A new task type pet-match, drawn by the app workers: .* It is open: any signed-in worker of the app may take its tasks, with no grant\.$/);
-    // Invite-only: an admin grants it.
+    // Only people you invite: the admin gives it to each.
     const invite = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false });
-    assert.equal(field(invite, "Who takes it")!.value, "invite-only: the workers an admin grants it to, in Tasks and workers (strut/staff)");
-    assert.equal(field(invite, "Workers")!.value, "none: this grants it to nobody — an admin grants workers in Tasks and workers (strut/staff)");
-    assert.match(invite.summary!, /It grants it to no worker: an admin does, in Tasks and workers\.$/);
-    // A new type with no answer: files only, nothing that fails.
+    assert.equal(field(invite, "Who can do it")!.value, "Only people you invite: give it to each of them in Tasks and workers.");
+    assert.equal(field(invite, "Workers")!.value, "none yet: you give it to each worker in Tasks and workers (strut/staff)");
+    assert.match(invite.summary!, /^Only people you invite can do the "pet match" task/);
+    // A new type with no answer: nothing to hand in but what the files rule says; nothing that fails.
     const none = typeCard({ name: "pet-match", app: "workers" });
-    assert.deepEqual(field(none, "The answer"), { label: "The answer", value: "no fields: only the files sent with it" });
-    assert.doesNotMatch(none.summary!, /Accepting it fails/);
-    // A paid new type: in sats and dollars at the rate, a rise from nothing, so a danger.
+    assert.equal(field(none, "A worker hands in")!.value, "nothing");
+    assert.deepEqual(field(none, "The answer"), { label: "The answer", value: "no fields: only the files sent with it", detail: true });
+    assert.doesNotMatch(none.summary!, /Approving it fails/);
+    // Made switched off: said in the sentence.
+    assert.match(typeCard({ name: "pet-match", app: "workers", answer: MATCH, enabled: false }).summary!, /It starts switched off: nobody gets one until it is turned on\.$/);
+    // A paid new type: dollars first, then sats, and the wait; a rise from nothing, so a danger, never folded.
     const paid = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, tests: { qualify: 3 }, copies: { max: 2, agree: 2 } }, { usdPerBtc: 100_000 });
-    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "10 sats an answer ($0.01), held 72 hours before it can be withdrawn", danger: true });
-    assert.match(paid.summary!, /Its pay rises from nothing to 10 sats an answer \(\$0\.01\)\./);
+    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
+    assert.match(paid.summary!, /for \$0\.01 \(10 sats\) each, paid from this server's wallet\.$/);
     assert.match(field(paid, "Tests")!.value, /^on: 5% of tasks are tests \(25% until a worker has answered 50 real ones\); 3 tests to qualify before any real task; a grant is revoked under 80% passed of the last 20 graded, read once 10 are; graded by equal answers$/);
     assert.equal(field(paid, "Copies")!.value, "on: a step may ask up to 2 workers, each paid; 2 matching answers settle a task, compared by equal answers; when they disagree one more worker is asked, up to 2");
-    // Ruling 12: a new PAID type left open is the admin's call — said as a danger, never refused.
+    // Ruling 12: a new PAID type anyone may take is the admin's call — said plainly as a danger, never refused.
     const paidOpen = typeCard({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10, tests: { qualify: 3 } });
-    assert.deepEqual(field(paidOpen, "Who takes it"), {
-      label: "Who takes it",
-      value:
-        "open: any signed-in worker of workers who is not suspended or banned, with no grant, after qualifying on 3 tests — task type pet-match is paid and qualifies newcomers on 3 tests, and has 0 ready, 3 short: it takes no new worker until they are",
+    assert.deepEqual(field(paidOpen, "Who can do it"), {
+      label: "Who can do it",
+      value: "Anyone signed in to the worker page, after passing a test of 3 tasks, but only 0 of its 3 test tasks are ready, so nobody new can start until 3 more are made.",
       danger: true,
     });
-    assert.doesNotMatch(paidOpen.summary!, /Accepting it fails/);
+    assert.match(paidOpen.summary!, /Nobody new can start it until 3 more test tasks are made\.$/);
+    assert.doesNotMatch(paidOpen.summary!, /Approving it fails/);
     const noTests = typeCard({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10 });
-    assert.match(field(noTests, "Who takes it")!.value, /^open: .* — paid and open with no qualifying tests: anyone signed in earns from their first answer, and staff review is the only check$/);
-    assert.equal(field(noTests, "Who takes it")!.danger, true);
-    assert.match(noTests.summary!, /Who takes it: paid and open with no qualifying tests/);
-    assert.doesNotMatch(noTests.summary!, /Accepting it fails/);
-    // §5.7: a standing type names the workflow each answer starts.
+    assert.deepEqual(field(noTests, "Who can do it"), {
+      label: "Who can do it",
+      value: "Anyone signed in to the worker page, and they are paid from their first one: there is no qualifying test, so only your own review of their answers checks them.",
+      danger: true,
+    });
+    assert.match(noTests.summary!, /Anyone signed in is paid from their first one, with no qualifying test\.$/);
+    // §5.7: a standing type is "any time", and names the workflow each one starts.
     const standing = typeCard({ name: "labels", app: "workers", answer: MATCH, standing: { workflow: "nutrition-label" } });
-    assert.match(standing.summary!, /^A new standing task type labels, drawn by the app workers: a worker starts one there whenever they ask, and each answer starts the workflow nutrition-label\./);
-    assert.equal(field(standing, "Standing")!.value, "yes: a worker starts one whenever they ask, any number at once, and each answer starts the workflow nutrition-label (billed to its owner)");
-    assert.equal(field(paid, "Standing")!.value, "no: a human step in a run makes its tasks");
+    assert.equal(standing.summary, 'Anyone signed in to the worker page can do the "labels" task whenever they like, as many as they like, unpaid.');
+    assert.equal(field(standing, "When")!.value, "Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow nutrition-label.");
+    assert.equal(field(standing, "Time limits")!.value, "10 minutes to finish one once started", "a standing task has no expiry: it lives as long as its lease");
+    // What the person decides on is never folded, nor is any danger.
+    for (const c of [card, invite, paid, paidOpen, noTests, standing]) {
+      for (const f of c.fields!) assert.ok(!(f.detail && f.danger), `${f.label}: a danger is never folded`);
+      assert.deepEqual(c.fields!.filter((f) => !f.detail && !f.danger).map((f) => f.label).filter((l) => l !== "Pay" && l !== "Who can do it"), ["A worker hands in", "When"]);
+    }
   });
 
-  it("the card for a change: each field before and after, the pay rise a danger with the last week's cost, the app's problem a danger; a cut in pay is none", () => {
+  it("askOver: a new ask built on the waiting one — what it leaves out is the waiting one's, rules merged key by key, null off, standing replaced", () => {
+    const waiting = { name: "visit", app: "workers", answer: MATCH, open: false, paySats: 5500, attachments: { max: 4, min: 4, types: ["image/*"] }, standing: { workflow: "visit" }, tests: { qualify: 3 } } as TypeChange;
+    assert.deepEqual(askOver(waiting, { name: "visit", paySats: 6600 } as TypeChange), { ...waiting, paySats: 6600 });
+    assert.deepEqual(
+      askOver(waiting, { name: "visit", attachments: { max: 2 }, tests: null, standing: { workflow: "other" } } as TypeChange),
+      { ...waiting, attachments: { max: 2, min: 4, types: ["image/*"] }, tests: null, standing: { workflow: "other" } },
+    );
+  });
+
+  it("the card for a change: what changes in the person's words, the pay rise a danger with the last week's cost, the app's problem a danger; a cut in pay is none", () => {
     const was = row({ paySats: 10, openTasks: 3, workers: 4, answeredWeek: 40 });
     const card = typeCard({ name: "pet-match", app: "pets", answer: { ...MATCH, required: ["same", "note"] }, paySats: 25, leaseSeconds: 1200, tests: { rate: 0.1 } }, { existing: was, usdPerBtc: 100_000, appProblem: "app pets does not grant task/submit: its page cannot answer this type's tasks" });
-    assert.equal(card.title, "Change task type pet-match");
-    assert.deepEqual(field(card, "Drawn by"), { label: "Drawn by", value: "pets — app pets does not grant task/submit: its page cannot answer this type's tasks", danger: true });
+    assert.equal(card.title, "Change task: pet match");
+    assert.deepEqual(field(card, "Task type"), { label: "Task type", value: "pet-match, in the app pets — app pets does not grant task/submit: its page cannot answer this type's tasks", danger: true });
     assert.equal(
       field(card, "What changes")!.value,
-      ["drawn by: workers → pets", "answer: a new shape (see The answer)", "lease: 10 minutes → 20 minutes", "pay: 10 sats → 25 sats", "tests: off → on"].join("\n"),
+      ["worker app: workers → pets", "questions: new ones (see A worker hands in)", "time to finish: 10 minutes → 20 minutes", "pay: $0.01 (10 sats) → $0.03 (25 sats)", "tests: off → on"].join("\n"),
     );
-    assert.equal(field(card, "Open tasks")!.value, "3: their answers are checked against the new shape when submitted");
+    assert.equal(card.fields![0]!.label, "What changes", "a change's card leads with it");
+    assert.deepEqual(field(card, "Open tasks"), { label: "Open tasks", value: "3: their answers are checked against the new questions when handed in", detail: true });
     assert.equal(field(card, "Workers")!.value, "4 hold it");
     assert.deepEqual(field(card, "Pay"), {
       label: "Pay",
-      value: "25 sats an answer ($0.03), held 72 hours before it can be withdrawn; now 10 sats ($0.01). The last week's 40 answers would have cost 1,000 sats ($1.00), against 400 sats ($0.40) at the pay now",
+      value: "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later. It is $0.01 (10 sats) now. The last week's 40 answers would have cost $1.00 (1,000 sats), against $0.40 (400 sats) at the pay now.",
       danger: true,
     });
-    assert.match(card.summary!, /^Changes the task type pet-match: drawn by, answer, lease, pay, tests\. Workers cannot answer it yet: app pets does not grant task\/submit.* Its pay rises from 10 sats to 25 sats an answer \(\$0\.03\)\.$/);
+    assert.equal(
+      card.summary,
+      'Changes the "pet match" task: worker app, questions, time to finish, pay, tests. Workers cannot do it yet: app pets does not grant task/submit: its page cannot answer this type\'s tasks. Its pay goes up from $0.01 (10 sats) to $0.03 (25 sats) each.',
+    );
     // Rules merged over the type's own, key by key.
     const tested = row({ tests: { rate: 0.05, newRate: 0.25, newTasks: 50, qualify: 10, window: 20, minGraded: 10, threshold: 0.8, grade: "equal", gradeCapUsd: 0.05 } });
     assert.equal(field(typeCard({ name: "pet-match", app: "workers", tests: { qualify: 5, threshold: 0.9 } }, { existing: tested }), "What changes")!.value, "tests: qualify 10 → 5, threshold 0.8 → 0.9");
-    // A merge the save would refuse: K over the type's own window.
+    // A merge the save would refuse: K over the type's own window — a danger, shown.
     const tooMany = typeCard({ name: "pet-match", app: "workers", tests: { window: 4 } }, { existing: tested });
     assert.deepEqual(field(tooMany, "Tests"), { label: "Tests", value: "refused: tests.qualify is a whole number from 0 to 4", danger: true });
-    assert.match(tooMany.summary!, /Accepting it fails: tests\.qualify is a whole number from 0 to 4\.$/);
+    assert.match(tooMany.summary!, /Approving it fails: tests\.qualify is a whole number from 0 to 4\.$/);
     // Opened with enough ready tests on file: no danger, and the change named; short of them, a danger.
     const ready = row({ paySats: 10, open: false, readyTests: 10, tests: tested.tests! });
     const opened = typeCard({ name: "pet-match", app: "workers", open: true }, { existing: ready });
-    assert.equal(field(opened, "What changes")!.value, "who takes it: invite-only → open");
-    assert.deepEqual(field(opened, "Who takes it"), { label: "Who takes it", value: "open: any signed-in worker of workers who is not suspended or banned, with no grant, after qualifying on 10 tests" });
-    const short = field(typeCard({ name: "pet-match", app: "workers", open: true }, { existing: { ...ready, readyTests: 7 } }), "Who takes it")!;
-    assert.match(short.value, /^open: .* — task type pet-match is paid and qualifies newcomers on 10 tests, and has 7 ready, 3 short/);
-    assert.equal(short.danger, true);
-    // Made standing, and off again: the change named.
-    assert.equal(field(typeCard({ name: "pet-match", app: "workers", standing: { workflow: "labels" } }, { existing: was }), "What changes")!.value, "standing: off → starts labels");
-    assert.equal(field(typeCard({ name: "pet-match", app: "workers", standing: null }, { existing: { ...was, standing: { workflow: "labels" } } }), "What changes")!.value, "standing: starts labels → off");
+    assert.equal(field(opened, "What changes")!.value, "who can do it: only people you invite → anyone signed in to the worker page");
+    assert.deepEqual(field(opened, "Who can do it"), { label: "Who can do it", value: "Anyone signed in to the worker page, after passing a test of 10 tasks." });
+    const short = typeCard({ name: "pet-match", app: "workers", open: true }, { existing: { ...ready, readyTests: 7 } });
+    assert.match(field(short, "Who can do it")!.value, /but only 7 of its 10 test tasks are ready, so nobody new can start until 3 more are made\.$/);
+    assert.equal(field(short, "Who can do it")!.danger, true);
+    assert.match(short.summary!, /Nobody new can start it until 3 more test tasks are made\.$/);
+    // Made standing, and off again: "any time" against "when a workflow sends one".
+    assert.equal(field(typeCard({ name: "pet-match", app: "workers", standing: { workflow: "labels" } }, { existing: was }), "What changes")!.value, "when: when a workflow sends one → any time");
+    assert.equal(field(typeCard({ name: "pet-match", app: "workers", standing: null }, { existing: { ...was, standing: { workflow: "labels" } } }), "What changes")!.value, "when: any time → when a workflow sends one");
     // A cut in pay is no danger; unchanged, the card says so.
     const cut = typeCard({ name: "pet-match", app: "workers", paySats: 5 }, { existing: was });
     assert.equal(field(cut, "Pay")!.danger, undefined);
-    assert.equal(field(typeCard({ name: "pet-match", app: "workers" }, { existing: was }), "What changes")!.value, "nothing: the type is already so");
+    assert.equal(field(typeCard({ name: "pet-match", app: "workers" }, { existing: was }), "What changes")!.value, "nothing: it is already so");
     // Turned off: its own title, and what becomes of its open tasks.
     const off = typeCard({ name: "pet-match", app: "workers", enabled: false }, { existing: was });
-    assert.equal(off.title, "Turn off task type pet-match");
-    assert.equal(field(off, "On")!.value, "off");
+    assert.equal(off.title, "Turn off task: pet match");
+    assert.equal(field(off, "What changes")!.value, "turned off");
     assert.equal(field(off, "Open tasks")!.value, "3: not handed out once it is off; they expire when due");
-    assert.match(off.summary!, /^Turns off the task type pet-match: a `human` step can make no new task of it/);
+    assert.match(off.summary!, /^Turns off the "pet match" task: nobody gets a new one, and the open ones expire when due\./);
   });
 });
 
@@ -354,6 +376,34 @@ describe("task/set-type on a strut: the builder asks, an admin says yes", () => 
   };
   const types = async () => ((await (await strut.app.request("/tasks/types", { headers: auth })).json()) as { types: TaskType[] }).types;
 
+  it("a second ask while the first card still waits is built on it and replaces it: one card, the whole type, and the yes saves it; once the type exists an ask is a change and replaces nothing", async () => {
+    const photos = { max: 4, min: 4, types: ["image/*"] };
+    const first = (await ask({ name: "visit", app: "workers", answer: MATCH, open: false, paySats: 5500, attachments: photos, rationale: "Shop visits at $5." })) as { proposal: string };
+    // "Make it $6": the builder asks for the change alone, as for a type that exists.
+    const second = (await ask({ name: "visit", app: "workers", paySats: 6600, rationale: "Now $6." })) as { proposal: string; title: string; replaced?: string };
+    assert.equal(second.title, "New task: visit");
+    assert.equal(second.replaced, first.proposal, "the builder reads that its earlier card is closed");
+    const rec = await record(second.proposal);
+    assert.deepEqual(rec.input, { name: "visit", app: "workers", answer: MATCH, open: false, paySats: 6600, attachments: photos }, "the record keeps the whole type the card shows");
+    assert.equal(rec.replaces, first.proposal);
+    assert.match(rec.card!.summary!, /^Only people you invite can do the "visit" task .* for \$6\.60 \(6,600 sats\) each, paid from this server's wallet\. .*It replaces the earlier card for this task\.$/);
+    assert.match(rec.card!.fields.find((f) => f.label === "A worker hands in")!.value, /^4 photos, and answers:/);
+    const old = await record(first.proposal);
+    assert.deepEqual([old.status, old.replacedBy], ["rejected", second.proposal]);
+    assert.deepEqual((await proposals()).filter((p) => p.status === "pending").map((p) => p.id), [second.proposal], "one card left");
+
+    const accepted = await decide(second.proposal, auth);
+    assert.equal(accepted.body.status, "applied", JSON.stringify(accepted.body.result));
+    const [t] = await types();
+    assert.deepEqual([t!.paySats, t!.open, t!.attachments], [6600, false, photos], "the yes saved the whole type");
+
+    const third = (await ask({ name: "visit", app: "workers", paySats: 7000 })) as { proposal: string };
+    const r3 = await record(third.proposal);
+    assert.equal(r3.replaces, undefined);
+    assert.deepEqual(r3.input, { name: "visit", app: "workers", paySats: 7000 }, "a change of the type, merged over it when saved");
+    assert.equal(r3.card!.title, "Change task: visit");
+  });
+
   it("task/types lists what is there: each type with its app, shape, on or off, open or invite-only, pay, its open tasks, how many hold it, its week and its ready tests — never who", async () => {
     assert.deepEqual(await step("task/types").run({}, ctx()), { types: [] });
     const cap = strut.tasks.capability;
@@ -422,7 +472,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     // Ruling 12: a new paid type left open with no tests — the card's danger, and the admin's yes saves it.
     const open = (await ask({ name: "pet-match", app: "workers", answer: MATCH, paySats: 10 })) as { proposal: string };
     const openRec = await record(open.proposal);
-    assert.equal(openRec.card?.fields.find((f) => f.label === "Who takes it")?.danger, true);
+    assert.equal(openRec.card?.fields.find((f) => f.label === "Who can do it")?.danger, true);
     const opened = await decide(open.proposal, { cookie: await signIn("ada", "admin") });
     assert.equal(opened.body.status, "applied");
     assert.deepEqual((await types()).map((t) => [t.name, t.open, t.paySats, t.tests]), [["pet-match", true, 10, undefined]]);
@@ -430,20 +480,20 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
 
     const out = (await ask({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, rationale: "Low-confidence matches go to a person." })) as { proposal: string; status: string; title: string };
     assert.equal(out.status, "pending");
-    assert.equal(out.title, "New task type pet-match");
+    assert.equal(out.title, "New task: pet match");
     const rec = await record(out.proposal);
     assert.equal(rec.step, "task/set-type");
     assert.equal(rec.approver, "admin");
     assert.deepEqual(rec.input, { name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10 });
-    assert.equal(rec.card?.actions.accept, "Save type");
+    assert.equal(rec.card?.actions.accept, "Approve");
     // No app named workers here: a danger on the card.
-    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Drawn by"), { label: "Drawn by", value: "workers — no app workers on this server", danger: true });
-    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "10 sats an answer ($0.01), held 72 hours before it can be withdrawn", danger: true });
+    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Task type"), { label: "Task type", value: "pet-match, in the app workers — no app workers on this server", danger: true });
+    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
 
     // A member is refused: their own page's accept (strut's own app, `proposal/decide`), their
     // session at the route, and their person token. Nothing saved, still pending.
     const page = ctx({ app: { name: "strut/jamie", version: "v1", firstParty: true }, workflow: RUN_STEP_FLOW, path: `${RUN_STEP_FLOW}/decide` });
-    await assert.rejects(step("proposal/decide").run({ id: out.proposal, action: "accept" }, page), /^Error: admin_required: only an admin of this strut server accepts "New task type pet-match" \(task\/set-type\)/);
+    await assert.rejects(step("proposal/decide").run({ id: out.proposal, action: "accept" }, page), /^Error: admin_required: only an admin of this strut server accepts "New task: pet match" \(task\/set-type\)/);
     assert.equal((await decide(out.proposal, { cookie: await signIn("bo", "member") })).status, 403, "a member's session reaches no route but the apps");
     const person = await decide(out.proposal, { authorization: `Bearer ${personToken("ann")!.token}` });
     assert.equal(person.status, 403);
@@ -486,15 +536,15 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     await cap.ensure({ type: "pet-match", workflow: "pets", runId: "r1", path: "pets/review" });
 
     const out = (await ask({ name: "pet-match", app: "workers", paySats: 25, tests: { rate: 0.2 } })) as { proposal: string; title: string };
-    assert.equal(out.title, "Change task type pet-match");
+    assert.equal(out.title, "Change task: pet match");
     const rec = await record(out.proposal);
     assert.ok(!JSON.stringify(rec).includes(SECRET), "no expected answer on the record or its card");
     const fields = Object.fromEntries(rec.card!.fields.map((f) => [f.label, f]));
-    assert.equal(fields["What changes"]!.value, "pay: 10 sats → 25 sats\ntests: rate 0.05 → 0.2");
+    assert.equal(fields["What changes"]!.value, "pay: $0.01 (10 sats) → $0.03 (25 sats)\ntests: rate 0.05 → 0.2");
     assert.equal(fields["Open tasks"]!.value, "1");
     assert.equal(fields["Workers"]!.value, "1 hold it");
     assert.equal(fields["Pay"]!.danger, true);
-    assert.match(fields["Pay"]!.value, /^25 sats an answer \(\$0\.03\), held 24 hours before it can be withdrawn; now 10 sats \(\$0\.01\)\. No answers in the last week$/);
+    assert.equal(fields["Pay"]!.value, "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 1 day later. It is $0.01 (10 sats) now. None were done in the last week.");
 
     // The admin's edit that breaks the shape: 400, still pending, nothing changed.
     const broken = await decide(out.proposal, auth, { action: "accept", input: { answer: { type: "object", properties: { x: { type: "string", pattern: "a" } } } } });

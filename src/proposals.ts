@@ -72,6 +72,11 @@ export interface Proposal {
   result?: { output?: unknown; error?: string; cost?: number; nodes?: unknown[]; at: string };
   /** When the proposing session was told of the decision (§5). */
   reportedAt?: string;
+  /** The waiting proposal this one replaced (`ProposalDescription.replaces`). */
+  replaces?: string;
+  /** The newer proposal that replaced this one while it waited: strut
+   *  rejected it then, so a host may leave it out of the thread. */
+  replacedBy?: string;
 }
 
 /** The slim form a host reads: `run.end { proposals }`, the steps' results. */
@@ -87,9 +92,11 @@ export interface ProposalBrief {
   rationale?: string;
   createdAt: string;
   decidedAt?: string;
+  /** Replaced by a newer proposal while it waited: a host may leave it out. */
+  replacedBy?: string;
 }
 
-export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by">;
+export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by" | "replaces">;
 
 export interface ProposalFilter {
   /** One job's, or any of several (the jobs a conversation page's turns started). */
@@ -166,6 +173,7 @@ export function briefOf(p: Proposal): ProposalBrief {
     ...(p.rationale ? { rationale: p.rationale } : {}),
     createdAt: p.createdAt,
     ...(p.decision ? { decidedAt: p.decision.at } : {}),
+    ...(p.replacedBy ? { replacedBy: p.replacedBy } : {}),
   };
 }
 
@@ -291,6 +299,30 @@ async function writeProposal(root: string, p: Proposal): Promise<void> {
   for (const k of [...inflight.keys()]) if (k.startsWith(`${root}\0`)) inflight.delete(k);
 }
 
+/** The thread a proposal shows in (`visibleTo`): its conversation, else its session. */
+const threadOf = (p: Pick<Proposal, "by">) => p.by.conversation ?? p.by.session;
+
+/** Close the waiting proposal `id` that `rec` replaces: rejected by strut,
+ *  "Replaced by a newer card", `replacedBy` the new one, and reported at
+ *  once (the proposer made the replacement itself). Only a PENDING one of
+ *  the same step in the same thread; null when there is nothing to close. */
+async function replaceProposal(root: string, id: string, rec: Proposal): Promise<Proposal | null> {
+  const fits = (q: Proposal) => q.id !== rec.id && q.status === "pending" && q.step === rec.step && !!threadOf(q) && threadOf(q) === threadOf(rec);
+  const was = await readProposal(root, id);
+  if (!was || !fits(was)) return null;
+  let closed = false;
+  const p = await updateProposal(root, id, (q) => {
+    if (!fits(q)) return;
+    const at = new Date().toISOString();
+    q.status = "rejected";
+    q.decision = { action: "reject", by: "strut", at, reason: "Replaced by a newer card" };
+    q.replacedBy = rec.id;
+    q.reportedAt = at;
+    closed = true;
+  });
+  return closed ? p : null;
+}
+
 async function updateProposal(root: string, id: string, edit: (p: Proposal) => void): Promise<Proposal | null> {
   return withLock(join(root, `${id}.json`), async () => {
     const p = await readProposal(root, id);
@@ -369,6 +401,11 @@ export interface ProposalsCapability {
   /** Is the person the run `runId` is for an ADMIN here, as its records
    *  say (`adminStanding`)? Undefined when they do not say. */
   personIsAdmin?(runId: string): Promise<boolean | undefined>;
+  /** The proposals of `step` still WAITING in the thread the run belongs
+   *  to (else, when no thread is known, its job's: a job is one thread's),
+   *  newest first: what a step's `describe` may build a new ask on and
+   *  replace (`ProposalDescription.replaces`). None with neither. */
+  waiting?(step: string, run: { runId: string; job?: string }): Promise<Proposal[]>;
 }
 
 export function proposalsCapability(
@@ -393,10 +430,20 @@ export function proposalsCapability(
   };
   return {
     async propose(p) {
-      const conversation = p.by.conversation ?? (await deps.conversationOf?.(p.by.runId).catch(() => undefined));
-      const rec = await createProposal(root, conversation ? { ...p, by: { ...p.by, conversation } } : p);
+      const { replaces, ...ask } = p;
+      const conversation = ask.by.conversation ?? (await deps.conversationOf?.(ask.by.runId).catch(() => undefined));
+      let rec = await createProposal(root, conversation ? { ...ask, by: { ...ask.by, conversation } } : ask);
+      // `replaces` is recorded only when the waiting one was in fact closed.
+      const old = replaces ? await replaceProposal(root, replaces, rec) : null;
+      if (old) rec = (await updateProposal(root, rec.id, (q) => void (q.replaces = old.id))) ?? rec;
       tell(rec);
+      if (old) tell(old);
       return rec;
+    },
+    async waiting(step, run) {
+      const thread = await deps.conversationOf?.(run.runId).catch(() => undefined);
+      if (!thread && !run.job) return [];
+      return (await listProposals(root, { status: "pending" })).filter((q) => q.step === step && (thread ? threadOf(q) === thread : q.by.job === run.job));
     },
     get: (id) => readProposal(root, id),
     list: (filter) => listProposals(root, filter),
@@ -520,6 +567,7 @@ export async function proposeCall(
     ...(summary ? { summary } : {}),
     ...(card ? { card } : {}),
     ...(def.approver ? { approver: def.approver } : {}),
+    ...(described?.replaces ? { replaces: described.replaces } : {}),
     by: {
       workflow: workflowOf(ctx),
       runId: ctx.runId,
@@ -539,7 +587,9 @@ export async function proposeCall(
   return result(rec);
 }
 
-const result = (p: Proposal) => ({ proposal: p.id, status: p.status, step: p.step, title: p.title, url: proposalUrl(p.id) });
+/** What the proposing agent reads back; `replaced`, the waiting card this
+ *  one closed and stands in for, so its reply never sends the person to it. */
+const result = (p: Proposal) => ({ proposal: p.id, status: p.status, step: p.step, title: p.title, url: proposalUrl(p.id), ...(p.replaces ? { replaced: p.replaces } : {}) });
 
 /** Is the person the turn `ctx` is for an ADMIN of this strut server
  *  (plans/member-rights.md)? A page's turn says (`ctx.app.admin`, the app
