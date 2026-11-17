@@ -70,6 +70,8 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** Folded under "Details": a setting most people need not read. */
+  detail?: boolean;
 }
 
 export interface ProposalCard {
@@ -97,6 +99,8 @@ export interface ProposalBrief {
   rationale?: string;
   createdAt: string;
   decidedAt?: string;
+  /** A newer card replaced it while it waited (strut closed it): left out of the thread. */
+  replacedBy?: string;
 }
 
 /** `proposal/get`: the whole record. */

@@ -81,7 +81,9 @@ export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fi
   const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean | "person"; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
   if (fill) doc.params.system = fill(doc.params.system);
   if (opts?.peer === false) delete doc.peer;
-  if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
+  // A tool the template already grants is not listed twice (a host that
+  // granted graph/graph-get before the orchestrator did).
+  if (opts?.tools?.length) doc.params.tools.push(...opts.tools.filter((t) => !doc.params.tools.includes(t)));
   if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);
   if (opts?.model === null) delete doc.params.model;
   else if (opts?.model) doc.params.model = opts.model;

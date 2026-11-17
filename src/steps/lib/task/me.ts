@@ -26,8 +26,11 @@ export default defineStep({
     "and balance { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }: what they are owed here, earnings in their hold and those past it, " +
     "and payout { on, why?, minMsat, dayLeftMsat, maxMsat, out? }: whether they may withdraw now (why not: off | no_wallet | no_keysend | no_address — sign in with Peel — | not_here), the least and the most one withdrawal may ask, and a payout on its way (task/withdraw). " +
     "With all: true, the types of EVERY app the viewer can open here (a visitor: the public view's apps), each naming its app, and the task in hand whichever app draws it — a dashboard across apps; task/next still hands out only the calling app's. " +
-    "A first call writes the viewer as a new worker, for staff to grant task types to. Only an app page's own call, as its viewer.",
-  input: z.object({ all: z.boolean().optional() }),
+    "A first call writes the viewer as a new worker, for staff to grant task types to — or, with the token their invite link opened the app with (`invite`), gives them the app's invite-only task types. Only an app page's own call, as its viewer.",
+  input: z.object({
+    invite: z.string().min(1).max(2000).optional().describe("The token the worker's invite link opened this app with (its tool input's `invite`). The kit's useWorker sends it."),
+    all: z.boolean().optional(),
+  }),
   output: z.object({
     actor: z.string(),
     status: z.enum(["new", "active", "suspended", "banned"]),
@@ -46,7 +49,9 @@ export default defineStep({
   async run(cfg, ctx?: StepContext) {
     const call = workerCall("task/me", ctx);
     const { tasks, actor, address } = call;
-    const me = await tasks.me(actor, { ...(await appsOf(call, cfg.all)), ...(address ? { address } : {}) });
+    // An invite's token names the app its link opened: this one, also when the list spans apps.
+    const invite = cfg.invite ? { invite: cfg.invite, ...(cfg.all ? { inviteApp: call.app } : {}) } : {};
+    const me = await tasks.me(actor, { ...(await appsOf(call, cfg.all)), ...(address ? { address } : {}), ...invite });
     // A host's own store may not count what waits: nothing, as far as it says.
     const types = me.types.map((t) => ({ ...t, standing: t.standing ?? false, waiting: t.waiting ?? 0 }));
     // A host's own store pays nobody: it says so, as strut's own would.

@@ -1985,6 +1985,8 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** Folded under "Details": a setting most people need not read. */
+  detail?: boolean;
 }
 
 /** What a person decides on (src/proposal-card.ts, specs/API.md §12). */

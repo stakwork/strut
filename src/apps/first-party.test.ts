@@ -292,7 +292,9 @@ describe("first-party apps through a whole strut", () => {
   it("what only an admin accepts: a member's turn proposes nothing and says why; an admin's card is theirs to accept, never their member session's", async () => {
     // A member's page: the turn's tool call is refused, the model reads why.
     const mo = page("strut/jamie", "mo");
+    const ADMIN_LINE = "The person is an admin of this server: what needs an admin to approve, they approve themself.";
     await mo.turn("mo/c1", "install it");
+    assert.ok(!requests.some((b) => JSON.stringify(b.messages).includes(ADMIN_LINE)), "a member's turn is not told they are an admin");
     assert.deepEqual((await mo.ok("proposal/list", { status: "pending" })).proposals, []);
     assert.ok(
       requests.some((b) => JSON.stringify(b.messages).includes("admin_required: installer is an admin's decision on this strut server")),
@@ -301,7 +303,11 @@ describe("first-party apps through a whole strut", () => {
 
     // An admin's page: proposed, the record saying who accepts it.
     const ada = page("strut/jamie", "ada", true);
+    const before = requests.length;
     const runId = await ada.turn("ada/c1", "install it");
+    // The admin's own turn says so before their message (proposal/standing),
+    // so the reply says the card is theirs, not "an admin will approve it".
+    assert.ok(requests.slice(before).some((b) => JSON.stringify(b.messages).includes(`${ADMIN_LINE} install it`)), "an admin's turn is told they approve it");
     const start = (await ada.ok("run/events", { workflow: ORCHESTRATOR_WORKFLOW, runId })).find((e: any) => e.type === "run.start");
     assert.deepEqual(start.app, { name: "strut/jamie", version: "v1", firstParty: true, admin: true });
     const { proposals } = await ada.ok("proposal/list", { status: "pending" });

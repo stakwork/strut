@@ -401,12 +401,14 @@ export function errorText(err: unknown): string {
 // ── sharing a worker app (§9.5) ─────────────────────────────────────────────
 
 /** Each public worker app once, with the types its workers answer. */
-export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[] }> {
-  const out = new Map<string, { app: string; share: TypeShare; types: string[] }>();
+export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[]; invited: string[] }> {
+  const out = new Map<string, { app: string; share: TypeShare; types: string[]; invited: string[] }>();
   for (const t of types ?? []) {
     if (!t.share?.public || !t.share.peelLink) continue;
-    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [] };
+    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [], invited: [] };
     row.types.push(t.name);
+    // The invite-only ones: what an invite gives its worker (§5.8).
+    if (t.open === false) row.invited.push(t.name);
     out.set(t.app, row);
   }
   return [...out.values()];
@@ -416,7 +418,7 @@ export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; 
 
 /** An invite's status in words. */
 export const INVITE_WORDS: Record<InviteStatus, string> = {
-  sending: "Sending: the wallet is paying the mixer for it",
+  sending: "Getting it ready: the wallet is paying for it",
   ready: "Ready to send",
   failed: "Failed: the wallet could not pay for it",
   used: "Used: a worker signed up with it",
@@ -428,11 +430,21 @@ export function inviteOpen(i: Pick<Invite, "status">): boolean {
   return i.status === "sending" || i.status === "ready";
 }
 
-/** Why this server cannot invite, in words. */
+/** Why this server cannot invite, in words a person who is not technical
+ *  follows; the cause for whoever runs the server in brackets. */
 export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
   return why === "no_pay_credential"
-    ? "Inviting needs this server's wallet to pay: a Sphinx daemon with its pay token (the Earnings app's wallet settings)."
-    : "This server's wallet cannot make Sphinx invites: a Sphinx daemon whose version has the invite routes can.";
+    ? "To invite people, this server's wallet has to be set up first, in Earnings. (No Sphinx daemon pay token.)"
+    : "This server's wallet cannot make invites yet: it needs an update. (Its Sphinx daemon has no invite routes.)";
+}
+
+/** The tasks a worker app's workers do, as the Share area says them:
+ *  `the "coffee shop visit" task`, `the "a" and "b" tasks`; "" for none. */
+export function tasksWords(types: readonly string[] | undefined): string {
+  const names = (types ?? []).map((t) => `"${t.replace(/[-_]+/g, " ")}"`);
+  if (!names.length) return "";
+  if (names.length === 1) return `the ${names[0]} task`;
+  return `the ${names.slice(0, -1).join(", ")} and ${names.at(-1)} tasks`;
 }
 
 /** The words a worker is sent with the link. */

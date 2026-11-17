@@ -1016,8 +1016,8 @@ worker app (a= : <public view>/?app=<name>&solo=1&public=1) ─▶ sign in with 
    app; an existing user goes straight there.
 4. **Work.** The worker app signs in with `sphinx` and the root key (§5.4):
    for a Peel user, one tap. Their first `task/next` enters the app's open
-   types (ruling 9). An invite-only type still needs a staff grant, as
-   before.
+   types (ruling 9), and their invite gives them its invite-only types
+   ("Per-invite grants" below): no staff grant needed.
 
 #### The `a=` section
 
@@ -1055,10 +1055,40 @@ the worker's starting balance; the mixer's invite price is paid on top.
 `scripts/fake-sphinx-daemon.ts` answers the three for a local strut and
 the tests.
 
+#### Per-invite grants
+
+**Built** (stakwork/strut#724, 2026-11-17). An invite gives its worker the
+work only invited people do, in one step: staff no longer grant each
+invited worker on the Workers tab.
+
+- **The token.** `a=` is the worker app's share link with
+  `&input=invite%3D<token>`: `strut-invite.<claims>.<hmac>` (auth.ts
+  `inviteToken` / `inviteOf`), the daemon's invite code and the app, signed
+  like a session, 90 days from the invite's creation, so a listing shows
+  the link the worker was sent. The app is opened with it as its tool
+  input (plans/apps.md §7.1).
+- **The page.** The kit's `useTask` and `useWorker` send it as `invite` on
+  `task/next` and `task/me`: every worker app gets it with no code of its
+  own.
+- **The grant.** The task service (`enterInvite`) gives that worker the
+  app's INVITE-ONLY, enabled types they hold no row of, by
+  `invite:<code>`, with the K a staff grant records (§7.5). One worker per
+  invite: once a grant it made is held by another, revoked or not, it gives
+  nothing (`WorkerStore.grantedBy`), and two first asks with one link are
+  taken one after the other. Only while the daemon lists the invite
+  `sending`, `ready` or `used`: cancelled or failed, it gives nothing. Never
+  a type staff revoked from that worker, never to a suspended or banned
+  one. A token that does not hold, or opens another app, is ignored.
+- **Staff's page.** Share's invite says which tasks it gives; the Peel link
+  says it does not give invite-only work.
+- **Not done:** marking the worker as invited by whom (the grant's `by`
+  names the invite, not the staff member who made it).
+
 #### What strut keeps
 
-Nothing new. The daemon keeps the invites, and the task store nothing: no
-invite table, no pending worker, no grant made ahead. An invite's default
+No invite table, no pending worker, no grant made ahead: the daemon keeps
+the invites, and the task store only the grants an invite made (`by:
+invite:<code>`) once its worker comes. An invite's default
 sats is a MONEY SETTING (§9.9): `inviteSats` on the payout settings, 100
 sats, 1 to 100,000, edited beside the caps in the Payouts tab.
 
@@ -1068,9 +1098,8 @@ sats, 1 to 100,000, edited beside the caps in the Payouts tab.
   the fallback is that. A store listing would change the fallback alone.
 - **Deferring the words backup** in Peel's onboarding, so a new worker
   reaches the work before writing down their words.
-- **Per-invite grants**: an invite that grants an invite-only type, or
-  marks the worker as invited by whom. The link carries the app alone, and
-  any open type lets them in.
+- **Who invited a worker**: per-invite grants are built (above); an
+  invite does not yet mark the worker as invited by which staff member.
 - **iPhone.** The page says to open the link on an Android phone.
 
 ## 6. Task types and staff
@@ -3608,7 +3637,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
 | 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
 | Dashboard | **The worker's dashboard**: `task/me` gains `standing`, `waiting` (what `take` could hand them, by type: the store's `waitingFor`) and `holding`; `task/history`, their own newest tasks with each `ask`, how it ended and what it earned; the kit's `useTaskHistory`; strut/views' `WorkHome`, where `WorkerPage` lands a signed-in worker: the task in hand as Continue, each kind with its pay and "Any time" / "N waiting", what they earned, what they did; choosing a kind works it. After an answer no next task is leased until Next task. ACROSS APPS: `{ all }` on both steps reads every app the caller can open (the public view's for a visitor, `WORKER_APPS` on the door's bag); strut/worker's dashboard (`everyApp`) lists them, and a kind another app draws opens that app on it in place, with a Back bar (`publicAppHop`, web/src/components/SoloApp.tsx). No Peel change: its web view (iOS and Android) loads a same-origin navigation in place and keeps the origin's cookies | 9 | **Built** (branch `feature/worker-dashboard`). A kind is chosen, never one task (a test is served in place of a task, §7.2) |
-| Invites | **Inviting a worker** (§5.8): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite in each worker app's Share block, the invite list on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Not decided: the Play Store, deferring the words backup, per-invite grants (§5.8) |
+| Invites | **Inviting a worker** (§5.8): `staff/invite`, `staff/invites` and `staff/cancel-invite` over the daemon's `POST /invite`, `GET /invites` and `POST /invite/:code/cancel` through the payer; the join link `https://<public view>/public/join#<invite>&a=<worker app>`; the static `/public/join` page (Peel's `intent://` on Android, a QR code elsewhere); Invite in each worker app's Share block, the invite list on the Workers tab; `inviteSats` in the payout settings. Nothing new in the task store. Peel Android's side and the daemon's routes are their repos' | 5b, 6, open types | **Built** (strut's side): stakwork/strut#711. Per-invite grants built in stakwork/strut#724 (§5.8: an invite's link carries a signed token, and its worker is given the app's invite-only types). Not decided: the Play Store, deferring the words backup, who invited a worker (§5.8) |
 
 Support, a chat between workers and staff over the treasury's Sphinx DMs, is
 its own plan: `plans/support-chat.md` (ruled 2026-11-16). Its items 1

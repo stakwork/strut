@@ -36,7 +36,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
-import { principalRequired } from "./auth.js";
+import { inviteOf, principalRequired } from "./auth.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
@@ -1693,6 +1693,19 @@ export async function createStrut<TServices = unknown>(
     // Withdraw (plans/human-steps.md §8.2): the payer's third door, built
     // below beside the withdrawals it sends through.
     payouts: { pay: (actor, o) => payouts.pay(actor, o), view: (actor, o) => payouts.view(actor, o) },
+    // Invites (plans/human-steps.md §5.8): the token an invite's link opens
+    // the worker app with gives its worker the app's invite-only types,
+    // while the daemon still has the invite — cancelled or failed, it
+    // gives nothing; a daemon that cannot answer, nothing now.
+    invite: {
+      read: (token) => inviteOf(token),
+      live: async (code) => {
+        const payer = await payments.payer();
+        if (!payer?.invites) return false;
+        const inv = (await payer.invites()).find((i) => i.code === code);
+        return !!inv && (inv.status === "sending" || inv.status === "ready" || inv.status === "used");
+      },
+    },
     // Standing types (plans/human-steps.md §5.7): a pick-up is read off the
     // type's workflow — on, with someone to bill, its first step the type's
     // `human` step — and each answer launches that workflow under the run id

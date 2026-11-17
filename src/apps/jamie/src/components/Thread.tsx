@@ -11,7 +11,7 @@ import { Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { inFlight, sendRefusal, silentReply, turnContext, type SendRefusal } from "../lib/chat";
+import { inFlight, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
 import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useSend, useStop, useUpdateConversation } from "../hooks";
@@ -235,7 +235,8 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
       )}
       {!working && turn.text && !silent && (
         <div data-chat-bubble="assistant" className="group/reply relative rounded-2xl bg-muted/40 py-2 pl-3 pr-8 shadow-sm">
-          <Markdown text={turn.text} />
+          {/* The question shows once, in the ask box below. */}
+          <Markdown text={withoutAsk(turn.text, turn.ask)} />
           <CopyButton text={turn.text} label="Copy reply" className="absolute right-1 top-1 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/reply:opacity-100" />
         </div>
       )}
@@ -252,9 +253,12 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
       {turn.jobs.map((j) => (
         <JobCard key={`${j.job}:${j.runId}`} job={j.job} runId={j.runId} {...(j.workflow ? { workflow: j.workflow } : {})} conversation={conversation} />
       ))}
-      {turn.proposals.map((p) => (
-        <ProposalCard key={p.id} brief={p} />
-      ))}
+      {/* A card a newer one replaced while it waited is gone: the newer one says it all. */}
+      {turn.proposals
+        .filter((p) => !p.replacedBy)
+        .map((p) => (
+          <ProposalCard key={p.id} brief={p} />
+        ))}
       {own.map(card)}
     </div>
   );

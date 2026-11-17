@@ -856,6 +856,24 @@ describe("a worker's page (plans/human-steps.md §5.3)", () => {
     await h.unmount();
   });
 
+  it("an invite link's token (the page's tool input `invite`) goes with task/me and task/next, so its worker is given the work (plans/human-steps.md §5.8)", async () => {
+    const host = createStaticHost({});
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [] }),
+      // Held a moment before "none", as the server holds it (`wait`).
+      [TASK_STEPS.next]: () => new Promise((resolve) => setTimeout(() => resolve({ none: true }), 30)),
+    });
+    const h = await renderHook(() => ({ me: useWorker(), t: useTask() }), { client, host });
+    await until(() => calls.some((c) => c.type === "task/me") && calls.some((c) => c.type === "task/next"), "asked without one");
+    assert.deepEqual(calls.find((c) => c.type === "task/me")!.config, {}, "no invite: nothing sent");
+    assert.equal((calls.find((c) => c.type === "task/next")!.config as { invite?: string }).invite, undefined);
+    await act(async () => { host.setToolInput({ invite: "strut-invite.x.y" }); });
+    await until(() => calls.filter((c) => c.type === "task/me").length >= 2 && calls.some((c) => (c.config as { invite?: string } | undefined)?.invite && c.type === "task/next"), "asked with it");
+    assert.deepEqual(calls.filter((c) => c.type === "task/me").at(-1)!.config, { invite: "strut-invite.x.y" });
+    assert.equal((calls.filter((c) => c.type === "task/next").at(-1)!.config as { invite?: string }).invite, "strut-invite.x.y");
+    await h.unmount();
+  });
+
   it("useWorker is task/me; useTaskFile reads one of the task's files through its lease, nothing without a task", async () => {
     const { client, calls } = fakeClient({
       [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers" }] }),

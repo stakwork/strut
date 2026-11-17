@@ -86,6 +86,9 @@ export interface WorkerStore {
   /** The queue's counts (plans/human-steps.md §9.4): workers by status, and
    *  live grants by type. */
   counts(): Promise<WorkerCounts>;
+  /** The workers holding any grant `by` made, revoked ones included: who
+   *  an invite (`invite:<code>`) already let in. */
+  grantedBy(by: string): Promise<string[]>;
 }
 
 export interface WorkerCounts {
@@ -161,6 +164,10 @@ export class MemoryWorkerStore implements WorkerStore {
       if (o.why !== undefined) g.why = o.why;
     }
     return this.record(actor);
+  }
+
+  async grantedBy(by: string): Promise<string[]> {
+    return [...this.grants].filter(([, mine]) => [...mine.values()].some((g) => g.by === by)).map(([actor]) => actor);
   }
 
   async counts(): Promise<WorkerCounts> {

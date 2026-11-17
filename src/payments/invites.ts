@@ -15,9 +15,16 @@
  * code → starting sats, and the core's parser ignores a section it does not
  * know.
  *
+ * The worker app's URL carries the invite's own token (`input=invite=…`,
+ * auth.ts `inviteToken`), handed to the app as its tool input: the worker's
+ * page sends it with `task/me` and `task/next`, and the task service gives
+ * that worker the app's INVITE-ONLY task types (`enterInvite`), one worker
+ * per invite, while the daemon still has it. So one link lets someone in
+ * and gives them the work; an open type lets anyone in on their first
+ * `task/next` (ruling 9).
+ *
  * Nothing is kept here: the daemon keeps the invites, and the task store
- * nothing new — task types are open by default (ruling 9), so the worker's
- * first `task/next` lets them in.
+ * keeps the grant an invite made (`by: invite:<code>`), nothing more.
  *
  * Never on a services bag: only the staff's `/tasks/invites` routes hold it.
  */
@@ -25,6 +32,21 @@ import { LightningError } from "./lightning.js";
 import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvite } from "./payer.js";
 import { INVITE_SATS_MAX } from "./ledger.js";
 import { publicAppLinks } from "../public-routes.js";
+import { inviteToken } from "../auth.js";
+
+/** How long an invite's token lets its worker in. */
+export const INVITE_TOKEN_DAYS = 90;
+
+/** The worker app's URL an invite opens: its share link with the invite's
+ *  token as the app's input (`?input=invite=…`, plans/apps.md §7.1), so the
+ *  page that opens with it hands it back. Fixed by the invite's code, app
+ *  and creation time, so a listing shows the link the worker was sent. */
+export function invitedAppUrl(base: string, app: string, code: string, createdAt?: string): string {
+  const link = publicAppLinks(base, app).link;
+  const made = createdAt ? Date.parse(createdAt) : NaN;
+  const token = inviteToken(code, app, (Number.isFinite(made) ? made : Date.now()) + INVITE_TOKEN_DAYS * 86_400_000);
+  return token ? `${link}&input=${encodeURIComponent(`invite=${token}`)}` : link;
+}
 
 export type InviteErrorCode =
   | "bad_request"
@@ -137,7 +159,7 @@ export function createInvites(deps: InvitesDeps): Invites {
   };
   const view = (inv: WalletInvite, base: string, app: string | undefined): InviteView => {
     // No app, no link: one that opened nothing after the sign-up would mislead.
-    const link = inv.link && app ? joinLink(base, inv.link, publicAppLinks(base, app).link) : undefined;
+    const link = inv.link && app ? joinLink(base, inv.link, invitedAppUrl(base, app, inv.code, inv.createdAt)) : undefined;
     return { code: inv.code, ...(link ? { link } : {}), sats: inv.sats, status: inv.status, ...(inv.createdAt ? { createdAt: inv.createdAt } : {}) };
   };
   const payerOf = async (): Promise<Payer & Required<Pick<Payer, "invite" | "invites" | "cancelInvite">>> => {

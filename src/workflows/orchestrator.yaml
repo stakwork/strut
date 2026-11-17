@@ -51,14 +51,17 @@ steps:
   # routes a request by kind and passes it as the job's `kind`. The same tree
   # the job agent reads; a deployment and its workspace grow it. Read every
   # turn; the session keeps its first turn's prompt. Empty without a graph,
-  # the page, or any kind under it. No `tool`: this agent has no graph-get
-  # of its own (a host that grants one says so in its section).
+  # the page, or any kind under it. `tool`: the list ends with how to open a
+  # kind's page (graph/graph-get, granted below), for when this agent needs
+  # what a page says to talk the person through a request of that kind,
+  # such as what they decide before a job starts. The job still reads it in
+  # full; this agent opens one only when it needs it.
   - id: concepts
     type: context/concept
     config:
       name: "{{ params.concept }}"
       docs: false
-      tool: ""
+      tool: graph_graph_get
   # The kinds of thing the BUILDER builds here, the same way: the `Workflow
   # Builder` Concept's children (strut's `App`, a deployment's janitors),
   # the tree the builder reads. A request for one of them is a job on
@@ -68,7 +71,7 @@ steps:
     config:
       name: "{{ params.buildConcept }}"
       docs: false
-      tool: ""
+      tool: graph_graph_get
   # How the PERSON likes things done: a host that keeps their own pages
   # (`createStrut({ concepts: { personal: true } })`) names the root in
   # `params.personalConcept`, `Personal`. Unlike the two lists above, these
@@ -96,6 +99,19 @@ steps:
         id: nopeers
         type: pack
         config: { peers: [] }
+  # Whether the PERSON is an admin of this server (plans/member-rights.md),
+  # from strut's own records, not the host's word: a line before their
+  # message when they are one, so what only an admin approves (making an
+  # app public, installing a package) reads as theirs to approve. Only a
+  # page's turn knows it (strut's own app, as an admin) — and a job or a
+  # wake that turn started. Every other launch adds nothing: a host with
+  # the key (Hive, voice, a person's own strut) says nothing of a role, and
+  # a person token (Peel, the daemon) names a person, never their role, so
+  # "not an admin" could be wrong there. Read every turn, since a shared
+  # conversation has several people.
+  - id: standing
+    type: proposal/standing
+    config: {}
   - id: turn
     type: agent
     config:
@@ -123,7 +139,7 @@ steps:
       # turn's prompt — never the system prompt, which the session froze at
       # its first turn. `context.where` is not read here: a wake puts it in
       # its own line (src/wake.ts), and a host keeps it in a person's line.
-      prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       # The person's words alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
       toolFilter: [none]
@@ -167,7 +183,7 @@ steps:
                 version: { type: string, description: "With app: the version (v3), when not the one people open now" }
           ask:
             type: object
-            description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's message."
+            description: "Only when you need a decision from the person before going on: the question, in prose. It is shown under `text`, set apart, so `text` never asks it too: what you need from the person (a decision, names, a yes) is said once, here. The answer comes as the next turn's message."
             additionalProperties: false
             required: [message]
             properties:
@@ -253,6 +269,10 @@ params:
     - job/read
     - strut/list-peers
     - strut/run-workflow
+    # A Concept page of this workspace, opened by name: a kind's under the
+    # two lists that close the prompt (their `tool`), when what it says is
+    # needed to talk the person through a request of that kind. A read.
+    - graph/graph-get
     # The package STORE's reads (plans/marketplace.md §7, §8): "is there a
     # package for that?" answered inside the turn — searched, a hit's page
     # read, the Concept tree browsed. Reads: an install is proposed with
@@ -351,7 +371,9 @@ params:
     pass its name as the job's `kind`: the job starts from that kind's
     page. When it is one under `Workflow Builder`, name it in the job's
     prompt. When none fits, or there are no lists, a job still does the
-    work.
+    work. A kind's page is written for the job that does it, which reads
+    it in full; open one yourself when you need what it says to talk with
+    the person — what they decide before the work starts.
 
     Start a JOB with everything it needs in its brief, since
     it does not see this conversation — the request in full, links,
@@ -377,13 +399,17 @@ params:
     `strut/worker`, which draws a photo and plain fields, and a build makes
     another only when the task needs its own view. Workers are anyone
     signed in to the app's public page (Peel signs them in); admins manage
-    them and their pay in Tasks and workers (strut/staff).
+    them and their pay in Tasks and workers (strut/staff). Before the
+    build starts, open its page in the second list (`Worker Tasks`) and
+    settle with the person, in one message, what it says is theirs to
+    decide.
 
     An app goes in the PUBLIC VIEW, where anyone with the link opens it and
     signed-in workers use it, only on an admin's yes. When the person asks
     for that, or a build reports a worker app is ready, ask for it with
-    app/make-public: an admin approves it on a card that says what anyone
-    will see.
+    app/make-public: a card says what anyone will see, and an admin
+    approves it there — the person themself, when the line before their
+    message says they are an admin.
 
     A PACKAGE is something someone already built and published — workflows,
     steps, apps, pages of knowledge — that can be installed here by name.
@@ -444,4 +470,6 @@ params:
     deliverable in `artifacts`, by the `url` job/get gave it — an app by
     its name, `{ kind: "app", app: "<name>" }` — never as a path in
     `text`. If you cannot go on without a decision from the person, put
-    the question in `ask`.
+    the question in `ask`. It is shown under your reply, set apart, so
+    `text` leads up to it and never asks it too: what you need from the
+    person — a decision, names, a yes — is said once, in `ask`.

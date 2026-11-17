@@ -23,7 +23,7 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
@@ -42,6 +42,33 @@ import { attachmentShow } from "./jamie/src/lib/attachments.js";
 const runs = { byJob: new Map([["j1", { workflow: "job", runId: "r-job" }]]), byRun: new Map([["r-turn", { workflow: "orchestrator", runId: "r-turn" }]]) };
 
 describe("strut/jamie — the pure parts", () => {
+  it("with an ask, the reply drops its closing question and request sentences, so the question shows once, in its box", () => {
+    const plan = "Here's my plan:\n\n- **Pay:** $4 per visit. Please change this if you want.";
+    const ask = "Does the plan work for you? Please send the names of your 6 shops.";
+    // What the model wrote in real runs, the question again at the end of the reply.
+    assert.equal(withoutAsk(`${plan}\n\nIs $4 per visit right, and do you want "any time" rather than a weekly round? I'd also need the names of your 6 shops.`, ask), plan);
+    assert.equal(withoutAsk(`${plan}\n\nI need two things from you: the names and addresses of your 6 shops, and whether $4 is right.`, ask), plan);
+    assert.equal(withoutAsk(`${plan}\n\nIs that OK, or what would you change?`, ask), plan);
+    assert.equal(withoutAsk(`${plan}\n\nTwo things I need from you: the names of the 6 shops, and whether $4 suits you.`, ask), plan);
+    assert.equal(
+      withoutAsk(`${plan}\n\nI need one thing from you. Please attach the spreadsheet, with the shop name and phone number. Also tell me whether workers should say anything specific, such as a short pitch.`, ask),
+      plan,
+    );
+    // And one that tells them how to answer.
+    assert.equal(
+      withoutAsk(`${plan}\n\nTo build it I need two things from you: your spreadsheet (attach it, or tell me the column names), and a couple of lines on what the caller should say. Reply "yes" with those, or change anything above.`, ask),
+      plan,
+    );
+    // Only the CLOSING asks: a statement before them stays.
+    assert.equal(withoutAsk("Built it. The pay is $4. Want me to change it?", ask), "Built it. The pay is $4.");
+    // Left as it is: no ask; a reply that does not ask; a list; one that would be empty.
+    assert.equal(withoutAsk(`${plan}\n\nIs that OK?`, undefined), `${plan}\n\nIs that OK?`);
+    const done = `${plan}\n\nAfter it's built, you'll approve the pay and put the worker page online.`;
+    assert.equal(withoutAsk(done, ask), done);
+    assert.equal(withoutAsk(plan, ask), plan, "a list ends it: never cut");
+    assert.equal(withoutAsk("Which repo?", ask), "Which repo?", "never an empty reply");
+  });
+
   it("a turn's context: the time where the person is, then where the reply is read; UTC for a bad zone", () => {
     const now = new Date("2026-11-04T14:02:00Z");
     // Hive's format (`orchestratorContextLine`); ICU puts a comma after the weekday or not.

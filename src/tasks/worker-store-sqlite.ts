@@ -65,7 +65,12 @@ export class SqliteWorkerStore implements WorkerStore {
       byStatus: p("select * from workers where status = ? order by first_seen desc, rowid desc"),
       statusCounts: p("select status, count(*) n from workers group by status"),
       grantCounts: p("select type, count(*) n from grants where revoked_at is null group by type"),
+      grantedBy: p("select distinct actor from grants where granted_by = ? order by actor"),
     };
+  }
+
+  async grantedBy(by: string): Promise<string[]> {
+    return (this.s.grantedBy.all(by) as Row[]).map((r) => r.actor as string);
   }
 
   async counts(): Promise<WorkerCounts> {

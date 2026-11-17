@@ -80,14 +80,21 @@ describe("app/make-public: the merge and the card", () => {
     assert.deepEqual(again.apps, [{ name: "workers", reads: ["acme/y", "demo/read"] }]);
   });
 
-  it("the card: the app and version, each cascade line with what it exposes, who can sign in, the hold; the version pinned", () => {
+  it("the card, for a person who is not technical: who can open it and what else they can see, plainly; the app, its hold, each cascade line and the sign-in under Details; the version pinned", () => {
     const card = makePublicCard({ name: "workers" }, { needs: NEEDS, version: "v2", live: { version: "v2", held: false }, listed: false, visitors: { signIn: ["sphinx"], set: false } });
-    assert.equal(card.title, "Make the app Workers public");
-    assert.deepEqual(card.actions, { accept: "Make public", reject: "Don't" });
+    assert.equal(card.title, 'Put "Workers" online');
+    assert.deepEqual(card.actions, { accept: "Put it online", reject: "Don't" });
     assert.deepEqual(card.input, { name: "workers", version: "v2" }, "the version live when asked, kept on the record");
     const f = (label: string) => card.fields!.find((x) => x.label === label);
-    assert.deepEqual(f("App"), { label: "App", value: "Workers — workers v2" });
-    assert.deepEqual(f("Held at"), { label: "Held at", value: "v2: a later publish is a draft until someone makes it live" });
+    assert.deepEqual(
+      card.fields!.filter((x) => !x.detail).map((x) => x.label),
+      ["Who can open it", "What else they can see", "Workflows"],
+      "shown: the two plain ones, and the danger (runs read whole), never folded",
+    );
+    assert.deepEqual(f("Who can open it"), { label: "Who can open it", value: "Anyone with the link. To use it, they sign in with their Sphinx account, in the Peel app; anyone else sees it signed out." });
+    assert.deepEqual(f("What else they can see"), { label: "What else they can see", value: "1 workflow, 1 thing the page reads and 1 step on this server, each listed under Details." });
+    assert.deepEqual(f("App"), { label: "App", value: "Workers — workers v2", detail: true });
+    assert.deepEqual(f("Held at"), { label: "Held at", value: "v2: a later publish is a draft until someone makes it live", detail: true });
     assert.deepEqual(f("Workflows"), {
       label: "Workflows",
       value: "pets — its definition and versions, and every run, whole\ngone — not added: not a workflow on this strut server",
@@ -99,8 +106,11 @@ describe("app/make-public: the merge and the card", () => {
     assert.equal(f("Concept trees")!.value, "Law — not added: no Concept of that name in this server's graph (read by pets)");
     assert.equal(f("Decided per run, not added")!.value, "pets: a Concept named per run ({{ input.kind }})");
     assert.match(f("Who can sign in")!.value, /^their Sphinx account, through the wallet that holds it \(Peel\), with the root key, so a visitor is one person on every app here\. The default/);
-    assert.match(card.summary!, /held at v2: later edits are drafts until someone makes them live/);
-    assert.match(card.summary!, /nothing is taken out of it/);
+    assert.equal(f("Who can sign in")!.detail, true);
+    assert.equal(
+      card.summary,
+      'Anyone with the link can open "Workers". To use it, people sign in with their Sphinx account, in the Peel app. It also lets them see 1 workflow, 1 thing the page reads and 1 step on this server. Anyone with the link can read every run of pets, in full. Later changes to it wait until someone makes them live. Nothing already online is changed or taken down.',
+    );
     assert.doesNotMatch(card.summary!, /fails/);
   });
 
@@ -109,14 +119,19 @@ describe("app/make-public: the merge and the card", () => {
     const card = makePublicCard({ name: "workers", version: "v1" }, { needs, version: "v1", live: { version: "v2", held: true }, listed: true, visitors: { signIn: [], set: true }, served: "acme/x" });
     const f = (label: string) => card.fields!.find((x) => x.label === label);
     assert.equal(f("Reads the page may call")!.danger, true);
+    assert.equal(f("Reads the page may call")!.detail, undefined, "a danger is never folded");
+    assert.match(card.summary!, /The page can call sheets\/get-values, an outside service, with this server's own credentials\./);
+    assert.match(card.summary!, /Everyone who opens it gets version v1 from now on/);
+    assert.deepEqual(f("Who can open it"), { label: "Who can open it", value: "Anyone with the link, but nobody can sign in to it, so nobody can work in it.", danger: true });
     assert.deepEqual(f("Held at"), { label: "Held at", value: "v1: a later publish is a draft until someone makes it live. Its live version moves from v2 to v1, for everyone who opens it", danger: true });
     assert.equal(f("Who can sign in")!.danger, true);
     assert.match(f("Who can sign in")!.value, /^nobody: the public view offers no sign-in/);
-    assert.match(card.summary!, /in the public view already/);
-    assert.match(card.summary!, /Accepting it fails: this strut server serves acme\/x, whose serve\.yaml writes the public view/);
+    assert.match(card.summary!, /It is online already/);
+    assert.match(card.summary!, /Approving it fails: this strut server serves acme\/x, whose serve\.yaml writes the public view/);
     const seeded = makePublicCard({ name: "strut/views" }, { needs, version: "v1", live: { version: "v1", held: false }, seeded: true, listed: false, visitors: { signIn: ["sphinx"], set: false } });
-    assert.doesNotMatch(seeded.summary!, /Accepting it fails/, "a seeded app is added, not held");
-    assert.deepEqual(seeded.fields!.find((x) => x.label === "Held at"), { label: "Held at", value: "not held: strut seeds this app, so it follows strut's releases" });
+    assert.doesNotMatch(seeded.summary!, /Approving it fails/, "a seeded app is added, not held");
+    assert.doesNotMatch(seeded.summary!, /later changes/i, "a seeded app follows strut's releases");
+    assert.deepEqual(seeded.fields!.find((x) => x.label === "Held at"), { label: "Held at", value: "not held: strut seeds this app, so it follows strut's releases", detail: true });
     const none = makePublicCard({ name: "nope" }, { needs: { error: 'no app "nope" on this strut server' }, listed: false, visitors: { signIn: ["sphinx"], set: false } });
     assert.deepEqual(none.fields, [{ label: "App", value: 'nope — no app "nope" on this strut server', danger: true }]);
     assert.equal(none.input, undefined, "nothing to pin");
@@ -279,11 +294,11 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
 
     const out = (await ask({ name: "workers", rationale: "Workers answer the pet matches here." })) as { proposal: string; status: string; title: string };
     assert.equal(out.status, "pending");
-    assert.equal(out.title, "Make the app Workers public");
+    assert.equal(out.title, 'Put "Workers" online');
     const rec = await record(out.proposal);
     assert.equal(rec.approver, "admin");
     assert.deepEqual(rec.input, { name: "workers", version: "v2" }, "the version live when asked is pinned");
-    assert.deepEqual(rec.card?.actions, { accept: "Make public", reject: "Don't" });
+    assert.deepEqual(rec.card?.actions, { accept: "Put it online", reject: "Don't" });
     // Each line of the card's cascade is the route's line, with what it exposes.
     const field = (label: string) => rec.card!.fields.find((f) => f.label === label)?.value;
     assert.equal(field("Workflows"), needs.workflows.map(needLine).join("\n"));
@@ -294,7 +309,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
 
     // A member is refused: their own page's accept, their session at the route, their person token.
     const page = ctx({ app: { name: "strut/jamie", version: "v1", firstParty: true }, workflow: RUN_STEP_FLOW, path: `${RUN_STEP_FLOW}/decide` });
-    await assert.rejects(step("proposal/decide").run({ id: out.proposal, action: "accept" }, page), /^Error: admin_required: only an admin of this strut server accepts "Make the app Workers public" \(app\/make-public\)/);
+    await assert.rejects(step("proposal/decide").run({ id: out.proposal, action: "accept" }, page), /^Error: admin_required: only an admin of this strut server accepts "Put \"Workers\" online" \(app\/make-public\)/);
     assert.equal((await decide(out.proposal, { cookie: await signIn("bo", "member") })).status, 403);
     const person = await decide(out.proposal, { authorization: `Bearer ${personToken("ann")!.token}` });
     assert.equal(person.status, 403);
@@ -322,6 +337,17 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     const rel = (await strut.apps.releases("workers"))!;
     assert.equal(rel.releases.at(-1)!.by, "ada", "the admin holds it");
     await assert.rejects(door().addApp("workers", "v2", { proposal: out.proposal }), /make_public_needs_admin: .*is applied/);
+  });
+
+  it("asked again for the same app while its card still waits (the build, then the assistant): the new card replaces it, so the thread has one", async () => {
+    const first = (await ask({ name: "workers", rationale: "From the build." })) as { proposal: string };
+    const second = (await ask({ name: "workers", rationale: "The person asked." })) as { proposal: string; replaced?: string };
+    assert.equal(second.replaced, first.proposal);
+    assert.deepEqual([(await record(first.proposal)).status, (await record(first.proposal)).replacedBy], ["rejected", second.proposal]);
+    assert.equal((await record(second.proposal)).status, "pending");
+    // The yes still adds it.
+    const yes = await decide(second.proposal, auth);
+    assert.equal(yes.body.status, "applied", JSON.stringify(yes.body.result));
   });
 
   it("the yes holds the version the card showed, keeps everything the view lists, and leaves its sign-in as it is", async () => {
@@ -362,7 +388,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
     const out = (await ask({ name: "strut/seeded" })) as { proposal: string };
     const rec = await record(out.proposal);
-    assert.doesNotMatch(rec.card!.summary!, /Accepting it fails/);
+    assert.doesNotMatch(rec.card!.summary!, /Approving it fails/);
     const admin = await decide(out.proposal, { cookie: await signIn("ada", "admin") });
     assert.equal(admin.body.status, "applied", JSON.stringify(admin.body.result));
     assert.ok((await view()).apps.some((a) => a.name === "strut/seeded"));

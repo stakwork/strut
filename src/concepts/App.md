@@ -679,9 +679,12 @@ offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
 writes. Say in your reply that later publishes are drafts until someone
-makes them live. The result (and `GET /public/apps`) carries the app's
-share links: hand the person `peelLink` (`link` for a browser), never a
-URL built by hand.
+makes them live. The person shares a worker app from Tasks and workers
+(`strut/staff`), whose first page opens with its links, a QR code and
+Invite (a one-use link that sets up a new worker's phone): point them
+there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
+say "Tasks and workers"), and never paste a link from the result (or `GET
+/public/apps`) in your reply, nor build one by hand.
 
 ## The assistant
 

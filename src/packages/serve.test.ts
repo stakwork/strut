@@ -277,7 +277,7 @@ describe("a served box over a file: ref", () => {
     const tool = buildRegistryTools(["app/make-public"], strut.getRegistry(), ctx, (d: unknown) => d, { approve: new Set(["app/make-public"]) })["app_make_public"] as { execute(i: unknown, o: unknown): Promise<{ proposal: string }> };
     const { proposal } = await tool.execute({ name: "acme/hello/hello" }, { strutToolPath: "builder/turn/001-app_make_public" });
     const rec = (await (strut.services as { proposals: { get(id: string): Promise<Proposal | null> } }).proposals.get(proposal))!;
-    assert.match(rec.summary!, /Accepting it fails: this strut server serves file:.*, whose serve\.yaml writes the public view at every deploy/);
+    assert.match(rec.summary!, /Approving it fails: this strut server serves file:.*, whose serve\.yaml writes the public view at every deploy/);
     const res = await strut.app.request(`/proposals/${proposal}/decide`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ action: "accept" }) });
     const body = (await res.json()) as Proposal;
     assert.equal(body.status, "failed");

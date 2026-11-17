@@ -34,6 +34,33 @@ export function timeLine(now: Date, timeZone?: string): string {
   }
 }
 
+/** A closing sentence that asks the person for something: a question, a
+ *  request ("I'd also need the names of your shops."), or one that tells
+ *  them how to answer ("Reply \"yes\" with those, or change anything."). */
+const ASKS = /\?["\u201d')\]]*$|^(also |and |then |so |just )?(please )?(send|tell|let me know|reply|answer|attach|confirm|share|upload)\b|\b(i|i'd|i would|we) (also )?need\b/i;
+
+/**
+ * The reply as Jamie shows it above the turn's `ask`: the model is told the
+ * question shows apart, under the reply, yet often asks it at the end of
+ * `text` too, in other words. So when there is an `ask`, the reply's last
+ * paragraph loses its closing sentences that ask for something, and the
+ * question shows once, in its box. A list, a paragraph left with nothing,
+ * or a reply that would be empty is left as it is.
+ */
+export function withoutAsk(text: string, ask: string | undefined): string {
+  if (!ask?.trim()) return text;
+  const paragraphs = text.trimEnd().split(/\n\s*\n/);
+  const last = paragraphs.at(-1) ?? "";
+  if (/^\s*([-*+]|\d+[.)])\s/m.test(last)) return text;
+  const sentences = last.match(/[^.!?]+[.!?]+["\u201d')\]]*\s*|[^.!?]+$/g) ?? [last];
+  let keep = sentences.length;
+  while (keep > 0 && ASKS.test(sentences[keep - 1]!.trim())) keep--;
+  if (keep === sentences.length) return text;
+  const rest = sentences.slice(0, keep).join("").trim();
+  const out = [...paragraphs.slice(0, -1), ...(rest ? [rest] : [])].join("\n\n").trimEnd();
+  return out || text;
+}
+
 /** The orchestrator's `input.context` for a turn sent now. */
 export function turnContext(now: Date, timeZone?: string): { line: string; where: string; timeZone?: string } {
   const zone = timeZone?.trim();

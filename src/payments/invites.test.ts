@@ -15,7 +15,7 @@ import { runInNewContext } from "node:vm";
 import { createStrut } from "../createStrut.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
-import { inProcessRequest, signInTicket } from "../auth.js";
+import { inProcessRequest, inviteOf, signInTicket } from "../auth.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { STAFF_APP } from "../apps/staff-seed.js";
 import { setEnv } from "../test-util/public-door.js";
@@ -188,7 +188,16 @@ describe("worker invites on a server (§5.8)", () => {
     actor: "admin-1",
     services: { staffAdmin: inProcessDoor((r, a) => Promise.resolve(strut.app.fetch(inProcessRequest(r, a))), STAFF_ROUTES, "staff") },
   });
-  const appUrl = (base: string, app = "workers") => encodeURIComponent(workerAppUrl(base, app));
+  /** The worker app an invite's link opens (`a=`): the app's share link,
+   *  then the invite's own token as the app's input (§5.8), naming this
+   *  invite and this app — what gives its worker the app's invite-only types. */
+  const opens = (link: string, base: string, code: string, app = "workers") => {
+    const a = decodeURIComponent(link.slice(link.indexOf("&a=") + 3));
+    const share = workerAppUrl(base, app);
+    assert.ok(a.startsWith(`${share}&input=`), a);
+    const input = new URLSearchParams(decodeURIComponent(a.slice(`${share}&input=`.length)));
+    assert.deepEqual(inviteOf(input.get("invite") ?? ""), { code, app });
+  };
 
   it("the routes are full scope only; with no worker app public an invite is refused before the wallet pays", async () => {
     const member = await session("member");
@@ -219,15 +228,16 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal(res.status, 200, await res.clone().text());
     const made = (await res.json()) as { code: string; link: string; sats: number; status: string; app: string };
     assert.deepEqual([made.sats, made.status, made.app], [100, "ready", "workers"]);
-    assert.match(made.link, new RegExp(`^http://strut\\.test/public/join#action=i&d=[A-Za-z0-9_-]+=*&a=${appUrl("http://strut.test").replace(/[.?]/g, "\\$&")}$`));
+    assert.match(made.link, /^http:\/\/strut\.test\/public\/join#action=i&d=[A-Za-z0-9_-]+=*&a=/);
+    opens(made.link, "http://strut.test", made.code);
     assert.equal(await daemonBalance(), before - (100 + INVITE_PRICE_SATS) * 1000);
 
     // Behind a proxy: the public host it names.
     const proxied = await req("/tasks/invites", { method: "POST", headers: { ...keyed, "x-forwarded-proto": "https", "x-forwarded-host": "stadeum.example" }, body: JSON.stringify({ sats: 42 }) });
-    const p = (await proxied.json()) as { link: string; sats: number };
+    const p = (await proxied.json()) as { code: string; link: string; sats: number };
     assert.equal(p.sats, 42);
     assert.ok(p.link.startsWith("https://stadeum.example/public/join#action=i&"), p.link);
-    assert.ok(p.link.endsWith(`&a=${appUrl("https://stadeum.example")}`), p.link);
+    opens(p.link, "https://stadeum.example", p.code);
 
     // The money settings' default.
     const settings = await req("/tasks/payouts/settings", { method: "PUT", headers: keyed, body: JSON.stringify({ on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 250 }) });
@@ -259,7 +269,7 @@ describe("worker invites on a server (§5.8)", () => {
     const made = (await inviteStep.run({ sats: 21 }, ctx as never)) as { code: string; link: string; qrSvg: string; sats: number };
     assert.equal(made.sats, 21);
     assert.ok(made.link.startsWith("https://stadeum.example/lab/public/join#action=i&d="), made.link);
-    assert.ok(made.link.endsWith(`&a=${appUrl("https://stadeum.example/lab")}`), made.link);
+    opens(made.link, "https://stadeum.example/lab", made.code);
     assert.match(made.qrSvg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" /);
     const listed = (await invitesStep.run({}, ctx as never)) as { invites: Array<{ code: string; link: string }> };
     assert.equal(listed.invites.find((i) => i.code === made.code)?.link, made.link);
@@ -269,9 +279,9 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "court" }] }) })).status, 200);
     await assert.rejects(inviteStep.run({}, ctx as never), /^Error: pick_app: .*court, workers/);
     // The last request from outside (the PUT above) moved the base.
-    const court = (await inviteStep.run({ app: "court" }, ctx as never)) as { link: string; app: string };
+    const court = (await inviteStep.run({ app: "court" }, ctx as never)) as { code: string; link: string; app: string };
     assert.equal(court.app, "court");
-    assert.ok(court.link.endsWith(`&a=${appUrl("http://strut.test", "court")}`), court.link);
+    opens(court.link, "http://strut.test", court.code, "court");
     // The step refuses a page that is not strut's staff app shown to an admin.
     await assert.rejects(inviteStep.run({}, { ...ctx, app: { name: "mine", version: "v1" } } as never), /is an admin's/);
   });

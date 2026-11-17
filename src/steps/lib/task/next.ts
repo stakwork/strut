@@ -23,10 +23,11 @@ export default defineStep({
   input: z.object({
     type: z.string().min(1).optional().describe("One task type, drawn by this app; any type the worker holds here when left out."),
     wait: z.number().min(0).max(NEXT_WAIT_MAX_S).optional().describe(`Seconds to hold for a task to appear, at most ${NEXT_WAIT_MAX_S}; 0 (the default) answers at once.`),
+    invite: z.string().min(1).max(2000).optional().describe("The token the worker's invite link opened this app with (its tool input's `invite`): first, it gives them the app's invite-only task types. The kit's useTask sends it."),
   }),
   output: z.any(),
   async run(cfg, ctx?: StepContext) {
     const { tasks, actor, app } = workerCall("task/next", ctx);
-    return tasks.next(actor, { app, ...(cfg.type === undefined ? {} : { type: cfg.type }), ...(cfg.wait === undefined ? {} : { wait: cfg.wait }) });
+    return tasks.next(actor, { app, ...(cfg.type === undefined ? {} : { type: cfg.type }), ...(cfg.wait === undefined ? {} : { wait: cfg.wait }), ...(cfg.invite ? { invite: cfg.invite } : {}) });
   },
 });

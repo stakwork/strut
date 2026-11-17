@@ -16,6 +16,7 @@ import { hostConfigFromEnv } from "./server.js";
 import { JOB_WORKFLOW } from "./job-seed.js";
 import { ORCHESTRATOR_WORKFLOW, orchestratorWorkflowYaml, personalOrchestratorSystem, seedOrchestratorWorkflow } from "./orchestrator-seed.js";
 import { resolveArtifactRefs } from "./artifact-refs.js";
+import { resolveTemplate } from "./expr.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
@@ -30,7 +31,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "strut/list-peers", "agent", "if", "job/start", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "agent", "if", "job/start", "pack"]);
     const personalOf = (t: string) => (yaml.load(t) as { params: { personalConcept?: string } }).params.personalConcept;
     assert.equal(personalOf(text), "", "no person's pages unless the host keeps them");
     assert.equal(personalOf(await orchestratorWorkflowYaml({ personalConcept: "Personal" })), "Personal");
@@ -38,15 +39,37 @@ describe("the orchestrator workflow strut ships", () => {
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
     // Two lists, one per agent's tree, children alone: the kinds of work a
     // job does here (Job) and the kinds of thing the builder builds
-    // (Workflow Builder). The pages' docs are those agents' instructions,
-    // and this agent has no graph-get to open a page with.
-    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "" });
-    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "" });
+    // (Workflow Builder). The pages' docs are those agents' instructions;
+    // each list ends with how to open a kind's page (graph/graph-get, a
+    // grant), for when this agent needs one to talk the person through it.
+    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "graph_graph_get" });
+    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "graph_graph_get" });
+    assert.ok(paramsOf(text).tools.includes("graph/graph-get"), "the tool the lists name is granted");
+    assert.match(paramsOf(text).system, /open one yourself when you need what it says to talk with\s+the person/);
+    // The question is shown apart, under the reply (Jamie's box, Hive's line): the reply never asks it too.
+    assert.match(paramsOf(text).system, /put\s+the question in `ask`\. It is shown under your reply, set apart, so\s+`text` leads up to it and never asks it too: what you need from the\s+person — a decision, names, a yes — is said once, in `ask`\./);
+    assert.match(paramsOf(text).system, /open its page in the second list \(`Worker Tasks`\)/, "work by people: the page the person's decisions are on, before the build");
+    // A host that grants it too (stakgraph's lab, Peel) does not list it twice.
+    const hosted = paramsOf(await orchestratorWorkflowYaml({ tools: ["graph/graph-get", "graph/graph-search"] })).tools;
+    assert.equal(hosted.filter((t) => t === "graph/graph-get").length, 1);
+    assert.ok(hosted.includes("graph/graph-search"));
     const params = (yaml.load(text) as { params: { concept: string; buildConcept: string } }).params;
     assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
     // The person's own pages are this agent's to follow: their root's docs, and how to open one.
     assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.personalConcept }}", tool: "graph_graph_get" });
-    const turn = flow.steps[5]!.config as Record<string, unknown>;
+    const turn = flow.steps[6]!.config as Record<string, unknown>;
+    const ask = (turn["schema"] as { properties: { ask: { description: string } } }).properties.ask.description;
+    assert.match(ask, /shown under `text`, set apart, so `text` never asks it too/);
+    // The person's standing (proposal/standing) heads the turn's message only
+    // when strut's records say they are an admin: a member, a person token
+    // (Peel, the daemon: a person, never a role) and a host's launch with the
+    // key (Hive, voice) add nothing, so every other host reads as before.
+    const message = (standing: { admin?: boolean }) =>
+      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing });
+    assert.equal(message({ admin: true }), "Tue 17 Nov 11:34. The person is an admin of this server: what needs an admin to approve, they approve themself. make it public");
+    assert.equal(message({ admin: false }), "Tue 17 Nov 11:34. make it public");
+    assert.equal(message({}), "Tue 17 Nov 11:34. make it public");
+    assert.match(paramsOf(text).system, /approves it there — the person themself, when the line before their\s+message says they are an admin\./);
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ personal.text }}", "the two lists, then the person's pages, close the prompt");

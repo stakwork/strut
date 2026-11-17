@@ -128,6 +128,12 @@ export interface ProposalDescription {
    *  card showed and not what is there by then. Parsed by the step's schema;
    *  one that does not parse is ignored. */
   input?: unknown;
+  /** A waiting proposal this one REPLACES (one `ProposalsCapability.waiting`
+   *  found): strut closes it when this one is made — rejected, "Replaced by
+   *  a newer card", its `replacedBy` this one — so the thread is left with
+   *  one card. Ignored unless that one is still pending, of the same step,
+   *  in the same thread. */
+  replaces?: string;
 }
 
 /** One line of a proposal's card (`ProposalCard.fields`). */
@@ -136,6 +142,10 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** A setting most people need not read: a host folds it under "Details"
+   *  (a host that does not know the flag shows it with the rest). A danger
+   *  is never one. */
+  detail?: boolean;
 }
 
 /** What running a step does outside the run (`StepDef.effect`). */

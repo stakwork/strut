@@ -22,7 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
   fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
-  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
+  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, tasksWords, whatsappUrl,
   earlierEnd, fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -310,8 +310,13 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
     assert.deepEqual((["sending", "ready", "failed", "used", "cancelled"] as const).filter((status) => inviteOpen({ status })), ["sending", "ready"]);
     assert.equal(Object.keys(INVITE_WORDS).length, 5);
-    assert.match(inviteWhyText("no_pay_credential"), /pay token/);
-    assert.match(inviteWhyText("no_invites"), /invite routes/);
+    // Plain first, for an admin who is not technical; the cause in brackets for whoever runs the server.
+    assert.match(inviteWhyText("no_pay_credential"), /^To invite people, this server's wallet has to be set up first, in Earnings\. \(.*pay token\.\)$/);
+    assert.match(inviteWhyText("no_invites"), /^This server's wallet cannot make invites yet: it needs an update\. \(.*invite routes\.\)$/);
+    // The Share area names the tasks a worker app's workers do, in words.
+    assert.equal(tasksWords(["coffee-shop-visit"]), 'the "coffee shop visit" task');
+    assert.equal(tasksWords(["a", "b-c", "d"]), 'the "a", "b c" and "d" tasks');
+    assert.equal(tasksWords([]), "");
     const link = "https://s.example/public/join#action=i&d=AA&a=https%3A%2F%2Fs.example%2F%3Fapp%3Dw";
     const wa = new URL(whatsappUrl(link));
     assert.equal(wa.origin, "https://wa.me");
@@ -632,6 +637,9 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
     const shared = sharedApps([await types()]);
     assert.deepEqual(shared.map((a) => [a.app, a.types]), [["workers", ["pets"]]], "the Queue's block: each public worker app once");
+    // An invite gives its worker the app's invite-only types (§5.8): the block names them.
+    assert.deepEqual(shared.map((a) => a.invited), [["pets"]], "pets is invite-only here");
+    assert.deepEqual(sharedApps([{ ...(await types()), open: true }]).map((a) => a.invited), [[]], "an open type needs no invite");
     await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 

@@ -1322,14 +1322,14 @@ card?: {
   v: 1,
   title: string,
   summary?: string,
-  fields: { label: string; value: string; kind?: "text" | "code" | "markdown" | "ref"; danger?: boolean }[], // ≤ 12; value ≤ 500 chars
+  fields: { label: string; value: string; kind?: "text" | "code" | "markdown" | "ref"; danger?: boolean; detail?: boolean }[], // ≤ 12; value ≤ 500 chars; `detail`: a setting most people need not read, which a host folds under "Details" (one that does not know the flag shows it with the rest); a danger is never one
   actions: { accept: string; reject: string },   // button labels, e.g. "Install" / "Don't install"
   full: boolean   // true when `fields` cover everything that will run (nothing cut, nothing left out)
 }
 ```
 
 `title` / `summary` are `describe`'s, else the description's first sentence.
-A step's `describe` may also return `fields`, `actions`, `full` and `input` — the input to KEEP on the record, the one asked with a default it read now filled in (`app/make-public` names the version live when asked), parsed by the step's schema and ignored when it does not parse, so the yes applies what the card showed; with no
+A step's `describe` may also return `fields`, `actions`, `full` and `input` — the input to KEEP on the record, the one asked with a default it read now filled in (`app/make-public` names the version live when asked), parsed by the step's schema and ignored when it does not parse, so the yes applies what the card showed; and `replaces`, a WAITING proposal this one replaces (one `ctx.services.proposals.waiting(step, { runId, job? })` found: the step's pending proposals in the run's thread, else its job's, newest first) — strut closes it when this one is made, `rejected` by `strut` with "Replaced by a newer card", `replacedBy` on it (and on its brief) and `replaces` on the new one — recorded only when one was in fact closed, and read back by the proposing agent as `replaced` — reported at once, and only when it is still pending, of the same step, in the same thread, so a host may leave a replaced card out of the thread (Jamie does); with no
 `fields` the card is built from the input (`src/proposal-card.ts`): one field
 per top-level key, strings as they are, anything else as JSON (`kind: "code"`
 for objects and arrays), a value over 500 chars cut with `… (see full input)`,
@@ -1420,7 +1420,11 @@ the dream's changes to the Concept tree, §14.13), which their session
 already reads at `GET /proposals`. A page's own
 `proposal/get` also answers `viewer: { admin }`: whether its viewer is an
 admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
-this" in place of an Accept the decision would refuse. `proposal/decide`
+this" in place of an Accept the decision would refuse. `proposal/standing`
+({} → `{ admin? }`) says whether the person a run is for is an admin here,
+by the same records (`AppRef.admin`, else the launch the run came from),
+`admin` left out when nothing says; the orchestrator puts a line before an
+admin's message from it. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
 a first-party page's own call, decides only its viewer's proposals — and,
@@ -3620,9 +3624,19 @@ release.
 
 **An agent's ask** (`app/make-public`, ruled 2026-11-13): the builder job
 or the assistant may ASK to add an app; only an ADMIN's yes adds it (§12,
-`approver: "admin"`). The card lists the app and the version live when it
-was asked (pinned on the record), every line `GET /public-view/needs`
-pre-checks with what it exposes, who can sign in, and the hold. The yes
+`approver: "admin"`). The card is for an admin who is not technical:
+`Put "<title>" online`, actions "Put it online" / "Don't", a few plain
+sentences (who can open it, how they sign in, how much else becomes
+visible, a stranger reading runs whole or the page calling an outside
+service with this server's credentials said plainly), then **Who can open
+it** and **What else they can see** (a count by kind). Under Details
+(`detail: true`, §12): the app and the version live when it was asked
+(pinned on the record), the hold, every line `GET /public-view/needs`
+pre-checks with what it exposes, and who can sign in and with which key; a
+danger (runs read whole, an outside read, a live version that moves, no
+sign-in) is never folded. Asked again for an app whose card still waits in
+the same thread (the build asked, then the assistant), the new card
+replaces it (`replaces`, §12), so the person sees one. The yes
 writes through `PUT`'s own save (`savePublicView`, the same checks, a served
 box's `409 serve_owned:`): the record as it was plus the pre-checked lines
 — nothing taken out, `visitors` as it was (absent: `[sphinx]` with the root
@@ -5153,11 +5167,11 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
+| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
 | `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? } }] }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
@@ -5594,15 +5608,26 @@ https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
 `a=`, strut's own section, the worker app's share `link`
-(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user)
-encoded whole. `/public/join` (§17.2)
+(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user) with
+`&input=invite%3D<token>` after it, encoded whole: the invite's own token
+(`strut-invite.<claims>.<hmac>`, auth.ts `inviteToken`, the daemon's code
+and the app, 90 days from the invite's creation), which the app is opened
+with as its tool input and the kit's `useTask` / `useWorker` send as
+`invite` on `task/next` / `task/me`. The worker who comes with it is given
+the app's INVITE-ONLY, enabled task types they hold no row of, by
+`invite:<code>` — one worker per invite (once a grant it made is held by
+another, revoked or not, it gives nothing), only while the daemon lists the
+invite `sending`, `ready` or `used`, never a type staff revoked from them,
+never to a suspended or banned worker; a token that does not hold, or opens
+another app, is ignored. So one invite lets someone in and gives them the
+work. `/public/join` (§17.2)
 turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
 new user up with the invite and then opens `a=` (an existing user goes there
 at once). The mixer keeps only code → starting sats, and the core's parser
 ignores a section it does not know. The WORKER APP is an app the task types
-name that is in the public view. Strut keeps nothing: the daemon keeps the
-invites, and an open type (the default) lets the worker in on their first
-`task/next`.
+name that is in the public view. Strut keeps no invite: the daemon keeps
+the invites, the task store the grants an invite made, and an open type
+(the default) lets the worker in on their first `task/next`.
 
 Full scope, beside the rest; `strut/staff` reaches them through
 `staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):
@@ -5858,6 +5883,13 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   checks, `tests` and `copies` to their rules, the name, the bounds and the
   pay to the msat. A shape strut cannot check is the model's error, and no
   proposal is made. A grader step is checked when the type is saved.
+- **Built on a card still waiting.** No type of that name yet, but a
+  `task/set-type` card for it still pending in this thread (`waiting`): the
+  ask is merged over that card's input as a change would be (`askOver`) and
+  kept so on the record, the card shows the whole type and says "It replaces
+  the earlier card for this task.", and the waiting card is closed
+  (`replaces`). "Make it $6" before the first card was approved leaves one
+  card, the whole task at $6.
 - **Merged over the type.** A field left out keeps its value, never the
   default; `tests` and `copies` objects merge over the type's own rules (or
   the defaults), `standing` replaces the type's, and `null` turns any of
@@ -5865,7 +5897,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   (`bad_request:` on accept otherwise; the card says so first).
 - **Open unless asked otherwise.** A new type left without `open` is open
   ("Open task types"). A new PAID open type has no tests yet, so anyone
-  signed in earns from their first answer: the card's **Who takes it** says
+  signed in earns from their first answer: the card's **Who can do it** says
   so as a danger, and the admin's accept saves it.
 - **What it cannot do.** It grants no worker, deletes no type and changes
   no worker: those are an admin's, in `strut/staff` (§14.15).
@@ -5874,23 +5906,31 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   `orchestrator` seeds do not, nor the builder chat, which has no
   proposals.
 
-**The card** (`describe`, §12), actions "Save type" and "Don't". Its title
-is "New task type <name>", "Change task type <name>" or "Turn off task type
-<name>". Its fields: **Drawn by** (the app; a danger when it is not here or
-does not grant `task/next` and `task/submit`, the queue's `appProblem`),
-**The answer** (one line per field — `same ("The same pet?"): yes or no,
-required` — or "needs the app's own view" with the schema, when it is not a
-form `TaskForm` draws), **Lease**, **Expires after**, **On**, **Who takes
-it** (open or invite-only; a paid open type with no qualifying, or short
-of its K ready tests, is a danger saying so); for a change,
-**What changes** (each field before and after) and **Open tasks** (with a
-new shape, that their answers are checked against it); **Workers** (how
-many hold it; a new open type's, that a worker holds it from their first
-ask); **Pay** (sats and dollars at the rate, held how long, and
-what the last week's answers would have cost; a RISE is a danger);
-**Tests** and **Copies** (their settings; a merge the save would refuse is
-a danger); **Files**; **Standing** (the workflow each answer starts, or
-no). It reads a type's rules, never a test: no expected answer is on
+**The card** (`describe`, §12), for an admin who is not technical,
+actions "Approve" and "Don't". Its title is "New task: <name>", "Change
+task: <name>" or "Turn off task: <name>" (the name's dashes as spaces), and
+its summary one sentence in the person's words — who can do it, when, and
+the pay in dollars with the sats: `Only people you invite can do the
+"coffee shop visit" task whenever they like, as many as they like, for
+$3.50 (5,500 sats) each, paid from this server's wallet.` Then, shown: for
+a change **What changes** (each field before and after, in the same
+words); **A worker hands in** (the photos or files, then each question by
+its title and what is given — `• The same pet? — yes or no`); **When**
+("Any time…", naming the workflow each one starts, for a standing type;
+"When a workflow sends one out…" otherwise); **Who can do it** (only
+people you invite, or anyone signed in to the worker page; a paid type
+anyone may take with no qualifying test, or short of its K ready tests, is
+a danger saying so plainly); **Pay** (dollars and sats, the wait before a
+worker can withdraw, for a change the pay now and what the last week's
+answers would have cost; a RISE is a danger). Under Details (`detail:
+true`): **Task type** (its name and app; a danger, shown, when the app is
+not here or does not grant `task/next` and `task/submit`), **The answer**
+(one line per field — `same ("The same pet?"): yes or no, required` — or
+"needs the app's own view" with the schema), **Time limits** (the lease,
+and the expiry unless standing), **Workers**, for a change **Open tasks**
+(with new questions, that their answers are checked against them), and
+**Tests** and **Copies** (a merge the save would refuse is a danger,
+shown). It reads a type's rules, never a test: no expected answer is on
 it.
 
 ### Support — the staff's chat with workers (`plans/support-chat.md`)

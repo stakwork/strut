@@ -663,8 +663,10 @@ export interface TasksCapability {
    *  on the oldest open task they may take; `{ none: true }` when there is
    *  none. `type` narrows to one type, `app` to the types an app draws.
    *  `wait` (seconds, at most `NEXT_WAIT_MAX_S`) holds that long for a task
-   *  to appear before answering `{ none: true }`; it counts as one call. */
-  next(actor: string, o?: { type?: string; app?: string; wait?: number }): Promise<WorkerTask | { none: true }>;
+   *  to appear before answering `{ none: true }`; it counts as one call.
+   *  `invite`: the token the worker's invite link opened `app` with
+   *  (§5.8): first, it gives them the app's invite-only types. */
+  next(actor: string, o?: { type?: string; app?: string; wait?: number; invite?: string }): Promise<WorkerTask | { none: true }>;
   /** Answers the lease: `answer` in the type's answer schema, and the
    *  files its `attachments` rule takes (§5.6) — `[{ name, mediaType?,
    *  data }]`, the chat's shape and caps — saved in the task's run before
@@ -678,8 +680,10 @@ export interface TasksCapability {
   file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
   /** Who the worker is here, what they may take, what they are owed, and
    *  whether they may withdraw (`address`: the Sphinx address their session
-   *  carries, §8.2); the first call writes them as `new`. */
-  me(actor: string, o?: { app?: string; apps?: string[]; address?: string }): Promise<WorkerView>;
+   *  carries, §8.2); the first call writes them as `new`. `invite`, as on
+   *  `next`, first — for `inviteApp`, the app its link opened, when the
+   *  list spans `apps`. */
+  me(actor: string, o?: { app?: string; apps?: string[]; address?: string; invite?: string; inviteApp?: string }): Promise<WorkerView>;
   /** The worker's own newest tasks here (of the app's types, or of the
    *  `apps`' types, when given), newest first, at most `RECENT_LEASES`:
    *  their dashboard's history. */
@@ -857,6 +861,12 @@ export interface TasksDeps {
   launch?(task: TaskRecord): Promise<void>;
   /** A new run id (createStrut's `generateRunId`): a pick-up's. */
   runId?(): string;
+  /** §5.8: an invite link's token — `read` checks it (auth.ts `inviteOf`:
+   *  strut's, signed here, not expired) and names the daemon's invite and
+   *  the worker app it opens; `live` asks the daemon whether that invite
+   *  may still let someone in (not cancelled, not failed). Left out: an
+   *  invite gives no task type. */
+  invite?: { read(token: string): { code: string; app: string } | undefined; live(code: string): Promise<boolean> };
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -971,14 +981,16 @@ export function createTasks(deps: TasksDeps): TasksService {
     }
   };
   /** One try at a task: the lease, or the types the worker may take now. */
-  const attempt = async (actor: string, o: { type?: string; app?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
+  const attempt = async (actor: string, o: { type?: string; app?: string; invite?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
     const seen = await worker(actor);
     const s = seen.s;
     if (seen.w.status === "suspended" || seen.w.status === "banned") mayWork(seen.w);
+    // §5.8: an invite's link gives its worker the app's invite-only types.
+    const invited = await enterInvite(s, seen.w, o.app, o.invite);
     const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
     // Ruling 9: the open types this ask reaches, never held, are entered now.
     const reach = [...kinds.values()].filter((k) => (o.app === undefined || k.app === o.app) && (o.type === undefined || k.name === o.type));
-    const { w, closed } = await enter(s, seen.w, reach);
+    const { w, closed } = await enter(s, invited, reach);
     mayWork(w, closed);
     const held = liveGrants(w);
     if (o.type !== undefined) {
@@ -1113,6 +1125,46 @@ export function createTasks(deps: TasksDeps): TasksService {
       else w = note(await s.workers.grantOpen(w.actor, k.name, now(), e.qualify));
     }
     return { w, closed };
+  };
+
+  // ── invites (§5.8) ────────────────────────────────────────────────────
+  /** An invite redeemed now, by code: two first asks with one link are
+   *  taken one after the other, so only one worker gets it. */
+  const redeeming = new Map<string, Promise<unknown>>();
+  /** A worker opened `app` from an invite's link (`token`): they are given
+   *  the app's INVITE-ONLY, enabled types they have no row of, by
+   *  `invite:<code>` — never one revoked, which only staff grant again, and
+   *  never to a suspended or banned worker. One worker per invite: once
+   *  another holds a grant it made, it gives nothing; nor once the daemon
+   *  no longer has it (cancelled, failed). A token that is not strut's, or
+   *  for another app, is ignored: the ask goes on as without one. */
+  const enterInvite = async (s: TaskStores, w: WorkerRecord, app: string | undefined, token: string | undefined): Promise<WorkerRecord> => {
+    if (!token || !app || !deps.invite || w.status === "suspended" || w.status === "banned") return w;
+    const inv = deps.invite.read(token);
+    if (!inv || inv.app !== app) return w;
+    const known = new Set(w.grants.map((g) => g.type));
+    const todo = (await s.tasks.types()).filter((k) => k.app === app && !k.open && k.enabled && !known.has(k.name));
+    if (!todo.length) return w;
+    const by = `invite:${inv.code}`;
+    const before = redeeming.get(inv.code) ?? Promise.resolve();
+    const turn = before.then(async () => {
+      if ((await s.workers.grantedBy(by)).some((a) => a !== w.actor)) return w;
+      if (!(await deps.invite!.live(inv.code).catch(() => false))) return w;
+      let after = w;
+      for (const k of todo) {
+        // §7.5, as a staff grant: the type's K when it has that many ready tests.
+        const want = k.tests?.qualify ?? 0;
+        const ready = want > 0 ? await s.tasks.readyTests(k.name) : 0;
+        after = note(await s.workers.grant(w.actor, k.name, by, now(), ready >= want ? want : 0));
+      }
+      return after;
+    });
+    redeeming.set(inv.code, turn.catch(() => undefined));
+    try {
+      return await turn;
+    } finally {
+      if (redeeming.get(inv.code) === turn) redeeming.delete(inv.code);
+    }
   };
 
   /** A lease the caller may act on (rule 3): their own, open, not past its
@@ -1529,7 +1581,10 @@ export function createTasks(deps: TasksDeps): TasksService {
 
     async me(actor, o = {}) {
       count(actor);
-      const { s, w } = await worker(actor);
+      const seen = await worker(actor);
+      const s = seen.s;
+      // §5.8: an invite's link gives its worker the app's invite-only types.
+      const w = await enterInvite(s, seen.w, o.app ?? o.inviteApp, o.invite);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
       const inApp = (k: TaskType | undefined): k is TaskType => !!k && k.enabled && drawnBy(k, o);
       const held = liveGrants(w).map((name) => kinds.get(name)).filter(inApp);

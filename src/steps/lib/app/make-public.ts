@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { makePublicCard, makePublicInput } from "../../../public-view.js";
+import { proposalsOf } from "../../../proposals.js";
 
 /**
  * The builder or the assistant ASKS to put an app in the PUBLIC VIEW; an
@@ -40,7 +41,13 @@ export default defineStep({
   output: z.any(),
   async describe(cfg, ctx: StepContext<StrutCapabilities>) {
     const cap = ctx.services?.publicView;
-    return makePublicCard(cfg, cap ? await cap.plan(cfg.name, cfg.version).catch(() => undefined) : undefined);
+    const card = makePublicCard(cfg, cap ? await cap.plan(cfg.name, cfg.version).catch(() => undefined) : undefined);
+    // A card for the same app still waiting in this thread (the build asked,
+    // then the assistant): this one replaces it, so the thread has one.
+    const waiting = ((await proposalsOf(ctx.services)?.waiting?.("app/make-public", { runId: ctx.runId, ...(ctx.job ? { job: ctx.job } : {}) }).catch(() => [])) ?? []).find(
+      (p) => (p.input as { name?: unknown } | null)?.name === cfg.name,
+    );
+    return waiting ? { ...card, replaces: waiting.id } : card;
   },
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!ctx.proposal) {

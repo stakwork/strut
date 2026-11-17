@@ -34,7 +34,7 @@ export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
   return (
     <>
       {shared.map((a) => (
-        <ShareBlock key={a.app} app={a.app} share={a.share} types={a.types} />
+        <ShareBlock key={a.app} app={a.app} share={a.share} types={a.types} invited={a.invited} />
       ))}
 
       {warnings.length > 0 && (
