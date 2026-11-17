@@ -1420,7 +1420,11 @@ the dream's changes to the Concept tree, §14.13), which their session
 already reads at `GET /proposals`. A page's own
 `proposal/get` also answers `viewer: { admin }`: whether its viewer is an
 admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
-this" in place of an Accept the decision would refuse. `proposal/decide`
+this" in place of an Accept the decision would refuse. `proposal/standing`
+({} → `{ admin? }`) says whether the person a run is for is an admin here,
+by the same records (`AppRef.admin`, else the launch the run came from),
+`admin` left out when nothing says; the orchestrator puts a line before an
+admin's message from it. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
 a first-party page's own call, decides only its viewer's proposals — and,

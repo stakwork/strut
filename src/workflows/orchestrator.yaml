@@ -96,6 +96,19 @@ steps:
         id: nopeers
         type: pack
         config: { peers: [] }
+  # Whether the PERSON is an admin of this server (plans/member-rights.md),
+  # from strut's own records, not the host's word: a line before their
+  # message when they are one, so what only an admin approves (making an
+  # app public, installing a package) reads as theirs to approve. Only a
+  # page's turn knows it (strut's own app, as an admin) — and a job or a
+  # wake that turn started. Every other launch adds nothing: a host with
+  # the key (Hive, voice, a person's own strut) says nothing of a role, and
+  # a person token (Peel, the daemon) names a person, never their role, so
+  # "not an admin" could be wrong there. Read every turn, since a shared
+  # conversation has several people.
+  - id: standing
+    type: proposal/standing
+    config: {}
   - id: turn
     type: agent
     config:
@@ -123,7 +136,7 @@ steps:
       # turn's prompt — never the system prompt, which the session froze at
       # its first turn. `context.where` is not read here: a wake puts it in
       # its own line (src/wake.ts), and a host keeps it in a person's line.
-      prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       # The person's words alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
       toolFilter: [none]
@@ -382,8 +395,9 @@ params:
     An app goes in the PUBLIC VIEW, where anyone with the link opens it and
     signed-in workers use it, only on an admin's yes. When the person asks
     for that, or a build reports a worker app is ready, ask for it with
-    app/make-public: an admin approves it on a card that says what anyone
-    will see.
+    app/make-public: a card says what anyone will see, and an admin
+    approves it there — the person themself, when the line before their
+    message says they are an admin.
 
     A PACKAGE is something someone already built and published — workflows,
     steps, apps, pages of knowledge — that can be installed here by name.

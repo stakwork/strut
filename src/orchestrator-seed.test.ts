@@ -16,6 +16,7 @@ import { hostConfigFromEnv } from "./server.js";
 import { JOB_WORKFLOW } from "./job-seed.js";
 import { ORCHESTRATOR_WORKFLOW, orchestratorWorkflowYaml, personalOrchestratorSystem, seedOrchestratorWorkflow } from "./orchestrator-seed.js";
 import { resolveArtifactRefs } from "./artifact-refs.js";
+import { resolveTemplate } from "./expr.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
@@ -30,7 +31,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "strut/list-peers", "agent", "if", "job/start", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "agent", "if", "job/start", "pack"]);
     const personalOf = (t: string) => (yaml.load(t) as { params: { personalConcept?: string } }).params.personalConcept;
     assert.equal(personalOf(text), "", "no person's pages unless the host keeps them");
     assert.equal(personalOf(await orchestratorWorkflowYaml({ personalConcept: "Personal" })), "Personal");
@@ -46,7 +47,17 @@ describe("the orchestrator workflow strut ships", () => {
     assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
     // The person's own pages are this agent's to follow: their root's docs, and how to open one.
     assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.personalConcept }}", tool: "graph_graph_get" });
-    const turn = flow.steps[5]!.config as Record<string, unknown>;
+    const turn = flow.steps[6]!.config as Record<string, unknown>;
+    // The person's standing (proposal/standing) heads the turn's message only
+    // when strut's records say they are an admin: a member, a person token
+    // (Peel, the daemon: a person, never a role) and a host's launch with the
+    // key (Hive, voice) add nothing, so every other host reads as before.
+    const message = (standing: { admin?: boolean }) =>
+      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing });
+    assert.equal(message({ admin: true }), "Tue 17 Nov 11:34. The person is an admin of this server: what needs an admin to approve, they approve themself. make it public");
+    assert.equal(message({ admin: false }), "Tue 17 Nov 11:34. make it public");
+    assert.equal(message({}), "Tue 17 Nov 11:34. make it public");
+    assert.match(paramsOf(text).system, /approves it there — the person themself, when the line before their\s+message says they are an admin\./);
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ personal.text }}", "the two lists, then the person's pages, close the prompt");
