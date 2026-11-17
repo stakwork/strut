@@ -22,6 +22,7 @@
 
 import { access, readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { RunArchiveError } from "./run-archive.js";
 import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem } from "./session-store.js";
@@ -239,7 +240,12 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     for (const line of lines.slice(0, limit)) {
       if (!(await readable(line.workflow))) continue;
       const summary = await deps.store.getRunSummary(line.workflow, line.runId);
-      const events = await deps.store.getRunEvents(line.workflow, line.runId);
+      // An archived log is restored by this read. One the bucket cannot
+      // give back reads as an evicted one: the job still opens.
+      const events = await deps.store.getRunEvents(line.workflow, line.runId).catch((err) => {
+        if (err instanceof RunArchiveError) return [];
+        throw err;
+      });
       const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, ...appsAt }) : undefined;
       const stale = !summary && deps.isLive && !deps.isLive(line.workflow, line.runId);
       runs.push({ ...line, summary, ...(stale ? { stale: true as const } : {}), events, ...(artifacts?.length ? { artifacts } : {}) });

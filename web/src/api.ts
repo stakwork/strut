@@ -585,7 +585,8 @@ export interface FlowDef {
   /** Open to other workspaces: `true`, or `"person"` (a person's credential only). */
   peer?: true | "person";
   /** The workflow's own `retain:` as text (`1h`, `runs:20`), and the fleet
-   *  default (`STRUT_RUN_RETENTION`) that applies when it sets none. */
+   *  default (`STRUT_RETENTION`, or its first name `STRUT_RUN_RETENTION`;
+   *  `fleetRetentionEnv` says which) that applies when it sets none. */
   retain?: string;
   fleetRetention?: string;
   fleetRetentionEnv?: string;
@@ -941,11 +942,20 @@ export interface RunSummary {
    *  resumes it; `waitingOn` says on what. */
   status: string;
   waitingOn?: string[];
-  /** Retention dropped this run's log; the summary is what is left. */
-  logEvicted?: boolean;
+  /** Where retention moved the run's parts (plans/retention.md): `log`
+   *  today. `evictedAt`: not on the server's disk; with `archive` (`bytes`
+   *  of log as a `size`-byte object, uploaded `at`) it is in the bucket and
+   *  opening the run restores it, without it the log is gone. `restoredAt`:
+   *  when a read last brought it back. */
+  parts?: {
+    log?: {
+      archive?: { key: string; bytes: number; size: number; at: string };
+      evictedAt?: string;
+      restoredAt?: string;
+    };
+  };
   /** The run died with its process (no summary of its own). */
   crashed?: boolean;
-  evictedAt?: string;
   input?: unknown;
   output?: unknown;
   error?: { message: string };

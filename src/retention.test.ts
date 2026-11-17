@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseRetention, formatRetention, createRetention } from "./retention.js";
+import { parseRetention, formatRetention, createRetention, fleetRetentionFromEnv } from "./retention.js";
 import { FileRunStore, MemoryRunStore, type RunStore } from "./store.js";
 import { flowFromYaml, renderWorkflowYaml, assertValidWorkflowYaml } from "./workspace.js";
 import { validateWorkflowYaml } from "./validate.js";
-import type { RunSummary } from "./core.js";
+import { logEvicted, type RunSummary } from "./core.js";
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-11-14T12:00:00Z");
@@ -100,13 +100,13 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.deepEqual(log.mock.calls.map((c) => c.arguments[0]), ["[retention] evicted 2 run log(s): w 2"]);
     for (const id of ["1", "2"]) {
       const s = await store.getRunSummary("w", id);
-      assert.equal(s?.logEvicted, true);
-      assert.ok(s?.evictedAt);
+      assert.equal(logEvicted(s), true);
+      assert.ok(s?.parts?.log?.evictedAt);
       assert.deepEqual(await store.getRunEvents("w", id), []);
     }
-    assert.ok(!(await store.getRunSummary("w", "3"))?.logEvicted);
+    assert.ok(!logEvicted(await store.getRunSummary("w", "3")));
     assert.equal((await store.getRunEvents("w", "3")).length, 1);
-    assert.ok(!(await store.getRunSummary("w", "4"))?.logEvicted);
+    assert.ok(!logEvicted(await store.getRunSummary("w", "4")));
     assert.equal((await store.getRunEvents("w", "5")).length, 1);
   });
 
@@ -114,8 +114,8 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     const store = await make();
     await scenario(store);
     assert.equal(await sweeper(store, { runs: 1 }).sweep(), 2); // newest finished: 3; evicts 2 and 1
-    assert.ok(!(await store.getRunSummary("w", "3"))?.logEvicted);
-    assert.equal((await store.getRunSummary("w", "1"))?.logEvicted, true);
+    assert.ok(!logEvicted(await store.getRunSummary("w", "3")));
+    assert.equal(logEvicted(await store.getRunSummary("w", "1")), true);
   });
 
   test(`sweep (${label}): kept and artifact-referenced runs are skipped`, async () => {
@@ -126,8 +126,8 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     await seed(store, "5", summary("5", 5, { output: { url: "/artifacts/5/self.txt" } })); // its own: not a reference
     const evicted = await sweeper(store, "1h").sweep();
     assert.equal(evicted, 2); // 4 and 5
-    for (const id of ["2", "3"]) assert.ok(!(await store.getRunSummary("w", id))?.logEvicted, id);
-    assert.equal((await store.getRunSummary("w", "5"))?.logEvicted, true);
+    for (const id of ["2", "3"]) assert.ok(!logEvicted(await store.getRunSummary("w", id)), id);
+    assert.equal(logEvicted(await store.getRunSummary("w", "5")), true);
   });
 
   test(`sweep (${label}): env default applies, workflow retain overrides, unset evicts nothing`, async () => {
@@ -147,7 +147,7 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     assert.equal(await sweeper(store, "1h").sweep(), 1);
     const s = await store.getRunSummary("w", "7");
     assert.equal(s?.crashed, true);
-    assert.equal(s?.logEvicted, true);
+    assert.equal(logEvicted(s), true);
     assert.equal(s?.status, "error");
     assert.equal(s?.parentRunId, "6");
     assert.equal(s?.finishedAt, new Date(NOW - 3 * HOUR).toISOString());
@@ -184,7 +184,7 @@ for (const [label, make] of [["memory", async () => new MemoryRunStore() as RunS
     await seed(store, "3", summary("3", 0.2));
     await seedCrashed(store, "4", 0.5); // inside the floor: neither counted nor touched
     assert.equal(await sweeper(store, { runs: 2 }).sweep(), 1); // newest two counted: 3, 2 → evicts 1
-    assert.equal((await store.getRunSummary("w", "1"))?.logEvicted, true);
+    assert.equal(logEvicted(await store.getRunSummary("w", "1")), true);
     assert.equal(await store.getRunSummary("w", "2"), null);
     assert.equal(await store.getRunSummary("w", "4"), null);
     assert.equal(await sweeper(store, { runs: 1 }).sweep(), 1); // now 2 is beyond the newest 1
@@ -212,5 +212,35 @@ test("FileRunStore.evictRun leaves only run.json in the run directory", async ()
   await store.evictRun("w", "1", new Date(NOW).toISOString());
   assert.deepEqual(await readdir(join(root, "workflows", "w", "runs", "1")), ["run.json"]);
   await assert.rejects(stat(join(root, "workflows", "w", "runs", "1", "events.jsonl")));
-  assert.equal((await store.getRunSummary("w", "1"))?.logEvicted, true);
+  assert.equal(logEvicted(await store.getRunSummary("w", "1")), true);
+});
+
+test("a summary retention's first build wrote (`logEvicted` + `evictedAt`) reads as parts.log", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ret-"));
+  const store = new FileRunStore(root);
+  const at = new Date(NOW).toISOString();
+  await store.finalize("w", "1", { ...summary("1", 5), logEvicted: true, evictedAt: at } as never);
+  await store.finalize("w", "2", { ...summary("2", 5), logEvicted: true } as never);
+  const one = await store.getRunSummary("w", "1");
+  assert.deepEqual(one?.parts, { log: { evictedAt: at } });
+  assert.ok(!("logEvicted" in one!) && !("evictedAt" in one!));
+  // No `evictedAt` (never written without it, but read safely): the run's finish.
+  assert.equal((await store.getRunSummary("w", "2"))?.parts?.log?.evictedAt, summary("2", 5).finishedAt);
+  // A sweep counts it as evicted and leaves it as it is.
+  assert.equal(await sweeper(store, "1h").sweep(), 0);
+});
+
+test("STRUT_RETENTION is the fleet default, STRUT_RUN_RETENTION its first name", () => {
+  assert.equal(fleetRetentionFromEnv({}), undefined);
+  assert.deepEqual(fleetRetentionFromEnv({ STRUT_RETENTION: "7d" }), { retention: { windowMs: 7 * 24 * HOUR }, env: "STRUT_RETENTION" });
+  assert.deepEqual(fleetRetentionFromEnv({ STRUT_RUN_RETENTION: "20" }), { retention: { runs: 20 }, env: "STRUT_RUN_RETENTION" });
+  // Both set: the new name wins.
+  assert.deepEqual(fleetRetentionFromEnv({ STRUT_RETENTION: "1h", STRUT_RUN_RETENTION: "20" }), { retention: { windowMs: HOUR }, env: "STRUT_RETENTION" });
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    assert.equal(fleetRetentionFromEnv({ STRUT_RETENTION: "soon" }), undefined);
+  } finally {
+    warn.mock.restore();
+  }
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /ignoring STRUT_RETENTION="soon"/);
 });

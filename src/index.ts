@@ -31,6 +31,11 @@ export {
   type RunEvent,
   type RunResult,
   type RunSummary,
+  type ArchivedPart,
+  type PartState,
+  type RunParts,
+  logEvicted,
+  withPart,
   type RunEventType,
   type RunOrigin,
   type AccessedNode,
@@ -95,7 +100,12 @@ export {
   tailFromPolling,
   lastRunAtFromIds,
   summarizeFromEvents,
+  localRuns,
 } from "./store.js";
+
+// The run archive (plans/run-archive.md, plans/retention.md): what `createStrut({ archive })` takes.
+export { type RunArchive, RunArchiveError, archiveFromEnv } from "./run-archive.js";
+export { type ObjectStore, type S3Settings, MemoryObjectStore, S3ObjectStore } from "./object-store.js";
 
 // Chat persistence (detached AI-builder background jobs)
 export {

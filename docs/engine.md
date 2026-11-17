@@ -35,7 +35,9 @@ services bag can override it, same as `http`/`secrets`).
   eviction (`src/retention.ts`) removes a run's event log and run directory
   only, never `<workspace>/artifacts/<runId>/`, and skips a run whose
   artifacts another run's input or output names (`artifacts/<runId>` in its
-  summary), so no link a run handed out can break.
+  summary), so no link a run handed out can break. The archive tier (below,
+  "The archive tier for run logs") moves run LOGS to a bucket; artifacts are
+  not archived yet (plans/run-archive.md, phase 2).
 - **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths) and
   mints the run's **file token** (`token`, when there is a secret to sign
   it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY` — never its dev default);
@@ -167,8 +169,9 @@ and the child env is scrubbed by construction).
   serializes to YAML) or a raw `yaml` string. Files are stored as
   `<version>.yaml` in the workflow directory. `js-yaml` for parsing.
 
-- **`retain:` = how long finished runs keep their log** (`src/retention.ts`).
-  An optional top-level field: a duration (`30m`, `1h`, `7d`; units s m h d
+- **`retain:` = how long finished runs keep their log** (`src/retention.ts`;
+  the first part of plans/retention.md, where every record strut keeps has an
+  index that stays and parts that leave the disk). An optional top-level field: a duration (`30m`, `1h`, `7d`; units s m h d
   w) or `{ runs: N }` (N a positive integer). Parsed by `parseRetention` (the
   one parser, shared with the env var and the sweep); `flowFromYaml` puts it
   on `Flow.retain`, `WorkflowContent.retain` / `renderWorkflowYaml` write it
@@ -177,10 +180,15 @@ and the child env is scrubbed by construction).
   beyond the newest N finished runs of that workflow, is EVICTED: its
   `events.jsonl` and everything else in its run directory go
   (`RunStore.evictRun`, File + Memory), and `run.json` stays, rewritten with
-  `logEvicted: true` + `evictedAt`, so the run still lists (the UI badges it
-  "log evicted"; its view says the log is gone). `STRUT_RUN_RETENTION` is the
-  fleet default for workflows with no `retain:` (`1h`, `20` or `runs:20`;
-  invalid: warned at boot, ignored; unset: nothing is evicted). The sweep
+  `parts.log.evictedAt` (`RunSummary.parts`: where each part of the run is;
+  `logEvicted(s)` and `withPart` in `core.ts`), so the run still lists (the
+  UI badges it "log evicted"; its view says the log is gone). A summary an
+  older strut wrote, with `logEvicted: true` + `evictedAt` (#693), reads as
+  `parts.log.evictedAt` (`upgradeSummary`, in `FileRunStore.getRunSummary`).
+  `STRUT_RETENTION` is the fleet default for workflows with no `retain:`
+  (`1h`, `20` or `runs:20`; `STRUT_RUN_RETENTION`, its first name, is read
+  when it is unset: `fleetRetentionFromEnv`; invalid: warned at boot,
+  ignored; unset: nothing is evicted). The sweep
   (`createRetention`, started beside the automations scheduler, at boot then
   hourly, unref'd, stopped on `close()`) walks workflow keys only and NEVER
   touches: a run with no summary (in flight), a `waiting` (parked) run, a run
@@ -191,7 +199,8 @@ and the child env is scrubbed by construction).
   skip kept every log): the Evidence nodes keep their verdict and content,
   and a re-verify of an evicted run skips it (`runPass`: no `run.start` →
   `unknown-run`; the Concept work pass and `addEvidence` find no events
-  too), so no check can write a verdict from a missing log. A sweep that
+  too), so no check can write a verdict from a missing log (with an archive
+  the pass's read restores the log and the run is verified: next bullet). A sweep that
   evicts logs one line: `[retention] evicted N run log(s): <workflow> <n>, …`
   (failures: `[retention] sweep failed:`).
   CRASHED runs: a run that died with its process (heap crash, OOM — the
@@ -212,13 +221,105 @@ and the child env is scrubbed by construction).
   qualifying crashed run joins the count form's newest-first ordering (one
   that does not qualify is neither counted nor touched). Eviction deletes
   the log and directory and WRITES a minimal summary (`status: "error"`,
-  `crashed: true`, `logEvicted`, `startedAt` from `run.start`, `finishedAt` =
+  `crashed: true`, `parts.log.evictedAt`, `startedAt` from `run.start`, `finishedAt` =
   the last write, `parentRunId` when known). Child runs: a resumed parent
   re-executes an unjournaled `meta/run-workflow` with NO runId, so the child
   is a fresh run; a dead child is never relaunched, and a live one is
   protected by `isLive`.
   `GET /workflows/:name/flow` returns `retain` and the fleet default
   (`fleetRetention`) as text for the flyout.
+
+- **The archive tier for run logs** (plans/run-archive.md; `src/run-archive.ts`,
+  `src/object-store.ts`). With `STRUT_ARCHIVE_S3_BUCKET` set (or
+  `createStrut({ archive })`), "evict" means upload first, drop the local
+  copy second, restore on read. With no bucket nothing here applies and
+  retention deletes as above.
+  - **Upload.** The sweep uploads the gzipped `events.jsonl` of every
+    finished run not uploaded yet to
+    `<prefix>/runs/<workflow>/<runId>/events.jsonl.gz`
+    (`RunStore.archiveRun` → `uploadLog`), streamed from the file with
+    nothing written to disk first, then checks the object's size against
+    what it sent and records it on the summary:
+    `parts.log.archive: { key, bytes, size, at }` (`bytes` the log's size, `size` the
+    object's). Only the event log: never `callback.json`, `mcp.json` or
+    `job-callback.json`. One sweep uploads at most `ARCHIVE_BYTES_PER_SWEEP`
+    (4 GiB of log; one bigger log still goes), the logs due for eviction
+    first, so a backlog drains over sweeps with no migration; it says
+    `[archive] archived N run log(s), 12.3 MB (… bytes); M more wait for the next sweep`.
+    A kept or artifact-referenced run is uploaded and stays local.
+  - **Evict.** The policy is `retain:`, else `STRUT_RETENTION`, else
+    `ARCHIVE_LOCAL_WINDOW` (7 days). A log goes only when the bucket holds
+    it: `FileRunStore.evictRun` itself refuses unless `parts.log.archive.bytes` is at
+    least the local log's size (a log only grows, so the bucket's copy
+    holds a local log no longer than it; a SHORTER local log, a file a
+    crash left short, is never uploaded over the bucket's).
+    For a log uploaded on an earlier sweep the sweep asks the bucket again
+    first (a HEAD of the recorded key and size, in `archiveRun`): an object
+    a lifecycle rule expired or someone deleted is uploaded again, never
+    trusted, and a HEAD that fails counts as gone (without `s3:ListBucket`
+    a missing key answers 403). A crashed run is uploaded, then evicted with its `crashed`
+    summary carrying `parts.log.archive`.
+  - **A run that goes on.** The record lives on the summary, and a durable
+    resume drops the summary before it appends (`clearRunSummary`), so a
+    resumed run has no record and is uploaded again, over the same key, once
+    it finishes. An upload a resume overtook is not recorded (the log's size
+    and the summary's `finishedAt` are checked again under the run's lock).
+    An object is read only through a summary's record, and a restore
+    refuses an object that does not gunzip to exactly `bytes`.
+    `clearRunSummary` itself brings an archived log back before it drops
+    the summary (the one pointer to it), and rejects when it cannot: the
+    sweep can evict a run between a resume's read of the log and its clear,
+    and the run would otherwise go on from an empty log and its next upload
+    replace the whole one.
+  - **Restore on read.** `getRunEvents`, `tailEvents`, `getRunStart`,
+    `readLogTail` and `repairLog` (a resume's first call) first bring back a
+    log that is in the bucket and not on this disk
+    (`FileRunStore.ensureLog` → `downloadLog`: written beside the log,
+    renamed into place), one restore at a time per run, so every reader
+    works unchanged: the run view, the SSE tail, a resume, the verify pass.
+    `parts.log` loses `evictedAt` and gains `restoredAt`; the sweep leaves a
+    restored log a day (`RESTORED_KEEP_MS`), then evicts it again without
+    another upload. `logSize` answers from the record and `logWrittenAt` is
+    null: neither restores (boot's resume scan asks `logWrittenAt` of every
+    run, and a resume's size cap asks `logSize` before the log is read). A
+    restore the bucket fails throws `RunArchiveError` and leaves the summary
+    as it was; `GET …/events` answers it 503 `{ error }`, as it does for an
+    archived run on a strut with no archive configured (a bucket unset
+    later, data moved to another box), which would otherwise read as a
+    run with no events.
+  - **What restores, and what never does.** A read of a run SOMEONE ASKED
+    FOR restores it: the run view (`…/events`, `…/stream`), a transcript,
+    provenance, the builder's read of a run, a search of named `runIds`, a
+    resume, an explicit verify (`POST …/verify`, `verify_run`,
+    `addEvidence`), a conversation page (its turns), a job view (its newest
+    runs; one the bucket cannot give back reads as evicted, the job still
+    opens). Everything strut does by itself, and every walk over many runs,
+    reads this disk only through `localRuns(store)` (`RunStore.local`),
+    where an archived run reads as an evicted one, or skips an evicted
+    summary: the sweep, boot's resume scan, the version counts
+    (`GET /workflows/:name/versions`), `stepStats`, a package build's
+    suggestions, the builder's default search (the newest N runs), the
+    verify pass strut makes when a run ends (so a work with old members is
+    not restored at every turn's end), a conversation's jobs backfill, and
+    the PUBLIC doors (`publicRoutes`, the public view's node index): an
+    anonymous caller walking a public workflow's run ids must not be able
+    to restore its archive. `graph/project` builds its own store with no
+    archive. A new walk over many runs must use `localRuns` too, or it
+    pages the whole archive back in.
+  - **A bucket that fails.** Each sweep first asks `checkArchive` (a HEAD of
+    `<prefix>/archive.json`, written the first time): when it fails the
+    sweep uploads and evicts nothing and says so in one line
+    (`[archive] the bucket does not answer, so this sweep archives and
+    evicts nothing: …`); an upload or a check that fails mid-sweep stops it
+    the same way (`[archive] the bucket failed, so this sweep archives and
+    evicts nothing more: …`).
+    Boot says once `[archive] on: finished runs' logs go to s3://… before
+    they are evicted`, or that the bucket does not work.
+  - **One store.** `createStrut` gives the archive to the run store it has
+    (`RunStore.useArchive`), the host's own `FileRunStore` included (mcp's
+    lab passes one). A store that cannot take one (memory) runs with the
+    archive off, with a warning. Deleting a workflow deletes its runs'
+    objects (`deleteRuns`, not waited for).
 
 - **`params` = the experiment surface.** A workflow may declare a
   top-level `params:` block of tunable default knobs (prompts,
@@ -587,7 +688,15 @@ resume journal: step.end outputs → {path→output}; `from` invalidation; `chan
 
 ### `src/store.ts`
 
-RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
+RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs). The archive tier's store half (`useArchive`, `archiveRun`, restore before a read, `local()` / `localRuns` for scans): "The archive tier for run logs" above
+
+### `src/run-archive.ts`
+
+the archive tier's transport (plans/run-archive.md): `archiveFromEnv` (STRUT_ARCHIVE_S3_* → a `RunArchive`: an object store, a prefix, a label), `uploadLog` / `downloadLog` (a log file gzipped to an object and back, each checked by size), `checkArchive` (the probe), `forgetLogs`, `RunArchiveError`
+
+### `src/object-store.ts`
+
+the `ObjectStore` boundary: put (streamed), get (streamed), head, delete, no listing. `S3ObjectStore` on the AWS SDK (`@aws-sdk/client-s3` + `lib-storage`, loaded by the first call; path-style on a custom endpoint; request and response checksums `WHEN_REQUIRED`, since the SDK's default breaks S3-compatible stores; 10 s connect and 60 s idle timeouts) and `MemoryObjectStore` for tests. The contract is `src/test-util/object-store-conformance.ts`, run on memory by `npm test` and on a real store by `npm run test:archive`
 
 ### `src/closure.ts`
 

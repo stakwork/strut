@@ -236,6 +236,12 @@ function Shell() {
   // has its steps and events (`openJobRun`).
   const [pendingFlyout, setPendingFlyout] = useState<string | null>(null);
   const [events, setEvents] = useState<api.RunEvent[]>([]);
+  /** The selected run's log read: still out (an archived log is being
+   *  restored), or why it could not be read. */
+  const [runLogLoading, setRunLogLoading] = useState(false);
+  const [runLogError, setRunLogError] = useState<string | null>(null);
+  /** The selected run's summary as last rendered, for the read below. */
+  const selectedSummaryRef = useRef<api.RunSummary | undefined>(undefined);
   const [running, setRunning] = useState(false);
   // Bumped after a durable resume so the run-view effect re-tails the log
   // (the prior tail closed at the old terminal event).
@@ -866,10 +872,28 @@ function Shell() {
     // Aborted on run-switch/unmount so pollers don't leak.
     const ctrl = new AbortController();
     setEvents([]);
+    setRunLogError(null);
+    setRunLogLoading(true);
     (async () => {
-      const accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
+      let accumulated: api.RunEvent[];
+      try {
+        accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
+      } catch (e) {
+        if ((e as Error)?.name !== "AbortError" && !ctrl.signal.aborted) {
+          // What the server said (an archived log the bucket could not give back).
+          setRunLogError((e as Error)?.message?.replace(/^\S+: /, "") || "The run's log could not be read");
+          setRunLogLoading(false);
+        }
+        throw e;
+      }
       if (ctrl.signal.aborted) return;
       setEvents([...accumulated]);
+      setRunLogLoading(false);
+      // The read may have restored an archived log: the list is read again,
+      // so its "archived" badge goes. Also when the summary is not in yet
+      // (a deep link): the list may have been read before the restore.
+      const listed = selectedSummaryRef.current;
+      if (!listed || listed.parts?.log?.evictedAt) refreshRuns();
       const result = await api.streamRun(selectedWf, selectedRun, (event) => {
         if (ctrl.signal.aborted) return;
         accumulated.push(event);
@@ -1114,6 +1138,7 @@ function Shell() {
   const selectedRunSummary = selectedRun
     ? runs.find((r) => r.runId === selectedRun) ?? (olderRun?.runId === selectedRun && olderRun.workflow === selectedWf ? olderRun : undefined)
     : undefined;
+  selectedSummaryRef.current = selectedRunSummary;
   const runControlStatus = selectedRunSummary?.status;
   // Live states come from the server's controller map; "stale"/"error"/
   // "cancelled" are dead-but-resumable (journal replay).
@@ -1655,7 +1680,9 @@ function Shell() {
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
                           {run.crashed && <span class="badge badge-danger" title="The run died with its process">crashed</span>}
-                          {run.logEvicted && <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>}
+                          {run.parts?.log?.evictedAt && (run.parts.log.archive
+                            ? <span class="badge" title={`Log archived at ${run.parts.log.archive.at}: opening the run restores it`}>archived</span>
+                            : <span class="badge" title={`Log evicted by retention at ${run.parts.log.evictedAt}`}>log evicted</span>)}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
@@ -2115,9 +2142,11 @@ function Shell() {
             : <div class="empty">Loading job…</div>
         ) : canvas
           ? <>
-            {selectedRunSummary?.logEvicted && !isRunView && (
-              <div class="run-evicted-note">This run's log was evicted by retention{selectedRunSummary.evictedAt ? ` (${selectedRunSummary.evictedAt})` : ""}; only its summary is kept.</div>
-            )}
+            {selectedRun && !isRunView && runLogError
+              ? <button type="button" class="run-evicted-note is-error" title="Read the log again" onClick={() => setRunEpoch((n) => n + 1)}>{runLogError} Click to try again.</button>
+              : selectedRunSummary?.parts?.log?.evictedAt && !isRunView && (selectedRunSummary.parts.log.archive
+                ? runLogLoading && <div class="run-evicted-note">Restoring this run's log from the archive…</div>
+                : <div class="run-evicted-note">This run's log was evicted by retention ({selectedRunSummary.parts.log.evictedAt}); only its summary is kept.</div>)}
             <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's

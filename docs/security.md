@@ -342,7 +342,11 @@ instead of baked into env at deploy time.
   the deployment's store or an actor's — and createStrut wraps a host's
   own `secrets` the same way (`hideSecrets`); `PUT /secrets` and an app's
   `secret/add` refuse one. What a step gets is `ctx.services.lightning`,
-  the receive side, which cannot pay.
+  the receive side, which cannot pay. The run archive's settings
+  (`STRUT_ARCHIVE_S3_*`: a bucket and a key pair that reads every archived
+  run log) are hidden by the same prefix list; only the server's object
+  store (`src/object-store.ts`) uses them, handed to the S3 client directly
+  and never put in `process.env`, so no child inherits them.
 
 - **Credit bought at another strut is not a secret a step reads either**
   (plans/paid-runs.md §10; `src/remote.ts`). The L402 token this strut

@@ -15,11 +15,18 @@ index. A change in this area updates this file, not AGENTS.md.
 
 - **Run retention** (docs/engine.md): the workflow flyout's footer has a
   Retention control (`RetentionSetting` in `WorkflowFlyout.tsx`): none / window
-  (`1h`) / runs (`20`), plus "Fleet default: <value> (STRUT_RUN_RETENTION)"
-  when it sets none. Save publishes a new version with `retain:` changed
+  (`1h`) / runs (`20`), plus "Fleet default: <value> (STRUT_RETENTION)"
+  when it sets none (the variable the server read it from: `fleetRetentionEnv`). Save publishes a new version with `retain:` changed
   (`handleSetRetain` in app.tsx; disabled while the canvas has unpublished
-  edits). A run whose summary has `logEvicted` shows a "log evicted" badge in
+  edits). A run whose summary has `parts.log.evictedAt` shows a "log evicted" badge in
   the runs list (a run that died with its process, `crashed`, also gets a red "crashed" badge), and its view (no events) a note saying only the summary is kept.
+  With `parts.log.archive` too (plans/run-archive.md) the badge is
+  "archived" and the run opens like any other: the events read restores the
+  log on the server, the canvas says "Restoring this run's log from the
+  archive…" until it answers (`runLogLoading` in app.tsx), and the runs
+  list is read again so the badge goes. A log the bucket cannot give back
+  shows the server's reason in that note (`runLogError`, the 503's
+  `error`); a click on it reads the log again.
 - **Flyout has two modes**: when no run is selected, clicking a
   canvas node opens the step editor (edit id, type, config). When
   a run is selected, it opens run results (input, output, error,

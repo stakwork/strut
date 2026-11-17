@@ -25,7 +25,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { RunEvent, RunSummary } from "./core.js";
+import { logEvicted, type RunEvent, type RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
 import type { PublicLaunchOutcome } from "./public-routes.js";
 import type { EdgeEnvelope, GraphReader, NodeEnvelope, SearchParams, SearchResult } from "./graph/search.js";
@@ -486,7 +486,7 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
       const refs = new Set<string>();
       const entry = { refs, ready: Promise.resolve() };
       entry.ready = (async () => {
-        for (const runId of await deps.store.listRuns(name)) for (const r of await runNodes(name, runId)) refs.add(r);
+        for (const runId of await deps.store.listRuns(name)) for (const r of await runNodes(name, runId, true)) refs.add(r);
       })().catch((err) => {
         if (index.get(name) === entry) index.delete(name);
         throw err;
@@ -549,11 +549,16 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     return saving;
   };
 
-  const runNodes = async (workflow: string, runId: string): Promise<Set<string>> => {
+  /** `scan`: asked by the index over EVERY run of the workflow, which reads
+   *  no evicted log: with a run archive (plans/run-archive.md) each read
+   *  restores one, and the scan would bring the whole archive back. Such a
+   *  run's set is not kept, so a read of that run alone still finds it. */
+  const runNodes = async (workflow: string, runId: string, scan = false): Promise<Set<string>> => {
     await loadRunSets(workflow);
     const sets = runSets.get(workflow)!;
     const kept = sets.get(runId);
     if (kept) return kept;
+    if (scan && logEvicted(await deps.store.getRunSummary(workflow, runId))) return new Set();
     const refs = new Set<string>();
     for (const e of await deps.store.getRunEvents(workflow, runId)) {
       for (const n of e.nodes ?? []) if (!n.peer && typeof n.ref_id === "string") refs.add(n.ref_id);

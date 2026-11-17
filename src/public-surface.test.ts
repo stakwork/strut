@@ -626,6 +626,23 @@ describe("the visible-refs index", () => {
     assert.equal(c.reads, reads);
   });
 
+  it("the index over a workflow's runs reads no evicted log (an archived one would be restored); a read of that run alone still does", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    await store.finalize("w", "r1", { status: "success" } as never);
+    // r2's log is not on this disk; reading it is what would bring it back.
+    await store.append("w", "r2", ev("r2", "step.end", ["b"]));
+    await store.finalize("w", "r2", { status: "success", parts: { log: { evictedAt: "2026-11-15T00:00:00.000Z" } } } as never);
+    const { c, store: s } = counting(store);
+    const surface = createPublicSurface({ dataDir: dir, store: s });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("a", undefined), true);
+    assert.equal(await surface.visible("b", undefined), false);
+    assert.equal(c.reads, 1, "r1's log alone");
+    assert.deepEqual([...(await surface.runNodes("w", "r2"))], ["b"]);
+    assert.equal(c.reads, 2);
+  });
+
   it("built while a run is going: what it reported before keeps visible after it ends, and after a restart", async () => {
     const store = new MemoryRunStore();
     await store.append("w", "r1", ev("r1", "run.start"));

@@ -3,7 +3,7 @@ import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type Ac
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
-import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
+import { countUsage, generateRunId, localRuns, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
@@ -255,6 +255,9 @@ export async function searchRunEvents(
   const runIds = opts.runIds?.length
     ? opts.runIds
     : (await store.listRuns(name)).slice(0, runLimit);
+  // Named runs are read whole, an archived log restored. The default, the
+  // newest `runLimit`, is a scan: it reads this disk only.
+  const runs = opts.runIds?.length ? store : localRuns(store);
 
   const matches: RunSearchMatch[] = [];
   const perRun: { runId: string; matchingEvents: number }[] = [];
@@ -263,7 +266,7 @@ export async function searchRunEvents(
 
   for (const runId of runIds) {
     if (truncated) break;
-    const events = await store.getRunEvents(name, runId);
+    const events = await runs.getRunEvents(name, runId);
     runsScanned++;
     let matchingEvents = 0;
     for (const e of events) {

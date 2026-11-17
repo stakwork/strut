@@ -93,7 +93,7 @@ import { buildLedger, type Ledger, type LedgerClaim } from "./ledger.js";
 import { runRef } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
-import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
+import { checkRunKey, localRuns, stepTypeOfRunKey, type RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { bootEnv } from "./env.js";
 import { executedWorkflowHash } from "./journal.js";
@@ -952,9 +952,15 @@ export function createVerifier(deps: VerifierDeps) {
     }
   }
 
+  /** The runs a pass reads. One someone asked for reads the store, which
+   *  restores an archived log (plans/run-archive.md); the pass strut makes
+   *  by itself when a run ends reads this disk only, so a work with old
+   *  members cannot page their logs back in at every turn's end. */
+  const runsFor = (explicit: boolean): RunStore => (explicit ? store : localRuns(store));
+
   async function runPass(key: string, runId: string, explicit: boolean): Promise<VerifyResult> {
     const pass = newPass(key, runId, explicit);
-    const events = await store.getRunEvents(key, runId);
+    const events = await runsFor(explicit).getRunEvents(key, runId);
     const launch = events.find((e) => e.type === "run.start");
     if (!launch) return { ...pass.result, skipped: "unknown-run" };
     if (launch.origin === "verify" || key.startsWith("check:")) return { ...pass.result, skipped: "verify-origin" };
@@ -984,7 +990,7 @@ export function createVerifier(deps: VerifierDeps) {
     if (key.includes(":")) return [];
     if (!(await reader.claimedSubjects("concept")).length) return [];
     const ended: RunRef = { workflow: key, runId };
-    const roots = await rootsOf(store, ended);
+    const roots = await rootsOf(runsFor(explicit), ended);
     if (!roots) return [];
     const out: VerifyResult[] = [];
     for (const root of roots) {
@@ -1033,7 +1039,8 @@ export function createVerifier(deps: VerifierDeps) {
    */
   async function verifyWork(root: RunRef, explicit: boolean, ended: RunRef): Promise<VerifyResult | null> {
     const members = await membersOf(dataDir(), root);
-    const state = await workDone({ store, dataDir: dataDir(), ...(deps.isLive ? { isLive: deps.isLive } : {}) }, members, ended);
+    const runs = runsFor(explicit);
+    const state = await workDone({ store: runs, dataDir: dataDir(), ...(deps.isLive ? { isLive: deps.isLive } : {}) }, members, ended);
     if (!state.done) return null;
     const claimed = new Set(await reader.claimedSubjects("concept"));
     const pass = newPass(root.workflow, root.runId, explicit);
@@ -1042,7 +1049,7 @@ export function createVerifier(deps: VerifierDeps) {
     let rootCheck: ObservedSubject["check"] | undefined;
     let endedAt = "";
     for (const m of members) {
-      const [events, summary] = await Promise.all([store.getRunEvents(m.workflow, m.runId), store.getRunSummary(m.workflow, m.runId)]);
+      const [events, summary] = await Promise.all([runs.getRunEvents(m.workflow, m.runId), runs.getRunSummary(m.workflow, m.runId)]);
       const start = events.find((e) => e.type === "run.start");
       // A child cut off by a crash and relaunched by its parent did nothing that finished.
       if (!start || !summary || !["success", "error", "cancelled"].includes(summary.status)) continue;

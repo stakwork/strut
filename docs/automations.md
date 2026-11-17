@@ -71,7 +71,7 @@ the Automations flyout's HTTP door: GET /automations[?workflow=], POST /automati
 
 ### `src/retention.ts`
 
-the run-retention sweep (docs/engine.md "Retention"): started right beside `automations.start()` in `createStrut` (same `scheduler` option / `STRUT_SCHEDULER` switch), once at boot and then hourly, its timer unref'd and stopped by `close()`. Evicts finished runs' logs per the workflow's `retain:` or `STRUT_RUN_RETENTION`; never a running, waiting, kept or artifact-referenced run (claim evidence does not hold one), and logs `[retention] evicted N run log(s): …` when it evicts.
+the run-retention sweep (docs/engine.md "Retention"): started right beside `automations.start()` in `createStrut` (same `scheduler` option / `STRUT_SCHEDULER` switch), once at boot and then hourly, its timer unref'd and stopped by `close()`. Evicts finished runs' logs per the workflow's `retain:` or `STRUT_RETENTION` (first named `STRUT_RUN_RETENTION`, still read); never a running, waiting, kept or artifact-referenced run (claim evidence does not hold one), and logs `[retention] evicted N run log(s): …` when it evicts. With an archive (`RetentionDeps.archive`, docs/engine.md "The archive tier for run logs") the same pass uploads first: it asks the bucket's check, uploads finished runs' logs within the sweep's byte budget (those due for eviction first), and evicts only a run whose upload the store recorded; a bucket that fails means nothing is uploaded or evicted, in one line. `strut.retention.sweep()` runs a pass by hand (a host with `scheduler: false`).
 
 ### `src/steps/lib/automation/`
 

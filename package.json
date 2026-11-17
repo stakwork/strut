@@ -43,6 +43,7 @@
     "test:gateway": "tsx scripts/gateway-smoke.ts",
     "bench:memory-graph": "tsx scripts/bench-memory-graph.ts",
     "test:graph": "node scripts/test-graph.mjs",
+    "test:archive": "tsx --test src/run-archive.live.test.ts",
     "test:app-build": "node scripts/check-app-build.mjs"
   },
   "dependencies": {
@@ -51,6 +52,8 @@
     "@ai-sdk/provider-utils": "^5.0.44",
     "@ai-sdk/typesafe-ai": "^3.0.3",
     "@ai-sdk/xai": "5.0.2",
+    "@aws-sdk/client-s3": "^3.1169.0",
+    "@aws-sdk/lib-storage": "^3.1169.0",
     "@googleapis/drive": "^20.2.0",
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
