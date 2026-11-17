@@ -392,7 +392,15 @@ const SIGN_IN_WORDS: Record<string, string> = {
   nostr: "a Nostr extension",
   ticket: "a host's ticket",
 };
-const SIGN_IN_SHORT: Record<string, string> = { sphinx: "Sphinx", key: "a browser key", lnurl: "a Lightning wallet", nostr: "Nostr", ticket: "a host's ticket" };
+/** A sign-in method in the words of a person who is not technical: the
+ *  card's "Who can open it". */
+const SIGN_IN_PLAIN: Record<string, string> = {
+  sphinx: "their Sphinx account, in the Peel app",
+  key: "a key their browser keeps",
+  lnurl: "a Lightning wallet",
+  nostr: "a Nostr extension",
+  ticket: "a ticket from your own site",
+};
 
 /** One cascade line as the dialog shows it: its name and what it exposes;
  *  one it does not pre-check is said and not added. */
@@ -401,24 +409,27 @@ export function needLine(l: NeedLine): string {
 }
 
 /**
- * The card (`app/make-public`'s `describe`): the app and its version, what
- * anyone will see — each line of the cascade with what it exposes, as the
- * Public view tab shows it — who can sign in, and that the app is held at
- * this version. Runs anyone reads whole and a read that reaches an outside
- * service with this server's credentials are dangers; so is anything that
- * makes the yes fail. `input` pins the version.
+ * The card (`app/make-public`'s `describe`), for a person who is not
+ * technical: `Put "<title>" online`, a few plain sentences, then who can
+ * open it and how they sign in, and how much else on this server it makes
+ * visible. Under Details (`CardField.detail`): the app and its version and
+ * hold, each line of the cascade with what it exposes (as the Public view
+ * tab shows it), and the sign-in's workings. Runs anyone reads whole, a
+ * read that reaches an outside service with this server's credentials, a
+ * live version that moves and no sign-in are dangers, never folded; so is
+ * anything that makes the yes fail. `input` pins the version.
  */
 export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined): ProposalDescription {
-  const actions = { accept: "Make public", reject: "Don't" };
-  if (!plan) return { title: `Make the app ${cfg.name} public`, actions };
+  const actions = { accept: "Put it online", reject: "Don't" };
+  if (!plan) return { title: `Put ${cfg.name} online`, actions };
   const { needs, version, live } = plan;
   const fails: string[] = [];
   if (plan.served) fails.push(`this strut server serves ${plan.served}, whose serve.yaml writes the public view at every deploy`);
   if ("error" in needs) {
     fails.push(needs.error);
     return {
-      title: `Make the app ${cfg.name} public`,
-      summary: `Accepting it fails: ${fails.join("; ")}.`,
+      title: `Put ${cfg.name} online`,
+      summary: `Approving it fails: ${fails.join("; ")}.`,
       fields: [{ label: "App", value: `${cfg.name}${cfg.version ? ` ${cfg.version}` : ""} — ${needs.error}`, danger: true }],
       actions,
       full: true,
@@ -426,51 +437,86 @@ export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined
   }
   const app = needs.app!;
   const v = version ?? app.version;
-
-  const fields: CardField[] = [{ label: "App", value: `${app.title} — ${app.name} ${v}` }];
+  const vis = plan.visitors;
+  const nobody = !vis.signIn.length;
   const moves = !!live && live.version !== v;
+
+  // Shown: what a person who is not technical decides on.
+  const fields: CardField[] = [];
+  const signIn = vis.signIn.map((m) => SIGN_IN_PLAIN[m] ?? m);
   fields.push({
-    label: "Held at",
-    value: plan.seeded
-      ? "not held: strut seeds this app, so it follows strut's releases"
-      : `${v}: a later publish is a draft until someone makes it live` +
-        (moves ? `. Its live version moves from ${live!.version} to ${v}, for everyone who opens it` : live?.held ? " (already held there)" : ""),
-    ...(moves && !plan.seeded ? { danger: true } : {}),
+    label: "Who can open it",
+    value: nobody
+      ? "Anyone with the link, but nobody can sign in to it, so nobody can work in it."
+      : `Anyone with the link. To use it, they sign in with ${orWords(signIn)}; anyone else sees it signed out.`,
+    ...(nobody ? { danger: true } : {}),
   });
+  const counted: Array<[number, string, string]> = [
+    [needs.workflows.filter((l) => l.checked).length, "workflow", "workflows"],
+    [needs.reads.filter((l) => l.checked).length, "thing the page reads", "things the page reads"],
+    [needs.steps.filter((l) => l.checked).length, "step", "steps"],
+    [needs.concepts.filter((l) => l.checked).length, "Concept tree", "Concept trees"],
+  ];
+  const parts = counted.filter(([n]) => n > 0).map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
+  fields.push({
+    label: "What else they can see",
+    value: parts.length ? `${andWords(parts)} on this server, each listed under Details.` : "Nothing else: only this page.",
+  });
+
+  // Under Details: the app, its version and hold, each line of the cascade
+  // with what it exposes (as the Public view tab shows it), the sign-in.
+  // A danger is never folded.
+  const detail = (f: CardField): CardField => (f.danger ? f : { ...f, detail: true });
+  fields.push(detail({ label: "App", value: `${app.title} — ${app.name} ${v}` }));
+  fields.push(
+    detail({
+      label: "Held at",
+      value: plan.seeded
+        ? "not held: strut seeds this app, so it follows strut's releases"
+        : `${v}: a later publish is a draft until someone makes it live` +
+          (moves ? `. Its live version moves from ${live!.version} to ${v}, for everyone who opens it` : live?.held ? " (already held there)" : ""),
+      ...(moves && !plan.seeded ? { danger: true } : {}),
+    }),
+  );
   const section = <L extends NeedLine>(label: string, lines: L[], danger: (l: L) => boolean) => {
     if (!lines.length) return;
     const d = lines.some((l) => l.checked && danger(l));
-    fields.push({ label, value: lines.map(needLine).join("\n"), ...(d ? { danger: true } : {}) });
+    fields.push(detail({ label, value: lines.map(needLine).join("\n"), ...(d ? { danger: true } : {}) }));
   };
   section("Workflows", needs.workflows, (w) => w.runs);
   section("Reads the page may call", needs.reads, (r) => r.note.startsWith("calls "));
   section("Steps", needs.steps, () => false);
   if (needs.concepts.length) {
-    fields.push({ label: "Concept trees", value: needs.concepts.map((c) => `${needLine(c)} (read by ${c.from.join(", ")})`).join("\n") });
+    fields.push(detail({ label: "Concept trees", value: needs.concepts.map((c) => `${needLine(c)} (read by ${c.from.join(", ")})`).join("\n") }));
   }
-  if (needs.perRun.length) fields.push({ label: "Decided per run, not added", value: needs.perRun.join("\n") });
-
-  const vis = plan.visitors;
-  const nobody = !vis.signIn.length;
+  if (needs.perRun.length) fields.push(detail({ label: "Decided per run, not added", value: needs.perRun.join("\n") }));
   const how = vis.signIn.map((m) => SIGN_IN_WORDS[m] ?? m).join("; ");
   const key = vis.visitorKey === "domain" ? "a key per domain, so a visitor is someone new on each domain" : "the root key, so a visitor is one person on every app here";
-  fields.push({
-    label: "Who can sign in",
-    value: nobody
-      ? "nobody: the public view offers no sign-in, so every visitor is anonymous and no worker can sign in. A person changes that in Publish → Public view."
-      : `${how}, with ${key}. ${vis.set ? "The public view's own setting, unchanged." : "The default; a person changes it in Publish → Public view."} Anyone else sees the page signed out.`,
-    ...(nobody ? { danger: true } : {}),
-  });
+  fields.push(
+    detail({
+      label: "Who can sign in",
+      value: nobody
+        ? "nobody: the public view offers no sign-in, so every visitor is anonymous and no worker can sign in. A person changes that in Publish → Public view."
+        : `${how}, with ${key}. ${vis.set ? "The public view's own setting, unchanged." : "The default; a person changes it in Publish → Public view."} Anyone else sees the page signed out.`,
+      ...(nobody ? { danger: true } : {}),
+    }),
+  );
 
   const lines: string[] = [];
-  lines.push(`Anyone with the link can open ${app.title} (${app.name} ${v}) and read what is listed here.`);
-  if (plan.listed) lines.push("It is in the public view already: only what it needs now and is not there yet is added.");
-  lines.push(nobody ? "Nobody can sign in to it." : `Visitors sign in with ${vis.signIn.map((m) => SIGN_IN_SHORT[m] ?? m).join(", ")}.`);
-  if (!plan.seeded) lines.push(`It is held at ${v}: later edits are drafts until someone makes them live.`);
-  lines.push("Nothing else in the public view changes, and nothing is taken out of it.");
-  if (fails.length) lines.push(`Accepting it fails: ${fails.join("; ")}.`);
+  lines.push(`Anyone with the link can open "${app.title}".`);
+  if (plan.listed) lines.push("It is online already: only what it needs now and is not there yet is added.");
+  lines.push(nobody ? "Nobody can sign in to it, so nobody can work in it." : `To use it, people sign in with ${orWords(signIn)}.`);
+  lines.push(parts.length ? `It also lets them see ${andWords(parts)} on this server.` : "Nothing else on this server becomes visible.");
+  // The dangers, said plainly: what a stranger could read or reach.
+  const wholeRuns = needs.workflows.filter((w) => w.checked && w.runs).map((w) => w.name);
+  if (wholeRuns.length) lines.push(`Anyone with the link can read every run of ${andWords(wholeRuns)}, in full.`);
+  const outside = needs.reads.filter((r) => r.checked && r.note.startsWith("calls ")).map((r) => r.name);
+  if (outside.length) lines.push(`The page can call ${andWords(outside)}, an outside service, with this server's own credentials.`);
+  if (!plan.seeded) lines.push(moves ? `Everyone who opens it gets version ${v} from now on, and later changes wait until someone makes them live.` : "Later changes to it wait until someone makes them live.");
+  lines.push("Nothing already online is changed or taken down.");
+  if (fails.length) lines.push(`Approving it fails: ${fails.join("; ")}.`);
   return {
-    title: `Make the app ${app.title} public`,
+    title: `Put "${app.title}" online`,
     summary: lines.join(" "),
     fields,
     actions,
@@ -478,3 +524,8 @@ export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined
     input: { name: cfg.name, version: v },
   };
 }
+
+/** "a", "a or b", "a, b or c". */
+const orWords = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} or ${xs.at(-1)}` : (xs[0] ?? ""));
+/** "a", "a and b", "a, b and c". */
+const andWords = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : (xs[0] ?? ""));

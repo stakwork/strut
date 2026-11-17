@@ -3598,9 +3598,19 @@ release.
 
 **An agent's ask** (`app/make-public`, ruled 2026-11-13): the builder job
 or the assistant may ASK to add an app; only an ADMIN's yes adds it (§12,
-`approver: "admin"`). The card lists the app and the version live when it
-was asked (pinned on the record), every line `GET /public-view/needs`
-pre-checks with what it exposes, who can sign in, and the hold. The yes
+`approver: "admin"`). The card is for an admin who is not technical:
+`Put "<title>" online`, actions "Put it online" / "Don't", a few plain
+sentences (who can open it, how they sign in, how much else becomes
+visible, a stranger reading runs whole or the page calling an outside
+service with this server's credentials said plainly), then **Who can open
+it** and **What else they can see** (a count by kind). Under Details
+(`detail: true`, §12): the app and the version live when it was asked
+(pinned on the record), the hold, every line `GET /public-view/needs`
+pre-checks with what it exposes, and who can sign in and with which key; a
+danger (runs read whole, an outside read, a live version that moves, no
+sign-in) is never folded. Asked again for an app whose card still waits in
+the same thread (the build asked, then the assistant), the new card
+replaces it (`replaces`, §12), so the person sees one. The yes
 writes through `PUT`'s own save (`savePublicView`, the same checks, a served
 box's `409 serve_owned:`): the record as it was plus the pre-checked lines
 — nothing taken out, `visitors` as it was (absent: `[sphinx]` with the root
