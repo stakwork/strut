@@ -298,8 +298,12 @@ index. A change in this area updates this file, not AGENTS.md.
   The daemon's answer gives the Sphinx id at once (`answered` keeps it), so
   a reply can quote it and Delete name it before the feed has it. DELETE
   (`POST /support/:worker/delete { key }`): Support's own messages alone,
-  through `POST /dm/:id/delete`, the row flagged; one that failed with
-  nothing sent is flagged here alone, and Retry no longer finds it.
+  through `POST /dm/:id/delete` (stakwork/sphinx#436), the row flagged; a
+  failed one never went, so it is flagged here alone and Retry no longer
+  finds it; the daemon's `409 not_deletable` on a send not yet settled is
+  `409 not_yet`, "try again in a moment". The daemon keeps no file bytes:
+  Retry sends a file again from strut's copy, and with a file the
+  daemon's 32 KiB counts 1 KiB more, which strut counts too.
   SUPPORT'S PICTURE (`PUT`/`DELETE /support/photo`): through the daemon's
   `PUT /dm/photo`, which answers the memes URL it then sends as `img` on
   every message; strut keeps the URL in `support_state` and the bytes in

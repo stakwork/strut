@@ -249,7 +249,10 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   over 25 MiB; the file then reads back through `GET /dm/:id/file`), `PUT
   /dm/photo { data, type }` → `{ url }` and `DELETE /dm/photo` (`GET
   /worker-photo`, open, says the `img` a worker now sees), `POST
-  /dm/:id/delete` for the account's own messages. `/worker-dm` takes
+  /dm/:id/delete` for the account's own messages, as stakwork/sphinx#436
+  answers them (no bytes kept: a failed file send is retried only with
+  its file; `GET /dm/:id/file` serves received files alone, so `GET
+  /worker-file/:id`, open, reads one the account sent). `/worker-dm` takes
   `time` (ISO), so a message can have waited 5 minutes for the heads-up.
   Then `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the
   admin a ticket names (`POST /auth/ticket { actor, role: "admin" }`), and

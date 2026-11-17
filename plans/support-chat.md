@@ -203,8 +203,8 @@ links to their page.
   (`<dataDir>/support/photo`) to show it in settings, since the page cannot
   load the memes URL (above).
 - **Delete** is a trash button on Support's own messages, asked in place
-  (an app frame has no modals), not a menu. A send that failed with nothing
-  sent has no Sphinx id: it is deleted in strut alone.
+  (an app frame has no modals), not a menu. A failed send never went (the
+  daemon deletes none, stakwork/sphinx#436): it is deleted in strut alone.
 - **Payout lines** go to the worker as a DM from Support, so Peel shows
   them; the staff's thread labels them "Payout". Only to a worker who is a
   contact (ruling 15), once per payout (its id made from the payout's key).
@@ -439,14 +439,25 @@ token expires and to send the welcome.
 - Support's photo sent as `img` on every message.
 - `POST /dm/:id/delete`.
 
-**Built differently (#ITEM2, against the stand-in; the daemon's side is
-stakwork/sphinx, stacked on #435):** the shapes strut uses —
-`POST /dm { id, to, text?, reply?, file?: { data, type, name } }` (25 MiB,
-`413 too_large`; the feed then shows `kind: "file"` with `mediaType` and
-`fileName`); `PUT /dm/photo { data, type }` → `{ url }`, sent as `img` on
-every message, and `DELETE /dm/photo`; `POST /dm/:id/delete`, the
-account's own messages alone, the record then `deleted: true` under a new
-`seq`. specs/LIGHTNING.md, "Support's DMs".
+**Built differently (stakwork/sphinx#436, strut #ITEM2):**
+- `POST /dm { id, to, text?, reply?, file?: { data, type, name? } }`: 25
+  MiB (`413 too_large`); a file's fields count 1 KiB toward the 32 KiB
+  `too_long`, which strut counts too. The daemon keeps NO bytes: a failed
+  file send is tried again only with `file` again (strut's Retry sends it
+  from its own copy), and `GET /dm/:id/file` refuses the account's own
+  files (strut never asks: it keeps its copy). An upload the memes server
+  refuses ends the send `failed`.
+- `PUT /dm/photo { data, type }` → `{ url }`: jpeg, png, gif or webp, the
+  bytes of that type, 5 MiB, not resized (strut's page sends a 512 px
+  JPEG). `DELETE /dm/photo` → `{ url: null }`. The `img` goes on messages
+  sent through sphinx-chat's `sendText` (not on keysend payouts).
+- `POST /dm/:id/delete`: messages and files alone; it answers the item
+  `deleted: true`, which the feed repeats under a new `seq`. `409
+  not_deletable` for a failed send (strut deletes its own copy alone, as
+  it never went) and for a send not settled after a restart (shown as
+  "try again in a moment"); `403 not_own`, `404 not_found`, `503
+  not_connected`, `502 send_failed`.
+- specs/LIGHTNING.md, "Support's DMs".
 
 ## 8. What a host does
 
@@ -489,7 +500,7 @@ item 2 (#ITEM2) is stacked on #719, which Evan allowed for this effort.
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
 | 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Built (#719), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
-| 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins. Routes: `PUT /support/:worker`, `POST /support/:worker/delete`, `PUT` and `DELETE /support/photo`; `file` on `POST /support/:worker`, `payoutLines` on `PUT /support/settings`, `filter` on `GET /support`. Steps `staff/support-update`, `-delete`, `-photo` | 1; the daemon's item-2 routes | Built (#ITEM2, stacked on #719), against the stand-in daemon; the daemon's routes are stakwork/sphinx's |
+| 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins. Routes: `PUT /support/:worker`, `POST /support/:worker/delete`, `PUT` and `DELETE /support/photo`; `file` on `POST /support/:worker`, `payoutLines` on `PUT /support/settings`, `filter` on `GET /support`. Steps `staff/support-update`, `-delete`, `-photo` | 1; the daemon's item-2 routes | Built (#ITEM2, stacked on #719), against the stand-in daemon matched to stakwork/sphinx#436 |
 
 A stand-in for the new routes goes into `scripts/fake-sphinx-daemon.ts`,
 which already answers the wallet, keysend and invite routes. That way item 1

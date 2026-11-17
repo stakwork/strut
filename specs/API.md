@@ -5877,12 +5877,12 @@ its first byte), one encoded segment.
 | `GET /support/unread` | `{ unread, conversations }`: workers' messages no one marked seen, and the conversations they are in — for a host's navigation |
 | `GET /support/settings` | `{ settings }` |
 | `PUT /support/settings { welcome?, payoutLines? }` | `{ settings }`: either or both |
-| `PUT /support/photo { base64, type }` | `{ settings }`: Support's picture through the daemon (`PUT /dm/photo`), `image/jpeg`, `png`, `webp` or `gif`, at most 1 MiB; `502 daemon_error` when the daemon refuses it |
+| `PUT /support/photo { base64, type }` | `{ settings }`: Support's picture through the daemon (`PUT /dm/photo`, which does not resize it), `image/jpeg`, `png`, `webp` or `gif`, at most 1 MiB; `502 daemon_error` when the daemon refuses it (bytes not of that type, its memes server) |
 | `DELETE /support/photo` | `{ settings }`: no picture (`DELETE /dm/photo`) |
 | `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
 | `PUT /support/:worker { status?, assignee? }` | `{ conversation }`: `status` `open` or `done`; `assignee` `"me"` takes it (an admin's session, or the key with `x-strut-actor`), `null` lets it go |
-| `POST /support/:worker { text?, replyTo?, file? }` | `{ message }`: kept, then sent from "Support"; `file` is `{ base64, type, name }`, at most 2.5 MiB, `text` then its caption; `{ retry: <key> }` sends a failed one again under the same id, its file with it |
-| `POST /support/:worker/delete { key }` | `{ message }`: one of Support's messages deleted for both sides (`POST /dm/:id/delete`); a failed one that never went is deleted here alone; `404 unknown_message` for a worker's, `400` while it is still sending |
+| `POST /support/:worker { text?, replyTo?, file? }` | `{ message }`: kept, then sent from "Support"; `file` is `{ base64, type, name }`, at most 2.5 MiB, `text` then its caption (with a file, the daemon's 32 KiB counts 1 KiB more); `{ retry: <key> }` sends a failed one again under the same id, its file again from strut's copy (the daemon keeps none) |
+| `POST /support/:worker/delete { key }` | `{ message }`: one of Support's messages deleted for both sides (`POST /dm/:id/delete`); a failed one never went and is deleted here alone; `404 unknown_message` for a worker's; `409 not_yet` ("try again in a moment") while it is still sending or the daemon has not settled it; `502 daemon_error` for the daemon's other refusals |
 | `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
 | `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
 

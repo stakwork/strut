@@ -419,8 +419,8 @@ describe("Support on a server (§3, §5, §8)", () => {
 
   // ── item 2 ────────────────────────────────────────────────────────────────
 
-  /** What the daemon holds as a file of the account's, read with the message token. */
-  const daemonFile = async (id: string) => Buffer.from(await (await fetch(`${daemon.url}/dm/${encodeURIComponent(id)}/file`, { headers: { authorization: `Bearer ${MESSAGE}` } })).arrayBuffer());
+  /** A file the account sent, as the worker's Peel downloads it (the stand-in's open route). */
+  const daemonFile = async (id: string) => Buffer.from(await (await fetch(`${daemon.url}/worker-file/${encodeURIComponent(id)}`)).arrayBuffer());
 
   it("staff send a file: strut keeps its copy and sends it through the daemon, a caption beside it; Retry resends it; more than 2.5 MiB is refused", async () => {
     const eve = await worker({ alias: "Eve", text: "Can I see the rules?" });
@@ -430,7 +430,9 @@ describe("Support on a server (§3, §5, §8)", () => {
     const sent = (await supportSend.run({ worker: actorOfPubkey(eve.pubkey), text: "Here they are", file: { base64: pdf.toString("base64"), type: "application/pdf", name: "../Rules.pdf" } }, ctx)) as { message: Msg };
     assert.deepEqual([sent.message.kind, sent.message.text, sent.message.status, sent.message.file], ["file", "Here they are", "sent", { name: ".._Rules.pdf", mediaType: "application/pdf", size: pdf.byteLength, state: "kept" }]);
     assert.ok(sent.message.id, "the daemon's id, from its answer: a reply may quote it and Delete name it at once");
-    assert.ok((await daemonFile(sent.message.id!)).equals(pdf), "the daemon has the bytes");
+    assert.ok((await daemonFile(sent.message.id!)).equals(pdf), "the worker gets the bytes");
+    // The daemon serves only files the account received (stakwork/sphinx#436): strut keeps its own.
+    assert.equal((await fetch(`${daemon.url}/dm/${encodeURIComponent(sent.message.id!)}/file`, { headers: { authorization: `Bearer ${MESSAGE}` } })).status, 404);
     await follow();
     const t = await get<Thread>(`/support/${w(eve.pubkey)}`);
     assert.equal(t.messages.filter((m) => m.kind === "file").length, 1, "the feed's copy is the same message");
@@ -442,12 +444,15 @@ describe("Support on a server (§3, §5, §8)", () => {
     await fetch(`${daemon.url}/next-dm`, { method: "POST", headers: json, body: JSON.stringify({ state: "failed" }) });
     const failed = await post<{ message: Msg }>(`/support/${w(eve.pubkey)}`, { file: { base64: jpeg.toString("base64"), type: "image/jpeg", name: "photo.jpg" } });
     assert.deepEqual([failed.message.status, failed.message.text, failed.message.file?.state], ["failed", undefined, "kept"]);
+    // The daemon keeps no bytes: Retry sends the file again from strut's copy.
     const again = await post<{ message: Msg }>(`/support/${w(eve.pubkey)}`, { retry: failed.message.key });
     assert.equal(again.message.status, "sent");
     assert.ok((await daemonFile(again.message.id!)).equals(jpeg));
 
     const big = Buffer.alloc(2.5 * 1024 * 1024 + 1).toString("base64");
-    for (const body of [{ file: { base64: big, type: "application/pdf", name: "big.pdf" } }, { file: { base64: "not base64!", type: "image/png", name: "x.png" } }, { file: { base64: "AAAA", type: "nonsense", name: "x" } }, { text: " " }]) {
+    // A file's own fields count 1 KiB toward the daemon's 32 KiB: refused here first.
+    const nearly = "x".repeat(32 * 1024 - 1024);
+    for (const body of [{ file: { base64: big, type: "application/pdf", name: "big.pdf" } }, { text: nearly, file: { base64: jpeg.toString("base64"), type: "image/jpeg", name: "p.jpg" } }, { file: { base64: "not base64!", type: "image/png", name: "x.png" } }, { file: { base64: "AAAA", type: "nonsense", name: "x" } }, { text: " " }]) {
       const res = await req(`/support/${w(eve.pubkey)}`, { method: "POST", headers: keyed, body: JSON.stringify(body) });
       assert.equal(res.status, 400, JSON.stringify(body).slice(0, 80));
     }

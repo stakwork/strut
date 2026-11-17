@@ -21,8 +21,8 @@ This file is the contract each provider is built against:
   `src/payments/sphinx-daemon.test.ts` and `payer.test.ts` drive stand-ins
   that answer exactly this. And SUPPORT's DM routes, with a token of
   their own ("Support's DMs" below, plans/support-chat.md §7;
-  stakwork/sphinx#435, and item 2's file, picture and delete stacked on
-  it); `scripts/fake-sphinx-daemon.ts` answers them.
+  stakwork/sphinx#435, and item 2's file, picture and delete in
+  stakwork/sphinx#436); `scripts/fake-sphinx-daemon.ts` answers them.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -367,12 +367,12 @@ GET /dm/:id/file
 → the decrypted bytes; content-type the file's type; content-disposition the sender's name
 
 POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>",
-           "file": { "data": "<base64>", "type": "image/jpeg", "name": "receipt.jpg" } }
+           "file": { "data": "<standard base64>", "type": "image/jpeg", "name": "receipt.jpg" } }
 → the send's item, as the feed shows it: { "seq": 31, "id": "<sphinx id>", "clientId": "<strut's>", …, "status": "sent" }
 
 PUT /dm/photo { "data": "<base64>", "type": "image/jpeg" }      → { "url": "https://memes…/public/<muid>" }
-DELETE /dm/photo                                               → 200
-POST /dm/:id/delete                                            → 200
+DELETE /dm/photo                                               → { "url": null }
+POST /dm/:id/delete                                            → the item, "deleted": true, "text": null
 ```
 
 - **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
@@ -425,26 +425,44 @@ POST /dm/:id/delete                                            → 200
   message's JSON over 32 KiB, which strut refuses before it keeps
   anything), `503 not_connected` (no LSP: nothing was sent). Strut keeps a
   refused send `failed` with the daemon's `code: error`, and Retry.
-- **A file in `POST /dm`** (item 2): `file { data, type, name }`, `text`
-  then optional, its caption. The daemon encrypts it (RNCryptor v3, as
-  Peel's `MediaCrypto`), uploads it to memes `/file`, signs a media token
-  and sends a type-6 message; at most 25 MiB (`413 too_large`). The same
-  `id` rule holds: a failed one is tried again with the file it first had.
-  The feed then shows the send as `kind: "file"` with `mediaType` and
-  `fileName` (made from the type), and `GET /dm/:id/file` reads it back.
-  Strut sends at most 2.5 MiB (a page's call is capped at 4 MB) and keeps
-  its own copy in `<dataDir>/support/files/`, which Retry sends again.
+- **A file in `POST /dm`** (item 2, stakwork/sphinx#436): `file { data,
+  type, name? }` (standard base64; without `name` one is made from the
+  type), `text` then optional, its caption. The daemon encrypts it
+  (RNCryptor v3, as Peel's `MediaCrypto`), uploads it to the first host in
+  `DAEMON_MEMES_HOSTS`, signs a media token (a year) and sends a type-6
+  message; an upload the memes server refuses ends the send `failed`, with
+  nothing sent. The answer and the feed show it as `kind: "file"` with
+  `mediaType` and `fileName`. **The daemon keeps no bytes**: a failed file
+  send is tried again under its `id` only with `file` again (`400
+  bad_request` without), keeping its first type and name — strut's Retry
+  sends it from its own copy in `<dataDir>/support/files/`; and `GET
+  /dm/:id/file` serves files the account RECEIVED alone (`404` on its own).
+  Refusals before anything goes: `400 bad_request`, `400 too_long` (the
+  caption and quoted id as JSON plus 1 KiB for the file's fields, over 32
+  KiB: strut counts the same and refuses first), `413 too_large` (over 25
+  MiB), `400 not_a_contact`, `403 host_not_allowed`, `503 not_connected`.
+  Strut sends at most 2.5 MiB (a page's call).
 - **`PUT /dm/photo { data, type }`** (item 2): Support's picture, uploaded
-  to memes `/public`; answers `{ url }`, which the daemon sends as `img` on
-  every message from then on, so Peel shows it beside "Support". `DELETE
-  /dm/photo` clears it. Strut keeps a copy in `<dataDir>/support/photo` to
-  show staff (a page cannot load the memes host).
-- **`POST /dm/:id/delete`** (item 2): deletes one of the account's OWN
-  messages for both sides (a type-17 delete); `404 not_found` for any
-  other. The feed then shows that record `deleted: true` under a new
-  `seq`. Strut asks it for a message of Support's that has its Sphinx id
-  (from the send's answer, or the feed); a failed send that never went is
-  deleted in strut alone.
+  to memes `/public`, NOT resized (the page shrinks it to 512 px); `type`
+  `image/jpeg` (or `image/jpg`), `png`, `gif` or `webp`, the bytes of that
+  format, at most 5 MiB. Answers `{ url }`, which the daemon sends as `img`
+  on every message through sphinx-chat's `sendText` from then on (kept in
+  its `config.json`), so Peel shows it beside "Support". Refusals: `400
+  bad_request`, `413 too_large`, `403 host_not_allowed`, `502
+  memes_failed`. `DELETE /dm/photo` answers `{ url: null }`. Strut keeps a
+  copy in `<dataDir>/support/photo` to show staff (a page cannot load the
+  memes host).
+- **`POST /dm/:id/delete`** (item 2): one of the account's OWN messages or
+  files deleted for both sides (a type-17 delete, a DM's cost); answers
+  the item, `deleted: true` and `text: null`, which also comes again in
+  the feed under a new `seq`; one already deleted is answered as it
+  stands. Refusals: `403 not_own`, `404 not_found`, `409 not_deletable` (a
+  failed send — it never went — a payment or a contact record, or a send
+  not settled yet after a restart), `503 not_connected`, `502
+  send_failed`. Strut asks it for a message of Support's that has its
+  Sphinx id (from the send's answer, or the feed); a failed send is
+  deleted in strut alone; `not_deletable` on a send is shown as "try again
+  in a moment".
 - **The alias**: a changed `DAEMON_ALIAS` replaces the account's stored
   alias at start, so every message after carries the new name, which is
   what renames the contact in Peel.

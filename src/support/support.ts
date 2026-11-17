@@ -76,6 +76,9 @@ const FILE_TIMEOUT_MS = 200_000;
 /** The daemon's limit on a message (sphinx-chat's `MAX_SEND_BYTES`): its
  *  content and the quoted id as the message's JSON, in bytes. */
 export const SUPPORT_SEND_MAX_BYTES = 32 * 1024;
+/** What the daemon counts for a file's own fields in that limit
+ *  (stakwork/sphinx#436, `MEDIA_FIELDS_BYTES`). */
+const FILE_FIELDS_BYTES = 1024;
 /** A file refusal that never changes (stakwork/sphinx#435): not tried again. */
 const FILE_REFUSED_FOR_GOOD = new Set(["not_found", "deleted", "host_not_allowed", "unreadable"]);
 /** The welcome's longest text. */
@@ -92,7 +95,7 @@ export const HEADS_UP_EVERY_MS = 60 * 60_000;
 /** The thread's page. */
 export const THREAD_PAGE = 200;
 
-export type SupportErrorCode = "not_available" | "bad_request" | "no_conversation" | "unknown_message" | "no_file" | "daemon_error";
+export type SupportErrorCode = "not_available" | "bad_request" | "no_conversation" | "unknown_message" | "no_file" | "not_yet" | "daemon_error";
 
 const STATUS: Record<SupportErrorCode, 400 | 404 | 409 | 501 | 502> = {
   not_available: 501,
@@ -100,6 +103,7 @@ const STATUS: Record<SupportErrorCode, 400 | 404 | 409 | 501 | 502> = {
   no_conversation: 404,
   unknown_message: 404,
   no_file: 404,
+  not_yet: 409,
   daemon_error: 502,
 };
 
@@ -511,7 +515,7 @@ export function createSupport(deps: SupportDeps): Support {
       const file = body.file === undefined ? undefined : fileOf(body.file);
       if (!text && !file) throw new SupportError("bad_request", "text is the message: a non-empty string (or a file's caption)");
       // The daemon's own measure, refused here before anything is kept.
-      const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(body.replyTo ? { replyUuid: body.replyTo } : {}) }), "utf8");
+      const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(body.replyTo ? { replyUuid: body.replyTo } : {}) }), "utf8") + (file ? FILE_FIELDS_BYTES : 0);
       if (size > SUPPORT_SEND_MAX_BYTES) throw new SupportError("bad_request", `too long: ${size} bytes as a message, at most ${SUPPORT_SEND_MAX_BYTES}`);
       return { message: await sendNew(d, s, { pubkey: c.pubkey, ...(text ? { text } : {}), ...(body.replyTo ? { replyTo: body.replyTo } : {}), ...(by ? { by } : {}), ...(file ? { file } : {}) }) };
     },
@@ -522,16 +526,18 @@ export function createSupport(deps: SupportDeps): Support {
       const own = s.own(c.pubkey, key);
       if (!own) throw new SupportError("unknown_message", `no message ${key} of Support's in ${worker}'s conversation: Support deletes only its own`);
       if (own.deleted) return { message: own.message };
-      const id = own.message.id;
-      if (!id) {
-        // Nothing went out: strut's copy alone.
-        if (own.message.status !== "failed") throw new SupportError("bad_request", "still sending: delete it once the daemon has answered");
+      // A failed send was never sent (the daemon deletes none): strut's copy alone.
+      if (own.message.status === "failed") {
         s.markDeleted(key);
         return { message: s.message(key)! };
       }
+      const id = own.message.id;
+      if (!id) throw new SupportError("not_yet", "still sending: try again in a moment");
       const res = await call(d, "POST", `/dm/${encodeURIComponent(id)}/delete`);
       if (!res.ok) {
         const r = await refusal(res);
+        // A send the daemon has not settled yet (after its restart).
+        if (r.code === "not_deletable") throw new SupportError("not_yet", `the daemon cannot delete it yet: try again in a moment (${r.error})`);
         throw new SupportError("daemon_error", `the daemon did not delete it: ${r.code ? `${r.code}: ` : ""}${r.error}`);
       }
       s.markDeleted(key);

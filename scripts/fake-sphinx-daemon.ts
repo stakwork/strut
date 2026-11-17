@@ -44,15 +44,20 @@
  * never sends twice — a failed one is tried again with its first text;
  * `sent` at once, or as `/next-dm { state: "failed" | "pending" }` says
  * (`failed` with nothing sent, no id; `sending` until `POST /settle/<id>`).
- * Item 2's (plans/support-chat.md §7, as the daemon's side builds them,
- * stacked on #435): `POST /dm` takes `file: { data: <base64>, type, name }`
- * (`text` then optional; `413 too_large` over 25 MiB), and its item is
- * `kind: "file"` with `mediaType` and `fileName`, the file readable by its
- * id; `PUT /dm/photo { data, type }` answers `{ url }`, a memes `/public`
- * URL then sent as `img` on every message, and `DELETE /dm/photo` clears
- * it; `POST /dm/:id/delete` deletes one of the account's own messages,
- * which comes again `deleted: true` under a new seq (`404 not_found` for
- * any other). `GET /worker-photo` (open) says the `img` a worker now sees.
+ * Item 2's (plans/support-chat.md §7, as stakwork/sphinx#436 built them):
+ * `POST /dm` takes `file: { data: <base64>, type, name? }` (`text` then
+ * optional; `413 too_large` over 25 MiB; a file's fields count 1 KiB toward
+ * `too_long`), and its item is `kind: "file"` with `mediaType` and
+ * `fileName`. No bytes are kept: a failed file send is tried again only
+ * with `file` again, and `GET /dm/:id/file` serves received files alone.
+ * `PUT /dm/photo { data, type }` (jpeg, png, gif or webp, bytes of that
+ * format, at most 5 MiB) answers `{ url }`, a memes `/public` URL then sent
+ * as `img` on every message; `DELETE /dm/photo` answers `{ url: null }`.
+ * `POST /dm/:id/delete` deletes one of the account's own messages and
+ * answers it, `deleted: true` — it comes again in the feed under a new seq
+ * — or `403 not_own`, `404 not_found`, `409 not_deletable` (a failed send,
+ * a payment or a contact). Open, for the test: `GET /worker-photo`, the
+ * `img` a worker now sees; `GET /worker-file/:id`, a file the account sent.
  * A WORKER is played through open routes: `POST /worker-dm { pubkey?, alias?,
  * text?, replyTo?, sats?, time?, file?: { name, type, base64 } | { name, type, size } }`
  * (a new pubkey is a new contact first: its key exchange, `kind: "contact"`),
@@ -132,6 +137,14 @@ export const DM_FILE_MAX_BYTES = 25 * 1024 * 1024;
 /** The daemon's limit on a message: its content and quoted id as JSON (sphinx-chat's `MAX_SEND_BYTES`). */
 const DM_MAX_SEND_BYTES = 32 * 1024;
 const DM_BLANK = { text: null, replyTo: null, sats: 0, deleted: false, mediaType: null, fileName: null };
+/** Support's picture (stakwork/sphinx#436): these types, bytes of that format, at most 5 MiB. */
+const PHOTO_TYPES: Record<string, string> = { "image/jpeg": "jpeg", "image/jpg": "jpeg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+/** An image's format by its first bytes. */
+const imageFormat = (b: Buffer) =>
+  b[0] === 0xff && b[1] === 0xd8 ? "jpeg" : b.subarray(0, 4).toString("hex") === "89504e47" ? "png" : b.subarray(0, 3).toString() === "GIF" ? "gif" : b.subarray(0, 4).toString() === "RIFF" && b.subarray(8, 12).toString() === "WEBP" ? "webp" : undefined;
+/** Standard base64, not empty, or undefined. */
+const base64Of = (v: unknown) => (typeof v === "string" && v && v.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(v) ? Buffer.from(v, "base64") : undefined);
 /** A file message's name in the feed, made from its type (a Sphinx file message carries none). */
 const nameOfType = (type: string) => `${type.startsWith("image/") ? "image" : "file"}.${type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin"}`;
 
@@ -163,8 +176,9 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   // The DMs: each record by id, its seq bumped when it changes.
   const dms = new Map<string, DmRec>();
   const dmFiles = new Map<string, { bytes: Buffer; size: number; name: string }>();
-  // A file sent through POST /dm, by the send's id: a failed one tried again sends it.
-  const sendFiles = new Map<string, { bytes: Buffer; type: string; name: string }>();
+  // What the account sent as files, by Sphinx id: what a worker's Peel
+  // downloads (`GET /worker-file/:id`). The daemon keeps no bytes of its own.
+  const sentFiles = new Map<string, { bytes: Buffer; type: string; name: string }>();
   const contacts = new Map<string, string | null>();
   // Support's picture: its memes /public URL, sent as `img` on every message.
   let photo: { url: string; type: string; bytes: number } | null = null;
@@ -329,6 +343,13 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         return reply(res, 200, { id: r.id, deleted: true });
       }
       if (req.method === "GET" && path === "/worker-photo") return reply(res, 200, { img: photo?.url ?? null, ...(photo ? { type: photo.type, bytes: photo.bytes } : {}) });
+      const workerFile = /^\/worker-file\/([^/]+)$/.exec(path);
+      if (req.method === "GET" && workerFile) {
+        const f = sentFiles.get(decodeURIComponent(workerFile[1]!));
+        if (!f) return reply(res, 404, { error: "the account sent no file with that id", code: "not_found" });
+        res.writeHead(200, { "content-type": f.type, "content-length": String(f.bytes.byteLength) });
+        return res.end(f.bytes);
+      }
       if (req.method === "POST" && path === "/next-dm") {
         const st = (await bodyOf(req))["state"];
         if (st !== "failed" && st !== "pending") return reply(res, 400, { error: "state is failed or pending", code: "bad_request" });
@@ -356,17 +377,24 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
             return reply(res, 200, { url: null });
           }
           const b = await bodyOf(req);
-          const bytes = typeof b["data"] === "string" ? Buffer.from(b["data"], "base64") : Buffer.alloc(0);
-          if (!bytes.byteLength || typeof b["type"] !== "string" || !b["type"].startsWith("image/")) return reply(res, 400, { error: "data is an image as base64 and type its image/* type", code: "bad_request" });
-          photo = { url: `https://memes.fake.invalid/public/${randomBytes(16).toString("hex")}`, type: b["type"], bytes: bytes.byteLength };
+          const type = typeof b["type"] === "string" ? b["type"].toLowerCase() : "";
+          const format = PHOTO_TYPES[type];
+          if (!format) return reply(res, 400, { error: `type must be one of ${Object.keys(PHOTO_TYPES).join(", ")}`, code: "bad_request" });
+          const bytes = base64Of(b["data"]);
+          if (!bytes) return reply(res, 400, { error: "data must be base64", code: "bad_request" });
+          if (bytes.byteLength > PHOTO_MAX_BYTES) return reply(res, 413, { error: `the photo is ${bytes.byteLength} bytes; at most ${PHOTO_MAX_BYTES}`, code: "too_large" });
+          if (imageFormat(bytes) !== format) return reply(res, 400, { error: `data is not a ${format} image`, code: "bad_request" });
+          photo = { url: `https://memes.fake.invalid/public/${randomBytes(16).toString("hex")}`, type, bytes: bytes.byteLength };
           log(`photo set: ${photo.url}`);
           return reply(res, 200, { url: photo.url });
         }
         const deleteOwn = /^\/dm\/([^/]+)\/delete$/.exec(path);
         if (deleteOwn) {
           const id = decodeURIComponent(deleteOwn[1]!);
-          const r = [...dms.values()].find((x) => x.fromMe && x.id === id);
-          if (!r) return reply(res, 404, { error: "no message of the account's own with that id", code: "not_found" });
+          const r = [...dms.values()].find((x) => x.id === id);
+          if (!r) return reply(res, 404, { error: "no message with that id among the direct messages", code: "not_found" });
+          if (!r.fromMe) return reply(res, 403, { error: "not one of the account's own messages", code: "not_own" });
+          if (!r.deleted && (r.status === "failed" || (r.kind !== "message" && r.kind !== "file"))) return reply(res, 409, { error: r.status === "failed" ? "it was never sent" : `a ${r.kind} can't be deleted`, code: "not_deletable" });
           if (!r.deleted) {
             r.deleted = true;
             r.text = null;
@@ -383,9 +411,10 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         const fileOne = /^\/dm\/([^/]+)\/file$/.exec(path);
         if (fileOne) {
           const id = decodeURIComponent(fileOne[1]!);
-          const r = dms.get(id) ?? [...dms.values()].find((x) => x.id === id);
+          // Files the account RECEIVED: its own sends are not served.
+          const r = dms.get(id);
           const f = dmFiles.get(id);
-          if (!r || !f || r.kind !== "file") return reply(res, 404, { error: "no file with that id among the direct messages", code: "not_found" });
+          if (!r || !f || r.kind !== "file" || r.fromMe) return reply(res, 404, { error: "no file with that id among the direct messages", code: "not_found" });
           if (r.deleted) return reply(res, 410, { error: "its sender deleted it", code: "deleted" });
           if (f.size > DM_FILE_MAX_BYTES) return reply(res, 413, { error: `the file is ${f.size} bytes, over 25 MB`, code: "too_large" });
           res.writeHead(200, {
@@ -396,7 +425,9 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           return res.end(f.bytes);
         }
         // POST /dm: answers the send as the feed shows it. The same id never
-        // sends twice; a failed one is tried again, with the text it first had.
+        // sends twice; a failed one is tried again, with the text it first
+        // had — and a file's bytes sent again (none are kept), its type and
+        // name as at first.
         const b = await bodyOf(req);
         const id = b["id"];
         if (typeof id !== "string" || !/^[\x21-\x7e]{1,128}$/.test(id)) return reply(res, 400, { error: "id must be 1 to 128 printable characters, no spaces", code: "bad_request" });
@@ -405,17 +436,26 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         const to = had ? had.peer.pubkey : b["to"];
         const text = had ? had.text : typeof b["text"] === "string" && b["text"] ? b["text"] : null;
         const replyTo = had ? had.replyTo : typeof b["reply"] === "string" && b["reply"] ? b["reply"] : null;
-        // A file: kept by the send's id, as the first try had it.
         const f = b["file"] as { data?: unknown; type?: unknown; name?: unknown } | undefined;
-        const file = had ? sendFiles.get(id) : f ? { bytes: typeof f.data === "string" ? Buffer.from(f.data, "base64") : Buffer.alloc(0), type: typeof f.type === "string" ? f.type : "", name: typeof f.name === "string" ? f.name : "file" } : undefined;
+        const wasFile = had?.kind === "file";
+        if (had && wasFile !== (f !== undefined)) return reply(res, 400, { error: wasFile ? "a failed file send is tried again with its file" : "it was a text", code: "bad_request" });
+        let file: { bytes: Buffer; type: string; name: string } | undefined;
+        if (f !== undefined) {
+          if (!f || typeof f !== "object" || (f.name !== undefined && typeof f.name !== "string")) return reply(res, 400, { error: "file is { data, type, name? }", code: "bad_request" });
+          if (typeof f.data === "string" && (f.data.length / 4) * 3 > DM_FILE_MAX_BYTES + 2) return reply(res, 413, { error: "the file is over 25 MiB", code: "too_large" });
+          const bytes = base64Of(f.data);
+          if (!bytes) return reply(res, 400, { error: "file.data must be base64", code: "bad_request" });
+          if (bytes.byteLength > DM_FILE_MAX_BYTES) return reply(res, 413, { error: `the file is ${bytes.byteLength} bytes, over 25 MiB`, code: "too_large" });
+          const type = had ? had.mediaType! : typeof f.type === "string" ? f.type.toLowerCase() : "";
+          if (!/^[\w.+-]+\/[\w.+-]+$/.test(type)) return reply(res, 400, { error: "file.type must be a MIME type", code: "bad_request" });
+          file = { bytes, type, name: had ? had.fileName! : typeof f.name === "string" && f.name ? f.name : nameOfType(type) };
+        }
         if (typeof to !== "string" || !/^0[23][0-9a-f]{64}$/.test(to)) return reply(res, 400, { error: "to must be a contact's pubkey (66 hex characters)", code: "bad_request" });
-        if (file && (!file.bytes.byteLength || !/^[\w.+-]+\/[\w.+-]+$/.test(file.type))) return reply(res, 400, { error: "file is { data: <base64>, type, name }", code: "bad_request" });
-        if (file && file.bytes.byteLength > DM_FILE_MAX_BYTES) return reply(res, 413, { error: `the file is ${file.bytes.byteLength} bytes, over 25 MiB`, code: "too_large" });
         if (!file && (typeof text !== "string" || !text.trim())) return reply(res, 400, { error: "text is required without a file", code: "bad_request" });
-        const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(replyTo ? { replyUuid: replyTo } : {}) }), "utf8");
+        // A file's own fields count 1 KiB (the daemon's MEDIA_FIELDS_BYTES).
+        const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(replyTo ? { replyUuid: replyTo } : {}) }), "utf8") + (file ? 1024 : 0);
         if (size > DM_MAX_SEND_BYTES) return reply(res, 400, { error: `text too long: ${size} bytes, at most ${DM_MAX_SEND_BYTES}`, code: "too_long" });
         if (!contacts.has(to)) return reply(res, 400, { error: `${to} is not one of the account's contacts`, code: "not_a_contact" });
-        if (file) sendFiles.set(id, file);
         const outcome = nextDm;
         nextDm = undefined;
         // failed: nothing went out (no Sphinx id); pending: the LSP has not answered.
@@ -430,12 +470,12 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           kind: file ? "file" : "message",
           text,
           replyTo,
-          ...(file ? { mediaType: file.type, fileName: nameOfType(file.type) } : {}),
+          ...(file ? { mediaType: file.type, fileName: file.name } : {}),
           status,
           ...(status === "failed" ? { error: "the LSP did not take it" } : {}),
         };
         const sent = put(item);
-        if (file && sent.id) dmFiles.set(sent.id, { bytes: file.bytes, size: file.bytes.byteLength, name: file.name });
+        if (file && sent.id) sentFiles.set(sent.id, file);
         log(`dm out ${file ? `file ${file.type} ` : ""}${status} to ${to.slice(0, 10)}…${photo ? ` (img ${photo.url})` : ""}`);
         return reply(res, 200, sent);
       }
