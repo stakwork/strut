@@ -138,6 +138,21 @@ describe("concept files (pure)", () => {
     assert.deepEqual(game.parents, ["App"]);
     for (const must of ['template: "game"', "useFrame", "touch-action: none", "useGLTF", "data: URL", "useAppState", "useChannel", "permissions:", "window.__debug", "keydown"]) assert.ok(game.docs!.includes(must), must);
     assert.doesNotMatch(game.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
+    // Work by people is a kind the builder builds, and the page the
+    // assistant opens before the build: what the person decides (when there
+    // is work, who, the pay), in their words, and what they do once it is
+    // built. Workspace-general: no one deployment's task.
+    const work = await read("Worker Tasks.md");
+    assert.deepEqual(work.parents, ["Workflow Builder"]);
+    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into"]) assert.ok(work.docs!.includes(must), must);
+    assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
+    // A worker app's links are shared from Tasks and workers, which opens with
+    // them (a QR code, Invite): every page points there, none pastes a link.
+    for (const c of [wb, app, work]) {
+      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Tasks and workers`);
+      assert.match(c.docs!, /never\s+paste a link/, `${c.name}: no link pasted in a reply`);
+      assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
+    }
     // No job side of an app (retired 2026-10-22, with the `Job App` page):
     // an app is the builder's, handed over by NAME — the job agent passes
     // the builder's deliverable on — and a page over the job's own results
@@ -393,8 +408,8 @@ for (const tb of testBackends()) {
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
-      // Under Workflow Builder: strut's own App page, and the host's Janitor.
-      const under = [strut["App"]!.ref_id!, host["Janitor"]!.ref_id!].sort();
+      // Under Workflow Builder: strut's own App and Worker Tasks pages, and the host's Janitor.
+      const under = [strut["App"]!.ref_id!, strut["Worker Tasks"]!.ref_id!, host["Janitor"]!.ref_id!].sort();
       assert.deepEqual(await children(wb), under);
       const again = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.deepEqual([again["Workflow Builder"]!.action, again["Job"]!.action, again["App"]!.action], ["keep", "keep", "keep"]);
@@ -515,13 +530,13 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Worker Tasks", "Workflow Builder"]);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Personal", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Personal", "Worker Tasks", "Workflow Builder"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;

@@ -39,10 +39,18 @@ describe("the orchestrator workflow strut ships", () => {
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
     // Two lists, one per agent's tree, children alone: the kinds of work a
     // job does here (Job) and the kinds of thing the builder builds
-    // (Workflow Builder). The pages' docs are those agents' instructions,
-    // and this agent has no graph-get to open a page with.
-    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "" });
-    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "" });
+    // (Workflow Builder). The pages' docs are those agents' instructions;
+    // each list ends with how to open a kind's page (graph/graph-get, a
+    // grant), for when this agent needs one to talk the person through it.
+    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "graph_graph_get" });
+    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "graph_graph_get" });
+    assert.ok(paramsOf(text).tools.includes("graph/graph-get"), "the tool the lists name is granted");
+    assert.match(paramsOf(text).system, /open one yourself when you need what it says to talk with\s+the person/);
+    assert.match(paramsOf(text).system, /open its page in the second list \(`Worker Tasks`\)/, "work by people: the page the person's decisions are on, before the build");
+    // A host that grants it too (stakgraph's lab, Peel) does not list it twice.
+    const hosted = paramsOf(await orchestratorWorkflowYaml({ tools: ["graph/graph-get", "graph/graph-search"] })).tools;
+    assert.equal(hosted.filter((t) => t === "graph/graph-get").length, 1);
+    assert.ok(hosted.includes("graph/graph-search"));
     const params = (yaml.load(text) as { params: { concept: string; buildConcept: string } }).params;
     assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
     // The person's own pages are this agent's to follow: their root's docs, and how to open one.

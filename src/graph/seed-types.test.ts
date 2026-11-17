@@ -49,7 +49,7 @@ for (const tb of testBackends()) {
         `MATCH ${b.dialect.node("p", "Concept", { ref_id: "$ref" })}-[:PARENT_OF]->${b.dialect.node("c", "Concept")} RETURN c.name AS name`,
         { ref: byName["Workflow Builder"]!.ref_id },
       );
-      assert.deepEqual(kids.map((r) => r["name"]), ["App"]);
+      assert.deepEqual(kids.map((r) => r["name"]).sort(), ["App", "Worker Tasks"]);
     });
   });
 }
