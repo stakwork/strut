@@ -4,7 +4,8 @@
 >
 > - **Written against:** strut `main` @425a9d06, stakwork/sphinx `master`
 >   @c1f55f11, peel-android @efbcccd and peel @78deb6e.
-> - **The Rulings** are Evan's, from one conversation.
+> - **The Rulings** are Evan's, from two conversations on 2026-11-16: 1–7,
+>   then 8–12 and the change to 4 after a review of the plan.
 > - **The decisions in §6** are this plan's defaults. Evan may overrule them.
 > - **Companion to:**
 >   - `human-steps.md`: §5.8, inviting a worker; §8.2, payouts; §9, the staff
@@ -23,10 +24,19 @@
 | 1 | The worker's door | **A Sphinx DM** to the treasury daemon, the contact an invite already gives every new worker (`human-steps.md` §5.8). Workers use Peel's own chat |
 | 2 | The contact's name | Plain **"Support"**, on every box. Replaces "`treasury` on every box", ruled in stakwork/stadeum's `plans/treasury.md` on 2026-11-12 |
 | 3 | A daemon token that reads and sends DMs | **Acceptable** |
-| 4 | Staff names | Workers see the name of the staff member who replied, **on every reply** |
+| 4 | Staff names | **None.** Every reply comes from "Support", and admins have no display name. Strut records which admin sent each reply, and shows it nowhere |
 | 5 | Writing first | **Support may message workers first.** Staff can send a **welcome** directly |
 | 6 | The staff's side | **A full chat UI in `strut/staff`**: workers' pictures, photos and files both ways, replies |
 | 7 | Auto-welcome | Sent automatically to a new worker **only once an admin has saved a welcome message**. Strut ships no default text |
+| 8 | Which new contacts are welcomed automatically | Only those whose `contact` record is **newer than the moment the welcome was saved**. Earlier ones, the backlog included, are welcomed only by a staff click (§5) |
+| 9 | An invite's row on Workers | Unchanged: it shows no "welcomed" state, so an invite needs no link to the worker who used it |
+| 10 | A file from a worker | Up to **25 MB**. A larger one shows as a line saying it was too large |
+| 11 | An NWC wallet | **No Support.** Support needs the Sphinx daemon |
+| 12 | A message the worker deleted | Hidden, as "Message deleted". Strut keeps its row, flagged |
+| 13 | Workers' pictures | **Later** (§11). Item 1 shows initials |
+| 14 | Sending the welcome | **Automatic only**, once an admin has saved it. No Send welcome button, no "Send to all", no `{name}` |
+| 15 | Writing first to a worker who isn't a contact (one who came by a Share link) | **Later** (§11). Item 1 writes only to existing contacts |
+| 16 | How new messages arrive | **Polled.** Strut polls the daemon every few seconds, and the page refetches every few seconds. No held connections |
 
 ## Problem
 
@@ -48,13 +58,13 @@ messenger:
 - a list of conversations with each worker's picture, name, last line and
   unread count;
 - a live thread with photos and files both ways, quoted replies, sent
-  status, and the staff member's name on each reply;
+  status, and every reply from "Support";
 - the worker's work and pay beside the thread.
 
 The treasury daemon carries the messages through a new DM-only token, which
 strut keeps away from the services bag, as it keeps the pay token. Strut
-keeps the conversations, with what Sphinx can't hold: who replied, unread
-state, staff names, the welcome.
+keeps the conversations, with what Sphinx can't hold: which admin replied,
+unread state, the welcome.
 
 One welcome message, sent automatically once an admin has written it, is also
 how every existing worker's "treasury" contact becomes "Support".
@@ -127,8 +137,8 @@ how every existing worker's "treasury" contact becomes "Support".
 
 **Two consequences.**
 - **The alias never changes per message.** A reply sent under "Ana" would
-  rename the worker's contact to "Ana". The staff member's name goes in the
-  text instead (§3).
+  rename the worker's contact to "Ana". Every reply is from "Support"
+  (ruling 4).
 - **The rename reaches an existing worker with the next message they get.**
   The welcome is that message (§5).
 
@@ -151,19 +161,18 @@ the right. On a phone, the list opens a thread and Back returns to the list.
 
 | Feature | What the staff see | Daemon needs (§7) | Strut needs | Item |
 | --- | --- | --- | --- | --- |
-| Conversations | Each worker's picture, name, last line, time, unread dot; unread first; search | `alias` and `photo` on each peer | The store; search over names and text | 1 |
-| Workers' pictures | The worker's Peel photo, else their initials | Each contact's newest `photo_url`, the URL only | Fetched, shrunk and cached (below) | 1 |
-| Live thread | A worker's message shows within a second or two | `GET /dms?after=&wait=25` | The follower; `staff/support-feed { after, wait }`, held as `task/next { wait }` is | 1 |
+| Conversations | Each worker's initials, name, last line, time, unread dot; unread first; search | `alias` on each peer | The store; search over names and text | 1 |
+| Live thread | A worker's message shows within a few seconds | `GET /dms?after=` | The follower polls it every few seconds; the page refetches the thread and the list every few seconds (ruling 16) | 1 |
 | Text from staff | Composer: Enter sends, Shift+Enter adds a line | `POST /dm`, idempotent by `id` | The row stored before the send; Retry resends the same `id` | 1 |
-| Staff name | Each reply shows who sent it in the thread | — | The worker sees a bold first line, `**Ana**`, then the text. Both Peels render `**bold**` (MessageMarkup). Each admin's display name is in Support settings, defaulting to their sign-in name | 1 |
+| Who replied | Every reply is from "Support", on both sides (ruling 4) | — | `by` on the message, the admin's actor, kept for the record and not shown | 1 |
 | Replies | Reply on a message, with the quote above the composer | `reply` on `POST /dm`; `replyTo` in the feed | Quote display | 1 |
 | Sent status | Clock while sending, ✓ once the LSP has it, ! with Retry if it failed | `status` on the account's own sends | Shown on the bubble | 1 |
-| Photos and files from workers | Images inline (tap for full size), voice notes playable, other files as a named download | `GET /dm/:id/file` | Fetched on arrival, kept under `dataDir`, read through `staff/support-file` | 1 |
-| Deleted by the worker | "Message deleted" | `deleted` in the feed (sphinx-chat already applies type 17) | Hide the text | 1 |
+| Photos and files from workers | Images inline (tap for full size), voice notes playable, other files as a named download | `GET /dm/:id/file` | Fetched on arrival, up to 25 MB (ruling 10), kept under `dataDir`, read through `staff/support-file`. The 4 MB cap is on what a page sends, not on what it gets back | 1 |
+| Deleted by the worker | "Message deleted" | `deleted` in the feed (sphinx-chat already applies type 17) | Flag the row and hide it (ruling 12) | 1 |
 | Sats from a worker | "Sent you 100 sats" as a line | Payment records in the feed | A line; not in the books | 1 |
 | The worker beside the thread | Status, types held, lease now, answers this week, owed and paid, invite used, note; links to their page and tasks | — | `staff/worker` and `earnings/read`, already there | 1 |
 | Task links | A task id in a message is a link to the task | — | Detected when drawn | 1 |
-| The welcome | §5 | Send to an address with no contact yet (sphinx-chat's `meetPerson`) | The text in settings, three places to send it, and the worker's address stored | 1 |
+| The welcome | §5 | `contact` records in the feed | The text in settings; sent automatically | 1 |
 | Photos and files from staff | Attach, paste or drop. Images shrunk to 1,600 px in the page; other files up to 2.5 MB | Encrypt, upload, sign, send a type-6 message | Composer attachments | 2 |
 | Support's picture | Set in Support settings | Upload to memes `/public`; `img` on every send | Settings | 2 |
 | Delete a staff message | Delete, for both sides | Send a type-17 delete | Menu | 2 |
@@ -178,9 +187,9 @@ the right. On a phone, the list opens a thread and Back returns to the list.
 **Typing indicators and the worker's read state:** nothing in the core
 carries them.
 
-### Where the pictures come from
+### Where the pictures come from (later, ruling 13)
 
-Staff see workers' pictures from **strut's own cache**. This is the same in
+Not in item 1; kept here for when it is built. Staff see workers' pictures from **strut's own cache**. This is the same in
 strut's UI, in a host's frame, and on a phone.
 
 1. **Peel puts the photo's public URL on every message.**
@@ -220,30 +229,26 @@ for tasks and workers).
 - Keyed by the worker's Sphinx pubkey. The actor is `secp:` plus the pubkey
   without its first byte: Peel signs in with the root key, which is also its
   contact key (`src/visitors.ts`).
-- Fields: the peer's alias, photo URL and avatar file; `seenAt` and `seenBy`
-  (shared by the staff); `welcomedAt`; and in item 2, `status` (open or
-  done) and `assignee`.
+- Fields: the peer's alias; `seenAt` (shared by the staff); `welcomedAt`; and in item 2, `status` (open or done) and
+  `assignee`.
 - Someone who has the contact but isn't a worker here still gets a
   conversation, marked "Not a worker here".
 
 **A message**
 - Keyed by the Sphinx id, and by `clientId` for strut's own sends.
-- Fields: direction, text (staff text kept without the name line), `by` (the
-  admin's actor), `replyTo`, kind, `sats`, `deleted`, the file's type, name
-  and path, and the send's status.
+- Fields: direction, text, `by` (the admin's actor, never shown),
+  `replyTo`, kind, `sats`, `deleted`, the file's type, name and path, and
+  the send's status.
 
 **Settings**
-- The welcome text: empty until an admin writes one.
-- Each admin's display name.
+- The welcome text: empty until an admin writes one, and when it was last
+  saved (ruling 8).
 - Payout lines on or off.
 
 **Also stored**
 - The follower's cursor.
-- On the worker row, `address`: the Sphinx address their session carries at
-  sign-in. Withdraw already reads it from the session; Support needs it to
-  write first.
 
-**Where files live.** Files and avatars go under `dataDir/support/`. They are
+**Where files live.** Files go under `dataDir/support/`. They are
 backed up with the box, beside the task store.
 
 **Retention.** Kept as long as the worker is on the box (§6).
@@ -251,45 +256,27 @@ backed up with the box, beside the task store.
 ## 5. The welcome
 
 **What it is.**
-- One text in Support settings, with `{name}` (the worker's Sphinx alias).
+- One plain text in Support settings.
 - **It starts empty.** The field shows an example only as a placeholder, such
-  as "Hi {name}, welcome! This is Support. Ask us anything about your tasks or
-  pay here."
-- Until an admin saves one, there is nothing to send, and every Send welcome
-  button says to write it first.
-- It goes out under "Support" with no staff name: it is from the desk, not a
-  person.
+  as "Welcome! This is Support. Ask us anything about your tasks or pay
+  here."
+- It goes out under "Support", as every reply does.
 
-**Where it is sent from:**
-1. **Automatically, when an invited worker joins, once a welcome is saved.**
-   - The daemon's feed reports a new contact: an incoming key exchange, which
-     already marks the invite `used`. Strut then sends the welcome.
-   - Before a welcome is saved, nothing goes out automatically, and the
-     invite's row on Workers says "Joined · not welcomed". After it, "Joined
-     · welcomed".
-   - Clearing the text turns it off again.
-2. **A worker's page, or an empty conversation:**
-   - **Send welcome** sends it immediately, with no draft;
-   - a composer option inserts the text so staff can edit it first.
-3. **The Workers list:**
-   - tick workers, then **Send welcome**;
-   - a banner offers it once for everyone not yet welcomed: "12 workers
-     haven't been welcomed. Send to all".
+**When it is sent: automatically, and only then** (ruling 14).
+- The daemon's feed reports a new contact: an incoming key exchange, which
+  already marks the invite `used`. Strut then sends the welcome.
+- Only for a `contact` record newer than when the welcome was saved
+  (ruling 8). An older one, such as the backlog's on the first follow, gets
+  none. So nothing goes out in bulk.
+- Each worker at most once (`welcomedAt`).
+- Saving the text again doesn't move that time. Clearing it turns
+  auto-welcome off, and the next save starts it again from then.
+- An invite's row on Workers shows nothing new (ruling 9).
 
-**The limits.**
-- Nothing goes out in bulk without a staff click.
-- Each worker is welcomed automatically at most once. Staff may send it again
-  by hand.
-
-**How it ties to the rename.** The welcome is the first message most
-existing workers get from "Support", so it renames their "treasury" contact.
-The rollout is: the host renames the alias, an admin writes the welcome, and
-an admin presses "Send to all" once. It costs nothing to a worker who
-already has the contact.
-
-**Workers with no contact yet** came through Share, not an invite. Strut
-writes to the address their sign-in carried, stored since item 1. The
-welcome makes "Support" a new contact in their Peel, for about 4 sats.
+**How it ties to the rename.** A worker's "treasury" contact becomes
+"Support" with the first message they get after the host renames the
+alias: the welcome for a new worker, a staff reply for an existing one.
+Only a few test accounts have joined so far, so no bulk send is needed.
 
 ## 6. Decisions (defaults; Evan may overrule)
 
@@ -313,8 +300,7 @@ welcome makes "Support" a new contact in their Peel, for about 4 sats.
   - Admins only, like the rest of `strut/staff` (`human-steps.md` §9.12).
     No support role of its own until a client asks.
   - Agents never: the token is never on the services bag.
-- **Unread** is per conversation and shared by the staff ("Seen by Ana,
-  10:02").
+- **Unread** is per conversation and shared by the staff ("Seen 10:02").
 - **The backlog.** The first follow reads from the start of the daemon's
   log, so what workers already wrote to "treasury" shows up, marked as
   earlier.
@@ -330,17 +316,25 @@ This is built in stakwork/sphinx (`wasm/daemon`) and becomes a section of
 - **It opens only** the routes below.
 - **It doesn't open** tribes, join, leave, invoices, pay, keysend, invites or
   the admin routes.
-- **The only sats it can spend** are what a DM itself costs. A cap on new
-  contacts per hour bounds that.
+- **The only sats it can spend** are what a DM to an existing contact
+  costs: 0, or 1 sat a part while their key is unconfirmed. It never meets
+  a new contact in item 1 (ruling 15).
 
 ### Item 1's routes
 
-**`GET /dms?after=<seq>&limit=&wait=25`**
+**Why a new route at all.** The only read today is `GET /messages`, which
+takes the admin token strut never holds, has no cursor, returns 500 records
+at most and mixes in every tribe. Strut needs a cursor, so it reads each DM
+once and survives a restart. It doesn't need a held connection: it polls
+every few seconds (ruling 16), soon enough to fetch a file before its media
+token expires and to send the welcome.
+
+**`GET /dms?after=<seq>&limit=`**
 - 1:1 records, sent and received, oldest first, under a sequence number of
   the daemon's own. The server's `index` is missing on the account's own
   sends, so it can't be the cursor.
 - Fields: `seq`, `id`, `clientId` (on the account's own sends), `time`,
-  `fromMe`, `peer { pubkey, address, alias, photo }`, `kind` (`message`,
+  `fromMe`, `peer { pubkey, address, alias }`, `kind` (`message`,
   `file`, `payment` or `contact`, a new contact's key exchange), `text`,
   `replyTo`, `sats`, `deleted`, `mediaType`, `fileName`, `status` (own
   sends).
@@ -348,16 +342,16 @@ This is built in stakwork/sphinx (`wasm/daemon`) and becomes a section of
 
 **`GET /dm/:id/file`**
 - The decrypted bytes, with their type, via `media.ts`'s download, without
-  shrinking.
+  shrinking. 25 MB at most (ruling 10); a larger file is refused with a
+  code strut can show.
 - The memes hosts allowed as for tribes.
 
 **`POST /dm { id, to, text, reply? }`**
-- `to` is an address, or the pubkey of a known person; never a tribe.
-- A new contact is met first.
+- `to` is the pubkey of an existing contact; never a tribe, never someone
+  it hasn't met (ruling 15).
 - The same `id` returns the first send's answer and never sends twice.
 
 **Also:**
-- sphinx-chat keeps each contact's newest `photo_url`.
 - A changed `DAEMON_ALIAS` replaces the stored alias at start.
 
 ### Item 2's routes
@@ -377,14 +371,18 @@ A host that runs the treasury (Stadeum, in `stack/stadeum.yml`):
 - sets `DAEMON_ALIAS: Support`;
 - may show `GET /support/unread` in its navigation.
 
-Without the token, the `/support` routes answer `not_available`, and the
-staff app shows no Support tab. The page decides in `shownOf`
-(`src/apps/staff/src/lib/view.ts`), as it already does for the Tests tab.
+Without the token, or with an NWC wallet (ruling 11), the `/support` routes
+answer `not_available`, and the staff app shows no Support tab. The page
+decides in `shownOf` (`src/apps/staff/src/lib/view.ts`), as it already does
+for the Tests tab.
 
 Strut keeps `LIGHTNING_DAEMON_MESSAGE_TOKEN` as it keeps the pay token:
-- in `payments.json`, never on the services bag and never readable by a
-  step;
-- equal to another token, it fails the boot;
+- as `messageToken` on a `sphinx` wallet in `payments.json`, set from the
+  environment or by `PUT /earnings/wallet`, as `payToken` is
+  (`checkWalletUpdate`, `src/payments/settings.ts`); never on the services
+  bag and never readable by a step;
+- equal to the receive or pay token, it is refused (`checkCredentials`), so
+  a bad environment fails the boot;
 - only the follower and the `/support` routes use it.
 
 ## 9. Who can read
@@ -404,14 +402,32 @@ Each is its own PR against `main`, never stacked.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
-| 1 | **A usable full chat.** The token kept in `payments.json`; the follower; the store (§4); files and avatars under `dataDir`; the worker's `address` stored at sign-in; the welcome and its auto-send. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET /support/feed?after=&wait=`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `POST /support/:worker/welcome`, `GET /support/:worker/files/:id`, `GET /support/avatar/:worker`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, the welcome in its three places, and Support settings. `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Not started |
+| 1 | **A usable full chat.** The token kept in `payments.json`; the follower, polling; the store (§4); files under `dataDir`; the automatic welcome. Routes, full scope only: `GET /support` (`?q=`), `GET /support/unread`, `GET` and `POST /support/:worker`, `POST /support/:worker/seen`, `GET /support/:worker/files/:id`, `GET` and `PUT /support/settings`. A `staff/support-*` step for each. The Support tab with every item-1 row of §3, Message on a worker's page, and Support settings (the welcome text). `specs/API.md`, `specs/LIGHTNING.md`, `docs/` | The daemon's item-1 routes (§7) | Not started |
 | 2 | **Staff send files; the desk scales.** Attachments in the composer, Support's picture, Delete, payout lines, done and assigned, the heads-up to admins | 1; the daemon's item-2 routes | Not started |
 
 A stand-in for the new routes goes into `scripts/fake-sphinx-daemon.ts`,
 which already answers the wallet, keysend and invite routes. That way item 1
 is built and tested before the daemon's side has merged.
 
-## 11. Rejected
+## 11. Later
+
+Cut from item 1 to keep it simple (2026-11-16). Each is a PR of its own
+when it is wanted.
+
+- **Workers' pictures** (ruling 13): the daemon keeps each contact's newest
+  `photo_url` and puts `photo` on `peer`; strut fetches, shrinks and caches
+  it, and the page gets it through `GET /support/avatar/:worker`. The design
+  is in §3, "Where the pictures come from".
+- **Writing first to Share-link workers** (ruling 15): strut stores the
+  Sphinx address a worker's sign-in carries (`address` on the worker row);
+  `POST /dm` takes an address and meets a new contact first, for about
+  4 sats; the message token gets a cap on new contacts per hour. The
+  welcome then needs a way to reach them, since no key exchange arrives to
+  trigger it.
+- **Sending the welcome by hand** (ruling 14): Send welcome on a
+  conversation, "Send to all" for those not welcomed, `{name}`.
+
+## 12. Rejected
 
 - **A thread inside the worker app, over HTTP.**
   - For: it reaches browser and iPhone workers, and the page knows the task.
