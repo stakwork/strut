@@ -893,7 +893,7 @@ function Shell() {
       // so its "archived" badge goes. Also when the summary is not in yet
       // (a deep link): the list may have been read before the restore.
       const listed = selectedSummaryRef.current;
-      if (!listed || listed.logEvicted) refreshRuns();
+      if (!listed || listed.parts?.log?.evictedAt) refreshRuns();
       const result = await api.streamRun(selectedWf, selectedRun, (event) => {
         if (ctrl.signal.aborted) return;
         accumulated.push(event);
@@ -1680,9 +1680,9 @@ function Shell() {
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
                           {run.crashed && <span class="badge badge-danger" title="The run died with its process">crashed</span>}
-                          {run.logEvicted && (run.archive
-                            ? <span class="badge" title={`Log archived${run.archive.at ? ` at ${run.archive.at}` : ""}: opening the run restores it`}>archived</span>
-                            : <span class="badge" title={`Log evicted by retention${run.evictedAt ? ` at ${run.evictedAt}` : ""}`}>log evicted</span>)}
+                          {run.parts?.log?.evictedAt && (run.parts.log.archive
+                            ? <span class="badge" title={`Log archived at ${run.parts.log.archive.at}: opening the run restores it`}>archived</span>
+                            : <span class="badge" title={`Log evicted by retention at ${run.parts.log.evictedAt}`}>log evicted</span>)}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
@@ -2144,9 +2144,9 @@ function Shell() {
           ? <>
             {selectedRun && !isRunView && runLogError
               ? <button type="button" class="run-evicted-note is-error" title="Read the log again" onClick={() => setRunEpoch((n) => n + 1)}>{runLogError} Click to try again.</button>
-              : selectedRunSummary?.logEvicted && !isRunView && (selectedRunSummary.archive
+              : selectedRunSummary?.parts?.log?.evictedAt && !isRunView && (selectedRunSummary.parts.log.archive
                 ? runLogLoading && <div class="run-evicted-note">Restoring this run's log from the archive…</div>
-                : <div class="run-evicted-note">This run's log was evicted by retention{selectedRunSummary.evictedAt ? ` (${selectedRunSummary.evictedAt})` : ""}; only its summary is kept.</div>)}
+                : <div class="run-evicted-note">This run's log was evicted by retention ({selectedRunSummary.parts.log.evictedAt}); only its summary is kept.</div>)}
             <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's

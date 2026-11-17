@@ -961,37 +961,63 @@ export interface RunResult {
 /** How a run stands once its runner returned. */
 export type RunStatus = "success" | "error" | "cancelled" | "waiting";
 
-/** A run's event log in the archive (`src/run-archive.ts`). */
-export interface ArchivedLog {
+/** One part of a record in the archive (`src/run-archive.ts`): a run's
+ *  event log today. */
+export interface ArchivedPart {
   /** The object's key in the bucket, prefix included. */
   key: string;
-  /** The log's size when it was uploaded. The object is this very log
+  /** The part's size when it was uploaded. The object is this very log
    *  while the local one is exactly this long (a log only grows). */
   bytes: number;
-  /** The object's size (the log gzipped). */
+  /** The object's size (the part gzipped). */
   size: number;
   /** When it was uploaded. */
   at: string;
 }
 
+/** Where one part of a record is (plans/retention.md). A part with no
+ *  state is on this disk and has never been uploaded. */
+export interface PartState {
+  /** The bucket holds it. A resume drops the summary, and this with it, so
+   *  a run that went on is uploaded again. */
+  archive?: ArchivedPart;
+  /** Retention took it off this disk then: to the bucket when `archive` is
+   *  set (the next read restores it), else deleted. */
+  evictedAt?: string;
+  /** When a read last brought it back from the bucket; the sweep leaves it
+   *  a day, then evicts it again. */
+  restoredAt?: string;
+}
+
+/** The parts of a run that retention moves (plans/retention.md). */
+export interface RunParts {
+  /** The event log (`events.jsonl`), with everything else in the run's
+   *  directory but `run.json`. */
+  log?: PartState;
+}
+
+/** True when the run's log is not on this disk: deleted by retention, or
+ *  in the bucket (`parts.log.archive`) until a read restores it. */
+export function logEvicted(s: { parts?: RunParts } | null | undefined): boolean {
+  return Boolean(s?.parts?.log?.evictedAt);
+}
+
+/** The summary with one part's state replaced. */
+export function withPart<S extends { parts?: RunParts }>(s: S, part: keyof RunParts, state: PartState): S {
+  return { ...s, parts: { ...s.parts, [part]: state } };
+}
+
 /** Run summary written to run.json. */
 export interface RunSummary {
-  /** The retention sweep dropped this run's event log and directory
-   *  (`src/retention.ts`); this summary is what is left — and, with
-   *  `archive`, the bucket's copy, which the next read of the log restores. */
-  logEvicted?: boolean;
+  /** Where the run's parts are once retention has moved them
+   *  (`src/retention.ts`, plans/retention.md): `log` today. Absent: all
+   *  here. */
+  parts?: RunParts;
   /** The run died with its process and never wrote a summary; retention
    *  wrote this one when it evicted the log (`src/retention.ts`). */
   crashed?: boolean;
   /** The run's parent, when it was a child run. */
   parentRunId?: string;
-  evictedAt?: string;
-  /** The bucket holds this run's log (plans/run-archive.md). A resume drops
-   *  it with the summary, so a run that went on is uploaded again. */
-  archive?: ArchivedLog;
-  /** When a read last restored the log from the archive; the sweep leaves
-   *  it for a day, then evicts it again. */
-  restoredAt?: string;
   runId: string;
   workflow: string;
   startedAt: string;

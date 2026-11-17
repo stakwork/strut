@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { z } from "zod";
-import { defineStep, type RunEvent, type RunSummary, type StepRegistry } from "./core.js";
+import { defineStep, logEvicted, type RunEvent, type RunSummary, type StepRegistry } from "./core.js";
 import { createStrut } from "./createStrut.js";
 import { hiddenFromSteps } from "./env.js";
 import { MemoryObjectStore, type ObjectStore } from "./object-store.js";
@@ -124,12 +124,12 @@ describe("the run archive: upload, then evict", () => {
     // Run 1: gone from this disk, in the bucket, and its summary says where.
     assert.deepEqual(await readdir(w.runDir("1")), ["run.json"]);
     const s1 = (await w.store.getRunSummary("w", "1"))!;
-    assert.equal(s1.logEvicted, true);
-    assert.deepEqual(s1.archive, { key: "box-1/runs/w/1/events.jsonl.gz", bytes: Buffer.byteLength(log1), size: w.objects.objects.get(s1.archive!.key)!.length, at: at(0) });
+    assert.equal(logEvicted(s1), true);
+    assert.deepEqual(s1.parts?.log?.archive, { key: "box-1/runs/w/1/events.jsonl.gz", bytes: Buffer.byteLength(log1), size: w.objects.objects.get(s1.parts!.log!.archive!.key)!.length, at: at(0) });
     // Run 3: uploaded, and still here.
     const s3 = (await w.store.getRunSummary("w", "3"))!;
-    assert.equal(s3.logEvicted, undefined);
-    assert.equal(s3.archive?.bytes, Buffer.byteLength(await logOf(w, "3")));
+    assert.equal(logEvicted(s3), false);
+    assert.equal(s3.parts?.log?.archive?.bytes, Buffer.byteLength(await logOf(w, "3")));
     // Run 5 is live: untouched.
     assert.equal(await w.store.getRunSummary("w", "5"), null);
 
@@ -176,7 +176,7 @@ describe("the run archive: upload, then evict", () => {
     await seed(w.store, "1", summary("1", 8 * 24));
     await seed(w.store, "2", summary("2", 6 * 24));
     assert.equal((await quiet(() => sweeper(w, undefined).sweep())).result, 1);
-    assert.equal((await w.store.getRunSummary("w", "1"))?.logEvicted, true);
+    assert.equal(logEvicted(await w.store.getRunSummary("w", "1")), true);
     assert.ok(await hasLog(w, "2"));
   });
 
@@ -188,7 +188,7 @@ describe("the run archive: upload, then evict", () => {
     await utimes(join(w.runDir("7"), "events.jsonl"), new Date(NOW - 3 * HOUR), new Date(NOW - 3 * HOUR));
     assert.equal((await quiet(() => sweeper(w, "1h").sweep())).result, 1);
     const s = (await w.store.getRunSummary("w", "7"))!;
-    assert.deepEqual([s.crashed, s.logEvicted, s.status, s.parentRunId, s.archive?.bytes], [true, true, "error", "6", Buffer.byteLength(log)]);
+    assert.deepEqual([s.crashed, logEvicted(s), s.status, s.parentRunId, s.parts?.log?.archive?.bytes], [true, true, "error", "6", Buffer.byteLength(log)]);
     assert.equal(w.archived("7"), log);
     assert.deepEqual(await readdir(w.runDir("7")), ["run.json"]);
     assert.equal((await quiet(() => w.store.getRunEvents("w", "7"))).result.length, 2);
@@ -223,7 +223,7 @@ describe("the run archive: upload, then evict", () => {
     assert.deepEqual(puts(w), ["put box-1/runs/w/3/events.jsonl.gz"]); // newest of the due ones first, as the sweep walks
     assert.equal((await quiet(() => sweep.sweep())).result, 1);
     assert.equal((await quiet(() => sweep.sweep())).result, 1);
-    for (const id of ["1", "2", "3"]) assert.equal((await w.store.getRunSummary("w", id))?.logEvicted, true, id);
+    for (const id of ["1", "2", "3"]) assert.equal(logEvicted(await w.store.getRunSummary("w", id)), true, id);
     assert.equal(w.archived("4"), undefined, "the run not due waits until the due ones are done");
     const last = await quiet(() => sweep.sweep());
     assert.equal(last.result, 0);
@@ -256,7 +256,7 @@ describe("the run archive: a bucket that fails", () => {
     w.archive.objects.head = (key) => (isDown ? down() : head(key));
     await seed(w.store, "1", summary("1", 0.5));
     await quiet(() => sweeper(w, "1h").sweep()); // uploaded, not due yet
-    assert.ok((await w.store.getRunSummary("w", "1"))?.archive);
+    assert.ok((await w.store.getRunSummary("w", "1"))?.parts?.log?.archive);
     isDown = true;
     const later = await quiet(() => sweeper(w, "1h", { now: () => NOW + 2 * HOUR }).sweep());
     assert.equal(later.result, 0);
@@ -273,10 +273,10 @@ describe("the run archive: a bucket that fails", () => {
     const sweep = await quiet(() => sweeper(w, "1h").sweep());
     assert.equal(sweep.result, 1); // 3 went (newest first), 2 failed, 1 was not tried
     assert.deepEqual(sweep.warnings, ["[archive] the bucket failed, so this sweep archives and evicts nothing more: connect ECONNREFUSED 10.0.0.9:9000"]);
-    assert.equal((await w.store.getRunSummary("w", "3"))?.logEvicted, true);
+    assert.equal(logEvicted(await w.store.getRunSummary("w", "3")), true);
     for (const id of ["1", "2"]) {
       assert.ok(await hasLog(w, id), id);
-      assert.equal((await w.store.getRunSummary("w", id))?.archive, undefined, id);
+      assert.equal((await w.store.getRunSummary("w", id))?.parts?.log?.archive, undefined, id);
     }
     assert.deepEqual(tried, ["box-1/archive.json", "box-1/runs/w/3/events.jsonl.gz", "box-1/runs/w/2/events.jsonl.gz"]);
   });
@@ -295,14 +295,14 @@ describe("the run archive: a bucket that fails", () => {
     assert.equal(sweep.result, 0);
     assert.match(sweep.warnings[0]!, /the bucket failed.*events\.jsonl\.gz" is \d+ bytes after an upload of \d+/);
     assert.ok(await hasLog(w, "1"));
-    assert.equal((await w.store.getRunSummary("w", "1"))?.archive, undefined);
+    assert.equal((await w.store.getRunSummary("w", "1"))?.parts?.log?.archive, undefined);
   });
 
   it("a log the bucket lost after its upload (a lifecycle rule, a delete) is uploaded again before it is evicted", async () => {
     const w = await world();
     await seed(w.store, "1", summary("1", 0.5));
     await quiet(() => sweeper(w, "1h").sweep()); // uploaded, not due yet
-    const key = (await w.store.getRunSummary("w", "1"))!.archive!.key;
+    const key = (await w.store.getRunSummary("w", "1"))!.parts!.log!.archive!.key;
     w.objects.objects.delete(key);
     // Due now: the sweep asks the bucket again before it takes the record's word.
     assert.equal((await quiet(() => sweeper(w, "1h", { now: () => NOW + 2 * HOUR }).sweep())).result, 1);
@@ -316,7 +316,7 @@ describe("the run archive: a bucket that fails", () => {
     await seed(w.store, "1", summary("1", 0.5));
     await seed(w.store, "2", summary("2", 0.5));
     await quiet(() => sweeper(w, "1h").sweep());
-    const lost = (await w.store.getRunSummary("w", "1"))!.archive!.key;
+    const lost = (await w.store.getRunSummary("w", "1"))!.parts!.log!.archive!.key;
     w.objects.objects.delete(lost);
     // Without s3:ListBucket a HEAD of a key that is not there throws a 403.
     const { head } = w.archive.objects;
@@ -352,7 +352,7 @@ describe("the run archive: a bucket that fails", () => {
     await w.store.append("w", "1", event("1", "late")); // the log grew after the upload
     assert.equal(await w.store.evictRun("w", "1", at(0)), false, "the upload is not this log");
     assert.ok(await hasLog(w, "1"));
-    assert.equal((await w.store.getRunSummary("w", "1"))?.logEvicted, undefined);
+    assert.equal(logEvicted(await w.store.getRunSummary("w", "1")), false);
   });
 
   it("a restore the bucket fails rejects, leaves the run as it was, and works once the bucket is back", async () => {
@@ -407,8 +407,8 @@ describe("the run archive: restore on read", () => {
       assert.deepEqual(logs, ["[archive] restored the log of w/1 from s3://test/box-1"]);
       assert.equal(await logOf(w, "1"), log);
       const s = (await w.store.getRunSummary("w", "1"))!;
-      assert.deepEqual([s.logEvicted, s.evictedAt], [undefined, undefined]);
-      assert.ok(s.restoredAt && s.archive);
+      assert.deepEqual([logEvicted(s), s.parts?.log?.evictedAt], [false, undefined]);
+      assert.ok(s.parts?.log?.restoredAt && s.parts?.log?.archive);
       assert.deepEqual((await readdir(w.runDir("1"))).sort(), ["events.jsonl", "run.json"]);
     });
   }
@@ -444,7 +444,7 @@ describe("the run archive: restore on read", () => {
     assert.deepEqual(await local.readLogTail("w", "1", 1024), []);
     assert.equal(await local.logSize("w", "1"), 0);
     assert.equal(await hasLog(w, "1"), false);
-    assert.equal((await local.getRunSummary("w", "1"))?.logEvicted, true);
+    assert.equal(logEvicted(await local.getRunSummary("w", "1")), true);
     // The store itself still restores.
     assert.equal((await quiet(() => w.store.getRunEvents("w", "1"))).result.length, 3);
   });
@@ -497,12 +497,12 @@ describe("the run archive: a run that goes on", () => {
     assert.equal(first, await logOf(w, "1"));
 
     await resumeAndFinish(w, "1", 0.2);
-    assert.equal((await w.store.getRunSummary("w", "1"))?.archive, undefined, "the record went with the summary the resume dropped");
+    assert.equal((await w.store.getRunSummary("w", "1"))?.parts?.log?.archive, undefined, "the record went with the summary the resume dropped");
     await quiet(() => sweeper(w, "1h").sweep());
     const second = w.archived("1")!;
     assert.equal(second, await logOf(w, "1"));
     assert.ok(second.length > first.length && second.startsWith(first));
-    assert.equal((await w.store.getRunSummary("w", "1"))?.archive?.bytes, Buffer.byteLength(second));
+    assert.equal((await w.store.getRunSummary("w", "1"))?.parts?.log?.archive?.bytes, Buffer.byteLength(second));
     assert.equal(puts(w).length, 2);
   });
 
@@ -589,7 +589,7 @@ describe("the run archive: off, and its settings", () => {
     assert.equal(await store.evictRun("w", "1", at(0)), true);
     assert.deepEqual(await readdir(join(root, "workflows", "w", "runs", "1")), ["run.json"]);
     const s = (await store.getRunSummary("w", "1"))!;
-    assert.deepEqual([s.logEvicted, s.archive, s.restoredAt], [true, undefined, undefined]);
+    assert.deepEqual([logEvicted(s), s.parts?.log?.archive, s.parts?.log?.restoredAt], [true, undefined, undefined]);
     assert.deepEqual(await store.getRunEvents("w", "1"), []);
     assert.equal(await store.getRunStart("w", "1"), null);
     assert.equal(await store.logSize("w", "1"), 0);
@@ -720,8 +720,8 @@ describe("the run archive through createStrut", () => {
       assert.ok(t.objects.objects.has(`box-1/runs/hello/${run.runId}/events.jsonl.gz`));
 
       const listed = ((await (await t.get("/workflows/hello/runs")).json()) as RunSummary[])[0]!;
-      assert.equal(listed.logEvicted, true);
-      assert.equal(listed.archive?.key, `box-1/runs/hello/${run.runId}/events.jsonl.gz`);
+      assert.equal(logEvicted(listed), true);
+      assert.equal(listed.parts?.log?.archive?.key, `box-1/runs/hello/${run.runId}/events.jsonl.gz`);
       // Listings and counts over many runs leave the archive where it is.
       assert.equal((await t.get("/workflows/hello/versions")).status, 200);
       assert.equal((await t.get("/steps/value/stats")).status, 200);
@@ -734,7 +734,7 @@ describe("the run archive through createStrut", () => {
       assert.deepEqual([events[0]!.type, events.at(-1)!.type], ["run.start", "run.end"]);
       assert.equal(await t.logHere("hello", run.runId), true);
       const after = (await (await t.get(`/workflows/hello/runs/${run.runId}`)).json()) as RunSummary;
-      assert.deepEqual([after.logEvicted, typeof after.restoredAt, after.archive?.bytes], [undefined, "string", listed.archive!.bytes]);
+      assert.deepEqual([logEvicted(after), typeof after.parts?.log?.restoredAt, after.parts?.log?.archive?.bytes], [false, "string", listed.parts!.log!.archive!.bytes]);
 
       // Evicted again, the live tail restores it too.
       assert.equal(await t.store.evictRun("hello", run.runId, new Date().toISOString()), true);
@@ -762,7 +762,7 @@ describe("the run archive through createStrut", () => {
       assert.equal(resume.result.status, 202, await resume.result.clone().text());
       const done = await t.waitForSummary("flaky", failed.runId, first.finishedAt);
       assert.equal(done.status, "success");
-      assert.equal(done.archive, undefined, "the finished run is not the log the bucket holds");
+      assert.equal(done.parts?.log?.archive, undefined, "the finished run is not the log the bucket holds");
       const types = (await t.store.getRunEvents("flaky", failed.runId)).map((e) => e.type);
       assert.ok(types.includes("run.error") && types.includes("run.resumed") && types.at(-1) === "run.end", types.join(","));
 
@@ -828,7 +828,7 @@ describe("the run archive through createStrut", () => {
         assert.equal(res.status, 503);
         assert.deepEqual(await res.json(), { error: `The log of run ${run.runId} of "hello" is in a run archive (box-1/runs/hello/${run.runId}/events.jsonl.gz), and this strut has no archive configured (STRUT_ARCHIVE_S3_BUCKET)` });
         // A log that was deleted with no archive is still an empty list.
-        await bare.store.finalize("hello", "1", { runId: "1", workflow: "hello", startedAt: at(1), finishedAt: at(1), durationMs: 1, status: "success", input: {}, logEvicted: true });
+        await bare.store.finalize("hello", "1", { runId: "1", workflow: "hello", startedAt: at(1), finishedAt: at(1), durationMs: 1, status: "success", input: {}, parts: { log: { evictedAt: at(1) } } });
         assert.deepEqual(await (await bare.app.request("/workflows/hello/runs/1/events")).json(), []);
       } finally {
         await bare.close();
@@ -848,7 +848,7 @@ describe("the run archive through createStrut", () => {
       const res = await t.get(`/workflows/hello/runs/${run.runId}/events`);
       assert.equal(res.status, 503);
       assert.deepEqual(await res.json(), { error: `The log of run ${run.runId} of "hello" is archived in s3://test/box-1 and could not be restored: no route to host` });
-      assert.equal((await t.store.getRunSummary("hello", run.runId))?.logEvicted, true);
+      assert.equal(logEvicted(await t.store.getRunSummary("hello", run.runId)), true);
     } finally {
       await t.close();
     }

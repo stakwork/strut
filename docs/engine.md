@@ -169,8 +169,9 @@ and the child env is scrubbed by construction).
   serializes to YAML) or a raw `yaml` string. Files are stored as
   `<version>.yaml` in the workflow directory. `js-yaml` for parsing.
 
-- **`retain:` = how long finished runs keep their log** (`src/retention.ts`).
-  An optional top-level field: a duration (`30m`, `1h`, `7d`; units s m h d
+- **`retain:` = how long finished runs keep their log** (`src/retention.ts`;
+  the first part of plans/retention.md, where every record strut keeps has an
+  index that stays and parts that leave the disk). An optional top-level field: a duration (`30m`, `1h`, `7d`; units s m h d
   w) or `{ runs: N }` (N a positive integer). Parsed by `parseRetention` (the
   one parser, shared with the env var and the sweep); `flowFromYaml` puts it
   on `Flow.retain`, `WorkflowContent.retain` / `renderWorkflowYaml` write it
@@ -179,10 +180,15 @@ and the child env is scrubbed by construction).
   beyond the newest N finished runs of that workflow, is EVICTED: its
   `events.jsonl` and everything else in its run directory go
   (`RunStore.evictRun`, File + Memory), and `run.json` stays, rewritten with
-  `logEvicted: true` + `evictedAt`, so the run still lists (the UI badges it
-  "log evicted"; its view says the log is gone). `STRUT_RUN_RETENTION` is the
-  fleet default for workflows with no `retain:` (`1h`, `20` or `runs:20`;
-  invalid: warned at boot, ignored; unset: nothing is evicted). The sweep
+  `parts.log.evictedAt` (`RunSummary.parts`: where each part of the run is;
+  `logEvicted(s)` and `withPart` in `core.ts`), so the run still lists (the
+  UI badges it "log evicted"; its view says the log is gone). A summary an
+  older strut wrote, with `logEvicted: true` + `evictedAt` (#693), reads as
+  `parts.log.evictedAt` (`upgradeSummary`, in `FileRunStore.getRunSummary`).
+  `STRUT_RETENTION` is the fleet default for workflows with no `retain:`
+  (`1h`, `20` or `runs:20`; `STRUT_RUN_RETENTION`, its first name, is read
+  when it is unset: `fleetRetentionFromEnv`; invalid: warned at boot,
+  ignored; unset: nothing is evicted). The sweep
   (`createRetention`, started beside the automations scheduler, at boot then
   hourly, unref'd, stopped on `close()`) walks workflow keys only and NEVER
   touches: a run with no summary (in flight), a `waiting` (parked) run, a run
@@ -215,7 +221,7 @@ and the child env is scrubbed by construction).
   qualifying crashed run joins the count form's newest-first ordering (one
   that does not qualify is neither counted nor touched). Eviction deletes
   the log and directory and WRITES a minimal summary (`status: "error"`,
-  `crashed: true`, `logEvicted`, `startedAt` from `run.start`, `finishedAt` =
+  `crashed: true`, `parts.log.evictedAt`, `startedAt` from `run.start`, `finishedAt` =
   the last write, `parentRunId` when known). Child runs: a resumed parent
   re-executes an unjournaled `meta/run-workflow` with NO runId, so the child
   is a fresh run; a dead child is never relaunched, and a live one is
@@ -234,16 +240,16 @@ and the child env is scrubbed by construction).
     (`RunStore.archiveRun` → `uploadLog`), streamed from the file with
     nothing written to disk first, then checks the object's size against
     what it sent and records it on the summary:
-    `archive: { key, bytes, size, at }` (`bytes` the log's size, `size` the
+    `parts.log.archive: { key, bytes, size, at }` (`bytes` the log's size, `size` the
     object's). Only the event log: never `callback.json`, `mcp.json` or
     `job-callback.json`. One sweep uploads at most `ARCHIVE_BYTES_PER_SWEEP`
     (4 GiB of log; one bigger log still goes), the logs due for eviction
     first, so a backlog drains over sweeps with no migration; it says
     `[archive] archived N run log(s), 12.3 MB (… bytes); M more wait for the next sweep`.
     A kept or artifact-referenced run is uploaded and stays local.
-  - **Evict.** The policy is `retain:`, else `STRUT_RUN_RETENTION`, else
+  - **Evict.** The policy is `retain:`, else `STRUT_RETENTION`, else
     `ARCHIVE_LOCAL_WINDOW` (7 days). A log goes only when the bucket holds
-    it: `FileRunStore.evictRun` itself refuses unless `archive.bytes` is at
+    it: `FileRunStore.evictRun` itself refuses unless `parts.log.archive.bytes` is at
     least the local log's size (a log only grows, so the bucket's copy
     holds a local log no longer than it; a SHORTER local log, a file a
     crash left short, is never uploaded over the bucket's).
@@ -252,7 +258,7 @@ and the child env is scrubbed by construction).
     a lifecycle rule expired or someone deleted is uploaded again, never
     trusted, and a HEAD that fails counts as gone (without `s3:ListBucket`
     a missing key answers 403). A crashed run is uploaded, then evicted with its `crashed`
-    summary carrying `archive`.
+    summary carrying `parts.log.archive`.
   - **A run that goes on.** The record lives on the summary, and a durable
     resume drops the summary before it appends (`clearRunSummary`), so a
     resumed run has no record and is uploaded again, over the same key, once
@@ -271,7 +277,7 @@ and the child env is scrubbed by construction).
     (`FileRunStore.ensureLog` → `downloadLog`: written beside the log,
     renamed into place), one restore at a time per run, so every reader
     works unchanged: the run view, the SSE tail, a resume, the verify pass.
-    The summary loses `logEvicted` and gains `restoredAt`; the sweep leaves a
+    `parts.log` loses `evictedAt` and gains `restoredAt`; the sweep leaves a
     restored log a day (`RESTORED_KEEP_MS`), then evicts it again without
     another upload. `logSize` answers from the record and `logWrittenAt` is
     null: neither restores (boot's resume scan asks `logWrittenAt` of every

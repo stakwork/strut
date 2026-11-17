@@ -8,6 +8,13 @@
 > Not ruled, and built as proposed: the env var names, the 7-day local
 > window, the order of the later phases. Every choice the build made where
 > the brief left room is listed in §4.
+>
+> **2026-11-17: reshaped before merge to plans/retention.md's shape.** The
+> later phases moved there (§2). The summary's fields are
+> `parts.log.{archive, evictedAt, restoredAt}` (were `archive`,
+> `logEvicted` + `evictedAt`, `restoredAt`), and the fleet default is
+> `STRUT_RETENTION` (`STRUT_RUN_RETENTION` still read). This file uses the
+> new names.
 
 ## Why
 
@@ -22,9 +29,9 @@ data folder:
 | under `steps/` (not broken down; it holds the `step:` run bucket) | 14 GB |
 | repository checkouts | 13 GB |
 
-Run retention landed the same day (`retain:`, `STRUT_RUN_RETENTION`,
+Run retention landed the same day (`retain:`, `STRUT_RUN_RETENTION`, now `STRUT_RETENTION`,
 `src/retention.ts`, #693 and #698): an hourly sweep that DELETES a finished
-run's event log and leaves its summary flagged `logEvicted`. It stops the
+run's event log and leaves its summary flagged evicted (`parts.log.evictedAt`). It stops the
 disk filling and loses the record. Logs and artifacts are what a run was:
 a re-verify of an evicted run has to skip it (`unknown-run`), and an eval
 over old runs has nothing to read. All of it will be wanted eventually.
@@ -109,13 +116,13 @@ scheduler); `strut.retention.sweep()` runs a pass by hand.
 - **Upload.** Every finished run not uploaded yet, gzipped, to
   `<prefix>/runs/<workflow>/<runId>/events.jsonl.gz`. The object's size is
   checked against what was sent, then the summary records it:
-  `archive: { key, bytes, size, at }`. Only `events.jsonl`: the three
+  `parts.log.archive: { key, bytes, size, at }`. Only `events.jsonl`: the three
   files that hold credentials (`callback.json`, `mcp.json`,
   `job-callback.json`) never leave and are deleted with the eviction, as
   before. One sweep uploads at most 4 GiB of log, the logs due for
   eviction first (they are what frees the disk); a backlog drains over
   sweeps and needs no migration.
-- **Evict.** By `retain:`, else `STRUT_RUN_RETENTION`, else 7 days. Only a
+- **Evict.** By `retain:`, else `STRUT_RETENTION`, else 7 days. Only a
   run whose upload was recorded, and the store itself enforces it:
   `evictRun` refuses unless the recorded upload is at least as long as the
   local log. A log only grows, so the bucket's copy then holds all of it;
@@ -196,70 +203,14 @@ has restored it), and a run opened while the bucket was down.
   expired is a log that is gone: once the local copy is evicted nothing
   can restore it. (Before the eviction strut notices and uploads again.)
 
-## 2. Later phases (proposed)
+## 2. Later phases
 
-In the order of what they free. Each reuses the object store, the sweep's
-budget and failure handling, and the rule that a summary or record stays
-local as the index.
-
-### Phase 2: run artifacts, one tarball per run (51 GB)
-
-`<prefix>/runs/<workflow>/<runId>/artifacts.tar.gz`, recorded on the
-summary beside `archive`.
-
-- **A tar that keeps what is there.** `src/tar.ts` writes regular files
-  only and builds the archive in memory from buffers. A checkout inside an
-  artifact directory would lose its symlinks and executable bits, and a
-  multi-GB directory cannot be held in memory. This phase needs a
-  streaming tar that carries modes and symlinks (a streaming writer of
-  our own, or the system `tar` through the shell service), and a restore
-  that refuses a path leaving the run's directory.
-- **Restore on read** has more doors than a log: `ctx.services.artifacts`
-  (`read`, `dir`: an agent's `cwd`), `GET /artifacts/:runId[/path]`, the
-  file tokens, and the links other runs hold. `dir()` hands out a path, so
-  the restore has to happen when the path is asked for.
-- **Listing without restoring.** `GET /artifacts/:runId` lists files. Keep
-  the file list (paths, sizes) local when the tarball is made, so a
-  listing never downloads it.
-- **References.** Retention skips a run whose artifacts another run's
-  summary names. With restore on read that skip can go for artifacts.
-- **A job run's files are the job's** (phase 3), not artifacts.
-- **Part size.** Above ~48 GiB compressed an upload needs a larger part
-  size than the default.
-
-### Phase 3: job directories (22 GB)
-
-A job directory holds the job's files and its repositories. The record
-(`job.json`) stays local as the index. The repositories are checkouts and
-are already swept (`STRUT_WORKDIR_TTL_DAYS`); the rest is what to archive,
-as one tarball per job once the job has been idle for a window. It needs
-phase 2's tar, a restore on `job/dir`, `job/get` and the job file route,
-and a decision on what "idle" means for a job a conversation may continue
-months later.
-
-### Phase 4: the `step:` and `check:` run buckets (14 GB under `steps/`)
-
-The sweep walks workflow keys only. These buckets have no `retain:`, so
-they need a policy (the fleet default) and a key mapping
-(`<prefix>/steps/<type>/runs/<runId>/…`). First, the verify pass's cost
-sums (`spentToday`, `costOf`) read every check run's LOG to add up what it
-cost; a check run's summary has to carry its cost before its log can
-leave, or each sum restores the bucket.
-
-### Phase 5: the repository cache (13 GB)
-
-Not an archive: `repos/<host>/<owner>/<name>.git` and `worktrees/<runId>`
-can be cloned again. Prune by last use, and remove a worktree whose run
-is over.
-
-### Not planned
-
-- Another protocol. An Azure or GCS deployment puts an S3 gateway in
-  front, or waits for a ruling.
-- A status page (how much is archived, how much waits). The sweep's log
-  line is the only report today.
-- A bulk restore, or a cap on restores. A day's keep is the only bound on
-  what reads bring back.
+Moved to plans/retention.md (2026-11-17), which makes them one rule
+instead of four phases: every record strut keeps (a run's artifacts, a
+job's files, `step:` and `check:` runs, chats) has an index that stays and
+parts that leave, each part one object, restored on its own read; caches
+are copies, deleted by last use. This file stays the record of the first
+part, a run's log.
 
 ## 3. Verified, and not
 
@@ -315,7 +266,7 @@ Where the brief left room, or the code turned out other than it assumed:
 11. **Deleting a workflow deletes its runs' objects.** The person asked
     for the records to go; versioning keeps them recoverable.
 12. **No graph field.** A run's projection names its fields one by one and
-    takes neither `logEvicted` nor `archive`, so `strut-schemas.ts` is
+    takes no `parts`, so `strut-schemas.ts` is
     unchanged.
 13. **`strut.retention`** is on the handle, so a host with
     `scheduler: false`, and a test, can run a pass.

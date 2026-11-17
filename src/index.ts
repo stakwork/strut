@@ -31,7 +31,11 @@ export {
   type RunEvent,
   type RunResult,
   type RunSummary,
-  type ArchivedLog,
+  type ArchivedPart,
+  type PartState,
+  type RunParts,
+  logEvicted,
+  withPart,
   type RunEventType,
   type RunOrigin,
   type AccessedNode,
@@ -99,7 +103,7 @@ export {
   localRuns,
 } from "./store.js";
 
-// The run archive (plans/run-archive.md): what `createStrut({ archive })` takes.
+// The run archive (plans/run-archive.md, plans/retention.md): what `createStrut({ archive })` takes.
 export { type RunArchive, RunArchiveError, archiveFromEnv } from "./run-archive.js";
 export { type ObjectStore, type S3Settings, MemoryObjectStore, S3ObjectStore } from "./object-store.js";
 

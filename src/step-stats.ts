@@ -16,7 +16,7 @@
  * cost is one small summary per run, never its event log. A workflow that
  * USED the step in an older version but no longer does is not scanned.
  */
-import type { Flow, StepCounts } from "./core.js";
+import { logEvicted, type Flow, type StepCounts } from "./core.js";
 import { closureIncludes, flowClosure } from "./closure.js";
 import type { RunStore } from "./store.js";
 import { countSteps, stepRunKey } from "./store.js";
@@ -66,7 +66,7 @@ export async function stepStats(
     if (summary?.stepCounts) return summary.stepCounts;
     // Its log is not here (deleted, or in the run archive): nothing to
     // count, and nothing written, so counts made later from the log stand.
-    if (summary?.logEvicted) return {};
+    if (logEvicted(summary)) return {};
     const counts = countSteps(await store.getRunEvents(key, id));
     // Re-read before writing: a resume may have cleared the summary while
     // the log was read, and writing the old one back would end a live run.

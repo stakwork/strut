@@ -1,10 +1,13 @@
 /**
- * Run retention: the `retain:` workflow field, `STRUT_RUN_RETENTION`, and the
- * sweep that evicts finished runs' logs (docs/engine.md "Retention").
+ * Run retention: the `retain:` workflow field, `STRUT_RETENTION`, and the
+ * sweep that evicts finished runs' logs (docs/engine.md "Retention"). The
+ * first part of plans/retention.md: a record keeps its index here and its
+ * parts leave the disk; a run's index is its summary, its one part so far
+ * the log.
  *
  * `retain: 1h` keeps a finished run's log for a window; `retain: { runs: 20 }`
  * keeps the newest 20 finished runs'. Past that a run's `events.jsonl` and
- * run directory go and its summary stays, flagged `logEvicted`. Never touched:
+ * run directory go and its summary stays, with `parts.log.evictedAt`. Never touched:
  * running or waiting runs, runs whose artifacts another run references, and
  * anything outside the workflow keys. Claim evidence does not hold a run: the
  * Evidence nodes keep their verdict and content, and a re-verify of an
@@ -20,11 +23,11 @@
  * With an archive (plans/run-archive.md, `src/run-archive.ts`) evicting is
  * "upload first, drop the local copy second": the sweep uploads every
  * finished run's log, the ones due for eviction first, and evicts only a
- * run whose upload was checked. The summary records it (`archive`), and a
+ * run whose upload was checked. The summary records it (`parts.log.archive`), and a
  * read of the evicted log restores it (`FileRunStore`). A sweep the bucket
  * fails evicts nothing.
  */
-import type { ArchivedLog, RunSummary } from "./core.js";
+import { logEvicted, withPart, type ArchivedPart, type RunSummary } from "./core.js";
 import { fmtBytes } from "./output-cap.js";
 import { errorText } from "./run-archive.js";
 import type { RunStore } from "./store.js";
@@ -34,7 +37,7 @@ import type { RunStore } from "./store.js";
 export const CRASHED_STALE_MS = 3_600_000;
 /** How much of a log's end is read to find a human's pause. */
 const TAIL_BYTES = 64 * 1024;
-/** With an archive and no `retain:` or `STRUT_RUN_RETENTION`: how long a
+/** With an archive and no `retain:` or `STRUT_RETENTION`: how long a
  *  finished run's log stays on this disk. */
 export const ARCHIVE_LOCAL_WINDOW: Retention = { windowMs: 7 * 86_400_000 };
 /** How much log one sweep uploads. A backlog drains over many sweeps, the
@@ -87,10 +90,30 @@ export function formatRetention(r: Retention): string {
   return `${r.windowMs}ms`;
 }
 
+/** The fleet default's variable. `STRUT_RUN_RETENTION`, its first name
+ *  (#698), is read when it is unset. */
+export const RETENTION_ENV = "STRUT_RETENTION";
+const RETENTION_ENV_FIRST = "STRUT_RUN_RETENTION";
+
+/** The fleet default from the env, and the variable it came from: the
+ *  first of `STRUT_RETENTION`, `STRUT_RUN_RETENTION` that is set. An invalid
+ *  value is warned about and ignored. */
+export function fleetRetentionFromEnv(env: Record<string, string | undefined>): { retention: Retention; env: string } | undefined {
+  const name = [RETENTION_ENV, RETENTION_ENV_FIRST].find((n) => env[n]);
+  if (!name) return undefined;
+  const raw = env[name]!;
+  const r = parseRetention(raw, { allowBare: true });
+  if ("error" in r) {
+    console.warn(`[retention] ignoring ${name}="${raw}": ${r.error}`);
+    return undefined;
+  }
+  return { retention: r, env: name };
+}
+
 export interface RetentionDeps {
   store: RunStore;
   workspace: { listWorkflows(): Promise<Array<{ name: string }>>; getWorkflow(name: string): Promise<{ retain?: Retention }> };
-  /** The fleet default (`STRUT_RUN_RETENTION`), for workflows with no `retain`. */
+  /** The fleet default (`STRUT_RETENTION`), for workflows with no `retain`. */
   fallback?: Retention;
   /** True while the run is in this process's active set. Absent: nothing is live. */
   isLive?: (workflow: string, runId: string) => boolean;
@@ -201,11 +224,12 @@ export function createRetention(deps: RetentionDeps): Retainer {
      *  within the sweep's budget. Resolves to what a crashed run's summary
      *  gains, or null when the log is not held yet (the next sweep's).
      *  Without one there is nothing to hold. */
-    const hold = async (name: string, id: string, s: RunSummary): Promise<{ archive?: ArchivedLog } | null> => {
+    const hold = async (name: string, id: string, s: RunSummary): Promise<{ archive?: ArchivedPart } | null> => {
       if (!archive) return {};
       if (failed) return null;
       const bytes = await deps.store.logSize(name, id);
-      const upload = bytes > 0 && !(s.archive && bytes <= s.archive.bytes);
+      const recorded = s.parts?.log?.archive;
+      const upload = bytes > 0 && !(recorded && bytes <= recorded.bytes);
       if (upload && uploads > 0 && bytes > budget) {
         waiting++;
         return null;
@@ -240,24 +264,26 @@ export function createRetention(deps: RetentionDeps): Retainer {
           crashed = true;
         }
         finished++;
-        if (s.logEvicted) continue;
+        if (logEvicted(s)) continue;
+        const restoredAt = s.parts?.log?.restoredAt;
         const due = "runs" in policy ? finished > policy.runs : now() - Date.parse(s.finishedAt) > policy.windowMs;
         const stays =
           !due ||
           (s as { kept?: boolean }).kept ||
           [...(refs.get(id) ?? [])].some((by) => by !== id) ||
           // A log a read just restored: left a day, whatever the policy.
-          (s.restoredAt !== undefined && now() - Date.parse(s.restoredAt) <= RESTORED_KEEP_MS);
+          (restoredAt !== undefined && now() - Date.parse(restoredAt) <= RESTORED_KEEP_MS);
         if (stays) {
           // It stays on this disk, and still goes to the bucket.
-          if (archive && !crashed && !s.archive) later.push({ name, id, s });
+          if (archive && !crashed && !s.parts?.log?.archive) later.push({ name, id, s });
           continue;
         }
         const held = await hold(name, id, s);
         if (!held) continue;
         // A dead run resumed by hand while its log was uploaded is not dead.
         if (archive && crashed && deps.isLive?.(name, id)) continue;
-        if (await deps.store.evictRun(name, id, at(), crashed ? { ...s, ...held } : undefined)) evicted++;
+        const fallback = crashed ? (held.archive ? withPart(s, "log", { archive: held.archive }) : s) : undefined;
+        if (await deps.store.evictRun(name, id, at(), fallback)) evicted++;
       }
       if (evicted > before) byWorkflow.push(`${name} ${evicted - before}`);
     }

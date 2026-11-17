@@ -273,7 +273,7 @@ function RetentionSetting(props: { workflow: string; disabled: boolean; onSet: (
       )}
       {dirty && <button type="button" class="btn" disabled={saving || props.disabled} onClick={() => void save()}>Save</button>}
       {mode === "none" && flow.fleetRetention && (
-        <span class="flyout-meta-value">Fleet default: {flow.fleetRetention} ({flow.fleetRetentionEnv ?? "STRUT_RUN_RETENTION"})</span>
+        <span class="flyout-meta-value">Fleet default: {flow.fleetRetention} ({flow.fleetRetentionEnv ?? "STRUT_RETENTION"})</span>
       )}
       {error && <span class="flyout-footer-error">{error}</span>}
     </span>

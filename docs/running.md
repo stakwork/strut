@@ -45,7 +45,7 @@ docker exec strut-minio-test mc alias set local http://localhost:9000 struttest 
 docker exec strut-minio-test mc mb local/strut-test
 STRUT_TEST_S3_ENDPOINT=http://localhost:9100 STRUT_TEST_S3_BUCKET=strut-test STRUT_TEST_S3_ACCESS_KEY_ID=struttest STRUT_TEST_S3_SECRET_ACCESS_KEY=struttest123 npm run test:archive
 # The same MinIO serves a local strut: STRUT_ARCHIVE_S3_ENDPOINT / _BUCKET /
-# _PREFIX / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY, with STRUT_RUN_RETENTION=1m
+# _PREFIX / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY, with STRUT_RETENTION=1m
 # to see a log leave (the sweep runs at boot, then hourly).
 
 # Speech-to-text live test — needs the sherpa addon (optionalDependency,

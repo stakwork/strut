@@ -3,7 +3,7 @@
  * `events.jsonl` is uploaded gzipped to a bucket before retention evicts it
  * (`src/retention.ts`), and a read of an evicted log brings it back to its
  * local path first (`FileRunStore`). The run summary stays local as the
- * index and records the upload (`RunSummary.archive`).
+ * index and records the upload (`RunSummary.parts.log.archive`).
  *
  * This file is the transport: a log file to an object and back, each way
  * checked. Only the event log travels. `callback.json`, `mcp.json` and
@@ -14,7 +14,7 @@ import { rename, rm } from "node:fs/promises";
 import { Readable, Transform, pipeline as pipe } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
-import type { ArchivedLog } from "./core.js";
+import type { ArchivedPart } from "./core.js";
 import { S3ObjectStore, type ObjectStore } from "./object-store.js";
 
 export interface RunArchive {
@@ -103,7 +103,7 @@ export async function uploadLog(objects: ObjectStore, key: string, file: string)
  *  as long as the log its record describes. The directory is the run's and
  *  is there (its summary is in it); one that went meanwhile, with a deleted
  *  workflow, is not made again. */
-export async function downloadLog(objects: ObjectStore, log: ArchivedLog, file: string): Promise<void> {
+export async function downloadLog(objects: ObjectStore, log: ArchivedPart, file: string): Promise<void> {
   const tmp = `${file}.restoring`;
   let bytes = 0;
   try {

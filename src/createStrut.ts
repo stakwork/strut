@@ -213,7 +213,7 @@ import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
-import { ARCHIVE_LOCAL_WINDOW, createRetention, formatRetention, parseRetention, type Retainer } from "./retention.js";
+import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
@@ -2865,7 +2865,7 @@ export async function createStrut<TServices = unknown>(
     if (!events.length && !archive) {
       // A log an archive holds, on a strut that has none now (its bucket
       // was unset, or its data moved here): say so, not "no events".
-      const held = (await store.getRunSummary(name, runId))?.archive;
+      const held = (await store.getRunSummary(name, runId))?.parts?.log?.archive;
       if (held) return c.json({ error: `The log of run ${runId} of "${name}" is in a run archive (${held.key}), and this strut has no archive configured (STRUT_ARCHIVE_S3_BUCKET)` }, 503);
     }
     return c.json(events.map((e) => withTranscriptLink(name, e)));
@@ -3750,7 +3750,7 @@ export async function createStrut<TServices = unknown>(
         // The workflow's own `retain:` and the fleet default, both as text (`1h`, `runs:20`).
         ...(flow.retain ? { retain: formatRetention(flow.retain) } : {}),
         ...(fleetRetention
-          ? { fleetRetention: formatRetention(fleetRetention), fleetRetentionEnv: "STRUT_RUN_RETENTION" }
+          ? { fleetRetention: formatRetention(fleetRetention.retention), fleetRetentionEnv: fleetRetention.env }
           : archive
             ? { fleetRetention: formatRetention(ARCHIVE_LOCAL_WINDOW), fleetRetentionEnv: "archived first" }
             : {}),
@@ -8438,16 +8438,7 @@ export async function createStrut<TServices = unknown>(
   // same detached path as `POST /run`, stamped with their automation.
   // Run retention (src/retention.ts): the fleet default, and the sweep that
   // starts and stops beside the scheduler.
-  const fleetRetention = (() => {
-    const raw = bootEnv()["STRUT_RUN_RETENTION"];
-    if (!raw) return undefined;
-    const r = parseRetention(raw, { allowBare: true });
-    if ("error" in r) {
-      console.warn(`[retention] ignoring STRUT_RUN_RETENTION="${raw}": ${r.error}`);
-      return undefined;
-    }
-    return r;
-  })();
+  const fleetRetention = fleetRetentionFromEnv(bootEnv());
   // The sweep waits for boot's auto-resume scan (`bootResumeRuns`, deferred to
   // the end of construction): before it, a cut-off run about to be relaunched
   // has no controller and no summary and would look crashed.
@@ -8460,7 +8451,7 @@ export async function createStrut<TServices = unknown>(
     isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     resumeSettled,
     workspace,
-    ...(fleetRetention ? { fallback: fleetRetention } : archive ? { fallback: ARCHIVE_LOCAL_WINDOW } : {}),
+    ...(fleetRetention ? { fallback: fleetRetention.retention } : archive ? { fallback: ARCHIVE_LOCAL_WINDOW } : {}),
     ...(archive ? { archive: { check: () => checkArchive(archive) } } : {}),
   });
   if (archive) {

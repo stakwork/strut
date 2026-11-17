@@ -632,7 +632,7 @@ describe("the visible-refs index", () => {
     await store.finalize("w", "r1", { status: "success" } as never);
     // r2's log is not on this disk; reading it is what would bring it back.
     await store.append("w", "r2", ev("r2", "step.end", ["b"]));
-    await store.finalize("w", "r2", { status: "success", logEvicted: true } as never);
+    await store.finalize("w", "r2", { status: "success", parts: { log: { evictedAt: "2026-11-15T00:00:00.000Z" } } } as never);
     const { c, store: s } = counting(store);
     const surface = createPublicSurface({ dataDir: dir, store: s });
     await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));

@@ -19,7 +19,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunEvent, RunSummary } from "./core.js";
+import { logEvicted, type RunEvent, type RunSummary } from "./core.js";
 import { S3ObjectStore, type ObjectStore } from "./object-store.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention } from "./retention.js";
 import { archiveFromEnv, checkArchive, type RunArchive } from "./run-archive.js";
@@ -97,24 +97,24 @@ describe("run archive live (STRUT_TEST_S3_BUCKET)", { skip: bucket ? false : "ST
       });
       assert.equal(await sweep.sweep(), 1);
       const s = (await store.getRunSummary("live", "1"))!;
-      assert.equal(s.logEvicted, true);
-      assert.deepEqual([s.archive?.key, s.archive?.bytes], [`${prefix}/runs/live/1/events.jsonl.gz`, log.length]);
-      assert.ok(s.archive!.size > 5 * 1024 * 1024, "sent as a multipart upload");
-      assert.deepEqual(await archive.objects.head(s.archive!.key), { size: s.archive!.size });
+      assert.equal(logEvicted(s), true);
+      assert.deepEqual([s.parts?.log?.archive?.key, s.parts?.log?.archive?.bytes], [`${prefix}/runs/live/1/events.jsonl.gz`, log.length]);
+      assert.ok(s.parts!.log!.archive!.size > 5 * 1024 * 1024, "sent as a multipart upload");
+      assert.deepEqual(await archive.objects.head(s.parts!.log!.archive!.key), { size: s.parts!.log!.archive!.size });
       assert.deepEqual(await readdir(join(root, "workflows", "live", "runs", "1")), ["run.json"]);
 
       assert.equal((await store.getRunEvents("live", "1")).length, 7);
       assert.ok((await readFile(file)).equals(log));
-      assert.equal((await store.getRunSummary("live", "1"))?.logEvicted, undefined);
+      assert.equal(logEvicted(await store.getRunSummary("live", "1")), false);
 
       // Asked again, the bucket still holds it: no second upload. Deleted
       // from the bucket (a lifecycle rule), it is uploaded again.
       const puts = written.size;
-      assert.deepEqual(await store.archiveRun("live", "1", old), { archive: s.archive });
-      await archive.objects.delete(s.archive!.key);
+      assert.deepEqual(await store.archiveRun("live", "1", old), { archive: s.parts?.log?.archive });
+      await archive.objects.delete(s.parts!.log!.archive!.key);
       const again = await store.archiveRun("live", "1", new Date().toISOString());
-      assert.deepEqual([again?.archive?.key, again?.archive?.bytes], [s.archive!.key, log.length]);
-      assert.deepEqual(await archive.objects.head(s.archive!.key), { size: again!.archive!.size });
+      assert.deepEqual([again?.archive?.key, again?.archive?.bytes], [s.parts!.log!.archive!.key, log.length]);
+      assert.deepEqual(await archive.objects.head(s.parts!.log!.archive!.key), { size: again!.archive!.size });
       assert.equal(written.size, puts, "the same key");
     } finally {
       await rm(root, { recursive: true, force: true });

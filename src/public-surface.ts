@@ -25,7 +25,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { RunEvent, RunSummary } from "./core.js";
+import { logEvicted, type RunEvent, type RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
 import type { PublicLaunchOutcome } from "./public-routes.js";
 import type { EdgeEnvelope, GraphReader, NodeEnvelope, SearchParams, SearchResult } from "./graph/search.js";
@@ -558,7 +558,7 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     const sets = runSets.get(workflow)!;
     const kept = sets.get(runId);
     if (kept) return kept;
-    if (scan && (await deps.store.getRunSummary(workflow, runId))?.logEvicted) return new Set();
+    if (scan && logEvicted(await deps.store.getRunSummary(workflow, runId))) return new Set();
     const refs = new Set<string>();
     for (const e of await deps.store.getRunEvents(workflow, runId)) {
       for (const n of e.nodes ?? []) if (!n.peer && typeof n.ref_id === "string") refs.add(n.ref_id);

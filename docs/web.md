@@ -15,12 +15,12 @@ index. A change in this area updates this file, not AGENTS.md.
 
 - **Run retention** (docs/engine.md): the workflow flyout's footer has a
   Retention control (`RetentionSetting` in `WorkflowFlyout.tsx`): none / window
-  (`1h`) / runs (`20`), plus "Fleet default: <value> (STRUT_RUN_RETENTION)"
-  when it sets none. Save publishes a new version with `retain:` changed
+  (`1h`) / runs (`20`), plus "Fleet default: <value> (STRUT_RETENTION)"
+  when it sets none (the variable the server read it from: `fleetRetentionEnv`). Save publishes a new version with `retain:` changed
   (`handleSetRetain` in app.tsx; disabled while the canvas has unpublished
-  edits). A run whose summary has `logEvicted` shows a "log evicted" badge in
+  edits). A run whose summary has `parts.log.evictedAt` shows a "log evicted" badge in
   the runs list (a run that died with its process, `crashed`, also gets a red "crashed" badge), and its view (no events) a note saying only the summary is kept.
-  With `archive` on the summary too (plans/run-archive.md) the badge is
+  With `parts.log.archive` too (plans/run-archive.md) the badge is
   "archived" and the run opens like any other: the events read restores the
   log on the server, the canvas says "Restoring this run's log from the
   archive…" until it answers (`runLogLoading` in app.tsx), and the runs

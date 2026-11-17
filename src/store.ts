@@ -1,6 +1,6 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { ArchivedLog, McpServer, ModelUsage, RunEvent, RunOrigin, RunSummary, StepCounts } from "./core.js";
+import { withPart, type ArchivedPart, type McpServer, type ModelUsage, type RunEvent, type RunOrigin, type RunSummary, type StepCounts } from "./core.js";
 import { addUsage, emptyUsage } from "./pricing.js";
 import { RunArchiveError, downloadLog, errorText, forgetLogs, logKey, uploadLog, type RunArchive } from "./run-archive.js";
 
@@ -313,10 +313,11 @@ export interface RunStore {
   repairLog?(workflow: string, runId: string): Promise<boolean>;
   /** Retention (`src/retention.ts`): drop a run's event log and everything
    *  else in its directory but the summary, which is rewritten with
-   *  `logEvicted: true` + `evictedAt`. A run with no summary (it died with
+   *  `parts.log.evictedAt`. A run with no summary (it died with
    *  its process) gets `fallback` as its summary; without one, nothing to do.
    *  A store with an archive drops only a log the bucket holds (the
-   *  summary's `archive` is at least as long as it). True when the log went. */
+   *  summary's `parts.log.archive` is at least as long as it). True when
+   *  the log went. */
   evictRun(workflow: string, runId: string, evictedAt: string, fallback?: RunSummary): Promise<boolean>;
   /** Give the store its archive (plans/run-archive.md): from then on
    *  `archiveRun` uploads, and a read of a log that is in the bucket and
@@ -325,13 +326,14 @@ export interface RunStore {
   useArchive?(archive: RunArchive): void;
   /** Upload the run's log unless the bucket holds this very log (asked
    *  again each call, so a recorded upload the bucket lost is made again),
-   *  and record it on the summary (`archive`). Resolves to what the summary
-   *  now carries: `{ archive }`, or `{}` for a run with no log on this disk.
+   *  and record it on the summary (`parts.log.archive`). Resolves to what
+   *  the summary now carries: `{ archive }`, or `{}` for a run with no log
+   *  on this disk.
    *  A run with no summary (it died with its process) is uploaded and
    *  nothing is recorded: the caller puts the answer on the summary it
    *  writes. Null when the run went on while its log was uploaded. Rejects
    *  when the bucket fails. */
-  archiveRun?(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedLog } | null>;
+  archiveRun?(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedPart } | null>;
   /** This store reading only what is on this disk: an archived log is not
    *  restored and reads as an evicted one. See `localRuns`. */
   local?(): RunStore;
@@ -562,6 +564,16 @@ export function stepTypeOfRunKey(key: string): string | null {
   return key.startsWith("step:") && key.length > 5 ? key.slice(5) : null;
 }
 
+/** A summary as an older strut wrote it, in today's shape: retention's
+ *  first build (#693) flagged an evicted log `logEvicted: true` +
+ *  `evictedAt`, which is `parts.log.evictedAt` now (plans/retention.md). */
+export function upgradeSummary(summary: RunSummary): RunSummary {
+  const old = summary as RunSummary & { logEvicted?: boolean; evictedAt?: string };
+  if (!("logEvicted" in old) && !("evictedAt" in old)) return summary;
+  const { logEvicted: gone, evictedAt, ...rest } = old;
+  return gone ? withPart(rest, "log", { ...rest.parts?.log, evictedAt: evictedAt ?? rest.finishedAt }) : rest;
+}
+
 // ── Filesystem implementation ──────────────────────────────────────────────
 
 /**
@@ -607,7 +619,7 @@ export class FileRunStore implements RunStore {
     const keys: string[] = [];
     if (this.archive) {
       for (const id of await this.listRuns(workflow)) {
-        const key = (await this.getRunSummary(workflow, id))?.archive?.key;
+        const key = (await this.getRunSummary(workflow, id))?.parts?.log?.archive?.key;
         if (key) keys.push(key);
       }
     }
@@ -650,11 +662,11 @@ export class FileRunStore implements RunStore {
     if ((await this.localLogSize(workflow, runId)) !== null) return;
     await this.oneAtATime(workflow, runId, async () => {
       const summary = await this.getRunSummary(workflow, runId);
-      if (!summary?.archive || (await this.localLogSize(workflow, runId)) !== null) return;
-      const { logEvicted: _gone, evictedAt: _at, ...rest } = summary;
-      await this.finalize(workflow, runId, { ...rest, restoredAt: new Date().toISOString() });
+      const held = summary?.parts?.log?.archive;
+      if (!summary || !held || (await this.localLogSize(workflow, runId)) !== null) return;
+      await this.finalize(workflow, runId, withPart(summary, "log", { archive: held, restoredAt: new Date().toISOString() }));
       try {
-        await this.download(archive, workflow, runId, summary.archive);
+        await this.download(archive, workflow, runId, held);
       } catch (err) {
         // The summary as it was, unless the run's records went meanwhile.
         if (await this.getRunSummary(workflow, runId)) await this.finalize(workflow, runId, summary);
@@ -664,7 +676,7 @@ export class FileRunStore implements RunStore {
   }
 
   /** The archived log back in its place. The caller holds the run's lock. */
-  private async download(archive: RunArchive, workflow: string, runId: string, log: ArchivedLog): Promise<void> {
+  private async download(archive: RunArchive, workflow: string, runId: string, log: ArchivedPart): Promise<void> {
     try {
       await downloadLog(archive.objects, log, this.logFile(workflow, runId));
     } catch (err) {
@@ -673,25 +685,26 @@ export class FileRunStore implements RunStore {
     console.log(`[archive] restored the log of ${workflow}/${runId} from ${archive.label}`);
   }
 
-  async archiveRun(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedLog } | null> {
+  async archiveRun(workflow: string, runId: string, at: string): Promise<{ archive?: ArchivedPart } | null> {
     const archive = this.archive;
     if (!archive) throw new Error("this run store has no archive");
     const before = await this.getRunSummary(workflow, runId);
+    const recorded = before?.parts?.log?.archive;
     const local = await this.localLogSize(workflow, runId);
     if (local === null) return {};
     // A log only grows, so the bucket's copy holds this one while it is at
     // least as long. A shorter local log (a torn tail cut off, a file a
     // crash left short) is never uploaded over it.
-    if (before?.archive && local <= before.archive.bytes) {
+    if (recorded && local <= recorded.bytes) {
       // Recorded on an earlier sweep, and the caller is about to evict on
       // this answer: ask the bucket again. An object a lifecycle rule
       // expired, or one written over, is uploaded again. A HEAD that fails
       // is "not held" too: without `s3:ListBucket` a missing key is a 403.
-      const held = await archive.objects.head(before.archive.key).catch(() => null);
-      if (held?.size === before.archive.size) return { archive: before.archive };
+      const held = await archive.objects.head(recorded.key).catch(() => null);
+      if (held?.size === recorded.size) return { archive: recorded };
     }
     const key = logKey(archive, workflow, runId);
-    const log: ArchivedLog = { key, ...(await uploadLog(archive.objects, key, this.logFile(workflow, runId))), at };
+    const log: ArchivedPart = { key, ...(await uploadLog(archive.objects, key, this.logFile(workflow, runId))), at };
     // A resume may have cleared the summary and gone on while the log was
     // uploaded: record only an upload of the log as it still is, on the
     // summary of the same finish.
@@ -699,7 +712,7 @@ export class FileRunStore implements RunStore {
       if ((await this.localLogSize(workflow, runId)) !== log.bytes) return null;
       const now = await this.getRunSummary(workflow, runId);
       if (!now !== !before || now?.finishedAt !== before?.finishedAt) return null;
-      if (now) await this.finalize(workflow, runId, { ...now, archive: log });
+      if (now) await this.finalize(workflow, runId, withPart(now, "log", { ...now.parts?.log, archive: log }));
       return { archive: log };
     });
   }
@@ -791,7 +804,7 @@ export class FileRunStore implements RunStore {
         join(this.runDir(workflow, runId), "run.json"),
         "utf-8",
       );
-      return JSON.parse(raw) as RunSummary;
+      return upgradeSummary(JSON.parse(raw) as RunSummary);
     } catch {
       return null;
     }
@@ -804,7 +817,7 @@ export class FileRunStore implements RunStore {
       // would go on from an empty log and its next upload would replace the
       // whole one in the bucket. So the log comes back first.
       if (this.archive && (await this.localLogSize(workflow, runId)) === null) {
-        const held = (await this.getRunSummary(workflow, runId))?.archive;
+        const held = (await this.getRunSummary(workflow, runId))?.parts?.log?.archive;
         if (held) await this.download(this.archive, workflow, runId, held);
       }
       await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
@@ -857,12 +870,13 @@ export class FileRunStore implements RunStore {
       if (this.archive) {
         // The log goes only when the bucket holds it: all of it, or more.
         const local = await this.localLogSize(workflow, runId);
-        if (local !== null && !(summary.archive && local <= summary.archive.bytes)) return false;
+        const held = summary.parts?.log?.archive;
+        if (local !== null && !(held && local <= held.bytes)) return false;
       }
       const dir = this.runDir(workflow, runId);
       await mkdir(dir, { recursive: true });
       for (const entry of await readdir(dir)) if (entry !== "run.json") await rm(join(dir, entry), { recursive: true, force: true });
-      await this.finalize(workflow, runId, { ...summary, logEvicted: true, evictedAt });
+      await this.finalize(workflow, runId, withPart(summary, "log", { ...summary.parts?.log, evictedAt }));
       return true;
     });
   }
@@ -967,7 +981,7 @@ export class FileRunStore implements RunStore {
   async logSize(workflow: string, runId: string): Promise<number> {
     const local = await this.localLogSize(workflow, runId);
     if (local !== null || !this.archive || !this.restores) return local ?? 0;
-    return (await this.getRunSummary(workflow, runId))?.archive?.bytes ?? 0;
+    return (await this.getRunSummary(workflow, runId))?.parts?.log?.archive?.bytes ?? 0;
   }
 
   async logWrittenAt(workflow: string, runId: string): Promise<number | null> {
@@ -1076,7 +1090,7 @@ export class MemoryRunStore implements RunStore {
     this.callbacks.delete(k);
     this.mcp.delete(k);
     this.jobCallbacks.delete(k);
-    this.summaries.set(k, { ...summary, logEvicted: true, evictedAt });
+    this.summaries.set(k, withPart(summary, "log", { ...summary.parts?.log, evictedAt }));
     return true;
   }
 
