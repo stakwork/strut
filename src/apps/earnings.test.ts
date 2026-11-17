@@ -228,7 +228,9 @@ describe("strut/earnings — seeded, an admin's, and its page's calls", () => {
     assert.equal(asked.error, undefined, asked.error);
     assert.equal(asked.result.state, "pending");
     assert.match(asked.result.qr, /^data:image\/svg\+xml;base64,/);
-    assert.match(Buffer.from(asked.result.qr.split(",")[1], "base64").toString(), /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    const svg = Buffer.from(asked.result.qr.split(",")[1], "base64").toString();
+    assert.match(svg, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    assert.equal(svg.match(/xmlns=/g)?.length, 1, "one xmlns: a repeated attribute is an XML error, and the <img> shows broken");
     wallet.settle(asked.result.paymentHash);
     const read = await call("earnings/deposit-read", { paymentHash: asked.result.paymentHash });
     assert.equal(read.result.state, "settled");
