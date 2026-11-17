@@ -416,7 +416,7 @@ export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; 
 
 /** An invite's status in words. */
 export const INVITE_WORDS: Record<InviteStatus, string> = {
-  sending: "Sending: the wallet is paying the mixer for it",
+  sending: "Getting it ready: the wallet is paying for it",
   ready: "Ready to send",
   failed: "Failed: the wallet could not pay for it",
   used: "Used: a worker signed up with it",
@@ -428,11 +428,21 @@ export function inviteOpen(i: Pick<Invite, "status">): boolean {
   return i.status === "sending" || i.status === "ready";
 }
 
-/** Why this server cannot invite, in words. */
+/** Why this server cannot invite, in words a person who is not technical
+ *  follows; the cause for whoever runs the server in brackets. */
 export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
   return why === "no_pay_credential"
-    ? "Inviting needs this server's wallet to pay: a Sphinx daemon with its pay token (the Earnings app's wallet settings)."
-    : "This server's wallet cannot make Sphinx invites: a Sphinx daemon whose version has the invite routes can.";
+    ? "To invite people, this server's wallet has to be set up first, in Earnings. (No Sphinx daemon pay token.)"
+    : "This server's wallet cannot make invites yet: it needs an update. (Its Sphinx daemon has no invite routes.)";
+}
+
+/** The tasks a worker app's workers do, as the Share area says them:
+ *  `the "coffee shop visit" task`, `the "a" and "b" tasks`; "" for none. */
+export function tasksWords(types: readonly string[] | undefined): string {
+  const names = (types ?? []).map((t) => `"${t.replace(/[-_]+/g, " ")}"`);
+  if (!names.length) return "";
+  if (names.length === 1) return `the ${names[0]} task`;
+  return `the ${names.slice(0, -1).join(", ")} and ${names.at(-1)} tasks`;
 }
 
 /** The words a worker is sent with the link. */
