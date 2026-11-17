@@ -233,11 +233,13 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   (`lspFeeFloorMsat`), or fails `not enough balance`. `POST /next-payout
   { "state": "failed" | "pending" }` makes the next one fail, or stay pending
   until `POST /settle/:id` (a keysend's id, or a pay's payment hash).
-- **Support's DMs** (plans/support-chat.md §7; the MESSAGE token alone,
-  `MESSAGE_TOKEN`, default `demo-message`, set as
-  `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET /dm/:id/file`
-  (`413 too_large` over 25 MB) and `POST /dm`, idempotent on `id` (a failed
-  one sent again). Play a worker with `POST /worker-dm { pubkey?, alias?,
+- **Support's DMs** (plans/support-chat.md §7, as stakwork/sphinx#435 built
+  them; the MESSAGE token alone, `MESSAGE_TOKEN`, default `demo-message`,
+  set as `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET
+  /dm/:id/file` (the sender's name in `content-disposition`; `413
+  too_large` over 25 MiB, `410 deleted`) and `POST /dm` (`400
+  not_a_contact`, `400 too_long`), answering the send's item; the same `id`
+  never sends twice, a failed one is tried again. Play a worker with `POST /worker-dm { pubkey?, alias?,
   text?, replyTo?, sats?, file?: { name, type, base64 } | { name, type,
   size } }` (a new pubkey is a contact first), `POST /worker-contact
   { pubkey?, alias? }` (a key exchange alone: what fires the welcome),

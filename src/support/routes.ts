@@ -26,9 +26,11 @@
  *   `{ retry: <key> }` sends a failed one again under the same id
  * - `POST /support/:worker/seen` → `{ conversation }`: marked seen up to
  *   its newest message, for every admin
- * - `GET /support/:worker/files/:id` → `{ id, name?, mediaType, bytes,
- *   base64 }`: a worker's file, by its message's Sphinx id; `404 no_file`
- *   while it is being fetched, or when it was too large or deleted
+ * - `GET /support/:worker/files/:id[?offset=]` → `{ id, name?, mediaType,
+ *   bytes, offset, base64, next? }`: a worker's file, by its message's
+ *   Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB);
+ *   `next` is the next piece's offset. `404 no_file` while it is being
+ *   fetched, or when it was too large or deleted
  */
 import type { Context, Hono } from "hono";
 import { SupportError, type Support } from "./support.js";
@@ -95,5 +97,10 @@ export function supportRoutes(app: Hono<any>, deps: SupportRoutesDeps): void {
     }),
   );
   app.post("/support/:worker/seen", (c) => answer(c, async () => support.seen(worker(c), await deps.actorOf(c))));
-  app.get("/support/:worker/files/:id", (c) => answer(c, () => support.file(worker(c), c.req.param("id") ?? "")));
+  app.get("/support/:worker/files/:id", (c) =>
+    answer(c, () => {
+      const offset = c.req.query("offset");
+      return support.file(worker(c), c.req.param("id") ?? "", offset === undefined || offset === "" ? 0 : Number(offset));
+    }),
+  );
 }

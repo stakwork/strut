@@ -2571,7 +2571,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/support-thread { worker, before?, limit? }` | `GET /support/:worker` | `{ conversation, messages, more }` |
 | `staff/support-send { worker, text?, replyTo?, retry? }` | `POST /support/:worker` | `{ message }` |
 | `staff/support-seen { worker }` | `POST /support/:worker/seen` | `{ conversation }` |
-| `staff/support-file { worker, id }` | `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, base64 }` |
+| `staff/support-file { worker, id, offset? }` | `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, offset, base64, next? }` — one 3 MB piece |
 | `staff/support-settings` | `GET /support/settings` | `{ settings }` |
 | `staff/support-save-settings { welcome }` | `PUT /support/settings` | `{ settings }` |
 
@@ -5843,7 +5843,9 @@ as to any contact; staff answer from the Support tab of `strut/staff`
 services bag. Its FOLLOWER reads `GET /dms?after=<seq>` every 3 s
 (`createStrut({ support: { pollMs } })`) and keeps the conversations in the
 task store's file (`<dataDir>/tasks/tasks.db`, `src/support/store.ts`), the
-cursor with them; a worker's file is fetched when it arrives, up to 25 MB
+cursor with them, one per daemon URL (another daemon is read from its
+start; a record read again changes nothing); a record it cannot keep is
+skipped and said, never the page; a worker's file is fetched when it arrives, up to 25 MB
 (a larger one is a line saying so), into `<dataDir>/support/files/`. What
 was in the daemon's log before Support first followed it shows too,
 marked `earlier`.
@@ -5863,7 +5865,7 @@ its first byte), one encoded segment.
 | `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
 | `POST /support/:worker { text, replyTo? }` | `{ message }`: kept, then sent from "Support"; `{ retry: <key> }` sends a failed one again under the same id |
 | `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
-| `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, base64 }`: a worker's file by its message's Sphinx id; `404 no_file` while fetched, too large, or deleted |
+| `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
 
 ```json
 { "conversations": [{ "worker": "secp:a1b2…", "pubkey": "02a1b2…", "alias": "Ana", "unread": 2,
@@ -5881,7 +5883,9 @@ file; strut keeps its row. `file` is `{ name?, mediaType?, size?, state,
 error? }`, `state` `fetching`, `kept`, `too_large` or `failed`. A send of
 Support's has `status` `sending`, `sent` or `failed` (with `error`). Who
 sent a reply is kept and never answered: every reply is from Support.
-`welcome: true` marks the automatic welcome.
+`welcome: true` marks the automatic welcome. The page's thread polls the
+newest 200 and keeps what it read, with **Show earlier messages** for the
+pages before (`before`).
 
 **The welcome** (`plans/support-chat.md` §5). `settings` is `{ welcome,
 since?, savedAt?, savedBy? }`. Empty, none is sent. Once saved, it goes
@@ -5892,7 +5896,11 @@ starts again from then. `400` for a body with anything but `welcome`, or a
 welcome over 2,000 characters.
 
 A send is kept before it goes: `POST /dm { id, to, text, reply? }` to the
-daemon, `id` 64 hex strut made. `text` is 1 to 10,000 characters. A failed
+daemon, `id` 64 hex strut made. One a past process left `sending` with no
+word from the daemon is `failed` when Support next opens its store, so
+Retry shows. `text` is at most 32 KiB as the message's JSON with its quoted
+id, the daemon's own limit (`400 bad_request: too long` before anything is
+kept). A failed
 send keeps its `error`; Retry sends the same `id`, once however many ask.
 Support writes only to someone who has it as a contact (the daemon refuses
 anyone else): a worker who joined by an invite.

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ArrowUp, Check, Clock, Download, Loader2, Reply, Search, Settings, X } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +21,8 @@ import { Back, ErrorLine, Field, Loading, Note } from "./bits";
 
 /** How often the list and the open thread are read again (ruling 16). */
 const POLL_MS = 3_000;
+/** A worker with no conversation: nothing to read again until they write. */
+const noConversation = (err: unknown) => /no_conversation/.test(err instanceof Error ? err.message : String(err ?? ""));
 /** Narrower than this, the list and the thread take turns. */
 const NARROW = 768;
 
@@ -88,9 +91,15 @@ export function Support(props: Props) {
 function ConversationList(props: { active?: string; workerOf: Map<string, Worker>; onOpen: (worker: string) => void; onSettings: () => void }) {
   const client = useStrutClient();
   const [q, setQ] = useState("");
+  // Searched once the typing pauses, not per key.
+  const [asked, setAsked] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setAsked(q.trim()), 300);
+    return () => clearTimeout(t);
+  }, [q]);
   const list = useQuery({
-    queryKey: ["staff", "support", "list", q.trim()],
-    queryFn: () => client.run<{ conversations: SupportConversation[] }>("staff/support-list", q.trim() ? { q: q.trim() } : {}),
+    queryKey: ["staff", "support", "list", asked],
+    queryFn: () => client.run<{ conversations: SupportConversation[] }>("staff/support-list", asked ? { q: asked } : {}),
     refetchInterval: POLL_MS,
   });
   const rows = list.data?.conversations ?? [];
@@ -118,7 +127,7 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
         {list.error ? <ErrorLine error={list.error} className="m-2" /> : null}
         {!list.data && !list.error && <div className="p-3"><Loading /></div>}
         {list.data && rows.length === 0 && (
-          <p className="p-4 text-sm text-muted-foreground">{q.trim() ? "No conversation matches." : "No worker has written to Support yet."}</p>
+          <p className="p-4 text-sm text-muted-foreground">{asked ? "No conversation matches." : "No worker has written to Support yet."}</p>
         )}
         {rows.map((c) => {
           const worker = props.workerOf.get(c.worker);
@@ -153,9 +162,9 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
 
 function Initials(props: { name: string; className?: string }) {
   return (
-    <span aria-hidden className={cn("grid size-9 shrink-0 place-items-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground", props.className)}>
-      {initialsOf(props.name)}
-    </span>
+    <Avatar aria-hidden className={cn("size-9 shrink-0", props.className)}>
+      <AvatarFallback className="text-xs font-semibold">{initialsOf(props.name)}</AvatarFallback>
+    </Avatar>
   );
 }
 
@@ -167,14 +176,44 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   const thread = useQuery({
     queryKey: ["staff", "support", "thread", props.worker],
     queryFn: () => client.run<SupportThread>("staff/support-thread", { worker: props.worker }),
-    refetchInterval: POLL_MS,
+    refetchInterval: (q) => (noConversation(q.state.error) ? false : POLL_MS),
+    retry: (n, err) => !noConversation(err) && n < 2,
   });
   const [replyTo, setReplyTo] = useState<SupportMessage | null>(null);
   const [sendError, setSendError] = useState<unknown>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const data = thread.data;
-  const messages = data?.messages ?? [];
+  // Every message read, by key: each read of the newest page laid over it,
+  // and the pages before it as Show earlier asks for them.
+  const [read, setRead] = useState<Map<number, SupportMessage>>(() => new Map());
+  const [olderMore, setOlderMore] = useState<boolean | undefined>(undefined);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const keep = (ms: SupportMessage[]) =>
+    setRead((prev) => {
+      const next = new Map(prev);
+      for (const m of ms) next.set(m.key, m);
+      return next;
+    });
+  useEffect(() => {
+    if (data) keep(data.messages);
+  }, [data]);
+  const messages = useMemo(() => [...read.values()].sort((a, b) => a.key - b.key), [read]);
+  const more = olderMore ?? data?.more ?? false;
+  const showEarlier = async () => {
+    if (!messages[0]) return;
+    setLoadingOlder(true);
+    try {
+      const older = await client.run<SupportThread>("staff/support-thread", { worker: props.worker, before: messages[0].key });
+      pinned.current = false;
+      keep(older.messages);
+      setOlderMore(older.more);
+    } catch (err) {
+      setSendError(err);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
   const byId = useMemo(() => new Map(messages.filter((m) => m.id).map((m) => [m.id!, m])), [messages]);
   const earlier = earlierEnd(messages);
   const name = data ? supportName(data.conversation, props.workerRecord) : "";
@@ -185,11 +224,20 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   useEffect(() => {
     if (unread > 0 && !document.hidden) void client.run("staff/support-seen", { worker: props.worker }).then(refresh, () => {});
   }, [unread, props.worker]);
-  // Follow the newest unless the person scrolled up.
+  // Follow the newest unless the person scrolled up — as messages come and
+  // as photos load, which grow the thread after it was drawn.
+  const content = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scroller.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [messages.length, messages[messages.length - 1]?.status]);
+    if (!el || !content.current) return;
+    const follow = () => {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    };
+    follow();
+    const seen = new ResizeObserver(follow);
+    seen.observe(content.current);
+    return () => seen.disconnect();
+  }, [!!data]);
 
   const send = async (body: { text: string; replyTo?: string } | { retry: number }) => {
     setSendError(null);
@@ -223,8 +271,8 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
     </div>
   );
 
-  if (thread.error) {
-    const none = /no_conversation/.test(thread.error instanceof Error ? thread.error.message : String(thread.error));
+  if (thread.error && !data) {
+    const none = noConversation(thread.error);
     return (
       <section className="flex min-w-0 flex-1 flex-col">
         {props.narrow && <div className="p-2"><Back onClick={props.onBack}>Conversations</Back></div>}
@@ -254,13 +302,20 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
         }}
       >
         {!data && <Loading />}
-        <div className="flex flex-col gap-1.5">
+        {more && (
+          <div className="mb-2 flex justify-center">
+            <Button size="xs" variant="outline" disabled={loadingOlder} onClick={() => void showEarlier()}>
+              {loadingOlder && <Loader2 className="animate-spin" />} Show earlier messages
+            </Button>
+          </div>
+        )}
+        <div ref={content} className="flex flex-col gap-1.5">
           {messages.map((m, i) => (
             <div key={m.key} className="contents">
               {i === 0 || new Date(messages[i - 1]!.at).toDateString() !== new Date(m.at).toDateString() ? (
                 <div className="my-2 text-center text-[11px] text-muted-foreground">{new Date(m.at).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</div>
               ) : null}
-              <Line m={m} worker={props.worker} quoted={m.replyTo ? byId.get(m.replyTo) : undefined} replyTo={m.replyTo} go={props.go} onReply={() => setReplyTo(m)} onRetry={() => void send({ retry: m.key })} />
+              <Line m={m} worker={props.worker} quoted={m.replyTo ? byId.get(m.replyTo) : undefined} go={props.go} onReply={() => setReplyTo(m)} onRetry={() => void send({ retry: m.key })} />
               {i === earlier && (
                 <div className="my-2 flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span className="h-px flex-1 bg-border" /> Above: written before Support was set up <span className="h-px flex-1 bg-border" />
@@ -276,7 +331,7 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
 }
 
 /** One message: a bubble, or a line (a contact, sats, a deletion). */
-function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessage; replyTo?: string; go: (p: Place) => void; onReply: () => void; onRetry: () => void }) {
+function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessage; go: (p: Place) => void; onReply: () => void; onRetry: () => void }) {
   const { m } = props;
   if (m.kind === "contact" || m.kind === "payment") {
     return <div className="my-1 text-center text-xs text-muted-foreground">{m.kind === "contact" ? "Added Support as a contact" : paymentLine(m)} · {fmtWhen(m.at)}</div>;
@@ -285,7 +340,7 @@ function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessag
   return (
     <div className={cn("group flex items-end gap-1", mine ? "flex-row-reverse" : "flex-row")}>
       <div className={cn("flex max-w-[78%] min-w-0 flex-col gap-1 rounded-2xl px-3 py-2 text-sm", mine ? "rounded-br-sm bg-primary text-primary-foreground" : "rounded-bl-sm bg-muted", m.deleted && "bg-transparent text-muted-foreground italic ring-1 ring-border")}>
-        {props.replyTo && !m.deleted && (
+        {m.replyTo && !m.deleted && (
           <div className={cn("truncate border-l-2 pl-2 text-xs opacity-80", mine ? "border-primary-foreground/60" : "border-foreground/30")}>
             {props.quoted ? `${props.quoted.fromMe ? "Support" : "They"}: ${messageLine(props.quoted).replace(/^Support: /, "")}` : "An earlier message"}
           </div>
@@ -347,9 +402,19 @@ function FileView(props: { worker: string; m: SupportMessage }) {
   const kind = f.mediaType?.startsWith("image/") ? "image" : f.mediaType?.startsWith("audio/") ? "audio" : f.mediaType?.startsWith("video/") ? "video" : "other";
   const [want, setWant] = useState(kind !== "other");
   const [full, setFull] = useState(false);
+  // Read once, in pieces (a step's result is capped at 5 MB), and kept: its
+  // key is outside ["staff", …], so the page's reads again never read it again.
   const q = useQuery({
-    queryKey: ["staff", "support", "file", props.worker, props.m.id],
-    queryFn: () => client.run<SupportFile>("staff/support-file", { worker: props.worker, id: props.m.id! }),
+    queryKey: ["support-file", props.worker, props.m.id],
+    queryFn: async (): Promise<SupportFile> => {
+      let piece = await client.run<SupportFile>("staff/support-file", { worker: props.worker, id: props.m.id! });
+      let base64 = piece.base64;
+      while (piece.next !== undefined) {
+        piece = await client.run<SupportFile>("staff/support-file", { worker: props.worker, id: props.m.id!, offset: piece.next });
+        base64 += piece.base64;
+      }
+      return { ...piece, base64 };
+    },
     enabled: want && f.state === "kept" && !!props.m.id,
     staleTime: Infinity,
   });

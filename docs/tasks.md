@@ -253,22 +253,38 @@ index. A change in this area updates this file, not AGENTS.md.
   `support_conversations` keyed by the worker's pubkey (the actor is
   `secp:` + the pubkey without its first byte), `support_messages` keyed by
   the Sphinx id and, for strut's own sends, the `client_id` strut gave
-  `POST /dm` (a record that changes — a send's status, a deletion — comes
-  again under a new seq and updates its row), `support_state` (the cursor,
-  when Support first followed — the backlog before it is `earlier` — and
-  the welcome). Each worker's file is fetched when it arrives (a media
-  token expires), up to 25 MB (`413 too_large` from the daemon, or more
-  bytes than that, is a line), into `<dataDir>/support/files/<sha256 of the
-  id>`; another failure is tried on the next 4 reads. A reply is KEPT
+  `POST /dm` — matched by it first, since a send that failed before
+  anything went out has no Sphinx id (a record that changes — a send's
+  status, a deletion — comes again under a new seq and updates its row; a record that cannot be kept
+  is skipped inside its own savepoint, never the page, since one bad record
+  would hold the cursor forever), `support_state` (the cursor, one per
+  daemon URL, so another daemon is read from its start; when Support first
+  followed — the backlog before it is `earlier` — and the welcome). The
+  tables are only added, so the file's schema version stays 2. Each
+  worker's file is fetched when it arrives (a media token expires), beside
+  the reads of the feed and never holding them (the daemon may take 180 s),
+  up to 25 MiB (`413 too_large` from the daemon, or more bytes than that,
+  is a line), into `<dataDir>/support/files/<sha256 of the id>`, under the
+  sender's name from `content-disposition` (the feed's is made from the
+  type); `not_found`, `deleted`, `host_not_allowed` and `unreadable` give
+  up at once, anything else is tried on the next 4 reads. A reply over the
+  daemon's 32 KiB (as the message's JSON) is refused before it is kept. A
+  reply is KEPT
   before it is sent (`sending`), then `sent` or `failed` from the daemon's
   answer unless the feed already said; Retry (`{ retry: key }`) claims a
-  failed row once and resends the same id. Who replied (`by`) is kept and
+  failed row once and resends the same id. When the store opens (once a
+  process), a send a past process left `sending` with no word from the
+  daemon is failed (`abandonSends`), so Retry shows. A file goes to a page
+  in 3 MB pieces (`offset`, `next`): a step's result is capped at 5 MB. Who replied (`by`) is kept and
   never answered: every reply is from Support. "Seen" is per conversation,
   shared by the staff, up to a message key. The WELCOME (§5): the text in
   `support_state`; a `contact` record (a new contact's key exchange) newer
-  than the save that turned it on gets it, once per worker
-  (`claimWelcome`, `by: "welcome"`); saving again keeps that time, clearing
-  turns it off. The search joins the `workers` table, so a worker's note
+  than the save that turned it on — one with no time of its own never is —
+  marks its conversation's welcome DUE in the page's own transaction, and
+  each tick claims and keeps each due welcome as Support's message in one
+  transaction (`startWelcome`, `by: "welcome"`), then sends it: once per
+  worker, and a restart in between loses nothing. Saving again keeps that
+  time; clearing turns it off, and a welcome due then goes no more. The search joins the `workers` table, so a worker's note
   is searched too. Tested by src/support/support.test.ts (the store over a
   file in memory; the routes and the `staff/support-*` steps against the
   stand-in daemon, `scripts/fake-sphinx-daemon.ts`, which answers the DM
@@ -303,7 +319,7 @@ the TASK STORE (plans/human-steps.md §4, item 2a; the `human` step that parks o
 
 ### `src/support/`
 
-SUPPORT (plans/support-chat.md item 1; "Support" above): the staff's chat with workers over the treasury daemon's DMs. store.ts: `supportSchema` (three tables in the task store's file, made by `openTaskDb` with the task store's own), `SupportStore` (one transaction per write: `ingest` a page of the feed with the cursor — each record's conversation made, its alias kept, its message added or changed by id or `clientId`, the new `contact` records returned — `addOwn` a send kept before it goes, `answered`, `claimRetry`, `claimWelcome`, `seen`, the welcome's `saveWelcome` (its `since` set when it turns on, kept by a save again, dropped by clearing), the files' `fetching` / `fileKept` / `fileFailed`, the reads `conversations` (unread first; `q` over alias, actor, the worker's note and text), `conversation`, `messages` (pages by key), `fileOf`, `unread`), `messageOf` (a deleted message without its text or file; `by` never out), `actorOfPubkey`. Imported at boot, so it imports `db.ts` for types alone (that loads `node:sqlite`). support.ts: `createSupport` — the daemon (`deps.daemon()`: the wallet's URL and message token, or null: `not_available`), the FOLLOWER (`tick`: pages of `GET /dms` until one is short, 20 at most a tick; the welcome for each new contact; up to 5 files fetched, each capped at 25 MB while it streams, written atomically), the actions the routes call, `SupportError` (its code and status), `dmOf` (a feed record as strut keeps it, lenient on the time). routes.ts: `supportRoutes`, full scope only. support.test.ts.
+SUPPORT (plans/support-chat.md item 1; "Support" above): the staff's chat with workers over the treasury daemon's DMs. store.ts: `supportSchema` (three tables in the task store's file, made by `openTaskDb` with the task store's own), `SupportStore` (one transaction per write: `ingest` a page of the feed with the cursor — each record in a savepoint of its own (one that throws is skipped and counted), its conversation made, its alias kept, its message added or changed by id or `clientId`, a new contact's welcome marked due — `dueWelcomes` / `startWelcome`, `addOwn` a send kept before it goes, `answered`, `claimRetry`, `abandonSends`, `seen`, the welcome's `saveWelcome` (its `since` set when it turns on, kept by a save again, dropped by clearing), the files' `fetching` / `fileKept` / `fileFailed`, the reads `conversations` (unread first; `q` over alias, actor, the worker's note and text), `conversation`, `messages` (pages by key), `fileOf`, `unread`), `messageOf` (a deleted message without its text or file; `by` never out), `actorOfPubkey`. Imported at boot, so it imports `db.ts` for types alone (that loads `node:sqlite`). support.ts: `createSupport` — the daemon (`deps.daemon()`: the wallet's URL and message token, or null: `not_available`), the FOLLOWER (`tick`: pages of `GET /dms` until one is short, 20 at most a tick, the cursor per daemon URL; the welcomes due; up to 5 files fetched, each capped at 25 MB while it streams, written atomically), the due welcomes, the actions the routes call — a file read in 3 MB pieces — `SupportError` (its code and status), `dmOf` (a feed record as strut keeps it, lenient on the time, `untimed` when it names none). `readCapped` is src/packages/archive.ts's. routes.ts: `supportRoutes`, full scope only. support.test.ts.
 
 ### `src/steps/lib/task/`
 

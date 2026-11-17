@@ -28,17 +28,17 @@ import supportFile from "../steps/lib/staff/support-file.js";
 import supportSettings from "../steps/lib/staff/support-settings.js";
 import supportSaveSettings from "../steps/lib/staff/support-save-settings.js";
 import { actorOfPubkey, SupportStore, type Dm } from "./store.js";
-import { dmOf } from "./support.js";
+import { dmOf, fileNameIn } from "./support.js";
 
 const PK = (n: number) => `02${n.toString(16).padStart(64, "0")}`;
 
 describe("the feed's records (§7)", () => {
-  it("reads a record; takes the time as seconds, ms or ISO; skips an unknown kind and a pubkey that is not one", () => {
-    const base = { seq: 1, id: "m1", fromMe: false, peer: { pubkey: PK(1).toUpperCase(), alias: " Ana " }, kind: "message", text: "hi" };
+  it("reads a record as stakwork/sphinx#435 writes it; takes the time as seconds, ms or ISO; skips an unknown kind and a pubkey that is not one", () => {
+    const base = { seq: 1, id: "m1", fromMe: false, peer: { pubkey: PK(1).toUpperCase(), address: null, alias: " Ana " }, kind: "message", text: "hi", replyTo: null, sats: 0, deleted: false, mediaType: null, fileName: null };
     assert.deepEqual(dmOf({ ...base, time: 1_700_000_000 }, 0), { seq: 1, id: "m1", at: 1_700_000_000_000, fromMe: false, pubkey: PK(1), alias: "Ana", kind: "message", text: "hi" });
     assert.equal(dmOf({ ...base, time: 1_700_000_000_123 }, 0)?.at, 1_700_000_000_123);
     assert.equal(dmOf({ ...base, time: "2026-11-16T10:00:00.250Z" }, 0)?.at, Date.parse("2026-11-16T10:00:00.250Z"));
-    assert.equal(dmOf({ ...base, time: undefined }, 42)?.at, 42);
+    assert.deepEqual([dmOf({ ...base, time: undefined }, 42)?.at, dmOf({ ...base, time: undefined }, 42)?.untimed], [42, true], "no time of its own: never newer than the welcome");
     assert.equal(dmOf({ ...base, kind: "boost" }, 0), null);
     assert.equal(dmOf({ ...base, peer: { pubkey: "abc" } }, 0), null);
     assert.equal(dmOf({ ...base, seq: "1" }, 0), null);
@@ -46,6 +46,22 @@ describe("the feed's records (§7)", () => {
     assert.equal(dmOf({ ...base, fromMe: true, status: "pending", clientId: "c1" }, 0)?.status, "sending");
     assert.equal(dmOf({ ...base, fromMe: true, status: "confirmed" }, 0)?.status, "sent");
     assert.equal(dmOf({ ...base, status: "failed" }, 0)?.status, undefined);
+    // A send that failed before anything went out has no Sphinx id: kept by its clientId.
+    assert.deepEqual(
+      dmOf({ ...base, id: null, clientId: "c1", fromMe: true, status: "failed", error: "no route" }, 0),
+      { seq: 1, clientId: "c1", at: 0, untimed: true, fromMe: true, pubkey: PK(1), alias: "Ana", kind: "message", text: "hi", status: "failed", error: "no route" },
+    );
+    assert.equal(dmOf({ ...base, id: null }, 0), null, "neither an id nor a clientId");
+    // Every record names its sats: a payment's alone are kept.
+    assert.equal(dmOf({ ...base, kind: "payment", sats: 100 }, 0)?.sats, 100);
+    assert.equal(dmOf({ ...base, sats: 3 }, 0)?.sats, undefined);
+  });
+
+  it("reads the sender's file name from content-disposition (RFC 6266)", () => {
+    assert.equal(fileNameIn(`attachment; filename="Scan _1.pdf"; filename*=UTF-8''Scan%20%C3%A91.pdf`), "Scan é1.pdf");
+    assert.equal(fileNameIn(`attachment; filename="receipt.png"`), "receipt.png");
+    assert.equal(fileNameIn(`attachment; filename*=UTF-8''%E0%A4%A; filename="plain.txt"`), "plain.txt");
+    assert.equal(fileNameIn(null), undefined);
   });
 });
 
@@ -56,12 +72,15 @@ describe("the store (§4)", () => {
   });
   after(() => s.close());
   const dm = (o: Partial<Dm> & { seq: number; id: string }): Dm => ({ at: 1000, fromMe: false, pubkey: PK(1), kind: "message", ...o });
+  const URL = "http://treasury";
 
   it("keeps a conversation per pubkey under its actor, the alias it last had, the backlog marked earlier, the cursor", () => {
-    assert.equal(s.cursor(), 0);
-    const contacts = s.ingest([dm({ seq: 1, id: "c", kind: "contact", alias: "Ana", at: 500 }), dm({ seq: 2, id: "a", text: "old", at: 900 }), dm({ seq: 3, id: "b", text: "new", at: 1500, alias: "Ana B" })], 3, 1000);
-    assert.deepEqual(contacts, [{ pubkey: PK(1), at: 500 }]);
-    assert.equal(s.cursor(), 3);
+    assert.equal(s.cursor(URL), 0);
+    const page = s.ingest([dm({ seq: 1, id: "c", kind: "contact", alias: "Ana", at: 500 }), dm({ seq: 2, id: "a", text: "old", at: 900 }), dm({ seq: 3, id: "b", text: "new", at: 1500, alias: "Ana B" })], URL, 3, 1000);
+    assert.deepEqual(page, { skipped: 0 });
+    assert.equal(s.cursor(URL), 3);
+    assert.equal(s.cursor("http://another-daemon"), 0, "another daemon's feed is read from its start");
+    assert.deepEqual(s.dueWelcomes(), [], "no welcome saved: none due");
     const c = s.conversation(actorOfPubkey(PK(1)))!;
     assert.deepEqual([c.worker, c.alias, c.unread, c.last?.text], [`secp:${PK(1).slice(2)}`, "Ana B", 2, "new"]);
     const { messages } = s.messages(PK(1), { limit: 10 });
@@ -69,14 +88,14 @@ describe("the store (§4)", () => {
   });
 
   it("a record again under a new seq changes the one it has: deleted for good (its text hidden), a send's status", () => {
-    s.ingest([dm({ seq: 4, id: "a", deleted: true })], 4, 1000);
+    s.ingest([dm({ seq: 4, id: "a", deleted: true })], URL, 4, 1000);
     const a = s.messages(PK(1), { limit: 10 }).messages.find((m) => m.id === "a")!;
     assert.deepEqual([a.deleted, a.text], [true, undefined]);
     // An own send kept first, then the feed names it by its clientId.
     const own = s.addOwn({ pubkey: PK(1), clientId: "c".repeat(64), text: "hello", by: "admin-1", at: 2000 });
     assert.equal(own.status, "sending");
-    s.ingest([dm({ seq: 5, id: "sphinx-1", clientId: "c".repeat(64), fromMe: true, text: "hello", status: "sending" })], 5, 1000);
-    s.ingest([dm({ seq: 6, id: "sphinx-1", clientId: "c".repeat(64), fromMe: true, text: "hello", status: "sent" })], 6, 1000);
+    s.ingest([dm({ seq: 5, id: "sphinx-1", clientId: "c".repeat(64), fromMe: true, text: "hello", status: "sending" })], URL, 5, 1000);
+    s.ingest([dm({ seq: 6, id: "sphinx-1", clientId: "c".repeat(64), fromMe: true, text: "hello", status: "sent" })], URL, 6, 1000);
     const m = s.message(own.key)!;
     assert.deepEqual([m.id, m.status, m.text, (m as Record<string, unknown>)["by"]], ["sphinx-1", "sent", "hello", undefined]);
     // A POST /dm answer after the feed said sent changes nothing.
@@ -85,7 +104,25 @@ describe("the store (§4)", () => {
     assert.equal(s.messages(PK(1), { limit: 10 }).messages.length, 4);
   });
 
-  it("seen is shared; a retry is claimed once; the welcome is claimed once", () => {
+  it("a record that cannot be kept is skipped, never the page: the cursor moves on", () => {
+    const page = s.ingest([dm({ seq: 7, id: "bad", kind: "boost" as never }), dm({ seq: 8, id: "fine", text: "after it" })], URL, 8, 1000);
+    assert.equal(page.skipped, 1);
+    assert.match(page.error ?? "", /^bad: .*CHECK/);
+    assert.equal(s.cursor(URL), 8);
+    assert.ok(s.messages(PK(1), { limit: 10 }).messages.some((m) => m.id === "fine"));
+    assert.ok(!s.messages(PK(1), { limit: 10 }).messages.some((m) => m.id === "bad"));
+    // A key and its negation share an actor: the second keeps no conversation of its own, and nothing fails.
+    assert.deepEqual(s.ingest([dm({ seq: 9, id: "neg", pubkey: `03${PK(1).slice(2)}`, text: "x" })], URL, 9, 1000), { skipped: 0 });
+  });
+
+  it("a send a past process left sending, with no word from the daemon, is failed when the store opens, so Retry shows", () => {
+    const left = s.addOwn({ pubkey: PK(1), clientId: "e".repeat(64), text: "lost?", at: 1500 });
+    s.abandonSends();
+    assert.deepEqual([s.message(left.key)!.status, /Retry/.test(s.message(left.key)!.error ?? "")], ["failed", true]);
+    assert.equal(s.message(s.messages(PK(1), { limit: 50 }).messages.find((m) => m.id === "sphinx-1")!.key)!.status, "sent", "one the daemon confirmed stays");
+  });
+
+  it("seen is shared; a retry is claimed once", () => {
     s.seen(PK(1), "admin-1", 3000);
     const c = s.conversation(actorOfPubkey(PK(1)))!;
     assert.deepEqual([c.unread, c.seenAt], [0, 3000]);
@@ -96,8 +133,6 @@ describe("the store (§4)", () => {
     assert.equal(s.claimRetry(f.key), true);
     assert.equal(s.claimRetry(f.key), false);
     assert.equal(s.own(PK(2), f.key), undefined, "not in another worker's thread");
-    assert.equal(s.claimWelcome(PK(1), 5000), true);
-    assert.equal(s.claimWelcome(PK(1), 5001), false);
   });
 
   it("the welcome: on from its first save, kept by a save again, dropped by clearing it", () => {
@@ -108,15 +143,35 @@ describe("the store (§4)", () => {
     assert.equal(s.saveWelcome("Back", undefined, 400).since, 400);
   });
 
+  it("a welcome is due in the page's own transaction, so a restart before it goes loses nothing; claimed and kept once", () => {
+    s.ingest(
+      [dm({ seq: 10, id: "k-old", pubkey: PK(3), kind: "contact", at: 300 }), dm({ seq: 11, id: "k-new", pubkey: PK(4), kind: "contact", at: 450 }), dm({ seq: 12, id: "k-untimed", pubkey: PK(5), kind: "contact", at: 9_999, untimed: true })],
+      URL,
+      12,
+      0,
+    );
+    assert.deepEqual(s.dueWelcomes(), [PK(4)], "only the contact newer than the save that turned it on (400)");
+    const m = s.startWelcome(PK(4), "f".repeat(64), 500)!;
+    assert.deepEqual([m.text, m.welcome, m.status], ["Back", true, "sending"]);
+    assert.equal(s.startWelcome(PK(4), "0".repeat(64), 501), undefined, "once per worker");
+    assert.deepEqual(s.dueWelcomes(), []);
+    // Due, then cleared before it went: it goes no more.
+    s.ingest([dm({ seq: 13, id: "k-late", pubkey: PK(6), kind: "contact", at: 600 })], URL, 13, 0);
+    s.saveWelcome("", undefined, 700);
+    assert.equal(s.startWelcome(PK(6), "1".repeat(64), 701), undefined);
+    assert.deepEqual(s.dueWelcomes(), []);
+  });
+
   it("search reads aliases, actors and text; a deleted message's text is not searched", () => {
-    s.ingest([dm({ seq: 7, id: "z", pubkey: PK(2), alias: "Bo", text: "my photo is blurry" })], 7, 0);
+    s.ingest([dm({ seq: 14, id: "z", pubkey: PK(2), alias: "Bo", text: "my photo is blurry" })], URL, 14, 0);
     assert.deepEqual(s.conversations("blurry").map((c) => c.alias), ["Bo"]);
     assert.deepEqual(s.conversations("ana").map((c) => c.alias), ["Ana B"]);
     assert.deepEqual(s.conversations(PK(2).slice(-8)).map((c) => c.alias), ["Bo"]);
     assert.deepEqual(s.conversations("old"), []);
     assert.deepEqual(s.conversations("100%"), []);
-    // Unread first: Bo's message is unread, Ana's are seen.
-    assert.deepEqual(s.conversations().map((c) => c.alias), ["Bo", "Ana B"]);
+    // Unread first: Bo's message is the only one unread, though newer ones (the welcomes above) are Support's.
+    assert.deepEqual(s.conversations().map((c) => [c.alias, c.unread])[0], ["Bo", 1]);
+    assert.equal(s.conversations()[0]!.last?.text, "my photo is blurry");
   });
 });
 
@@ -166,10 +221,12 @@ describe("Support on a server (§3, §5, §8)", () => {
   };
   /** A worker, played on the stand-in daemon. */
   const worker = async (body: Record<string, unknown>, path = "/worker-dm") => (await (await fetch(`${daemon.url}${path}`, { method: "POST", headers: json, body: JSON.stringify(body) })).json()) as { id: string; pubkey: string };
-  /** The follower read twice: one tick may be in flight from before. */
+  /** The follower read twice (one tick may be in flight from before), and
+   *  the files it set out to fetch, fetched. */
   const follow = async () => {
     await strut.support.tick();
     await strut.support.tick();
+    await strut.support.settled();
   };
   const w = (pubkey: string) => encodeURIComponent(actorOfPubkey(pubkey));
   type Msg = { key: number; id?: string; kind: string; text?: string; status?: string; error?: string; deleted?: true; welcome?: true; sats?: number; replyTo?: string; file?: { state: string; name?: string; mediaType?: string; size?: number } };
@@ -234,6 +291,8 @@ describe("Support on a server (§3, §5, §8)", () => {
     assert.deepEqual(await supportSeen.run({ worker: actorOfPubkey(ana.pubkey) }, ctx).then((r) => (r as Thread).conversation.unread), 0);
     await assert.rejects(supportThread.run({ worker: actorOfPubkey(PK(9)) }, ctx), /^Error: no_conversation: /);
     await assert.rejects(supportSend.run({ worker: actorOfPubkey(ana.pubkey), text: "  " }, ctx), /^Error: bad_request: /);
+    // The daemon's own limit, refused before anything is kept.
+    await assert.rejects(supportSend.run({ worker: actorOfPubkey(ana.pubkey), text: "é".repeat(17_000) }, ctx), /^Error: bad_request: too long: \d+ bytes/);
   });
 
   it("a failed send shows its error; Retry resends the same id once", async () => {
@@ -243,6 +302,10 @@ describe("Support on a server (§3, §5, §8)", () => {
     const failed = await post<{ message: Msg }>(`/support/${w(bo.pubkey)}`, { text: "We are here." });
     assert.equal(failed.message.status, "failed");
     assert.match(failed.message.error ?? "", /LSP did not take it/);
+    await follow();
+    // The feed's copy names it by its clientId alone: nothing went out, so no Sphinx id.
+    const before = (await get<Thread>(`/support/${w(bo.pubkey)}`)).messages.find((m) => m.key === failed.message.key)!;
+    assert.deepEqual([before.status, before.id], ["failed", undefined]);
     const again = await post<{ message: Msg }>(`/support/${w(bo.pubkey)}`, { retry: failed.message.key });
     assert.deepEqual([again.message.key, again.message.status], [failed.message.key, "sent"]);
     // A second Retry of a sent one sends nothing.
@@ -256,7 +319,7 @@ describe("Support on a server (§3, §5, §8)", () => {
 
   it("a worker's file is fetched when it arrives and read through staff/support-file; one over 25 MB is a line; a deleted message is hidden; sats are a line", async () => {
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
-    const cy = await worker({ alias: "Cy", file: { name: "photo.png", type: "image/png", base64: png.toString("base64") } });
+    const cy = await worker({ alias: "Cy", file: { name: "Lake photo.png", type: "image/png", base64: png.toString("base64") } });
     await worker({ pubkey: cy.pubkey, file: { name: "huge.mov", type: "video/quicktime", size: 26 * 1024 * 1024 } });
     const gone = await worker({ pubkey: cy.pubkey, text: "oops" });
     await worker({ pubkey: cy.pubkey, sats: 100 });
@@ -265,16 +328,34 @@ describe("Support on a server (§3, §5, §8)", () => {
     await follow();
     const t = await get<Thread>(`/support/${w(cy.pubkey)}`);
     const [photo, huge, deleted, sats] = t.messages.slice(1);
-    assert.deepEqual(photo!.file, { name: "photo.png", mediaType: "image/png", size: png.byteLength, state: "kept" });
+    // The feed named it `image.png`, from its type; the bytes came with the sender's name.
+    assert.deepEqual(photo!.file, { name: "Lake photo.png", mediaType: "image/png", size: png.byteLength, state: "kept" });
     assert.equal(huge!.file?.state, "too_large");
     assert.deepEqual([deleted!.deleted, deleted!.text], [true, undefined]);
     assert.deepEqual([sats!.kind, sats!.sats], ["payment", 100]);
     const file = (await supportFile.run({ worker: actorOfPubkey(cy.pubkey), id: photo!.id! }, staffCtx() as never)) as { base64: string; mediaType: string; name: string };
-    assert.deepEqual([Buffer.from(file.base64, "base64").equals(png), file.mediaType, file.name], [true, "image/png", "photo.png"]);
+    assert.deepEqual([Buffer.from(file.base64, "base64").equals(png), file.mediaType, file.name], [true, "image/png", "Lake photo.png"]);
     const tooLarge = await req(`/support/${w(cy.pubkey)}/files/${encodeURIComponent(huge!.id!)}`, { headers: keyed });
     assert.equal(tooLarge.status, 404);
     assert.match(((await tooLarge.json()) as { error: string }).error, /too large/);
     assert.deepEqual(await readdir(join(dir, "ws", "support", "files")).then((f) => f.length), 1);
+  });
+
+  it("a file over a step result's cap is read in 3 MB pieces whose base64 joins as one", async () => {
+    const big = Buffer.alloc(7 * 1024 * 1024 + 5, 7);
+    big.write("start", 0);
+    big.write("end", big.byteLength - 3);
+    const dee = await worker({ alias: "Dee", file: { name: "clip.mp4", type: "video/mp4", base64: big.toString("base64") } });
+    await follow();
+    const id = (await get<Thread>(`/support/${w(dee.pubkey)}`)).messages.find((m) => m.kind === "file")!.id!;
+    const ctx = staffCtx() as never;
+    type Piece = { base64: string; bytes: number; offset: number; next?: number };
+    const pieces: Piece[] = [(await supportFile.run({ worker: actorOfPubkey(dee.pubkey), id }, ctx)) as Piece];
+    while (pieces.at(-1)!.next !== undefined) pieces.push((await supportFile.run({ worker: actorOfPubkey(dee.pubkey), id, offset: pieces.at(-1)!.next! }, ctx)) as Piece);
+    assert.deepEqual(pieces.map((p) => p.offset), [0, 3 * 1024 * 1024, 6 * 1024 * 1024]);
+    assert.ok(pieces.every((p) => p.bytes === big.byteLength && p.base64.length < 5 * 1024 * 1024));
+    assert.ok(Buffer.from(pieces.map((p) => p.base64).join(""), "base64").equals(big));
+    await assert.rejects(supportFile.run({ worker: actorOfPubkey(dee.pubkey), id, offset: 5 }, ctx), /^Error: bad_request: offset/);
   });
 
   it("the welcome goes automatically, once, only to contacts newer than its first save; none before one is saved", async () => {

@@ -217,9 +217,8 @@ export async function openTaskStores(o: { dataDir: string } | { file: string }):
   return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
 }
 
-/** A task store file in memory (`openTaskDb`): Support's, beside a task
- *  store in memory. The same name as db.ts's `MEMORY`, which is not
- *  imported here: it loads `node:sqlite`. */
+/** A task store file in memory (`openTaskDb`, `TaskDb.open`): Support's,
+ *  beside a task store in memory. */
 export const TASKS_IN_MEMORY = ":memory:";
 
 /** The task store's file opened (`TASKS_IN_MEMORY`: one in memory) with every table

@@ -416,10 +416,14 @@ export interface SupportSettings {
   savedBy?: string;
 }
 
+/** One piece of a worker's file (`staff/support-file`): `next` is where the
+ *  next piece starts; the pieces' base64 joins as one. */
 export interface SupportFile {
   id: string;
   name?: string;
   mediaType: string;
   bytes: number;
+  offset: number;
   base64: string;
+  next?: number;
 }

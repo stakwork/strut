@@ -73,7 +73,7 @@ how every existing worker's "treasury" contact becomes "Support".
 
 **Every message is kept.**
 - The account writes every message it sees, 1:1 included, to
-  `<home>/log.jsonl` (`wasm/chat/src/log.ts`).
+  `<home>/messages.jsonl` (`wasm/chat/src/log.ts`).
 - A sender goes into the address book as a person, with their address
   (`learn`, `wasm/chat/src/inbox.ts`).
 
@@ -168,6 +168,11 @@ the right. On a phone, the list opens a thread and Back returns to the list.
 | Replies | Reply on a message, with the quote above the composer | `reply` on `POST /dm`; `replyTo` in the feed | Quote display | 1 |
 | Sent status | Clock while sending, ✓ once the LSP has it, ! with Retry if it failed | `status` on the account's own sends | Shown on the bubble | 1 |
 | Photos and files from workers | Images inline (tap for full size), voice notes playable, other files as a named download | `GET /dm/:id/file` | Fetched on arrival, up to 25 MB (ruling 10), kept under `dataDir`, read through `staff/support-file`. The 4 MB cap is on what a page sends, not on what it gets back | 1 |
+
+**Built differently (#PRNUM):** what a page gets back is capped too: a
+step's result is at most 5 MB (`STEP_RUN_RESULT_MAX_CHARS`, src/apps/tools.ts).
+So `staff/support-file` hands a file over in 3 MB pieces (`offset`, `next`),
+which the page joins.
 | Deleted by the worker | "Message deleted" | `deleted` in the feed (sphinx-chat already applies type 17) | Flag the row and hide it (ruling 12) | 1 |
 | Sats from a worker | "Sent you 100 sats" as a line | Payment records in the feed | A line; not in the books | 1 |
 | The worker beside the thread | Status, types held, lease now, answers this week, owed and paid, invite used, note; links to their page and tasks | — | `staff/worker` and `earnings/read`, already there | 1 |
@@ -340,11 +345,19 @@ token expires and to send the welcome.
 - 1:1 records, sent and received, oldest first, under a sequence number of
   the daemon's own. The server's `index` is missing on the account's own
   sends, so it can't be the cursor.
-- **Built differently (#PRNUM):** the answer is `{ dms: [...] }`, and a
-  record that changes (a send's `status`, a message deleted) comes again
-  under a new `seq` with the same `id`, which is how `status` and `deleted`
-  reach strut; strut keeps one row per `id`. `status` is `pending`, `sent`
-  or `failed` (with `error`). specs/LIGHTNING.md, "Support's DMs".
+- **Built differently (stakwork/sphinx#435, strut #PRNUM):** the answer is
+  `{ dms: [...] }`; `after` defaults to 0, `limit` is 1 to 1,000 (100 by
+  default). A record that changes (a send's `status` moving, a message
+  deleted) comes again under a new, higher `seq`, so strut UPSERTS: its own
+  sends by `clientId`, everything else by `id`, and keeps its cursor per
+  daemon URL. `id` is null only on a send that failed before anything went
+  out; `clientId` is only on sends made through `POST /dm`; `status`
+  (`sending`, `sent` or `failed`) is on every message the account sent, and
+  `error` on a failed one. `fileName` is made from the type (`image.jpg`,
+  `file.pdf`): a Sphinx file message carries no name, so strut takes the
+  sender's from `GET /dm/:id/file`'s `content-disposition`. The feed's
+  numbers live in the daemon's `<home>/dms.jsonl`, over the log
+  (`messages.jsonl`). specs/LIGHTNING.md, "Support's DMs".
 - Fields: `seq`, `id`, `clientId` (on the account's own sends), `time`,
   `fromMe`, `peer { pubkey, address, alias }`, `kind` (`message`,
   `file`, `payment` or `contact`, a new contact's key exchange), `text`,
@@ -355,18 +368,28 @@ token expires and to send the welcome.
 **`GET /dm/:id/file`**
 - The decrypted bytes, with their type, via `media.ts`'s download, without
   shrinking. 25 MB at most (ruling 10); a larger file is refused with a
-  code strut can show. **Built differently (#PRNUM):** that refusal is
-  `413 { code: "too_large" }`; strut also stops reading past 25 MB.
+  code strut can show. **Built differently (stakwork/sphinx#435, strut
+  #PRNUM):** 25 MiB; that refusal is `413 too_large`, shown as ruling 10's
+  "too large" line (strut also stops reading past 25 MiB). The others:
+  `404 not_found`, `410 deleted`, `403 host_not_allowed`, `422 unreadable`
+  (strut gives up at once) and `502 memes_failed` (strut tries again). The
+  daemon downloads a DM's file within 180 s, so strut fetches files beside
+  its reads of the feed, never holding them.
 - The memes hosts allowed as for tribes.
 
 **`POST /dm { id, to, text, reply? }`**
 - `to` is the pubkey of an existing contact; never a tribe, never someone
   it hasn't met (ruling 15).
 - The same `id` returns the first send's answer and never sends twice.
-- **Built differently (#PRNUM):** a first send that FAILED is sent again
-  under the same `id`, as `POST /pay` sends a failed payment again: that is
-  what Retry needs. `id` is 64 hex, made by strut. The answer is `{ id,
-  status, error? }`; `to` not a contact is `409 { code: "not_a_contact" }`.
+- **Built differently (stakwork/sphinx#435, strut #PRNUM):** a send that
+  FAILED is tried again under the same `id`, with the text it first had:
+  that is strut's Retry. A send whose publish failed partway stays
+  `sending`, never `failed`, so it is never sent twice. The answer is the
+  send's item as the feed shows it, with its `seq`, after up to about 10 s
+  for the LSP (then `sending`; the LSP's PENDING counts as `sent`). `id` is
+  1 to 128 printable characters (strut sends 64 hex). Refusals: `400
+  not_a_contact`, `400 too_long` (over 32 KiB as the message's JSON, which
+  strut refuses before it keeps anything), `503 not_connected`.
 
 **Also:**
 - A changed `DAEMON_ALIAS` replaces the stored alias at start.

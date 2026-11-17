@@ -25,6 +25,7 @@ create table if not exists support_conversations (
   seen_at integer,
   seen_by text,
   welcomed_at integer,
+  welcome_due integer,
   first_at integer not null
 ) strict;
 
@@ -77,10 +78,15 @@ export const WELCOME_BY = "welcome";
 /** One record of the daemon's `GET /dms` as strut keeps it (§7). */
 export interface Dm {
   seq: number;
-  id: string;
+  /** The Sphinx id: absent only on a send of strut's that failed before
+   *  anything went out. */
+  id?: string;
   clientId?: string;
   /** ms. */
   at: number;
+  /** The record named no time: `at` is when strut read it, which says
+   *  nothing about the welcome's save (ruling 8). */
+  untimed?: true;
   fromMe: boolean;
   pubkey: string;
   alias?: string;
@@ -165,7 +171,7 @@ export class SupportStore {
     this.s = {
       state: p("select value from support_state where key = ?"),
       setState: p("insert into support_state (key, value) values (?, ?) on conflict (key) do update set value = excluded.value"),
-      addConversation: p("insert into support_conversations (pubkey, actor, alias, first_at) values (?, ?, ?, ?) on conflict (pubkey) do nothing"),
+      addConversation: p("insert into support_conversations (pubkey, actor, alias, first_at) values (?, ?, ?, ?) on conflict do nothing"),
       setAlias: p("update support_conversations set alias = ? where pubkey = ? and (alias is null or alias != ?)"),
       conversation: p(
         `select c.*, (select max(key) from support_messages m where m.pubkey = c.pubkey) last_key,
@@ -190,7 +196,12 @@ export class SupportStore {
       retry: p("update support_messages set status = 'sending', error = null where key = ? and status = 'failed'"),
       thread: p("select * from support_messages where pubkey = ? and key < ? order by key desc limit ?"),
       seen: p("update support_conversations set seen_key = coalesce((select max(key) from support_messages where pubkey = ?1), 0), seen_at = ?2, seen_by = ?3 where pubkey = ?1"),
-      welcomed: p("update support_conversations set welcomed_at = ? where pubkey = ? and welcomed_at is null"),
+      due: p("update support_conversations set welcome_due = 1 where pubkey = ? and welcomed_at is null"),
+      dueList: p("select pubkey from support_conversations where welcome_due = 1 and welcomed_at is null order by first_at"),
+      welcomed: p("update support_conversations set welcomed_at = ?, welcome_due = null where pubkey = ? and welcomed_at is null"),
+      undue: p("update support_conversations set welcome_due = null where pubkey = ?"),
+      abandoned: p("update support_messages set status = 'failed', error = ? where from_me = 1 and status = 'sending' and id is null"),
+      byKeys: p("select * from support_messages where key in (select value from json_each(?))"),
       unread: p(`select count(*) n, count(distinct m.pubkey) c from support_messages m join support_conversations c on c.pubkey = m.pubkey where ${UNREAD}`),
       list: p(
         `with conv as (
@@ -204,7 +215,7 @@ export class SupportStore {
          select * from conv order by (unread > 0) desc, last_key desc nulls last limit ?2`,
       ),
       fetching: p("select * from support_messages where file_state = 'fetching' and deleted = 0 order by key limit ?"),
-      fileKept: p("update support_messages set file_state = 'kept', file_path = ?, file_size = ?, media_type = coalesce(media_type, ?), error = null where key = ?"),
+      fileKept: p("update support_messages set file_state = 'kept', file_path = ?, file_size = ?, media_type = coalesce(media_type, ?), file_name = coalesce(?, file_name), error = null where key = ?"),
       fileFailed: p("update support_messages set file_state = ?, file_tries = file_tries + 1, error = ? where key = ?"),
     };
   }
@@ -216,9 +227,11 @@ export class SupportStore {
     return typeof v === "string" ? v : undefined;
   }
 
-  /** The follower's cursor: the newest `seq` read (0 before the first). */
-  cursor(): number {
-    return Number(this.state("cursor") ?? 0);
+  /** The follower's cursor on the daemon at `url`: the newest `seq` read
+   *  there (0 before the first). Kept per daemon, so another daemon's feed
+   *  is read from its start; a record read again changes nothing. */
+  cursor(url: string): number {
+    return Number(this.state(`cursor ${url}`) ?? 0);
   }
 
   /** When Support first followed the daemon (ms), set once: what came
@@ -259,50 +272,93 @@ export class SupportStore {
    * One page of the daemon's feed in one transaction, the cursor with it:
    * each record's conversation made (its alias kept when it has one), its
    * message added — or, for one strut has (the same id, or strut's own send
-   * by its `clientId`), changed. Returns the `contact` records new here: the
-   * welcome's to decide (§5).
+   * by its `clientId`), changed. A new contact's key exchange newer than the
+   * welcome's save marks its conversation's welcome DUE (§5), in the same
+   * transaction, so a restart before it goes loses nothing (`dueWelcomes`).
+   * A record that cannot be kept is skipped, never the page: one bad record
+   * would hold the cursor, and every DM after it, forever. Returns how many
+   * were skipped, with the first one's error.
    */
-  ingest(dms: Dm[], cursor: number, since: number): Array<{ pubkey: string; at: number }> {
+  ingest(dms: Dm[], url: string, cursor: number, since: number): { skipped: number; error?: string } {
     return this.db.tx(() => {
-      const contacts: Array<{ pubkey: string; at: number }> = [];
+      const w = this.welcome();
+      let skipped = 0;
+      let error: string | undefined;
       for (const d of dms) {
-        this.s.addConversation.run(d.pubkey, actorOfPubkey(d.pubkey), d.alias ?? null, d.at);
-        if (d.alias) this.s.setAlias.run(d.alias, d.pubkey, d.alias);
-        const had = (this.s.byId.get(d.id) ?? (d.clientId ? this.s.byClientId.get(d.clientId) : undefined)) as Row | undefined;
-        if (had) {
-          this.s.update.run(d.id, d.deleted ? 1 : 0, d.status ?? null, d.status === "failed" ? (d.error ?? "the daemon could not send it") : null, had.key as number);
-          continue;
+        this.db.exec("savepoint dm");
+        try {
+          this.one(d, since, w);
+          this.db.exec("release dm");
+        } catch (err) {
+          this.db.exec("rollback to dm");
+          this.db.exec("release dm");
+          skipped++;
+          error ??= `${d.id ?? d.clientId}: ${err instanceof Error ? err.message : String(err)}`;
         }
-        this.s.insert.run(
-          d.pubkey,
-          d.id,
-          d.clientId ?? null,
-          d.fromMe ? 1 : 0,
-          d.kind,
-          d.text ?? null,
-          null,
-          d.replyTo ?? null,
-          d.sats ?? null,
-          d.deleted ? 1 : 0,
-          d.mediaType ?? null,
-          d.fileName ?? null,
-          d.kind === "file" && !d.fromMe ? "fetching" : null,
-          d.fromMe ? (d.status ?? "sent") : null,
-          d.status === "failed" ? (d.error ?? "the daemon could not send it") : null,
-          d.at,
-          d.at < since ? 1 : 0,
-        );
-        if (d.kind === "contact" && !d.fromMe) contacts.push({ pubkey: d.pubkey, at: d.at });
       }
-      this.s.setState.run("cursor", String(cursor));
-      return contacts;
+      this.s.setState.run(`cursor ${url}`, String(cursor));
+      return { skipped, ...(error ? { error } : {}) };
     });
   }
 
-  /** Marks the conversation welcomed: true for the one call that did (at
-   *  most once per worker, §5). */
-  claimWelcome(pubkey: string, now: number): boolean {
-    return Number(this.s.welcomed.run(now, pubkey).changes) > 0;
+  private one(d: Dm, since: number, w: WelcomeSettings): void {
+    this.s.addConversation.run(d.pubkey, actorOfPubkey(d.pubkey), d.alias ?? null, d.at);
+    if (d.alias) this.s.setAlias.run(d.alias, d.pubkey, d.alias);
+    // Strut's own send by the id it gave; everything else by its Sphinx id.
+    const had = ((d.clientId ? this.s.byClientId.get(d.clientId) : undefined) ?? (d.id ? this.s.byId.get(d.id) : undefined)) as Row | undefined;
+    if (had) {
+      this.s.update.run(d.id ?? null, d.deleted ? 1 : 0, d.status ?? null, d.status === "failed" ? (d.error ?? "the daemon could not send it") : null, had.key as number);
+      return;
+    }
+    this.s.insert.run(
+      d.pubkey,
+      d.id ?? null,
+      d.clientId ?? null,
+      d.fromMe ? 1 : 0,
+      d.kind,
+      d.text ?? null,
+      null,
+      d.replyTo ?? null,
+      d.sats ?? null,
+      d.deleted ? 1 : 0,
+      d.mediaType ?? null,
+      d.fileName ?? null,
+      d.kind === "file" && !d.fromMe ? "fetching" : null,
+      d.fromMe ? (d.status ?? "sent") : null,
+      d.status === "failed" ? (d.error ?? "the daemon could not send it") : null,
+      d.at,
+      d.at < since ? 1 : 0,
+    );
+    // §5, ruling 8: only a contact newer than the save that turned the
+    // welcome on; a record with no time of its own is never one.
+    if (d.kind === "contact" && !d.fromMe && !d.untimed && w.welcome && w.since !== undefined && d.at >= w.since) this.s.due.run(d.pubkey);
+  }
+
+  /** The conversations whose welcome is due (§5). */
+  dueWelcomes(): string[] {
+    return (this.s.dueList.all() as Row[]).map((r) => r.pubkey as string);
+  }
+
+  /** A due welcome claimed and kept as Support's message, `sending`, in one
+   *  transaction: at most once per worker. Undefined when it was claimed
+   *  already, or the welcome was cleared since (then it is due no more). */
+  startWelcome(pubkey: string, clientId: string, now: number): SupportMessage | undefined {
+    return this.db.tx(() => {
+      const text = this.welcome().welcome;
+      if (!text) {
+        this.s.undue.run(pubkey);
+        return undefined;
+      }
+      if (Number(this.s.welcomed.run(now, pubkey).changes) === 0) return undefined;
+      return this.addOwn({ pubkey, clientId, text, by: WELCOME_BY, at: now });
+    });
+  }
+
+  /** Support's sends a past process left `sending` with no word from the
+   *  daemon: failed, so Retry shows (it resends the same id, which the daemon
+   *  sends once). Called when the store opens, before anything is sent. */
+  abandonSends(): void {
+    this.s.abandoned.run("strut restarted before the daemon answered: Retry sends it (once, whatever happened)");
   }
 
   // ── sends ─────────────────────────────────────────────────────────────────
@@ -343,9 +399,13 @@ export class SupportStore {
     return row ? this.conversationOf(row) : undefined;
   }
 
-  /** Unread first, then the newest; `q` over names, actors and text. */
+  /** Unread first, then the newest; `q` over names, actors and text. Their
+   *  last messages in one read. */
   conversations(q = "", limit = 500): SupportConversation[] {
-    return (this.s.list.all(like(q.trim()), limit) as Row[]).map((r) => this.conversationOf(r));
+    const rows = this.s.list.all(like(q.trim()), limit) as Row[];
+    const keys = rows.map((r) => r.last_key).filter((k) => k !== null && k !== undefined);
+    const last = new Map((this.s.byKeys.all(JSON.stringify(keys)) as Row[]).map((m) => [m.key as number, messageOf(m)]));
+    return rows.map((r) => this.conversationOf(r, last));
   }
 
   /** The thread's newest `limit` before `before` (a key), oldest first. */
@@ -385,8 +445,10 @@ export class SupportStore {
     return (this.s.fetching.all(limit) as Row[]).map((r) => ({ key: r.key as number, id: r.id as string, tries: r.file_tries as number }));
   }
 
-  fileKept(key: number, path: string, size: number, mediaType: string | undefined): void {
-    this.s.fileKept.run(path, size, mediaType ?? null, key);
+  /** A file kept: its place and size, and the type and sender's name it
+   *  came with (the feed's name is only made from its type). */
+  fileKept(key: number, path: string, size: number, mediaType: string | undefined, name?: string): void {
+    this.s.fileKept.run(path, size, mediaType ?? null, name ?? null, key);
   }
 
   /** A file not kept: `too_large` for good, `fetching` to try again, `failed` for good. */
@@ -394,8 +456,9 @@ export class SupportStore {
     this.s.fileFailed.run(state, error, key);
   }
 
-  private conversationOf(r: Row): SupportConversation {
-    const last = r.last_key === null || r.last_key === undefined ? undefined : this.message(Number(r.last_key));
+  private conversationOf(r: Row, lasts?: Map<number, SupportMessage>): SupportConversation {
+    const key = r.last_key === null || r.last_key === undefined ? undefined : Number(r.last_key);
+    const last = key === undefined ? undefined : lasts ? lasts.get(key) : this.message(key);
     return {
       worker: r.actor as string,
       pubkey: r.pubkey as string,

@@ -107,13 +107,17 @@ export class PaymentsSettings {
     this.#store = store;
   }
 
+  /** The unreadable value last warned about: said once, not at every read
+   *  (Support's follower reads the wallet every few seconds). */
+  #warned: string | null = null;
   async wallet(): Promise<WalletSettings | null> {
     const raw = await this.#store.get(PAYMENTS_KEYS.wallet);
     if (!raw) return null;
     try {
       return checkStored(JSON.parse(raw));
     } catch (err) {
-      console.warn(`[payments] the wallet on file in ${PAYMENTS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}); no wallet is set`);
+      if (this.#warned !== raw) console.warn(`[payments] the wallet on file in ${PAYMENTS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}); no wallet is set`);
+      this.#warned = raw;
       return null;
     }
   }

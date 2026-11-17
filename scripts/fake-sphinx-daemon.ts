@@ -31,15 +31,19 @@
  * not_cancellable` once used). `POST /use-invite/:code` marks one used, as
  * a new account taking it would.
  *
- * DMS, with the MESSAGE token alone (plans/support-chat.md §7; the other
- * two are 403, and it opens nothing else): `GET /dms?after=<seq>&limit=`
+ * DMS, with the MESSAGE token alone (plans/support-chat.md §7, as
+ * stakwork/sphinx#435 built them; the other two are 403, and it opens
+ * nothing else): `GET /dms?after=<seq>&limit=` (1 to 1,000, 100 by default)
  * answers `{ dms }`, 1:1 records oldest first under a `seq` of its own — a
  * record that changes (a send's status, a deletion) comes again under a new
- * one, the same `id`. `GET /dm/:id/file` the file's bytes with its type,
- * `413 too_large` over 25 MB. `POST /dm { id, to, text, reply? }` sends to a
- * contact (`409 not_a_contact` otherwise), idempotent on `id` — a failed one
- * is sent again, as `/pay` is; `sent` at once, or as `/next-dm { state:
- * "failed" | "pending" }` says (`pending` until `POST /settle/<id>`).
+ * one. `GET /dm/:id/file` the file's bytes with its type and the sender's
+ * name in `content-disposition` (the feed's `fileName` is made from the
+ * type), `413 too_large` over 25 MiB, `410 deleted`, `404 not_found`. `POST
+ * /dm { id, to, text, reply? }` sends to a contact (`400 not_a_contact`,
+ * `400 too_long` past 32 KiB) and answers the send's item; the same `id`
+ * never sends twice — a failed one is tried again with its first text;
+ * `sent` at once, or as `/next-dm { state: "failed" | "pending" }` says
+ * (`failed` with nothing sent, no id; `sending` until `POST /settle/<id>`).
  * A WORKER is played through open routes: `POST /worker-dm { pubkey?, alias?,
  * text?, replyTo?, sats?, file?: { name, type, base64 } | { name, type, size } }`
  * (a new pubkey is a new contact first: its key exchange, `kind: "contact"`),
@@ -90,27 +94,35 @@ interface Inv { hash: string; preimage: string; msat: number; made: number; expi
 /** A pay (keyed by payment hash) or a keysend (keyed by its id). */
 interface Out { key: string; hash: string; preimage?: string; msat: number; state: State; fee: number; error?: string }
 
-/** One 1:1 record of `GET /dms` (plans/support-chat.md §7). */
+/** One 1:1 record of `GET /dms`, as stakwork/sphinx#435's `wasm/daemon/src/dms.ts` writes it. */
 interface DmRec {
   seq: number;
-  id: string;
+  /** null only on a send that failed before anything went out. */
+  id: string | null;
+  /** On a send made through POST /dm. */
   clientId?: string;
   /** ISO, as the daemon's log writes it. */
   time: string;
   fromMe: boolean;
   peer: { pubkey: string; address: string | null; alias: string | null };
   kind: "message" | "file" | "payment" | "contact";
-  text?: string;
-  replyTo?: string;
-  sats?: number;
-  deleted?: boolean;
-  mediaType?: string;
-  fileName?: string;
-  status?: "pending" | "sent" | "failed";
+  text: string | null;
+  replyTo: string | null;
+  sats: number;
+  deleted: boolean;
+  mediaType: string | null;
+  /** Made from the type (a Sphinx file message carries no name): the
+   *  sender's comes in `GET /dm/:id/file`'s content-disposition. */
+  fileName: string | null;
+  /** The account's own. */
+  status?: "sending" | "sent" | "failed";
   error?: string;
 }
 /** The largest file `GET /dm/:id/file` gives (ruling 10). */
 export const DM_FILE_MAX_BYTES = 25 * 1024 * 1024;
+/** The daemon's limit on a message: its content and quoted id as JSON (sphinx-chat's `MAX_SEND_BYTES`). */
+const DM_MAX_SEND_BYTES = 32 * 1024;
+const DM_BLANK = { text: null, replyTo: null, sats: 0, deleted: false, mediaType: null, fileName: null };
 
 /** What the stand-in's mixer charges for an invite, on top of its sats. */
 export const INVITE_PRICE_SATS = 10;
@@ -139,19 +151,22 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   let nextPayout: "failed" | "pending" | undefined;
   // The DMs: each record by id, its seq bumped when it changes.
   const dms = new Map<string, DmRec>();
-  const dmFiles = new Map<string, { bytes: Buffer; size: number }>();
+  const dmFiles = new Map<string, { bytes: Buffer; size: number; name: string }>();
   const contacts = new Map<string, string | null>();
   let seq = 0;
   let nextDm: "failed" | "pending" | undefined;
+  // Each item by its key: its Sphinx id, or `send:<clientId>` for a send
+  // through POST /dm, as the daemon keeps a send's item apart from its log.
+  const keyOf = (r: DmRec) => (r.clientId ? `send:${r.clientId}` : r.id!);
   const put = (r: Omit<DmRec, "seq">) => {
     const rec = { ...r, seq: ++seq } as DmRec;
-    dms.set(rec.id, rec);
+    dms.set(keyOf(rec), rec);
     return rec;
   };
   const touch = (r: DmRec) => {
-    dms.delete(r.id);
+    dms.delete(keyOf(r));
     r.seq = ++seq;
-    dms.set(r.id, r);
+    dms.set(keyOf(r), r);
   };
   const someKey = () => `02${randomBytes(32).toString("hex")}`;
   const peerOf = (pubkey: string) => ({ pubkey, address: `${pubkey}_${"03" + "1".repeat(64)}_1`, alias: contacts.get(pubkey) ?? null });
@@ -162,7 +177,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
       return;
     }
     contacts.set(pubkey, alias);
-    put({ id: randomUUID(), time: new Date().toISOString(), fromMe: false, peer: peerOf(pubkey), kind: "contact" });
+    put({ ...DM_BLANK, id: randomUUID(), time: new Date().toISOString(), fromMe: false, peer: peerOf(pubkey), kind: "contact" });
   };
 
   /** Settled now? An invoice settles settleAfterMs after it was made (0: only by hand). */
@@ -229,7 +244,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           inv.settledAt ??= Date.now();
           return reply(res, 200, { settled: x });
         }
-        const dm = [...dms.values()].find((r) => r.clientId === x && r.status === "pending");
+        const dm = [...dms.values()].find((r) => r.clientId === x && r.status === "sending");
         if (dm) {
           dm.status = "sent";
           touch(dm);
@@ -269,11 +284,13 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         const id = randomUUID();
         const file = b["file"] as { name?: string; type?: string; base64?: string; size?: number } | undefined;
         const sats = typeof b["sats"] === "number" ? b["sats"] : undefined;
+        const type = file?.type ?? "application/octet-stream";
         if (file) {
           const bytes = Buffer.from(file.base64 ?? "", "base64");
-          dmFiles.set(id, { bytes, size: file.size ?? bytes.byteLength });
+          dmFiles.set(id, { bytes, size: file.size ?? bytes.byteLength, name: file.name ?? "file" });
         }
         const r = put({
+          ...DM_BLANK,
           id,
           time: new Date().toISOString(),
           fromMe: false,
@@ -282,7 +299,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           ...(typeof b["text"] === "string" ? { text: b["text"] } : {}),
           ...(typeof b["replyTo"] === "string" ? { replyTo: b["replyTo"] } : {}),
           ...(sats ? { sats } : {}),
-          ...(file ? { fileName: file.name ?? "file", mediaType: file.type ?? "application/octet-stream" } : {}),
+          ...(file ? { mediaType: type, fileName: `${type.startsWith("image/") ? "image" : "file"}.${type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin"}` } : {}),
         });
         log(`dm in ${r.kind} from ${pubkey.slice(0, 10)}…`);
         return reply(res, 200, { id, pubkey, seq: r.seq });
@@ -292,7 +309,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         const r = dms.get(decodeURIComponent(deleteOne[1]!));
         if (!r || r.fromMe) return reply(res, 404, { error: "no worker's message with that id", code: "not_found" });
         r.deleted = true;
-        delete r.text;
+        r.text = null;
         touch(r);
         return reply(res, 200, { id: r.id, deleted: true });
       }
@@ -316,7 +333,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         if (!messaging) return reply(res, 403, { error: "the message token opens the DM routes alone", code: "forbidden" });
         if (req.method === "GET" && path === "/dms") {
           const after = Number(url.searchParams.get("after") ?? 0);
-          const limit = Math.min(Math.max(1, Number(url.searchParams.get("limit") ?? 100) || 100), 500);
+          const limit = Math.min(Math.max(1, Number(url.searchParams.get("limit") ?? 100) || 100), 1000);
           const page = [...dms.values()].filter((r) => r.seq > after).sort((a, b) => a.seq - b.seq).slice(0, limit);
           return reply(res, 200, { dms: page });
         }
@@ -325,33 +342,51 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           const id = decodeURIComponent(fileOne[1]!);
           const r = dms.get(id);
           const f = dmFiles.get(id);
-          if (!r || !f || r.kind !== "file") return reply(res, 404, { error: `no file ${id}`, code: "not_found" });
+          if (!r || !f || r.kind !== "file") return reply(res, 404, { error: "no file with that id among the direct messages", code: "not_found" });
+          if (r.deleted) return reply(res, 410, { error: "its sender deleted it", code: "deleted" });
           if (f.size > DM_FILE_MAX_BYTES) return reply(res, 413, { error: `the file is ${f.size} bytes, over 25 MB`, code: "too_large" });
-          res.writeHead(200, { "content-type": r.mediaType ?? "application/octet-stream", "content-length": String(f.bytes.byteLength) });
+          res.writeHead(200, {
+            "content-type": r.mediaType ?? "application/octet-stream",
+            "content-length": String(f.bytes.byteLength),
+            "content-disposition": `attachment; filename="${f.name.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+          });
           return res.end(f.bytes);
         }
-        // POST /dm
+        // POST /dm: answers the send as the feed shows it. The same id never
+        // sends twice; a failed one is tried again, with the text it first had.
         const b = await bodyOf(req);
         const id = b["id"];
-        const to = b["to"];
-        if (typeof id !== "string" || !hex64.test(id)) return reply(res, 400, { error: "id is 64 lowercase hex characters", code: "bad_request" });
-        if (typeof b["text"] !== "string" || !b["text"]) return reply(res, 400, { error: "text is required", code: "bad_request" });
-        if (typeof to !== "string" || !contacts.has(to)) return reply(res, 409, { error: "to is not a contact of this account", code: "not_a_contact" });
-        const had = [...dms.values()].find((r) => r.clientId === id);
-        if (had && had.status !== "failed") return reply(res, 200, { id, status: had.status });
+        if (typeof id !== "string" || !/^[\x21-\x7e]{1,128}$/.test(id)) return reply(res, 400, { error: "id must be 1 to 128 printable characters, no spaces", code: "bad_request" });
+        const had = dms.get(`send:${id}`);
+        if (had && had.status !== "failed") return reply(res, 200, had);
+        const to = had ? had.peer.pubkey : b["to"];
+        const text = had ? had.text! : b["text"];
+        const replyTo = had ? had.replyTo : typeof b["reply"] === "string" && b["reply"] ? b["reply"] : null;
+        if (typeof to !== "string" || !/^0[23][0-9a-f]{64}$/.test(to)) return reply(res, 400, { error: "to must be a contact's pubkey (66 hex characters)", code: "bad_request" });
+        if (typeof text !== "string" || !text.trim()) return reply(res, 400, { error: "text is required", code: "bad_request" });
+        const size = Buffer.byteLength(JSON.stringify({ content: text, ...(replyTo ? { replyUuid: replyTo } : {}) }), "utf8");
+        if (size > DM_MAX_SEND_BYTES) return reply(res, 400, { error: `text too long: ${size} bytes, at most ${DM_MAX_SEND_BYTES}`, code: "too_long" });
+        if (!contacts.has(to)) return reply(res, 400, { error: `${to} is not one of the account's contacts`, code: "not_a_contact" });
         const outcome = nextDm;
         nextDm = undefined;
-        const status = outcome === "failed" ? "failed" : outcome === "pending" ? "pending" : "sent";
-        const fields = { status, ...(status === "failed" ? { error: "the LSP did not take it" } : {}) } as const;
-        if (had) {
-          Object.assign(had, fields);
-          if (status !== "failed") delete had.error;
-          touch(had);
-        } else {
-          put({ id: randomUUID(), clientId: id, time: new Date().toISOString(), fromMe: true, peer: peerOf(to), kind: "message", text: b["text"], ...(typeof b["reply"] === "string" ? { replyTo: b["reply"] } : {}), ...fields });
-        }
+        // failed: nothing went out (no Sphinx id); pending: the LSP has not answered.
+        const status = outcome === "failed" ? "failed" : outcome === "pending" ? "sending" : "sent";
+        const item: Omit<DmRec, "seq"> = {
+          ...DM_BLANK,
+          id: status === "failed" ? null : (had?.id ?? randomUUID()),
+          clientId: id,
+          time: new Date().toISOString(),
+          fromMe: true,
+          peer: peerOf(to),
+          kind: "message",
+          text,
+          replyTo,
+          status,
+          ...(status === "failed" ? { error: "the LSP did not take it" } : {}),
+        };
+        const sent = put(item);
         log(`dm out ${status} to ${to.slice(0, 10)}…`);
-        return reply(res, 200, { id, ...fields });
+        return reply(res, 200, sent);
       }
       if (messaging) return reply(res, auth === `Bearer ${token}` || pay ? 403 : 401, { error: "the DM routes take the message token", code: auth === `Bearer ${token}` || pay ? "forbidden" : "unauthorized" });
       if (!pay && auth !== `Bearer ${token}`) return reply(res, 401, { error: "unauthorized", code: "unauthorized" });

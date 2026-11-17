@@ -121,7 +121,17 @@ describe("the wallet's settings", () => {
     it("a wallet on file that no longer parses is no wallet, said once", async () => {
       const store = new MemorySecretStore();
       await store.set("WALLET", "{ not json");
-      assert.equal(await new PaymentsSettings(store).wallet(), null);
+      const settings = new PaymentsSettings(store);
+      const warned: string[] = [];
+      const warn = console.warn;
+      console.warn = (line: string) => void warned.push(line);
+      try {
+        // Read every few seconds by Support's follower: one line, not one a read.
+        for (let i = 0; i < 3; i++) assert.equal(await settings.wallet(), null);
+      } finally {
+        console.warn = warn;
+      }
+      assert.equal(warned.length, 1);
     });
   });
 

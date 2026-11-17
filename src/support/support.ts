@@ -21,9 +21,10 @@
  * one id once.
  */
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open as openFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileNameOf, KINDS, WELCOME_BY, type Dm, type SendStatus, type SupportConversation, type SupportKind, type SupportMessage, type SupportStore, type WelcomeSettings } from "./store.js";
+import { readCapped } from "../packages/archive.js";
+import { fileNameOf, KINDS, type Dm, type SendStatus, type SupportConversation, type SupportKind, type SupportMessage, type SupportStore, type WelcomeSettings } from "./store.js";
 
 /** How often the follower reads the daemon (ruling 16). */
 export const SUPPORT_POLL_MS = 3_000;
@@ -33,15 +34,25 @@ export const DMS_PAGE = 100;
 const PAGES_PER_TICK = 20;
 /** The largest file kept from a worker (ruling 10). */
 export const SUPPORT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+/** A file is handed to a page in pieces this size (a multiple of 3, so the
+ *  pieces' base64 joins as one): a step's result is capped at 5 MB
+ *  (src/apps/tools.ts `STEP_RUN_RESULT_MAX_CHARS`). */
+export const SUPPORT_FILE_PIECE_BYTES = 3 * 1024 * 1024;
 /** Tries for a file before it is given up. */
 const FILE_TRIES = 5;
 /** Files fetched per tick. */
 const FILES_PER_TICK = 5;
-/** How long one call to the daemon may take; a file, longer. */
+/** How long one call to the daemon may take; a send, which waits about
+ *  10 s for the LSP's word, longer; a file, which the daemon downloads from
+ *  the memes server within 180 s, longer still. */
 const DAEMON_TIMEOUT_MS = 10_000;
-const FILE_TIMEOUT_MS = 60_000;
-/** The longest message staff may send, in characters. */
-export const SUPPORT_TEXT_MAX = 10_000;
+const SEND_TIMEOUT_MS = 30_000;
+const FILE_TIMEOUT_MS = 200_000;
+/** The daemon's limit on a message (sphinx-chat's `MAX_SEND_BYTES`): its
+ *  content and the quoted id as the message's JSON, in bytes. */
+export const SUPPORT_SEND_MAX_BYTES = 32 * 1024;
+/** A file refusal that never changes (stakwork/sphinx#435): not tried again. */
+const FILE_REFUSED_FOR_GOOD = new Set(["not_found", "deleted", "host_not_allowed", "unreadable"]);
 /** The welcome's longest text. */
 export const WELCOME_MAX = 2_000;
 /** The thread's page. */
@@ -91,19 +102,22 @@ export interface SupportDeps {
 }
 
 export interface Support {
-  /** Whether Support answers here (a message token on a Sphinx wallet). */
-  available(): Promise<boolean>;
   conversations(q?: string): Promise<{ conversations: SupportConversation[] }>;
   unread(): Promise<{ unread: number; conversations: number }>;
   thread(worker: string, o?: { before?: number; limit?: number }): Promise<{ conversation: SupportConversation; messages: SupportMessage[]; more: boolean }>;
   /** A message from Support (`text`, `replyTo`), or a failed one sent again (`retry`, its key). */
   send(worker: string, body: { text?: string; replyTo?: string; retry?: number }, by: string | undefined): Promise<{ message: SupportMessage }>;
   seen(worker: string, by: string | undefined): Promise<{ conversation: SupportConversation }>;
-  file(worker: string, id: string): Promise<{ id: string; name?: string; mediaType: string; bytes: number; base64: string }>;
+  /** A worker's file, `SUPPORT_FILE_PIECE_BYTES` of it from `offset`;
+   *  `next` is where the next piece starts, absent at the last. */
+  file(worker: string, id: string, offset?: number): Promise<{ id: string; name?: string; mediaType: string; bytes: number; offset: number; base64: string; next?: number }>;
   settings(): Promise<{ settings: WelcomeSettings }>;
   saveSettings(body: { welcome: string }, by: string | undefined): Promise<{ settings: WelcomeSettings }>;
-  /** One read of the daemon: the feed, the welcome, the files. */
+  /** One read of the daemon: the feed and the welcomes due; the files
+   *  that came are fetched beside it, never holding the next read. */
   tick(): Promise<void>;
+  /** The tick and the file fetches in flight, done (a test's). */
+  settled(): Promise<void>;
   start(): void;
   stop(): void;
   /** Stops, waits for a tick in flight. The store's connection closes with it. */
@@ -113,28 +127,32 @@ export interface Support {
 const PUBKEY = /^0[23][0-9a-f]{64}$/;
 
 /** One `GET /dms` record as strut keeps it, or null for one it does not
- *  (an unknown kind, a pubkey that is not one). Lenient on the time: unix
- *  seconds, ms or an ISO string. */
+ *  (an unknown kind, a pubkey that is not one, neither an id nor a
+ *  `clientId`). Its `id` is null only on a send of strut's that failed
+ *  before anything went out. Lenient on the time: unix seconds, ms or ISO. */
 export function dmOf(v: unknown, now: number): Dm | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   const peer = (o["peer"] && typeof o["peer"] === "object" ? o["peer"] : {}) as Record<string, unknown>;
   const pubkey = typeof peer["pubkey"] === "string" ? peer["pubkey"].toLowerCase() : "";
   const seq = o["seq"];
-  const id = o["id"];
   const kind = o["kind"];
-  if (!PUBKEY.test(pubkey) || typeof seq !== "number" || !Number.isSafeInteger(seq) || typeof id !== "string" || !id || !KINDS.includes(kind as SupportKind)) return null;
   const str = (k: string) => (typeof o[k] === "string" && o[k] ? (o[k] as string) : undefined);
+  const id = str("id");
+  if (!PUBKEY.test(pubkey) || typeof seq !== "number" || !Number.isSafeInteger(seq) || (!id && !str("clientId")) || !KINDS.includes(kind as SupportKind)) return null;
   const t = o["time"];
-  const at = typeof t === "number" && Number.isFinite(t) ? (t < 1e12 ? t * 1000 : t) : typeof t === "string" && !Number.isNaN(Date.parse(t)) ? Date.parse(t) : now;
+  const timed = typeof t === "number" && Number.isFinite(t) ? (t < 1e12 ? t * 1000 : t) : typeof t === "string" && !Number.isNaN(Date.parse(t)) ? Date.parse(t) : undefined;
+  const at = timed ?? now;
   const status = o["fromMe"] === true ? statusOf(o["status"]) : undefined;
-  const sats = typeof o["sats"] === "number" && Number.isFinite(o["sats"]) ? Math.round(o["sats"]) : undefined;
+  // Every record names its sats; only a payment's are worth keeping.
+  const sats = kind === "payment" && typeof o["sats"] === "number" && Number.isFinite(o["sats"]) ? Math.round(o["sats"]) : undefined;
   const alias = typeof peer["alias"] === "string" && peer["alias"].trim() ? peer["alias"].trim() : undefined;
   return {
     seq,
-    id,
+    ...(id ? { id } : {}),
     ...(str("clientId") ? { clientId: str("clientId")! } : {}),
     at: Math.round(at),
+    ...(timed === undefined ? { untimed: true as const } : {}),
     fromMe: o["fromMe"] === true,
     pubkey,
     ...(alias ? { alias } : {}),
@@ -150,8 +168,9 @@ export function dmOf(v: unknown, now: number): Dm | null {
   };
 }
 
-/** A send's status as the daemon says it: `pending` (or `sending`) is still
- *  going, `failed` failed, anything else went. */
+/** A send's status as the daemon says it: `sending` (or `pending`) is still
+ *  going — the LSP has not answered, or a publish failed partway and the
+ *  daemon asks the LSP — `failed` failed, anything else went. */
 function statusOf(v: unknown): SendStatus | undefined {
   if (v === undefined || v === null) return undefined;
   if (v === "pending" || v === "sending") return "sending";
@@ -163,8 +182,14 @@ export function createSupport(deps: SupportDeps): Support {
   const now = deps.now ?? Date.now;
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   let opening: Promise<SupportStore> | undefined;
+  let closed = false;
   const store = (): Promise<SupportStore> => {
-    opening ??= deps.open();
+    if (closed) return Promise.reject(new Error("Support is closed"));
+    // Opened once a process: no send of this one is in flight yet.
+    opening ??= deps.open().then((s) => {
+      s.abandonSends();
+      return s;
+    });
     opening.catch(() => {
       opening = undefined;
     });
@@ -205,7 +230,9 @@ export function createSupport(deps: SupportDeps): Support {
   /** `POST /dm` for a message kept as sending; its answer kept unless the feed spoke first. */
   const deliver = async (d: SupportDaemon, s: SupportStore, key: number, o: { clientId: string; pubkey: string; text: string; replyTo?: string }): Promise<SupportMessage> => {
     try {
-      const res = await call(d, "POST", "/dm", { id: o.clientId, to: o.pubkey, text: o.text, ...(o.replyTo ? { reply: o.replyTo } : {}) });
+      // The daemon answers with the send as its feed shows it, once the LSP
+      // has spoken or about 10 s have passed (then `sending`).
+      const res = await call(d, "POST", "/dm", { id: o.clientId, to: o.pubkey, text: o.text, ...(o.replyTo ? { reply: o.replyTo } : {}) }, SEND_TIMEOUT_MS);
       if (!res.ok) {
         const r = await refusal(res);
         s.answered(key, "failed", r.code ? `${r.code}: ${r.error.replace(/^[a-z_]+: /, "")}` : r.error);
@@ -233,7 +260,7 @@ export function createSupport(deps: SupportDeps): Support {
   const follow = async (d: SupportDaemon, s: SupportStore) => {
     const since = s.since(now());
     for (let page = 0; page < PAGES_PER_TICK; page++) {
-      const cursor = s.cursor();
+      const cursor = s.cursor(d.url);
       const res = await call(d, "GET", `/dms?after=${cursor}&limit=${DMS_PAGE}`);
       if (!res.ok) {
         const r = await refusal(res);
@@ -245,35 +272,43 @@ export function createSupport(deps: SupportDeps): Support {
       const seqs = raw.map((r) => (r && typeof r === "object" ? (r as Record<string, unknown>)["seq"] : undefined)).filter((q): q is number => typeof q === "number" && Number.isSafeInteger(q));
       const next = Math.max(cursor, ...seqs);
       const dms = raw.map((r) => dmOf(r, now())).filter((x): x is Dm => x !== null);
-      const contacts = s.ingest(dms, next, since);
-      for (const c of contacts) await welcome(d, s, c);
+      const { skipped, error } = s.ingest(dms, d.url, next, since);
+      if (skipped) console.warn(`[support] ${skipped} of the daemon's records could not be kept and were skipped (${error})`);
       if (raw.length < DMS_PAGE || next === cursor) return;
     }
   };
 
-  /** §5: the welcome, to a contact newer than its save, once. */
-  const welcome = async (d: SupportDaemon, s: SupportStore, c: { pubkey: string; at: number }) => {
-    const w = s.welcome();
-    if (!w.welcome || w.since === undefined || c.at < w.since) return;
-    if (!s.claimWelcome(c.pubkey, now())) return;
-    await sendNew(d, s, { pubkey: c.pubkey, text: w.welcome, by: WELCOME_BY });
+  /** §5: each welcome due, claimed and kept before it goes, once. */
+  const welcomes = async (d: SupportDaemon, s: SupportStore) => {
+    for (const pubkey of s.dueWelcomes()) {
+      const clientId = randomBytes(32).toString("hex");
+      const m = s.startWelcome(pubkey, clientId, now());
+      if (m) await deliver(d, s, m.key, { clientId, pubkey, text: m.text! });
+    }
   };
 
   /** Workers' files, kept when they arrive. */
   const fetchFiles = async (d: SupportDaemon, s: SupportStore) => {
     for (const f of s.fetching(FILES_PER_TICK)) {
+      if (closed) return;
       try {
         const res = await call(d, "GET", `/dm/${encodeURIComponent(f.id)}/file`, undefined, FILE_TIMEOUT_MS);
         if (!res.ok) {
           const r = await refusal(res);
           if (res.status === 413 || r.code === "too_large") s.fileFailed(f.key, "too_large", "too large: over 25 MB");
-          else s.fileFailed(f.key, f.tries + 1 >= FILE_TRIES ? "failed" : "fetching", r.error);
+          else s.fileFailed(f.key, FILE_REFUSED_FOR_GOOD.has(r.code ?? "") || f.tries + 1 >= FILE_TRIES ? "failed" : "fetching", r.code ? `${r.code}: ${r.error}` : r.error);
           continue;
         }
-        const bytes = await readCapped(res, SUPPORT_FILE_MAX_BYTES);
-        if (!bytes) {
-          s.fileFailed(f.key, "too_large", "too large: over 25 MB");
-          continue;
+        let bytes: Buffer;
+        try {
+          bytes = await readCapped(res, SUPPORT_FILE_MAX_BYTES, "file");
+        } catch (err) {
+          // readCapped's refusal past the cap, by its content-length or as it streams.
+          if (/more than \d+/.test(err instanceof Error ? err.message : "")) {
+            s.fileFailed(f.key, "too_large", "too large: over 25 MB");
+            continue;
+          }
+          throw err;
         }
         await mkdir(deps.filesDir, { recursive: true, mode: 0o700 });
         const path = join(deps.filesDir, fileNameOf(f.id));
@@ -286,7 +321,9 @@ export function createSupport(deps: SupportDeps): Support {
           throw err;
         }
         const type = res.headers.get("content-type")?.split(";")[0]?.trim();
-        s.fileKept(f.key, path, bytes.byteLength, type && type !== "application/octet-stream" ? type : undefined);
+        // The feed names a file by its type (a Sphinx file message carries no
+        // name); the sender's own name comes with the bytes.
+        s.fileKept(f.key, path, bytes.byteLength, type && type !== "application/octet-stream" ? type : undefined, fileNameIn(res.headers.get("content-disposition")));
       } catch (err) {
         s.fileFailed(f.key, f.tries + 1 >= FILE_TRIES ? "failed" : "fetching", err instanceof Error ? err.message : String(err));
       }
@@ -294,6 +331,7 @@ export function createSupport(deps: SupportDeps): Support {
   };
 
   let ticking: Promise<void> | null = null;
+  let filing: Promise<void> | null = null;
   let warned = "";
   const tick = (): Promise<void> => {
     ticking ??= (async () => {
@@ -302,7 +340,13 @@ export function createSupport(deps: SupportDeps): Support {
         if (!d) return;
         const s = await store();
         await follow(d, s);
-        await fetchFiles(d, s);
+        await welcomes(d, s);
+        // A file may take minutes to come: the next read never waits for it.
+        filing ??= fetchFiles(d, s)
+          .catch((err) => console.warn(`[support] the files could not be fetched: ${err instanceof Error ? err.message : String(err)}`))
+          .finally(() => {
+            filing = null;
+          });
         warned = "";
       } catch (err) {
         // Said once until it changes: a daemon down for an hour is one line.
@@ -319,10 +363,6 @@ export function createSupport(deps: SupportDeps): Support {
   let timer: ReturnType<typeof setInterval> | undefined;
 
   return {
-    async available() {
-      return (await deps.daemon()) !== null;
-    },
-
     async conversations(q) {
       const { s } = await ready();
       return { conversations: s.conversations(q ?? "") };
@@ -353,7 +393,9 @@ export function createSupport(deps: SupportDeps): Support {
       }
       const text = typeof body.text === "string" ? body.text : "";
       if (!text.trim()) throw new SupportError("bad_request", "text is the message: a non-empty string");
-      if (text.length > SUPPORT_TEXT_MAX) throw new SupportError("bad_request", `a message is at most ${SUPPORT_TEXT_MAX} characters`);
+      // The daemon's own measure, refused here before anything is kept.
+      const size = Buffer.byteLength(JSON.stringify({ content: text, ...(body.replyTo ? { replyUuid: body.replyTo } : {}) }), "utf8");
+      if (size > SUPPORT_SEND_MAX_BYTES) throw new SupportError("bad_request", `too long: ${size} bytes as a message, at most ${SUPPORT_SEND_MAX_BYTES}`);
       return { message: await sendNew(d, s, { pubkey: c.pubkey, text, ...(body.replyTo ? { replyTo: body.replyTo } : {}), ...(by ? { by } : {}) }) };
     },
 
@@ -364,7 +406,7 @@ export function createSupport(deps: SupportDeps): Support {
       return { conversation: conversationOf(s, worker) };
     },
 
-    async file(worker, id) {
+    async file(worker, id, offset = 0) {
       const { s } = await ready();
       const c = conversationOf(s, worker);
       const f = s.fileOf(c.pubkey, id);
@@ -373,14 +415,33 @@ export function createSupport(deps: SupportDeps): Support {
         const state = f.message.deleted ? "deleted by the worker" : f.message.file?.state === "too_large" ? "too large: over 25 MB" : f.message.file?.state === "fetching" ? "still being fetched from the daemon" : `not kept: ${f.message.file?.error ?? "the daemon did not give it"}`;
         throw new SupportError("no_file", `the file is ${state}`);
       }
-      let bytes: Buffer;
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset % SUPPORT_FILE_PIECE_BYTES !== 0) throw new SupportError("bad_request", `offset is a multiple of ${SUPPORT_FILE_PIECE_BYTES}: where a piece starts`);
+      let piece: Buffer;
+      let size: number;
       try {
-        bytes = await readFile(f.path);
+        const fh = await openFile(f.path, "r");
+        try {
+          size = (await fh.stat()).size;
+          const buf = Buffer.alloc(Math.max(0, Math.min(SUPPORT_FILE_PIECE_BYTES, size - offset)));
+          const { bytesRead } = await fh.read(buf, 0, buf.byteLength, offset);
+          piece = buf.subarray(0, bytesRead);
+        } finally {
+          await fh.close();
+        }
       } catch (err: any) {
         if (err?.code === "ENOENT") throw new SupportError("no_file", "the file is no longer on this server");
         throw err;
       }
-      return { id, ...(f.message.file?.name ? { name: f.message.file.name } : {}), mediaType: f.message.file?.mediaType ?? "application/octet-stream", bytes: bytes.byteLength, base64: bytes.toString("base64") };
+      const next = offset + piece.byteLength;
+      return {
+        id,
+        ...(f.message.file?.name ? { name: f.message.file.name } : {}),
+        mediaType: f.message.file?.mediaType ?? "application/octet-stream",
+        bytes: size,
+        offset,
+        base64: piece.toString("base64"),
+        ...(next < size ? { next } : {}),
+      };
     },
 
     async settings() {
@@ -396,6 +457,10 @@ export function createSupport(deps: SupportDeps): Support {
     },
 
     tick,
+    async settled() {
+      await ticking;
+      await filing;
+    },
     start() {
       if (timer) return;
       void tick();
@@ -407,9 +472,11 @@ export function createSupport(deps: SupportDeps): Support {
       timer = undefined;
     },
     async close() {
+      closed = true;
       if (timer) clearInterval(timer);
       timer = undefined;
       await ticking;
+      await filing;
       const open = opening;
       opening = undefined;
       if (open) (await open.catch(() => null))?.close();
@@ -417,27 +484,19 @@ export function createSupport(deps: SupportDeps): Support {
   };
 }
 
-/** A response's bytes, or null past `max`. */
-async function readCapped(res: Response, max: number): Promise<Uint8Array | null> {
-  const declared = Number(res.headers.get("content-length") ?? NaN);
-  if (Number.isFinite(declared) && declared > max) {
-    await res.body?.cancel().catch(() => {});
-    return null;
-  }
-  if (!res.body) return new Uint8Array(await res.arrayBuffer());
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let n = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    n += value.byteLength;
-    if (n > max) {
-      await reader.cancel().catch(() => {});
-      return null;
+/** The sender's name of a file, as `content-disposition` carries it
+ *  (RFC 6266: `filename*=UTF-8''…` first, else `filename="…"`). */
+export function fileNameIn(header: string | null): string | undefined {
+  if (!header) return undefined;
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      const name = decodeURIComponent(star[1]!.trim());
+      if (name) return name;
+    } catch {
+      // not well encoded: the plain name below
     }
-    parts.push(value);
   }
-  return Buffer.concat(parts);
+  const plain = /filename\s*=\s*"([^"]*)"/i.exec(header) ?? /filename\s*=\s*([^;]+)/i.exec(header);
+  return plain?.[1]?.trim() || undefined;
 }
-
