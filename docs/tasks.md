@@ -84,10 +84,13 @@ index. A change in this area updates this file, not AGENTS.md.
   (`ctx.services.publicView.share`, src/public-view.ts, `publicAppLinks` on
   `lastBase`, the last OUTSIDE request's base: an in-process request no
   longer moves it) and a QR of `peelLink` drawn server-side (`qrSvg`,
-  src/move/link.ts, `qrcode-generator`). The Queue opens with a "Share with
-  workers" block per public worker app (`sharedApps`,
-  `components/Share.tsx`); a type's page shows its app's, or says it is
-  not public. The page makes nothing public.
+  src/move/link.ts, `qrcode-generator`). The Queue opens with a "Bring
+  workers in" list, one closed row per public worker app (`sharedApps`,
+  `ShareRows` in `components/Share.tsx`): the app's name and the types its
+  workers answer, opening to its invite maker, QR and links (kept mounted
+  while closed, so an invite just made stays). A type's page shows its
+  app's block open, or says it is not public. The page makes nothing
+  public.
 - **Task types the builder asks for** (`plans/human-steps.md` §9.8, item 6
   PR 2; `src/tasks/set-type.ts`, `task/set-type`, `task/types`). The
   builder writes the workflow with the `human` step, so it knows when a
