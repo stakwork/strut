@@ -48,7 +48,11 @@ import { appendFile, mkdir, readdir, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { appDir } from "./files.js";
 
-export type AppCallStatus = "ok" | "refused" | "error";
+/** How a `step_run` ended: it ran (`ok`), its grants or hosts refused it
+ *  (`refused`), the step failed (`error`), or a host's config is one the
+ *  step's input does not take, so it never ran (`invalid`: the host door's
+ *  400, plans/people-and-hosts.md §3). */
+export type AppCallStatus = "ok" | "refused" | "error" | "invalid";
 
 /** One `step_run`, as the door saw it. */
 export interface AppCall {

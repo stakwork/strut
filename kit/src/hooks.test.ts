@@ -223,6 +223,25 @@ describe("the run hooks name their step and pass what they were given", () => {
     await h2.unmount();
   });
 
+  it("useNames: a newer answer for a person reaches every list holding them, so two lists never disagree", async () => {
+    let wendy = "Wendy Worker";
+    const { client } = fakeClient({
+      [PEOPLE_NAMES_STEP]: (c) => ({ people: Object.fromEntries((c.config!.actors as string[]).map((a) => [a, a === "w-1" ? { name: wendy } : a === "a-1" ? { name: "Ada" } : {}])) }),
+    });
+    let second = false;
+    const h = await renderHook(() => ({ workers: useNames(["w-1", "a-1"]), support: useNames(["w-1", "b-2"], { enabled: second }) }), { client });
+    await until(() => h.result().workers.data !== undefined, "the first list");
+    assert.deepEqual(h.result().workers.data, { "w-1": "Wendy Worker", "a-1": "Ada" });
+    wendy = "Wendy W";
+    second = true;
+    await h.rerender();
+    await until(() => h.result().support.data !== undefined, "the second list");
+    assert.deepEqual(h.result().support.data, { "w-1": "Wendy W" });
+    await until(() => h.result().workers.data?.["w-1"] === "Wendy W", "the first list to take the newer name");
+    assert.equal(h.result().workers.data?.["a-1"], "Ada", "a person only the first list holds keeps their name");
+    await h.unmount();
+  });
+
   it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {
     let n = 0;
     const { client, calls } = fakeClient({

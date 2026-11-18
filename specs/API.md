@@ -1804,7 +1804,7 @@ does. The HTTP status says how it ended, so a host sends again until a
 | `200` | Every call in the request finished (a `tools/list` or `initialize` too) |
 | `403` | Refused: one of the checks above |
 | `500` | The step itself failed (its message in the result) |
-| `400` | A call the tool could not take: unknown tool, bad arguments, a JSON-RPC error |
+| `400` | A call the tool could not take: unknown tool, bad arguments, a JSON-RPC error, or a `config` the step's input does not take (`<type> cannot take this config: <field>: …`), which is checked before the step runs. A config with `input` beside it has its templates resolved first, so the step checks it and a bad one is a `500` |
 | `413` | The request is over 36 MiB (`HOST_CALL_BODY_MAX_BYTES`: a 25 MiB file as base64, with room for the rest). Every other caller of `/mcp` keeps its own cap |
 | `406` | No `Accept: application/json, text/event-stream`: MCP's rule, though the answer is never a stream |
 

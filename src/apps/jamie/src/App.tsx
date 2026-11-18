@@ -17,7 +17,7 @@ import { useConversationList } from "./hooks";
 import { ViewerContext } from "./viewer";
 import { ChatList } from "./components/ChatList";
 import { Thread } from "./components/Thread";
-import { Connect } from "./components/Connect";
+import { Connect, type Offer } from "./components/Connect";
 import { Notice, errorText } from "./components/bits";
 
 /** Narrower than this, the list is a drawer over the thread. */
@@ -69,6 +69,9 @@ export default function App() {
   const [focusJob, setFocusJob] = useState<{ job: string; at: number } | null>(null);
   /** Connect is open in the thread's place. */
   const [connect, setConnect] = useState(false);
+  /** Connect's waiting link challenge, kept here so it outlives Connect
+   *  closing: reopened, Connect shows it again and sees Peel's link. */
+  const [linkOffer, setLinkOffer] = useState<Offer>(null);
   const open = (id: string, job?: string) => {
     setDraft(null);
     setActive(id);
@@ -113,7 +116,7 @@ export default function App() {
               <Notice tone="error">{errorText(list.error)}</Notice>
             </div>
           ) : connect ? (
-            <Connect onClose={() => setConnect(false)} />
+            <Connect offer={linkOffer} setOffer={setLinkOffer} onClose={() => setConnect(false)} />
           ) : (
             <Thread
               session={session}

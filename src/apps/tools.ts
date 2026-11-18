@@ -470,7 +470,19 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       const bad = await graphWriteRefusal(base, cfg, manifest, own ?? reader);
       if (bad) return refuse(`step_run refused: ${bad}`);
     }
-    if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    const resolved = await resolveStep(deps.registry, type).catch(() => null);
+    if (!resolved) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    // A host's config the step cannot take is the host's mistake, not the
+    // step failing: checked before it runs, so the door answers 400 and not
+    // 500 (a host sends a 5xx again forever). With `input`, templates in the
+    // config resolve first, so the runner checks it.
+    if (deps.host && input === undefined) {
+      const checked = resolved.def.input.safeParse(cfg);
+      if (!checked.success) {
+        const why = checked.error.issues.map((i) => `${i.path.join(".") || "config"}: ${i.message}`).join("; ");
+        return { out: { error: `step_run: ${type} cannot take this config: ${why}` }, status: "invalid", bytes: 0 };
+      }
+    }
     const result = await runStep(
       type,
       deps.registry,

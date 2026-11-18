@@ -254,6 +254,12 @@ describe("a host calls an app's tools (plans/people-and-hosts.md §3)", () => {
     assert.equal(badArgs.status, 400, badArgs.text);
   });
 
+  it("a config the step's input does not take answers 400, naming the field, and the step never runs", async () => {
+    const r = await call({ app: "inbox", type: "test/receive", config: { text: 42 } });
+    assert.equal(r.status, 400, r.text);
+    assert.match(r.error ?? "", /test\/receive cannot take this config: text:/);
+  });
+
   it("x-strut-account-name keeps the name the speaker goes by: as the key's own actor's while unlinked, on the account once linked", async () => {
     const r = await call({ app: "inbox", type: "test/receive" }, { name: encodeURIComponent("Zoë 🌱\nworker") });
     assert.equal(r.status, 200, r.text);

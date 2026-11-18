@@ -4,7 +4,7 @@
 // viewer, as a QR and an Open in Peel link; Peel signs it with its Sphinx key,
 // and the list shows the link while the challenge waits. A link is removed
 // here, which ends Peel's access at once.
-import { useEffect, useState } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { useHost } from "@strut/kit";
 import { ArrowLeft, ExternalLink, Link2, Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,9 +18,14 @@ const OFFER_MS = 10 * 60_000;
 /** A key as a person reads it: its ends. */
 export const shortKey = (key: string) => (key.length > 16 ? `${key.slice(0, 8)}…${key.slice(-6)}` : key);
 
-export function Connect({ onClose }: { onClose: () => void }) {
+/** A link challenge Connect shows, and whether Peel has linked through it. */
+export type Offer = (LinkOffer & { linked?: true }) | null;
+
+/** `offer` is the app's, not Connect's own: a challenge still waiting when
+ *  Connect closes is shown again when it reopens, and the link Peel made
+ *  meanwhile is seen. */
+export function Connect({ offer, setOffer, onClose }: { offer: Offer; setOffer: Dispatch<SetStateAction<Offer>>; onClose: () => void }) {
   const make = useLinkOffer();
-  const [offer, setOffer] = useState<(LinkOffer & { linked?: true }) | null>(null);
   const waiting = !!offer && !offer.linked && offer.exp > Date.now();
   const links = useLinks(waiting);
   const unlink = useUnlink();

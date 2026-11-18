@@ -1400,22 +1400,41 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
 export const PEOPLE_NAMES_STEP = "people/names";
 /** How many actors one `people/names` call asks for: the server's most. */
 const PEOPLE_NAMES_MAX = 200;
+/** Every `useNames` list's query key starts with this. */
+const NAMES_KEY = ["strut", "people", "names"] as const;
 
 /** People's names, by actor (`people/names`; grant it): only those who have
  *  one, so `names[actor] ?? <what showed before>` is what to show — a name
  *  is for showing, and the actor stays the person. Asked once for the list,
  *  200 actors a call; a visitor's page gets the visitor's own name alone.
- *  `data` is undefined until the answer, and on an error. */
+ *  `data` is undefined until the answer, and on an error. Every answer
+ *  also updates the page's other lists holding the same people, so two
+ *  lists never show one person under two names. */
 export function useNames(actors: readonly string[] | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<Readonly<Record<string, string>>> {
   const client = useStrutClient();
+  const qc = useQueryClient();
   const list = [...new Set(actors ?? [])].sort();
   return useQuery({
-    queryKey: ["strut", "people", "names", list],
+    queryKey: [...NAMES_KEY, list],
     queryFn: async () => {
       const out: Record<string, string> = {};
       for (let i = 0; i < list.length; i += PEOPLE_NAMES_MAX) {
         const got = await client.run<{ people: Record<string, { name?: string }> }>(PEOPLE_NAMES_STEP, { actors: list.slice(i, i + PEOPLE_NAMES_MAX) });
         for (const [actor, p] of Object.entries(got?.people ?? {})) if (typeof p?.name === "string" && p.name) out[actor] = p.name;
+      }
+      // The newest answer is every list's: another list holding any of these
+      // people takes their names from it.
+      for (const [key, old] of qc.getQueriesData<Record<string, string>>({ queryKey: NAMES_KEY })) {
+        const theirs = key[NAMES_KEY.length];
+        if (!old || !Array.isArray(theirs)) continue;
+        const shared = list.filter((a) => (theirs as string[]).includes(a));
+        if (!shared.length || shared.every((a) => old[a] === out[a])) continue;
+        const next = { ...old };
+        for (const a of shared) {
+          if (out[a] === undefined) delete next[a];
+          else next[a] = out[a];
+        }
+        qc.setQueryData(key, next);
       }
       return out;
     },
