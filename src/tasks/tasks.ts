@@ -2027,23 +2027,29 @@ export function createTasks(deps: TasksDeps): TasksService {
     if (before && at >= until) {
       throw new TaskError("final", `final: the hold on ${l.worker}'s answer to task ${t.id} ended at ${new Date(until).toISOString()}, so its verdict (${before.verdict}) can no longer change`);
     }
-    // The money (§9.6, ruled 2026-11-13: option A): inside the hold a
-    // rejection takes the earning back, and `ok` undoes a take-back a
-    // rejection made (its why begins `REVIEW_TAKE_BACK`), never a staff or a
-    // grading one. Past the hold nothing moves: paid money never moves back.
+    // The money (§9.6, ruled 2026-11-13: option A; `ok` releases, ruled
+    // 2026-11-18): inside the hold a rejection takes the earning back, and
+    // `ok` undoes a take-back a rejection made (its why begins
+    // `REVIEW_TAKE_BACK`), never a staff or a grading one, then RELEASES the
+    // earning at once: the worker can withdraw it now and the verdict is
+    // final (the hold now ends at `at`). Unreviewed answers keep the type's
+    // hold. Past the hold nothing moves: paid money never moves back.
     if (earning && at < until && deps.ledger) {
       const ledger = await deps.ledger();
       if (o.verdict === "rejected") {
         earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
-      } else if (earning.takenBack !== undefined && earning.takenBackWhy?.startsWith(REVIEW_TAKE_BACK)) {
-        earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+      } else {
+        if (earning.takenBack !== undefined && earning.takenBackWhy?.startsWith(REVIEW_TAKE_BACK)) {
+          earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+        }
+        earning = (await ledger.release({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
       }
     }
     const row = await s.tasks.putReview({ task: t.id, worker: l.worker, verdict: o.verdict, ...(why ? { why } : {}), ...(o.by ? { by: o.by } : {}), at });
     // §7.5: a rejection counts against standing as a failed test does, so
     // the check runs as after a grade; `ok` takes it out of the window.
     if (o.verdict === "rejected" && kind?.tests) await standingCheck(s, l.worker, kind);
-    return { task: t.id, worker: l.worker, lease: l.id, review: leaseReview(row, until, at), ...(earning ? { earning: leaseEarning(earning) } : {}) };
+    return { task: t.id, worker: l.worker, lease: l.id, review: leaseReview(row, earning?.releases ?? until, at), ...(earning ? { earning: leaseEarning(earning) } : {}) };
   };
 
   // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────

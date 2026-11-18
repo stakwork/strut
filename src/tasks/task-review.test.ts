@@ -8,6 +8,10 @@ import { tmpdir } from "node:os";
 import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TaskError, type TaskErrorCode, type TasksService, type TaskSettled, type WorkerTask } from "./tasks.js";
 import type { TaskListQuery } from "./task-store.js";
 import { MemoryLedgerStore } from "../payments/ledger-memory.js";
+import { FakePayer, FakeWallet } from "../payments/fake-wallet.js";
+import { lightningCapability } from "../payments/lightning.js";
+import { createPayouts, PayoutError } from "../payments/payouts.js";
+import { createWithdrawals } from "../payments/withdrawals.js";
 
 /**
  * The review verdict (plans/human-steps.md §9.6, ruled §9.12 4 and 5): a
@@ -37,7 +41,24 @@ const IMPLS = ["SQLite", "memory"] as const;
 
 function rigFor(impl: (typeof IMPLS)[number], dir: string): Rig {
   const rig: Rig = { svc: undefined as never, clock: T0, heard: [], ledger: new MemoryLedgerStore() };
+  // What `task/withdraw` calls: the service's `worker.withdraw` → the payer's
+  // third door (payouts.ts), over a fake wallet and keysend payer.
+  const wallet = new FakeWallet({ startMsat: 100_000_000, now: () => rig.clock });
+  const payer = new FakePayer();
+  payer.wallet = wallet;
+  const lightning = lightningCapability(wallet);
+  const withdrawals = createWithdrawals({
+    payer: async () => payer,
+    ledger: async () => rig.ledger,
+    now: () => rig.clock,
+    answerWithinMs: 2_000,
+    owedToWorkers: async () => (await rig.ledger.owedToWorkers({ now: rig.clock })).owedMsat,
+    balance: async () => (await lightning.balance()).msat,
+    sweep: async () => undefined as never,
+  });
+  const payouts = createPayouts({ ledger: async () => rig.ledger, ledgerIfAny: async () => rig.ledger, withdrawals, payer: async () => payer, lightning: () => lightning, now: () => rig.clock });
   rig.svc = createTasks({
+    payouts,
     open: impl === "SQLite" ? () => openTaskStores({ dataDir: dir }) : async () => memoryTaskStores(),
     ...(impl === "SQLite" ? { exists: () => existsSync(tasksPath(dir)) } : {}),
     now: () => rig.clock,
@@ -159,7 +180,8 @@ for (const impl of IMPLS) {
       assert.equal(first.review.until, releases, "paid: the earning's hold");
       rig.clock = releases - 1;
       const changed = await review({ task: t.id, verdict: "ok" });
-      assert.deepEqual([changed.review.verdict, changed.review.final], ["ok", false], "inside the hold it changes");
+      assert.deepEqual([changed.review.verdict, changed.review.final], ["ok", true], "inside the hold it changes; an ok releases the earning, so it is final at once");
+      assert.equal(changed.review.until, releases - 1, "the hold ends where the ok released it");
       rig.clock = releases;
       await assert.rejects(review({ task: t.id, verdict: "rejected", why: "blurry after all" }), refused("final", /final: the hold on ann's answer .* ended at .*its verdict \(ok\) can no longer change/));
       await assert.rejects(review({ task: t.id, verdict: "ok", why: "again" }), refused("final"), "the same verdict too");
@@ -217,29 +239,68 @@ for (const impl of IMPLS) {
       assert.ok((await tasks().worker("ann"))!.grants.find((x) => x.type === TYPE)!.revokedAt !== undefined, "a revoke is an act: staff grant again");
     });
 
-    it("money: inside the hold a rejection takes the earning back and ok gives it back, again and again; a reason changed moves nothing", async () => {
+    it("money: inside the hold a rejection takes the earning back; a reason changed moves nothing; ok then restores AND releases it at once (§9.6)", async () => {
       await typeWith({ paySats: 5, holdHours: 24 }, ["ann"]);
       const t = await ask();
       await answer("ann");
       const lease = (await leaseOf(t.id, "ann")).id;
-      const total = async () => (await tasks().me("ann")).balance.totalMsat;
-      assert.equal(await total(), 5_000);
+      const me = async () => (await tasks().me("ann")).balance;
+      assert.equal((await me()).totalMsat, 5_000);
       rig.clock += HOUR;
       const out = await review({ task: t.id, verdict: "rejected", why: "blurry", by: "ada" });
       assert.deepEqual([out.earning?.takenBack, out.earning?.takenBackWhy, out.earning?.takenBackBy], [rig.clock, "review: blurry", "ada"]);
-      assert.equal(await total(), 0, "taken back at once");
+      assert.equal((await me()).totalMsat, 0, "taken back at once");
+      rig.clock += HOUR;
+      await review({ task: t.id, verdict: "rejected", why: "very blurry" });
+      const e = (await leaseOf(t.id, "ann")).earning!;
+      assert.deepEqual([e.takenBackWhy, (await me()).totalMsat], ["review: blurry", 0], "a new reason takes nothing more");
+      assert.equal((await leaseOf(t.id, "ann")).review?.why, "very blurry", "the verdict keeps the new one");
       rig.clock += HOUR;
       const ok = await review({ task: t.id, verdict: "ok", by: "bo" });
       assert.equal(ok.earning?.takenBack, undefined, "restored");
-      assert.equal(await total(), 5_000);
+      assert.equal(ok.earning?.releases, rig.clock, "and released now");
+      assert.deepEqual([ok.review.final, ok.review.until], [true, rig.clock], "the verdict is final at once");
+      const bal = await me();
+      assert.deepEqual([bal.totalMsat, bal.withdrawableMsat, bal.heldMsat], [5_000, 5_000, 0]);
       assert.deepEqual((await rig.ledger.restoresOf(lease)).map((r) => [r.takenBackWhy, r.takenBackBy, r.restoredBy]), [["review: blurry", "ada", "bo"]], "the take-back it cleared is kept");
+    });
+
+    it("money: ok on a held answer releases its earning now; the worker withdraws it at once (task/withdraw's path) within the caps; a later rejection is final and takes nothing", async () => {
+      const X = "c".repeat(64);
+      const ann = `secp:${X}`;
+      const address = `02${X}_03${"d".repeat(64)}_1099511627776`;
+      await typeWith({ paySats: 2_000, holdHours: 24 }, [ann]);
+      await rig.ledger.deposit({ msat: 100_000_000, paymentHash: "seed", at: T0 - HOUR });
+      await rig.ledger.setPayoutSettings({ on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, at: T0 });
+      const t = await ask();
+      await answer(ann);
+      const me = async () => (await tasks().me(ann)).balance;
+      const withdraw = (msat: number) => rig.svc.worker.withdraw!(ann, { msat, address });
+      assert.deepEqual([(await me()).heldMsat, (await me()).withdrawableMsat], [2_000_000, 0], "held");
+      await assert.rejects(withdraw(1_000_000), (e: unknown) => e instanceof PayoutError && e.code === "over_balance", "held: nothing to withdraw");
       rig.clock += HOUR;
-      await review({ task: t.id, verdict: "rejected", why: "blurry after all" });
-      assert.equal(await total(), 0, "taken back again");
-      await review({ task: t.id, verdict: "rejected", why: "very blurry" });
-      const e = (await leaseOf(t.id, "ann")).earning!;
-      assert.deepEqual([e.takenBackWhy, await total()], ["review: blurry after all", 0], "a new reason takes nothing more");
-      assert.equal((await leaseOf(t.id, "ann")).review?.why, "very blurry", "the verdict keeps the new one");
+      const out = await review({ task: t.id, verdict: "ok", by: "ada" });
+      assert.equal(out.earning?.releases, rig.clock);
+      assert.equal(out.review.final, true);
+      const bal = await me();
+      assert.deepEqual([bal.withdrawableMsat, bal.heldMsat, bal.nextReleaseAt], [2_000_000, 0, undefined]);
+      const paid = await withdraw(1_000_000);
+      assert.equal(paid.msat, 1_000_000, "withdrawn at once, caps and all");
+      await assert.rejects(withdraw(2_000_000), (e: unknown) => e instanceof PayoutError && e.code === "over_balance", "never past what it was");
+      rig.clock += MIN;
+      await assert.rejects(review({ task: t.id, verdict: "rejected", why: "too late" }), refused("final"));
+      assert.deepEqual([(await leaseOf(t.id, ann)).earning!.takenBack, (await leaseOf(t.id, ann)).review?.verdict], [undefined, "ok"]);
+      assert.equal((await rig.svc.takeBack({ task: t.id, why: "staff" }))[0]!.result, "released", "a staff take-back answers released");
+    });
+
+    it("money: an unreviewed answer stays held until the type's hold", async () => {
+      await typeWith({ paySats: 5, holdHours: 24 }, ["ann"]);
+      await ask();
+      await answer("ann");
+      const bal = async () => (await tasks().me("ann")).balance;
+      assert.deepEqual([(await bal()).withdrawableMsat, (await bal()).heldMsat], [0, 5_000]);
+      rig.clock += 24 * HOUR;
+      assert.deepEqual([(await bal()).withdrawableMsat, (await bal()).heldMsat], [5_000, 0]);
     });
 
     it("money: ok never undoes a staff take-back; past the hold nothing moves; an unpaid answer has none to move", async () => {

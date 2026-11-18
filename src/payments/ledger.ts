@@ -32,7 +32,9 @@
  * its worker, in SATS (msat), never dollars. `pay` is one row per answer
  * (its lease), written once and changed only by a take-back — which a
  * review's `ok` may undo inside the hold (`restore`, plans/human-steps.md
- * §9.6), the take-back it cleared kept in `pay_restores`; `payees`
+ * §9.6), the take-back it cleared kept in `pay_restores` — or by its
+ * `releases` moved EARLIER, never later (`release`: a review's `ok` pays a
+ * held earning out at once); `payees`
  * one row per worker, what they were credited, taken back and withdrawn;
  * `pay_daily` one row per UTC day and task type, what every read of pay
  * over time sums. An earning is HELD until its `releases` and withdrawable
@@ -469,6 +471,22 @@ export interface RestoreResult {
   earning?: Earning;
 }
 
+/** A held earning released now (plans/human-steps.md §9.6: a review's `ok`). */
+export interface ReleaseInput {
+  lease: string;
+  by?: string;
+  at?: number;
+}
+
+/** A release's outcome: `released` (now: `releases` is `at`, or the
+ *  earning's own `at` if that is later), `already` (past its hold already),
+ *  `taken` (taken back: nothing moves) or `none` (no earning). */
+export interface ReleaseResult {
+  lease: string;
+  result: "released" | "already" | "taken" | "none";
+  earning?: Earning;
+}
+
 /** One take-back a restore cleared, kept: when, why and by whom it was
  *  taken back, and when and by whom it was restored. */
 export interface PayRestore {
@@ -818,6 +836,12 @@ export interface LedgerStore {
    *  Past its hold the take-back is final (`released`); an earning not
    *  taken back is `none`. The earning can be taken back again after. */
   restore(input: RestoreInput): Promise<RestoreResult>;
+  /** Releases a held earning now (§9.6: a review's ok): one guarded
+   *  statement moving `releases` earlier, to `at` (never before the
+   *  earning's own `at`), committed with `synchronous=full`. One past its
+   *  hold is `already`; one taken back is `taken`; nothing changes. After
+   *  it the earning is the worker's: a take-back answers `released`. */
+  release(input: ReleaseInput): Promise<ReleaseResult>;
   /** The take-backs restores cleared on one lease, oldest first. */
   restoresOf(lease: string): Promise<PayRestore[]>;
   /** What one worker is owed, held and withdrawable at `now`. */

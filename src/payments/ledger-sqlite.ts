@@ -75,6 +75,8 @@ import {
   type SweepResult,
   type PayRestore,
   type RestoreInput,
+  type ReleaseInput,
+  type ReleaseResult,
   type RestoreResult,
   type TakeBackInput,
   type TakeBackResult,
@@ -156,7 +158,7 @@ create index if not exists deposits_at on deposits(at);
 
 -- Worker pay (plans/human-steps.md §8.1): what accepted answers earned, in
 -- msat. Tables of their own, so no ledger file needs a migration. A pay row
--- is written once per lease and changed only by its take-back, once.
+-- is written once per lease and changed only by its take-back, once (or undone, or released early: see its trigger).
 create table if not exists pay (
   lease text primary key,
   task text not null,
@@ -180,14 +182,21 @@ create index if not exists pay_run on pay(run_id);
 -- (plans/human-steps.md §9.6: a review's ok inside the hold; the statement
 -- guards the hold). #664's trigger allowed the take-back alone, once: it is
 -- replaced at every open, so a file a strut from before opened works too.
+-- And by its releases moved EARLIER (a review's ok releases a held
+-- earning at once), to no earlier than its at, nothing else changing.
 drop trigger if exists pay_take_back_once;
-create trigger if not exists pay_take_back_or_restore before update on pay
-  when not ((old.taken_back is null and new.taken_back is not null)
-         or (old.taken_back is not null and new.taken_back is null and new.taken_back_why is null and new.taken_back_by is null))
+drop trigger if exists pay_take_back_or_restore;
+create trigger if not exists pay_take_back_restore_release before update on pay
+  when not (
+      (new.releases is old.releases and
+        ((old.taken_back is null and new.taken_back is not null)
+         or (old.taken_back is not null and new.taken_back is null and new.taken_back_why is null and new.taken_back_by is null)))
+      or (new.releases < old.releases and new.releases >= old.at
+        and new.taken_back is old.taken_back and new.taken_back_why is old.taken_back_why and new.taken_back_by is old.taken_back_by))
     or new.lease is not old.lease or new.task is not old.task or new.worker is not old.worker or new.type is not old.type
-    or new.msat is not old.msat or new.at is not old.at or new.releases is not old.releases
+    or new.msat is not old.msat or new.at is not old.at
     or new.workflow is not old.workflow or new.run_id is not old.run_id or new.path is not old.path
-  begin select raise(abort, 'a pay row changes only by its take-back, or that take-back undone'); end;
+  begin select raise(abort, 'a pay row changes only by its take-back, that take-back undone, or its release moved earlier'); end;
 create trigger if not exists pay_kept before delete on pay
   begin select raise(abort, 'pay rows are kept'); end;
 
@@ -416,6 +425,8 @@ export class SqliteLedgerStore implements LedgerStore {
         `update pay set taken_back = ?1, taken_back_why = ?2, taken_back_by = ?3
           where lease = ?4 and taken_back is null and releases > ?1`,
       ),
+      // The one guarded write of a release: held, and not taken back.
+      releaseEarning: p("update pay set releases = max(?1, at) where lease = ?2 and taken_back is null and releases > max(?1, at)"),
       payeeTakenBack: p("update payees set taken_back = taken_back + ? where worker = ?"),
       // The one guarded write of a restore: taken back, and still held.
       restore: p(
@@ -801,6 +812,21 @@ export class SqliteLedgerStore implements LedgerStore {
       this.s.payeeRestored.run(before.msat, before.worker);
       this.s.payDayRestored.run(before.msat, dayOf(before.at), before.type);
       return { lease: input.lease, result: "restored", earning: earningRow(this.s.payOf.get(input.lease) as Row) };
+    }, true);
+  }
+
+  async release(input: ReleaseInput): Promise<ReleaseResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    int("at", at);
+    return this.tx<ReleaseResult>(() => {
+      const row = this.s.payOf.get(input.lease) as Row | undefined;
+      if (!row) return { lease: input.lease, result: "none" };
+      if (Number(this.s.releaseEarning.run(at, input.lease).changes) === 1) {
+        return { lease: input.lease, result: "released", earning: earningRow(this.s.payOf.get(input.lease) as Row) };
+      }
+      const earning = earningRow(row);
+      return { lease: input.lease, result: earning.takenBack !== undefined ? "taken" : "already", earning };
     }, true);
   }
 

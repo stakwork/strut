@@ -3289,6 +3289,12 @@ So review is a mark on the answer, never an undo of the run.
   answered. A FIRST verdict may still be given after that (§9.6: "after
   the hold it changes no money"); it is final at once. A change after it
   is `409 final`. Each lease's verdict carries `until` and `final`.
+- **`ok` releases (ruled 2026-11-18).** Differs from "after the hold it
+  changes no money": a review's `ok` on a held earning (restored first if a
+  rejection took it back) RELEASES it at once: the ledger's `release` moves
+  `releases` to now. The worker can withdraw it now and the verdict is
+  final (the hold ends now, so a change is `409 final`). Unreviewed answers
+  keep the type's hold; a grading `pass` does not release early.
 - **Standing (§7.5).** A rejection is a `fail` in the window, at the time
   the answer was given, for answers given since the grant, and the
   standing check runs after it as after a grade, so it can revoke. `ok`

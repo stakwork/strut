@@ -197,7 +197,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.match(typeCard({ name: "pet-match", app: "workers", answer: MATCH, enabled: false }).summary!, /It starts switched off: nobody gets one until it is turned on\.$/);
     // A paid new type: dollars first, then sats, and the wait; a rise from nothing, so a danger, never folded.
     const paid = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, tests: { qualify: 3 }, copies: { max: 2, agree: 2 } }, { usdPerBtc: 100_000 });
-    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
+    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later, or as soon as you mark the answer ok.", danger: true });
     assert.match(paid.summary!, /for \$0\.01 \(10 sats\) each, paid from this server's wallet\.$/);
     assert.match(field(paid, "Tests")!.value, /^on: 5% of tasks are tests \(25% until a worker has answered 50 real ones\); 3 tests to qualify before any real task; a grant is revoked under 80% passed of the last 20 graded, read once 10 are; graded by equal answers$/);
     assert.equal(field(paid, "Copies")!.value, "on: a step may ask up to 2 workers, each paid; 2 matching answers settle a task, compared by equal answers; when they disagree one more worker is asked, up to 2");
@@ -255,7 +255,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.equal(field(card, "Workers")!.value, "4 hold it");
     assert.deepEqual(field(card, "Pay"), {
       label: "Pay",
-      value: "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later. It is $0.01 (10 sats) now. The last week's 40 answers would have cost $1.00 (1,000 sats), against $0.40 (400 sats) at the pay now.",
+      value: "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later, or as soon as you mark the answer ok. It is $0.01 (10 sats) now. The last week's 40 answers would have cost $1.00 (1,000 sats), against $0.40 (400 sats) at the pay now.",
       danger: true,
     });
     assert.equal(
@@ -491,7 +491,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.equal(rec.card?.actions.accept, "Approve");
     // No app named workers here: a danger on the card.
     assert.deepEqual(rec.card?.fields.find((f) => f.label === "Task type"), { label: "Task type", value: "pet-match, in the app workers — no app workers on this server", danger: true });
-    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
+    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later, or as soon as you mark the answer ok.", danger: true });
 
     // A member is refused: their own page's accept (strut's own app, `proposal/decide`), their
     // session at the route, and their person token. Nothing saved, still pending.
@@ -547,7 +547,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.equal(fields["Open tasks"]!.value, "1");
     assert.equal(fields["Workers"]!.value, "1 hold it");
     assert.equal(fields["Pay"]!.danger, true);
-    assert.equal(fields["Pay"]!.value, "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 1 day later. It is $0.01 (10 sats) now. None were done in the last week.");
+    assert.equal(fields["Pay"]!.value, "$0.03 (25 sats) for each one, from this server's wallet. Workers can withdraw it 1 day later, or as soon as you mark the answer ok. It is $0.01 (10 sats) now. None were done in the last week.");
 
     // The admin's edit that breaks the shape: 400, still pending, nothing changed.
     const broken = await decide(out.proposal, auth, { action: "accept", input: { answer: { type: "object", properties: { x: { type: "string", pattern: "a" } } } } });
