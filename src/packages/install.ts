@@ -593,7 +593,9 @@ async function resolveSet(
       info,
       source: resolved?.source ?? { ref },
       ...(resolved?.key ? { key: resolved.key } : {}),
-      ...(resolved?.commit ? { commit: resolved.commit } : cached && commit && ref.startsWith("git+") ? { commit } : {}),
+      // A caller that read the digest at a commit (a `git+` ref, a
+      // subscription to one) names it.
+      ...(resolved?.commit ? { commit: resolved.commit } : cached && commit ? { commit } : {}),
       ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}),
     };
     for (const req of info.manifest.requires?.packages ?? []) {

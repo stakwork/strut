@@ -141,6 +141,8 @@ export interface ResolveOptions {
   /** A `git+` ref's last resolve: when the ref still points at `commit`,
    *  the cached `digest` is the answer and nothing is read out of git. */
   known?: { commit: string; digest: string };
+  /** A `git+` ref must name a branch: a tag or a commit is refused. */
+  branch?: boolean;
 }
 
 /**
@@ -171,7 +173,7 @@ export async function resolvePackage(ref: string, opts: ResolveOptions): Promise
 async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
   const tokenSecret = opts.tokenSecret ?? DEFAULT_TOKEN_SECRET;
   const token = (await opts.secret?.(tokenSecret)) || undefined;
-  const git = { dataDir: opts.dataDir ?? dirname(opts.cache.root), tokenSecret, ...(token ? { token } : {}), ...(opts.shell ? { shell: opts.shell } : {}) };
+  const git = { dataDir: opts.dataDir ?? dirname(opts.cache.root), tokenSecret, ...(token ? { token } : {}), ...(opts.shell ? { shell: opts.shell } : {}), ...(opts.branch ? { branch: true } : {}) };
   return fetchGitRef(ref, git, async (got) => {
     if (opts.known?.commit === got.commit && (!opts.digest || opts.digest === opts.known.digest)) {
       const have = await opts.cache.get(opts.known.digest);

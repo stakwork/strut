@@ -5,18 +5,24 @@
  * the distro's door, keeps its own forks, and hears the central's ping.
  * Both run behind an API key, so only the token opens the central's
  * catalog to the child, and the ping comes in on the peer key.
+ *
+ * And a box following a git BRANCH (plans/followed-repos.md §1): a fixture
+ * repository on disk (`file://`), its package under `#pkg`, moved by the
+ * test's commits and synced by the host alone.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
-import type { SubscriptionInfo } from "./subscriptions.js";
+import type { SubscriptionInfo, SyncOutcome } from "./subscriptions.js";
 
 const KEY = "fleet-api-key";
 const PEER_KEY = "fleet-peer-key";
@@ -222,5 +228,205 @@ describe("a fleet fed by its central strut", () => {
     const bad = await subscribe({ key: "not-a-key", url: centralUrl });
     assert.equal(bad.status, 400);
     assert.match(((await bad.json()) as { error: string }).error, /^subscription_invalid: key is the publisher's key/);
+  });
+});
+
+const GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
+const git = (cwd: string, ...args: string[]): string => {
+  const r = spawnSync("git", [...GIT_ID, ...args], { cwd, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+  return r.stdout.trim();
+};
+const LOG = (name: string, message: string) => `name: ${name}\ndescription: Sync the pods\nsteps:\n  - id: say\n    type: log\n    config: { message: ${JSON.stringify(message)} }\n`;
+
+describe("a box following a git branch", () => {
+  let root: string;
+  let repo: string;
+  let ref: string;
+  let ws: WorkspaceManager;
+  let strut: Strut;
+
+  /** Write `files` into the repository and commit them on `stable`. */
+  const commit = async (message: string, files: Record<string, string>): Promise<string> => {
+    for (const [rel, text] of Object.entries(files)) {
+      await mkdir(dirname(join(repo, rel)), { recursive: true });
+      await writeFile(join(repo, rel), text);
+    }
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", message);
+    return git(repo, "rev-parse", "HEAD");
+  };
+  const release = (version: string, message: string) => commit(version, { "pkg/strut.yaml": `package: acme/pods\nversion: ${version}\n`, "pkg/workflows/sync.yaml": LOG("acme/pods/sync", message) });
+  const subscribe = (body: Record<string, unknown>, id = "pods") => strut.app.request(`/packages/subscriptions/${id}`, json(body, "PUT"));
+  const syncNow = async (id = "pods"): Promise<SyncOutcome> => {
+    const res = await strut.app.request(`/packages/subscriptions/${id}/sync`, { method: "POST", headers: auth });
+    assert.equal(res.status, 200, await res.clone().text());
+    return (await res.json()) as SyncOutcome;
+  };
+  const state = async (): Promise<SubscriptionInfo> => {
+    const res = await strut.app.request("/packages/subscriptions", { headers: auth });
+    return ((await res.json()) as { subscriptions: SubscriptionInfo[] }).subscriptions.find((s) => s.id === "pods")!;
+  };
+  const active = async () => {
+    const wf = await ws.getWorkflowMetadata("acme/pods/sync");
+    return { version: wf?.active, commit: wf?.versions[wf.active]?.upstream?.commit, source: wf?.versions[wf.active]?.upstream?.source.ref, versions: Object.keys(wf?.versions ?? {}).length };
+  };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-git-sub-"));
+    repo = join(root, "stadeum");
+    await mkdir(repo, { recursive: true });
+    git(repo, "-c", "init.defaultBranch=main", "init", "--quiet");
+    await commit("site", { "README.md": "# stadeum\n" });
+    git(repo, "checkout", "--quiet", "-b", "stable");
+    ref = `git+${pathToFileURL(repo).href}@stable#pkg`;
+    ws = new WorkspaceManager(join(root, "box"));
+    strut = await boot(ws);
+  });
+  afterEach(async () => {
+    await strut.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("installs a push at the next sync and not before, skips a commit outside its folder, rolls back, and keeps an edit beside the release", async () => {
+    const c1 = await release("0.1.0", "one");
+    const put = await subscribe({ ref });
+    assert.equal(put.status, 200, await put.clone().text());
+    const info = (await put.json()) as SubscriptionInfo;
+    assert.deepEqual([info.ref, info.tokenSecret, info.token, info.key], [ref, "GITHUB_TOKEN", undefined, undefined], "the secret's name, never a token");
+
+    // The PUT starts the first read; a sync after it finds the package in.
+    await strut.subscriptions.sync("pods");
+    let s = await state();
+    assert.equal(s.error, undefined);
+    assert.equal(s.applied?.commit, c1);
+    assert.equal(s.applied?.seq, undefined, "a branch has no catalog seq");
+    assert.deepEqual(s.packages, [{ package: "acme/pods", version: "0.1.0", digest: s.applied?.digest, diverged: [] }]);
+    assert.deepEqual(await active(), { version: "v1", commit: c1, source: "subscription:pods", versions: 1 });
+    assert.ok(s.checkedAt);
+
+    // A push: nothing moves until the host syncs.
+    const c2 = await release("0.2.0", "two");
+    assert.equal((await state()).applied?.commit, c1);
+    let out = await syncNow();
+    assert.deepEqual([out.status, out.from, out.to], ["applied", c1, c2]);
+    assert.equal(out.result?.packages[0]?.package, "acme/pods");
+    s = await state();
+    assert.deepEqual(s.packages.map((p) => p.version), ["0.2.0"]);
+    assert.deepEqual(await active(), { version: "v2", commit: c2, source: "subscription:pods", versions: 2 });
+
+    // A commit outside the package's folder: the commit is recorded, nothing installed.
+    const c3 = await commit("site only", { "www/index.html": "<p>hi</p>\n" });
+    out = await syncNow();
+    assert.deepEqual([out.status, out.from, out.to, out.result], ["current", c2, c3, undefined]);
+    s = await state();
+    assert.equal(s.applied?.commit, c3);
+    assert.equal((await active()).versions, 2);
+    // An unmoved branch: current, read from nothing new.
+    assert.deepEqual([(await syncNow()).status, (await syncNow()).from], ["current", c3]);
+
+    // `stable` moved back: the older commit's package goes in.
+    git(repo, "reset", "--quiet", "--hard", c1);
+    out = await syncNow();
+    assert.deepEqual([out.status, out.from, out.to], ["applied", c3, c1]);
+    assert.deepEqual((await state()).packages.map((p) => p.version), ["0.1.0"]);
+    assert.deepEqual(await active(), { version: "v1", commit: c1, source: "subscription:pods", versions: 2 });
+
+    // Edited here, then a release: the edit stays active, the release beside it.
+    await ws.publishWorkflow("acme/pods/sync", "v3", LOG("acme/pods/sync", "mine"));
+    const c4 = await release("0.3.0", "three");
+    out = await syncNow();
+    assert.deepEqual([out.status, out.to], ["applied", c4]);
+    s = await state();
+    assert.deepEqual(s.packages, [{ package: "acme/pods", version: "0.3.0", digest: s.applied?.digest, diverged: ["acme/pods/sync"] }]);
+    const wf = await ws.getWorkflowMetadata("acme/pods/sync");
+    assert.equal(wf?.active, "v3", "the edit stays active");
+    assert.equal(Object.values(wf?.versions ?? {}).filter((v) => v.upstream?.commit === c4).length, 1, "the release waits beside it");
+  });
+
+  it("keeps what is installed when the remote does not answer, and says why", async () => {
+    const c1 = await release("0.1.0", "one");
+    await subscribe({ ref });
+    await strut.subscriptions.sync("pods");
+    await release("0.2.0", "two");
+    await rename(repo, `${repo}-gone`);
+    const out = await syncNow();
+    assert.equal(out.status, "error");
+    assert.equal(out.from, c1);
+    assert.match(out.error!, /^package_repo_(not_found|unreachable): /);
+    let s = await state();
+    assert.equal(s.error, out.error);
+    assert.deepEqual([s.applied?.commit, s.packages.map((p) => p.version)], [c1, ["0.1.0"]]);
+    assert.deepEqual(await active(), { version: "v1", commit: c1, source: "subscription:pods", versions: 1 });
+
+    // Back: the next sync brings the push in and clears the error.
+    await rename(`${repo}-gone`, repo);
+    assert.equal((await syncNow()).status, "applied");
+    s = await state();
+    assert.equal(s.error, undefined);
+    assert.deepEqual(s.packages.map((p) => p.version), ["0.2.0"]);
+  });
+
+  it("a peer's ping leaves it alone; the host's sync by id and the poll read it", async () => {
+    const c1 = await release("0.1.0", "one");
+    await subscribe({ ref });
+    await strut.subscriptions.sync("pods");
+    const checked = (await state()).checkedAt;
+    const c2 = await release("0.2.0", "two");
+
+    const asPeer = { authorization: `Bearer ${PEER_KEY}`, "content-type": "application/json" };
+    assert.equal((await strut.app.request("/packages/subscriptions/sync", { method: "POST", headers: asPeer, body: "{}" })).status, 202);
+    assert.deepEqual(await strut.subscriptions.syncAll({ git: false }), [], "the ping's set holds no git+ subscription");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual([(await state()).checkedAt, (await state()).applied?.commit], [checked, c1], "the ping read nothing");
+    assert.equal((await strut.app.request("/packages/subscriptions/pods/sync", { method: "POST", headers: asPeer, body: "{}" })).status, 403, "a peer may not sync one by id");
+    assert.equal((await strut.app.request("/packages/subscriptions/nope/sync", { method: "POST", headers: auth })).status, 404);
+
+    // The poll reads every subscription, git+ ones included.
+    const polled = await strut.subscriptions.syncAll();
+    assert.deepEqual(polled.map((o) => [o.id, o.status, o.to]), [["pods", "applied", c2]]);
+    const c3 = await release("0.3.0", "three");
+    assert.deepEqual([(await syncNow()).status, (await state()).applied?.commit], ["applied", c3]);
+  });
+
+  it("takes a branch: refuses a commit at the PUT and a tag at the first sync; a changed ref starts over", async () => {
+    const c1 = await release("0.1.0", "one");
+    git(repo, "tag", "v1");
+    const refused = async (body: Record<string, unknown>, re: RegExp) => {
+      const res = await subscribe(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.match(((await res.json()) as { error: string }).error, re);
+    };
+    await refused({ ref: `git+${pathToFileURL(repo).href}@${c1}#pkg` }, /^subscription_invalid: ref .*names a commit, which does not move/);
+    await refused({ ref, key: "y".repeat(52) }, /not both/);
+    await refused({ ref, tokenSecret: "ghp-not-a-name" }, /tokenSecret is the NAME of a secret/);
+    await refused({ ref: "https://github.com/acme/pods" }, /^subscription_invalid: ref https:\/\/github.com\/acme\/pods: a git ref starts with git\+/);
+    await refused({ ref: "git+https://github.com/acme/pods@" }, /nothing after @/);
+    await refused({ tokenSecret: "GITHUB_TOKEN" }, /^subscription_invalid: ref is git\+https:/);
+    await refused({ ref: 3 }, /^subscription_invalid: ref is git\+https:/);
+
+    // A tag names a commit that does not move: the first sync says so.
+    assert.equal((await subscribe({ ref: `git+${pathToFileURL(repo).href}@v1#pkg` })).status, 200);
+    const tag = await strut.subscriptions.sync("pods");
+    assert.equal(tag.status, "error");
+    assert.match(tag.error!, /^package_ref_not_found: .*no branch "v1" .*a subscription follows a branch, not a tag or a commit/);
+    assert.equal(await ws.getWorkflowMetadata("acme/pods/sync"), null);
+
+    // The branch, then another token's name: the state stays.
+    assert.equal((await subscribe({ ref })).status, 200);
+    await strut.subscriptions.sync("pods");
+    assert.equal((await state()).applied?.commit, c1);
+    const renamed = await subscribe({ ref, tokenSecret: "STADEUM_GH" });
+    assert.equal(((await renamed.json()) as SubscriptionInfo).tokenSecret, "STADEUM_GH");
+    await strut.subscriptions.sync("pods");
+    assert.equal((await state()).applied?.commit, c1);
+
+    // Another ref under the same id: its state starts over.
+    git(repo, "branch", "canary");
+    const canary = ref.replace("@stable", "@canary");
+    const moved = (await (await subscribe({ ref: canary })).json()) as SubscriptionInfo;
+    assert.deepEqual([moved.ref, moved.applied], [canary, undefined]);
+    await strut.subscriptions.sync("pods");
+    assert.deepEqual([(await state()).applied?.ref, (await state()).applied?.commit], [canary, c1]);
   });
 });

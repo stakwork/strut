@@ -5646,6 +5646,10 @@ export async function createStrut<TServices = unknown>(
     },
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
+    // A `git+` subscription's branch, read as serve mode reads its ref.
+    dataDir,
+    ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+    ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
   });
 
   // ── Serve mode (src/packages/serve.ts; plans/app-repos.md §4) ──────────
@@ -5752,16 +5756,25 @@ export async function createStrut<TServices = unknown>(
     }
   });
   // The publisher's ping (a peer may send it): read the catalogs now — of
-  // the subscriptions to `key`, or all of them. Answered at once.
+  // the subscriptions to `key`, or all of them. Answered at once. A `git+`
+  // subscription has no publisher: its host syncs it by id (below), in its
+  // own window (plans/followed-repos.md §1.3).
   app.post("/packages/subscriptions/sync", async (c) => {
     const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
     if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
-    void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    void subscriptions.syncAll({ ...(body.key ? { key: body.key } : {}), git: false });
     // A served ref is followed the same way (src/packages/serve.ts).
     if (served?.follows(body.key)) void served.sync();
     // The index follows the same ping: a listed publisher's public catalog moved.
     if (index) void index.crawl(body.key ? { key: body.key } : {}).catch(() => undefined);
     return c.json({ ok: true }, 202);
+  });
+  // One subscription read now, answered with the outcome — the operator's
+  // (full scope: the peer gate lets a peer POST only the ping above). How a
+  // host moves a `git+` subscription in its window.
+  app.post("/packages/subscriptions/:id/sync", async (c) => {
+    const out = await subscriptions.sync(c.req.param("id"));
+    return c.json(out, out.error?.startsWith("subscription_unknown:") ? 404 : 200);
   });
 
   // ── The package INDEX (plans/marketplace.md §7, step 7) ─────────────────
