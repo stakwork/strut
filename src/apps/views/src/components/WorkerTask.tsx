@@ -427,8 +427,11 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
     setWorking(undefined);
   };
   /** Whether there is more of what they are working on: a standing type, or one with tasks waiting. */
+  // Any-time work comes only when a kind is named (`working`, else the page's
+  // `type`): Start working, which names none, takes only work a workflow sent.
+  const named = working ?? type;
   const more = (me.data?.types ?? []).some(
-    (t) => (working == null || t.name === working) && (type === undefined || t.name === type) && (!here || t.app === here) && (t.standing || (t.waiting ?? 0) > 0),
+    (t) => (working == null || t.name === working) && (type === undefined || t.name === type) && (!here || t.app === here) && ((t.standing && named !== undefined) || (t.waiting ?? 0) > 0),
   );
   const mark = icon ?? <Briefcase className="size-4" />;
 
@@ -553,8 +556,9 @@ const HOME_POLL_MS = 15_000;
  * and whether there is work of it now (any time, for a standing type; how
  * many wait, for tasks a workflow made) — what they earned here, and their
  * own tasks, newest first, with how each ended and what it earned. Choosing a
- * kind starts it (`onStart(type)`); Start working takes any kind this app
- * draws (`null`). With `all`, every app's kinds the worker can open here; one
+ * kind starts it (`onStart(type)`); Start working takes work a workflow sent
+ * of any kind this app draws (`null`) — any-time work only when its kind is
+ * chosen, and a pick-up in hand is never shown as in hand. With `all`, every app's kinds the worker can open here; one
  * another app draws says so, and `onStart` is for the page to open that app.
  */
 export function WorkHome({ only, all = false, onStart }: { only?: string; all?: boolean; onStart: (type: string | null) => void }) {
@@ -584,12 +588,15 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
   if (info.status === "suspended" || info.status === "banned") {
     return <Screen icon={<Clock className="size-10" />} heading="Your work here is paused" text="An admin has paused your account here. What you earned is still yours." />;
   }
-  const holding = info.holding && types.some((t) => t.name === info.holding!.type) ? info.holding : undefined;
+  // Any-time work in hand reserves nothing and blocks nothing (asking for
+  // other work lets it go), so it is not shown as in hand.
+  const holding = info.holding && types.some((t) => t.name === info.holding!.type && !t.standing) ? info.holding : undefined;
   const items = history.data?.items.filter((i) => only === undefined || i.type === only) ?? [];
   /** A kind another app draws: it opens there. */
   const elsewhere = (t: WorkerType) => !!here && t.app !== here;
   const mine = types.filter((t) => !elsewhere(t));
-  const any = mine.some((t) => t.standing || (t.waiting ?? 0) > 0);
+  // Start working names no kind, so it takes only work a workflow sent.
+  const any = mine.some((t) => !t.standing && (t.waiting ?? 0) > 0);
 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">

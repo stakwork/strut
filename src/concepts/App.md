@@ -675,10 +675,14 @@ address. It reads `useWorker()` again when it answers, then every 5 s while
 `out` is there.
 
 A STANDING type (the worker starts the work: a photo of something they
-found) always has a task for a worker who may take it: `useTask` hands one
-over as soon as the page asks, and each answer starts the type's workflow.
-Draw it as a call to act ("Snap a label"), never as a queue that may be
-empty; a worker who leaves lets it go with nothing started.
+found) always has a task for a worker who may take it, and each answer
+starts the type's workflow. It is ANY-TIME work, taken only when the worker
+picks it: name its type (`useTask("label-photo")`; with no type, `useTask()`
+hands out only tasks a workflow sent), and ask only once they choose to
+start (`enabled` on their press). Draw it as a call to act ("Snap a
+label"), never as a queue that may be empty. One in hand holds nothing
+back: a worker who leaves lets it go with nothing started, and asking for
+other work lets it go.
 
 Workers are signed-in visitors of the public view (or the server's own
 members). Once the app is published and draws its task types, ask for it

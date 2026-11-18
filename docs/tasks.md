@@ -163,7 +163,12 @@ index. A change in this area updates this file, not AGENTS.md.
   `standing` on the type, `pickUp` and `launchStanding` in tasks.ts,
   `takeStanding` in the store, `standing.ts`). For work a worker starts: a
   photo of a nutrition label. A type saved `standing: { workflow }` has
-  work whenever a worker asks: `task/next`, with nothing a run made for
+  work whenever a worker asks — ANY-TIME work, taken only when picked: only
+  a `task/next` that names the type picks one up (`attempt`'s `takeable`;
+  an ask with no type, the dashboard's Start working, takes only what a run
+  made), a pick-up in hand is let go (skipped) when the worker asks for
+  another type instead of `lease_held`, and `task/history` leaves out a
+  pick-up never answered. `task/next { type }`, with nothing a run made for
   them, makes ONE task and their lease in one write (as `takeTest` makes an
   instance) — keyed by the workflow, a run id chosen now (`deps.runId`) and
   the path of the workflow's first step, a `human` step of the type, its

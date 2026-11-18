@@ -1044,20 +1044,28 @@ export function createTasks(deps: TasksDeps): TasksService {
       const kind = kinds.get(name);
       return kind && kind.enabled && (o.type === undefined || name === o.type) && (o.app === undefined || kind.app === o.app);
     });
+    // Any-time work (a standing type, §5.7) is taken only when the worker
+    // picks it, by name: an ask that names no type (Start working, a page
+    // drawing every type it holds) takes what a run made, never a pick-up.
+    const takeable = o.type === undefined ? types.filter((name) => !kinds.get(name)!.standing) : types;
     const at = now();
     const live = await s.tasks.heldBy(actor, at);
     if (live) {
-      if (types.includes(live.type)) return { got: await workerTask(s, live), types };
-      throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
+      if (types.includes(live.type)) return { got: await workerTask(s, live), types: takeable };
+      // A pick-up in hand reserves nothing (it was made for them, and nothing
+      // is sent until they answer): asking for other work lets it go.
+      const inHand = await s.tasks.task(live.task);
+      if (!inHand?.standing) throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
+      await s.tasks.skip({ lease: live.id, worker: actor, reason: "took other work", now: at });
     }
     // §7.2: a type with tests serves the worker by where they are with it —
     // a qualifying one only tests, oldest grant first; one waiting for its
     // qualifying grades nothing; a qualified one real tasks, a test drawn in
     // place of one at the type's rate.
-    const { qualifying, open, rows } = await phases(s, w, types.map((n) => kinds.get(n)!));
+    const { qualifying, open, rows } = await phases(s, w, takeable.map((n) => kinds.get(n)!));
     for (const type of qualifying) {
       const got = await s.tasks.takeTest({ worker: actor, type, lease: randomId(), task: randomId(), now: at, pick });
-      if (got) return { got: await workerTask(s, got), types };
+      if (got) return { got: await workerTask(s, got), types: takeable };
     }
     if (open.length) {
       // A test only ever replaces a real task: drawn only when `take` would
@@ -1067,11 +1075,11 @@ export function createTasks(deps: TasksDeps): TasksService {
         const answered = rows.get(kind.name)?.real ?? 0;
         if (random() < (answered < kind.tests.newTasks ? kind.tests.newRate : kind.tests.rate)) {
           const got = await s.tasks.takeTest({ worker: actor, type: kind.name, lease: randomId(), task: randomId(), now: at, pick });
-          if (got) return { got: await workerTask(s, got), types };
+          if (got) return { got: await workerTask(s, got), types: takeable };
         }
       }
       const taken = await s.tasks.take({ worker: actor, types: open, id: randomId(), now: at });
-      if (taken) return { got: await workerTask(s, taken), types };
+      if (taken) return { got: await workerTask(s, taken), types: takeable };
       // §5.7: nothing a run made is waiting for them, so a standing type
       // they may take makes its task now — a test in its place at the
       // type's rate, as for any task.
@@ -1082,16 +1090,16 @@ export function createTasks(deps: TasksDeps): TasksService {
           const answered = rows.get(kind.name)?.real ?? 0;
           if (random() < (answered < kind.tests.newTasks ? kind.tests.newRate : kind.tests.rate)) {
             const got = await s.tasks.takeTest({ worker: actor, type: kind.name, lease: randomId(), task: randomId(), now: at, pick });
-            if (got) return { got: await workerTask(s, got), types };
+            if (got) return { got: await workerTask(s, got), types: takeable };
           }
         }
         const got = await pickUp(s, actor, kind, at);
-        if (got) return { got: await workerTask(s, got), types };
+        if (got) return { got: await workerTask(s, got), types: takeable };
       }
     }
     // Another call of the same worker may have taken one meanwhile.
     const raced = await s.tasks.heldBy(actor, at);
-    return raced && types.includes(raced.type) ? { got: await workerTask(s, raced), types } : { types };
+    return raced && types.includes(raced.type) ? { got: await workerTask(s, raced), types: takeable } : { types: takeable };
   };
   /** §7.2 step 2, §7.5: the types `w` may be served now — `qualifying` (tests
    *  alone, oldest grant first) and `open` (real tasks) — with the standing
@@ -1730,11 +1738,14 @@ export function createTasks(deps: TasksDeps): TasksService {
         return k && drawnBy(k, o);
       });
       const byId = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, t]));
-      const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);
+      // Any-time work they opened and never sent is nothing they did: it was
+      // made for them and goes when they leave it (§5.7).
+      const done = leases.filter((l) => l.status === "submitted" || !byId.get(l.task)?.standing);
+      const paid = done.filter((l) => l.status === "submitted" && l.payMsat);
       const ledger = paid.length ? await deps.ledgerIfAny?.() : undefined;
       const earned = ledger ? new Map((await ledger.payFor([...new Set(paid.map((l) => l.task))])).map((e) => [e.lease, e])) : new Map<string, Earning>();
       return {
-        items: leases.map((l): WorkerHistoryItem => {
+        items: done.map((l): WorkerHistoryItem => {
           const e = earned.get(l.id);
           // An answer not booked yet is booked by the next sweep: its hold
           // runs from when it was answered, as booking will set it.

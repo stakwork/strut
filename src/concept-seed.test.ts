@@ -150,6 +150,8 @@ describe("concept files (pure)", () => {
     // behind `useHost().public` while its workflow's runs were open to anyone).
     assert.ok(app.docs!.includes("keep the person's reports out of it") && app.docs!.includes("locks nothing"), "App: no reports in a worker app");
     assert.ok(work.docs!.includes("never in\n  the worker app"), "Worker Tasks: no reports in the worker app");
+    // Any-time work is taken only when the worker picks it: by name, on their press.
+    assert.ok(app.docs!.includes("taken only when the worker\npicks it") && app.docs!.includes("asking for\nother work lets it go"), "App: any-time work only when picked");
     // Ruling 12: open paid work needs no qualifying test first.
     assert.doesNotMatch(work.docs!, /first needs a short qualifying test/, "open paid work is not held for a test");
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");

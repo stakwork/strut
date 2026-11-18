@@ -119,10 +119,12 @@ describe("strut/worker: the worker app every server has", () => {
     const worker = await sphinxSignIn(req);
     const call = (t: string, config: Record<string, unknown> = {}) => stepCall(req, "/public/mcp", t, config, { authorization: `Bearer ${worker.token}` }, page);
 
-    // ── The page's first ask picks a task up: no run yet.
+    // ── Any-time work is taken only when picked: the page's ask with no type
+    // picks nothing up; the worker choosing the kind (the page names it) does: no run yet.
     const me = (await call("task/me")).result as { status: string; types: Array<{ name: string; payMsat: number }> };
     assert.deepEqual(me.types.map((t) => [t.name, t.payMsat]), [["label-photo", 50_000]]);
-    const next = await call("task/next", { wait: 1 });
+    assert.deepEqual((await call("task/next")).result, { none: true });
+    const next = await call("task/next", { type: "label-photo", wait: 1 });
     const task = next.result as { lease: string; type: string; show: { ask: string }; payMsat: number; attachments: unknown };
     assert.ok(task?.lease, next.error);
     assert.deepEqual([task.type, task.show.ask, task.payMsat, task.attachments], ["label-photo", "Photograph a nutrition label: the whole panel, flat, in good light.", 50_000, { max: 2, min: 1, types: ["image/*"] }]);
@@ -164,7 +166,7 @@ describe("strut/worker: the worker app every server has", () => {
     // ── What it earned is held; the next ask is another pick-up.
     const after = (await call("task/me")).result as { balance: { heldMsat: number } };
     assert.equal(after.balance.heldMsat, 50_000);
-    const again = (await call("task/next", { wait: 1 })).result as { lease: string };
+    const again = (await call("task/next", { type: "label-photo", wait: 1 })).result as { lease: string };
     assert.ok(again.lease && again.lease !== task.lease);
   });
 });

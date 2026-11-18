@@ -73,7 +73,8 @@ for (const impl of ["SQLite", "memory"] as const) {
     });
 
     const labels = (more: Record<string, unknown> = {}) => tasks().setType("labels", { app: "labelers", answer: LABEL, paySats: 5, standing: { workflow: "label-flow" }, ...more }, "staff");
-    const take = async (actor: string, o: { type?: string; app?: string } = { app: "labelers" }) => {
+    /** Any-time work is taken by name: the type, unless `o` says otherwise. */
+    const take = async (actor: string, o: { type?: string; app?: string } = { type: "labels", app: "labelers" }) => {
       const got = await tasks().next(actor, o);
       assert.ok(!("none" in got), `${actor} got nothing`);
       return got as WorkerTask;
@@ -155,20 +156,39 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.equal(launched.length, 1);
     });
 
-    it("a run's task comes before a pick-up; a workflow that can no longer be one hands out nothing", async () => {
+    it("any-time work only when named: an ask with no type takes a run's task, never a pick-up; a workflow that can no longer be one hands out nothing", async () => {
       await labels();
       await tasks().setType("recheck", { app: "labelers", answer: LABEL }, "staff");
       const made = (await tasks().ensure({ type: "recheck", workflow: "w", runId: "r1", path: "w/ask" })).task;
-      const ann = await take("ann");
-      assert.equal((await taskOf(ann.lease)).id, made.id, "the waiting run's task first");
+      const ann = await take("ann", { app: "labelers" });
+      assert.equal((await taskOf(ann.lease)).id, made.id, "the waiting run's task");
       await tasks().submit("ann", { lease: ann.lease, answer: { product: "x" } });
-      assert.equal((await taskOf((await take("ann")).lease)).standing, true, "then a pick-up");
+      assert.deepEqual(await tasks().next("ann", { app: "labelers" }), { none: true }, "no type names the any-time work: nothing is picked up");
+      assert.equal((await taskOf((await take("ann")).lease)).standing, true, "named, it is");
       workflows["label-flow"] = { problem: "workflow label-flow is off" };
-      assert.deepEqual(await tasks().next("bob", { app: "labelers" }), { none: true });
+      assert.deepEqual(await tasks().next("bob", { type: "labels", app: "labelers" }), { none: true });
       // Turned off, a standing type hands out nothing either.
       workflows["label-flow"] = { path: "label-flow/photo", show: SHOW };
       await labels({ enabled: false });
       assert.deepEqual(await tasks().next("cat", { app: "labelers" }), { none: true });
+    });
+
+    it("a pick-up in hand holds nothing back: asking for other work lets it go with no run, and it is in no history; a run's task in hand still blocks", async () => {
+      await labels();
+      await tasks().setType("recheck", { app: "labelers", answer: LABEL }, "staff");
+      const made = (await tasks().ensure({ type: "recheck", workflow: "w", runId: "r1", path: "w/ask" })).task;
+      const pick = await take("ann");
+      const got = await take("ann", { type: "recheck", app: "labelers" });
+      assert.equal((await taskOf(got.lease)).id, made.id, "the other work, at once");
+      assert.equal((await taskOf(pick.lease)).status, "expired", "the pick-up closed");
+      assert.deepEqual(launched, [], "nothing was sent, so no run");
+      assert.deepEqual((await tasks().history("ann", { app: "labelers" })).items.map((i) => [i.type, i.status]), [["recheck", "open"]], "only what they hold or did");
+      await assert.rejects(tasks().next("ann", { type: "labels", app: "labelers" }), refused("lease_held"), "a run's task is reserved for them");
+      // Answered, any-time work is theirs to show.
+      await tasks().submit("ann", { lease: got.lease, answer: { product: "y" } });
+      const done = await take("ann");
+      await tasks().submit("ann", { lease: done.lease, answer: { product: "z" } });
+      assert.deepEqual((await tasks().history("ann", { app: "labelers" })).items.map((i) => [i.type, i.status]).sort(), [["labels", "submitted"], ["recheck", "submitted"]]);
     });
   });
 }
@@ -271,7 +291,7 @@ describe("a standing type on a strut: a pick-up, an answer, the run", () => {
     assert.equal(put.status, 200, await put.clone().text());
 
     const worker = strut.tasks.worker;
-    const [ann, bob] = (await Promise.all([worker.next("ann", { app: "labelers" }), worker.next("bob", { app: "labelers" })])) as WorkerTask[];
+    const [ann, bob] = (await Promise.all([worker.next("ann", { type: "labels", app: "labelers" }), worker.next("bob", { type: "labels", app: "labelers" })])) as WorkerTask[];
     assert.deepEqual(ann!.show, { ask: "Photograph a nutrition label" });
     const byLease = async (lease: string) => (await strut.tasks.capability.list({ type: "labels", limit: 100 })).find((t) => t.leases.some((l) => l.id === lease))!;
     assert.notEqual((await byLease(ann!.lease)).id, (await byLease(bob!.lease)).id);
@@ -300,7 +320,7 @@ describe("a standing type on a strut: a pick-up, an answer, the run", () => {
     const bad = await putType({ standing: { workflow: "label-flow" } });
     assert.equal(bad.status, 400);
     assert.match(((await bad.json()) as { error: string }).error, /show reads only input and params/);
-    assert.deepEqual(await worker.next("cat", { app: "labelers" }), { none: true });
+    assert.deepEqual(await worker.next("cat", { type: "labels", app: "labelers" }), { none: true });
   });
 
   it("where every run needs someone to bill: an ownerless workflow bills who published its active version; with nobody at all it is refused", async () => {
@@ -319,7 +339,7 @@ describe("a standing type on a strut: a pick-up, an answer, the run", () => {
       const put = await putType({ standing: { workflow: "label-flow" } });
       assert.equal(put.status, 200, await put.clone().text());
 
-      const ann = (await strut.tasks.worker.next("ann", { app: "labelers" })) as WorkerTask;
+      const ann = (await strut.tasks.worker.next("ann", { type: "labels", app: "labelers" })) as WorkerTask;
       await strut.tasks.worker.submit("ann", { lease: ann.lease, answer: { product: "rye" } });
       const runId = (await strut.tasks.capability.list({ type: "labels", limit: 10 })).find((t) => t.leases.some((l) => l.id === ann.lease))!.runId;
       let start;
