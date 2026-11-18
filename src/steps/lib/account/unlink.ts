@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { requireAccounts } from "./_shared.js";
 
-/** `account/unlink` (plans/jamie-in-tribes.md §3): removes one of the
+/** `account/unlink` (plans/people-and-hosts.md §2.1): removes one of the
  *  viewer's linked accounts. A host then knows nobody by it. */
 export default defineStep({
   type: "account/unlink",

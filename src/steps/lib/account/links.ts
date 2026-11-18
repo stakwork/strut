@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { requireAccounts } from "./_shared.js";
 
-/** `account/links` (plans/jamie-in-tribes.md §3): the accounts the viewer
+/** `account/links` (plans/people-and-hosts.md §2.1): the accounts the viewer
  *  linked, the newest first. */
 export default defineStep({
   type: "account/links",

@@ -1352,6 +1352,9 @@ describe("listen()", () => {
 
 /** The visitor's sign-in routes (plans/app-repos.md §5.2): open to anyone. */
 const VISITOR_SIGN_IN_ROUTES = ["GET /visitors", "GET /visitors/challenge", "GET /visitors/lnurl", "POST /visitors/session", "DELETE /visitors/session"];
+/** And Peel's link (plans/people-and-hosts.md §2.1): the challenge and the
+ *  key's signature are the credential (src/people-link.test.ts). */
+const SIGN_IN_ROUTES = [...VISITOR_SIGN_IN_ROUTES, "POST /people/link", "GET /people/challenge", "POST /people/token"];
 
 describe("the API key gate", () => {
   const KEY = "gate-key";
@@ -1400,7 +1403,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r));
+    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r));
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
     // So is `GET /llms.txt` (plans/paid-runs.md §10): the public view as a page.
@@ -1473,7 +1476,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
+    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
     // A launch, a run's control, and the publisher's ping to sync subscriptions.
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
@@ -1758,14 +1761,14 @@ describe("the API key gate", () => {
   };
   /** Open to anyone, whoever is signed in. */
   const openToAnyone = (r: string) =>
-    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || VISITOR_SIGN_IN_ROUTES.includes(r);
+    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || SIGN_IN_ROUTES.includes(r);
   const everyRoute = (strut: Awaited<ReturnType<typeof boot>>) => [...new Set(
     strut.app.routes
       .filter((r) => r.method !== "ALL" && r.path !== "*")
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
 
-  it("a host key (STRUT_HOST_KEYS) passes its six routes, and every other route is 403 — reads included", async () => {
+  it("a host key (STRUT_HOST_KEYS) passes its five routes, and every other route is 403 — reads included", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
     const saved = process.env["STRUT_HOST_KEYS"];
@@ -1773,9 +1776,9 @@ describe("the API key gate", () => {
     try {
       const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
       // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
-      // back, a proposal there decided, and linking an account; and an
+      // back, a proposal there decided, and who an account is linked to; and an
       // app's tools its hosts: lets it call (plans/people-and-hosts.md §3).
-      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "POST /hosts/link", "GET /hosts/links/x", "POST /mcp"];
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "GET /hosts/links/x", "POST /mcp"];
       for (const r of allowed) assert.ok(routes.includes(r), r);
       const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
       for (const route of routes) {

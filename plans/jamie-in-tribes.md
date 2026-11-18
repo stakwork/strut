@@ -154,7 +154,10 @@ request as the bound person. An account nobody bound is a `403`
 forward"). A person links through Peel: the box's Connect panel shows a
 challenge, and Peel signs it (`people-and-hosts.md` §2.1, ruling 9). The
 daemon has no part. What follows is the DM flow as #737 built it first.
-`people-and-hosts.md` item 6 removes it.
+`people-and-hosts.md` item 6 removed it on #737: `POST /hosts/link`, the
+`link-` codes, `account/link-code`, Connect's code and the daemon's `GET
+/me` are gone, here and in §5.1 and §5.2. `GET /hosts/links/:key` stays, for
+§4.
 
 **How a person links their Sphinx account** (proposed, §9 decision 1). In
 the Jamie app, **Connect Sphinx** shows a one-time code and the account's

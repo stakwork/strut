@@ -9,8 +9,7 @@
  * credential when there is one (kept here for the payer, item 7; never
  * handed to `ctx.services.lightning`). A Sphinx daemon's MESSAGE token too
  * (plans/support-chat.md §8), kept as the pay token is: only the `sphinx`
- * capability (src/payments/sphinx-dm.ts, Support's sends) and `GET /me`
- * for a link code use it. And `L402_ROOT` (§4.2): the 32 bytes
+ * capability (src/payments/sphinx-dm.ts, Support's sends) uses it. And `L402_ROOT` (§4.2): the 32 bytes
  * every credit token's root key is derived from, minted when the first
  * priced item is saved. It must be backed up with the ledger: without it no
  * outstanding token verifies.

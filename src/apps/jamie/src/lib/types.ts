@@ -40,14 +40,15 @@ export interface AccountLink {
   at: number;
 }
 
-/** A code that links an account to the viewer (`account/link-code`). */
-export interface LinkCode {
-  code: string;
-  expiresAt: number;
-  /** The hosts that can hand a code back; none and nothing links here. */
-  hosts: string[];
-  /** The account to send it to by DM, with its address as a QR. */
-  to?: { kind: string; address: string; alias?: string; qr: string };
+/** A link challenge naming the viewer, for Peel to sign (`account/link`). */
+export interface LinkOffer {
+  challenge: string;
+  /** When it stops working (the server's clock). */
+  exp: number;
+  /** Open in Peel: `peel://strut/link?url=…&challenge=…`. */
+  link: string;
+  /** The link as a QR code, an SVG data URI. */
+  qr: string;
 }
 
 /** A job as a list row shows it. */

@@ -8,12 +8,12 @@
  *
  * An account is a key on a medium, `<kind>:<key>`: `sphinx:<66 hex>`, the
  * pubkey as the Sphinx daemon and an address spell it, is the one spelling
- * of a Sphinx account. A person links one with a code (`linkCode`) that a
- * host hands back with the key it vouches for (`POST /hosts/link`,
- * plans/jamie-in-tribes.md §3). `actorOf` is who an account is: the person
- * it is linked to; else, for a Sphinx key, the key's own actor
+ * of a Sphinx account. A person links one through Peel (§2.1): their own
+ * page shows a link challenge naming them (`account/link`), and Peel signs
+ * it with the key (`POST /people/link`). `actorOf` is who an account is: the
+ * person it is linked to; else, for a Sphinx key, the key's own actor
  * (`secp:<x-only>`, what a signed sign-in with that key gives), unlinked;
- * else nobody. A code lives in memory only, ten minutes, once.
+ * else nobody.
  *
  * A name is for showing. Nothing checks it, and two people may share one.
  * It is one line, at most 80 characters, trimmed (`cleanName`). A host's
@@ -25,10 +25,11 @@
  * (`PEOPLE_IN_MEMORY`) is the same store in memory: tests, and a strut whose
  * run store is in memory.
  */
-import { randomInt } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { linkChallenge } from "./auth.js";
+import { qrSvg } from "./move/link.js";
 
 /** A name's most characters (code points), after trimming. */
 export const NAME_MAX = 80;
@@ -73,12 +74,6 @@ export interface People extends PeopleReader {
   link(account: Account, actor: string, extra?: { host?: string; name?: unknown; address?: unknown }): Promise<AccountLink>;
   /** Removes `actor`'s link of `account`. False when they had none. */
   unlink(account: Account, actor: string): Promise<boolean>;
-  /** A new link code for `actor`, replacing one they had: single use, for
-   *  `LINK_CODE_MS`, in memory only. */
-  linkCode(actor: string): { code: string; expiresAt: number };
-  /** The actor a code was made for, using it up; undefined for one unknown,
-   *  used or expired. */
-  redeemLinkCode(code: unknown): string | undefined;
   /** Folds the WAL into the file. */
   close(): Promise<void>;
 }
@@ -109,7 +104,8 @@ export interface AccountLink {
   address?: string;
   /** The account's own name, as its holder wrote it (an alias). */
   name?: string;
-  /** The host that vouched for the key. */
+  /** The host that vouched for the key, when one did (a link Peel made
+   *  has none: the key signed for itself). */
   host?: string;
   at: number;
 }
@@ -120,11 +116,7 @@ export const ACCOUNT_HEADER = "x-strut-account";
 export const ACCOUNT_NAME_HEADER = "x-strut-account-name";
 /** A kind of account, and so a host's name (`STRUT_HOST_KEYS`). */
 export const KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-/** How long a link code is good for. */
-export const LINK_CODE_MS = 10 * 60_000;
 const SPHINX_KEY = /^0[23][0-9a-f]{64}$/;
-const CODE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
-const CODE_LENGTH = 8;
 
 /** `key` on `kind` as kept, or undefined when it is not one: a Sphinx key
  *  is the 66-hex compressed pubkey, lowercase; any other kind's is up to 200
@@ -167,21 +159,6 @@ export function accountAddress(a: Account, raw: unknown): string | undefined {
  *  compressed key without its parity byte). */
 function ownActor(account: Account): string | undefined {
   return account.kind === "sphinx" ? `secp:${account.key.slice(2)}` : undefined;
-}
-
-/** A link code, as a person sends it: `link-` and eight letters and digits
- *  with none that read alike. */
-function newCode(): string {
-  let out = "link-";
-  for (let i = 0; i < CODE_LENGTH; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
-  return out;
-}
-
-/** A code as kept, from what a person typed: case and `link-` optional. */
-function codeOf(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const m = /^(?:link-)?([a-z0-9]{8})$/.exec(raw.trim().toLowerCase());
-  return m ? `link-${m[1]}` : undefined;
 }
 
 interface AccountRow {
@@ -274,8 +251,6 @@ export function createPeople(file: string): People {
   };
   /** Is there anything to read? A read never makes the file. */
   const kept = () => !!db || file === PEOPLE_IN_MEMORY || existsSync(file);
-  /** Link codes: in memory only, so a restart drops one still waiting. */
-  const codes = new Map<string, { actor: string; exp: number }>();
   const people: People = {
     async names(actors) {
       const asked = [...new Set(actors)];
@@ -353,22 +328,6 @@ export function createPeople(file: string): People {
       if (!kept()) return false;
       return Number((await open()).prepare("DELETE FROM accounts WHERE kind = ? AND key = ? AND actor = ?").run(account.kind, account.key, actor).changes) > 0;
     },
-    linkCode(actor) {
-      const now = Date.now();
-      for (const [code, c] of codes) if (c.exp <= now || c.actor === actor) codes.delete(code);
-      let code = newCode();
-      while (codes.has(code)) code = newCode();
-      const exp = now + LINK_CODE_MS;
-      codes.set(code, { actor, exp });
-      return { code, expiresAt: exp };
-    },
-    redeemLinkCode(raw) {
-      const code = codeOf(raw);
-      const c = code ? codes.get(code) : undefined;
-      if (!c) return undefined;
-      codes.delete(code!);
-      return c.exp > Date.now() ? c.actor : undefined;
-    },
     async close() {
       const conn = await db?.catch(() => undefined);
       db = undefined;
@@ -397,38 +356,44 @@ export function ownName(people: PeopleReader, actor: string): PeopleReader {
   });
 }
 
-/** A link code as strut's own app shows it (`account/link-code`). */
-export interface LinkCode {
-  code: string;
-  expiresAt: number;
-  /** The hosts this server has keys for (`STRUT_HOST_KEYS`): who can hand a
-   *  code back. None: nothing links here yet. */
-  hosts: string[];
-  /** The account to send the code to by DM, when strut knows it: the Sphinx
-   *  daemon's own (its `GET /me`). */
-  to?: { kind: string; address: string; alias?: string };
+/** Peel's own link (§2.1): `peel://strut/link?url=<strut's base>&challenge=<…>`.
+ *  The scheme is Peel's. */
+export const PEEL_LINK = "peel://strut/link";
+
+/** A link challenge as strut's own app shows it (`account/link`). */
+export interface LinkOffer {
+  challenge: string;
+  exp: number;
+  /** Open in Peel: `PEEL_LINK` with this strut's base and the challenge. */
+  link: string;
+  /** The link as a QR code, an SVG data URI, for Peel to scan. */
+  qr: string;
 }
 
 /** What the `account/*` steps reach (`ctx.services.accounts`,
- *  plans/jamie-in-tribes.md §5.2): a person's own links, and a code to make
- *  one. Strut's own app's page alone calls them (the steps check). */
+ *  plans/people-and-hosts.md §2.1): a person's own links, and a challenge
+ *  that links one. Strut's own app's page alone calls them (the steps check). */
 export interface AccountsCapability {
-  linkCode(actor: string): Promise<LinkCode>;
+  /** A link challenge naming `actor`, for Peel to sign. */
+  challenge(actor: string): Promise<LinkOffer>;
   links(actor: string): Promise<AccountLink[]>;
   /** False when `actor` had no link of `account` (`<kind>:<key>`). */
   unlink(actor: string, account: string): Promise<boolean>;
 }
 
-export function accountsCapability(
-  people: People,
-  deps: { hosts: () => string[]; sphinx: () => Promise<{ address: string; alias?: string } | undefined> },
-): AccountsCapability {
+/** The capability for a page reached at `box`: `base`, where Peel posts
+ *  (strut's address as the request reached it, mount path included), and
+ *  `host`, the box's host name a challenge is bound to. None: the challenge
+ *  is refused (a run strut started itself has no address to hand Peel). */
+export function accountsCapability(people: People, box?: { base: string; host: string }): AccountsCapability {
   return Object.freeze({
-    async linkCode(actor: string): Promise<LinkCode> {
-      const { code, expiresAt } = people.linkCode(actor);
-      const hosts = deps.hosts();
-      const sphinx = hosts.includes("sphinx") ? await deps.sphinx().catch(() => undefined) : undefined;
-      return { code, expiresAt, hosts, ...(sphinx ? { to: { kind: "sphinx", ...sphinx } } : {}) };
+    async challenge(actor: string): Promise<LinkOffer> {
+      if (!box) throw new Error("a link challenge names this strut server's address: it is made for a page a person opened here (or set STRUT_PUBLIC_URL)");
+      const name = await people.nameOf(actor);
+      const minted = linkChallenge({ host: box.host, actor, ...(name ? { name } : {}) });
+      if (!minted) throw new Error("a link challenge is signed with STRUT_API_KEY or STRUT_SECRET_KEY: set one");
+      const link = `${PEEL_LINK}?url=${encodeURIComponent(box.base)}&challenge=${encodeURIComponent(minted.challenge)}`;
+      return { ...minted, link, qr: `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString("base64")}` };
     },
     links: (actor: string) => people.accountsOf(actor),
     async unlink(actor: string, raw: string) {

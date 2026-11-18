@@ -22,7 +22,10 @@ their listing, so the key never sits in a URL a served page could read
 things served without the key are the web UI's own files, `GET /health`
 (§8), and `GET /public/*` with the POSTs §17 names (a visitor's page, a
 launch and its cancel, buying and claiming credit): what a person put in
-the public view, and nothing when nothing is. The examples below leave the header out for brevity; add
+the public view, and nothing when nothing is. And the sign-ins, where what
+the request carries is the credential: a visitor's (`/visitors/*`, §13.2)
+and Peel's link to a box (`GET /people/challenge`, `POST /people/link`,
+`POST /people/token`, §13.6). The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
@@ -62,7 +65,9 @@ and `POST /proposals/:id/decide` for a proposal its actor
 made — and it lists only those, but reads any proposal by id (§12). The
 plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
-JWT with a `sub`).
+JWT with a `sub`). The token Peel holds for a box (§13.6) is a person
+token that also names a linked account: it holds only while that account
+is still linked to its actor, checked on every request.
 
 ## 1. Publish
 
@@ -1710,8 +1715,7 @@ reads included.
 | POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
 | GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
 | POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
-| POST   | `/hosts/link` | — | `{ code, key, name?, address? }` → the link: the code a person was shown (`account/link-code`), handed back with the key it came from — the host vouches for it, as for who spoke. `key` bare or as `<kind>:<key>`; `name` the account's own (the sender's alias), one line, 80 characters; `address` where it is reached (a Sphinx address names its own key). A link replaces the account's earlier one. `400` for a bad key, name or address; `404 no_code:` for a code unknown, used or expired |
-| GET    | `/hosts/links/:key` | — | The link, or `404 not_linked:` |
+| GET    | `/hosts/links/:key` | — | The link (`key` bare or as `<kind>:<key>`), or `404 not_linked:`. How the Sphinx daemon checks a tribe's owner is a person here (`plans/jamie-in-tribes.md` §4). A host links nothing: a person links through Peel (§13.6) |
 | POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
 
 A launch or a decision with no `x-strut-account` is `400`; with an account
@@ -1734,29 +1738,14 @@ interface AccountLink {
   actor: string;     // the person
   address?: string;  // where the account is reached
   name?: string;     // the account's own name, as its holder wrote it
-  host?: string;     // the host that vouched for the key
+  host?: string;     // the host that vouched for the key; none for a link Peel made (§13.6)
   at: number;        // when it was linked (ms)
 }
 ```
 
-**Linking, from strut's own app** (the Jamie app's Connect, §14.10). Three
-steps, refused to anything but a first-party page's own call for its viewer
-(never an agent's tool: a code is worth the person it was made for):
-
-- `account/link-code {}` → `{ code, expiresAt, hosts, to? }`. `code`:
-  `link-` and eight letters and digits, single use, ten minutes, in memory
-  (a restart drops it); a new one replaces the viewer's last. `hosts`: the
-  hosts with a key here — none, and nothing links. `to: { kind, address,
-  alias?, qr }`: the account to DM it to, read from the Sphinx daemon's
-  `GET /me` with Support's message token, its address as a QR (an SVG data
-  URL); absent when strut cannot read it.
-- `account/links {}` → `{ links: AccountLink[] }`, the viewer's, newest first, without `actor`.
-- `account/unlink { account }` → `{ removed }`.
-
 ```bash
-# The daemon, holding the host key, hands back a code it was DM'd:
-curl -s https://strut.box.example/hosts/link -H "authorization: Bearer $HOST_TOKEN" \
-  -H "content-type: application/json" -d '{"code":"link-k7m3q9x2","key":"02ab…","name":"Ada"}'
+# Is a tribe's owner a person here?
+curl -s https://strut.box.example/hosts/links/02ab… -H "authorization: Bearer $HOST_TOKEN"
 # A mention in a tribe, as Ada:
 curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
   -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
@@ -1825,6 +1814,60 @@ curl -s https://strut.box.example/mcp -H "authorization: Bearer $HOST_TOKEN" \
   -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"step_run","arguments":{"app":"tickets","type":"tickets/receive","config":{"text":"hello"}}}}'
 ```
+
+### 13.6 Peel links to a box
+
+`plans/people-and-hosts.md` §2.1 (ruling 9); `src/auth.ts` "Link
+challenges", `src/people.ts`. A person signed in here links their Sphinx
+account by having Peel sign a challenge their own page shows. Peel's key is
+the lasting credential: no device flow, no device record.
+
+1. **The challenge.** In the Jamie app, Connect → **Link Peel** calls the
+   step `account/link {}` → `{ challenge, exp, link, qr }`. `challenge` is
+   `strut-link.<base64url { host, actor, name?, nonce, exp }>.<hmac>`,
+   signed like strut's other tokens, naming the viewer (and their name, for
+   Peel to show), ten minutes, good once. `host` is the host name in
+   strut's address as the page's request reached it (`STRUT_PUBLIC_URL`
+   first). `link` is `peel://strut/link?url=<that address, mount path
+   included>&challenge=<…>`, both percent-encoded; `qr` is it as a QR, an
+   SVG data URL. Refused to anything but a first-party page's own call for
+   its viewer, as the other `account/*` steps are: a challenge is worth the
+   person it names.
+2. **Peel signs** the challenge's UTF-8 bytes as a Lightning signed message
+   with its account key (child 0), as its visitor `sign_in` does
+   (`specs/WALLET.md` §1.2), and posts it with no other credential.
+3. **The token.** A person token ("A person's token" at the top: scope
+   `peer:person`) whose claims also name the account, for seven days. On
+   every request strut checks that the account is still linked to the
+   token's actor: removing the link (`account/unlink`, Connect's Remove)
+   ends it at once (`401`). Peel renews it by signing again.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/people/link` | `{ challenge, key, sig, name?, address? }` → `200 { actor, name?, token, exp }` (`cache-control: no-store`). `key`: the compressed secp256k1 key, 66 hex; `sig`: the Lightning signed message, 65 bytes as hex. Links `sphinx:<key>` to the challenge's `actor`, keeping `name` (the account's own, its alias: one line, 80 characters) and `address` (`<key>_<lsp key>_<scid>`, naming the same key) on the account. The answer's `name` is the person's as strut shows it (§13.3). `401 unauthorized:` for a challenge not strut's, expired, for another host, already used, or naming nobody (a renewal's), and for a signature that does not hold — a refused signature does not spend the challenge; `400` for a key, sig, name or address that is not one; `409 linked_elsewhere:` when the key is linked to another person (they remove it first); `413` past 8 KB; `503` with nothing to sign a token with |
+| GET    | `/people/challenge` | → `{ challenge, exp }` (`cache-control: no-store`): a challenge naming nobody, `{ host, nonce, exp }`, a minute, good once — what Peel signs to renew |
+| POST   | `/people/token` | `{ challenge, key, sig }` → `200 { actor, name?, token, exp }` as above, for the person the key is linked to; `403 not_linked:` for a key nobody linked here; the same `401`s |
+
+**Open to anyone.** These three answer without the key: the challenge and
+the signature are the credential, as for `/visitors/*` (§13.2). Each is
+budgeted per address as those are (`429`).
+
+```bash
+# Peel, after the person said yes:
+curl -s https://strut.box.example/people/link -H "content-type: application/json" \
+  -d '{"challenge":"strut-link.eyJob3N0Ijoi….Xk2…","key":"02ab…","sig":"1f3c…","name":"Ada"}'
+# → { "actor": "ada-3f9a…", "name": "Ada Lovelace", "token": "strut-person.…", "exp": 1795000000000 }
+# Renewing, a day later:
+curl -s https://strut.box.example/people/challenge
+curl -s https://strut.box.example/people/token -H "content-type: application/json" \
+  -d '{"challenge":"strut-link.…","key":"02ab…","sig":"20aa…"}'
+```
+
+The steps, from strut's own app alone:
+
+- `account/link {}` → `{ challenge, exp, link, qr }` (above).
+- `account/links {}` → `{ links: AccountLink[] }` (§13.4), the viewer's, newest first, without `actor`.
+- `account/unlink { account }` → `{ removed }`. Peel's token for that account stops working at once.
 
 ## 14. Apps — a front-end project over workflows
 
@@ -2513,10 +2556,11 @@ a plain notice. A HOST's conversation (a Sphinx tribe's, `host: "sphinx"`
 on its row, §13.4) shows with a `#` in the list and, in place of the
 composer, "In a Sphinx tribe: reply there" and **Continue here**, which
 forks it (`conversation/fork`) and opens the copy. **Connect** (the list's
-header) lists the viewer's linked Sphinx accounts with Remove
-(`account/links`, `account/unlink`) and, on Connect Sphinx, shows a code
-from `account/link-code` with the account to DM it to and its QR, reading
-`account/links` every 3 s until the link shows (§13.4). A captcha's answer
+header) lists the viewer's linked Peel accounts with Remove
+(`account/links`, `account/unlink`) and, on Link Peel, shows a link
+challenge from `account/link` as a QR and an Open in Peel link (the host
+page hands a `peel:` link to the device), reading `account/links` every
+3 s until the link shows (§13.6). A captcha's answer
 is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
 "[captcha-answer] {…}" }, conversation }`; so is a pull request's Fix, when
 its checks failed (`prompt`: which checks, and the branch to push the fix
@@ -4850,8 +4894,7 @@ credential, an NWC URL that does not parse, a pay credential equal to the
 receive one, or a message token equal to the receive or the pay token;
 what is on file stays. The message token is kept as the pay token is:
 never on the services bag, read only by the `sphinx` capability, which
-sends as Support (`plans/people-and-hosts.md` §4), and `GET /me` for a
-link code's account.
+sends as Support (`plans/people-and-hosts.md` §4).
 
 `PUT /secrets/LIGHTNING_…` is refused (`400`): a wallet credential never
 goes in the deployment's secrets, and the secrets capability answers

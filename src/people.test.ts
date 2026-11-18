@@ -1,12 +1,14 @@
-import { describe, it, mock } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accountAddress, accountsCapability, accountText, cleanName, createPeople, LINK_CODE_MS, ownName, parseAccount, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader } from "./people.js";
+import { readLinkChallenge } from "./auth.js";
+import { accountAddress, accountsCapability, accountText, cleanName, createPeople, ownName, parseAccount, PEEL_LINK, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader } from "./people.js";
 import { RUN_STEP_FLOW } from "./run-step.js";
-import linkCode from "./steps/lib/account/link-code.js";
+import { setEnv } from "./test-util/public-door.js";
+import linkStep from "./steps/lib/account/link.js";
 import links from "./steps/lib/account/links.js";
 import unlink from "./steps/lib/account/unlink.js";
 import names from "./steps/lib/people/names.js";
@@ -144,37 +146,22 @@ describe("accounts (plans/people-and-hosts.md §2)", () => {
     await people.close();
   });
 
-  it("a link code: one per person, once, ten minutes, as typed", () => {
-    mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
-    try {
-      const people = createPeople(PEOPLE_IN_MEMORY);
-      const first = people.linkCode("ada-1");
-      assert.match(first.code, /^link-[2-9a-hjkmnp-z]{8}$/);
-      assert.equal(first.expiresAt, 1_000_000 + LINK_CODE_MS);
-      const second = people.linkCode("ada-1");
-      assert.equal(people.redeemLinkCode(first.code), undefined, "a new code replaces the last");
-      assert.equal(people.redeemLinkCode(` ${second.code.slice(5).toUpperCase()} `), "ada-1", "case and link- optional");
-      assert.equal(people.redeemLinkCode(second.code), undefined, "once");
-      const late = people.linkCode("bob-2");
-      mock.timers.tick(LINK_CODE_MS);
-      assert.equal(people.redeemLinkCode(late.code), undefined, "expired");
-      assert.equal(people.redeemLinkCode(42), undefined);
-    } finally {
-      mock.timers.reset();
-    }
-  });
-
-  it("the account/* steps run only as strut's own app's call, for its viewer", async () => {
+  it("the account/* steps run only as strut's own app's call, for its viewer; account/link names them for Peel", async () => {
+    const restore = setEnv({ STRUT_API_KEY: undefined, STRUT_SECRET_KEY: "people-test-secret" });
     const people = createPeople(PEOPLE_IN_MEMORY);
-    const accounts = accountsCapability(people, { hosts: () => ["sphinx"], sphinx: async () => ({ address: `${KEY}_${LSP}_7`, alias: "Support" }) });
+    const accounts = accountsCapability(people, { base: "https://box.example/lab", host: "box.example" });
     const page = { services: { accounts }, app: { name: "strut/jamie", version: "v1", firstParty: true as const }, actor: "ada-1", workflow: RUN_STEP_FLOW };
-    const made = (await linkCode.run({}, page as never)) as { code: string; hosts: string[]; to?: { address: string; alias?: string; qr: string } };
-    assert.deepEqual(made.hosts, ["sphinx"]);
-    assert.equal(made.to?.address, `${KEY}_${LSP}_7`);
-    assert.equal(made.to?.alias, "Support");
-    assert.match(made.to!.qr, /^data:image\/svg\+xml;base64,/);
-    assert.equal(people.redeemLinkCode(made.code), "ada-1");
-    await people.link({ kind: "sphinx", key: KEY }, "ada-1", { host: "sphinx" });
+    await people.setName("ada-1", "Ada", "host");
+    const made = (await linkStep.run({}, page as never)) as { challenge: string; exp: number; link: string; qr: string };
+    // A challenge naming the viewer and the box, ten minutes, as Peel's link and its QR.
+    assert.deepEqual(readLinkChallenge(made.challenge), { host: "box.example", actor: "ada-1", name: "Ada", nonce: readLinkChallenge(made.challenge)!.nonce, exp: made.exp });
+    const link = new URL(made.link);
+    assert.equal(`${link.protocol}//${link.host}${link.pathname}`, PEEL_LINK);
+    assert.deepEqual([link.searchParams.get("url"), link.searchParams.get("challenge")], ["https://box.example/lab", made.challenge]);
+    assert.match(made.qr, /^data:image\/svg\+xml;base64,/);
+    // A bag with no address (a run strut started itself) makes none.
+    await assert.rejects(linkStep.run({}, { ...page, services: { accounts: accountsCapability(people) } } as never), /names this strut server's address/);
+    await people.link({ kind: "sphinx", key: KEY }, "ada-1");
     const listed = (await links.run({}, page as never)) as { links: Array<Record<string, unknown>> };
     assert.deepEqual(listed.links.map((l) => l["account"]), [`sphinx:${KEY}`]);
     assert.equal("actor" in listed.links[0]!, false);
@@ -186,14 +173,10 @@ describe("accounts (plans/people-and-hosts.md §2)", () => {
       { ...page, actor: undefined },
       { services: { accounts }, actor: "ada-1", workflow: RUN_STEP_FLOW },
     ]) {
-      await assert.rejects(linkCode.run({}, ctx as never), /strut's own app's call/);
+      await assert.rejects(linkStep.run({}, ctx as never), /strut's own app's call/);
       await assert.rejects(links.run({}, ctx as never), /strut's own app's call/);
     }
-    // No Sphinx host here: a code, and nobody named to send it to.
-    const none = accountsCapability(people, { hosts: () => [], sphinx: async () => assert.fail("not asked") });
-    const bare = (await linkCode.run({}, { ...page, services: { accounts: none } } as never)) as { hosts: string[]; to?: unknown };
-    assert.deepEqual(bare.hosts, []);
-    assert.equal(bare.to, undefined);
     await people.close();
+    restore();
   });
 });

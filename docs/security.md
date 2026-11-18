@@ -38,6 +38,10 @@ container in the compose (strut and any service that registers steps).
   (`/public/credit`, `/public/credit/claim`). A key or session sent with
   them is ignored. And `GET /llms.txt`: the index role's page, else the
   public view's (`src/public-agents.ts`), a `404` when nothing is public.
+  And the sign-ins, where what a request carries is the credential: a
+  visitor's (`/visitors/*`, below) and Peel's link to a box (`GET
+  /people/challenge`, `POST /people/link`, `POST /people/token`: a challenge
+  strut signed and a key's signature over it, "Peel links to a box" below).
   The web UI attaches the key to every request once it has one: a host
   that spawns strut hands it over as `?key=` on the first page load (stored
   in `sessionStorage`, stripped from the URL), or a user pastes it under
@@ -206,8 +210,8 @@ container in the compose (strut and any service that registers steps).
   (`scopeFromKey`, and createStrut's `resolveScope` before a host hook, as a
   member's session is). The gate passes it `HOST_ROUTES` alone — `POST
   /workflows/:name/run`, `GET /conversations/item`, `POST
-  /proposals/:id/decide`, `POST /hosts/link`, `GET /hosts/links/:key`, and
-  `POST /mcp` (below) — and 403s every other route, reads included
+  /proposals/:id/decide`, `GET /hosts/links/:key` (whether an account is
+  linked, and to whom), and `POST /mcp` (below) — and 403s every other route, reads included
   (`createStrut.test.ts` "a host key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
   (the host's own kind, else 400) and asks `people.actorOf` once
   (`hostCalls`); `resolveActor` answers that person only when the account
@@ -231,16 +235,46 @@ container in the compose (strut and any service that registers steps).
   another's: whoever holds the key says whose it is). `actorOf(account)`:
   the linked person; else, for a `sphinx` key, `secp:<the key without its
   first byte>` marked unlinked (its own person, at a visitor's level — a
-  host's launch still refuses it); else nobody. A LINK CODE (`link-` and
-  eight letters and digits, ten minutes, once, one per person, in memory)
-  is made by `account/link-code` and handed back with the key that sent it
-  by `POST /hosts/link`. The `account/*` steps (`src/steps/lib/account/`)
-  run only as a first-party page's own call for its viewer (`requireAccounts`,
-  as `secret/add`): a code is worth the person it was made for, and in a
+  host's launch still refuses it); else nobody. A host links nothing: a
+  person links their Sphinx account through Peel ("Peel links to a box"
+  below).
+- **Peel links to a box** (plans/people-and-hosts.md §2.1, ruling 9;
+  specs/API.md §13.6). The person, signed in here, opens Connect in the
+  Jamie app, whose `account/link` mints a LINK CHALLENGE naming them
+  (auth.ts "Link challenges": `strut-link.<claims>.<hmac>`, `{ host, actor,
+  name?, nonce, exp }`, ten minutes, good once — its nonce remembered in
+  memory until `exp`, as a visitor's challenge's). Connect shows it as a QR
+  and `peel://strut/link?url=<strut's base>&challenge=<…>`. Peel signs the
+  challenge's bytes with its Sphinx key as a Lightning signed message (the
+  `ln-message` verifier `POST /visitors/session` uses) and posts it: `POST
+  /people/link { challenge, key, sig, name?, address? }` checks the HMAC,
+  `host` (the host name in strut's address as the request reached it,
+  `STRUT_PUBLIC_URL` first), expiry and the signature, spends the challenge
+  only then (one someone only saw cannot be burned), links `sphinx:<key>`
+  to the challenge's actor (`409 linked_elsewhere:` when the key is another
+  person's; a challenge naming nobody is refused) and answers `{ actor,
+  name?, token, exp }`. The TOKEN is a person token (scope `peer:person`,
+  what any person token may do) whose claims also name the account
+  (`PersonToken.account`), for `LINKED_TOKEN_DAYS` (7). **The gate checks
+  it on every request:** a person token that names an account holds only
+  while that account is linked to its actor (`people.linkOf`), so
+  `account/unlink` ends it at once (401). Peel renews by signing again:
+  `GET /people/challenge` (`{ host, nonce }`, a minute) then `POST
+  /people/token { challenge, key, sig }` — a linked key gets a new token,
+  an unlinked one `403 not_linked:`. **These three routes are open** (the
+  exception to "no public endpoints", beside `/visitors/*`): the challenge
+  and the signature are the credential, a link challenge names a person
+  only their own signed-in page could mint, and Peel shows the box and the
+  name before it signs. They are budgeted per address as the visitors'
+  routes are (`overVisitorBudget`), and a body is at most 8 KB
+  (`bodyLimit`, 413). The `account/*` steps (`src/steps/lib/account/`) run
+  only as a first-party page's own call for its viewer (`requireAccounts`,
+  as `secret/add`): a challenge is worth the person it names, and in a
   tribe that shows no senders every turn runs as its linker, so no agent
   may mint one. `ctx.services.accounts` (`accountsCapability`) is their
-  door; `to` is the daemon's own account from its `GET /me` on Support's
-  message token (createStrut `sphinxAccount`).
+  door; the app door hands each request one bound to strut's address as
+  that request reached it (createStrut `requestServices`), and the shared
+  bag's has `STRUT_PUBLIC_URL` alone (none: `account/link` fails).
 - **A host calls an app's tools** (plans/people-and-hosts.md §3, §9;
   docs/apps.md has the door). On `POST /mcp` a host key gets `step_run`
   alone, and only the steps an app's `hosts:` lists for that key's name —
@@ -487,7 +521,7 @@ What each file and folder in this area is, in the order of the tree.
 
 ### `src/auth.ts`
 
-the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches a `peer: true` workflow, controls a run a peer launched, and the gate 403s the rest) + the PERSON TOKEN (personToken / verifyPersonToken / personOf: the peer key attenuated to one actor, `strut-person.<claims>.<hmac>` signed like a session, Bearer only, minted by `POST /peers/tokens` — scope `peer:person`, `isPeerScope`: a peer whose actor is its credential's own, which alone launches a `peer: person` workflow, opens its actor's own sessions and gets an app's `step_run` alone on `POST /mcp`; plans/chained-orchestrators.md §2, plans/apps.md §7.4) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key; a person token's actor wins) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read. The app IDENTITY a served document carries: `appIdentity` (`app:<name>@<vN>.<token>`), read back by `appOfIdentity` → `ctx.app`. The INVITE TOKEN (`inviteToken` / `inviteOf`, plans/human-steps.md §5.8): `strut-invite.<claims>.<hmac>` naming a Sphinx invite's code and the worker app, what an invite link opens that app with — it gives the one worker who comes with it the app's invite-only task types, while the daemon still has the invite. The CHANNEL TICKET (`channelTicket` / `channelTicketOf`, plans/app-channels.md §2): `strut-channel.<claims>.<hmac>` naming the viewer, the app and its version for a minute, the one credential that opens `GET /channels` — a browser host's upgrade, which carries no header (unsigned, and taken at its word, with no secret to sign under) + the VISITOR's session (plans/app-repos.md §5): role `visitor`, scope `visitor`, in a cookie of its own (`strut_visitor`, so a visitor's sign-in never replaces the operator's console session on one origin) and accepted as `Authorization: Bearer <token>` or `x-strut-visitor` (a page framed by another site keeps the token, ruled 4) — `visitorOf`, `startVisitorSession`; and the visitor's CHALLENGE (`strut-visitor.<claims>.<hmac>`, `{ host, visitorKey, nonce, exp }`, a minute, good once: `visitorChallenge` / `redeemVisitorChallenge`). `fullSession` — "is this session the key's equal" — is an ALLOWLIST (no role, or `admin`), so a member's, a visitor's or a role strut does not know opens nothing. The HOST KEYS (`hostKeys` / `hostOf`, `STRUT_HOST_KEYS`, plans/jamie-in-tribes.md §5.1): a program that brings people to strut, scope `host`
+the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches a `peer: true` workflow, controls a run a peer launched, and the gate 403s the rest) + the PERSON TOKEN (personToken / verifyPersonToken / personOf: the peer key attenuated to one actor, `strut-person.<claims>.<hmac>` signed like a session, Bearer only, minted by `POST /peers/tokens` — scope `peer:person`, `isPeerScope`: a peer whose actor is its credential's own, which alone launches a `peer: person` workflow, opens its actor's own sessions and gets an app's `step_run` alone on `POST /mcp`; plans/chained-orchestrators.md §2, plans/apps.md §7.4) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key; a person token's actor wins) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read. The app IDENTITY a served document carries: `appIdentity` (`app:<name>@<vN>.<token>`), read back by `appOfIdentity` → `ctx.app`. The INVITE TOKEN (`inviteToken` / `inviteOf`, plans/human-steps.md §5.8): `strut-invite.<claims>.<hmac>` naming a Sphinx invite's code and the worker app, what an invite link opens that app with — it gives the one worker who comes with it the app's invite-only task types, while the daemon still has the invite. The CHANNEL TICKET (`channelTicket` / `channelTicketOf`, plans/app-channels.md §2): `strut-channel.<claims>.<hmac>` naming the viewer, the app and its version for a minute, the one credential that opens `GET /channels` — a browser host's upgrade, which carries no header (unsigned, and taken at its word, with no secret to sign under) + the VISITOR's session (plans/app-repos.md §5): role `visitor`, scope `visitor`, in a cookie of its own (`strut_visitor`, so a visitor's sign-in never replaces the operator's console session on one origin) and accepted as `Authorization: Bearer <token>` or `x-strut-visitor` (a page framed by another site keeps the token, ruled 4) — `visitorOf`, `startVisitorSession`; and the visitor's CHALLENGE (`strut-visitor.<claims>.<hmac>`, `{ host, visitorKey, nonce, exp }`, a minute, good once: `visitorChallenge` / `redeemVisitorChallenge`). The LINK CHALLENGE (`linkChallenge` / `readLinkChallenge` / `redeemLinkChallenge`, plans/people-and-hosts.md §2.1): `strut-link.<claims>.<hmac>`, `{ host, actor?, name?, nonce, exp }`, what Peel signs to link its key (ten minutes, naming a person) or renew its token (a minute, naming nobody); the token it buys is a person token whose `account` claim the gate checks against the link on every request. `fullSession` — "is this session the key's equal" — is an ALLOWLIST (no role, or `admin`), so a member's, a visitor's or a role strut does not know opens nothing. The HOST KEYS (`hostKeys` / `hostOf`, `STRUT_HOST_KEYS`, plans/jamie-in-tribes.md §5.1): a program that brings people to strut, scope `host`
 
 ### `src/secret-store.ts`
 
@@ -507,7 +541,7 @@ the static check on a custom step's SOURCE — imports of child_process / fs / n
 
 ### `src/steps/lib/account/`
 
-`account/link-code`, `account/links`, `account/unlink` (plans/jamie-in-tribes.md §3, §5.2): the viewer's linked accounts and the one-time code that links one (with the account to DM it to, its address as a QR), over `ctx.services.accounts` (src/people.ts `accountsCapability`). `_shared.ts`'s `requireAccounts`: only a FIRST-PARTY page's own call for its viewer (`RUN_STEP_FLOW`), never an agent's tool or another app's — the Jamie app's Connect panel
+`account/link`, `account/links`, `account/unlink` (plans/people-and-hosts.md §2.1): the viewer's linked accounts and the link challenge that links one (`{ challenge, exp, link, qr }`: Peel's `peel://strut/link?url=&challenge=` link, and it as a QR), over `ctx.services.accounts` (src/people.ts `accountsCapability`). `_shared.ts`'s `requireAccounts`: only a FIRST-PARTY page's own call for its viewer (`RUN_STEP_FLOW`), never an agent's tool or another app's — the Jamie app's Connect panel
 
 ### `src/steps/lib/secret/`
 

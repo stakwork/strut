@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fileData, useAppState, useStrutClient } from "@strut/kit";
 import { modelParams, sentModel } from "./lib/chat";
-import type { AccountLink, ConversationList, ConversationListItem, ConversationTurn, ConversationView, LinkCode, ModelCatalog } from "./lib/types";
+import type { AccountLink, ConversationList, ConversationListItem, ConversationTurn, ConversationView, LinkOffer, ModelCatalog } from "./lib/types";
 
 export const ASSISTANT = "orchestrator";
 /** How long one `conversation/get` is held: under the kit's feeds' 25 s, so a
@@ -209,7 +209,7 @@ export function useFork() {
 }
 
 /** The viewer's linked accounts (`account/links`): every few seconds while
- *  a code waits, so the link shows once the host hands it back. */
+ *  a link challenge waits, so the link shows once Peel has signed it. */
 export function useLinks(waiting: boolean) {
   const client = useStrutClient();
   return useQuery({
@@ -219,10 +219,10 @@ export function useLinks(waiting: boolean) {
   });
 }
 
-/** A new code that links an account to the viewer (`account/link-code`). */
-export function useLinkCode() {
+/** A new link challenge naming the viewer, for Peel to sign (`account/link`). */
+export function useLinkOffer() {
   const client = useStrutClient();
-  return useMutation({ mutationFn: () => client.run<LinkCode>("account/link-code", {}) });
+  return useMutation({ mutationFn: () => client.run<LinkOffer>("account/link", {}) });
 }
 
 /** Removes one of the viewer's links (`account/unlink`). */

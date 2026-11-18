@@ -522,16 +522,14 @@ describe("conversations through a whole strut", () => {
     assert.equal(unlinked.status, 403);
     assert.match(unlinked.body.error, /^not_linked: sphinx:02abab/);
 
-    // Ada links her key: a code she was shown, handed back with the key.
-    const { code } = strut.people.linkCode("ada");
+    // Ada links her key (through Peel, plans/people-and-hosts.md §2.1); the
+    // host asks who it is. A host links nothing itself.
     assert.equal((await req(`/hosts/links/${ADA}`, { headers: host() })).status, 404);
-    assert.equal((await req("/hosts/link", { method: "POST", body: { code, key: "nope" }, headers: host() })).status, 400);
-    const linked = await req("/hosts/link", { method: "POST", body: { code, key: ADA, name: "ada on sphinx" }, headers: host() });
-    assert.equal(linked.status, 200, JSON.stringify(linked.body));
-    assert.deepEqual([linked.body.account, linked.body.actor, linked.body.host], [`sphinx:${ADA}`, "ada", "sphinx"]);
-    assert.equal((await req("/hosts/link", { method: "POST", body: { code, key: ADA }, headers: host() })).status, 404, "a code links once");
-    assert.equal((await req(`/hosts/links/sphinx:${ADA}`, { headers: host() })).body.actor, "ada");
-    assert.equal((await req("/hosts/link", { method: "POST", body: { code: strut.people.linkCode("bob").code, key: BOB }, headers: host() })).status, 200);
+    assert.equal((await req("/hosts/link", { method: "POST", body: { code: "link-abcdefgh", key: ADA }, headers: host() })).status, 403);
+    await strut.people.link({ kind: "sphinx", key: ADA }, "ada", { name: "ada on sphinx" });
+    assert.deepEqual([(await req(`/hosts/links/sphinx:${ADA}`, { headers: host() })).body.actor, (await req(`/hosts/links/${ADA}`, { headers: host() })).body.name], ["ada", "ada on sphinx"]);
+    assert.equal((await req("/hosts/links/nope", { headers: host() })).status, 400);
+    await strut.people.link({ kind: "sphinx", key: BOB }, "bob");
 
     // The workflow as published, on the host's own namespace, a conversation workflow.
     assert.equal((await turn(`sphinx:${ADA}`, { ...launch, params: { model: "x" } })).status, 403);

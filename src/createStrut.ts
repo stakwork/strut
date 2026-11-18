@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { compress } from "hono/compress";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
@@ -37,7 +38,7 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostOf, hostKeys, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -246,6 +247,9 @@ const APP_DOOR_BODY_MAX_BYTES = PUBLIC_RUN_FILES_BODY_MAX_BYTES;
  *  §3): a 25 MiB file as base64 (about 33.4 MiB), with room for the rest of
  *  the message. Every other caller keeps its own cap. */
 export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
+/** The most a body Peel posts to link or renew may be (`POST /people/link`,
+ *  `/people/token`): a challenge, a key, a signature, a name, an address. */
+const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
@@ -1527,24 +1531,6 @@ export async function createStrut<TServices = unknown>(
     // accepts is refused to one who is not (proposals.ts `proposeCall`).
     personIsAdmin: (runId) => personIsAdmin(runId),
   });
-  /** The Sphinx account a person sends a link code to (plans/jamie-in-tribes.md
-   *  §5.2): the treasury daemon's own, from its `GET /me` on the message
-   *  token — `{ address, pubkey, alias }`, never the balance. None without
-   *  the token, or from a daemon that does not answer it. */
-  const sphinxAccount = async (): Promise<{ address: string; alias?: string } | undefined> => {
-    if (payments.injected) return undefined;
-    const w = await payments.settings.wallet().catch(() => null);
-    if (w?.provider !== "sphinx" || !w.messageToken) return undefined;
-    try {
-      const res = await (opts.sphinx?.fetch ?? fetch)(`${w.url}/me`, { headers: { authorization: `Bearer ${w.messageToken}` }, signal: AbortSignal.timeout(5_000) });
-      if (!res.ok) return undefined;
-      const me = (await res.json()) as { address?: unknown; alias?: unknown };
-      if (typeof me.address !== "string" || !me.address) return undefined;
-      return { address: me.address, ...(typeof me.alias === "string" && me.alias ? { alias: me.alias } : {}) };
-    } catch {
-      return undefined;
-    }
-  };
   // People (plans/people-and-hosts.md §1, src/people.ts): a name per
   // person, written by a host's ticket and a visitor's own sign-in, read by
   // `GET /people` and the `people/names` step. Opened on the first name;
@@ -1620,9 +1606,12 @@ export async function createStrut<TServices = unknown>(
     // The apps' own databases (`sqlite/*`): `ctx.app`'s, or the app a call
     // with none names.
     appDb,
-    // A person's linked accounts and a code to link one (`account/*`,
-    // plans/jamie-in-tribes.md §5.2): strut's own app's page alone.
-    accounts: accountsCapability(people, { hosts: () => [...hostKeys().keys()], sphinx: () => sphinxAccount() }),
+    // A person's linked accounts and a challenge that links one
+    // (`account/*`, plans/people-and-hosts.md §2.1): strut's own app's page
+    // alone. A challenge names strut's address, so the app door hands each
+    // request one bound to where it reached strut (`requestServices`); this
+    // one has only `STRUT_PUBLIC_URL`.
+    accounts: accountsCapability(people, opts.publicUrl ? { base: opts.publicUrl.replace(/\/+$/, ""), host: hostOfRequest({ url: opts.publicUrl }) } : undefined),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
@@ -2724,15 +2713,14 @@ export async function createStrut<TServices = unknown>(
     VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
   /** What a HOST key may call (plans/jamie-in-tribes.md §5.1): a turn of
    *  one of its own conversations, as the person it names, read back; a
-   *  proposal made there, decided as that person; linking an account; and
-   *  the tools an app's `hosts:` lets it call, on `POST /mcp`
+   *  proposal made there, decided as that person; who an account is linked
+   *  to; and the tools an app's `hosts:` lets it call, on `POST /mcp`
    *  (plans/people-and-hosts.md §3). No other read, no publishing, no
    *  secret, no other session. */
   const HOST_ROUTES: Array<[method: string, path: RegExp]> = [
     ["POST", /^\/workflows\/[^/]+\/run$/],
     ["GET", /^\/conversations\/item$/],
     ["POST", PROPOSAL_DECIDE],
-    ["POST", /^\/hosts\/link$/],
     ["GET", /^\/hosts\/links\/[^/]+$/],
     ["POST", /^\/mcp$/],
   ];
@@ -2741,6 +2729,10 @@ export async function createStrut<TServices = unknown>(
    *  gets a credential (src/visitors.ts). */
   const VISITOR_OPEN_READ = /^\/visitors(?:\/challenge|\/lnurl)?$/;
   const VISITOR_SESSION_PATH = "/visitors/session";
+  /** Peel's link (plans/people-and-hosts.md §2.1): open to anyone, since a
+   *  link challenge and the key's signature over it are the credential. */
+  const PEEL_POSTS = new Set(["/people/link", "/people/token"]);
+  const PEEL_CHALLENGE_PATH = "/people/challenge";
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -2748,16 +2740,26 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
+      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path) || path === PEEL_CHALLENGE_PATH
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && (PUBLIC_POST.test(path) || PEEL_POSTS.has(path))) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
+    // A person token Peel holds for a link (plans/people-and-hosts.md §2.1)
+    // names the account it stands on: it holds while that account is still
+    // linked to its actor, and not a request longer.
+    const person = personOf(c);
+    if (person?.account) {
+      const account = parseAccount(person.account);
+      if ((account ? await people.linkOf(account) : undefined)?.actor !== person.actor) {
+        return c.json({ error: `unauthorized: ${person.account} is no longer linked to ${person.actor} here — link Peel again` }, 401);
+      }
+    }
     // A HOST key (plans/jamie-in-tribes.md §5.1): `HOST_ROUTES` alone, as the
     // person its `x-strut-account` names. Read here once: `resolveActor`
     // answers that person when the account is linked, and nobody else.
     const host = hostOf(c);
     if (host) {
       if (!hostMay(c.req.method, path)) {
-        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, links accounts and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
+        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, asks who an account is linked to and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
       }
       const raw = c.req.header(ACCOUNT_HEADER);
       const account = raw === undefined ? undefined : parseAccount(raw);
@@ -2892,36 +2894,17 @@ export async function createStrut<TServices = unknown>(
     return c.json({ people: await people.names(actors) });
   });
 
-  // ── Hosts: linked accounts (plans/jamie-in-tribes.md §3, §5.2;
+  // ── Hosts: linked accounts (plans/jamie-in-tribes.md §4, §5.2;
   // plans/people-and-hosts.md §2; src/people.ts) ──────────────────────────
-  // A person is shown a link code in strut's own app (`account/link-code`)
-  // and sends it by DM to the account a host speaks for. The host hands the
-  // code back with the key that sent it — it vouches for that key, as it
-  // vouches for who spoke in a tribe — and the account is that person's from
-  // then on: a host names them by it in `x-strut-account`. A host key's
-  // routes alone, for an account of its own kind.
+  // A person links an account through Peel (`POST /people/link`, below with
+  // the visitors' sign-in). A host asks whether one is linked: the Sphinx
+  // daemon checks a tribe's owner with it. A host key's route alone, for an
+  // account of its own kind.
   const hostRoute = (c: Context): string | Response =>
     hostCalls.get(c.req.raw)?.host ?? c.json({ error: "forbidden: a host's route — it takes a host key (STRUT_HOST_KEYS)" }, 403);
   /** The key a host names, bare or as `<kind>:<key>` of its own kind. */
   const hostKeyOf = (host: string, raw: unknown) =>
     accountKey(host, typeof raw === "string" && raw.startsWith(`${host}:`) ? raw.slice(host.length + 1) : raw);
-
-  app.post("/hosts/link", async (c) => {
-    const host = hostRoute(c);
-    if (host instanceof Response) return host;
-    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "body is { code, key, name?, address? }" }, 400);
-    const key = hostKeyOf(host, body["key"]);
-    if (!key) return c.json({ error: `key must be a ${host} account's key${host === "sphinx" ? ": its pubkey, 66 hex" : ""}` }, 400);
-    const account = { kind: host, key };
-    if (body["name"] != null && typeof body["name"] !== "string") return c.json({ error: "name must be a string: the account's own name, as its holder wrote it" }, 400);
-    if (body["address"] != null && !accountAddress(account, body["address"])) {
-      return c.json({ error: `address must be where this account is reached${host === "sphinx" ? ": <its key>_<the LSP's key>_<scid>" : ""}` }, 400);
-    }
-    const actor = people.redeemLinkCode(body["code"]);
-    if (!actor) return c.json({ error: "no_code: that code is unknown, used or expired — the person asks for a new one in the Jamie app (Connect)" }, 404);
-    return c.json(await people.link(account, actor, { host, name: body["name"], address: body["address"] }));
-  });
 
   // Whether an account is a person's here: the link, or 404 `not_linked`.
   app.get("/hosts/links/:key", async (c) => {
@@ -5090,6 +5073,94 @@ export async function createStrut<TServices = unknown>(
     if (!sig || !key) return c.json({ status: "ERROR", reason: "sig and key are required (LUD-04)" }, 400);
     const got = await lnurlLogins.sign(k1, sig, key);
     return "error" in got ? c.json({ status: "ERROR", reason: got.error }) : c.json({ status: "OK" });
+  });
+
+  // ── Peel links to this strut (plans/people-and-hosts.md §2.1) ──────────
+  //
+  // A person signed in here opens Connect in the Jamie app, which shows a
+  // LINK CHALLENGE naming them (`account/link`, auth.ts "Link challenges").
+  // Peel signs it with its Sphinx key as a Lightning signed message, as its
+  // visitor `sign_in` does, and posts it: `POST /people/link` links
+  // `sphinx:<key>` to the challenge's person and answers a person token that
+  // names the account, for seven days. Peel renews it by signing again:
+  // `GET /people/challenge`, then `POST /people/token`. The key is the
+  // lasting credential; removing the link (`account/unlink`) ends the token
+  // at once (the gate checks it on every request). All three are open, as
+  // the visitors' sign-in is: the challenge and the signature are the
+  // credential. Budgeted per address as those are, bodies capped.
+  /** The host name a challenge is bound to: the one in strut's address as
+   *  this request reached it (`STRUT_PUBLIC_URL`, else the request's). */
+  const boxHost = (c: Context) => hostOfRequest({ url: baseOfRequest(c) });
+  const peelBody = bodyLimit({ maxSize: PEEL_BODY_MAX_BYTES, onError: (c) => c.json({ error: `the body is at most ${PEEL_BODY_MAX_BYTES} bytes` }, 413) });
+  /** The signed challenge a body carries: its claims, spent, and the key
+   *  that signed it — or the refusal. */
+  const peelSigned = async (c: Context, body: Record<string, unknown>): Promise<{ claims: LinkChallenge; account: Account } | Response> => {
+    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const claims = readLinkChallenge(body["challenge"]);
+    if (!claims) return refuse("this challenge has expired or is not this server's — ask for another");
+    if (claims.host !== boxHost(c)) return refuse(`this challenge was for ${claims.host}`);
+    const key = fromHex(body["key"]);
+    const sig = fromHex(body["sig"]);
+    const hexKey = accountKey("sphinx", typeof body["key"] === "string" ? body["key"] : "");
+    if (!key || !sig || !hexKey) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
+    if (!(await VERIFIERS["ln-message"]!(new TextEncoder().encode(body["challenge"] as string), key, sig))) return refuse("the signature does not hold for this challenge and key");
+    // Spent once its signature holds, so a challenge someone only saw
+    // cannot be burned.
+    if (!redeemLinkChallenge(body["challenge"])) return refuse("this challenge was already used");
+    return { claims, account: { kind: "sphinx", key: hexKey } };
+  };
+  /** Peel's token for `actor` on `account`, and who that is. */
+  const peelToken = async (c: Context, actor: string, account: Account) => {
+    const minted = personToken(actor, LINKED_TOKEN_DAYS * 86_400_000, { account: accountText(account) });
+    if (!minted) return noSecret(c);
+    const name = await people.nameOf(actor);
+    c.header("cache-control", "no-store");
+    return c.json({ actor, ...(name ? { name } : {}), token: minted.token, exp: minted.exp });
+  };
+  const readPeelBody = async (c: Context): Promise<Record<string, unknown> | Response> => {
+    const body = (await c.req.json().catch(() => null)) as unknown;
+    return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : c.json({ error: "the body is JSON: { challenge, key, sig, … }" }, 400);
+  };
+
+  app.post("/people/link", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    if (body["name"] != null && typeof body["name"] !== "string") return c.json({ error: "name must be a string: the account's own name, as its holder wrote it" }, 400);
+    const key = accountKey("sphinx", body["key"]);
+    if (body["address"] != null && (!key || !accountAddress({ kind: "sphinx", key }, body["address"]))) {
+      return c.json({ error: "address must be where this account is reached: <its key>_<the LSP's key>_<scid>" }, 400);
+    }
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const { claims, account } = signed;
+    if (!claims.actor) return c.json({ error: "unauthorized: this challenge links nobody — it renews a token (POST /people/token); a link starts in the Jamie app's Connect" }, 401);
+    const was = await people.linkOf(account);
+    if (was && was.actor !== claims.actor) return c.json({ error: `linked_elsewhere: ${accountText(account)} is linked to another person here — they remove it in Connect first` }, 409);
+    await people.link(account, claims.actor, { name: body["name"], address: body["address"] });
+    return peelToken(c, claims.actor, account);
+  });
+
+  app.get(PEEL_CHALLENGE_PATH, (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const minted = linkChallenge({ host: boxHost(c) }, RENEW_CHALLENGE_MS);
+    if (!minted) return noSecret(c);
+    c.header("cache-control", "no-store");
+    return c.json(minted);
+  });
+
+  app.post("/people/token", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const link = await people.linkOf(signed.account);
+    if (!link) return c.json({ error: `not_linked: ${accountText(signed.account)} is not linked to a person here — link it from the Jamie app's Connect` }, 403);
+    return peelToken(c, link.actor, signed.account);
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -10309,16 +10380,20 @@ export async function createStrut<TServices = unknown>(
   // with no credential.
 
   if (enableMcp) {
+    /** The shared bag, with the `account/*` steps' capability bound to
+     *  strut's address as this request reached it: the link challenge a
+     *  page shows names where Peel posts it (plans/people-and-hosts.md §2.1). */
+    const requestServices = (c: Context) => ({ ...services, accounts: accountsCapability(people, { base: baseOfRequest(c), host: boxHost(c) }) });
     /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
      *  doors — hidden from a model, callable by a page whose host relays
      *  its tools/call here. The viewer is the connection's actor, an ADMIN
      *  when the connection holds full scope (plans/member-rights.md). */
-    const appDoor = async (actor: string | undefined, scope: Scope) => {
+    const appDoor = async (c: Context, actor: string | undefined, scope: Scope) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const appTools = buildAppTools({
         apps,
         registry,
-        services,
+        services: requestServices(c),
         ...(actor ? { actor } : {}),
         admin: scope === "full",
         // And the `sphinx` capability (plans/people-and-hosts.md §4): Support's
@@ -10516,7 +10591,7 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c))) };
+      return { publicUrl, actor, deps, ...(await appDoor(c, actor, await scopeOf(c))) };
     };
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
@@ -10527,7 +10602,7 @@ export async function createStrut<TServices = unknown>(
      *  Neither is an admin here. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
-      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
+      const { appTools, appMeta } = await appDoor(c, await resolveActor(c), await scopeOf(c));
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
       return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };

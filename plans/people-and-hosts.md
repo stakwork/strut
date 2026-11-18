@@ -2,9 +2,9 @@
 
 > **Status (2026-11-18): ruled in outline; every item built on #737: 1
 > (names), 2 (host keys and accounts), 3 (a host calls an app's tools), 4
-> (an app's own SQLite) and 5 (Support rebuilt as an app: no polling, no
-> `/support` routes, no heads-up). Item 6 (Peel links to a box, ruling 9)
-> is proposed.**
+> (an app's own SQLite), 5 (Support rebuilt as an app: no polling, no
+> `/support` routes, no heads-up) and 6 (Peel links to a box, ruling 9:
+> strut's side; Peel's is its own PR).**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -133,7 +133,8 @@ linked: `POST /hosts/link` takes `name` (and `address`), what the DM that
 carried the code says of its sender (`jamie-in-tribes.md` §3). Without it the
 fallback below would have nothing to read until item 3 brings
 `x-strut-account-name`. Kept on the account as the holder wrote it, the
-newest link's first.
+newest link's first. Since item 6 it is `POST /people/link`'s `name` (and
+`address`): what Peel sends of its own account.
 
 **Built differently (#737):** `x-strut-account-name` keeps the name on the
 account only when the account is linked: the `accounts` table holds links,
@@ -252,6 +253,29 @@ this way: the path off Hive.
 `accounts`, `actorOf`, `account/links`, `account/unlink` and
 `GET /hosts/links/:key` stay. The daemon still checks a tribe's owner with
 that last route (`jamie-in-tribes.md` §4).
+
+**Built differently (#737):**
+- **A challenge names strut's address as the page reached it.** The step
+  has no request, so the app door hands each request its own `accounts`
+  capability, bound to strut's base (`STRUT_PUBLIC_URL`, else the request's
+  origin and `x-forwarded-prefix`) and its host name (createStrut
+  `requestServices`). `POST /people/link` checks `host` against the same
+  base for its own request. A run strut started itself has only
+  `STRUT_PUBLIC_URL`, and without it `account/link` fails.
+- **Open in Peel goes through the host.** The app is framed, so Connect
+  asks its host to open the link (`ui/open-link`). Strut's own host page
+  followed only `http(s)` and `mailto`; it now follows a `peel:` link in
+  place (web/src/app-host.ts `APP_SCHEME`), so the device opens Peel.
+- **One challenge format for both.** A renewal's challenge is a
+  `strut-link.` one naming nobody. `POST /people/link` refuses it (`401`,
+  "links nobody"). `POST /people/token` takes any `strut-link.` challenge,
+  since the key's link decides who the token is for.
+- **The rest, as details.** The `409` is `linked_elsewhere:`, and the
+  challenge is spent by then. The answer's `name` is the person's as strut
+  shows it (`nameOf`, which falls back to the account's). A link Peel made
+  has no `host` on its row: nobody vouched, the key signed for itself. The
+  three routes share the visitors' budget per address and take at most
+  8 KB (`413`).
 
 ## 3. A host calls an app's tools
 
@@ -501,7 +525,7 @@ stacked.
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | **Built (#737).** As `apps.md` §4.4 marks: no job's app half (job apps are retired), the build tries the migrations, a preview applies them, the kit's `useSql`. A seeded app's `db/*.sql` are applied at every boot, from its live version's directory, once the seeds are in. For item 5: `strut/staff` grants `sqlite: true` and ships `db/001-support.sql`; `support/receive`, called by the host with `ctx.app` set, opens the file with `ctx.services.appDb.open(ctx.app.name)` and keeps a batch in one transaction (`runBatch`, or its own `BEGIN`…`COMMIT` on that connection, never across an `await`) |
 | 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | **Built (#737).** One contact's records a call, a bad record skipped, the daemon's `seq` kept, `support/file` by key, the page's viewer as `:actor`, "seen" only when unread (§5); `sphinx` on a run by its app (§4). The stand-in daemon pushes |
 
-| 6 | **Peel links to a box** (§2.1, ruling 9): `account/link` minting the link challenge; `POST /people/link`, `GET /people/challenge` and `POST /people/token`; person tokens that name an account, checked against the link on every request; Connect's QR and Open in Peel. `POST /hosts/link`, the `link-` codes, Connect's code and daemon address, and the stand-in daemon's linking and `GET /me` go. `specs/API.md`, `docs/security.md`, `docs/apps.md` | 2 | — |
+| 6 | **Peel links to a box** (§2.1, ruling 9): `account/link` minting the link challenge; `POST /people/link`, `GET /people/challenge` and `POST /people/token`; person tokens that name an account, checked against the link on every request; Connect's QR and Open in Peel. `POST /hosts/link`, the `link-` codes, Connect's code and daemon address, and the stand-in daemon's linking and `GET /me` go. `specs/API.md`, `docs/security.md`, `docs/apps.md` | 2 | **Built (#737).** Strut's side (§2.1's marks): the challenge bound to strut's address per request, Open in Peel through the host (`peel:` followed by strut's page), a renewal's challenge refused for a link. `specs/API.md` §13.6. Peel's side is Peel's PR |
 
 `scripts/fake-sphinx-daemon.ts` gains the push, so item 5 is tested before
 the daemon's side has merged. Peel's side of item 6 (§7) is Peel's own PR.

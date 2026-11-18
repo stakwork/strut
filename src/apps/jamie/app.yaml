@@ -5,7 +5,8 @@ description: >-
   each turn's reply, the jobs it started (live while they run, with their
   claims, captchas and pull requests, merged from here), the changes it
   proposes for a yes or no, and what it made — and Connect, which links the
-  person's Sphinx account so a tribe's Jamie knows them. Strut ships it and
+  person's Peel (their Sphinx account) so a tribe's Jamie knows them and Peel
+  opens this server's apps as them. Strut ships it and
   seeds it on every server; it acts as its viewer.
 icon: message-circle
 grants:
@@ -15,7 +16,7 @@ grants:
     - conversation/get
     - conversation/update
     - conversation/fork
-    - account/link-code
+    - account/link
     - account/links
     - account/unlink
     - llm/models

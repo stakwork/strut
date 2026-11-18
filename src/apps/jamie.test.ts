@@ -9,7 +9,9 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { hostConfigFromEnv } from "../server.js";
 import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore, WorkspaceManager } from "../workspace.js";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { appIdentity } from "../auth.js";
+import { lnSign, stepCall } from "../test-util/public-door.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { treeHash } from "../version.js";
 import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
@@ -444,6 +446,8 @@ describe("strut/jamie — its steps, as its viewer", () => {
       kit: await kitForTests(),
       serveUi: false,
       enableChat: false,
+      // The app door, as a page reaches it (Connect's link challenge).
+      enableMcp: true,
       scheduler: false,
       builder: false,
       autoResume: false,
@@ -579,16 +583,26 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.match((await plain.call("run/launch", { workflow: "job", job: "j", input: { prompt: "x" }, conversation: "alice/c1" })).error!, /only strut's own app/);
   });
 
-  it("Connect and tribe conversations (plans/jamie-in-tribes.md §3, §5.1): the viewer's own code and links; a host's conversation forked, never continued here", async () => {
+  it("Connect and tribe conversations (plans/people-and-hosts.md §2.1; plans/jamie-in-tribes.md §5.1): the viewer's own link challenge and links; a host's conversation forked, never continued here", async () => {
     assert.equal(hostPlace("sphinx"), "a Sphinx tribe");
     assert.equal(hostPlace("email"), "email");
     const alice = page(JAMIE_APP, "alice");
-    const made = await alice.ok("account/link-code");
-    assert.match(made.code, /^link-[a-z0-9]{8}$/);
-    assert.deepEqual(made.hosts, [], "no host key here: nothing hands a code back");
-    assert.equal(strut.people.redeemLinkCode(made.code), "alice", "the code is the viewer's");
-    const KEY_HEX = `02${"ab".repeat(32)}`;
-    await strut.people.link({ kind: "sphinx", key: KEY_HEX }, "alice", { host: "sphinx", name: "alice on sphinx" });
+    // Link Peel, as the page asks on the app door: a challenge naming her,
+    // bound to strut's address as the request reached it.
+    const made = await stepCall((p, i) => strut.app.request(`http://jamie.box${p}`, i), "/mcp", "account/link", {}, { authorization: `Bearer ${KEY}`, "x-strut-actor": "alice" }, appIdentity(JAMIE_APP, "v1"));
+    assert.equal(made.error, undefined, made.error);
+    const offer = made.result as { challenge: string; link: string };
+    assert.equal(new URL(offer.link).searchParams.get("url"), "http://jamie.box");
+    // Peel signs it with its Sphinx key and posts it where the link says.
+    const priv = secp256k1.utils.randomPrivateKey();
+    const KEY_HEX = Buffer.from(secp256k1.getPublicKey(priv, true)).toString("hex");
+    const res = await strut.app.request("http://jamie.box/people/link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challenge: offer.challenge, key: KEY_HEX, sig: Buffer.from(lnSign(priv, offer.challenge)).toString("hex"), name: "alice on sphinx" }),
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(((await res.json()) as { actor: string }).actor, "alice");
     assert.deepEqual((await alice.ok("account/links")).links.map((l: any) => [l.account, l.name]), [[`sphinx:${KEY_HEX}`, "alice on sphinx"]]);
     assert.deepEqual((await page(JAMIE_APP, "bob").ok("account/links")).links, [], "never another's");
     assert.deepEqual(await page(JAMIE_APP, "bob").ok("account/unlink", { account: `sphinx:${KEY_HEX}` }), { removed: false });

@@ -358,7 +358,7 @@ invoices, pay, keysend, invites or the admin routes. The only sats it can
 spend are what a DM to an existing contact costs: 0, or 1 sat a part while
 their key is unconfirmed. It never meets a new contact. Strut calls
 `POST /dm`, `POST /dm/:id/delete`, `PUT` / `DELETE /dm/photo` (the `sphinx`
-capability, `src/payments/sphinx-dm.ts`) and `GET /me`; `GET /dms` and `GET
+capability, `src/payments/sphinx-dm.ts`); `GET /dms` and `GET
 /dm/:id/file` stay the daemon's, and strut does not call them. Fields may
 be added; none is renamed or removed.
 
