@@ -617,9 +617,14 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await ws.publishStep(type, STEP_SRC(type, "one"), undefined, undefined, { upstream: at("c1"), source: "repo" });
       const s2 = await ws.publishStep(type, STEP_SRC(type, "two"), undefined, undefined, { source: "builder" });
       await ws.publishStep(type, STEP_SRC(type, "two"), undefined, undefined, { upstream: at("c2"), source: "repo", stamp: true });
-      const info = (await ws.getStepMetadata(type))!;
+      let info = (await ws.getStepMetadata(type))!;
       assert.equal(info.versions[s2.version]?.source, "repo");
       assert.deepEqual(info.versions[s2.version]?.upstream, at("c2"));
+      // The same release stamped again later (a branch moved back to it): its time moves.
+      const later = { ...at("c2"), at: "2026-11-18T12:00:00.000Z" };
+      await ws.publishStep(type, STEP_SRC(type, "two"), undefined, undefined, { upstream: later, source: "repo", stamp: true });
+      info = (await ws.getStepMetadata(type))!;
+      assert.deepEqual([Object.keys(info.versions).length, info.versions[s2.version]?.upstream], [2, later]);
 
       await ws.publishApp("acme/moon/game", "h1", APP("One"), { upstream: at("c1"), source: "repo" });
       const a2 = await ws.publishApp("acme/moon/game", "h2", APP("Two"), { source: "agent" });

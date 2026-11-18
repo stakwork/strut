@@ -3118,9 +3118,12 @@ the build is the compatibility check — then published after the workflows
 through the apps capability (`POST /apps`'s publish), each after the apps
 of the set it imports. Each step, workflow and app version it
 writes records `source: "install"`, the installing actor, and
-`upstream: { package, version, digest, source: { ref }, secrets }` (what
+`upstream: { package, version, digest, source: { ref }, secrets, at }` (what
 `GET /workflows/:name`, the step version records and `GET /apps/:name`
-show); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
+show; `at` is when the release went in, rewritten when a later release's
+item is that version again — a branch or channel moved back — and what
+`GET /packages` reads to tell which release is here once a fork is
+active); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
 `pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
 A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
 with the package as their speaker, and `publish` checks fire. GRAPH TYPES

@@ -256,6 +256,23 @@ describe("a repo", () => {
     assert.ok(p.install?.packages[0]?.items.some((i) => i.name === "acme/moon/more" && i.status === "retired"));
   });
 
+  it("a revert pulled in makes the older version the package's again, and the package reads so once it is edited here", async () => {
+    const remote = await moonRemote();
+    await req("/packages/repos", json({ url: remote.url }));
+    await pushElsewhere(remote.url, { "workflows/score.yaml": SCORE("acme/moon/score", "two") }, "two");
+    await req("/packages/repos/acme/moon/pull", json({}));
+    await pushElsewhere(remote.url, { "workflows/score.yaml": SCORE("acme/moon/score", "one") }, "revert");
+    await req("/packages/repos/acme/moon/pull", json({}));
+    const head = git(remote.dir, "rev-parse", "main");
+    const meta = (await strut.workspace.getWorkflowMetadata("acme/moon/score"))!;
+    assert.deepEqual([meta.active, Object.keys(meta.versions), meta.versions["v1"]?.upstream?.commit], ["v1", ["v1", "v2"], head], "the first version, stamped with the revert");
+
+    await editScore('"one"', '"mine"');
+    const p = (await installed())!;
+    assert.equal(p.commit, head, "at the revert, not the commit before it");
+    assert.deepEqual(p.items.find((i) => i.name === "acme/moon/score"), { kind: "workflow", name: "acme/moon/score", installed: "v1", active: "v3", modified: true });
+  });
+
   it("commits to a new branch, and a workflow deleted here is deleted in the commit", async () => {
     const remote = await moonRemote();
     await pushElsewhere(remote.url, { "workflows/gone.yaml": SCORE("acme/moon/gone", "g") }, "gone");

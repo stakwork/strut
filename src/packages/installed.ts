@@ -86,21 +86,30 @@ interface VersionRecord {
 /** A version the package wrote, through either of its doors. */
 export const byPackage = (v: VersionRecord | undefined): boolean => !!v?.upstream && !!v.source && PACKAGE_DOORS.includes(v.source);
 
+/** When a package's door last wrote this version or stamped it the
+ *  release's (`upstream.at`); for a version from before doors recorded
+ *  that, when it was written. */
+const doorAt = (v: VersionRecord): string => v.upstream?.at ?? v.createdAt ?? "";
+
 /** The version the package put there: the ACTIVE one when the package wrote
  *  it — so an update that was taken back, or an older release a person made
- *  active again, reads as what is running — else the newest one it wrote
- *  (the release a fork has not taken), else (a record from before steps kept
- *  their door) the oldest that names a package. */
+ *  active again, reads as what is running — else the one its door wrote or
+ *  stamped last, the higher label on a tie (the release a fork has not
+ *  taken; a branch moved back stamps the older release's version, writing
+ *  none), else (a record from before steps kept their door) the oldest that
+ *  names a package. */
 function installedVersion(versions: Record<string, VersionRecord>, active: string): string | undefined {
   if (byPackage(versions[active])) return active;
   const labels = Object.keys(versions).sort(versionLabelOrder);
-  return [...labels].reverse().find((l) => byPackage(versions[l])) ?? labels.find((l) => versions[l]!.upstream);
+  let last: string | undefined;
+  for (const l of labels) if (byPackage(versions[l]) && (!last || doorAt(versions[l]!) >= doorAt(versions[last]!))) last = l;
+  return last ?? labels.find((l) => versions[l]!.upstream);
 }
 
 /** Every installed package, sorted by name, its items by kind then name. */
 export async function listInstalledPackages(deps: InstalledDeps): Promise<InstalledPackage[]> {
   const packages = new Map<string, InstalledPackage>();
-  /** When the package's release, as `packages` has it, was written. */
+  /** When the package's release, as `packages` has it, went in (`doorAt`). */
   const releasedAt = new Map<string, string>();
   const entry = (name: string): InstalledPackage => {
     let p = packages.get(name);
@@ -113,10 +122,10 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     // An item is its package's only under its prefix.
     if (!installed || !upstream || packagePrefixOf(name) !== upstream.package) return;
     const p = entry(upstream.package);
-    // The package is at the release its newest installed version came
-    // from: an item the release dropped and a fork kept still names the
-    // release before.
-    const at = versions[installed]!.createdAt ?? "";
+    // The package is at the release its installed version written or
+    // stamped last came from: an item the release dropped and a fork kept
+    // still names the release before.
+    const at = doorAt(versions[installed]!);
     if (!p.digest || at > (releasedAt.get(upstream.package) ?? "")) {
       releasedAt.set(upstream.package, at);
       const source = versions[installed]!.source;

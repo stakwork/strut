@@ -273,6 +273,8 @@ async function installSet(
   const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
   if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
 
+  /** When this release went in: on every version it writes or stamps. */
+  const at = new Date().toISOString();
   const upstreamOf = (m: Member): Upstream => ({
     ...(m.key ? { key: m.key } : {}),
     ...(m.commit ? { commit: m.commit } : {}),
@@ -281,6 +283,7 @@ async function installSet(
     digest: m.info.digest,
     source: m.source,
     secrets: m.info.manifest.requires?.secrets ?? [],
+    at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
   const reports = new Map(members.map((m) => [m.info.manifest.package, [] as PackageInstallReport["items"]]));
@@ -292,9 +295,11 @@ async function installSet(
     ...publish,
     upstream: upstreamOf(m),
     ...(plan.action === "diverge" ? { activate: false } : {}),
-    // The repo's door records the commit on a version it makes active, a
-    // known one included (an older commit's content, made active again).
-    ...(opts.door === "repo" ? { stamp: true } : {}),
+    // A known version is stamped the release's, with its time: an older
+    // release's content made active again (a branch or channel moved back,
+    // a repo's older commit), or recorded beside a fork. The installed fold
+    // reads that time once a fork is active (installed.ts).
+    stamp: true,
   });
   /** Report an item, and remember a write the install would take back. */
   const done = (m: Member, kind: Wrote["kind"], name: string, plan: ItemPlan, version?: string) => {
