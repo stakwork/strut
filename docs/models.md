@@ -191,11 +191,20 @@ it the builder and the agent step have `web_fetch` only.
   OpenRouter lists takes image input, but the two listed as text-only —
   Recraft V4.1 Flash — were unavailable, so whether OpenRouter refuses or
   ignores a reference such a model cannot take is unknown). No SDK drops
-  them. Through the gateway an edit rides `/openai/v1/images/edits`
-  (Bifrost's image_edit): openai (probed live) and google (Bifrost's gemini
-  provider edits; not probed, no Google key); Bifrost's xai provider answers
-  `unsupported_operation`, and the `openrouter-images` provider maps only
-  generation, so OpenRouter 404s. Those two carry no `routedEdits` in
+  them. **Edits through the gateway** (stakgraph-gateway as built from
+  stakwork/stakgraph#1859 on 2026-11-12: Bifrost transports v2.2.2, commit
+  fdeef8e3, its plugin on core v1.10.1; probed live 2026-11-17) ride
+  `/openai/v1/images/edits`, Bifrost's image_edit: openai
+  (`gpt-image-1-mini`) edits, its usage passed through with
+  `input_tokens_details.image_tokens`; google
+  (`gemini/gemini-2.5-flash-image`) reached Bifrost's gemini provider as an
+  image_edit but was not run, the gateway holding no Google key
+  (`no_key_supports_model`) — its gemini provider edits in source
+  (generateContent with the images; Imagen's :predict); xai answers
+  `unsupported_operation` ("image_edit is not supported by xai provider"),
+  nothing sent to xAI; openrouter (`openrouter-images/…`) answers 404: the
+  custom provider maps only generation onto OpenRouter's `/v1/images`, and
+  OpenRouter has no `/v1/images/edits`. Those two carry no `routedEdits` in
   `MEDIA_MODELS`: their edit is refused before anything is sent, unless the
   grant allows a direct call (`resolveMediaModel(kind, { edit })` →
   `mediaProviders(kind, edit)`). A mask is not offered (xAI ignores one).
@@ -204,6 +213,9 @@ it the builder and the agent step have `web_fetch` only.
   `input_cost_per_image_token`; Gemini counts the image in its input tokens,
   priced at its input rate (the same for text and images); xAI and
   OpenRouter report the whole call's cost (an xAI edit $0.022 against $0.02).
+  An OpenAI response without `input_tokens_details` would price every input
+  token at the text rate, an undercount; none was seen, direct or through
+  the gateway.
   A 5 MB (2600×2600) JPEG edits on xAI, OpenRouter (FLUX.2 klein) and OpenAI,
   direct and through the gateway: no downscale.
 

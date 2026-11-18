@@ -276,6 +276,36 @@ describe("image step", () => {
       assert.equal(out.cost, 0.015);
     });
 
+    it("an edit costs its source's input tokens more than the same call without one (the datasheet-priced providers)", async () => {
+      // What OpenAI answered live for gpt-image-1-mini at low 1024x1024
+      // (2026-11-17), direct and through the gateway alike: the edit's 256
+      // input image tokens come split out in input_tokens_details.
+      const openaiUsage = (imageTokens: number) => ({
+        input_tokens: 21 + imageTokens,
+        input_tokens_details: { text_tokens: 21, image_tokens: imageTokens },
+        output_tokens: 272,
+      });
+      stub = stubFetch((url) => ({ data: [{ b64_json: PNG }], usage: openaiUsage(url.endsWith("/images/edits") ? 256 : 0) }));
+      for (const [i, services] of [{}, { llmAuth: async () => ({ apiKey: "vk-1", baseUrl: "https://gw.test" }) }].entries()) {
+        const run = (images?: any[]) =>
+          image.run({ prompt: "watercolour", model: "openai/gpt-image-1-mini", ...(images ? { images } : {}) }, ctx({ path: `pics/o${i}` }, services));
+        const plain = await run();
+        const edit = await run([photo]);
+        assert.ok(Math.abs(edit.cost - plain.cost - (256 * 2.5) / 1e6) < 1e-12, `${edit.cost} - ${plain.cost}: the 256 image tokens at $2.5/M`);
+      }
+      // Gemini does not split them: the photo's tokens are in its prompt
+      // count, at the input rate (one rate for text and images).
+      let calls = 0;
+      stub.restore();
+      stub = stubFetch(() => ({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG } }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: calls++ === 0 ? 15 : 15 + 1290, candidatesTokenCount: 1290 },
+      }));
+      const plain = await image.run({ prompt: "watercolour", model: "google/gemini-2.5-flash-image" }, ctx());
+      const edit = await image.run({ prompt: "watercolour", model: "google/gemini-2.5-flash-image", images: [photo] }, ctx());
+      assert.ok(Math.abs(edit.cost - plain.cost - (1290 * 0.3) / 1e6) < 1e-12, `${edit.cost} - ${plain.cost}: the 1290 image tokens at $0.3/M`);
+    });
+
     it("no images (none listed, or a step that sent none) draws from the prompt alone", async () => {
       stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { cost_in_usd_ticks: 200_000_000 } }));
       await image.run({ prompt: "a fox", model: "xai/grok-imagine-image", images: [] }, ctx());
