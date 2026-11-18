@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { fmtDuration, owedLine, queueWarnings, sharedApps, type Place } from "../lib/view";
 import type { Books, TaskStats, TaskType } from "../lib/types";
 import { Empty, ErrorLine, Figure, Loading, Note, Section } from "./bits";
-import { ShareBlock } from "./Share";
+import { ShareRows } from "./Share";
 
 export const STATS_EVERY_MS = 10_000;
 
@@ -27,15 +27,13 @@ export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
   if (stats.error) return <ErrorLine error={stats.error} />;
   if (!s) return <Loading>Reading the queue…</Loading>;
   const warnings = queueWarnings(s);
-  // How workers get in: each public worker app's links and QR, first.
+  // How workers get in: a closed row each public worker app, first.
   const shared = sharedApps(props.types);
   const p = (x: { p50: number; p90: number } | undefined) => (x ? `${fmtDuration(x.p50)} · ${fmtDuration(x.p90)}` : "—");
 
   return (
     <>
-      {shared.map((a) => (
-        <ShareBlock key={a.app} app={a.app} share={a.share} types={a.types} invited={a.invited} />
-      ))}
+      <ShareRows apps={shared} />
 
       {warnings.length > 0 && (
         <ul className="flex flex-col gap-1.5" aria-label="Needs a person">

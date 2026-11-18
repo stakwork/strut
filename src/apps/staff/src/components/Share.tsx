@@ -1,17 +1,19 @@
 // Sharing a worker app (plans/human-steps.md §9.5): how a type's workers get
 // in. `staff/types` answers each type's `share`: whether its app is in the
 // public view and, when it is, its links (`publicAppLinks`) and the Peel one
-// as a QR code. The Queue shows a block for each public worker app; a type's
-// page shows its app's, or says it is not public. Making an app public stays
+// as a QR code. The Queue lists each public worker app as one closed row,
+// its name and task types, that opens to its block; a type's page shows its
+// app's block open, or says it is not public. Making an app public stays
 // the Public view dialog or an `app/make-public` proposal. For someone new
 // to Peel the block makes an INVITE link (§5.8, ./Invite): one use, on
 // Android it installs Peel, makes their Sphinx account with starting sats
 // and opens the app at the same share link.
-import { useRef, useState } from "react";
-import { Check, Copy, QrCode, UserPlus, Users } from "lucide-react";
+import { type ReactNode, useRef, useState } from "react";
+import { Check, ChevronRight, Copy, QrCode, UserPlus, Users } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { INVITE_WORDS, inviteSatsOf, inviteWhyText, tasksWords } from "../lib/view";
 import type { MadeInvite, TaskType, TypeShare } from "../lib/types";
 import { ErrorLine, Field, Note, useAct } from "./bits";
@@ -54,19 +56,19 @@ function CopyLine(props: { label: string; value: string; hint: string }) {
   );
 }
 
+type Shared = { app: string; share: TypeShare; types?: string[]; invited?: string[] };
+
 /** The block, for an admin who is not technical: how workers get in. An
  *  invite for someone new first; then, for someone who has Peel already,
  *  the code to scan and the link to send. */
-export function ShareBlock(props: { app: string; share: TypeShare; types?: string[]; invited?: string[] }) {
+function ShareBody(props: Shared & { heading?: ReactNode }) {
   const { share } = props;
   if (!share.peelLink || !share.link) return null;
   const tasks = tasksWords(props.types);
   return (
-    <section className="flex flex-col gap-4 rounded-lg border p-4" aria-label={`Share ${props.app} with workers`} data-testid="share-block">
+    <div className="flex flex-col gap-4" data-testid="share-block">
       <div className="flex flex-col gap-0.5">
-        <h3 className="flex items-center gap-2 text-base font-semibold">
-          <Users className="size-4 text-muted-foreground" /> Bring workers in
-        </h3>
+        {props.heading}
         <Note>Workers do {tasks || "their tasks"} on their phone. Send each of them a way in.</Note>
       </div>
       <InviteMaker app={props.app} invited={props.invited ?? []} />
@@ -86,7 +88,60 @@ export function ShareBlock(props: { app: string; share: TypeShare; types?: strin
           <CopyLine label="In a browser" value={share.link} hint="The same page in any browser, for someone without Peel." />
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A type's page: its app's block, open. */
+export function ShareBlock(props: Shared) {
+  if (!props.share.peelLink || !props.share.link) return null;
+  const heading = (
+    <h3 className="flex items-center gap-2 text-base font-semibold">
+      <Users className="size-4 text-muted-foreground" /> Bring workers in
+    </h3>
+  );
+  return (
+    <section className="rounded-lg border p-4" aria-label={`Share ${props.app} with workers`}>
+      <ShareBody {...props} heading={heading} />
     </section>
+  );
+}
+
+/** The Queue's list: a closed row a public worker app, its name and its task types. */
+export function ShareRows(props: { apps: Shared[] }) {
+  if (props.apps.length === 0) return null;
+  return (
+    <section className="divide-y rounded-lg border" aria-label="Bring workers in">
+      {props.apps.map((a) => (
+        <ShareRow key={a.app} {...a} />
+      ))}
+    </section>
+  );
+}
+
+function ShareRow(props: Shared) {
+  const [open, setOpen] = useState(false);
+  const body = `share-${props.app}`;
+  return (
+    <div data-testid="share-row">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-2 px-4 py-3 text-left text-sm hover:bg-muted/50"
+        aria-expanded={open}
+        aria-controls={body}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+        <Users className="size-4 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 font-medium">{props.app}</span>
+        <span className="min-w-0 truncate text-muted-foreground">{props.types?.join(", ")}</span>
+        <span className="ml-auto hidden shrink-0 text-xs text-muted-foreground sm:inline">Bring workers in</span>
+      </button>
+      {/* Kept mounted while closed, so an invite just made stays on its card. */}
+      <div id={body} hidden={!open} className="border-t p-4">
+        <ShareBody {...props} />
+      </div>
+    </div>
   );
 }
 
