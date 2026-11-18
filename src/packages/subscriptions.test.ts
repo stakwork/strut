@@ -583,5 +583,63 @@ for (const tb of testBackends()) {
       assert.deepEqual([s.waiting, s.applied?.packages, s.warnings], [{ secrets: ["PODS_KEY"] }, [], []]);
       assert.deepEqual(s.packages, [{ package: "acme/pods", version: "0.1.0", digest: s.applied?.digest, diverged: ["acme/pods/sync"] }], "what is left of it: the edit");
     });
+
+    it("moved back, then a step edited here: at the older release, its untouched page follows the next one, and goes with the secret", async () => {
+      /** Commit a release on `stable`: the step and both pages say which. */
+      const release = async (v: string): Promise<string> => {
+        await writeFile(join(repo, "pkg", "strut.yaml"), `package: acme/pods\nversion: ${v}\nrequires:\n  secrets: [PODS_KEY]\n`);
+        await writeFile(join(repo, "pkg", "steps", "claim.ts"), `${KEYED_STEP("acme/pods/claim", "PODS_KEY")}// ${v}\n`);
+        await writeFile(join(repo, "pkg", "concepts", "Code Change.md"), `---\ndescription: Change a repository's code in a pod\n---\nYou can change code (${v}).\n`);
+        await writeFile(join(repo, "pkg", "concepts", "Pods.md"), `---\ndescription: Where code runs\n---\nPods (${v}).\n`);
+        git(repo, "add", ".");
+        git(repo, "commit", "--quiet", "-m", v);
+        return git(repo, "rev-parse", "HEAD");
+      };
+      const docs = async (name: string) =>
+        ((await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns", name: "$name" })} WHERE ${backend.dialect.live("c")} RETURN ${backend.dialect.project("c", ["ref_id", "docs"])} AS p`, { ns: backend.namespace, name }))[0]?.["p"] as
+          | { ref_id: string; docs: string }
+          | undefined);
+      const c1 = await release("0.1.0");
+      assert.equal((await setSecret(strut, "PODS_KEY", "pk_1")).status, 200);
+      assert.equal((await strut.app.request("/packages/subscriptions/pods", json({ ref: `git+${pathToFileURL(repo).href}@stable#pkg` }, "PUT"))).status, 200);
+      await strut.subscriptions.sync("pods");
+      assert.equal((await state()).applied?.commit, c1);
+      await release("0.2.0");
+      assert.equal((await strut.subscriptions.sync("pods")).status, "applied");
+      assert.match((await docs("Code Change"))!.docs, /\(0\.2\.0\)/);
+
+      // `stable` moved back, then the step edited here and a page edited here.
+      git(repo, "reset", "--quiet", "--hard", c1);
+      let out = await strut.subscriptions.sync("pods");
+      assert.deepEqual([out.status, out.to], ["applied", c1], out.error);
+      assert.equal((await ws.getStepMetadata("acme/pods/claim"))?.active, "v1", "made active again, no version written");
+      assert.match((await docs("Code Change"))!.docs, /\(0\.1\.0\)/);
+      await ws.publishStep("acme/pods/claim", `${KEYED_STEP("acme/pods/claim", "PODS_KEY")}// mine\n`);
+      await backend.nodes.update((await docs("Pods"))!.ref_id, { set: { docs: "Edited here." } });
+      let s = await state();
+      const digest1 = s.applied?.digest;
+      assert.deepEqual(s.packages, [{ package: "acme/pods", version: "0.1.0", digest: digest1, diverged: ["acme/pods/claim", "Pods"] }], "at the release moved back to");
+
+      // The next release: the untouched page follows it, the edited one is left, the step waits beside the edit.
+      await release("0.3.0");
+      out = await strut.subscriptions.sync("pods");
+      assert.equal(out.status, "applied", out.error);
+      const [p] = out.result!.packages;
+      assert.deepEqual(p!.from, { version: "0.1.0", digest: digest1 });
+      assert.deepEqual(p!.items.filter((i) => i.kind !== "workflow").map((i) => [i.name, i.status]), [
+        ["acme/pods/claim", "diverged"],
+        ["Code Change", "updated"],
+        ["Pods", "modified"],
+      ]);
+      assert.match((await docs("Code Change"))!.docs, /\(0\.3\.0\)/);
+      assert.equal((await docs("Pods"))!.docs, "Edited here.");
+      s = await state();
+      assert.deepEqual([s.packages[0]?.version, s.packages[0]?.digest], ["0.3.0", s.applied?.digest]);
+
+      // The secret removed: out, the untouched page with it.
+      assert.equal((await setSecret(strut, "PODS_KEY", null)).status, 200);
+      assert.equal((await strut.subscriptions.sync("pods")).status, "waiting");
+      assert.equal(await docs("Code Change"), undefined, "no page of a package taken out stays live");
+    });
   });
 }
