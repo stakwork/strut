@@ -434,8 +434,9 @@ export interface WorkerView {
    *  score is shown. */
   types: Array<WorkerTypeView>;
   /** The task in their hand now, of a type in `types`: what Continue opens
-   *  (`task/next` refuses another type while they hold it). */
-  holding?: { type: string; expires: number };
+   *  (`task/next` refuses another type while they hold it), and its `lease`,
+   *  which the dashboard's Let go skips (`skip` with `apps`). */
+  holding?: { type: string; expires: number; lease: string };
   /** What they are owed here (§8.1): zeros with nothing earned. A payout
    *  on its way is no longer in it (§8.2). */
   balance: PayeeBalance;
@@ -692,8 +693,10 @@ export interface TasksCapability {
    *  data }]`, the chat's shape and caps — saved in the task's run before
    *  it settles (a test instance's are checked and dropped). */
   submit(actor: string, o: { lease: string; answer: unknown; attachments?: unknown; app?: string }): Promise<{ ok: true }>;
-  /** The task reopens for someone else; never handed to this worker again. */
-  skip(actor: string, o: { lease: string; reason?: string; app?: string }): Promise<{ ok: true }>;
+  /** The task reopens for someone else; never handed to this worker again.
+   *  With `apps` in place of `app` (the dashboard across apps, `task/me`'s
+   *  `all`): a lease of a type any of those apps draws, the worker's own. */
+  skip(actor: string, o: { lease: string; reason?: string; app?: string; apps?: string[] }): Promise<{ ok: true }>;
   /** One file the leased task names (`files`), as `run/files` answers one
    *  (§5.5): only a path on the task's list, only through the caller's own
    *  live lease, whether or not another path exists. Through a lease they
@@ -1635,7 +1638,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       const { s, w } = await worker(actor);
       mayWork(w);
       const l = await ownLease(s, w, o?.lease);
-      await appOk(s, l, o.app);
+      // The dashboard's Let go (`apps`): a task any app it lists draws.
+      if (o.apps) {
+        const k = await s.tasks.type(l.type);
+        if (!k || !drawnBy(k, o)) throw new TaskError("wrong_app", `task type ${l.type} is drawn by an app you can't open here`);
+      } else await appOk(s, l, o.app);
       const reason = o.reason === undefined ? undefined : text("reason", o.reason);
       if (!(await s.tasks.skip({ lease: l.id, worker: actor, ...(reason === undefined ? {} : { reason }), now: now() }))) return whyNot(s, w, l.id);
       // The task is open for someone else.
@@ -1704,7 +1711,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const waiting = types.length ? await s.tasks.waitingFor({ worker: w.actor, types: types.map((t) => t.name), now: at }) : {};
       for (const t of types) t.waiting = waiting[t.name] ?? 0;
       const live = await s.tasks.heldBy(w.actor, at);
-      const holding = live && types.some((t) => t.name === live.type) ? { type: live.type, expires: live.expires } : undefined;
+      const holding = live && types.some((t) => t.name === live.type) ? { type: live.type, expires: live.expires, lease: live.id } : undefined;
       // A worker's status touches no earning (§8.1): a suspended worker
       // still sees what they are owed, and may withdraw what passed its
       // hold (§8.2).

@@ -331,7 +331,7 @@ for (const impl of impls) {
       assert.deepEqual(await waiting("ann"), [["pet-match", false, 3]]);
       const a = await take("ann");
       const me = await tasks().me("ann");
-      assert.deepEqual(me.holding, { type: "pet-match", expires: a.expires }, "the task in hand");
+      assert.deepEqual(me.holding, { type: "pet-match", expires: a.expires, lease: a.lease }, "the task in hand");
       assert.deepEqual(await waiting("ann"), [["pet-match", false, 2]], "the one in hand is not waiting");
       assert.deepEqual(await waiting("bob"), [["pet-match", false, 2]], "nor for anyone else: it is held");
       await tasks().skip("ann", { lease: a.lease });
@@ -799,8 +799,13 @@ for (const impl of earningsImpls) {
       assert.deepEqual((await tasks().history("ann", { apps: ["workers"] })).items.length, 3, "an app the caller cannot open is left out");
       const across = await tasks().me("ann", { apps: ["workers", "ballots"] });
       assert.deepEqual(across.types.map((t) => [t.name, t.app]).sort(), [["ballot", "ballots"], ["pet-match", "workers"]]);
-      assert.deepEqual(across.holding, { type: "pet-match", expires: three.expires }, "the task in hand, whichever app draws it");
+      assert.deepEqual(across.holding, { type: "pet-match", expires: three.expires, lease: three.lease }, "the task in hand, whichever app draws it");
       assert.deepEqual((await tasks().me("ann", { apps: ["ballots"] })).holding, undefined, "unless that app is not one of them");
+      // The dashboard's Let go: skip with `apps` takes a lease of a type one of them draws, the worker's own.
+      await assert.rejects(tasks().skip("ann", { lease: three.lease, apps: ["ballots"] }), /wrong_app/);
+      await assert.rejects(tasks().skip("bob", { lease: three.lease, apps: ["workers", "ballots"] }), /no_lease/);
+      assert.deepEqual(await tasks().skip("ann", { lease: three.lease, apps: ["workers", "ballots"] }), { ok: true });
+      assert.equal((await tasks().me("ann", { apps: ["workers", "ballots"] })).holding, undefined, "let go");
     });
 
     it("me answers held, withdrawable and total as the clock passes the hold", async () => {

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formProblem, useAccountWidget, useApp, useCamera, useHost, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fieldsOf, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -549,7 +549,7 @@ const HOME_POLL_MS = 15_000;
 
 /**
  * The worker's DASHBOARD (plans/human-steps.md §5): the task in their hand
- * (Continue), the kinds of work they can do here — each with what it pays
+ * (Continue, or Let go), the kinds of work they can do here — each with what it pays
  * and whether there is work of it now (any time, for a standing type; how
  * many wait, for tasks a workflow made) — what they earned here, and their
  * own tasks, newest first, with how each ended and what it earned. Choosing a
@@ -594,19 +594,14 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
       {holding && (
-        <button
-          type="button"
-          onClick={() => onStart(holding.type)}
-          className="flex items-center gap-3 rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4 text-left"
-        >
-          <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">In your hand</div>
-            <div className="truncate text-base font-semibold">{typeLabel(holding.type)}</div>
-          </div>
-          <span className="inline-flex items-center gap-1 text-sm font-semibold">
-            Continue <ChevronRight className="size-4" />
-          </span>
-        </button>
+        <InHand
+          holding={holding}
+          onContinue={() => onStart(holding.type)}
+          onGone={() => {
+            void refetch();
+            void reread();
+          }}
+        />
       )}
 
       <section className="flex flex-col gap-2.5">
@@ -661,12 +656,78 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
   );
 }
 
+/** Refusals that mean the task already left their hand: nothing to let go of. */
+const ALREADY_GONE = new Set(["no_lease", "lease_closed", "lease_expired", "task_closed", "not_granted"]);
+
+/**
+ * The task in their hand: Continue, and Let go — asked first, in place (a
+ * framed page has no modals) — which frees it whichever app draws it
+ * (`task/skip { lease, all: true }`), so the other kinds of work open again.
+ */
+function InHand({ holding, onContinue, onGone }: { holding: NonNullable<WorkerInfo["holding"]>; onContinue: () => void; onGone: () => void }) {
+  const skip = useStep("task/skip");
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const letGo = async () => {
+    setError(null);
+    try {
+      await skip.run({ lease: holding.lease, all: true });
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      if (!ALREADY_GONE.has(taskErrorCode(e) ?? "")) {
+        setError(reason(e) || errorText(e));
+        return;
+      }
+    }
+    setAsking(false);
+    onGone();
+  };
+  return (
+    <div className="rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4" data-testid="in-hand">
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
+          <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">In your hand</div>
+          <div className="truncate text-base font-semibold">{typeLabel(holding.type)}</div>
+        </button>
+        {holding.lease && !asking && (
+          <button
+            type="button"
+            aria-label="Let go"
+            title="Let go"
+            onClick={() => setAsking(true)}
+            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-amber-400/25 hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        )}
+        <button type="button" onClick={onContinue} className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold">
+          Continue <ChevronRight className="size-4" />
+        </button>
+      </div>
+      {asking && (
+        <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
+          <p className="text-sm">Let go of this task? Someone else can take it, and you can pick other work.</p>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" className="h-10 rounded-xl" disabled={skip.pending} onClick={() => setAsking(false)}>
+              Keep it
+            </Button>
+            <Button className={cn("h-10 rounded-xl font-semibold", ACCENT_BUTTON)} disabled={skip.pending} onClick={() => void letGo()}>
+              {skip.pending ? <Loader2 className="animate-spin" /> : <X />} Let go
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One kind of work: its name, what an answer pays, and whether there is work
  *  of it now. `blocked` while a task of another kind is in their hand: the
  *  server hands out no other until it is answered or skipped. */
 function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; onStart: () => void; blocked?: boolean; app?: string }) {
   const waiting = type.waiting ?? 0;
-  const status = blocked ? "Finish the task in your hand first" : type.standing ? "Any time" : waiting > 0 ? `${waiting} waiting` : "None right now";
+  const status = blocked ? "Finish or let go of the task in your hand first" : type.standing ? "Any time" : waiting > 0 ? `${waiting} waiting` : "None right now";
   // Another app draws it: where it opens.
   const now = app && !blocked ? `${status} · in ${typeLabel(app)}` : status;
   const ready = !blocked && (!!type.standing || waiting > 0);

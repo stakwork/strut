@@ -575,6 +575,25 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await call(w.token, "task/skip", { lease: got.lease });
   });
 
+  it("the dashboard lets go of a task another app draws (task/skip { all }): the worker's own lease alone", async () => {
+    await parked();
+    const w = await signIn();
+    await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}/grants/${TYPE}`);
+    const got = (await call(w.token, "task/next")).result as { lease: string; expires: number };
+    // Another app's dashboard (task/me { all }) sees the task in hand with its lease.
+    const me = (await call(w.token, "task/me", { all: true }, otherIdentity)).result as { holding?: { type: string; lease: string } };
+    assert.deepEqual(me.holding, { type: TYPE, expires: got.expires, lease: got.lease });
+    // Without `all` that app may not touch it; nor may another worker, with it.
+    assert.match((await call(w.token, "task/skip", { lease: got.lease }, otherIdentity)).error ?? "", /wrong_app/);
+    const ann = await signIn();
+    await staff("PUT", `/tasks/workers/${encodeURIComponent(ann.actor)}/grants/${TYPE}`);
+    assert.match((await call(ann.token, "task/skip", { lease: got.lease, all: true }, otherIdentity)).error ?? "", /no_lease/);
+    // Let go: nothing is in hand, and the task is open for someone else.
+    assert.deepEqual(await call(w.token, "task/skip", { lease: got.lease, all: true }, otherIdentity), { result: { ok: true } });
+    assert.equal(((await call(w.token, "task/me", { all: true }, otherIdentity)).result as { holding?: unknown }).holding, undefined);
+    assert.match((await call(w.token, "task/submit", { lease: got.lease, answer: { same: true } })).error ?? "", /lease_closed/);
+  });
+
   it("task/file refuses a path not on the task's list, though the run wrote it, and reads a listed one", async () => {
     await parked();
     const w = await signIn();
@@ -612,7 +631,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await strut.tasks.capability.ensure({ type: "ballot", workflow: "ballots", runId: "b1", path: "ballots/check", show: { n: 1 } });
     const got = (await call(w.token, "task/next")).result as { type: string; show: unknown; lease: string; expires: number };
     assert.deepEqual([got.type, got.show], ["ballot", { n: 1 }]);
-    assert.deepEqual(await call(w.token, "task/me"), { result: { actor: w.actor, status: "active", types: [{ name: "ballot", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 0 }], holding: { type: "ballot", expires: got.expires }, balance: NOTHING, payout: NO_PAYOUT } });
+    assert.deepEqual(await call(w.token, "task/me"), { result: { actor: w.actor, status: "active", types: [{ name: "ballot", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 0 }], holding: { type: "ballot", expires: got.expires, lease: got.lease }, balance: NOTHING, payout: NO_PAYOUT } });
     await call(w.token, "task/submit", { lease: got.lease, answer: { same: true } });
     // The dashboard's history: their own answer, as they read it.
     const history = (await call(w.token, "task/history")).result as { items: Array<{ lease: string; type: string; status: string }> };

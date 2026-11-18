@@ -22,7 +22,7 @@ export default defineStep({
   worker: true,
   description:
     "A WORKER's page asks who its viewer is here (the kit's useWorker): { actor, status, types, holding?, balance } — status new | active | suspended | banned, the task types they hold that this app draws (each with payMsat, what an answer earns now; qualifying: true while every task they get of it is a test they qualify on; standing: true when there is work of it whenever they ask; waiting: how many of its tasks wait that they could take), " +
-    "holding { type, expires }: the task in their hand now, which task/next hands back before any other, " +
+    "holding { type, expires, lease }: the task in their hand now, which task/next hands back before any other (task/skip { lease, all: true } lets it go from a dashboard across apps), " +
     "and balance { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }: what they are owed here, earnings in their hold and those past it, " +
     "and payout { on, why?, minMsat, dayLeftMsat, maxMsat, out? }: whether they may withdraw now (why not: off | no_wallet | no_keysend | no_address — sign in with Peel — | not_here), the least and the most one withdrawal may ask, and a payout on its way (task/withdraw). " +
     "With all: true, the types of EVERY app the viewer can open here (a visitor: the public view's apps), each naming its app, and the task in hand whichever app draws it — a dashboard across apps; task/next still hands out only the calling app's. " +
@@ -35,7 +35,7 @@ export default defineStep({
     actor: z.string(),
     status: z.enum(["new", "active", "suspended", "banned"]),
     types: z.array(z.object({ name: z.string(), app: z.string(), payMsat: z.number(), qualifying: z.boolean(), standing: z.boolean(), waiting: z.number() })),
-    holding: z.object({ type: z.string(), expires: z.number() }).optional(),
+    holding: z.object({ type: z.string(), expires: z.number(), lease: z.string() }).optional(),
     balance: z.object({ heldMsat: z.number(), withdrawableMsat: z.number(), totalMsat: z.number(), nextReleaseAt: z.number().optional() }),
     payout: z.object({
       on: z.boolean(),
