@@ -9,6 +9,7 @@ export default defineStep({
   description: "Save a task type whole (PUT /tasks/types/:name): what is left out is the default (open to any signed-in worker, unpaid, a 72-hour hold, no tests, no copies, no files with an answer, not standing, no round; whether a paid open type qualifies newcomers on tests is the admin's). Answers { type }. Only strut's own staff app, shown to an admin: the type's changedBy is that admin.",
   input: z.object({
     name: z.string().min(1),
+    title: z.string().nullable().optional(),
     app: z.string().min(1),
     answer: z.any(),
     leaseSeconds: z.number().optional(),

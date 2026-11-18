@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { CameraPhoto } from "@strut/kit/camera";
+import { words } from "../words";
 
 // ── The host's camera (@strut/kit/camera) ──────────────────────────────────
 //
@@ -8,7 +9,8 @@ import type { CameraPhoto } from "@strut/kit/camera";
 // as it draws the payment and sign-in sheets — when the page asks for a photo
 // (`useCamera().capture()`). The stream never reaches the page: the person
 // takes a shot, looks at it, and only "Use photo" hands that one JPEG over.
-// Cancel, or the page going away, answers null.
+// Cancel, or the page going away, answers null. In the page's language
+// (../words).
 
 /** The size a frame of `w` × `h` is drawn at so its longest side is at most `max`. */
 export function photoSize(w: number, h: number, max: number): { width: number; height: number } {
@@ -50,7 +52,7 @@ export function CameraSheet(props: {
         if (video.current) video.current.srcObject = s;
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-    if (!navigator.mediaDevices) setError("This browser offers no camera here.");
+    if (!navigator.mediaDevices) setError(words.noCamera);
     return () => {
       gone = true;
       stream?.getTracks().forEach((t) => t.stop());
@@ -80,24 +82,24 @@ export function CameraSheet(props: {
   };
 
   return (
-    <div class="camera-sheet" role="dialog" aria-label={`${props.app} asks for a photo`} data-testid="camera-sheet">
-      {shot ? <img class="camera-media" src={shot.url} alt="The photo" /> : <video ref={video} class="camera-media" autoPlay playsInline muted />}
+    <div class="camera-sheet" role="dialog" aria-label={`${props.app} ${words.asksForPhoto}`} data-testid="camera-sheet">
+      {shot ? <img class="camera-media" src={shot.url} alt={words.thePhoto} /> : <video ref={video} class="camera-media" autoPlay playsInline muted />}
       <div class="camera-top">
-        <button type="button" class="camera-cancel" onClick={() => props.onDone(null)}>Cancel</button>
+        <button type="button" class="camera-cancel" onClick={() => props.onDone(null)}>{words.cancel}</button>
         <div class="camera-asks">
-          <strong>{props.app}</strong> asks for a photo
+          <strong>{props.app}</strong> {words.asksForPhoto}
           {props.title && !shot && <div class="camera-title">{props.title}</div>}
         </div>
       </div>
-      {error && <div class="camera-error">Camera: {error}</div>}
+      {error && <div class="camera-error">{words.camera}: {error}</div>}
       <div class="camera-bar">
         {shot ? (
           <>
-            <button type="button" class="camera-btn" disabled={busy} onClick={() => setShot(null)}>Retake</button>
-            <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void use()}>Use photo</button>
+            <button type="button" class="camera-btn" disabled={busy} onClick={() => setShot(null)}>{words.retake}</button>
+            <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void use()}>{words.usePhoto}</button>
           </>
         ) : (
-          <button type="button" class="camera-shutter" aria-label="Take photo" disabled={!!error} onClick={take} />
+          <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error} onClick={take} />
         )}
       </div>
     </div>

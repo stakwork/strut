@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { qrSvg } from "./PaymentSheet";
 import { signInNote, type SignInAsk } from "../native-pay";
 import { signInWithKey, signInWithNostr, signInWithSphinx, startLnurl, type LnurlLogin, type SignInMethod, type VisitorSession } from "../visitor-signin";
+import { words } from "../words";
 
 // ── The sheet a visitor signs in on (plans/app-repos.md §5.3) ─────────────
 //
@@ -12,13 +13,14 @@ import { signInWithKey, signInWithNostr, signInWithSphinx, startLnurl, type Lnur
 // actor, never a key. Close answers it that the visitor did not sign in.
 // Its server is this one, or another one whose app this page hosts
 // (`from`). `sphinx`: the native host's wallet (Peel), whose own sheet
-// signs — a press here is the fresh tap it asks for.
+// signs — a press here is the fresh tap it asks for. In the page's
+// language (../words).
 
 const LABELS: Record<SignInMethod, string> = {
-  key: "Continue on this device",
-  nostr: "Sign in with Nostr",
-  lnurl: "Sign in with a Lightning wallet",
-  sphinx: "Sign in with Sphinx",
+  key: words.continueHere,
+  nostr: words.withNostr,
+  lnurl: words.withLnurl,
+  sphinx: words.withWallet("Sphinx"),
   ticket: "",
 };
 
@@ -49,7 +51,7 @@ export function SignInSheet(props: {
       if (!open) return;
       if (Date.now() > lnurl.exp) {
         setLnurl(null);
-        setError("The code expired before a wallet signed it.");
+        setError(words.codeExpired);
         return;
       }
       try {
@@ -79,7 +81,7 @@ export function SignInSheet(props: {
       else if (m === "sphinx" && sphinx) {
         const r = await signInWithSphinx(sphinx, from);
         if (r.outcome === "signed") onDone(r.session);
-        else setError(signInNote(r, sphinx.name));
+        else setError(signInNote(r, sphinx.name, words));
       } else onDone(m === "nostr" ? await signInWithNostr(from) : await signInWithKey(from));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -92,27 +94,27 @@ export function SignInSheet(props: {
     <div class="pay-sheet-backdrop" role="dialog" aria-modal="true" aria-labelledby="sign-in-sheet-title" data-testid="sign-in-sheet">
       <div class="pay-sheet">
         <div class="pay-sheet-head">
-          <div class="pay-sheet-title" id="sign-in-sheet-title">Sign in{props.seller ? ` to ${props.seller}` : ""}</div>
+          <div class="pay-sheet-title" id="sign-in-sheet-title">{props.seller ? words.signInTo(props.seller) : words.signIn}</div>
         </div>
         {lnurl ? (
           <>
-            <p class="pay-sheet-what">Scan with a Lightning wallet that signs in (LNURL-auth).</p>
-            <div class="pay-sheet-qr" aria-label="LNURL-auth QR code" dangerouslySetInnerHTML={{ __html: svg }} />
+            <p class="pay-sheet-what">{words.scan}</p>
+            <div class="pay-sheet-qr" aria-label={words.qrLabel} dangerouslySetInnerHTML={{ __html: svg }} />
             <div class="pay-sheet-invoice">
               <code title={lnurl.lnurl}>{lnurl.lnurl}</code>
             </div>
             <div class="pay-sheet-status">
               <span class="pay-sheet-spinner" aria-hidden="true" />
-              Waiting for the wallet
+              {words.waitingForWallet}
             </div>
           </>
         ) : (
           <>
-            <p class="pay-sheet-what">You are known here by a key only you hold. Nothing else about you is shared.</p>
+            <p class="pay-sheet-what">{words.knownByKey}</p>
             <div class="sign-in-methods">
               {methods.map((m) => (
                 <button key={m} type="button" class={`btn${m === methods[0] ? " btn-primary" : ""}`} disabled={!!busy} onClick={() => void run(m)}>
-                  {busy === m ? (m === "sphinx" && sphinx ? `Confirm in ${sphinx.name}…` : "Signing in…") : m === "sphinx" && sphinx ? `Sign in with ${sphinx.name}` : LABELS[m]}
+                  {busy === m ? (m === "sphinx" && sphinx ? words.confirmIn(sphinx.name) : words.signingIn) : m === "sphinx" && sphinx ? words.withWallet(sphinx.name) : LABELS[m]}
                 </button>
               ))}
             </div>
@@ -121,7 +123,7 @@ export function SignInSheet(props: {
         {error && <div class="pay-sheet-status is-expired">{error}</div>}
         <div class="pay-sheet-actions">
           <button type="button" class="btn" onClick={() => onDone(null)}>
-            Close
+            {words.close}
           </button>
         </div>
       </div>

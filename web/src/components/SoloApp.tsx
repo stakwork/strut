@@ -4,6 +4,7 @@ import { appToolInput, namesApp, publicAppHop } from "../app-links";
 import { replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
+import { words } from "../words";
 
 // ── An app's page alone (plans/apps.md §7.4) ───────────────────────────────
 //
@@ -101,7 +102,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   }, [props.app, visitor, from]);
   // Nothing to wait for: the page says why there is no app.
   const missing = visitor ? visitorApp === null : listed.entry === null;
-  const server = from ? hostOf(from) : "this server";
+  const server = from ? hostOf(from) : words.thisServer;
   useEffect(() => {
     if (missing) reportReady();
   }, [missing]);
@@ -113,7 +114,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     <div class={`app-solo${back && shown ? " has-back" : ""}`}>
       {back && shown && (
         <button type="button" class="app-solo-back" onClick={goBack}>
-          <span aria-hidden="true">←</span> Back
+          <span aria-hidden="true">←</span> {words.back}
         </button>
       )}
       {shown
@@ -127,8 +128,8 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
           />
         : <div class="empty">
             {visitor
-              ? visitorApp === null ? readError ?? `"${props.app}" is not in ${server}'s public view` : "Loading the app…"
-              : listed.entry === null ? `No app "${props.app}"` : "Loading apps…"}
+              ? visitorApp === null ? readError ?? words.notPublic(props.app, server) : words.loadingApp
+              : listed.entry === null ? words.noApp(props.app) : words.loadingApps}
           </div>}
     </div>
   );

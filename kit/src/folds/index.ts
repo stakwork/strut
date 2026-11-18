@@ -21,3 +21,4 @@ export * from "./concept-diff.js";
 export * from "./earnings.js";
 export * from "./answer-form.js";
 export * from "./answer-schema.js";
+export * from "./words.js";
