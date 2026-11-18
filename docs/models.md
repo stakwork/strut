@@ -138,7 +138,7 @@ it the builder and the agent step have `web_fetch` only.
 - **`image` core step** (`src/steps/core/image.ts`, specs/SPEC.md §4.1.6a).
   ONE image from a prompt with any image model, through the AI SDK's
   `generateImage`: `{ prompt, model, size?, aspectRatio?, seed?,
-  providerOptions?, name? }` → `{ path, url, mediaType, bytes, model, cost,
+  providerOptions?, name?, images? }` → `{ path, url, mediaType, bytes, model, cost,
   usage, revisedPrompt? }`, the file written where the run's files go
   (`src/media.ts`), never in the output — a workflow declares `path` as a
   deliverable (`kind: image`). The model is aieo's `<provider>/<id>`
@@ -174,7 +174,38 @@ it the builder and the agent step have `web_fetch` only.
   (`withMedia`). Image models are not in `GET /llm/models` (chat models).
   Several images: a foreach. `video` next is one more `MEDIA_MODELS` key and
   one more thin step on `src/media.ts`. `npm run test:image` (opt-in, the
-  keys in the environment) makes one real image per provider.
+  keys in the environment) makes one real image per provider, then edits it.
+
+  **An edit** (`images`): files of the run — paths, or what a `human` step's
+  `attachments` hands out, so `images: "{{ photo.attachments }}"` transforms
+  a worker's photo — read through `ctx.services.artifacts` by the agent's
+  loader (`loadListedFiles`, src/ai/attachments.ts: the same caps, 5 MB an
+  image), png/jpeg/gif/webp only, and sent as `generateImage`'s
+  `prompt: { images, text }`. No list (a step that sent none) draws from the
+  prompt alone. What each SDK does with them (read from the pinned
+  sources, 2026-11-17): `@ai-sdk/openai` posts multipart to `/images/edits`;
+  `@ai-sdk/google` puts them in a Gemini `generateContent` prompt as inline
+  data (its Imagen models it refuses outright, edit or not); `@ai-sdk/xai`
+  posts JSON to `/images/edits`, the image as a data URL; OpenRouter's
+  provider sends them as `/images`'s `input_references` (every image model
+  OpenRouter lists takes image input, but the two listed as text-only —
+  Recraft V4.1 Flash — were unavailable, so whether OpenRouter refuses or
+  ignores a reference such a model cannot take is unknown). No SDK drops
+  them. Through the gateway an edit rides `/openai/v1/images/edits`
+  (Bifrost's image_edit): openai (probed live) and google (Bifrost's gemini
+  provider edits; not probed, no Google key); Bifrost's xai provider answers
+  `unsupported_operation`, and the `openrouter-images` provider maps only
+  generation, so OpenRouter 404s. Those two carry no `routedEdits` in
+  `MEDIA_MODELS`: their edit is refused before anything is sent, unless the
+  grant allows a direct call (`resolveMediaModel(kind, { edit })` →
+  `mediaProviders(kind, edit)`). A mask is not offered (xAI ignores one).
+  **Cost**: OpenAI reports an edit's input image tokens
+  (`input_tokens_details.image_tokens`), priced at the datasheet's
+  `input_cost_per_image_token`; Gemini counts the image in its input tokens,
+  priced at its input rate (the same for text and images); xAI and
+  OpenRouter report the whole call's cost (an xAI edit $0.022 against $0.02).
+  A 5 MB (2600×2600) JPEG edits on xAI, OpenRouter (FLUX.2 klein) and OpenAI,
+  direct and through the gateway: no downscale.
 
 ## Files
 
@@ -186,11 +217,11 @@ the npm package `aieo` (plans/aieo-in-strut.md), built from `src/aieo/` for the 
 
 ### `src/aieo/`
 
-aieo, the model layer (moved from stakwork/stakgraph's mcp/src/aieo, history kept): model names → a working AI SDK client (resolve.ts: aliases, `provider/id`, the OpenRouter prefix trap; provider.ts: keys and their companion headers, each provider's client and quirks — thinking rules, Maple's reasoning efforts, gateway paths — output caps, context windows, prices, `computeSessionCost`; the MODEL CATALOG, bifrost's datasheet as data — `loadModelCatalog`, the gateway's key rule, `getModelPrice`, consulted after Maple's and Numes' own tables and before the hand-kept ones, and an image model's prices (`getImagePrice`: image tokens or per image, never OpenRouter's rows, which are not what it charges; `computeImageCost`); `STRUT_MODEL_CATALOG`; MEDIA MODELS — `getMediaModel(kind, provider)` / resolve.ts `resolveMediaModel`: one `connect` (key, gateway, headers, fetch) shared with `getModel`, and one table, `MEDIA_MODELS`, of which providers make each kind (`image`: openai, google, xai, openrouter) and how each rides a gateway's OpenAI-compatible route — openrouter as the gateway's `openrouter-images` custom provider, Bifrost's own having no image generation; `mediaProviders`; a response's reported cost (`usage.cost`, xAI's ticks) put on the call's provider metadata, `mediaCostOf`; a kind is one more key in the table), the web tools (search.ts: native Anthropic or Exa; fetch.ts: native or a guarded HTTP fetch, citations), usage, and the helpers its npm users call (`callModel`, `ConversationStorage`). Strut imports it only through `loadAieo()` (llm.ts), lazily: its index loads every provider SDK. Its own env reads go through `env.ts` (`useEnv`), the one file env.test.ts lets read `process.env`. Its five suites sit beside the sources; the npm package is `aieo/` at the root
+aieo, the model layer (moved from stakwork/stakgraph's mcp/src/aieo, history kept): model names → a working AI SDK client (resolve.ts: aliases, `provider/id`, the OpenRouter prefix trap; provider.ts: keys and their companion headers, each provider's client and quirks — thinking rules, Maple's reasoning efforts, gateway paths — output caps, context windows, prices, `computeSessionCost`; the MODEL CATALOG, bifrost's datasheet as data — `loadModelCatalog`, the gateway's key rule, `getModelPrice`, consulted after Maple's and Numes' own tables and before the hand-kept ones, and an image model's prices (`getImagePrice`: image tokens or per image, never OpenRouter's rows, which are not what it charges; `computeImageCost`); `STRUT_MODEL_CATALOG`; MEDIA MODELS — `getMediaModel(kind, provider)` / resolve.ts `resolveMediaModel`: one `connect` (key, gateway, headers, fetch) shared with `getModel`, and one table, `MEDIA_MODELS`, of which providers make each kind (`image`: openai, google, xai, openrouter) and how each rides a gateway's OpenAI-compatible route — openrouter as the gateway's `openrouter-images` custom provider, Bifrost's own having no image generation — and which of them the gateway also EDITS for (`routedEdits`: openai, google); `mediaProviders(kind, edit?)`; a response's reported cost (`usage.cost`, xAI's ticks) put on the call's provider metadata, `mediaCostOf`; a kind is one more key in the table), the web tools (search.ts: native Anthropic or Exa; fetch.ts: native or a guarded HTTP fetch, citations), usage, and the helpers its npm users call (`callModel`, `ConversationStorage`). Strut imports it only through `loadAieo()` (llm.ts), lazily: its index loads every provider SDK. Its own env reads go through `env.ts` (`useEnv`), the one file env.test.ts lets read `process.env`. Its five suites sit beside the sources; the npm package is `aieo/` at the root
 
 ### `src/llm.ts`
 
-resolveModel()/listModelOptions()/loadAieo(): strut's glue over aieo's resolve.ts (src/aieo/) — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context. `resolveMediaModel(kind, opts)`: the same for a media model (the `image` step) — the grant's gateway when it routes that kind for the provider, else direct only where the grant allows (`direct`), else refused before anything is sent
+resolveModel()/listModelOptions()/loadAieo(): strut's glue over aieo's resolve.ts (src/aieo/) — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context. `resolveMediaModel(kind, opts)`: the same for a media model (the `image` step) — the grant's gateway when it routes that kind for the provider (for an `edit`, edits it), else direct only where the grant allows (`direct`), else refused before anything is sent
 
 ### `src/media.ts`
 

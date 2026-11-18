@@ -332,10 +332,13 @@ export interface ResolvedMediaModel<K extends MediaKind> extends ModelRef {
 /**
  * Name → a media model of `kind` (an ImageModel for "image"): resolveModel's
  * rules for the name, the key and the gateway, `getMediaModel` for the
- * model. Throws when the provider makes no such media, or makes it only
- * directly and `baseUrl` names a gateway.
+ * model. Throws when the provider makes no such media, or makes it (or, for
+ * an `edit`, edits it) only directly and `baseUrl` names a gateway.
  */
-export async function resolveMediaModel<K extends MediaKind>(kind: K, opts: ResolveOptions = {}): Promise<ResolvedMediaModel<K>> {
+export async function resolveMediaModel<K extends MediaKind>(
+  kind: K,
+  opts: ResolveOptions & { edit?: boolean } = {},
+): Promise<ResolvedMediaModel<K>> {
   if (!opts.model) throw new Error(`A ${kind} model is required, written as "<provider>/<id>"`);
   const baseUrl = normalizeApiKey(opts.baseUrl);
   const ref = canonicalModelName(opts.model, opts.provider);
@@ -359,6 +362,7 @@ export async function resolveMediaModel<K extends MediaKind>(kind: K, opts: Reso
     headers,
     abortSignal: opts.abortSignal,
     timeoutMs: opts.timeoutMs,
+    edit: opts.edit,
   });
   return { ...ref, model, apiKey };
 }

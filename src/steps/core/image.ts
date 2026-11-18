@@ -4,12 +4,40 @@ import type { StrutCapabilities } from "../../capabilities.js";
 import { loadAieo, resolveMediaModel, stepAuth } from "../../llm.js";
 import { emptyUsage, type TokenUsage } from "../../pricing.js";
 import { imagePreview, mediaFileName, saveMedia } from "../../media.js";
+import { isImageType, listedFileSchema, loadListedFiles, type ListedFile } from "../../ai/attachments.js";
 
 const EXAMPLE = `- id: hero
   type: image
   config:
     prompt: "A lighthouse at dusk, flat illustration: {{ input.theme }}"
-    model: xai/grok-imagine-image`;
+    model: xai/grok-imagine-image
+- id: remix                      # an edit: the photo a human step's worker sent
+  type: image
+  config:
+    prompt: "Turn the picture into a watercolour"
+    model: openai/gpt-image-1-mini
+    images: "{{ photo.attachments }}"`;
+
+/** The models that edit, as the step's description names them. */
+const EDITORS =
+  "openai/gpt-image-…, google/gemini-…-image, xai/grok-imagine-image, openrouter/<a model that takes images> directly; " +
+  "through the deployment's LLM gateway only openai and google (an xai or openrouter edit there is refused before anything is sent, " +
+  "unless the grant allows a direct call)";
+
+/** The source images the step lists, read from the run's files. */
+async function sourceImages(ctx: StepContext<StrutCapabilities> | undefined, list: ListedFile[]): Promise<Buffer[]> {
+  const artifacts = ctx?.services?.artifacts;
+  if (!ctx || !artifacts) throw new Error("image: images lists files of the run, and this run has no artifacts capability to read them from");
+  let loaded: Awaited<ReturnType<typeof loadListedFiles>>;
+  try {
+    loaded = await loadListedFiles(artifacts, ctx.runId, list);
+  } catch (err) {
+    throw new Error(`image: images: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const other = loaded.find((f) => !isImageType(f.mediaType));
+  if (other) throw new Error(`image: images: ${other.name} is not an image (${other.mediaType}); a source image is a png, jpeg, gif or webp`);
+  return loaded.map((f) => f.bytes);
+}
 
 /** aieo, as `loadAieo` returns it. */
 type Aieo = Awaited<ReturnType<typeof loadAieo>>;
@@ -36,7 +64,7 @@ const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v)
 
 export default defineStep({
   type: "image",
-  description: `Make ONE image from a prompt with an image model, written to a file. Output: { path, url, mediaType, bytes, model, cost, usage, revisedPrompt? } — \`path\` is relative to the run's files (the job's directory on a job run), so declare it as a deliverable: artifacts: [{ id, kind: image, path: "{{ <step>.path }}" }]. \`cost\` is the call's dollar cost: what the provider reported (OpenRouter, xAI), else the model's datasheet price (OpenAI, Google); a model with neither is refused before the call. Models are "<provider>/<id>": xai/grok-imagine-image, openai/gpt-image-1-mini, google/gemini-2.5-flash-image, openrouter/black-forest-labs/flux.2-klein-4b (through the deployment's LLM gateway as its \`openrouter-images\` provider). Several images: a foreach. As an agent's tool, the model sees a small copy of the image.\n\n${EXAMPLE}`,
+  description: `Make ONE image from a prompt with an image model, written to a file — or, given \`images\` (files of the run: the photo a \`human\` step's \`attachments\` hands out), EDIT them: the prompt says what to do to the picture. Models that edit: ${EDITORS}. Output: { path, url, mediaType, bytes, model, cost, usage, revisedPrompt? } — \`path\` is relative to the run's files (the job's directory on a job run), so declare it as a deliverable: artifacts: [{ id, kind: image, path: "{{ <step>.path }}" }]. \`cost\` is the call's dollar cost: what the provider reported (OpenRouter, xAI), else the model's datasheet price (OpenAI, Google), an edit's source images included; a model with neither is refused before the call. Models are "<provider>/<id>": xai/grok-imagine-image, openai/gpt-image-1-mini, google/gemini-2.5-flash-image, openrouter/black-forest-labs/flux.2-klein-4b (through the deployment's LLM gateway as its \`openrouter-images\` provider). Several images: a foreach. As an agent's tool, the model sees a small copy of the image.\n\n${EXAMPLE}`,
   input: z.object({
     prompt: z.string().min(1).describe("what to draw; templates resolve first"),
     model: z
@@ -64,6 +92,12 @@ export default defineStep({
       .string()
       .optional()
       .describe("the file's name, without extension (default: the step's own, e.g. hero, or each-3-pic in a foreach)"),
+    images: z
+      .array(listedFileSchema)
+      .optional()
+      .describe(
+        "source images to EDIT, files of the run: each a path or `{ path, name?, mediaType? }` — what a `human` step's `attachments` hands out, so `images: \"{{ photo.attachments }}\"` transforms the photo a worker sent (a step that sent none leaves no list, and the image is drawn from the prompt alone). png, jpeg, gif or webp; at most 10, 5 MB each, 15 MB together. A model that cannot edit fails the step; the images are never dropped",
+      ),
   }),
   output: z.object({
     path: z.string(),
@@ -76,12 +110,14 @@ export default defineStep({
     revisedPrompt: z.string().optional(),
   }),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
+    const sources = cfg.images?.length ? await sourceImages(ctx, cfg.images) : [];
     const aieo: Aieo = await loadAieo();
     const { generateImage } = await import("ai");
     const resolved = await resolveMediaModel("image", {
       model: cfg.model,
       secrets: ctx?.services?.secrets,
       ...stepAuth(ctx),
+      edit: sources.length > 0,
     });
     const provider = resolved.provider as Parameters<Aieo["computeImageCost"]>[0];
     // A cost is never guessed: a model whose provider does not report what a
@@ -96,7 +132,7 @@ export default defineStep({
 
     const result = await generateImage({
       model: resolved.model,
-      prompt: cfg.prompt,
+      prompt: sources.length ? { images: sources, text: cfg.prompt } : cfg.prompt,
       ...(cfg.size ? { size: cfg.size as `${number}x${number}` } : {}),
       ...(cfg.aspectRatio ? { aspectRatio: cfg.aspectRatio as `${number}:${number}` } : {}),
       ...(cfg.seed !== undefined ? { seed: cfg.seed } : {}),

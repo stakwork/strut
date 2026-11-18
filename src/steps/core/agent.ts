@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
-import { attachmentParts, checkAttachmentCaps, loadRunAttachments, normalizeType } from "../../ai/attachments.js";
+import { attachmentParts, listedFileSchema, loadListedFiles, loadRunAttachments, type ListedFile } from "../../ai/attachments.js";
 import { applyToolWrappers } from "../../extensions.js";
 import { loadAieo, resolveModel, createWebTools, modelProvider, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
@@ -23,7 +23,7 @@ import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, reportedCost, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
-import { basename, join, resolve, dirname, isAbsolute, sep } from "node:path";
+import { join, resolve, dirname, isAbsolute, sep } from "node:path";
 import os from "node:os";
 
 /**
@@ -971,10 +971,6 @@ async function attachedParts(ctx: StepContext): Promise<unknown[]> {
   return (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat();
 }
 
-/** One file an agent's `attachments` LISTS: a path under the run's
- *  artifacts, or what a `human` step's `attachments` hands out. */
-type ListedFile = string | { path: string; name?: string | undefined; mediaType?: string | undefined };
-
 /** The files the step lists (`attachments: [...]`, plans/human-steps.md
  *  §5.6.4) — read from the run's artifacts, held to the chat's caps — as
  *  user-message parts, and as the run records them. */
@@ -982,22 +978,9 @@ export async function listedParts(ctx: StepContext | undefined, list: ListedFile
   if (!list.length) return { files: [], parts: [] };
   const artifacts = (ctx?.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
   if (!ctx || !artifacts) throw new Error("agent: attachments lists files of the run, and this run has no artifacts capability to read them from");
-  const dir = await artifacts.dir(ctx.runId);
-  const loaded = await Promise.all(
-    list.map(async (e) => {
-      const path = typeof e === "string" ? e : e.path;
-      const name = (typeof e === "string" ? undefined : e.name) || basename(path);
-      let bytes: Buffer;
-      try {
-        bytes = Buffer.from(await artifacts.read(ctx.runId, path));
-      } catch (err) {
-        throw new Error(`agent: attachments: ${JSON.stringify(path)} is not a file of this run (${err instanceof Error ? err.message : String(err)})`);
-      }
-      return { name, mediaType: normalizeType(typeof e === "string" ? undefined : e.mediaType, name), bytes, path, savedAt: join(dir, path) };
-    }),
-  );
+  let loaded: Awaited<ReturnType<typeof loadListedFiles>>;
   try {
-    checkAttachmentCaps(loaded);
+    loaded = await loadListedFiles(artifacts, ctx.runId, list);
   } catch (err) {
     throw new Error(`agent: attachments: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1379,7 +1362,7 @@ export default defineStep({
     attachments: z
       .union([
         z.boolean(),
-        z.array(z.union([z.string().min(1), z.object({ path: z.string().min(1), name: z.string().optional(), mediaType: z.string().optional() })])),
+        z.array(listedFileSchema),
       ])
       .default(true)
       .describe(
