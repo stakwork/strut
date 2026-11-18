@@ -19,7 +19,9 @@ import { PACKAGE_NAME } from "../../../packages/format.js";
  * `detail`, derived by the index from the archive — src/packages/detail.ts):
  * the publisher and its key, which index vouches for the pair, the digest,
  * the license, what it brings, what it can spend or act on (the §8 lines,
- * read off the closure by the index), what it needs. Nothing is fetched
+ * read off the closure by the index), which of its steps it gives the job
+ * agent and which of those ask first (plans/followed-repos.md §3.3), what
+ * it needs. Nothing is fetched
  * from the publisher before the yes; the install then re-verifies
  * everything against the publisher's own catalog.
  *
@@ -43,6 +45,10 @@ const input = z.object({
 });
 
 const words = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+/** The steps a package gives the job agent, the ones that ask first said. */
+const jobTools = (job: { tools: string[]; approve: string[] }) =>
+  `${words(job.tools.length, "step")}: ${job.tools.join(", ")}` + (job.approve.length ? ` (${job.approve.join(", ")} ${job.approve.length === 1 ? "asks" : "ask"} you first)` : "");
 
 export default defineStep({
   type: "package/install",
@@ -88,6 +94,7 @@ export default defineStep({
       if (d.can.acts) can.push("act (a step changes something outside the run)");
       if (d.can.code) can.push("run code (its own TypeScript, or exec)");
       lines.push(can.length ? `It can ${can.join("; ")}.` : "It only reads: no model call, no step that acts, no code of its own.");
+      if (d.job?.tools.length) lines.push(`It gives the job agent ${jobTools(d.job)}.`);
       lines.push(d.secrets.length ? `It needs the secret${d.secrets.length === 1 ? "" : "s"} ${d.secrets.join(", ")}.` : "It needs no secret.");
     } else {
       lines.push("The index has not read its archive yet, so what it holds is not known before the install.");
@@ -110,6 +117,7 @@ export default defineStep({
       fields.push({ label: "Brings", value: holds.join(", ") || "nothing the index could read" });
       fields.push({ label: "Needs", value: d.secrets.length ? d.secrets.join(", ") : "no secret" });
       fields.push({ label: "Runs code", value: d.can.code ? "yes" : "no", ...(d.can.code ? { danger: true } : {}) });
+      if (d.job?.tools.length) fields.push({ label: "Job agent's tools", value: jobTools(d.job) });
     }
     return { title, summary: lines.join(" "), fields, actions: { accept: "Install", reject: "Don't install" }, full: !!d };
   },

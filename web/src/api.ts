@@ -2895,6 +2895,9 @@ export interface PackageDetail {
   steps: StepDetail[];
   concepts: ConceptDetail[];
   secrets: string[];
+  /** The steps the manifest's `job:` gives the job agent, by their names
+   *  inside the package, and the ones among them that ask first. */
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   files: number;
   bytes: number;
@@ -2906,6 +2909,7 @@ export interface DetailSummary {
   steps: number;
   concepts: number;
   secrets: string[];
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   readme: boolean;
 }
