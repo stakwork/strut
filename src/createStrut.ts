@@ -71,7 +71,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { ACCOUNT_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
+import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -130,7 +130,7 @@ import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
-import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
+import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
@@ -242,6 +242,10 @@ const LLMS_TXT_CACHE_MS = 30_000;
  *  what a public launch with files may be. An anonymous request stays at
  *  the SDK's 4 MB (`MCP_BODY_MAX_BYTES`). */
 const APP_DOOR_BODY_MAX_BYTES = PUBLIC_RUN_FILES_BODY_MAX_BYTES;
+/** The most a HOST's call on `POST /mcp` may be (plans/people-and-hosts.md
+ *  §3): a 25 MiB file as base64 (about 33.4 MiB), with room for the rest of
+ *  the message. Every other caller keeps its own cap. */
+export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
@@ -2673,14 +2677,17 @@ export async function createStrut<TServices = unknown>(
     VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
   /** What a HOST key may call (plans/jamie-in-tribes.md §5.1): a turn of
    *  one of its own conversations, as the person it names, read back; a
-   *  proposal made there, decided as that person; and linking an account.
-   *  No other read, no publishing, no secret, no other session. */
+   *  proposal made there, decided as that person; linking an account; and
+   *  the tools an app's `hosts:` lets it call, on `POST /mcp`
+   *  (plans/people-and-hosts.md §3). No other read, no publishing, no
+   *  secret, no other session. */
   const HOST_ROUTES: Array<[method: string, path: RegExp]> = [
     ["POST", /^\/workflows\/[^/]+\/run$/],
     ["GET", /^\/conversations\/item$/],
     ["POST", PROPOSAL_DECIDE],
     ["POST", /^\/hosts\/link$/],
     ["GET", /^\/hosts\/links\/[^/]+$/],
+    ["POST", /^\/mcp$/],
   ];
   const hostMay = (method: string, path: string) => HOST_ROUTES.some(([m, re]) => m === method && re.test(path));
   /** The sign-in routes: open to anyone, since signing in is how a visitor
@@ -2703,7 +2710,7 @@ export async function createStrut<TServices = unknown>(
     const host = hostOf(c);
     if (host) {
       if (!hostMay(c.req.method, path)) {
-        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals and links accounts — nothing else" }, 403);
+        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, links accounts and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
       }
       const raw = c.req.header(ACCOUNT_HEADER);
       const account = raw === undefined ? undefined : parseAccount(raw);
@@ -2712,6 +2719,20 @@ export async function createStrut<TServices = unknown>(
       }
       const person = account ? await people.actorOf(account) : undefined;
       hostCalls.set(c.req.raw, { host: host.name, ...(account ? { account } : {}), ...(person ? { person } : {}) });
+      // What the speaker goes by there, as they wrote it
+      // (plans/people-and-hosts.md §1): kept as `self`, on the account when
+      // it is linked, else as its key's own actor's name.
+      const named = c.req.header(ACCOUNT_NAME_HEADER);
+      if (named !== undefined) {
+        if (!account) return c.json({ error: `${ACCOUNT_NAME_HEADER} is the name of the account ${ACCOUNT_HEADER} names: send both` }, 400);
+        let name: string;
+        try {
+          name = decodeURIComponent(named);
+        } catch {
+          return c.json({ error: `${ACCOUNT_NAME_HEADER} must be percent-encoded UTF-8` }, 400);
+        }
+        await people.setAccountName(account, name).catch((err) => console.error(`[people] ${accountText(account)}'s name was not kept:`, err));
+      }
       return next();
     }
     if (memberOnly(c)) {
@@ -10501,10 +10522,51 @@ export async function createStrut<TServices = unknown>(
       });
       return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
+    /** A HOST key on `/mcp` (plans/people-and-hosts.md §3): `step_run`
+     *  alone, the app named by its name, as the account `x-strut-account`
+     *  names — its person, or the key's own actor where the app says
+     *  `unlinked: true` — under the app's `hosts:`, on the shared bag. It
+     *  is synchronous: one JSON answer once the step is done, 200 only when
+     *  every call in it finished — 403 refused, 500 the step failed, 400 a
+     *  call the tool could not take — so a host sends again until a 2xx,
+     *  and a 2xx means taken. Up to `HOST_CALL_BODY_MAX_BYTES`. */
+    const hostAppHandler = async (c: Context) => {
+      const call = hostCalls.get(c.req.raw)!;
+      if (!call.account) return c.json({ error: `${ACCOUNT_HEADER} is required: the account this call is made as ("${call.host}:<key>")` }, 400);
+      if (!call.person) return c.json({ error: `not_linked: ${accountText(call.account)} is not linked to a person on this strut server` }, 403);
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { buildAppTools } = await import("./apps/tools.js");
+      const outcomes: AppCallStatus[] = [];
+      const tools = buildAppTools({
+        apps,
+        registry,
+        services,
+        actor: call.person.actor,
+        host: { ref: { name: call.host, account: accountText(call.account), unlinked: !call.person.linked }, outcome: (s) => void outcomes.push(s) },
+        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+        monitor: appMonitor,
+      });
+      const instructions = "A host's door to an app's tools: step_run { app, type, config }, as the account x-strut-account names, under the app's hosts:. The answer comes once the step is done; a 2xx means it finished.";
+      const res = await createMcpDoor(() => toolsetServer({ tools, instructions }), { maxBodyBytes: HOST_CALL_BODY_MAX_BYTES, json: true }).handle(c.req.raw);
+      if (res.status !== 200) return res;
+      const text = await res.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined;
+      }
+      const answers = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ error?: unknown; result?: { isError?: boolean } } | undefined>;
+      const failed = answers.some((a) => a?.error !== undefined || a?.result?.isError === true);
+      const status = !failed ? 200 : outcomes.includes("error") ? 500 : outcomes.includes("refused") ? 403 : 400;
+      return new Response(text, { status, headers: res.headers });
+    };
     app.post("/mcp/builder", builderHandler);
-    app.post("/mcp", async (c) =>
-      ["peer:person", "member"].includes(await scopeOf(c)) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
-    );
+    app.post("/mcp", async (c) => {
+      const scope = await scopeOf(c);
+      if (scope === "host") return hostAppHandler(c);
+      return ["peer:person", "member"].includes(scope) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c);
+    });
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     for (const path of ["/mcp", "/mcp/builder", "/public/mcp"]) {

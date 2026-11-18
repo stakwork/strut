@@ -118,6 +118,32 @@ describe("accounts (plans/people-and-hosts.md §2)", () => {
     await people.close();
   });
 
+  it("setAccountName (x-strut-account-name, §1): on the account when linked, else the key's own actor's, as self", async () => {
+    const people = createPeople(PEOPLE_IN_MEMORY);
+    const sphinx = { kind: "sphinx", key: KEY };
+    const own = `secp:${KEY.slice(2)}`;
+    // Nobody linked it: the key's own actor, as a person names themself.
+    assert.equal(await people.setAccountName(sphinx, " Zoë \n🌱 "), true);
+    assert.equal(await people.nameOf(own), "Zoë 🌱");
+    assert.equal(await people.setAccountName(sphinx, "Zoë 🌱"), false, "the same name changes nothing");
+    await people.setName(own, "Zoe (staff)", "host");
+    assert.equal(await people.setAccountName(sphinx, "Z"), false, "never over a host's");
+    assert.equal(await people.nameOf(own), "Zoe (staff)");
+    // Linked: on the account, beneath the person's own name.
+    await people.link(sphinx, "ada-1", { name: "ada" });
+    assert.equal(await people.setAccountName(sphinx, "Ada L."), true);
+    assert.equal((await people.linkOf(sphinx))?.name, "Ada L.");
+    assert.equal(await people.nameOf("ada-1"), "Ada L.");
+    await people.setName("ada-1", "Ada Lovelace", "self");
+    await people.setAccountName(sphinx, "Ada on Sphinx");
+    assert.equal(await people.nameOf("ada-1"), "Ada Lovelace", "their own name comes first");
+    assert.equal(await people.nameOf(own), "Zoe (staff)", "the key's own actor keeps its name");
+    // Another kind nobody linked has no one to name; an empty name is none.
+    assert.equal(await people.setAccountName({ kind: "email", key: "bob@example.com" }, "Bob"), false);
+    assert.equal(await people.setAccountName(sphinx, " \n "), false);
+    await people.close();
+  });
+
   it("a link code: one per person, once, ten minutes, as typed", () => {
     mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
     try {

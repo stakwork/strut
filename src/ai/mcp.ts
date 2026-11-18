@@ -316,13 +316,21 @@ export function builderServer({ deps, instructions, prompt, tools, meta }: Build
  * SDK's 4 MB (`MCP_BODY_MAX_BYTES`) unless the caller says more — an app
  * door does for a request with a session, so a page's files fit
  * (plans/human-steps.md §5.6.7).
+ *
+ * `json`: the answer is one JSON body, returned once the call is done,
+ * never a stream — the host's door, whose HTTP status says how the tool
+ * ended (plans/people-and-hosts.md §3).
  */
-export function createMcpDoor(server: () => Promise<Server>, o: { maxBodyBytes?: number } = {}): { handle(req: Request): Promise<Response> } {
+export function createMcpDoor(server: () => Promise<Server>, o: { maxBodyBytes?: number; json?: boolean } = {}): { handle(req: Request): Promise<Response> } {
   return {
     async handle(req) {
       const { WebStandardStreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
       const s = await server();
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, maxRequestBodySize: o.maxBodyBytes ?? MCP_BODY_MAX_BYTES });
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        maxRequestBodySize: o.maxBodyBytes ?? MCP_BODY_MAX_BYTES,
+        ...(o.json ? { enableJsonResponse: true } : {}),
+      });
       await s.connect(transport);
       return transport.handleRequest(req);
     },

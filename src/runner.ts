@@ -1,6 +1,7 @@
 import type {
   AppRef,
   Flow,
+  HostRef,
   McpServer,
   RunAttachment,
   Step,
@@ -171,6 +172,10 @@ export interface RunOptions<TServices = unknown> {
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
    *  Nothing a launch body sends can set it. */
   app?: AppRef;
+  /** A HOST's call of an app's tool (plans/people-and-hosts.md §3): handed
+   *  to every step as `ctx.host`. The host's door (`runSingleStep { host }`)
+   *  is the one site that sets it; nothing records it. */
+  hostCall?: HostRef;
   /** The package the run's own steps look a bare name up in first
    *  (src/package-lookup.ts) — the workflow's prefix when not given; a
    *  single-step run for an app passes the app's (`runSingleStep`). */
@@ -359,6 +364,7 @@ interface Exec {
   /** The run's Concept branch (`StepContext.branch`). */
   branch?: string;
   app?: AppRef;
+  hostCall?: HostRef;
   automation?: { id: string };
   wake?: WakeMark;
   mcp?: McpServer[];
@@ -719,6 +725,7 @@ async function executeRun<TServices = unknown>(
     job: opts?.job,
     ...(branch ? { branch } : {}),
     app: opts?.app,
+    ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
@@ -1294,6 +1301,7 @@ function stepContext(step: Step, validConfig: unknown, scope: Record<string, unk
     ...(exec.job ? { job: exec.job } : {}),
     ...(exec.branch ? { branch: exec.branch } : {}),
     ...(exec.app ? { app: exec.app } : {}),
+    ...(exec.hostCall ? { host: exec.hostCall } : {}),
     ...(exec.automation ? { automation: exec.automation } : {}),
     ...(exec.wake ? { wake: exec.wake } : {}),
     ...(exec.mcp ? { mcp: exec.mcp } : {}),

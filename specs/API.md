@@ -1207,7 +1207,9 @@ and lets a page call it), served beside each set so a host relays a frame's
 `tools/call` to whichever door it connects. A PERSON token (`peer:person`,
 Auth) gets `POST /mcp` with `step_run` and nothing else — how a person's own
 strut hosts an app that lives here (§14.3, "A peer's app"); `/mcp/builder`
-and every plain peer stay 403.
+and every plain peer stay 403. A HOST key gets `POST /mcp` with a `step_run`
+of its own — the app by name, the app's `hosts:` in place of its grants,
+one JSON answer whose status says how the step ended (§13.5).
 
 ```bash
 claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: hermes"
@@ -1710,10 +1712,19 @@ reads included.
 | POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
 | POST   | `/hosts/link` | — | `{ code, key, name?, address? }` → the link: the code a person was shown (`account/link-code`), handed back with the key it came from — the host vouches for it, as for who spoke. `key` bare or as `<kind>:<key>`; `name` the account's own (the sender's alias), one line, 80 characters; `address` where it is reached (a Sphinx address names its own key). A link replaces the account's earlier one. `400` for a bad key, name or address; `404 no_code:` for a code unknown, used or expired |
 | GET    | `/hosts/links/:key` | — | The link, or `404 not_linked:` |
+| POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
 
 A launch or a decision with no `x-strut-account` is `400`; with an account
 nobody linked, `403 not_linked:` — the host falls back to someone who is (a
 tribe's linker). The deployment key is no host: `/hosts/*` answer it `403`.
+
+**`x-strut-account-name`**, beside `x-strut-account` on any of these
+routes: the name the speaker goes by there, as they wrote it,
+percent-encoded (`encodeURIComponent`). It is kept as the person said it
+of themself (`self`, never over a name a host gave at sign-in, §13.3): on
+the account when it is linked — read beneath the person's own name — else
+as the name of the key's own actor (a Sphinx key's `secp:`). One line, 80
+characters. Malformed, or without `x-strut-account`, it is `400`.
 
 ```ts
 interface AccountLink {
@@ -1750,6 +1761,69 @@ curl -s https://strut.box.example/hosts/link -H "authorization: Bearer $HOST_TOK
 curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
   -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
   -d '{"input":{"prompt":"Ada: @jamie what did we decide?","session":"host/sphinx/3f9a0c21b7e4"},"wake":true,"callback":{"url":"http://treasury:8095/strut/end?m=1&token=…"}}'
+```
+
+### 13.5 A host calls an app's tools
+
+`plans/people-and-hosts.md` §3; `src/apps/tools.ts` (`hostRefusal`).
+Besides launching turns, a host key (§13.4) may call the tools an app lists
+for it, directly, as the person who spoke: an email gateway handing a
+message to a ticket app, the Sphinx daemon a DM to an inbox. The app says
+who may call what in its `app.yaml`:
+
+```yaml
+hosts:
+  sphinx:                    # the host key's name in STRUT_HOST_KEYS
+    steps: [tickets/receive] # the step types it may call (globs as grants.steps)
+    unlinked: true           # an account nobody linked may be the caller
+```
+
+Only a person's publish (`POST /apps`, a package a person installs) and
+strut's own seeded apps write `hosts:`: a model's (`app/publish`,
+`app/look`) is refused naming it, as `peer:` on a workflow is.
+
+The door is `POST /mcp` with the host key and `x-strut-account` (none:
+`400`), JSON-RPC as §11, with ONE tool:
+
+```ts
+step_run { app: string /* the app's name: its live version runs */, type: string, config?: object, input?: unknown }
+```
+
+| Check, in order | Refused with |
+| --- | --- |
+| An account with a person: linked, or a Sphinx key's own `secp:` | `403 not_linked:` (HTTP, before the tool) |
+| The app exists | `403`, `no app "…"` |
+| Its `hosts:` names this host | `403`, `hosts: does not name "…"` |
+| Its entry's `steps` lists the type | `403`, `not one this app lets … call` |
+| An unlinked account only where the entry says `unlinked: true` | `403`, `not_linked: … does not say unlinked: true` |
+| What no caller of an app's tools does: a paid or shell step (`llm`, `agent`, `exec`, …), a sealed step, `run/*` outside `grants.workflows`, a graph write on a type `data.graph` does not declare | `403`, as for a page (§14.1) |
+
+The step runs as that account's person (or the key's own actor), with
+`ctx.app` the app and `ctx.host = { name, account, unlinked }`, on the
+shared services bag alone: no admin door, no worker's calls, nothing that
+pays or sends. It is never first-party or an admin's. Nothing is kept as a
+run unless the step's own claim keeps it.
+
+**It is synchronous.** The answer is ONE JSON body (`content-type:
+application/json`, never a stream), sent once the step is done: the
+JSON-RPC result carrying the step's whole output, as §14.1's `step_run`
+does. The HTTP status says how it ended, so a host sends again until a
+`2xx` and a `2xx` means the tool finished:
+
+| Status | |
+| --- | --- |
+| `200` | Every call in the request finished (a `tools/list` or `initialize` too) |
+| `403` | Refused: one of the checks above |
+| `500` | The step itself failed (its message in the result) |
+| `400` | A call the tool could not take: unknown tool, bad arguments, a JSON-RPC error |
+| `413` | The request is over 36 MiB (`HOST_CALL_BODY_MAX_BYTES`: a 25 MiB file as base64, with room for the rest). Every other caller of `/mcp` keeps its own cap |
+| `406` | No `Accept: application/json, text/event-stream`: MCP's rule, though the answer is never a stream |
+
+```bash
+curl -s https://strut.box.example/mcp -H "authorization: Bearer $HOST_TOKEN" \
+  -H "x-strut-account: sphinx:02ab…" -H "x-strut-account-name: Ad%C3%A1" \
+  -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"step_run","arguments":{"app":"tickets","type":"tickets/receive","config":{"text":"hello"}}}}'
 ```
 
 ## 14. Apps — a front-end project over workflows

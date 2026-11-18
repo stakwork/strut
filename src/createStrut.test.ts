@@ -1765,7 +1765,7 @@ describe("the API key gate", () => {
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
 
-  it("a host key (STRUT_HOST_KEYS) passes its five routes, and every other route is 403 — reads included", async () => {
+  it("a host key (STRUT_HOST_KEYS) passes its six routes, and every other route is 403 — reads included", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
     const saved = process.env["STRUT_HOST_KEYS"];
@@ -1773,8 +1773,9 @@ describe("the API key gate", () => {
     try {
       const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
       // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
-      // back, a proposal there decided, and linking an account.
-      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "POST /hosts/link", "GET /hosts/links/x"];
+      // back, a proposal there decided, and linking an account; and an
+      // app's tools its hosts: lets it call (plans/people-and-hosts.md §3).
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "POST /hosts/link", "GET /hosts/links/x", "POST /mcp"];
       for (const r of allowed) assert.ok(routes.includes(r), r);
       const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
       for (const route of routes) {

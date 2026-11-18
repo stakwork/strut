@@ -9,8 +9,9 @@
  * written. Under the meta surface's rules (`surface: "ai"` — `app/publish`,
  * a model's door) a manifest may not grant a sealed workflow or step, nor
  * `llm`, `agent` or `exec` as direct step grants (§5.1, §9): the workflow
- * is the unit of spend. A person's `POST /apps` (`surface: "person"`) may
- * grant anything, the `peer: true` precedent — and a person may lift the
+ * is the unit of spend, nor name `hosts:` (plans/people-and-hosts.md §3). A
+ * person's `POST /apps` (`surface: "person"`) may grant anything, the
+ * `peer: true` precedent — and a person may lift the
  * seal for one app and one workflow (./grants.ts: `app/grant`, accepted as
  * a proposal), after which the meta surface's publishes may name it. Built
  * by `createStrut` into
@@ -479,6 +480,11 @@ export function createApps(deps: AppsDeps): AppsCapability {
    *  workflow a person granted `name` aside (./grants.ts). */
   const refusedGrants = async (manifest: AppManifest, name: string): Promise<string[]> => {
     const out: string[] = [];
+    // Which host may call the app's tools, as whom, is a person's call (as
+    // `peer:` on a workflow): plans/people-and-hosts.md §3.
+    if (manifest.hosts && Object.keys(manifest.hosts).length) {
+      out.push(`hosts: only a person lets a host call an app's tools (plans/people-and-hosts.md §3) — drop the key; over an app whose hosts: a person wrote, your version closes it to those hosts until a person publishes one with it again`);
+    }
     const registry = deps.getRegistry?.() ?? {};
     for (const g of manifest.grants.steps) {
       const glob = g.includes("*");

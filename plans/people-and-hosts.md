@@ -1,7 +1,7 @@
 # People and hosts: one identity, names, and Support as an app
 
-> **Status (2026-11-18): ruled in outline; items 1 (names) and 2 (host keys
-> and accounts) built on #737.**
+> **Status (2026-11-18): ruled in outline; items 1 (names), 2 (host keys
+> and accounts) and 3 (a host calls an app's tools) built on #737.**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -130,6 +130,14 @@ fallback below would have nothing to read until item 3 brings
 `x-strut-account-name`. Kept on the account as the holder wrote it, the
 newest link's first.
 
+**Built differently (#737):** `x-strut-account-name` keeps the name on the
+account only when the account is linked: the `accounts` table holds links,
+and an account nobody linked has no row. For one nobody linked it is kept
+as the name of the key's own actor (a Sphinx key's `secp:`, §2), as `self`,
+which is who that account is. Either way it is read where §1 says, and
+never replaces a name a host gave. It is read on every host route, not only
+on `POST /mcp`; malformed or without `x-strut-account` it is a `400`.
+
 **Who reads one.** `nameOf(actor)`: the person's name, else the name on an
 account that is theirs, else nothing.
 
@@ -204,6 +212,28 @@ hosts:
 
 Nothing here is about Sphinx or Support. An email gateway would be
 `hosts: { email: { steps: [tickets/receive] } }`.
+
+**Built differently (#737):**
+
+- **The HTTP status says how the step ended.** strut's MCP door answers a
+  tool's failure as a `200` with `isError`, so for a host it answers one
+  JSON body (never a stream) and sets the status: `200` when the step
+  finished, `403` refused, `500` the step failed, `400` a call the tool
+  could not take, `413` over the size. That is how "a `2xx` means the tool
+  finished" holds (specs/API.md §13.5).
+- **A listed step is also held to what no caller of an app's tools does**:
+  no paid or shell step, nothing sealed, `run/*` only on `grants.workflows`,
+  a graph write only on a declared type, as for a page. `hosts:` replaces
+  the page's `grants.steps`, not those checks.
+- **A model's publish that names `hosts:` is refused**, as one naming
+  `peer:` is. So a builder's new version of a person's app with `hosts:`
+  must drop it, and closes the app to those hosts until a person publishes
+  one with it again.
+- **"Unless the tool asks"** is the usual rule: the door keeps nothing,
+  and a step with an active claim keeps its run as it does anywhere.
+- **`ctx.host` is the call's alone**: nothing records it, and a run the
+  step launches does not carry it.
+- **Size:** 36 MiB (`HOST_CALL_BODY_MAX_BYTES`).
 
 ## 4. Sending through Sphinx
 
@@ -330,7 +360,7 @@ stacked.
 | --- | --- | --- | --- |
 | 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | **Built (#737).** No memory twin (§1) |
 | 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | **Built (#737).** `accounts` in `people.db`, `actorOf`, the name on an account (§1); the rest as `jamie-in-tribes.md` item 1 says, with its own marks |
-| 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | — |
+| 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | **Built (#737).** The status says how the step ended, the page's call-time refusals still hold, a model's `hosts:` is refused (§3); an unlinked account's name is its key's actor's (§1) |
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | — |
 | 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |
 

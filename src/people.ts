@@ -62,6 +62,12 @@ export interface People extends PeopleReader {
   linkOf(account: Account): Promise<AccountLink | undefined>;
   /** The accounts `actor` linked, the newest first. */
   accountsOf(actor: string): Promise<AccountLink[]>;
+  /** Keeps `raw` (cleaned) as the name `account`'s holder goes by, as a
+   *  host passed on what they wrote (`x-strut-account-name`, §1): on the
+   *  account when it is linked (read beneath the person's own name), else as
+   *  the name of the key's own actor (a Sphinx key's `secp:`), said by
+   *  `self`. False when nothing changed. */
+  setAccountName(account: Account, raw: unknown): Promise<boolean>;
   /** Links `account` to `actor`, replacing any link it had: whoever holds
    *  the key says whose it is. */
   link(account: Account, actor: string, extra?: { host?: string; name?: unknown; address?: unknown }): Promise<AccountLink>;
@@ -110,6 +116,8 @@ export interface AccountLink {
 
 /** The header a host names the speaker by: `<kind>:<key>`. */
 export const ACCOUNT_HEADER = "x-strut-account";
+/** Beside it, the name the speaker goes by there, percent-encoded (§1). */
+export const ACCOUNT_NAME_HEADER = "x-strut-account-name";
 /** A kind of account, and so a host's name (`STRUT_HOST_KEYS`). */
 export const KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 /** How long a link code is good for. */
@@ -152,6 +160,13 @@ export function accountAddress(a: Account, raw: unknown): string | undefined {
   if (a.kind !== "sphinx") return /^[\x21-\x7e]{1,300}$/.test(address) ? address : undefined;
   const m = /^(0[23][0-9a-f]{64})_0[23][0-9a-f]{64}_\d+$/.exec(address.toLowerCase());
   return m && m[1] === a.key ? address.toLowerCase() : undefined;
+}
+
+/** The actor a key nobody linked is, or undefined: a Sphinx key's own
+ *  (`secp:<x-only>`, what a signed sign-in with that key gives — the
+ *  compressed key without its parity byte). */
+function ownActor(account: Account): string | undefined {
+  return account.kind === "sphinx" ? `secp:${account.key.slice(2)}` : undefined;
 }
 
 /** A link code, as a person sends it: `link-` and eight letters and digits
@@ -296,10 +311,22 @@ export function createPeople(file: string): People {
     async actorOf(account) {
       const link = await people.linkOf(account);
       if (link) return { actor: link.actor, linked: true };
-      // A Sphinx key nobody linked is its own person: the actor a signed
-      // sign-in with it gives, the compressed key without its parity byte.
-      if (account.kind === "sphinx") return { actor: `secp:${account.key.slice(2)}`, linked: false };
-      return undefined;
+      // A Sphinx key nobody linked is its own person.
+      const own = ownActor(account);
+      return own ? { actor: own, linked: false } : undefined;
+    },
+    async setAccountName(account, raw) {
+      const name = cleanName(raw);
+      if (!name) return false;
+      const link = await people.linkOf(account);
+      if (link) {
+        if (link.name === name) return false;
+        (await open()).prepare("UPDATE accounts SET name = ? WHERE kind = ? AND key = ?").run(name, account.kind, account.key);
+        return true;
+      }
+      const own = ownActor(account);
+      if (!own || (await people.nameOf(own)) === name) return false;
+      return people.setName(own, name, "self");
     },
     async linkOf(account) {
       if (!kept()) return undefined;

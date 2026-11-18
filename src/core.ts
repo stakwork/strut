@@ -274,6 +274,11 @@ export interface StepContext<TServices = unknown> {
    *  step that keeps something per app (its SQLite file, its declared
    *  graph types, its schedules) finds the app here. Absent otherwise. */
   app?: AppRef;
+  /** The HOST this call came through (plans/people-and-hosts.md §3): set by
+   *  the host's door alone (`step_run` on `POST /mcp` with a host key), never
+   *  by a launch body, and not carried by a run the step launches. Absent
+   *  otherwise. */
+  host?: HostRef;
   /** The AUTOMATION whose fire this run is (plans/automations.md §6): set
    *  by the scheduler's launch alone, recorded on `run.start`, read back by
    *  a resume. Nothing a caller sends (`POST …/run`, `meta/run-workflow`)
@@ -532,6 +537,17 @@ export interface WorkspaceAppRef {
    *  every run the page launches, so a turn knows whether its person may
    *  accept what only an admin accepts (`StepDef.approver`). */
   admin?: true;
+}
+
+/** A HOST's call of an app's tool (plans/people-and-hosts.md §3), as a step
+ *  reads it on `ctx.host`. */
+export interface HostRef {
+  /** The host key's name (`STRUT_HOST_KEYS`). */
+  name: string;
+  /** The account that spoke, `<kind>:<key>` (`x-strut-account`). */
+  account: string;
+  /** Nobody linked the account: the call runs as the key's own actor. */
+  unlinked: boolean;
 }
 
 /** Is this a first-party page's call or run (`AppRef.firstParty`)? */

@@ -206,9 +206,9 @@ container in the compose (strut and any service that registers steps).
   (`scopeFromKey`, and createStrut's `resolveScope` before a host hook, as a
   member's session is). The gate passes it `HOST_ROUTES` alone — `POST
   /workflows/:name/run`, `GET /conversations/item`, `POST
-  /proposals/:id/decide`, `POST /hosts/link`, `GET /hosts/links/:key` — and
-  403s every other route, reads included (`createStrut.test.ts` "a host
-  key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
+  /proposals/:id/decide`, `POST /hosts/link`, `GET /hosts/links/:key`, and
+  `POST /mcp` (below) — and 403s every other route, reads included
+  (`createStrut.test.ts` "a host key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
   (the host's own kind, else 400) and asks `people.actorOf` once
   (`hostCalls`); `resolveActor` answers that person only when the account
   is LINKED, never an `x-strut-actor`. A launch or a decision needs a linked
@@ -241,6 +241,26 @@ container in the compose (strut and any service that registers steps).
   may mint one. `ctx.services.accounts` (`accountsCapability`) is their
   door; `to` is the daemon's own account from its `GET /me` on Support's
   message token (createStrut `sphinxAccount`).
+- **A host calls an app's tools** (plans/people-and-hosts.md §3, §9;
+  docs/apps.md has the door). On `POST /mcp` a host key gets `step_run`
+  alone, and only the steps an app's `hosts:` lists for that key's name —
+  a field a model's publish may never write (`refusedGrants`). It runs as
+  the account `x-strut-account` names (none: 400; an account with no
+  person, such as an unlinked non-Sphinx one: `403 not_linked`), and a
+  Sphinx key nobody linked — its own `secp:` actor — only where the app's
+  entry says `unlinked: true`. What it reaches is the shared bag: no admin
+  door (`adminBag` is never built for it, `AppRef.admin` and `firstParty`
+  are never set), no worker's calls (`workerServices` is not given), and
+  nothing that pays or sends — the payer is on no bag, and the coming
+  `sphinx` capability is not on the shared one. So a stolen host key can
+  put false records into what an app keeps; it cannot send, read a secret
+  or reach the task store. The same paid-or-shell and sealed refusals as a
+  page's hold. **`x-strut-account-name`** (percent-encoded, beside
+  `x-strut-account`, on any host route): the name the speaker goes by
+  there, as they wrote it — kept on the account when it is linked (read
+  beneath the person's own name), else as the key's own actor's name, by
+  `self`, never over a host's (`people.setAccountName`). Malformed, or with
+  no account, it is a 400.
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the
