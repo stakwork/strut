@@ -3,7 +3,7 @@ import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { ConfirmButton } from "./ConfirmButton";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import { SourceCode } from "./SourceCode";
 import { CopyButton } from "./CopyButton";
 
@@ -128,7 +128,7 @@ export function VersionsPanel(props: {
                 {v.version === shown && !active && <span class="badge">viewing</span>}
                 {v.source && (
                   <span class="badge" title={v.actor ? `Published via ${v.source} by ${v.actor}` : `Published via ${v.source}`}>
-                    {v.source}{v.actor ? ` · ${displayActor(v.actor)}` : ""}
+                    {v.source}{v.actor ? <> · <Who actor={v.actor} /></> : ""}
                   </span>
                 )}
               </span>

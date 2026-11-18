@@ -384,7 +384,9 @@ export interface SignedInRules {
  *   visitor), and the reads of its own runs of one; a spending workflow only
  *   as one anyone may run (`runnable`), through the public run door;
  * - a WORKER's step (`rules.worker`, plans/human-steps.md §5.2) the app
- *   grants: it decides from its caller alone, the visitor's own actor.
+ *   grants: it decides from its caller alone, the visitor's own actor;
+ * - `people/names` the app grants: the visitor's bag names them alone
+ *   (plans/people-and-hosts.md §1).
  * Everything else is the anonymous visitor's rule: the reads the public
  * view opens, never a private one.
  */
@@ -401,7 +403,7 @@ export async function signedInRefusal(
   if (!surface.apps.some((a) => a.name === app.name) || live !== app.version) return anonymous;
   if (type.startsWith("graph/") && config["namespace"] !== undefined) return `${type}: a visitor reads and writes the workspace's own namespace — leave out \`namespace\``;
   if (type === "app/state" || type === "app/report-error" || GRAPH_WRITES.has(type)) return null;
-  if (rules.worker?.(type)) return null;
+  if (rules.worker?.(type) || type === "people/names") return null;
   if (type === "graph/find") {
     const t = config["node_type"];
     if (typeof t === "string" && rules.declared.some((d) => d.toLowerCase() === t.toLowerCase())) return null;

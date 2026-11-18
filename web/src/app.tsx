@@ -25,7 +25,7 @@ import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PublishDialog, type PublishTab } from "./components/PublishDialog";
 import { ArrowLeftIcon, ClockIcon, GearIcon, UserIcon } from "./icons";
-import { displayActor } from "./actor";
+import { useActorLabel } from "./components/Who";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -228,6 +228,7 @@ function Shell() {
   // says who "me" is (`actor` on the listing); without one the icon hides.
   const [jobsMine, setJobsMine] = useState<boolean>(() => loadPref("jobsMine", false));
   const [jobsActor, setJobsActor] = useState<string | null>(null);
+  const actorLabel = useActorLabel(jobsActor ?? undefined);
   // The history panel: one slot, Runs or Jobs, remembered across sessions.
   const [historyMode, setHistoryMode] = useState<"runs" | "jobs">(() => loadPref("historyMode", "runs"));
   // A thread's transcript, open in the flyout.
@@ -1639,7 +1640,7 @@ function Shell() {
               : selectedWf && <span class="section-scope" title={selectedWf}>{selectedWf}</span>}
             {historyMode === "jobs" && jobsActor && (
               <button type="button" class={`mine-toggle${jobsMine ? " is-on" : ""}`} aria-pressed={jobsMine}
-                title={jobsMine ? `Only your jobs (${displayActor(jobsActor)}) — click for everyone's` : "Only your jobs"}
+                title={jobsMine ? `Only your jobs (${actorLabel(jobsActor)}) — click for everyone's` : "Only your jobs"}
                 onClick={() => { const v = !jobsMine; setJobsMine(v); savePref("jobsMine", v); }}>
                 <UserIcon />
               </button>

@@ -1444,7 +1444,7 @@ and rotating that secret ends every session.
 | POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp, role? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. The key login names no role |
 | GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member` \| `visitor`), none for the key login; a visitor's session (§13.2) as cookie or bearer; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
-| POST   | `/auth/ticket`  | `{ actor, role? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
+| POST   | `/auth/ticket`  | `{ actor, role?, name? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `name`, a string: the person's name as the host knows them, kept as a host's (§13.3); `null` is none, anything else not a string `400`. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
@@ -1481,7 +1481,7 @@ session does — and frames the UI with it:
 ```bash
 curl -s -X POST https://strut.acme.com/auth/ticket \
   -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
-  -d '{"actor":"evanfeenstra-cm3k9x","role":"member"}'
+  -d '{"actor":"evanfeenstra-cm3k9x","role":"member","name":"Evan Feenstra"}'
 # → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
 # frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fjamie&solo=1&theme=light
 ```
@@ -1555,7 +1555,7 @@ none, and nobody signs in.
 | ------ | ---- | ----------- |
 | GET    | `/visitors` | `{ methods, visitorKey, actor?, exp? }`: the sign-ins offered here and who this request is signed in as. Open to anyone, CORS `*` (below) |
 | GET    | `/visitors/challenge` | `{ challenge, exp, methods, visitorKey }` (`cache-control: no-store`). `404` with no method named; `503` with no `STRUT_API_KEY` or `STRUT_SECRET_KEY` to sign it. Open to anyone |
-| POST   | `/visitors/session` | `{ challenge, method, … }` (method `sphinx`: `{ challenge, method, key, sig, address? }`; `address` is the account's own Sphinx address `<pubkey>_<lsp_pubkey>_<scid>`, kept in the session's signed claims for a worker's payout (plans/human-steps.md §8.2) only when its pubkey is the `key` that signed — else dropped, and the sign-in still holds; the answer never carries it) → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
+| POST   | `/visitors/session` | `{ challenge, method, …, name? }` (`name`: the visitor's own name, kept as theirs once the sign-in holds (§13.3); one that is not a string is dropped and the sign-in still holds. Method `sphinx`: `{ challenge, method, key, sig, address?, name? }`, `name` the account's alias from `sign_in`; `address` is the account's own Sphinx address `<pubkey>_<lsp_pubkey>_<scid>`, kept in the session's signed claims for a worker's payout (plans/human-steps.md §8.2) only when its pubkey is the `key` that signed — else dropped, and the sign-in still holds; the answer never carries it) → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
 | DELETE | `/visitors/session` | clears the visitor's cookie → `204` |
 | GET    | `/visitors/lnurl` | LNURL-auth's callback (LUD-04): `?tag=login&k1&sig&key` from the WALLET → `{ status: "OK" }` or `{ status: "ERROR", reason }`. Open to anyone, CORS `*` |
 
@@ -1616,7 +1616,9 @@ On `POST /public/mcp` a signed-in visitor's page (§17) may also:
   if it is runnable, through the public run door (§17);
 - a WORKER's step the app grants — `task/next`, `task/submit`,
   `task/skip`, `task/file`, `task/me` (§22) — the visitor the worker:
-  never kept as a run, and not a daily write.
+  never kept as a run, and not a daily write;
+- `people/names`, when the app grants it: the visitor's own name alone
+  (§13.3).
 
 Everything else is the anonymous visitor's rule. **Limits**: each visitor's
 writes (state sets, graph writes, error reports) and launches per UTC day —
@@ -1631,6 +1633,38 @@ curl -s https://moon.game/visitors/challenge
 curl -s -X POST https://moon.game/visitors/session -H 'content-type: application/json' \
   -d '{"challenge":"strut-visitor.…","method":"key","key":"04ab…","sig":"3c9f…"}'
 # → { "actor": "p256:02ab…", "token": "eyJhY3Rvci….hZ…", "exp": 1797… }
+```
+
+### 13.3 People — a name per person
+
+`plans/people-and-hosts.md` §1; `src/people.ts`. Strut keeps one small
+record per person, their name, in `<dataDir>/people.db`. Whoever learns a
+name writes it:
+
+| Who says it | How | Kept as |
+| ----------- | --- | ------- |
+| A host signing a person in | `name` on `POST /auth/ticket` (§13.1) | `host` |
+| A person signing in to a public app | `name` on `POST /visitors/session` (§13.2): strut's UI sends the alias Peel's `sign_in` answers (`specs/WALLET.md` §1.2) | `self` |
+
+A name is one line, at most 80 characters, trimmed: whitespace and control
+characters fold to one space, and it is cut at 80. A host's name is never
+replaced by one a person gave themself; within each kind the newest wins.
+A name is for showing. Nothing checks it, and two people may share one.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/people?actor=…&actor=…` | → `{ people: { "<actor>": { name? } } }`: each actor asked, with `name` when one is kept. At most 200 actors (`400` past it, or for an actor empty or over 512 characters). `full` scope only: a peer is `403`, and the gate refuses a member's and a visitor's session |
+
+**An app's page** reads the same with the step `people/names { actors }`
+(`effect: "read"`; the kit's `useNames`), granted like any step. It answers
+the same shape. On a signed-in visitor's page it names the visitor alone —
+every other actor answers with none — and an anonymous visitor's page
+reads none. No other answer carries a name: runs, tasks and conversations
+keep the actor, and a page asks for the names of its list once.
+
+```bash
+curl -s "https://strut.acme.com/people?actor=evanfeenstra-cm3k9x&actor=secp:3fa2…" -H "authorization: Bearer $STRUT_API_KEY"
+# → { "people": { "evanfeenstra-cm3k9x": { "name": "Evan Feenstra" }, "secp:3fa2…": {} } }
 ```
 
 ## 14. Apps — a front-end project over workflows
@@ -2504,7 +2538,10 @@ the host as `ui/open-link`, so its address bar follows.
   group), JSON, and a preview in `TaskForm`; it writes only what the store
   checks. Pay, Tests and Copies sections; the workers who hold it, with
   Revoke and Grant.
-- **Workers**: the workers, `new` first, several granted at once; each with their status,
+- **Workers**: the workers, `new` first, several granted at once; each
+  shown by the first line of the staff's note, else their name
+  (`people/names`, §13.3), else the key shortened, with the short key
+  beside a name; each with their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
   `standing` too), the week, their newest leases with each answer's
   verdict and links to their answers to review and their rejected ones,
@@ -2610,8 +2647,9 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/support-save-settings { welcome }` | `PUT /support/settings` | `{ settings }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
-grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
-line on what workers are owed). It launches nothing.
+grants it checks with `taskAppProblem`), `earnings/read` (the Queue's
+line on what workers are owed) and `people/names` (the workers' names,
+§13.3). It launches nothing.
 
 **Sharing the worker app.** The Queue opens with a "Bring workers in"
 list, one closed row for each public app a type is answered in

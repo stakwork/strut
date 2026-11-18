@@ -1,6 +1,6 @@
 # People and hosts: one identity, names, and Support as an app
 
-> **Status (2026-11-17): ruled in outline; nothing built.**
+> **Status (2026-11-18): ruled in outline; item 1 (names) built on #737.**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -96,6 +96,11 @@ move.
 ## 1. People
 
 **The store.** `<dataDir>/people.db`, SQLite, with a memory twin for tests.
+
+**Built differently (#737):** no memory twin. Tests, and a strut whose run
+store is in memory, open the same store on `:memory:` (`src/people.ts`,
+as `src/tasks/db.ts` does): one code path, nothing to keep in step. The
+file is made on the first name, never on a read.
 
 | Table | Columns |
 | --- | --- |
@@ -310,11 +315,12 @@ daemon pushes it.
 
 ## 10. Work items
 
-Each is its own PR against `main`, never stacked.
+The items land together on #737, against `main` (Evan, 2026-11-18), never
+stacked.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
-| 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | — |
+| 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | **Built (#737).** No memory twin (§1) |
 | 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | — |
 | 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | — |
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | — |

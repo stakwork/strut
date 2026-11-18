@@ -16,7 +16,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Users } from "lucide-react";
-import { useAppLink, useHost, useStrutClient, useToolInput } from "@strut/kit";
+import { useAppLink, useHost, useNames, useStrutClient, useToolInput } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TABS, TAB_LABELS, inputOf, placeOf, shownOf, testsAnswerOf, type Place, type Tab } from "./lib/view";
@@ -47,6 +47,10 @@ export default function App() {
 
   const types = useQuery({ queryKey: ["staff", "types"], queryFn: () => client.run<{ types: TaskType[] }>("staff/types", {}) });
   const workers = useQuery({ queryKey: ["staff", "workers"], queryFn: () => client.run<{ workers: Worker[] }>("staff/workers", {}) });
+  // Their names (plans/people-and-hosts.md §1), asked once for the list;
+  // each worker carries theirs for `whoOf`, after the staff's own note.
+  const names = useNames(workers.data?.workers.map((w) => w.actor)).data;
+  const listed = useMemo(() => workers.data?.workers.map((w) => (names?.[w.actor] ? { ...w, name: names[w.actor] } : w)), [workers.data, names]);
   // Whether the test routes answer here (item 4): the Tests tab's own read.
   const tests = useQuery({ queryKey: ["staff", "tests", "all"], queryFn: () => client.run<{ tests: Test[] }>("staff/tests", {}) });
   // Whether the payout routes answer here (item 5b): the Payouts tab's own read.
@@ -61,8 +65,8 @@ export default function App() {
     retry: false,
   });
   const shown = useMemo(
-    () => shownOf({ types: types.data?.types, workers: workers.data?.workers, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts), supportAnswer: testsAnswerOf(support) }),
-    [types.data, workers.data, tests.data, tests.error, payouts.data, payouts.error, support.data, support.error],
+    () => shownOf({ types: types.data?.types, workers: listed, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts), supportAnswer: testsAnswerOf(support) }),
+    [types.data, listed, tests.data, tests.error, payouts.data, payouts.error, support.data, support.error],
   );
   const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
   const unread = support.data?.unread ?? 0;
@@ -112,12 +116,12 @@ export default function App() {
       ) : (
         <main className="flex min-w-0 flex-col gap-5">
           {tab === "queue" && <Queue go={go} types={types.data?.types} />}
-          {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} error={types.error} />}
-          {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} error={workers.error} />}
-          {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={workers.data?.workers} />}
+          {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} workers={listed} error={types.error} />}
+          {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} workers={listed} error={workers.error} />}
+          {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={listed} />}
           {tab === "tests" && shown.tests && <Tests go={go} place={place} types={types.data?.types} />}
-          {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={workers.data?.workers} />}
-          {tab === "support" && shown.support && <Support go={go} place={place} shown={shown} workers={workers.data?.workers} />}
+          {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={listed} />}
+          {tab === "support" && shown.support && <Support go={go} place={place} shown={shown} workers={listed} />}
         </main>
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import { AppGlyph } from "../icons";
 import { memberApps, soloAppHref } from "../page";
 
@@ -24,7 +24,7 @@ export function MemberApps({ actor }: { actor?: string }) {
     <div class="member-apps">
       <header class="member-apps-head">
         <h1>Apps</h1>
-        {actor && <span class="member-apps-who">Signed in as {displayActor(actor)}</span>}
+        {actor && <span class="member-apps-who">Signed in as <Who actor={actor} /></span>}
       </header>
       {error ? (
         <div class="empty">Could not list the apps: {error}</div>

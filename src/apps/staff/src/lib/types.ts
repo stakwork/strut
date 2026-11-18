@@ -167,6 +167,9 @@ export interface Worker {
   changedAt: number;
   changedBy?: string;
   note?: string;
+  /** Their name (`people/names`, plans/people-and-hosts.md §1): not the
+   *  route's answer; the page adds it. */
+  name?: string;
   grants: Grant[];
   /** 5a and 4: there on a server that answers for them. */
   balance?: Balance;

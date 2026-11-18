@@ -201,7 +201,7 @@ in `protocol.ts`:
 { v: 1, op: "buy_credit", purchase: CreditPurchase }    → { result: Payment } | { error }   (a pay method's answer, §3, §4.1)
 { v: 1, op: "buy_credit_status", payment_hash }         → { result: Payment } | { error }   (where that purchase stands now)
 { v: 1, op: "buy_credit_cancel", payment_hash }         → { result: {} }
-{ v: 1, op: "sign_in", seller, app, challenge }         → { result: { key, sig } } | { error }   (below, "Signing a visitor in")
+{ v: 1, op: "sign_in", seller, app, challenge }         → { result: { key, sig, address?, alias? } } | { error }   (below, "Signing a visitor in")
 ```
 
 **`host_capability`** is asked ONCE per page, as a visitor's page connects,
@@ -345,8 +345,8 @@ app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/vis
                                         │◀── { challenge, methods: [… "sphinx" …], visitorKey }
                                         │ checks the request (below)
                                         ├──{ v: 1, op: "sign_in", seller, app, challenge }──▶ native host ── its sheet, the person signs in
-                                        │◀── { result: { key, sig, address? } }
-                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig, address? } ──▶ the seller
+                                        │◀── { result: { key, sig, address?, alias? } }
+                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig, address?, name? } ──▶ the seller
                                         │◀── { actor: "secp:…", token, exp }   kept by strut's UI, per seller
 ```
 
@@ -360,7 +360,7 @@ app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/vis
 | `challenge` | the seller's `GET /visitors/challenge`: `strut-visitor.<claims>.<hmac>`, claims `{ host, visitorKey, nonce, exp }` as base64url JSON (`visitorChallengeClaims`), `exp` in unix MILLISECONDS. The HMAC is the seller's to check |
 
 **The answer** (`SignInAnswer`, read by `readSignInReply`; the
-`sign_in_replies` vectors, §7): `{ result: { key, sig, address? } }` —
+`sign_in_replies` vectors, §7): `{ result: { key, sig, address?, alias? } }` —
 - `key`: the compressed secp256k1 key that signed, 33 bytes;
 - `sig`: a Lightning signed message over the challenge's UTF-8 bytes, 65
   bytes `[31 + recovery id] ‖ r ‖ s`, a recoverable ECDSA signature over
@@ -378,7 +378,13 @@ app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/vis
   `sign_in_addresses` vectors, §7, pin it). `readSignInReply` keeps the
   address only when it parses (`parseSphinxAddress`) and its pubkey is
   `key`, and drops it otherwise; strut's UI posts it as `address`, and the
-  seller checks the same again. Peel still signs nothing new.
+  seller checks the same again. Peel still signs nothing new;
+- `alias` (optional): the account's Sphinx alias, the name the person goes
+  by. `readSignInReply` keeps it trimmed when it is text and drops it
+  otherwise; strut's UI posts it as `name`, and the seller keeps it as the
+  name the person gave themself (plans/people-and-hosts.md §1; specs/API.md
+  §13.3): one line, at most 80 characters, never over a name a host gave.
+  It is shown, never checked, and the sign-in holds without it.
 
 Or `{ error }` (§4.1): `USER_REJECTED` when the person declined,
 `RESTRICTED` for no tap (below) or a sheet still up when the challenge
@@ -703,7 +709,7 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
 | `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` (or `buy_credit_status`) as `outcome`: `paid` with `preimage`; `pending`, a payment sent, after which the invoice is not shown again; or `fallback` with `code`, nothing sent (`readCreditReply`). A native host checks that its own answers come to what it means |
 | `sign_in_requests` | `{ name, now, request, valid }` | a `sign_in` request is (or is not) one the native host may sign at `now` (ms) (`signInRequestProblems`, §1.2): above all, the challenge is a strut visitor challenge for the SELLER's host. A native host refuses every invalid one |
-| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, address?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex) and `address` only when the answer's address parses and its pubkey is `key` (one whose pubkey is another's is dropped), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
+| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, address?, alias?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex), `address` only when the answer's address parses and its pubkey is `key` (one whose pubkey is another's is dropped), and `alias` trimmed when it is text (else dropped), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
 | `sign_in_signatures` | `{ name, signer?, message, key, sig, actor }` | Lightning signed messages over strut challenges, made by Sphinx's own signer (sphinx-rs `sign_bytes` / `pubkey_from_seed`, `scripts/ln-message-fixtures`): with `signer` (`{ seed, idx, network }`), `sig` is exactly what that signer makes of `message` and `key` its key — a native host's signing reproduces both; strut's `ln-message` verifier (src/visitors.ts) names `actor`, or refuses (`null`): a tampered message, another key, a changed recovery byte, no recovery byte, an uncompressed key |
 | `sign_in_addresses` | `{ name, signer, key, address }` | one seed's Sphinx address (sphinx `get_my_contact_info`) and its root sign-in key (`pubkey_from_seed`, `idx: 0`, as in `sign_in_signatures`) agree: `address`'s pubkey is `key`. Every implementation that makes the answer checks its own address against it. `source` says how it was made: Sphinx's core, the way an account registers (`initial_setup`'s register topic for the seed, then the server's register answer through `handle`, whose `my_contact_info` is the address; Peel's `VisitorSignInTests` reproduces it), its pubkey `pubkey_from_seed(idx: 0)` of the seed (as in `sign_in_signatures`, `scripts/ln-message-fixtures`). The route hint `<lsp_pubkey>_<scid>` is the register answer's: the server names it, no seed makes it |
 | `scenarios` | a host's behaviour, below | the host does what each step says |

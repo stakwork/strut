@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import * as storage from "../storage";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon, PaperclipIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
@@ -689,8 +689,8 @@ export function ChatFlyout(props: {
                 )}
                 <span class="chat-history-title">{ch.title || "Untitled chat"}</span>
                 {ch.createdBy && (
-                  <span class="chat-history-user" title={`Started by ${ch.createdBy}`}>
-                    {displayActor(ch.createdBy)}
+                  <span class="chat-history-user">
+                    <Who actor={ch.createdBy} />
                   </span>
                 )}
                 {ch.model && (

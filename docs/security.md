@@ -95,10 +95,11 @@ container in the compose (strut and any service that registers steps).
   the whole flow; the route sweeps leave out the two open login routes.
   **A host signs one person in** (auth.ts "Sign-in tickets", specs/API.md
   §13.1) — the standalone twin of mcp's `/mint-token` JWT handed to
-  `/lab/?key=`: the host's SERVER mints `POST /auth/ticket { actor, role? }`
+  `/lab/?key=`: the host's SERVER mints `POST /auth/ticket { actor, role?, name? }`
   (full scope; the actor the host's to name, checked like `/peers/tokens`'
   — 120 chars, no line break; `role` `admin` | `member`, a member when left
-  out, anything else 400) → `{ ticket, expiresAt }`,
+  out, anything else 400; `name` kept as the host's name for the person,
+  "People" below) → `{ ticket, expiresAt }`,
   `strut-ticket.<claims>.<hmac>` with `{ actor, role, exp, jti }` signed like a
   session, 60 s, good ONCE (redeemed `jti`s kept in memory until they
   expire), and frames `<strut>/?ticket=…`. The UI trades it at `POST
@@ -161,7 +162,9 @@ container in the compose (strut and any service that registers steps).
   sign-in may carry the account's Sphinx `address`: kept in the session's
   signed claims (`Session.sphinxAddress`, claim `address`, refreshed by each
   sign-in) only when its pubkey is the `key` that signed (`keptSphinxAddress`,
-  src/visitors.ts); else dropped, and the sign-in holds. A visitor is
+  src/visitors.ts); else dropped, and the sign-in holds. A sign-in may also
+  carry `name` (strut's UI sends the alias Peel's `sign_in` answers), kept
+  as the visitor's own ("People" below). A visitor is
   NOT a member: past what is open to anyone (the public apps' pages and
   files, `POST /public/mcp`, `/visitors/*`) the gate passes `GET
   /auth/session` and its public app's `POST /apps/:name/channel-ticket`, and
@@ -173,6 +176,24 @@ container in the compose (strut and any service that registers steps).
   a granted workflow that spends nothing, as itself — a spending one only
   as `runnable`; per-actor daily limits (`serve.yaml`'s `limits` over
   strut's defaults) and a per-address budget on top.
+- **People — a name per person** (plans/people-and-hosts.md §1;
+  specs/API.md §13.3; `src/people.ts`). One row per actor in
+  `<dataDir>/people.db` (`node:sqlite`, imported on the first name; a read
+  opens no file that is not there; `:memory:` where the run store is in
+  memory — no separate memory class): `people (actor, name, name_by, name_at)`.
+  Written by a host's ticket (`name_by = 'host'`) and a visitor's own
+  sign-in (`'self'`), through `setName` alone, which `cleanName`s it (one
+  line, at most 80 characters, trimmed) and never lets a `self` name
+  replace a `host` one (one upsert's `WHERE`); within a kind the newest
+  wins. Read through `names(actors)` (`nameOf` for one), at most 200 at
+  a time: `GET /people` (full scope; a peer is 403 in the route) and the
+  `people/names` step, which reads `services.people` — `peopleReader`,
+  names and no write, on the shared bag; `ownName(people, actor)` on a
+  signed-in visitor's `/public/mcp` bag (their own name alone), and nothing
+  on an anonymous one's (each actor answers with none). `signedInRefusal`
+  lets a signed-in visitor call it where the app grants it. A name is
+  shown, never checked: nothing authorizes by it, and no other answer
+  carries one (runs, tasks and conversations keep the actor).
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the

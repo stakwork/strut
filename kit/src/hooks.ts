@@ -1396,6 +1396,34 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
   return { run, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
 }
 
+/** The step behind `useNames` (plans/people-and-hosts.md §1). */
+export const PEOPLE_NAMES_STEP = "people/names";
+/** How many actors one `people/names` call asks for: the server's most. */
+const PEOPLE_NAMES_MAX = 200;
+
+/** People's names, by actor (`people/names`; grant it): only those who have
+ *  one, so `names[actor] ?? <what showed before>` is what to show — a name
+ *  is for showing, and the actor stays the person. Asked once for the list,
+ *  200 actors a call; a visitor's page gets the visitor's own name alone.
+ *  `data` is undefined until the answer, and on an error. */
+export function useNames(actors: readonly string[] | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<Readonly<Record<string, string>>> {
+  const client = useStrutClient();
+  const list = [...new Set(actors ?? [])].sort();
+  return useQuery({
+    queryKey: ["strut", "people", "names", list],
+    queryFn: async () => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < list.length; i += PEOPLE_NAMES_MAX) {
+        const got = await client.run<{ people: Record<string, { name?: string }> }>(PEOPLE_NAMES_STEP, { actors: list.slice(i, i + PEOPLE_NAMES_MAX) });
+        for (const [actor, p] of Object.entries(got?.people ?? {})) if (typeof p?.name === "string" && p.name) out[actor] = p.name;
+      }
+      return out;
+    },
+    enabled: (opts.enabled ?? true) && list.length > 0,
+    staleTime: 60_000,
+  });
+}
+
 /** The step behind `useAppState` (src/apps/state.ts on the server). */
 export const APP_STATE_STEP = "app/state";
 /** A page's state writes go out at most this often, every key set since

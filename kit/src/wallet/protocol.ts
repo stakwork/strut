@@ -1144,6 +1144,11 @@ export interface SignInAnswer {
    *  `get_my_contact_info` builds the address from). The seller keeps it to
    *  keysend a payout; `readSignInReply` drops one whose pubkey is not `key`. */
   address?: string;
+  /** The account's Sphinx alias: the name the person goes by. The seller
+   *  keeps it as the name the person gave themself (plans/people-and-hosts.md
+   *  §1): one line, at most 80 characters, where its sign-in sends it as
+   *  `name`. Shown, never checked. */
+  alias?: string;
 }
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
@@ -1222,12 +1227,12 @@ export function signInRequestProblems(raw: unknown, nowMs = Date.now()): string[
 
 /** What the host does with the native host's answer to `sign_in`: `signed`,
  *  the key and signature to post (`POST <seller>/visitors/session { challenge,
- *  method: "sphinx", key, sig, address? }`), or `refused` with the code — the person
+ *  method: "sphinx", key, sig, address?, name? }`, `name` the alias), or `refused` with the code — the person
  *  declined (`USER_REJECTED`), the native host wants a fresh tap
  *  (`RESTRICTED`), refused the request (`BAD_REQUEST`) — or an answer that
  *  is neither (`INTERNAL`). */
 export type SignInReplyOutcome =
-  | { outcome: "signed"; key: string; sig: string; address?: string }
+  | { outcome: "signed"; key: string; sig: string; address?: string; alias?: string }
   | { outcome: "refused"; code: WalletErrorCode; message: string };
 
 const KEY_HEX = /^0[23][0-9a-fA-F]{64}$/;
@@ -1249,5 +1254,7 @@ export function readSignInReply(reply: unknown): SignInReplyOutcome {
   // The address rides along only when it is `key`'s own; else dropped.
   const address = typeof a.address === "string" ? a.address.trim().toLowerCase() : undefined;
   const keep = address !== undefined && parseSphinxAddress(address)?.pubkey === a.key.toLowerCase();
-  return { outcome: "signed", key: a.key.toLowerCase(), sig: a.sig.toLowerCase(), ...(keep ? { address } : {}) };
+  // The alias rides along when it is text; the seller makes it one line.
+  const alias = typeof a.alias === "string" ? a.alias.trim() : "";
+  return { outcome: "signed", key: a.key.toLowerCase(), sig: a.sig.toLowerCase(), ...(keep ? { address } : {}), ...(alias ? { alias } : {}) };
 }

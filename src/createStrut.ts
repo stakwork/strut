@@ -71,6 +71,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
+import { createPeople, ownName, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -942,6 +943,13 @@ export interface Strut<TServices = unknown> {
    *  the file; closed by `close()`. What the launch and the charge write. */
   ledger(): Promise<LedgerStore>;
 
+  /** PEOPLE (plans/people-and-hosts.md §1, src/people.ts): a name per
+   *  person, which a host's ticket and a visitor's own sign-in write and
+   *  `nameOf` / `names` read. Opened on the first name —
+   *  `<dataDir>/people.db`, or memory where the run store is — closed by
+   *  `close()`. */
+  people: People;
+
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
    *  a step of a workflow. `capability` is the whole store, which the staff
    *  routes hold; every step's `ctx.services.tasks` is `human` (`ensure`
@@ -1519,6 +1527,11 @@ export async function createStrut<TServices = unknown>(
     // accepts is refused to one who is not (proposals.ts `proposeCall`).
     personIsAdmin: (runId) => personIsAdmin(runId),
   });
+  // People (plans/people-and-hosts.md §1, src/people.ts): a name per
+  // person, written by a host's ticket and a visitor's own sign-in, read by
+  // `GET /people` and the `people/names` step. Opened on the first name;
+  // memory where the run store is.
+  const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir));
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1551,6 +1564,8 @@ export async function createStrut<TServices = unknown>(
     // `agentTools: [mcp/<server>/*]` reaches.
     mcpRegistry,
     proposals: ownProposals,
+    // Names, read alone (`people/names`); a visitor's bag carries their own.
+    people: peopleReader(people),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
@@ -2702,19 +2717,34 @@ export async function createStrut<TServices = unknown>(
   // person token and a member off every POST but theirs); the actor and
   // the role are the host's to name, as with `x-strut-actor` beside the
   // key. No role is a member's (plans/member-rights.md): a host that does
-  // not say signs nobody in with the console.
+  // not say signs nobody in with the console. A `name` is the person's as
+  // the host knows them, kept as a host's (plans/people-and-hosts.md §1).
   app.post("/auth/ticket", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = await c.req.json<{ actor?: unknown; role?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown });
+    const body = await c.req.json<{ actor?: unknown; role?: unknown; name?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown; name?: unknown });
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
       return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
     }
     const role = body.role ?? "member";
     if (!isRole(role)) return c.json({ error: 'role must be "admin", "member" or "visitor": an admin runs this strut server, a member uses its apps, a visitor uses its public apps as itself' }, 400);
+    if (body.name != null && typeof body.name !== "string") return c.json({ error: "name must be a string: the person's name, one line, at most 80 characters" }, 400);
     const minted = signInTicket(actor, role)!;
+    if (typeof body.name === "string") await people.setName(actor, body.name, "host").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
+  });
+
+  // ── People (plans/people-and-hosts.md §1; src/people.ts) ───────────────
+  // The names of a list of people, for strut's own UI to show in place of
+  // their actors: each actor asked, with `name` when one is kept. An
+  // admin's read (full scope); an app's page asks `people/names`.
+  app.get("/people", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: people's names are an admin's read (an app's page asks people/names)" }, 403);
+    const actors = c.req.queries("actor") ?? [];
+    if (actors.length > PEOPLE_READ_MAX) return c.json({ error: `at most ${PEOPLE_READ_MAX} actors at a time (?actor=…&actor=…), not ${actors.length}` }, 400);
+    if (actors.some((a) => !a || a.length > 512)) return c.json({ error: "each actor is 1 to 512 characters" }, 400);
+    return c.json({ people: await people.names(actors) });
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────
@@ -4695,7 +4725,9 @@ export async function createStrut<TServices = unknown>(
   // this request is; `GET /visitors/challenge` mints a challenge for this
   // host; `POST /visitors/session` checks the signature with the method's
   // verifier and answers the visitor's cookie and `{ actor, token, exp }`
-  // (the token for a page framed by another site, ruled 4); `DELETE` signs
+  // (the token for a page framed by another site, ruled 4), keeping a
+  // `name` the body carries as the visitor's own (plans/people-and-hosts.md
+  // §1: Peel's `sign_in` answers `alias`, which strut's UI sends); `DELETE` signs
   // out. LNURL-auth's wallet calls back on `GET /visitors/lnurl`. All open to
   // anyone: signing in is how a visitor gets a credential.
   const lnurlLogins = createLnurlLogins();
@@ -4707,9 +4739,12 @@ export async function createStrut<TServices = unknown>(
     return { methods: offeredMethods(signInOf(surface), visitorKey), visitorKey };
   };
   const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
-  /** Sign `actor` in: the visitor's cookie, and the token beside it. */
-  const signVisitorIn = (c: Context, actor: string, sphinxAddress?: string) => {
+  /** Sign `actor` in: the visitor's cookie, and the token beside it. A
+   *  `name` the visitor gave is kept as their own (plans/people-and-hosts.md
+   *  §1); one that cannot be kept never fails the sign-in. */
+  const signVisitorIn = async (c: Context, actor: string, sphinxAddress?: string, name?: unknown) => {
     const started = startVisitorSession(actor, sphinxAddress)!;
+    if (typeof name === "string") await people.setName(actor, name, "self").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
     c.header("set-cookie", visitorSessionCookie(started.token, started.session.exp, isSecureRequest(c)));
     c.header("cache-control", "no-store");
     return c.json({ actor, token: started.token, exp: started.session.exp });
@@ -4781,7 +4816,7 @@ export async function createStrut<TServices = unknown>(
       const got = lnurlLogins.take(body["k1"], challenge, host);
       if ("error" in got) return refuse(got.error);
       if ("pending" in got) return c.json({ pending: true, exp: got.exp }, 202);
-      return signVisitorIn(c, got.actor);
+      return signVisitorIn(c, got.actor, undefined, body["name"]);
     }
     if (!claims) return refuse("this challenge has expired or is not this server's — ask GET /visitors/challenge for another");
     if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`);
@@ -4828,7 +4863,7 @@ export async function createStrut<TServices = unknown>(
       const { k1, exp } = lnurlLogins.register(challenge, host);
       return c.json({ pending: true, k1, exp, ...lnurlLogin(publicUrlOf(c), k1) }, 202);
     }
-    return signVisitorIn(c, actor!, sphinxAddress);
+    return signVisitorIn(c, actor!, sphinxAddress, body["name"]);
   });
 
   app.delete(VISITOR_SESSION_PATH, (c) => {
@@ -10124,6 +10159,8 @@ export async function createStrut<TServices = unknown>(
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
         ...(graph && reader ? { graph: graphView(reader) } : {}),
         ...(runs ? { runs } : {}),
+        // A signed-in visitor reads their own name alone (people/names).
+        ...(signedIn ? { people: ownName(people, signedIn) } : {}),
       };
       /** A signed-in visitor's bag for one call: its own `app/state`, the
        *  nodes of its app's declared types read whole, and the graph
@@ -10590,6 +10627,8 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
+    // And the people store's.
+    await people.close();
     // And the task store's, and Support's connection to it.
     await tasks.close();
     await support.close();
@@ -10787,6 +10826,7 @@ export async function createStrut<TServices = unknown>(
     payments,
     remote,
     ledger,
+    people,
     tasks,
     support,
     claims,

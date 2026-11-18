@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { jobTotals } from "../api";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import { formatTokens } from "../context-meter";
 import { fmtDuration } from "../duration";
 import { statusTone } from "../helpers";
@@ -155,7 +155,7 @@ export function JobTimeline(props: {
         {job.busy && <span class="badge badge-warning">running</span>}
       </div>
       <div class="job-meta">
-        {job.createdBy && <span>by <b>{displayActor(job.createdBy)}</b></span>}
+        {job.createdBy && <span>by <b><Who actor={job.createdBy} /></b></span>}
         {job.createdAt && <span>started <b>{fmtTime(job.createdAt)}</b></span>}
         <span>last <b>{fmtTime(job.usedAt)}</b></span>
         <span><b>{job.runs.length}</b> run{job.runs.length === 1 ? "" : "s"}{job.omittedRuns ? ` (+${job.omittedRuns} older)` : ""}</span>

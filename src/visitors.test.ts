@@ -264,10 +264,10 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     return (await res.json()) as { challenge: string; methods: string[]; visitorKey: string };
   };
   /** A key signs a challenge in: the session's answer, its cookie, and what was sent. */
-  const signIn = async (key: CryptoKeyPair, host = "moon.game") => {
+  const signIn = async (key: CryptoKeyPair, host = "moon.game", extra: Record<string, unknown> = {}) => {
     const { challenge: c } = await challenge(host);
     const signed = await p256Sign(key, c);
-    const body = JSON.stringify({ challenge: c, method: "key", ...signed });
+    const body = JSON.stringify({ challenge: c, method: "key", ...signed, ...extra });
     const res = await req("/visitors/session", { method: "POST", headers: json, body, host });
     const got = (await res.json()) as { actor: string; token: string; exp: number; error?: string };
     return { res, got, body, cookie: res.headers.get("set-cookie")?.split(";")[0] ?? "" };
@@ -315,7 +315,7 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     for (const [name, grants] of [["game", "[score, ghost, paid]"], ["other", "[score]"]] as const) {
       const dir = join(root, "apps", name);
       await mkdir(join(dir, "src"), { recursive: true });
-      await writeFile(join(dir, "app.yaml"), `title: ${name}\ngrants:\n  workflows: ${grants}\n  steps: [test/whoami]\n`);
+      await writeFile(join(dir, "app.yaml"), `title: ${name}\ngrants:\n  workflows: ${grants}\n  steps: [test/whoami, people/names]\n`);
       await writeFile(join(dir, "src", "App.tsx"), `export default function App() { return <p className="p-2">${name}</p>; }\n`);
       const r = await strut.apps.publish(dir, name, { surface: "person" });
       assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -540,6 +540,35 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     // Nothing else of this server's answers a preflight with it.
     const other = await req("/apps", { method: "OPTIONS", headers: { origin: "http://localhost:5173", "access-control-request-method": "GET" } });
     assert.notEqual(other.headers.get("access-control-allow-origin"), "*");
+  });
+
+  it("a name (plans/people-and-hosts.md §1): kept from the sign-in as the visitor's own, never over a host's; a visitor's page reads their own name alone", async () => {
+    const key = await p256Key();
+    const { got } = await signIn(key, "moon.game", { name: "  Ada\n Lovelace  " });
+    assert.deepEqual(Object.keys(got).sort(), ["actor", "exp", "token"], "the answer is unchanged");
+    assert.equal(await strut.people.nameOf(got.actor), "Ada Lovelace", "one line, trimmed");
+    // A name that is not a string, or none: the sign-in holds, nothing kept.
+    const other = await signIn(await p256Key(), "moon.game", { name: 42 });
+    assert.equal(other.res.status, 200);
+    assert.equal(await strut.people.nameOf(other.got.actor), undefined);
+    await strut.people.setName("bob-1", "Bob", "host");
+    // The visitor's page: their own name, and none for anyone else's.
+    assert.deepEqual(await call("people/names", { actors: [got.actor, "bob-1"] }, bearer(got.token)), { result: { people: { [got.actor]: { name: "Ada Lovelace" }, "bob-1": {} } } });
+    // An anonymous visitor reads no names.
+    assert.match((await call("people/names", { actors: ["bob-1"] })).error ?? "", /not one of this app's public reads/);
+    // A host names them: the host's wins, and a later sign-in of their own does not replace it.
+    const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: auth, body: JSON.stringify({ actor: got.actor, role: "visitor", name: "Ada L." }) });
+    assert.equal(minted.status, 200, await minted.clone().text());
+    assert.equal((await strut.app.request("/auth/ticket", { method: "POST", headers: auth, body: JSON.stringify({ actor: "x-1", name: ["no"] }) })).status, 400, "a name is a string");
+    await signIn(key, "moon.game", { name: "Countess" });
+    assert.equal(await strut.people.nameOf(got.actor), "Ada L.");
+    // An admin's read: every actor asked, named where a name is kept.
+    const read = await strut.app.request(`/people?actor=${encodeURIComponent(got.actor)}&actor=bob-1&actor=nobody-2`, { headers: auth });
+    assert.equal(read.status, 200, await read.clone().text());
+    assert.deepEqual(await read.json(), { people: { [got.actor]: { name: "Ada L." }, "bob-1": { name: "Bob" }, "nobody-2": {} } });
+    assert.equal((await req("/people?actor=bob-1", { headers: bearer(got.token) })).status, 403, "not a visitor's");
+    const many = Array.from({ length: 201 }, (_, i) => `actor=a-${i}`).join("&");
+    assert.equal((await strut.app.request(`/people?${many}`, { headers: auth })).status, 400, "at most 200 at a time");
   });
 
   it("lnurl: the page learns the session for its k1 once the wallet signed", async () => {

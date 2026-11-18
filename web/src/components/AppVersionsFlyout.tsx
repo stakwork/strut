@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import { errorMessage } from "../helpers";
 import { CloseIcon } from "../icons";
 import {
@@ -135,7 +135,7 @@ export function AppVersionsFlyout(props: {
               <div class="auto-meta">
                 {held && release
                   ? <span title={new Date(release.createdAt).toLocaleString()}>
-                      Live since {when(release.createdAt)}{release.by ? `, by ${displayActor(release.by)}` : ""}
+                      Live since {when(release.createdAt)}{release.by ? <>, by <Who actor={release.by} /></> : ""}
                     </span>
                   : <span title={data.versions[data.active] ? new Date(data.versions[data.active]!.createdAt).toLocaleString() : undefined}>
                       Published {data.versions[data.active] ? when(data.versions[data.active]!.createdAt) : ""}
@@ -208,7 +208,7 @@ export function AppVersionsFlyout(props: {
                     {[...data.releases].reverse().map((r) => (
                       <li key={r.id} title={`${r.id} · ${new Date(r.createdAt).toLocaleString()}`}>
                         <span class="app-version-name">{r.version}</span> made live {when(r.createdAt)}
-                        {r.by ? ` by ${displayActor(r.by)}` : ""}
+                        {r.by ? <> by <Who actor={r.by} /></> : ""}
                         {r.id === data.live && <span class="badge badge-ok">live now</span>}
                       </li>
                     ))}

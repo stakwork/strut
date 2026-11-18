@@ -2434,6 +2434,33 @@
       "address": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e_03abababababababababababababababababababababababababababababababab_1099511627776"
     },
     {
+      "name": "the key, its signature and the account's alias: the alias is kept, trimmed",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+          "alias": "  Ada Lovelace "
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+      "alias": "Ada Lovelace"
+    },
+    {
+      "name": "an alias that is not text, or is blank: dropped, and the sign-in holds",
+      "reply": {
+        "result": {
+          "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+          "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda",
+          "alias": 42
+        }
+      },
+      "outcome": "signed",
+      "key": "02dfab7975d5ae97a90c0c92f961d74922186221d36f7f3d20271209f663558e5e",
+      "sig": "1f60c294e6649c67044e90b7aa22d7b03426c3c51fd7dc5d3870b77fd9bc298adf39f874921a1da3c2444d0f705d9b8e15bdf240d70da21eedc326be68569a9fda"
+    },
+    {
       "name": "an address whose pubkey is not the key: dropped, still signed",
       "reply": {
         "result": {

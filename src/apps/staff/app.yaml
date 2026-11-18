@@ -55,3 +55,4 @@ grants:
     - staff/support-photo
     - app/list
     - earnings/read
+    - people/names

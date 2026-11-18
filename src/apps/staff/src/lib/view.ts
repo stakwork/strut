@@ -248,11 +248,21 @@ export function shortActor(actor: string): string {
   return id.length > 12 ? `${scheme}${id.slice(0, 4)}…${id.slice(-3)}` : actor;
 }
 
-/** Who a worker is to staff (§9.5): the note's first line as a name, else
- *  the actor shortened. The store keeps no name of its own. */
-export function whoOf(w: Pick<Worker, "actor" | "note">): string {
+/** Who a worker is to staff (§9.5): the note's first line, which staff
+ *  typed on purpose, else their name (`people/names`,
+ *  plans/people-and-hosts.md §1 and decision 5), else the actor shortened. */
+export function whoOf(w: Pick<Worker, "actor" | "note" | "name">): string {
   const first = w.note?.split("\n")[0]?.trim();
-  return first ? first : shortActor(w.actor);
+  return first || w.name || shortActor(w.actor);
+}
+
+/** What shows under `whoOf`: their name where the note came first, and the
+ *  short key beside any name (plans/people-and-hosts.md §9: a name is never
+ *  checked). Empty when `whoOf` is the key itself. */
+export function whoElse(w: Pick<Worker, "actor" | "note" | "name">): string {
+  const first = w.note?.split("\n")[0]?.trim();
+  if (!first && !w.name) return "";
+  return [first && w.name ? w.name : "", shortActor(w.actor)].filter(Boolean).join(" · ");
 }
 
 /** Who an open type's grant is by (src/tasks/worker-store.ts): the worker's
