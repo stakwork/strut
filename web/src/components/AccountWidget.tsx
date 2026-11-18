@@ -39,7 +39,7 @@ export function AccountWidget(props: {
 
   const readWorker = async () => {
     try {
-      setWorker(api.run ? workerOf(await api.run("task/me", {})) : null);
+      setWorker(api.run ? workerOf(await api.run("task/me", {}), words, fmt) : null);
     } catch {
       setWorker(null);
     }

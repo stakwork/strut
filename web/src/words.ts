@@ -72,6 +72,15 @@ const en = {
   withdrawFailed: "The withdrawal failed.",
   withdrawPending: "Withdrawal on its way.",
   withdrawn: "Withdrawn.",
+  // Why there is no Withdraw (account-widget.ts workerOf).
+  onTheWay: (sats: string) => `${sats} on the way to you. You can withdraw again once it arrives.`,
+  noAddress: "Sign in with Peel to withdraw: your sign-in gave no Sphinx address to pay.",
+  payoutsOff: "Withdrawals are off on this server for now.",
+  cannotPay: "This server can't pay out right now.",
+  noPayouts: "This server doesn't pay out earnings.",
+  dayLimit: "You've reached today's withdrawal limit. Try again tomorrow.",
+  belowMin: (min: string, fee: string) => `Withdrawals start at ${min}, plus up to ${fee} routing fee.`,
+  paused: "Withdrawals are paused on this server until tomorrow.",
   collapse: "Collapse to a dot",
 
   // An app alone.
@@ -129,6 +138,14 @@ const es: HostWords = {
   withdrawFailed: "El retiro falló.",
   withdrawPending: "El retiro va en camino.",
   withdrawn: "Retirado.",
+  onTheWay: (sats) => `Tu retiro de ${sats} va en camino. Podrás retirar de nuevo cuando llegue.`,
+  noAddress: "Inicia sesión con Peel para retirar: tu sesión no dio una dirección de Sphinx a la que pagar.",
+  payoutsOff: "Los retiros están desactivados en este servidor por ahora.",
+  cannotPay: "Este servidor no puede pagar en este momento.",
+  noPayouts: "Este servidor no paga ganancias.",
+  dayLimit: "Llegaste al límite de retiros de hoy. Intenta de nuevo mañana.",
+  belowMin: (min, fee) => `El retiro mínimo es de ${min}, más hasta ${fee} de comisión de enrutamiento.`,
+  paused: "Los retiros están en pausa en este servidor hasta mañana.",
   collapse: "Reducir a un punto",
 
   back: "Atrás",
