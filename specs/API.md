@@ -2627,7 +2627,10 @@ a type names `strut/worker` as its `app`, and no app is built for it. It is
 NOT an admin's: anyone with the deployment's key or a member lists it, and
 nobody outside reaches it until an admin puts it in the public view (`PUT
 /public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
-Its page signs a worker in, then shows their DASHBOARD (`WorkHome`, from
+Its page signs a VISITOR in (the public view); a member or an admin — the
+page in their assistant's chat, or strut's UI — is signed in already, as
+`task/me` says, and works and earns as themselves. Then it shows their
+DASHBOARD (`WorkHome`, from
 `task/me { all }` and `task/history { all }`): the server's one work link,
 across every app of the public view. The task in their hand (Continue), each
 kind of work they can do with its pay and whether there is work of it now

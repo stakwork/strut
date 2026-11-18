@@ -367,14 +367,21 @@ interface Sent {
  * `task/next`, `task/submit`, `task/skip` and `task/me` (`task/file` to show
  * a task's files; `task/history` for what they did; `task/withdraw` for the
  * account widget's Withdraw) and lists `camera` in `permissions:` for Take a
- * photo.
+ * photo. A visitor (the public view) signs in on the page; a member or an
+ * admin — the page shown in their assistant's chat — is signed in already,
+ * and works and earns as themselves.
  */
 export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get paid", icon, intro, everyApp = false, className }: WorkerPageProps) {
   const visitor = useVisitor();
   const account = useAccountWidget();
-  const signedIn = !!visitor.actor;
   const here = useApp()?.name;
-  const { openLink } = useHost();
+  const host = useHost();
+  // A member's or an admin's page — the app in their assistant's chat, or
+  // strut's own UI — is not the public view: strut knows who is looking
+  // already, and `task/me` says who. Only a visitor signs in on the page.
+  const known = !host.public;
+  const me = useWorker({ enabled: !!visitor.actor || known, all: everyApp });
+  const signedIn = !!visitor.actor || (known && !!me.data?.actor);
   /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
   const [working, setWorking] = useState<string | null | undefined>(undefined);
   // Opened on one kind of work (`appLink(app, { type })`, as another app's
@@ -390,11 +397,10 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
    *  leased meanwhile, so a worker who stops here holds nothing. */
   const [paused, setPaused] = useState(false);
   const work = useTask(working ?? type, { enabled: signedIn && working !== undefined && !paused });
-  const me = useWorker({ enabled: signedIn, all: everyApp });
   /** Work on a kind: here when this app draws it, else in the app that does. */
   const start = (kind: string | null) => {
     const app = kind === null ? undefined : me.data?.types.find((t) => t.name === kind)?.app;
-    if (app && here && app !== here) void openLink(appLink(app, { type: kind }));
+    if (app && here && app !== here) void host.openLink(appLink(app, { type: kind }));
     else setWorking(kind);
   };
   const [sent, setSent] = useState<Sent | null>(null);
@@ -425,7 +431,9 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
   const mark = icon ?? <Briefcase className="size-4" />;
 
   let body: ReactNode;
-  if (!signedIn) {
+  if (!signedIn && known && me.isLoading) {
+    body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading="One moment…" />;
+  } else if (!signedIn) {
     body = (
       <Screen
         icon={mark}

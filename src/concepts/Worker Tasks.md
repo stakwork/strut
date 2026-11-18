@@ -28,9 +28,11 @@ their request already said.
 
   Pick "any time" unless every item must be covered.
 - **Who can do it.** *Only people you invite* (pick this for paid work to
-  start: they know who is paid), or *anyone with the link*. Paid work open
-  to anyone first needs a short qualifying test — tasks with known answers
-  that an admin sets up — so it is a later step, not a first one.
+  start: they know who is paid), or *anyone with the link*: anyone signed
+  in to the worker page does it and is paid from their first one, and the
+  person checks the answers in Tasks and workers. Nothing more is needed
+  first: a qualifying test (tasks with known answers) is something an admin
+  may add later, never a step before the first try.
 - **The pay**, per task, in dollars. Say too that earnings wait three days
   before a worker can withdraw them, and that the money comes from this
   server's wallet, so it has to be added first.
@@ -55,6 +57,8 @@ Talk in the person's words:
 Say these in order, in a few lines, and point to where each is done: an
 app is an artifact, `{ kind: "app", app: "strut/staff" }`, which shows as
 a card the person opens, while your words name it ("Tasks and workers").
+Show the WORKER PAGE too — the app the task names, `strut/worker` unless
+the builder made one: it is what they built, and what workers will see.
 
 1. **Approve.** The pay comes on one card, putting the worker page online
    on another. An admin approves both: the person themself, when they are
@@ -69,9 +73,11 @@ a card the person opens, while your words name it ("Tasks and workers").
    only once the person is given it on the Workers tab — so for
    invite-only work, an invite is the one step. Point there; never paste
    a link in the conversation.
-4. **Try it.** Open the link on their own phone and do one, so they see
-   what a worker sees and what comes back. For work one for each item,
-   that is after asking for a round of one (below).
+4. **Try it.** In the worker page, right here: they are signed in as
+   themselves, see the work as a worker does, do one and see what comes
+   back (and earn its pay). On their phone, Tasks and workers' link shows
+   it as a worker opens it. For work one for each item, that is after
+   asking for a round of one (below).
 
 For work *one for each item*, a round goes out when the person says so:
 they ask in the conversation ("send the calls", "just the first shop to
