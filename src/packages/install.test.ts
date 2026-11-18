@@ -330,6 +330,10 @@ describe("installing a package on a filesystem workspace", () => {
     );
     assert.equal(r.status, 201);
     assert.deepEqual(r.body.missing, { secrets: ["NOTION_KEY"], binaries: ["no-such-binary-strut"], runtimes: ["kali"] });
+    // A person's install is not gated (only a subscription's is): it is all here.
+    assert.equal(r.body.packages[0]!.status, "installed");
+    assert.ok(await ws.getWorkflowMetadata("acme/linear/sync"));
+    assert.ok(await ws.getStepMetadata("acme/linear/create-issue"));
   });
 
   it("uninstalls what is still the package's own, keeps the forks, and frees the prefix once nothing of it is left", async () => {

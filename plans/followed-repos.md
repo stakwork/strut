@@ -1,6 +1,8 @@
 # Followed packages: a deployment follows a package's git branch
 
-> **Status (2026-11-18): proposed. Nothing is built.** First written
+> **Status (2026-11-18): work items 1 (`git+` subscriptions,
+> stakwork/strut#739) and 2 (the secrets gate, stakwork/strut#740) are
+> built; item 3 (the `job` grant) is proposed.** First written
 > 2026-11-17 (stakwork/strut#732) around a new follower, `STRUT_REPOS`, that
 > opened each package as a repo and pulled it on a poll. Revised 2026-11-18
 > after a review against the code: strut already follows packages
@@ -10,7 +12,11 @@
 > against strut `main` @5b33e939. Companions: `marketplace.md` (§12.1:
 > subscriptions and the distro's door), `app-repos.md` (§3: Open, Commit
 > and Pull of a package repo; §4.3: serve mode following a branch). The
-> first package is Stadeum's pods (stakwork/stadeum `plans/pods.md`).
+> first package is pods (stakwork/stadeum `plans/pods.md`). Its examples
+> follow the owner's 2026-11-18 ruling: pods live in a new public repo,
+> `stakwork/pods` (not created yet), and a box's strut holds only
+> `PODS_URL` and a tenant `PODS_TOKEN` for a pods service that holds the
+> cloud keys (stakwork/stadeum#53).
 
 ## Goal
 
@@ -20,7 +26,7 @@ from a branch, moves it when the host says the branch moved, and the job
 agent can use the steps the package names.
 
 The first use is the Stadeum boxes Stakwork hosts for customers, with
-Stadeum's pods as the package. Self-hosted boxes come later. The owner, on
+pods as the package. Self-hosted boxes come later. The owner, on
 2026-11-17: *"Stadeum should add functionality to strut as well (pods). But
 not 'embedded'.. but via a package … a repo(s) that strut pulls from
 automatically when it starts and just embeds all those workflows, tools,
@@ -49,13 +55,13 @@ Strut already follows packages, twice:
 Three things are missing:
 
 - **A subscription to a git branch.** Subscriptions take only `pk:`
-  catalogs, which need a publishing strut. Stadeum's pods live in a public
-  GitHub repo, and Stadeum releases them by moving a `stable` branch.
+  catalogs, which need a publishing strut. Pods live in a public GitHub
+  repo, `stakwork/pods`, released by moving a `stable` branch.
 - **Keeping out a package that can't work.** A package installs without
   the secrets it requires: the install reports them and goes on
-  (`src/packages/install.ts`). Pods without an AWS account would put ten
-  failing tools on the job agent, and a `Code Change` page under `Job`
-  that tells Jamie it can change code.
+  (`src/packages/install.ts`). Pods without a pods service would put
+  eleven failing tools on the job agent, and a `Code Change` page under
+  `Job` that tells Jamie it can change code.
 - **Tools for the job agent.** Only a host's delta appends to the `job`
   workflow's `params.tools`. A package's steps can be agent tools
   (package-first lookup, `src/package-lookup.ts`), but nothing grants them
@@ -68,28 +74,28 @@ Three things are missing:
 | 1 | How does a deployment add a feature like pods? | **A package in a git repo that strut follows.** Not an embed: no host process around strut. | **owner** |
 | 2 | Which follower? | **A subscription, through the distro's door.** No new follower. The first version of this plan opened each package as a repo (the repo door) and pulled it. That door is for a box that develops a package, not one that runs it: an edit here stops the package's updates, the box can't push to the repo it follows, and a Commit takes along the Concept pages made under the package's pages (§5). | **owner** (2026-11-18) |
 | 3 | How is a git branch followed? | **`git+` refs in subscriptions:** `{ ref, tokenSecret? }` beside `{ key, url, channel?, token? }`. The branch is the channel. | **owner** (2026-11-18: "git+ refs in subscriptions is the way") |
-| 4 | A package that lacks a required secret? | **Disabled completely, tools and Concepts.** A subscription doesn't install it, and takes it out at the next sync when a secret goes (§2). | **owner** (2026-11-18: "disable the package completely (tools and concepts)"); how is proposed |
+| 4 | A package that lacks a required secret? | **Disabled completely, tools and Concepts.** A subscription doesn't install it, and takes it out at the next sync when a secret goes (§2). | **owner** (2026-11-18: "disable the package completely (tools and concepts)"); how: §2, built |
 | 5 | When does a hosted box's package move? | **When the host says, in the window where it updates strut's image.** Strut's poll is off and the host syncs the subscription (§4). | **owner** (2026-11-18: "the same schedule as updating images"); the route is proposed |
 | 6 | Which boxes first? | **The Stadeum boxes Stakwork hosts for customers.** Self-hosted boxes later: what they add is in §2 and §4. | **owner** (2026-11-18) |
 | 7 | A push webhook? | **No.** A `git+` subscription has no publisher to ping, and a peer's ping doesn't read it (§1.3): it would move a box outside its host's window. | proposed |
 | 8 | How does a package give the job agent tools? | **A `job:` key in `strut.yaml`** naming steps of the package. The `job` seed grants what each installed package's manifest names. | proposed |
 | 9 | Why `strut.yaml`, when `serve.yaml` is a top-level file? | **An older strut should refuse the package.** The manifest is strict, so an older strut fails to read a package with a `job:` key instead of installing it without its tools. Only a serving strut reads `serve.yaml`; every strut that installs this package needs the grant. | proposed |
 | 10 | May a package grant strut's own steps, or another package's? | **No, only its own.** A grant widens what the job agent can do. Limiting it to the package's own steps keeps it to code the subscription (or the person's install) already named. | proposed |
-| 11 | Can a package's steps import npm packages? | **Not now.** A step imports `strut` and its own helper files (`src/strut-resolve-hook.ts`); a package vendors what it needs. Pods sign their AWS calls with `node:crypto`. | **owner** (2026-11-17: "Vendor for now") |
+| 11 | Can a package's steps import npm packages? | **Not now.** A step imports `strut` and its own helper files (`src/strut-resolve-hook.ts`); a package vendors what it needs. Pods' steps only call the pods service. | **owner** (2026-11-17: "Vendor for now") |
 | 12 | Who opens pull requests on a package? | **Jamie, on a box that develops it,** through `package/commit` and the repo door as built (§5). Never a box that follows the package. | **owner** (Jamie makes PRs from strut); the scope is proposed |
 
 ## Design in one paragraph
 
 **A hosted Stadeum box subscribes to a package's git branch, and its host
 moves it.** At first boot, Stadeum's ops subscribes the box to
-`git+https://github.com/stakwork/stadeum@stable#packages/pods` with the
-deployment key. Each night it syncs the subscription in the window where it
-updates strut's image; strut never moves it by itself. A sync fetches the
-branch. When the commit moved and the package's digest with it, the package
-at that commit goes in through the distro's door, an older one included, so
-moving `stable` back is a rollback. Until every secret the package requires
-is set, nothing of it is installed. The package's `strut.yaml` names its
-steps for the job agent (`job: { tools: [...] }`), and the `job` seed grants
+`git+https://github.com/stakwork/pods@stable#package` with the deployment
+key. Each night it syncs the subscription in the window where it updates
+strut's image; strut never moves it by itself. A sync fetches the branch.
+When the commit moved and the package's digest with it, the package at that
+commit goes in through the distro's door, an older one included, so moving
+`stable` back is a rollback. Until every secret the package requires is
+set, nothing of it is installed. The package's `strut.yaml` names its steps
+for the job agent (`job: { tools: [...] }`), and the `job` seed grants
 them.
 
 ## 1. `git+` subscriptions
@@ -100,9 +106,13 @@ them.
 
 - `{ key, url, channel?, token? }`: a publisher's catalog, as today; or
 - `{ ref, tokenSecret? }`: `ref` is a
-  `git+https://host/org/repo@<branch>[#<folder>]` ref, the form
-  `git-source.ts` parses. It names a branch. A tag or a commit has nothing
-  to follow, so it's refused (`subscription_invalid`). `tokenSecret` is the
+  `git+https://host/org/repo[@<branch>][#<folder>]` ref, the form
+  `git-source.ts` parses. It names a branch; without `@<branch>` the
+  remote's default branch is followed. A tag or a commit has nothing to
+  follow. A full commit sha is refused at the `PUT`
+  (`subscription_invalid`). A tag can only be told from a branch after a
+  fetch, so the first sync refuses it (`package_ref_not_found`) and
+  installs nothing. `tokenSecret` is the
   NAME of the deployment secret the repo is read with (default
   `GITHUB_TOKEN`, as serve mode and `STRUT_PACKAGES` read it). A public repo
   needs none.
@@ -116,19 +126,24 @@ For a `git+` subscription, the sync reads the ref as serve mode's
 `fetchRef` does: `resolvePackage(ref, { cache, dataDir, tokenSecret, … ,
 known })` fetches the branch and reads the package at its commit into the
 cache. It skips that read when the commit is the one applied (`known`).
-Then:
+Then, in this order:
 
-- **Current:** the digest is the one applied. A commit that changed
-  nothing in the package's folder is recorded, and nothing is installed.
-- **Waiting:** a secret the package requires is unset (§2).
+- **Waiting:** a secret the package requires is unset (§2). Checked first,
+  on every sync: the package is not installed, or is taken out, even when
+  nothing moved.
+- **Current:** the digest is the one applied, and it went in then. A
+  commit that changed nothing in the package's folder is recorded, and
+  nothing is installed.
 - **Applied:** otherwise, one install through the distro's door. It
   records `ref: subscription:<id>` as today, and the commit on each
   version's upstream.
 
 A failure (the remote doesn't answer, the token is refused, the install is
 refused because the package needs a newer strut) keeps what's installed.
-It's kept as `error` on the subscription, as today. The state gains `ref`
-and `applied.commit`. A catalog's `seq` is absent for a `git+` subscription.
+It's kept as `error` on the subscription, as today. `applied` gains `ref`
+and `commit`: the ref is kept on the applied state too, so a sync never
+reuses a commit read from a different ref. A catalog's `seq` is absent for
+a `git+` subscription.
 
 A branch moved back installs the older commit's package. That's how a
 channel rolls back.
@@ -152,10 +167,11 @@ each package it installed with the items `diverged` here.
 
 ## 2. A package that lacks a secret stays out
 
-Before it installs, a sync checks every secret the package's
-`requires.secrets` names, as the install's `missing` list does
-(`missingFor` in `install.ts`: the deployment's store, then its
-environment). While one is unset:
+On every sync, before it installs and before it finds nothing new, a
+subscription checks every secret the package's `requires.secrets` names,
+as the install's `missing` list does (`missingFor` in `install.ts`: the
+deployment's secrets capability, which falls back to strut's environment;
+never the subscription's own store). While one is unset:
 
 - nothing of the package is installed: no steps, workflows, apps or
   Concept pages, and no grant to the job agent;
@@ -164,9 +180,24 @@ environment). While one is unset:
   as when a channel drops one. What was edited here stays as the box's own
   (the distro's uninstall rule), and isn't granted.
 
-The next sync after the secrets are set installs it. This holds for every
-subscription, `pk:` included. A person's install is unchanged: its ask
-lists what's missing, and the person decides.
+The next sync after the secrets are set installs it, with no new commit or
+release: "nothing moved" means the digest is the one applied AND what went
+in then is what the gate lets in now (`applied.packages` lists what went
+in, not what waits). This holds for every subscription, `pk:` included. A
+person's install is unchanged: its ask lists what's missing, and the
+person decides.
+
+**A channel of several packages** (`pk:`) is gated per package, over the
+set ordered requirements first: a package waits when it lacks a secret,
+or when it requires a package of the channel that waits. The rest of the
+channel goes in, and the sync says `waiting` with the install's result. A
+release is gated on the `requires` its catalog carries, sealed with it, so
+a waiting package's archive isn't fetched. A package required from outside
+the channel (resolved from its source hint at install) isn't gated.
+
+A take-out that fails (a run in flight in one of its workflows) is a
+warning on the subscription, as a channel's drop is today. It is tried
+again only when the release moves.
 
 This makes `requires.secrets` mean what it says. Today a package lists
 every secret its steps may read, needed or not, because the fence
@@ -187,10 +218,10 @@ waiting subscription and the secrets it needs.
 package: stadeum/pods
 version: 0.1.0
 job:
-  tools: [claim, release, bash, edit, overview, search, fetch, latest, push, workspace]  # the package's own steps, or globs over them
+  tools: [claim, release, bash, edit, overview, search, fetch, latest, push, link, workspace]  # the package's own steps, or globs over them
   approve: [workspace]  # among those, the ones whose call becomes a proposal
 requires:
-  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, PODS_REGION, PODS_BUCKET, PODS_BUILD_ROLE, PODS_EXEC_ROLE]
+  secrets: [PODS_URL, PODS_TOKEN]
 ```
 
 `readPackage` resolves each name against the package's steps (`claim` →
@@ -234,12 +265,16 @@ Not work in strut: what Stadeum's side (its pods plan) does with §1–§3.
 
 - Strut runs with `STRUT_DISTRO_POLL_MINUTES=0`. It still reads its
   subscriptions once at boot, and Stadeum restarts strut in its window.
-- At provisioning, Stakwork sets the package's secrets: in strut's
-  environment, which its secrets fall back to, or with
-  `PUT /secrets/:name`.
+- At provisioning, Stakwork makes the box a tenant of its pods service and
+  sets the package's two secrets, `PODS_URL` and the tenant's
+  `PODS_TOKEN`: in strut's environment, which its secrets fall back to, or
+  with `PUT /secrets/:name`. No cloud keys go in strut: the service holds
+  them. A box without a pods service has neither, so the gate (§2) keeps
+  pods out.
 - At first boot, ops subscribes the box with the deployment key (strut's
-  `STRUT_API_KEY`): `PUT /packages/subscriptions/pods { ref }`. The list
-  rides Stadeum's release, so a release can add a package to every box.
+  `STRUT_API_KEY`): `PUT /packages/subscriptions/pods { "ref":
+  "git+https://github.com/stakwork/pods@stable#package" }`. The list rides
+  Stadeum's release, so a release can add a package to every box.
 - Each night, inside the drain it takes for strut's image and after that
   image moved, ops calls `POST /packages/subscriptions/:id/sync` and
   records the commits from and to, as it records an image's. A package
@@ -286,22 +321,22 @@ way:
 Each is its own PR against `main`. Items 1 and 2 both change
 `subscriptions.ts`, so they land in order.
 
-1. **`git+` subscriptions** (§1). The record and its check, the `git+`
-   sync over serve mode's resolve (`subscriptions.ts`), the per-id sync
-   route, the peer's ping leaving `git+` subscriptions alone
-   (`createStrut.ts`). Tests over a local bare repo (`file://`, as
-   `serve.test.ts` and `repos.test.ts` do): a push goes in at the next sync
-   and not before; a branch moved back installs the older commit; a commit
-   outside the package's folder installs nothing; an edit here stays active
-   with the release beside it; a remote that doesn't answer keeps what's
-   installed; a peer's ping leaves it alone. Docs: `docs/packages.md`,
-   `specs/API.md` §16, `docs/environment.md` (`STRUT_DISTRO_POLL_MINUTES`
-   covers `git+`).
-2. **The secrets gate** (§2). Tests: a secret unset, so `waiting` names it
-   and nothing of the package is here (no step, page or grant); the secret
-   set, so the next sync installs it; the secret removed, so the next sync
-   takes the package out with its edits kept; the same for a `pk:`
-   subscription. Docs: `docs/packages.md`.
+1. **`git+` subscriptions** (§1). **Built: stakwork/strut#739.** The record
+   and its check, the `git+` sync over serve mode's resolve
+   (`subscriptions.ts`), the per-id sync route, the peer's ping leaving
+   `git+` subscriptions alone (`createStrut.ts`). Tests over a local bare
+   repo (`file://`, as `serve.test.ts` and `repos.test.ts` do): a push goes
+   in at the next sync and not before; a branch moved back installs the
+   older commit; a commit outside the package's folder installs nothing; an
+   edit here stays active with the release beside it; a remote that doesn't
+   answer keeps what's installed; a peer's ping leaves it alone. Docs:
+   `docs/packages.md`, `specs/API.md` §16, `docs/environment.md`
+   (`STRUT_DISTRO_POLL_MINUTES` covers `git+`).
+2. **The secrets gate** (§2). **Built: stakwork/strut#740.** Tests: a secret
+   unset, so `waiting` names it and nothing of the package is here (no step,
+   page or grant); the secret set, so the next sync installs it; the secret
+   removed, so the next sync takes the package out with its edits kept; the
+   same for a `pk:` subscription. Docs: `docs/packages.md`.
 3. **The `job` grant** (§3). The manifest key and its check (`format.ts`),
    the seed's merged delta and the re-seed (`job-seed.ts`, `createStrut.ts`),
    the package page and the install ask. Tests: a package whose step the
