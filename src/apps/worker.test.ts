@@ -5,7 +5,9 @@
  * its app — here a STANDING type that takes a photo (§5.7), the open-ended
  * "snap a picture" task — and a worker signed in with their Sphinx account
  * picks a task up, answers it with the photo on `POST /public/mcp` as the
- * page does, and the workflow runs on the answer.
+ * page does, and the workflow runs on the answer — and replies (`task/reply`):
+ * the worker reads the reply on their history and opens its picture, and
+ * staff read it on the task.
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -38,6 +40,14 @@ steps:
       task: label-photo
       show:
         ask: "{{ params.ask }}"
+  - id: tell
+    type: task/reply
+    config:
+      task: "{{ photo.task }}"
+      show:
+        ask: "Thanks! Here is your label."
+        product: "{{ photo.answer.product }}"
+      files: "{{ photo.attachments }}"
   - id: done
     type: pack
     config:
@@ -88,7 +98,7 @@ describe("strut/worker: the worker app every server has", () => {
     assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"worker" must be false/);
   });
 
-  it("an open-ended photo task: a standing type drawn by strut/worker in the public view, a worker's pick-up answered with a photo, the workflow run on the answer", async () => {
+  it("an open-ended photo task: a standing type drawn by strut/worker in the public view, a worker's pick-up answered with a photo, the workflow run on the answer and its reply read by the worker and staff", async () => {
     // ── The workflow and its type: standing, a photo with each answer, paid, open with no tests (ruling 12).
     await staff("POST", "/workflows", { name: "label-photos", yaml: LABELS }, 201);
     const type = await staff("PUT", "/tasks/types/label-photo", {
@@ -120,7 +130,7 @@ describe("strut/worker: the worker app every server has", () => {
 
     // ── No photo: refused, the task still theirs. With one: sent, and the workflow runs on it.
     assert.match(String((await call("task/submit", { lease: task.lease, answer: { product: "oat milk" } })).error), /bad_answer: task type label-photo needs a file with each answer/);
-    const photo = jpeg(2048, 3);
+    const photo = jpeg(2048);
     const sent = await call("task/submit", { lease: task.lease, answer: { product: "oat milk" }, attachments: [{ name: "label.jpg", mediaType: "image/jpeg", data: photo.toString("base64") }] });
     assert.deepEqual(sent, { result: { ok: true } });
     const deadline = Date.now() + 10_000;
@@ -137,6 +147,19 @@ describe("strut/worker: the worker app every server has", () => {
     }
     assert.equal(done?.status, "success", JSON.stringify(done));
     assert.deepEqual(done!.output, { by: worker.actor, photos: 1, product: "oat milk" });
+
+    // ── The run's reply: on the worker's history, its picture opened through the lease they answered by; on the task for staff.
+    const [answered] = await strut.tasks.capability.list({ runId: runs[0]! });
+    const saved = { name: "label.jpg", mediaType: "image/jpeg", size: photo.length, path: `tasks/${answered!.id}/label.jpg` };
+    const history = (await call("task/history", { all: true })).result as { items: Array<{ lease: string; reply?: { show: unknown; files: unknown; at: number } }> };
+    const reply = history.items.find((i) => i.lease === task.lease)?.reply;
+    assert.deepEqual(reply && { show: reply.show, files: reply.files }, { show: { ask: "Thanks! Here is your label.", product: "oat milk" }, files: [saved] });
+    const opened = await call("task/file", { lease: task.lease, path: saved.path });
+    assert.equal((opened.result as { base64?: string } | undefined)?.base64, photo.toString("base64"), opened.error);
+    const view = await staff("GET", `/tasks/${answered!.id}`);
+    assert.deepEqual(view["task"].reply, reply);
+    const read = await staff("GET", `/tasks/${answered!.id}/files/${saved.path.split("/").map(encodeURIComponent).join("/")}`);
+    assert.equal(read["base64"], photo.toString("base64"));
 
     // ── What it earned is held; the next ask is another pick-up.
     const after = (await call("task/me")).result as { balance: { heldMsat: number } };
