@@ -144,9 +144,6 @@ export function appIdentityOf(html: string): string | undefined {
   return m ? m[1]!.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&") : undefined;
 }
 
-/** msat as sats, "1,234 sats". */
-export const formatSats = (msat: number) => `${Math.floor(msat / 1000).toLocaleString("en-US")} sats`;
-
 /** What `GET /public/credit` answers, when it is credit. */
 export interface CreditView {
   usd: number;

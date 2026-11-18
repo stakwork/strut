@@ -132,6 +132,7 @@ describe("bootstrap", () => {
     assert.equal(html.getAttribute("data-theme"), "dark");
     assert.ok(html.classList.contains("dark"));
     assert.equal(html.getAttribute("data-display-mode"), "fullscreen");
+    assert.equal(html.lang, "en-GB", "the host's locale is the page's language (plans/i18n.md)");
     assert.equal(html.style.getPropertyValue("--color-background-primary"), "#111111");
     assert.equal(html.style.getPropertyValue("--font-sans"), "Inter, sans-serif");
     assert.equal(html.style.getPropertyValue("--border-radius-md"), "4px");

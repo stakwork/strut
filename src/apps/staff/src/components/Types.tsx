@@ -261,6 +261,9 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <Input id="type-name" value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder="pet-match" aria-invalid={!!(d.name && nameProblem)} />
           </Field>
         )}
+        <Field label="What workers call it" htmlFor="type-title" hint="In their language, any words: “Revisión de recibo”. Empty: they read the name.">
+          <Input id="type-title" value={d.title} maxLength={80} onChange={(e) => set({ title: e.target.value })} placeholder={d.name ? d.name.split("/").pop()!.replace(/[-_]+/g, " ") : "Pet match"} />
+        </Field>
         <Field label="App" htmlFor="type-app" hint={appProblem ? <span className="text-destructive">{appProblem}.</span> : "The worker app whose page draws this type's tasks."}>
           <NativeSelect id="type-app" value={d.app} onChange={(e) => set({ app: e.target.value })}>
             <NativeSelectOption value="">Choose an app…</NativeSelectOption>

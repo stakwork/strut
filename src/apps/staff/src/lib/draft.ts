@@ -27,6 +27,8 @@ export interface GradeDraft {
 
 export interface Draft {
   name: string;
+  /** What workers call it; empty: none, they read the name. */
+  title: string;
   app: string;
   leaseMinutes: string;
   withinHours: string;
@@ -68,6 +70,7 @@ export function draftOf(t?: TaskType): Draft {
   const answer = t?.answer ?? (schemaOf(STARTER) as AnswerSchema);
   return {
     name: t?.name ?? "",
+    title: t?.title ?? "",
     app: t?.app ?? "",
     leaseMinutes: s((t?.leaseSeconds ?? DEFAULTS.leaseSeconds) / 60),
     withinHours: s(t?.withinHours ?? DEFAULTS.withinHours),
@@ -138,6 +141,7 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
   const within = num(d.withinHours, "expires after");
   if (typeof within !== "number") return within;
   const input: Record<string, unknown> = { name: d.name, app: d.app, answer: answer.schema, leaseSeconds: Math.round(lease * 60), withinHours: within, enabled: d.enabled };
+  if (d.title.trim()) input["title"] = d.title.trim();
   if (shown.open) input["open"] = d.open;
   else if (was?.open !== undefined) input["open"] = was.open;
   if (shown.pay) {

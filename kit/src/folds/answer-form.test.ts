@@ -36,13 +36,13 @@ describe("answer-form: a flat form over a JSON Schema", () => {
   });
 
   it("answerOf: numbers read, picks mapped back to the schema's values, empties left out, the required named", () => {
-    assert.deepEqual(answerOf(MATCH, { same: true }), { problem: "rating is required" });
-    assert.deepEqual(answerOf(MATCH, {}), { problem: "same, rating are required" });
+    assert.deepEqual(answerOf(MATCH, { same: true }), { problem: "rating is required", issue: { kind: "required", fields: ["rating"] } });
+    assert.deepEqual(answerOf(MATCH, {}), { problem: "same, rating are required", issue: { kind: "required", fields: ["Same pet?", "rating"] } });
     assert.deepEqual(answerOf(MATCH, { same: false, rating: "2", score: "1.5", count: "3", marks: ["ears"], note: "" }), {
       answer: { same: false, rating: 2, score: 1.5, count: 3, marks: ["ears"] },
     });
-    assert.deepEqual(answerOf(MATCH, { same: true, rating: "1", count: "2.5" }), { problem: "count is a whole number" });
-    assert.deepEqual(answerOf(MATCH, { same: true, rating: "1", score: "lots" }), { problem: "score is a number" });
+    assert.deepEqual(answerOf(MATCH, { same: true, rating: "1", count: "2.5" }), { problem: "count is a whole number", issue: { kind: "integer", field: "count" } });
+    assert.deepEqual(answerOf(MATCH, { same: true, rating: "1", score: "lots" }), { problem: "score is a number", issue: { kind: "number", field: "score" } });
   });
 
   it("initialContent, missingRequired and contentToSubmit: the defaults, what is left to fill, what is sent", () => {

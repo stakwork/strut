@@ -1,7 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
-import { formatSats, workerOf, type CreditView, type PlacementController, type WorkerView } from "../account-widget";
+import { workerOf, type CreditView, type PlacementController, type WorkerView } from "../account-widget";
 import type { AccountApi } from "../app-host";
 import { signOutVisitor, visitorInfo } from "../visitor-signin";
+import { fmt, words } from "../words";
 
 // ── The visitor's account widget ───────────────────────────────────────────
 //
@@ -14,7 +15,7 @@ import { signOutVisitor, visitorInfo } from "../visitor-signin";
 // collapsed widget is a dot that stays on screen and opens on a click.
 // The worker section is the host's own `step_run` of `task/me` and
 // `task/withdraw` as the app's viewer; refused (not granted, not a worker),
-// it is not drawn.
+// it is not drawn. In the page's language (../words).
 
 export function AccountWidget(props: {
   placement: PlacementController;
@@ -91,7 +92,7 @@ export function AccountWidget(props: {
     setNote(null);
     try {
       const r = (await api.run("task/withdraw", { msat: worker.maxMsat })) as { state?: string; error?: string };
-      setNote(r.state === "failed" ? r.error ?? "The withdrawal failed." : r.state === "pending" ? "Withdrawal on its way." : "Withdrawn.");
+      setNote(r.state === "failed" ? r.error ?? words.withdrawFailed : r.state === "pending" ? words.withdrawPending : words.withdrawn);
     } catch (err) {
       setNote(err instanceof Error ? err.message : String(err));
     } finally {
@@ -106,8 +107,8 @@ export function AccountWidget(props: {
         <button
           type="button"
           class="account-dot"
-          aria-label="Open account"
-          title="Account"
+          aria-label={words.openAccount}
+          title={words.account}
           onClick={() => {
             placement.user(false);
             setOpen(true);
@@ -120,8 +121,8 @@ export function AccountWidget(props: {
             type="button"
             class={`account-pill${actor ? " is-icon" : ""}`}
             aria-expanded={open}
-            aria-label={actor ? "Account: signed in" : undefined}
-            title={actor ? "Account" : undefined}
+            aria-label={actor ? words.accountSignedIn : undefined}
+            title={actor ? words.account : undefined}
             onClick={() => setOpen(!open)}
           >
             {actor ? (
@@ -135,42 +136,42 @@ export function AccountWidget(props: {
             ) : (
               <>
                 <span class="account-pill-dot" aria-hidden="true" />
-                {canSignIn ? "Sign in" : "Account"}
+                {canSignIn ? words.signIn : words.account}
               </>
             )}
           </button>
           {open && (
-            <div class="account-panel" role="dialog" aria-label="Account">
+            <div class="account-panel" role="dialog" aria-label={words.account}>
               <div class="account-row">
                 {actor ? (
                   <>
-                    <span title={actor}>Signed in</span>
-                    <button type="button" class="btn" onClick={() => void signOut()}>Sign out</button>
+                    <span title={actor}>{words.signedIn}</span>
+                    <button type="button" class="btn" onClick={() => void signOut()}>{words.signOut}</button>
                   </>
                 ) : (
                   <>
-                    <span>Not signed in</span>
-                    {canSignIn && <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void signIn()}>Sign in</button>}
+                    <span>{words.notSignedIn}</span>
+                    {canSignIn && <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void signIn()}>{words.signIn}</button>}
                   </>
                 )}
               </div>
               {/* A worker's page is about what they earn: their credit only when they hold some. */}
               {(credit || !worker) && (
                 <div class="account-row">
-                  <span>Credit</span>
-                  <span class="account-num">{credit ? `$${credit.usd.toFixed(2)}${credit.sats ? ` · ${credit.sats.toLocaleString("en-US")} sats` : ""}` : "No credit"}</span>
+                  <span>{words.credit}</span>
+                  <span class="account-num">{credit ? `$${credit.usd.toFixed(2)}${credit.sats ? ` · ${fmt.sats(credit.sats * 1000)}` : ""}` : words.noCredit}</span>
                 </div>
               )}
               {worker && (
                 <>
-                  <div class="account-row"><span>Held</span><span class="account-num">{formatSats(worker.heldMsat)}</span></div>
+                  <div class="account-row"><span>{words.held}</span><span class="account-num">{fmt.sats(worker.heldMsat)}</span></div>
                   <div class="account-row">
-                    <span>Withdrawable</span>
-                    <span class="account-num">{formatSats(worker.withdrawableMsat)}</span>
+                    <span>{words.withdrawable}</span>
+                    <span class="account-num">{fmt.sats(worker.withdrawableMsat)}</span>
                   </div>
                   {worker.canWithdraw ? (
                     <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void withdraw()}>
-                      Withdraw {formatSats(worker.maxMsat)}
+                      {words.withdraw(fmt.sats(worker.maxMsat))}
                     </button>
                   ) : (
                     worker.blocked && <div class="account-note" data-testid="withdraw-blocked">{worker.blocked}</div>
@@ -178,7 +179,7 @@ export function AccountWidget(props: {
                 </>
               )}
               {note && <div class="account-note">{note}</div>}
-              <button type="button" class="account-collapse" onClick={() => placement.user(true)}>Collapse to a dot</button>
+              <button type="button" class="account-collapse" onClick={() => placement.user(true)}>{words.collapse}</button>
             </div>
           )}
         </>

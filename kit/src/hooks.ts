@@ -11,6 +11,7 @@ import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
+import { formats, wordsFor, type Formats, type Words } from "./folds/words.js";
 
 /** The run steps the hooks call (§5). */
 export const RUN_STEPS = {
@@ -959,6 +960,9 @@ export interface WorkerBalance {
 /** A task type on the worker's menu (`task/me`). */
 export interface WorkerType {
   name: string;
+  /** What workers call it, in their language (plans/i18n.md); absent: its
+   *  name, as `typeLabel` writes it. Absent from a server before titles. */
+  title?: string;
   app: string;
   /** What an answer earns now, msat; 0 when unpaid. */
   payMsat: number;
@@ -1551,6 +1555,27 @@ export function useAppState<T>(key: string, initial: T): [T, (value: T | ((prev:
 function useHostState(): HostState {
   const host = useStrutHost();
   return useSyncExternalStore(host.subscribe, host.getState, host.getState);
+}
+
+/** The page's locale (BCP 47, plans/i18n.md): the host's — `ui/initialize`'s
+ *  `locale`, which strut's UI takes from the link's `lang=` or the browser —
+ *  else the browser's, else `en-US`. */
+export function useLocale(): string {
+  const s = useHostState();
+  return s.locale || (typeof navigator !== "undefined" && navigator.language) || "en-US";
+}
+
+/** A screen's words in the page's language (`{ en, es }`: the folds'
+ *  `Words`), English when it has none there. */
+export function useWords<W>(words: Words<W>): W {
+  return wordsFor(words, useLocale());
+}
+
+/** Numbers, sats and times as the page's locale writes them (the folds'
+ *  `formats`). */
+export function useFormats(): Formats {
+  const locale = useLocale();
+  return useMemo(() => formats(locale), [locale]);
 }
 
 /** Which app this page is (plans/apps.md §7.2), off its identity: the
