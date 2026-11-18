@@ -22,7 +22,9 @@ This file is the contract each provider is built against:
   that answer exactly this. And SUPPORT's DM routes, with a token of
   their own ("Support's DMs" below, plans/support-chat.md §7;
   stakwork/sphinx#435, and item 2's file, picture and delete in
-  stakwork/sphinx#436); `scripts/fake-sphinx-daemon.ts` answers them.
+  stakwork/sphinx#436), and the push of each DM to strut
+  (plans/people-and-hosts.md §5, §7); `scripts/fake-sphinx-daemon.ts`
+  answers them and pushes.
 - **NWC** (`src/payments/nwc.ts`): NIP-47 as it is; what strut sends and
   reads is listed below.
 - **The payer** (`src/payments/payer.ts`): `POST /pay` on the daemon, as
@@ -345,16 +347,20 @@ POST /invite/:code/cancel
 plans/support-chat.md §7, built in stakwork/sphinx#435
 (`wasm/daemon/src/dms.ts`). Workers write to the treasury's account, named
 "Support" (`DAEMON_ALIAS`), from Peel; staff answer from strut
-(specs/API.md §22, "Support"). The daemon gives strut its 1:1 messages
-through a FOURTH token, `DAEMON_MESSAGE_TOKEN` — strut's
+(specs/API.md §22, "Support"). **Strut no longer reads the feed**
+(plans/people-and-hosts.md §5): the daemon HANDS each record to strut —
+"The push" below — and strut only sends, through a FOURTH token,
+`DAEMON_MESSAGE_TOKEN` — strut's
 `LIGHTNING_DAEMON_MESSAGE_TOKEN`, `messageToken` on the wallet, kept as the
 pay token is and refused when it equals the receive or the pay token. It
 opens the routes below and nothing else: not tribes, join, leave,
 invoices, pay, keysend, invites or the admin routes. The only sats it can
 spend are what a DM to an existing contact costs: 0, or 1 sat a part while
-their key is unconfirmed. It never meets a new contact. Only strut's
-follower and its `/support` routes call them (`src/support/support.ts`).
-Fields may be added; none is renamed or removed.
+their key is unconfirmed. It never meets a new contact. Strut calls
+`POST /dm`, `POST /dm/:id/delete`, `PUT` / `DELETE /dm/photo` (the `sphinx`
+capability, `src/payments/sphinx-dm.ts`) and `GET /me`; `GET /dms` and `GET
+/dm/:id/file` stay the daemon's, and strut does not call them. Fields may
+be added; none is renamed or removed.
 
 ```
 GET /dms?after=<seq>&limit=100
@@ -375,16 +381,29 @@ DELETE /dm/photo                                               → { "url": null
 POST /dm/:id/delete                                            → the item, "deleted": true, "text": null
 ```
 
+- **The push** (plans/people-and-hosts.md §5, §7; in the daemon's strut
+  mode): each record of the feed, OLDEST FIRST, one call at a time, as
+  strut's host — `POST /mcp` with the host key (`STRUT_HOST_KEYS`'s
+  `sphinx`), `x-strut-account: sphinx:<peer.pubkey>`, the peer's alias
+  percent-encoded in `x-strut-account-name`, and the JSON-RPC body
+  `tools/call` `step_run { app: "strut/staff", type: "support/receive",
+  config: { records: [<record>] } }` (one record a call; several of ONE
+  contact's may go in one call). A worker's file goes with its bytes:
+  `file: { data: <standard base64>, name: <the sender's name> }` on the
+  record, or `fileError: "too_large"` over 25 MiB (the call is at most 36
+  MiB). The daemon sends the same record again until strut answers a
+  `2xx` (`200` means it is kept; `403` refused, `400` a call it could not
+  take, `500` the step failed), and keeps how far strut has taken. **A
+  record that changes comes again under a new, higher `seq`**: a send's
+  `status` moving, a message its sender deleted. Strut keeps one row per
+  message — its own send by `clientId`, anything else by `id` — and the
+  newest `seq` it applied, so an older record never undoes a newer one.
 - **`GET /dms`**: 1:1 records, sent and received, OLDEST FIRST, `seq` above
   `after` (0 by default), at most `limit` (1 to 1,000; 100 by default).
   `seq` is the feed's own, kept by the daemon in `<home>/dms.jsonl` (the
   server's `index` is missing on the account's own sends, so it cannot be
   the cursor); its first start numbers the log's backlog (`messages.jsonl`),
-  oldest first. **A record that changes comes again under a new, higher
-  `seq`**: a send's `status` moving, a message its sender deleted. Strut
-  keeps one row per record — its own send by `clientId`, anything else by
-  `id` — and its cursor per daemon URL. It reads every 3 s, and the next
-  page at once while one comes back full. 10 s each.
+  oldest first. What the push sends.
 - **The fields**: `seq`; `id`, the Sphinx id — null only on a send that
   failed before anything went out; `clientId`, only on a send made through
   `POST /dm` (the `id` strut gave); `time` (ISO; strut also reads unix
@@ -400,17 +419,16 @@ POST /dm/:id/delete                                            → the item, "de
   `sending` until the LSP has it (the LSP's PENDING, holding a sat for
   someone offline, counts as `sent`), then `sent`, or `failed` — and
   `error` on a failed one. Never a file's key. Strut skips a record of
-  another kind, or with no pubkey.
+  another kind, or with no pubkey, and names it in its answer.
 - **`GET /dm/:id/file`**: a file a contact sent, downloaded from the memes
   server and decrypted as for a tribe mention, without shrinking, within
   180 s; the sender's own name in `content-disposition` (RFC 6266), which
-  strut keeps over the feed's. At most 25 MiB. Strut fetches each file when
-  it arrives (a media token expires), beside its reads of the feed, never
-  holding them, with 200 s. Refusals: `413 too_large` (strut's "too large"
-  line, ruling 10, never asked again), `404 not_found`, `410 deleted`, `403
-  host_not_allowed` (the daemon opens no files, `DAEMON_MEMES_HOSTS`), `422
-  unreadable` — each for good — and `502 memes_failed`, which strut tries
-  again on its next 4 reads.
+  strut keeps over the feed's. At most 25 MiB. What the push reads to send
+  a worker's file with its record (a media token expires, so it is read
+  when the file arrives). Refusals: `413 too_large` (the push's
+  `fileError`, strut's "too large" line, ruling 10), `404 not_found`, `410
+  deleted`, `403 host_not_allowed` (the daemon opens no files,
+  `DAEMON_MEMES_HOSTS`), `422 unreadable` and `502 memes_failed`.
 - **`POST /dm`**: a text to an existing contact, by pubkey — never a tribe,
   never someone the account has not met. `id` is 1 to 128 printable
   characters (strut sends 64 hex); `reply` quotes a message by its id. The
@@ -435,7 +453,7 @@ POST /dm/:id/delete                                            → the item, "de
   `mediaType` and `fileName`. **The daemon keeps no bytes**: a failed file
   send is tried again under its `id` only with `file` again (`400
   bad_request` without), keeping its first type and name — strut's Retry
-  sends it from its own copy in `<dataDir>/support/files/`; and `GET
+  sends it from its own copy (a row of strut/staff's database); and `GET
   /dm/:id/file` serves files the account RECEIVED alone (`404` on its own).
   Refusals before anything goes: `400 bad_request`, `400 too_long` (the
   caption and quoted id as JSON plus 1 KiB for the file's fields, over 32
@@ -450,8 +468,8 @@ POST /dm/:id/delete                                            → the item, "de
   its `config.json`), so Peel shows it beside "Support". Refusals: `400
   bad_request`, `413 too_large`, `403 host_not_allowed`, `502
   memes_failed`. `DELETE /dm/photo` answers `{ url: null }`. Strut keeps a
-  copy in `<dataDir>/support/photo` to show staff (a page cannot load the
-  memes host).
+  copy in Support's settings to show staff (a page cannot load the memes
+  host).
 - **`POST /dm/:id/delete`** (item 2): one of the account's OWN messages or
   files deleted for both sides (a type-17 delete, a DM's cost); answers
   the item, `deleted: true` and `text: null`, which also comes again in

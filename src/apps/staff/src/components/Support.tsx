@@ -1,19 +1,25 @@
-// Support (plans/support-chat.md §3): the staff's chat with workers over the
-// treasury's Sphinx DMs, laid out as strut/jamie is — the conversations on
-// the left, the thread on the right, the worker beside it on a wide screen.
-// On a phone the list opens a thread and Back returns to it. The list and
-// the thread are read again every few seconds (ruling 16). Every reply is
-// from "Support" (ruling 4); a worker's photo shows inline, a voice note
-// plays, any other file downloads; a deleted message is a line (ruling 12);
-// a task's id is a link to it. Item 2: staff attach, paste or drop a photo
-// (shrunk here to 1,600 px) or a file (up to 2.5 MB); Delete takes one of
-// Support's messages back on both sides; a conversation is taken and marked
-// done, and the list filters by mine and unassigned. Settings holds
-// Support's picture, payout lines and the welcome (§5, §6).
+// Support (plans/support-chat.md §3; plans/people-and-hosts.md §5): the
+// staff's chat with workers over the treasury's Sphinx DMs, laid out as
+// strut/jamie is — the conversations on the left, the thread on the right,
+// the worker beside it on a wide screen. On a phone the list opens a thread
+// and Back returns to it. Every reply is from "Support" (ruling 4); a photo
+// shows inline, a voice note plays, any other file downloads; a deleted
+// message is a line (ruling 12); a task's id is a link to it. Staff attach,
+// paste or drop a photo (shrunk here to 1,600 px) or a file (up to 2.5 MB);
+// Delete takes one of Support's messages back on both sides; a conversation
+// is taken and marked done, and the list filters by mine and unassigned.
+// Settings holds Support's picture, payout lines and the welcome.
+//
+// Support's tables are this app's own SQLite (db/001-support.sql): every
+// read here is SQL (`useSql`), and so is what the page writes to its own
+// columns — seen, done, taken, settings (`useSqlMutation`). A reply, a
+// deletion, a file and the picture go through the `support/*` tools. The
+// daemon hands strut each DM; the app's channel says so (App.tsx reads
+// again on it), and every read is also read again every 30 s.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ArrowUp, Check, CheckCheck, Clock, Download, FileText, Loader2, Paperclip, Reply, RotateCcw, Search, Settings, Trash2, UserCheck, UserPlus, X } from "lucide-react";
-import { useStrutClient } from "@strut/kit";
+import { useNames, useSql, useSqlMutation, useStrutClient } from "@strut/kit";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,7 +30,6 @@ import {
   attachProblem,
   AUTO_LABELS,
   balanceCells,
-  earlierEnd,
   fmtBytes,
   fmtWhen,
   initialsOf,
@@ -42,13 +47,35 @@ import {
   type Shown,
 } from "../lib/view";
 import { base64Of, shrinkImage } from "../lib/shrink";
-import type { SupportConversation, SupportFile, SupportFilter, SupportMessage, SupportSettings, SupportThread, Worker, WorkerActivity } from "../lib/types";
+import type { SupportFile, SupportFilter, SupportMessage, Worker, WorkerActivity } from "../lib/types";
+import {
+  CONVERSATION_SQL,
+  conversationOf,
+  LET_GO_SQL,
+  likeOf,
+  LIST_SQL,
+  messageOf,
+  PAYOUT_LINES_SQL,
+  searchHit,
+  SEEN_SQL,
+  SETTINGS_SQL,
+  settingsOf,
+  STATUS_SQL,
+  SUPPORT_REFETCH_MS,
+  TAKE_SQL,
+  TEXT_MATCH_SQL,
+  THREAD_PAGE,
+  THREAD_SQL,
+  WELCOME_SQL,
+  type ConversationRow,
+  type MessageRow,
+  type SettingsRow,
+} from "../lib/support";
 import { Back, ErrorLine, Field, Loading, Note, Picture } from "./bits";
 
-/** How often the list and the open thread are read again (ruling 16). */
-const POLL_MS = 3_000;
-/** A worker with no conversation: nothing to read again until they write. */
-const noConversation = (err: unknown) => /no_conversation/.test(err instanceof Error ? err.message : String(err ?? ""));
+/** A send still `sending` this long with no word may be tried again
+ *  (`support/send`'s `SEND_STALE_MS`): the daemon sends one id once. */
+const STUCK_MS = 60_000;
 /** Narrower than this, the list and the thread take turns. */
 const NARROW = 768;
 
@@ -115,7 +142,6 @@ export function Support(props: Props) {
 // ── the conversations ───────────────────────────────────────────────────────
 
 function ConversationList(props: { active?: string; workerOf: Map<string, Worker>; onOpen: (worker: string) => void; onSettings: () => void }) {
-  const client = useStrutClient();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<SupportFilter>("open");
   // Searched once the typing pauses, not per key.
@@ -124,12 +150,19 @@ function ConversationList(props: { active?: string; workerOf: Map<string, Worker
     const t = setTimeout(() => setAsked(q.trim()), 300);
     return () => clearTimeout(t);
   }, [q]);
-  const list = useQuery({
-    queryKey: ["staff", "support", "list", asked, filter],
-    queryFn: () => client.run<{ conversations: SupportConversation[] }>("staff/support-list", { filter, ...(asked ? { q: asked } : {}) }),
-    refetchInterval: POLL_MS,
-  });
-  const rows = list.data?.conversations ?? [];
+  const list = useSql<ConversationRow>(LIST_SQL, { filter }, { refetchInterval: SUPPORT_REFETCH_MS });
+  // Their own names (plans/people-and-hosts.md §1), asked once for the list.
+  const names = useNames(list.data?.rows.map((r) => r.actor)).data;
+  // A search reads the messages that say it; names and notes are matched here.
+  const said = useSql<{ pubkey: string }>(asked ? TEXT_MATCH_SQL : undefined, { like: likeOf(asked) });
+  const hits = useMemo(() => new Set((said.data?.rows ?? []).map((r) => r.pubkey)), [said.data]);
+  const rows = useMemo(
+    () =>
+      (list.data?.rows ?? [])
+        .map((r) => conversationOf(r, names?.[r.actor]))
+        .filter((c) => !asked || searchHit(asked, c, [props.workerOf.get(c.worker)?.note ?? "", c.alias ?? ""], hits)),
+    [list.data, names, asked, hits, props.workerOf],
+  );
   return (
     <section aria-label="Conversations" className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-1 border-b pr-1 pl-3">
@@ -228,12 +261,15 @@ interface Attached {
 function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) => void; narrow: boolean; onBack: () => void }) {
   const client = useStrutClient();
   const qc = useQueryClient();
-  const thread = useQuery({
-    queryKey: ["staff", "support", "thread", props.worker],
-    queryFn: () => client.run<SupportThread>("staff/support-thread", { worker: props.worker }),
-    refetchInterval: (q) => (noConversation(q.state.error) ? false : POLL_MS),
-    retry: (n, err) => !noConversation(err) && n < 2,
-  });
+  const sql = useSqlMutation();
+  const conv = useSql<ConversationRow>(CONVERSATION_SQL, { worker: props.worker }, { refetchInterval: SUPPORT_REFETCH_MS });
+  const row = conv.data?.rows[0];
+  const names = useNames(row ? [row.actor] : undefined).data;
+  const c = row ? conversationOf(row, names?.[row.actor]) : undefined;
+  // The newest page, and as many more as Show earlier asked for: one more
+  // than shown says there are earlier ones.
+  const [limit, setLimit] = useState(THREAD_PAGE);
+  const thread = useSql<MessageRow>(c ? THREAD_SQL : undefined, { pubkey: c?.pubkey ?? "", limit: limit + 1 }, { refetchInterval: SUPPORT_REFETCH_MS, maxRows: limit + 1 });
   const [replyTo, setReplyTo] = useState<SupportMessage | null>(null);
   const [sendError, setSendError] = useState<unknown>(null);
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -241,47 +277,19 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   const [dragging, setDragging] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const data = thread.data;
-  // Every message read, by key: each read of the newest page laid over it,
-  // and the pages before it as Show earlier asks for them.
-  const [read, setRead] = useState<Map<number, SupportMessage>>(() => new Map());
-  const [olderMore, setOlderMore] = useState<boolean | undefined>(undefined);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const keep = (ms: SupportMessage[]) =>
-    setRead((prev) => {
-      const next = new Map(prev);
-      for (const m of ms) next.set(m.key, m);
-      return next;
-    });
-  useEffect(() => {
-    if (data) keep(data.messages);
-  }, [data]);
-  const messages = useMemo(() => [...read.values()].sort((a, b) => a.key - b.key), [read]);
-  const more = olderMore ?? data?.more ?? false;
-  const showEarlier = async () => {
-    if (!messages[0]) return;
-    setLoadingOlder(true);
-    try {
-      const older = await client.run<SupportThread>("staff/support-thread", { worker: props.worker, before: messages[0].key });
-      pinned.current = false;
-      keep(older.messages);
-      setOlderMore(older.more);
-    } catch (err) {
-      setSendError(err);
-    } finally {
-      setLoadingOlder(false);
-    }
-  };
+  const rows = thread.data?.rows;
+  const messages = useMemo(() => (rows ?? []).slice(0, limit).reverse().map(messageOf), [rows, limit]);
+  const more = (rows?.length ?? 0) > limit;
   const byId = useMemo(() => new Map(messages.filter((m) => m.id).map((m) => [m.id!, m])), [messages]);
-  const earlier = earlierEnd(messages);
-  const name = data ? supportName(data.conversation, props.workerRecord) : "";
-  const refresh = () => void qc.invalidateQueries({ queryKey: ["staff", "support"] });
+  const name = c ? supportName(c, props.workerRecord) : "";
+  const refresh = () => void qc.invalidateQueries({ queryKey: ["strut", "sqlite"] });
 
-  // Read while open: marked seen for every admin.
-  const unread = data?.conversation.unread ?? 0;
+  // Read while open: marked seen for every admin — only when there is
+  // something unread, so a write (kept as a run) is one per batch read.
+  const unread = c?.unread ?? 0;
   useEffect(() => {
-    if (unread > 0 && !document.hidden) void client.run("staff/support-seen", { worker: props.worker }).then(refresh, () => {});
-  }, [unread, props.worker]);
+    if (c && unread > 0 && !document.hidden) void sql.exec(SEEN_SQL, { pubkey: c.pubkey }).catch(() => {});
+  }, [unread, c?.pubkey]);
   // Follow the newest unless the person scrolled up — as messages come and
   // as photos load, which grow the thread after it was drawn.
   const content = useRef<HTMLDivElement>(null);
@@ -295,7 +303,7 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
     const seen = new ResizeObserver(follow);
     seen.observe(content.current);
     return () => seen.disconnect();
-  }, [!!data]);
+  }, [!!rows]);
 
   /** A file attached, picked, pasted or dropped: a photo shrunk to 1,600 px
    *  (sent as it is when this browser cannot read it), anything else up to
@@ -330,7 +338,7 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
   const send = async (body: { text?: string; replyTo?: string; file?: { base64: string; type: string; name: string } } | { retry: number }) => {
     setSendError(null);
     try {
-      await client.run("staff/support-send", { worker: props.worker, ...body });
+      await client.run("support/send", { worker: props.worker, ...body });
       pinned.current = true;
       refresh();
       return true;
@@ -340,16 +348,15 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
     }
   };
   /** A write about the conversation or a message; its refusal shown above the composer. */
-  const act = async (step: string, body: Record<string, unknown>) => {
+  const act = async (fn: () => Promise<unknown>) => {
     setSendError(null);
     try {
-      await client.run(step, { worker: props.worker, ...body });
+      await fn();
       refresh();
     } catch (err) {
       setSendError(err);
     }
   };
-  const c = data?.conversation;
   /** A button's words: beside its icon, or for a screen reader alone on a phone. */
   const words = (text: string) => (props.narrow ? <span className="sr-only">{text}</span> : text);
 
@@ -361,26 +368,26 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
           <ArrowUp className="-rotate-90" />
         </Button>
       )}
-      {data && <Initials name={name} className="size-7 text-[10px]" />}
+      {c && <Initials name={name} className="size-7 text-[10px]" />}
       <span className="min-w-0 flex-1 truncate text-sm font-semibold">{name}</span>
       {c?.seenAt !== undefined && <span className="hidden text-xs text-muted-foreground xl:inline">Seen {fmtWhen(c.seenAt)}</span>}
       {c && (
         <>
           {c.assigned === "me" ? (
-            <Button variant="secondary" size={props.narrow ? "icon-sm" : "xs"} title="Yours: let it go" onClick={() => void act("staff/support-update", { assignee: null })}>
+            <Button variant="secondary" size={props.narrow ? "icon-sm" : "xs"} title="Yours: let it go" onClick={() => void act(() => sql.exec(LET_GO_SQL, { pubkey: c.pubkey }))}>
               <UserCheck /> {words("Yours · Let go")}
             </Button>
           ) : (
-            <Button variant="ghost" size={props.narrow ? "icon-sm" : "xs"} title={c.assigned === "other" ? "Another admin took it: take it yourself" : "Make it yours"} onClick={() => void act("staff/support-update", { assignee: "me" })}>
+            <Button variant="ghost" size={props.narrow ? "icon-sm" : "xs"} title={c.assigned === "other" ? "Another admin took it: take it yourself" : "Make it yours"} onClick={() => void act(() => sql.exec(TAKE_SQL, { pubkey: c.pubkey }))}>
               <UserPlus /> {words(c.assigned === "other" ? "Taken · Take it" : "Take it")}
             </Button>
           )}
           {c.status === "done" ? (
-            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Open it again" onClick={() => void act("staff/support-update", { status: "open" })}>
+            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Open it again" onClick={() => void act(() => sql.exec(STATUS_SQL, { pubkey: c.pubkey, status: "open" }))}>
               <RotateCcw /> {words("Reopen")}
             </Button>
           ) : (
-            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Answered: off the open list until they write again" onClick={() => void act("staff/support-update", { status: "done" })}>
+            <Button variant="outline" size={props.narrow ? "icon-sm" : "xs"} title="Answered: off the open list until they write again" onClick={() => void act(() => sql.exec(STATUS_SQL, { pubkey: c.pubkey, status: "done" }))}>
               <CheckCheck /> {words("Done")}
             </Button>
           )}
@@ -394,19 +401,18 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
     </div>
   );
 
-  if (thread.error && !data) {
-    const none = noConversation(thread.error);
+  if (conv.error || (conv.data && !row)) {
     return (
       <section className="flex min-w-0 flex-1 flex-col">
         {props.narrow && <div className="p-2"><Back onClick={props.onBack}>Conversations</Back></div>}
         <div className="p-4">
-          {none ? (
+          {conv.error ? (
+            <ErrorLine error={conv.error} />
+          ) : (
             <Note className="text-sm">
               This worker has no conversation with Support yet. Support can write only to someone who has it as a contact — an invite gives them one — and their
               conversation starts when they join or write.
             </Note>
-          ) : (
-            <ErrorLine error={thread.error} />
           )}
         </div>
       </section>
@@ -441,11 +447,20 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
-        {!data && <Loading />}
+        {!rows && !thread.error && <Loading />}
+        {thread.error ? <ErrorLine error={thread.error} /> : null}
         {more && (
           <div className="mb-2 flex justify-center">
-            <Button size="xs" variant="outline" disabled={loadingOlder} onClick={() => void showEarlier()}>
-              {loadingOlder && <Loader2 className="animate-spin" />} Show earlier messages
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={thread.isFetching}
+              onClick={() => {
+                pinned.current = false;
+                setLimit((n) => n + THREAD_PAGE);
+              }}
+            >
+              {thread.isFetching && <Loader2 className="animate-spin" />} Show earlier messages
             </Button>
           </div>
         )}
@@ -457,18 +472,12 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
               ) : null}
               <Line
                 m={m}
-                worker={props.worker}
                 quoted={m.replyTo ? byId.get(m.replyTo) : undefined}
                 go={props.go}
                 onReply={() => setReplyTo(m)}
                 onRetry={() => void send({ retry: m.key })}
-                onDelete={() => act("staff/support-delete", { key: m.key })}
+                onDelete={() => act(() => client.run("support/delete", { key: m.key }))}
               />
-              {i === earlier && (
-                <div className="my-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-                  <span className="h-px flex-1 bg-border" /> Above: written before Support was set up <span className="h-px flex-1 bg-border" />
-                </div>
-              )}
             </div>
           ))}
         </div>
@@ -503,7 +512,7 @@ function Thread(props: { worker: string; workerRecord?: Worker; go: (p: Place) =
 /** One message: a bubble, or a line (a contact, sats, a deletion). Support's
  *  own may be deleted for both sides, asked first in place (an app frame
  *  has no modals). */
-function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessage; go: (p: Place) => void; onReply: () => void; onRetry: () => void; onDelete: () => Promise<void> }) {
+function Line(props: { m: SupportMessage; quoted?: SupportMessage; go: (p: Place) => void; onReply: () => void; onRetry: () => void; onDelete: () => Promise<void> }) {
   const { m } = props;
   const [asking, setAsking] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -512,6 +521,9 @@ function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessag
   }
   const mine = m.fromMe;
   const deletable = mine && !m.deleted && (!!m.id || m.status === "failed");
+  // Still sending a minute on, with no word from the daemon (a restart cut
+  // it off): sent again under the same id, which the daemon sends once.
+  const stuck = mine && !m.deleted && m.status === "sending" && !m.id && Date.now() - m.at > STUCK_MS;
   return (
     <div className={cn("flex flex-col gap-1", mine ? "items-end" : "items-start")}>
       <div className={cn("group flex w-full items-end gap-1", mine ? "flex-row-reverse" : "flex-row")}>
@@ -525,7 +537,7 @@ function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessag
             <span>Message deleted</span>
           ) : (
             <>
-              {m.file && <FileView worker={props.worker} m={m} />}
+              {m.file && <FileView m={m} />}
               {m.text ? <Text text={m.text} go={props.go} mine={mine} /> : null}
             </>
           )}
@@ -536,9 +548,9 @@ function Line(props: { m: SupportMessage; worker: string; quoted?: SupportMessag
             {mine && !m.deleted && m.status === "sent" && <Check className="size-3" aria-label="Sent" />}
           </span>
         </div>
-        {mine && !m.deleted && m.status === "failed" && (
-          <span className="flex shrink-0 items-center gap-1 text-xs text-destructive" title={m.error}>
-            <AlertCircle className="size-4" aria-label="Not sent" />
+        {mine && !m.deleted && (m.status === "failed" || stuck) && (
+          <span className="flex shrink-0 items-center gap-1 text-xs text-destructive" title={m.error ?? "No word from the daemon yet"}>
+            <AlertCircle className="size-4" aria-label={stuck ? "Not confirmed" : "Not sent"} />
             <Button size="xs" variant="outline" onClick={props.onRetry}>
               Retry
             </Button>
@@ -597,35 +609,34 @@ function Text(props: { text: string; go: (p: Place) => void; mine: boolean }) {
   );
 }
 
-/** A worker's file (§3): a photo inline (tap for full size), a voice note
- *  to play, anything else to download; read through `staff/support-file`. */
-function FileView(props: { worker: string; m: SupportMessage }) {
+/** A file of the thread (§3): a photo inline (tap for full size), a voice
+ *  note to play, anything else to download; read through `support/file`. */
+function FileView(props: { m: SupportMessage }) {
   const client = useStrutClient();
   const f = props.m.file!;
   const kind = f.mediaType?.startsWith("image/") ? "image" : f.mediaType?.startsWith("audio/") ? "audio" : f.mediaType?.startsWith("video/") ? "video" : "other";
   const [want, setWant] = useState(kind !== "other");
   // Read once, in pieces (a step's result is capped at 5 MB), and kept: its
-  // key is outside ["staff", …], so the page's reads again never read it again.
+  // key is outside ["strut", "sqlite"], so the page's reads again never read it again.
   const q = useQuery({
-    queryKey: ["support-file", props.worker, props.m.id],
+    queryKey: ["support-file", props.m.key],
     queryFn: async (): Promise<SupportFile> => {
-      let piece = await client.run<SupportFile>("staff/support-file", { worker: props.worker, id: props.m.id! });
+      let piece = await client.run<SupportFile>("support/file", { key: props.m.key });
       let base64 = piece.base64;
       while (piece.next !== undefined) {
-        piece = await client.run<SupportFile>("staff/support-file", { worker: props.worker, id: props.m.id!, offset: piece.next });
+        piece = await client.run<SupportFile>("support/file", { key: props.m.key, offset: piece.next });
         base64 += piece.base64;
       }
       return { ...piece, base64 };
     },
-    enabled: want && f.state === "kept" && !!props.m.id,
+    enabled: want && f.state === "kept",
     staleTime: Infinity,
   });
   const label = `${f.name ?? "File"}${f.size !== undefined ? ` · ${fmtBytes(f.size)}` : ""}`;
-  // Support's own, before the daemon gave it an id (or it never went): its name.
-  if (!props.m.id) return <span className="flex items-center gap-1.5 text-xs"><FileText className="size-3.5" /> {label}</span>;
-  if (f.state === "fetching") return <span className="flex items-center gap-1.5 text-xs opacity-80"><Loader2 className="size-3 animate-spin" /> Fetching {f.name ?? "the file"}…</span>;
+  // Support's own, sent from elsewhere: not kept here, its name alone.
+  if (!f.state) return <span className="flex items-center gap-1.5 text-xs"><FileText className="size-3.5" /> {label}</span>;
   if (f.state === "too_large") return <span className="text-xs opacity-80">{f.name ?? "A file"} was too large to keep (over 25 MB).</span>;
-  if (f.state === "failed") return <span className="text-xs opacity-80" title={f.error}>{f.name ?? "A file"} could not be fetched.</span>;
+  if (f.state === "failed") return <span className="text-xs opacity-80" title={f.error}>{f.name ?? "A file"} could not be kept.</span>;
   const url = q.data ? `data:${q.data.mediaType};base64,${q.data.base64}` : undefined;
   if (q.error) return <ErrorLine error={q.error} />;
   if (kind === "image") {
@@ -818,19 +829,20 @@ function Fact(props: { label: string; children: ReactNode }) {
 function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
   const client = useStrutClient();
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["staff", "support", "settings"], queryFn: () => client.run<{ settings: SupportSettings }>("staff/support-settings", {}) });
+  const sql = useSqlMutation();
+  const q = useSql<SettingsRow>(SETTINGS_SQL);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState<"welcome" | "lines" | "photo" | null>(null);
   const [error, setError] = useState<unknown>(null);
   const picker = useRef<HTMLInputElement>(null);
-  const s = q.data?.settings;
+  const s = q.data?.rows[0] ? settingsOf(q.data.rows[0]) : undefined;
   const text = draft ?? s?.welcome ?? "";
   const save = async (what: "welcome" | "lines" | "photo", fn: () => Promise<unknown>) => {
     setBusy(what);
     setError(null);
     try {
       await fn();
-      await qc.invalidateQueries({ queryKey: ["staff", "support", "settings"] });
+      await qc.invalidateQueries({ queryKey: ["strut", "sqlite"] });
       return true;
     } catch (err) {
       setError(err);
@@ -843,7 +855,7 @@ function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
   const pick = (file: File) =>
     save("photo", async () => {
       const blob = await shrinkImage(file, SUPPORT_AVATAR_SIDE);
-      await client.run("staff/support-photo", { photo: { base64: await base64Of(blob), type: "image/jpeg" } });
+      await client.run("support/set-photo", { photo: { base64: await base64Of(blob), type: "image/jpeg" } });
     });
   return (
     <section aria-label="Support settings" className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
@@ -861,7 +873,7 @@ function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
                 {busy === "photo" && <Loader2 className="animate-spin" />} {s.photo ? "Change" : "Choose a picture"}
               </Button>
               {s.photo && (
-                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void save("photo", () => client.run("staff/support-photo", { photo: null }))}>
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void save("photo", () => client.run("support/set-photo", { photo: null }))}>
                   Remove
                 </Button>
               )}
@@ -885,7 +897,7 @@ function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
               className="mt-0.5"
               checked={s.payoutLines}
               disabled={busy !== null}
-              onCheckedChange={(c) => void save("lines", () => client.run("staff/support-save-settings", { payoutLines: c }))}
+              onCheckedChange={(c) => void save("lines", () => sql.exec(PAYOUT_LINES_SQL, { on: c }))}
             />
             <label htmlFor="support-payout-lines" className="grid gap-0.5">
               <span className="text-sm font-medium">Payout lines</span>
@@ -914,7 +926,7 @@ function SettingsPanel(props: { onBack: () => void; narrow: boolean }) {
             <Button
               size="sm"
               disabled={busy !== null || draft === null || draft === s.welcome}
-              onClick={() => void save("welcome", () => client.run("staff/support-save-settings", { welcome: text })).then((ok) => ok && setDraft(null))}
+              onClick={() => void save("welcome", () => sql.exec(WELCOME_SQL, { welcome: text.trim() ? text : "" })).then((ok) => ok && setDraft(null))}
             >
               {busy === "welcome" && <Loader2 className="animate-spin" />} Save
             </Button>

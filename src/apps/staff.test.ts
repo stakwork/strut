@@ -23,7 +23,7 @@ import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKin
 import {
   answerFiles, fmtWhen, grantedBy, isPicture, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, tasksWords, whatsappUrl,
-  earlierEnd, fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
+  fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
   attachProblem,
@@ -31,6 +31,7 @@ import {
   jpgName,
 } from "./staff/src/lib/view.js";
 import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
+import { conversationOf, likeOf, messageOf, searchHit, settingsOf, type MessageRow } from "./staff/src/lib/support.js";
 import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
 import statsStep from "../steps/lib/staff/stats.js";
 import saveTestStep from "../steps/lib/staff/save-test.js";
@@ -250,9 +251,9 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(testsAnswerOf({ data: { tests: [] } }), "yes");
   });
 
-  it("the Support tab (plans/support-chat.md §3): shown when /support answers, its deep link, how a conversation and a message read", () => {
+  it("the Support tab (plans/support-chat.md §3): shown when Support is on, its deep link, how a conversation and a message read", () => {
     assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes", supportAnswer: "yes" }).support, true);
-    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes", supportAnswer: "no" }).support, false, "no message token, or an NWC wallet: not_available");
+    assert.equal(shownOf({ types: [], workers: [], testsAnswer: "yes", supportAnswer: "no" }).support, false, "no message token, or an NWC wallet, and no conversation");
     assert.deepEqual(placeOf({ tab: "support", worker: "secp:abc" }), { tab: "support", worker: "secp:abc" }, "not the worker's Workers page");
     assert.deepEqual(placeOf({ tab: "support" }), { tab: "support" });
     for (const p of [{ tab: "support" }, { tab: "support", worker: "secp:abc" }] as const) assert.deepEqual(placeOf(inputOf(p)), p);
@@ -275,8 +276,33 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(paymentLine({ fromMe: false, sats: 1200 }), "Sent you 1,200 sats");
     assert.equal(paymentLine({ fromMe: true, sats: 1 }), "Support sent 1 sat");
     assert.deepEqual([fmtBytes(820), fmtBytes(14_000), fmtBytes(3_400_000)], ["820 B", "14 KB", "3.2 MB"]);
-    assert.equal(earlierEnd([{ earlier: true }, { earlier: true }, {}]), 1);
-    assert.equal(earlierEnd([{}, {}]), -1);
+  });
+
+  it("Support's rows as the page draws them (plans/people-and-hosts.md §5): a message, a conversation, settings, a search", () => {
+    const row: MessageRow = { key: 7, id: "sx", from_me: 1, kind: "file", text: "the rules", reply_to: "q1", sats: null, deleted: 0, by: "welcome", status: "failed", error: "not_a_contact: no", media_type: "application/pdf", file_name: "Rules.pdf", file_size: 12, file_state: "kept", at: 5 };
+    assert.deepEqual(messageOf(row), { key: 7, id: "sx", fromMe: true, kind: "file", text: "the rules", replyTo: "q1", file: { name: "Rules.pdf", mediaType: "application/pdf", size: 12, state: "kept" }, status: "failed", error: "not_a_contact: no", at: 5, auto: "welcome" });
+    // A deleted one shows neither its text nor its file (ruling 12); an admin's own is never named (ruling 4).
+    assert.deepEqual(messageOf({ ...row, deleted: 1, by: "secp:admin", status: "sent", error: null }), { key: 7, id: "sx", fromMe: true, kind: "file", replyTo: "q1", deleted: true, status: "sent", at: 5 });
+    assert.deepEqual(messageOf({ ...row, from_me: 0, kind: "file", text: null, by: null, status: null, error: "too_large", file_state: "too_large", file_size: null }).file, { name: "Rules.pdf", mediaType: "application/pdf", state: "too_large", error: "too_large" });
+    const c = conversationOf(
+      { pubkey: "02ab", actor: "secp:ab", seen_at: null, status: "open", welcomed_at: 3, assigned: "me", unread: 2, last_key: 9, last_from_me: 0, last_kind: "message", last_text: "hi", last_deleted: 0, last_media_type: null, last_file_name: null, last_sats: null, last_at: 8 },
+      "Ana",
+    );
+    assert.deepEqual(c, { worker: "secp:ab", pubkey: "02ab", alias: "Ana", unread: 2, last: { key: 9, fromMe: false, kind: "message", text: "hi", at: 8 }, welcomedAt: 3, status: "open", assigned: "me" });
+    assert.equal(messageLine(c.last!), "hi");
+    assert.deepEqual(settingsOf({ welcome: "", welcome_since: null, welcome_saved_at: null, payout_lines: 1, photo: null, photo_type: null, photo_url: null }), { welcome: "", payoutLines: true });
+    assert.deepEqual(settingsOf({ welcome: "Hi", welcome_since: 1, welcome_saved_at: 2, payout_lines: 0, photo: { base64: "AA==" }, photo_type: "image/jpeg", photo_url: "https://m/x" }), {
+      welcome: "Hi",
+      since: 1,
+      savedAt: 2,
+      payoutLines: false,
+      photo: { url: "https://m/x", mediaType: "image/jpeg", base64: "AA==" },
+    });
+    assert.equal(likeOf("50%_off\\"), "%50\\%\\_off\\\\%");
+    assert.ok(searchHit("ana", c, ["", "Ana"], new Set()), "by name");
+    assert.ok(searchHit("lopez", c, ["Ana Lopez\nlikes pets", ""], new Set()), "by the staff's note");
+    assert.ok(searchHit("rules", c, [], new Set(["02ab"])), "by what a message says");
+    assert.ok(!searchHit("bo", c, ["", "Ana"], new Set()));
   });
 
   it("Support's item 2 (plans/support-chat.md §3): a staff file in a line, a photo's size once shrunk, what may be sent", () => {

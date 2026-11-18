@@ -220,27 +220,26 @@ export async function openTaskStores(o: { dataDir: string } | { file: string }):
   return { tasks: new SqliteTaskStore(db), workers: new SqliteWorkerStore(db), close: async () => db.close() };
 }
 
-/** A task store file in memory (`openTaskDb`, `TaskDb.open`): Support's,
- *  beside a task store in memory. */
+/** A task store file in memory (`openTaskDb`, `TaskDb.open`). */
 export const TASKS_IN_MEMORY = ":memory:";
+
+/** Support's tables as it was first built (plans/support-chat.md §4),
+ *  dropped whenever the file is opened: Support is strut/staff's own now, in
+ *  the app's SQLite, and nothing of these was copied
+ *  (plans/people-and-hosts.md §5, ruling 7). */
+export const DROPPED_SUPPORT_TABLES = ["support_messages", "support_conversations", "support_state"] as const;
 
 /** The task store's file opened (`TASKS_IN_MEMORY`: one in memory) with every table
  *  made, or an older file's brought to version 2, in one transaction
- *  (plans/human-steps.md §7.7): both sides' and Support's
- *  (plans/support-chat.md §4), which opens a connection of its own on it. */
+ *  (plans/human-steps.md §7.7): both sides'. */
 export async function openTaskDb(file: string): Promise<TaskDb> {
-  const [{ TaskDb }, { taskSchema }, { workerSchema }, { supportSchema }] = await Promise.all([
-    import("./db.js"),
-    import("./task-store-sqlite.js"),
-    import("./worker-store-sqlite.js"),
-    import("../support/store.js"),
-  ]);
+  const [{ TaskDb }, { taskSchema }, { workerSchema }] = await Promise.all([import("./db.js"), import("./task-store-sqlite.js"), import("./worker-store-sqlite.js")]);
   const db = TaskDb.open(file);
   try {
     db.migrate(() => {
       taskSchema(db);
       workerSchema(db);
-      supportSchema(db);
+      for (const t of DROPPED_SUPPORT_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
     });
   } catch (err) {
     db.close();

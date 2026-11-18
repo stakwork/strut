@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { BATCH_MAX, runBatch } from "../../../apps/data.js";
-import { appDatabase, appSchema, paramsSchema } from "./_shared.js";
+import { appDatabase, appSchema, batchWithActor, paramsSchema } from "./_shared.js";
 
 /** Several writes on an app's own database in ONE transaction (plans/apps.md
  *  §4.4). From a page, kept as a step run with its viewer (§9). */
@@ -24,6 +24,6 @@ export default defineStep({
   output: z.object({ results: z.array(z.object({ changes: z.number(), lastInsertRowid: z.union([z.number(), z.string()]) })) }),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     const db = await appDatabase(ctx, cfg.app, "sqlite/batch");
-    return runBatch(db, cfg.statements);
+    return runBatch(db, batchWithActor(cfg.statements, ctx?.actor));
   },
 });

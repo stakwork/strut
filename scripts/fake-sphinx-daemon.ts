@@ -75,6 +75,16 @@
  * and the account answers the DM ("Linked…", or why not). The worker-dm's
  * answer carries strut's (`link: { status, body }`).
  *
+ * And SUPPORT's push (plans/people-and-hosts.md §5, §7): every DM record —
+ * a worker's and the account's own, a new one or one that changed — goes to
+ * strut's `POST /mcp` as `step_run { app: "strut/staff", type:
+ * "support/receive", config: { records: [record] } }` with the host key, as
+ * the contact it is about (`x-strut-account: sphinx:<pubkey>`, their alias
+ * in `x-strut-account-name`). In order, one call at a time, a worker's file
+ * with its bytes (`file: { data, name }`, or `fileError: "too_large"` over
+ * 25 MiB), and again every `pushRetryMs` until strut answers a 2xx. It keeps
+ * how far strut has taken; `drained()` waits until strut has every record.
+ *
  * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
  * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`,
  * `/next-dm`, `/use-invite` and `/worker-*` are open: they are the test's,
@@ -114,10 +124,14 @@ export interface FakeSphinxDaemonOptions {
    *  `POST /hosts/link` with this host key. Both, or neither. */
   strutUrl?: string;
   strutHostKey?: string;
+  /** How long Support's push waits before it hands a record again. Default 1000. */
+  pushRetryMs?: number;
 }
 
 export interface FakeSphinxDaemon {
   url: string;
+  /** Strut has taken every DM record (Support's push), or there is no strut. */
+  drained(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -208,12 +222,57 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   const put = (r: Omit<DmRec, "seq">) => {
     const rec = { ...r, seq: ++seq } as DmRec;
     dms.set(keyOf(rec), rec);
+    push();
     return rec;
   };
   const touch = (r: DmRec) => {
     dms.delete(keyOf(r));
     r.seq = ++seq;
     dms.set(keyOf(r), r);
+    push();
+  };
+
+  // SUPPORT's push (plans/people-and-hosts.md §5, §7): each record in order,
+  // one call at a time, until strut answers a 2xx; `pushed` is how far
+  // strut has taken. A record that changes comes again under its new seq.
+  let pushed = 0;
+  let pushing: Promise<void> | null = null;
+  let closed = false;
+  const nextToPush = () => [...dms.values()].filter((r) => r.seq > pushed).sort((a, b) => a.seq - b.seq)[0];
+  const pushOne = async (r: DmRec): Promise<boolean> => {
+    const f = r.kind === "file" && !r.fromMe && r.id ? dmFiles.get(r.id) : undefined;
+    const record = { ...r, ...(f ? (f.size > DM_FILE_MAX_BYTES ? { fileError: "too_large" } : { file: { data: f.bytes.toString("base64"), name: f.name } }) : {}) };
+    const alias = r.peer.alias;
+    const res = await fetch(`${opts.strutUrl!.replace(/\/+$/, "")}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${opts.strutHostKey}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-strut-account": `sphinx:${r.peer.pubkey}`,
+        ...(alias ? { "x-strut-account-name": encodeURIComponent(alias) } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: r.seq, method: "tools/call", params: { name: "step_run", arguments: { app: "strut/staff", type: "support/receive", config: { records: [record] } } } }),
+    });
+    const text = await res.text();
+    if (!res.ok) log(`push ${r.kind} #${r.seq} to strut: ${res.status} ${text.slice(0, 200)}`);
+    return res.ok;
+  };
+  function push(): void {
+    if (!opts.strutUrl || !opts.strutHostKey || pushing || closed) return;
+    pushing = (async () => {
+      for (let r = nextToPush(); r && !closed; r = nextToPush()) {
+        const at = r.seq;
+        if (await pushOne(r).catch((err) => (log(`push #${at} to strut: ${err instanceof Error ? err.message : String(err)}`), false))) pushed = Math.max(pushed, at);
+        else await new Promise((ok) => setTimeout(ok, opts.pushRetryMs ?? 1000));
+      }
+    })().finally(() => {
+      pushing = null;
+      if (nextToPush()) push();
+    });
+  }
+  const drained = async (): Promise<void> => {
+    while (opts.strutUrl && opts.strutHostKey && !closed && (pushing || nextToPush())) await (pushing ?? new Promise((ok) => setTimeout(ok, 10)));
   };
   const someKey = () => `02${randomBytes(32).toString("hex")}`;
   const addressOf = (pubkey: string) => `${pubkey}_${"03" + "1".repeat(64)}_1`;
@@ -634,7 +693,12 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   await new Promise<void>((ok, fail) => server.once("error", fail).listen(opts.port ?? 3461, "127.0.0.1", ok));
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-    close: () => new Promise<void>((ok) => server.close(() => ok())),
+    drained,
+    close: async () => {
+      closed = true;
+      await pushing;
+      await new Promise<void>((ok) => server.close(() => ok()));
+    },
   };
 }
 

@@ -390,13 +390,14 @@ export interface InvitesAnswer {
 /** `staff/invite`'s answer: the invite, its app and its link as a QR code (an SVG). */
 export type MadeInvite = Invite & { app: string; qrSvg?: string };
 
-// ── Support (plans/support-chat.md) ─────────────────────────────────────────
+// ── Support (plans/people-and-hosts.md §5; db/001-support.sql) ─────────────
 
 export type SupportKind = "message" | "file" | "payment" | "contact";
 export type SendStatus = "sending" | "sent" | "failed";
 
-/** One message of a conversation (`GET /support/:worker`): a deleted one
- *  without its text or file; never who sent it (every reply is Support's). */
+/** One message of a conversation, as the thread draws it (`messageOf`,
+ *  lib/support.ts): a deleted one without its text or file; never who sent
+ *  it (every reply is Support's). */
 export interface SupportMessage {
   /** Strut's own order. */
   key: number;
@@ -408,21 +409,20 @@ export interface SupportMessage {
   replyTo?: string;
   sats?: number;
   deleted?: true;
-  file?: { name?: string; mediaType?: string; size?: number; state: "fetching" | "kept" | "too_large" | "failed"; error?: string };
+  /** `state` absent: a file of Support's sent from elsewhere, not kept here. */
+  file?: { name?: string; mediaType?: string; size?: number; state?: "kept" | "too_large" | "failed"; error?: string };
   status?: SendStatus;
   error?: string;
   at: number;
-  /** Written before Support first followed the daemon. */
-  earlier?: true;
-  /** Sent by strut on its own: the welcome, a payout's line, the staff's heads-up. */
-  auto?: "welcome" | "payout" | "heads-up";
+  /** Sent by strut on its own: the welcome, a payout's line. */
+  auto?: "welcome" | "payout";
 }
 
 export interface SupportConversation {
   /** The worker's actor. */
   worker: string;
   pubkey: string;
-  /** Their Sphinx name. */
+  /** Their name (`useNames`). */
   alias?: string;
   unread: number;
   last?: SupportMessage;
@@ -437,27 +437,20 @@ export interface SupportConversation {
 /** Which conversations the list shows. */
 export type SupportFilter = "open" | "mine" | "unassigned" | "done";
 
-export interface SupportThread {
-  conversation: SupportConversation;
-  messages: SupportMessage[];
-  more: boolean;
-}
-
 export interface SupportSettings {
   welcome: string;
   since?: number;
   savedAt?: number;
-  savedBy?: string;
   /** "Paid you 1,200 sats" from Support when a payout settles. */
   payoutLines: boolean;
   /** Support's picture: the URL workers' Peel loads, and the bytes to show here. */
-  photo?: { url: string; mediaType: string; savedAt: number; base64?: string };
+  photo?: { url: string; mediaType: string; base64?: string };
 }
 
-/** One piece of a worker's file (`staff/support-file`): `next` is where the
- *  next piece starts; the pieces' base64 joins as one. */
+/** One piece of a file (`support/file`): `next` is where the next piece
+ *  starts; the pieces' base64 joins as one. */
 export interface SupportFile {
-  id: string;
+  key: number;
   name?: string;
   mediaType: string;
   bytes: number;

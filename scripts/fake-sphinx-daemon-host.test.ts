@@ -43,7 +43,6 @@ describe("the stand-in Sphinx daemon as strut's host", () => {
       scheduler: false,
       autoResume: false,
       payments: { rate: async () => ({ usdPerBtc: 100_000, at: new Date().toISOString(), source: "test" }) },
-      support: { pollMs: 3_600_000 },
       views: false, jamie: false, knowledge: false, job: false, orchestrator: false, builder: false,
       browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });

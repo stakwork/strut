@@ -251,8 +251,8 @@ container in the compose (strut and any service that registers steps).
   entry says `unlinked: true`. What it reaches is the shared bag: no admin
   door (`adminBag` is never built for it, `AppRef.admin` and `firstParty`
   are never set), no worker's calls (`workerServices` is not given), and
-  nothing that pays or sends — the payer is on no bag, and the coming
-  `sphinx` capability is not on the shared one. So a stolen host key can
+  nothing that pays or sends — the payer is on no bag, and the `sphinx`
+  capability (plans/people-and-hosts.md §4) is not on the shared one. So a stolen host key can
   put false records into what an app keeps; it cannot send, read a secret
   or reach the task store. The same paid-or-shell and sealed refusals as a
   page's hold. **`x-strut-account-name`** (percent-encoded, beside

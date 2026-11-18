@@ -225,10 +225,11 @@ takes payments IN and sends payouts OUT on a laptop or in an end-to-end
 test, with no mixer and no real sats:
 
 ```bash
-PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 npm run dev:fake-daemon
+PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 \
+STRUT_URL=http://127.0.0.1:3000 STRUT_HOST_KEY=dev-host npm run dev:fake-daemon
 LIGHTNING_DAEMON_URL=http://127.0.0.1:3461 LIGHTNING_DAEMON_TOKEN=demo \
 LIGHTNING_DAEMON_PAY_TOKEN=demo-pay LIGHTNING_DAEMON_MESSAGE_TOKEN=demo-message \
-STRUT_RATE_URL=http://127.0.0.1:3461/prices \
+STRUT_RATE_URL=http://127.0.0.1:3461/prices STRUT_HOST_KEYS=sphinx:dev-host \
 STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
 ```
 
@@ -248,28 +249,25 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
 - **Support's DMs** (plans/support-chat.md §7, as stakwork/sphinx#435 built
   them; the MESSAGE token alone, `MESSAGE_TOKEN`, default `demo-message`,
   set as `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET
-  /dm/:id/file` (the sender's name in `content-disposition`; `413
-  too_large` over 25 MiB, `410 deleted`) and `POST /dm` (`400
-  not_a_contact`, `400 too_long`), answering the send's item; the same `id`
-  never sends twice, a failed one is tried again. Play a worker with `POST /worker-dm { pubkey?, alias?,
-  text?, replyTo?, sats?, time?, file?: { name, type, base64 } | { name, type,
-  size } }` (a new pubkey is a contact first), `POST /worker-contact
-  { pubkey?, alias? }` (a key exchange alone: what fires the welcome),
-  `POST /worker-delete/:id`; `POST /next-dm { "state": "failed" |
-  "pending" }` makes the next send fail, or wait for `POST /settle/<id>`.
-  Item 2's: `POST /dm` with `file { data, type, name }` (`413 too_large`
-  over 25 MiB; the file then reads back through `GET /dm/:id/file`), `PUT
-  /dm/photo { data, type }` → `{ url }` and `DELETE /dm/photo` (`GET
-  /worker-photo`, open, says the `img` a worker now sees), `POST
-  /dm/:id/delete` for the account's own messages, as stakwork/sphinx#436
-  answers them (no bytes kept: a failed file send is retried only with
-  its file; `GET /dm/:id/file` serves received files alone, so `GET
-  /worker-file/:id`, open, reads one the account sent). `/worker-dm` takes
-  `time` (ISO), so a message can have waited 5 minutes for the heads-up.
-  Then `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the
-  admin a ticket names (`POST /auth/ticket { actor, role: "admin" }`), and
-  that admin gets the heads-up when their actor is `secp:` + a contact's
-  key without its first byte.
+  /dm/:id/file` (`413 too_large` over 25 MiB, `410 deleted`), `POST /dm`
+  (`400 not_a_contact`, `400 too_long`; `file { data, type, name }`), `PUT
+  /dm/photo` / `DELETE /dm/photo`, `POST /dm/:id/delete`, as
+  stakwork/sphinx#436 answers them. Play a worker with `POST /worker-dm {
+  pubkey?, alias?, text?, replyTo?, sats?, time?, file?: { name, type,
+  base64 } | { name, type, size } }` (a new pubkey is a contact first),
+  `POST /worker-contact { pubkey?, alias? }` (a key exchange alone: what
+  fires the welcome), `POST /worker-delete/:id`; `POST /next-dm { "state":
+  "failed" | "pending" }` makes the next send fail, or wait for `POST
+  /settle/<id>`; `GET /worker-photo` and `GET /worker-file/:id` (open) say
+  what a worker sees. Strut reads none of the feed itself: started with
+  `STRUT_URL` and `STRUT_HOST_KEY` (strut's `STRUT_HOST_KEYS=sphinx:<it>`),
+  the stand-in PUSHES each record, a worker's file with its bytes, to
+  strut/staff's `support/receive` (plans/people-and-hosts.md §5, §7), one
+  call at a time, again every second until strut answers a `2xx`. Then
+  `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the admin a
+  ticket names (`POST /auth/ticket { actor, role: "admin" }`, then the UI
+  at `/?ticket=<it>`). src/apps/support.test.ts runs it all against a
+  strut served on a port.
 - **Strut's host** (plans/jamie-in-tribes.md §3, §5.1): `GET /me` (the
   message token) answers the account's `{ address, pubkey, alias }`, what
   the Jamie app's Connect shows a person to DM a link code to. Started with

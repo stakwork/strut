@@ -8,15 +8,17 @@
 // them in, what they did and earned), the Tasks (every task and its answers),
 // the Tests, the Payouts (workers' withdrawals: the switch, the caps, the
 // list), and Support (the chat with workers, plans/support-chat.md, with its
-// unread count on the tab). Every call
-// is a `staff/*` step, which answers only strut's own page shown to an admin
-// with a name; the page is only a face, the routes decide. Parts of items 4
+// unread count on the tab; its tables are this app's own SQLite,
+// plans/people-and-hosts.md §5). Every call
+// to the task store is a `staff/*` step, which answers only strut's own page
+// shown to an admin with a name; the page is only a face, the routes decide.
+// Support's are SQL on the app's own tables and its `support/*` tools. Parts of items 4
 // (tests, standing, copies) and 5a (pay, earnings) show only when the server
 // answers for them (§9.7).
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Users } from "lucide-react";
-import { useAppLink, useHost, useNames, useStrutClient, useToolInput } from "@strut/kit";
+import { useAppLink, useChannel, useHost, useNames, useSql, useStrutClient, useToolInput } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TABS, TAB_LABELS, inputOf, placeOf, shownOf, testsAnswerOf, type Place, type Tab } from "./lib/view";
@@ -29,6 +31,7 @@ import { Tasks } from "./components/Tasks";
 import { Tests } from "./components/Tests";
 import { Payouts } from "./components/Payouts";
 import { Support } from "./components/Support";
+import { COUNTS_SQL, SUPPORT_CHANNEL, SUPPORT_REFETCH_MS } from "./lib/support";
 
 export default function App() {
   const client = useStrutClient();
@@ -55,21 +58,25 @@ export default function App() {
   const tests = useQuery({ queryKey: ["staff", "tests", "all"], queryFn: () => client.run<{ tests: Test[] }>("staff/tests", {}) });
   // Whether the payout routes answer here (item 5b): the Payouts tab's own read.
   const payouts = useQuery({ queryKey: ["staff", "payouts", "any"], queryFn: () => client.run("staff/payouts", { limit: 1 }) });
-  // Whether Support answers here (a Sphinx daemon's message token), and the
-  // tab's unread count, read every few seconds (plans/support-chat.md §3).
-  const support = useQuery({
-    queryKey: ["staff", "support", "unread"],
-    queryFn: () => client.run<{ unread: number; conversations: number }>("staff/support-unread", {}),
-    // Not asked again once the server says it has no Support.
-    refetchInterval: (q) => (testsAnswerOf({ error: q.state.error }) === "no" ? false : 5_000),
+  // Support (plans/people-and-hosts.md §5): its tables are this app's own
+  // SQLite. Shown where the wallet is a Sphinx daemon with its message token,
+  // or Support already has a conversation; its unread count on the tab, read
+  // again when the app's channel says a DM came, and every 30 s besides.
+  const wallet = useQuery({
+    queryKey: ["staff", "wallet"],
+    queryFn: () => client.run<{ wallet?: { provider?: string | null; messages?: boolean } }>("earnings/read", { wallet: true, days: 1 }),
     retry: false,
+    staleTime: Infinity,
   });
+  const counts = useSql<{ conversations: number; unread: number }>(COUNTS_SQL, undefined, { refetchInterval: SUPPORT_REFETCH_MS });
+  const supportAnswer = wallet.data?.wallet?.messages === true || (counts.data?.rows[0]?.conversations ?? 0) > 0 ? "yes" : "no";
   const shown = useMemo(
-    () => shownOf({ types: types.data?.types, workers: listed, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts), supportAnswer: testsAnswerOf(support) }),
-    [types.data, listed, tests.data, tests.error, payouts.data, payouts.error, support.data, support.error],
+    () => shownOf({ types: types.data?.types, workers: listed, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts), supportAnswer }),
+    [types.data, listed, tests.data, tests.error, payouts.data, payouts.error, supportAnswer],
   );
+  useChannel(SUPPORT_CHANNEL, { enabled: shown.support, onMessage: () => void qc.invalidateQueries({ queryKey: ["strut", "sqlite"] }) });
   const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
-  const unread = support.data?.unread ?? 0;
+  const unread = counts.data?.rows[0]?.unread ?? 0;
   const tab: Tab = tabs.includes(place.tab) ? place.tab : "queue";
   // Strut's own admin pages act as the person viewing them: with the bare
   // key and no name, every step refuses.

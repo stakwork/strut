@@ -898,6 +898,12 @@ specs/API.md §14.17)
   `hosts:` entry and `grants.sqlite`; a visitor's page gets none of it.
   "An automation it set" carries nothing yet: `automation/*` under
   `ctx.app` is work item 7.
+- **`:actor` is strut's** (plans/people-and-hosts.md item 5, #737): a
+  statement naming `:actor` (`@actor`, `$actor`) gets the caller's own
+  actor there — a page's viewer, a host call's person, a run's actor; NULL
+  with none — so a page reads and writes "mine" (Support's "Take it" and
+  Mine) without being told who its viewer is. A value the caller names
+  `actor` is replaced; such a statement takes its other values by name.
 - **`engines` was already `>=22.13`** (since the ledger, f081fb89).
 - **Not bounded: a statement's run time.** `node:sqlite` has no progress
   handler or interrupt, so a statement that never ends holds the server's

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { QUERY_ROWS_DEFAULT, QUERY_ROWS_MAX, runQuery } from "../../../apps/data.js";
-import { appDatabase, appSchema, paramsSchema } from "./_shared.js";
+import { appDatabase, appSchema, paramsSchema, withActor } from "./_shared.js";
 
 /** One read on an app's own database (plans/apps.md §4.4): the kit's
  *  `useSql`. Never kept as a run: a read records nothing. */
@@ -28,6 +28,6 @@ export default defineStep({
   }),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     const db = await appDatabase(ctx, cfg.app, "sqlite/query");
-    return runQuery(db, cfg.sql, cfg.params, cfg.maxRows);
+    return runQuery(db, cfg.sql, withActor(cfg.sql, cfg.params, ctx?.actor), cfg.maxRows);
   },
 });

@@ -1,8 +1,9 @@
 # People and hosts: one identity, names, and Support as an app
 
-> **Status (2026-11-18): ruled in outline; items 1 (names), 2 (host keys
-> and accounts), 3 (a host calls an app's tools) and 4 (an app's own
-> SQLite) built on #737.**
+> **Status (2026-11-18): ruled in outline; every item built on #737: 1
+> (names), 2 (host keys and accounts), 3 (a host calls an app's tools), 4
+> (an app's own SQLite) and 5 (Support rebuilt as an app: no polling, no
+> `/support` routes, no heads-up).**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -251,6 +252,23 @@ Strut still holds the message token, to send. It no longer reads with it.
 - **A payout's line** ("Paid you 1,200 sats") is the engine's own: the
   withdrawals' `paid` hook calls the capability. It needs no app.
 
+**Built differently (#737):** (src/payments/sphinx-dm.ts; createStrut
+`sendsAsSupport`)
+
+- **"A run that page's app launched" is told by the run's app**: a run
+  whose `app` is a `strut/` app at a version strut seeded with `admin:
+  true` in its manifest carries `sphinx`, whoever launched it.
+  `support-outbox` is started by `support/receive`, the host's call of
+  `strut/staff`'s tool, not by the page, so the page's own flags
+  (`AppRef.firstParty`, `admin`) cannot be what decides. A resume keeps
+  the run's app, and so the capability. `strut/staff` grants no workflow,
+  so its page launches nothing itself.
+- **The payout line keeps its switch and its label.** The hook reads
+  `strut/staff`'s own database (`payout_lines`, and the worker's
+  conversation for their pubkey) and keeps the line in the thread as
+  `by: "payout"`, as Support as built did. Its id is made from the
+  payout's key, so a second call sends nothing.
+
 ## 5. Support as an app
 
 Support stays a tab of `strut/staff`.
@@ -298,6 +316,50 @@ not push yet, Support receives nothing (§7).
 **What goes away:** `src/support/`, the twelve `/support` routes, the eleven
 `staff/support-*` steps, both 3 s polls, the heads-up, and reading DMs with
 the token.
+
+**Built differently (#737):** (src/steps/lib/support/, src/apps/staff/db/,
+src/apps/staff/src/lib/support.ts; specs/API.md §22 "Support")
+
+- **One contact a call.** A host's call runs as the one account
+  `x-strut-account` names, so `support/receive { records }` takes ONE
+  contact's records (the account's; a record about another contact is
+  skipped and named). The stand-in daemon sends one record a call; the
+  daemon may batch one contact's consecutive records. So the sender's
+  name is the call's `x-strut-account-name` (item 3) and `support/receive`
+  writes no name: the list reads names through `people/names`, and search
+  matches them in the page.
+- **A bad record is skipped, never the call**, and named in the answer
+  (`{ kept, skipped }`): a `500` would make the daemon send it forever and
+  hold every DM after it.
+- **The daemon's `seq` is kept per message**, and an older record never
+  undoes a newer one: a push of a send's `failed` can arrive after a Retry
+  made it `sending` again, or after the send's own answer.
+- **`support/file { key, offset? }`** names the message by strut's key,
+  not its Sphinx id: Support's own files are kept too, and have no id
+  until the daemon gives one.
+- **Retry** also sends one stuck `sending` a minute with no id. Support as
+  built marked such sends `failed` when its store opened after a restart;
+  nothing opens now, and the daemon sends one id once.
+- **The welcome's `since`** is kept by a trigger on `settings`, so the page
+  writes only the text. `support/receive` starts the outbox while ANY
+  welcome is due, not only one it marked, and `support/send-due` reads
+  again until none is, so a welcome that came due as a run ended goes.
+- **The page knows its viewer through `:actor`** (`plans/apps.md` §4.4): a
+  `sqlite/*` statement naming it gets the caller's actor, which is how
+  "Take it" writes and "Mine" reads. It shows the tab when the wallet is a
+  Sphinx daemon with its message token (`earnings/read { wallet }`'s
+  `messages`) or Support has a conversation.
+- **Kept runs** (`sqlite/exec` from a page is kept): they are under the
+  `step:sqlite/exec` store key, which no runs list shows, and the page
+  writes "seen" only when a conversation has something unread, so it is
+  one run per batch read, not per open. Done, taken and settings are rare
+  and their run says which admin did it (Support as built kept
+  `seen_by`, `savedBy`).
+- **Dropped with the follower**: the `earlier` marker on the backlog (it
+  was "before Support first followed the daemon"; nothing follows now).
+- **The old tables** go when the task store's file is opened, which its
+  sweep does at boot; `<dataDir>/support/` is removed at boot without
+  holding it up.
 
 ## 6. What stays in the engine
 
@@ -364,7 +426,7 @@ stacked.
 | 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | **Built (#737).** `accounts` in `people.db`, `actorOf`, the name on an account (§1); the rest as `jamie-in-tribes.md` item 1 says, with its own marks |
 | 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | **Built (#737).** The status says how the step ended, the page's call-time refusals still hold, a model's `hosts:` is refused (§3); an unlinked account's name is its key's actor's (§1) |
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | **Built (#737).** As `apps.md` §4.4 marks: no job's app half (job apps are retired), the build tries the migrations, a preview applies them, the kit's `useSql`. A seeded app's `db/*.sql` are applied at every boot, from its live version's directory, once the seeds are in. For item 5: `strut/staff` grants `sqlite: true` and ships `db/001-support.sql`; `support/receive`, called by the host with `ctx.app` set, opens the file with `ctx.services.appDb.open(ctx.app.name)` and keeps a batch in one transaction (`runBatch`, or its own `BEGIN`…`COMMIT` on that connection, never across an `await`) |
-| 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |
+| 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | **Built (#737).** One contact's records a call, a bad record skipped, the daemon's `seq` kept, `support/file` by key, the page's viewer as `:actor`, "seen" only when unread (§5); `sphinx` on a run by its app (§4). The stand-in daemon pushes |
 
 `scripts/fake-sphinx-daemon.ts` gains the push, so item 5 is tested before
 the daemon's side has merged.

@@ -40,6 +40,7 @@ import {
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
+import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { HumanTasksCapability } from "./tasks/tasks.js";
 import type { TaskTypesCapability } from "./tasks/set-type.js";
@@ -481,6 +482,13 @@ export interface StrutCapabilities {
    *  wallet is set (`LIGHTNING_*`, `PUT /earnings/wallet`); a host's own
    *  wins. */
   lightning?: LightningCapability;
+  /** SENDING AS SUPPORT through the treasury's Sphinx daemon
+   *  (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts): `send`,
+   *  `delete`, `setPhoto` over its message token. NEVER on the shared bag:
+   *  only on a first-party page's call shown to an admin, and on a run such
+   *  an app launched (`support-outbox`). Not on an agent's tools, not on a
+   *  host's call. */
+  sphinx?: SphinxCapability;
   /** What this server earned (plans/paid-runs.md §8, src/payments/earnings.ts):
    *  the read `GET /earnings` answers, what the `earnings/read` step is thin
    *  over. Reads only: nothing on it pays — the payer is never on the bag. */

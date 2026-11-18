@@ -48,9 +48,8 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
-import { createSupport, type Support } from "./support/support.js";
-import { supportRoutes } from "./support/routes.js";
-import { SupportStore } from "./support/store.js";
+import { sphinxCapability, type SphinxDaemon } from "./payments/sphinx-dm.js";
+import { payoutLine, SUPPORT_APP } from "./steps/lib/support/_shared.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { standingTask } from "./tasks/standing.js";
@@ -140,7 +139,7 @@ import { seedStaffApp } from "./apps/staff-seed.js";
 import { seedWorkerApp } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
-import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive, packTar } from "./packages/archive.js";
 import { packageTorrent } from "./packages/torrent.js";
@@ -448,10 +447,10 @@ export interface StrutOptions<TServices = unknown> {
    *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
    *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
   tasks?: { now?: () => number; principal?: string };
-  /** Support (plans/support-chat.md, src/support/): `pollMs`, how often the
-   *  follower reads the daemon's DMs (3 s); `fetch`, how it reaches the
-   *  daemon (a test's). */
-  support?: { pollMs?: number; fetch?: typeof fetch };
+  /** How strut reaches the Sphinx daemon on its MESSAGE token (a test's
+   *  `fetch`): the `sphinx` capability (plans/people-and-hosts.md §4) and
+   *  the account a link code is sent to. */
+  sphinx?: { fetch?: typeof fetch };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -966,12 +965,6 @@ export interface Strut<TServices = unknown> {
    *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
    *  every minute, closed by `close()`. */
   tasks: TasksService;
-
-  /** SUPPORT (plans/support-chat.md, src/support/): the staff's chat with
-   *  workers over the treasury daemon's DMs. Its follower reads the daemon
-   *  every few seconds while the wallet has a message token; `tick()` reads
-   *  it now. Closed by `close()`. */
-  support: Support;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -1543,7 +1536,7 @@ export async function createStrut<TServices = unknown>(
     const w = await payments.settings.wallet().catch(() => null);
     if (w?.provider !== "sphinx" || !w.messageToken) return undefined;
     try {
-      const res = await (opts.support?.fetch ?? fetch)(`${w.url}/me`, { headers: { authorization: `Bearer ${w.messageToken}` }, signal: AbortSignal.timeout(5_000) });
+      const res = await (opts.sphinx?.fetch ?? fetch)(`${w.url}/me`, { headers: { authorization: `Bearer ${w.messageToken}` }, signal: AbortSignal.timeout(5_000) });
       if (!res.ok) return undefined;
       const me = (await res.json()) as { address?: unknown; alias?: unknown };
       if (typeof me.address !== "string" || !me.address) return undefined;
@@ -1561,6 +1554,35 @@ export async function createStrut<TServices = unknown>(
   // `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on and an
   // app's migrations are applied to. Memory where the run store is.
   const appDb = createAppDatabases(store instanceof MemoryRunStore ? { memory: true } : { dataDir });
+  // SENDING AS SUPPORT (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts):
+  // the treasury daemon on its MESSAGE token. Never on the shared bag: on
+  // the admin door's (a first-party page shown to an admin), on a run such
+  // an app launched (`launchDetached`), and in the payout line's hook alone.
+  const sphinxDaemon = async (): Promise<SphinxDaemon | null> => {
+    if (payments.injected) return null;
+    const w = await payments.settings.wallet().catch(() => null);
+    return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
+  };
+  const sphinx = sphinxCapability({ daemon: sphinxDaemon, ...(opts.sphinx?.fetch ? { fetch: opts.sphinx.fetch } : {}) });
+  /** A settled payout's line from Support, the engine's own (§4): to a
+   *  worker who is Support's contact, while strut/staff has its tables and
+   *  the daemon its message token. */
+  const supportPayoutLine = async (p: { key: string; worker: string; msat: number }): Promise<void> => {
+    try {
+      if (!appDb.has(SUPPORT_APP) || !(await sphinxDaemon())) return;
+      await payoutLine(await appDb.open(SUPPORT_APP), sphinx, p);
+    } catch (err) {
+      console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  /** Does a run for this app carry `sphinx` (§4)? An admin's first-party
+   *  app — a `strut/` name at a version strut seeded, its manifest
+   *  `admin: true` — so `strut/staff`'s `support-outbox`. No other run's. */
+  const sendsAsSupport = async (app: AppRef | undefined): Promise<boolean> => {
+    if (!app || !isFirstPartyName(app.name)) return false;
+    const found = await apps.manifestOf(app.name, app.version).catch(() => null);
+    return !!found?.seeded && found.manifest.admin === true;
+  };
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1874,9 +1896,9 @@ export async function createStrut<TServices = unknown>(
     owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
     balance: () => walletBalanceMsat(payments.lightning(), 5_000),
     sweep: () => payouts.sweep(),
-    // A line from Support to the worker (plans/support-chat.md §6), on its
-    // own: the payout is booked whatever becomes of it.
-    paid: (p) => void support.paidOut(p),
+    // A line from Support to the worker (plans/people-and-hosts.md §4), on
+    // its own: the payout is booked whatever becomes of it.
+    paid: (p) => void supportPayoutLine(p),
   });
   // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
   // the payer's THIRD door — a keysend to the Sphinx address the worker's
@@ -6909,35 +6931,10 @@ export async function createStrut<TServices = unknown>(
     },
   });
 
-  // ── Support (plans/support-chat.md; src/support/) ──────────────────────
-  // The staff's chat with workers over the treasury's Sphinx DMs, through
-  // the daemon's MESSAGE token: held here and by the follower alone, never
-  // on a bag. No token, or an NWC wallet: every route says `not_available`.
-  // Its tables are in the task store's file, on a connection of its own;
-  // memory where the run store is.
-  const support = createSupport({
-    daemon: async () => {
-      if (payments.injected) return null;
-      const w = await payments.settings.wallet();
-      return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
-    },
-    open: async () => new SupportStore(await openTaskDb(store instanceof MemoryRunStore ? TASKS_IN_MEMORY : tasksPath(dataDir))),
-    filesDir: join(dataDir, "support", "files"),
-    photoFile: join(dataDir, "support", "photo"),
-    ...(opts.support?.fetch ? { fetch: opts.support.fetch } : {}),
-    ...(opts.support?.pollMs ? { pollMs: opts.support.pollMs } : {}),
-  });
-  supportRoutes(app, {
-    isFull: async (c) => (await scopeOf(c)) === "full",
-    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
-    support,
-  });
-
   // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
   // in-process request, the viewer's own, for the steps strut's own admin
   // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
-  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks, and
-  // /support, plans/support-chat.md).
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks).
   // Handed to the app door's bag for a first-party page shown to an admin,
   // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
   // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
@@ -7878,6 +7875,8 @@ export async function createStrut<TServices = unknown>(
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
+      // An admin's first-party app's run sends as Support (§4); no other does.
+      const bag = (await sendsAsSupport(extra?.app)) ? { ...services, sphinx } : services;
       principal ??= await principalFor(flow.name, extra?.actor);
       // Once who pays is known: an automation's turn is its owner's. On
       // record before the run starts.
@@ -7897,7 +7896,7 @@ export async function createStrut<TServices = unknown>(
         runId,
         store,
         workspace,
-        services,
+        services: bag,
         params: body.params,
         settings: body.settings,
         paramOverrides: body.paramOverrides,
@@ -10317,7 +10316,9 @@ export async function createStrut<TServices = unknown>(
         services,
         ...(actor ? { actor } : {}),
         admin: scope === "full",
-        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor } } : {}),
+        // And the `sphinx` capability (plans/people-and-hosts.md §4): Support's
+        // sends from strut/staff's page.
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor, sphinx } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
         // calls of the task store on that call's bag alone. A member's
         // session carries no Sphinx address: nothing to withdraw to (§8.2).
@@ -10898,7 +10899,6 @@ export async function createStrut<TServices = unknown>(
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
     tasks.stop();
-    support.stop();
     publicTools.close();
     withdrawals.stop();
     deposits.stop();
@@ -10930,9 +10930,8 @@ export async function createStrut<TServices = unknown>(
     await people.close();
     // And the apps' own databases.
     appDb.close();
-    // And the task store's, and Support's connection to it.
+    // And the task store's.
     await tasks.close();
-    await support.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -11068,9 +11067,11 @@ export async function createStrut<TServices = unknown>(
   // minute, wherever a store is — dead leases let go, tasks past their time
   // expired.
   tasks.start();
-  // Support's follower (plans/support-chat.md ruling 16): the daemon's DMs
-  // read every few seconds while a message token is set; idle otherwise.
-  support.start();
+  // Support as it was first built kept its files in `<dataDir>/support/`
+  // (and its tables in the task store's file, which its first open drops,
+  // src/tasks/tasks.ts): it is strut/staff's own now, in the app's SQLite,
+  // and nothing of it was copied (plans/people-and-hosts.md §5, ruling 7).
+  if (!(store instanceof MemoryRunStore)) void rm(join(dataDir, "support"), { recursive: true, force: true }).catch((err) => console.warn(`[support] ${join(dataDir, "support")} could not be removed: ${err instanceof Error ? err.message : String(err)}`));
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
@@ -11129,7 +11130,6 @@ export async function createStrut<TServices = unknown>(
     ledger,
     people,
     tasks,
-    support,
     claims,
     verifier,
     listen,
