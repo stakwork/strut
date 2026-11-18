@@ -8,6 +8,7 @@
 // `collapsed` flag — there is no value in it that hides the widget, so no
 // message can; a collapsed widget is a handle that stays visible.
 import { ACCOUNT_CORNERS, type AccountCorner, type AccountPlacement } from "@strut/kit/visitor";
+import { defaultMaxFeeMsat } from "../../src/payments/fee.js";
 
 export interface AccountState {
   corner: AccountCorner;
@@ -165,12 +166,43 @@ export interface WorkerView {
   /** The most one withdrawal may ask now (0: none). */
   maxMsat: number;
   canWithdraw: boolean;
+  /** Why there is no Withdraw while something is withdrawable or on its
+   *  way, said for the worker; absent when they may withdraw or have
+   *  nothing to. */
+  blocked?: string;
 }
+type PayoutRead = { on?: unknown; why?: unknown; minMsat?: unknown; dayLeftMsat?: unknown; maxMsat?: unknown; out?: { msat?: unknown } };
 export function workerOf(me: unknown): WorkerView | null {
-  const m = me as { balance?: { heldMsat?: unknown; withdrawableMsat?: unknown }; payout?: { on?: unknown; maxMsat?: unknown } } | null;
+  const m = me as { balance?: { heldMsat?: unknown; withdrawableMsat?: unknown }; payout?: PayoutRead } | null;
   const held = m?.balance?.heldMsat;
   const free = m?.balance?.withdrawableMsat;
   if (typeof held !== "number" || typeof free !== "number") return null;
   const max = typeof m?.payout?.maxMsat === "number" ? m.payout.maxMsat : 0;
-  return { heldMsat: held, withdrawableMsat: free, maxMsat: max, canWithdraw: m?.payout?.on === true && max > 0 };
+  const canWithdraw = m?.payout?.on === true && max > 0;
+  const blocked = canWithdraw ? undefined : withdrawBlocked(free, m?.payout);
+  return { heldMsat: held, withdrawableMsat: free, maxMsat: max, canWithdraw, ...(blocked ? { blocked } : {}) };
+}
+
+/** Why `task/me`'s payout offers no withdrawal (src/payments/payouts.ts
+ *  `view`): a payout out, its `why`, or — open, `maxMsat` 0 — the day's cap
+ *  or the minimum. The minimum is said with the routing fee the worker pays
+ *  on top (src/payments/fee.ts), as `payoutMaxMsat` counts it. */
+function withdrawBlocked(freeMsat: number, p: PayoutRead | undefined): string | undefined {
+  if (!p) return undefined;
+  const out = typeof p.out?.msat === "number" ? p.out.msat : undefined;
+  if (out !== undefined) return `${formatSats(out)} on the way to you. You can withdraw again once it arrives.`;
+  if (freeMsat <= 0) return undefined;
+  switch (p.why) {
+    case "no_address": return "Sign in with Peel to withdraw: your sign-in gave no Sphinx address to pay.";
+    case "off": return "Withdrawals are off on this server for now.";
+    case "no_wallet":
+    case "no_keysend": return "This server can't pay out right now.";
+    case "not_here": return "This server doesn't pay out earnings.";
+  }
+  if (p.on !== true) return undefined;
+  const minMsat = typeof p.minMsat === "number" ? p.minMsat : 0;
+  if (typeof p.dayLeftMsat === "number" && p.dayLeftMsat < minMsat) return "You've reached today's withdrawal limit. Try again tomorrow.";
+  const feeMsat = defaultMaxFeeMsat(minMsat);
+  if (freeMsat < minMsat + feeMsat) return `Withdrawals start at ${formatSats(minMsat)}, plus up to ${formatSats(feeMsat)} routing fee.`;
+  return "Withdrawals are paused on this server until tomorrow.";
 }

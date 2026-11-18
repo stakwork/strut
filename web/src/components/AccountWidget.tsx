@@ -168,10 +168,12 @@ export function AccountWidget(props: {
                     <span>Withdrawable</span>
                     <span class="account-num">{formatSats(worker.withdrawableMsat)}</span>
                   </div>
-                  {worker.canWithdraw && (
+                  {worker.canWithdraw ? (
                     <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void withdraw()}>
                       Withdraw {formatSats(worker.maxMsat)}
                     </button>
+                  ) : (
+                    worker.blocked && <div class="account-note" data-testid="withdraw-blocked">{worker.blocked}</div>
                   )}
                 </>
               )}
