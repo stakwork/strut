@@ -1,7 +1,8 @@
 # Jamie in tribes: the Sphinx daemon as a strut host
 
-> **Status (2026-11-18): proposed; item 1 (host keys and linked accounts)
-> built on #737, with `people-and-hosts.md` §2's accounts.**
+> **Status (2026-11-18): proposed; items 1 (host keys and linked accounts)
+> and 2 (`delivered` on a wake turn's `run.end`) built on #737, item 1 with
+> `people-and-hosts.md` §2's accounts.**
 >
 > - **Written against:** strut `main` @53364a3d, stakwork/sphinx `master`
 >   @f5baba75, stakwork/hive `master` @64260e485 (what is built today),
@@ -469,7 +470,7 @@ Each is its own PR against its repo's default branch, never stacked.
 | Item | Repo | What | Needs | State |
 | --- | --- | --- | --- | --- |
 | 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link` |
-| 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | — |
+| 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | — |
 | 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply, `GET /me` on the message token | 1 (a stand-in strut in its tests until 1 merges) | — |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4 released | — |

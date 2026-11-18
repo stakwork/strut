@@ -8114,6 +8114,10 @@ export async function createStrut<TServices = unknown>(
       // What the run proposed (plans/proposals.md §6): from the records,
       // never from the model's output.
       const proposals = (await listProposals(proposalsRoot(dataDir), { runId: res.runId }).catch(() => [])).map(briefOf);
+      // A wake turn's own run holds none of the job's work: what the job
+      // run(s) it woke on delivered, as the conversation index shows it
+      // (plans/jamie-in-tribes.md §5.3).
+      const delivered = typeof wake === "object" ? await conversations.delivered(wake).catch(() => []) : [];
       await postCallback(
         url,
         {
@@ -8130,6 +8134,7 @@ export async function createStrut<TServices = unknown>(
           ...(res.error ? { error: { message: res.error.message } } : {}),
           ...(transcripts.length ? { transcripts } : {}),
           ...(artifacts ? { artifacts } : {}),
+          ...(delivered.length ? { delivered } : {}),
           ...(proposals.length ? { proposals } : {}),
           durationMs,
         },

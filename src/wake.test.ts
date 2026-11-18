@@ -293,6 +293,42 @@ describe("the wake through a whole strut", () => {
     assert.deepEqual(lines.map((t) => !!t.wake), [false, true], "the session's turn line marks the wake");
   });
 
+  it("a wake turn's run.end carries what the job run it woke on delivered, as the conversation index shows it; nothing delivered, none", async () => {
+    const { strut, say, wakeEnds } = await boot({
+      reply: () => ({ text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] }),
+    });
+    const indexed = async (session: string, runId: string) => {
+      const res = await strut.app.request(`/conversations/item?id=${encodeURIComponent(session)}`, { headers: { "x-test-actor": "alice" } });
+      return ((await res.json()) as any).turns.find((t: any) => t.runId === runId);
+    };
+
+    // The stand-in job delivers nothing.
+    await say({ prompt: "flights?", session: "c-1" });
+    const bare = await until(() => wakeEnds()[0], "the first wake turn's end");
+    assert.equal(bare.delivered, undefined, "nothing delivered, no field");
+    assert.equal((await indexed("c-1", bare.runId)).delivered, undefined);
+
+    await strut.workspace.publishWorkflow("job", "v2", {
+      steps: [{ id: "result", type: "pack", config: { text: "found 3", artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", title: "Fares", url: "https://example.com/fares" },
+      ] } }],
+    });
+    await say({ prompt: "flights again?", session: "c-2" });
+    const wakeEnd = await until(() => wakeEnds().find((e) => e.runId !== bare.runId), "the second wake turn's end");
+    assert.deepEqual(wakeEnd.delivered, [{
+      job: wakeEnd.wake.job,
+      runId: wakeEnd.wake.runId,
+      workflow: "job",
+      artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", kind: "url", title: "Fares", url: "https://example.com/fares" },
+      ],
+    }]);
+    assert.deepEqual(wakeEnd.artifacts ?? [], [], "the wake turn's own run delivered nothing");
+    assert.deepEqual((await indexed("c-2", wakeEnd.runId)).delivered, wakeEnd.delivered, "what the conversation index shows");
+  });
+
   it("a job a host launched names the conversation; ends that wait for a busy conversation go as ONE turn", async () => {
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));

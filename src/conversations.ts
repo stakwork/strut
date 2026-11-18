@@ -395,6 +395,9 @@ export interface Conversations extends ConversationsCapability {
   /** The record on file, or null: never built here, so a session that is
    *  no conversation costs a file read (the graph projection's reader). */
   record(id: string): Promise<ConversationRecord | null>;
+  /** What the job run(s) a wake woke on delivered: a wake turn's
+   *  `delivered`, on the index and on its `run.end` alike. */
+  delivered(mark: WakeMark): Promise<Delivery[]>;
   /** May `actor` take a turn in `id`, a session that is not under their own
    *  id (plans/jamie-app.md §2.2)? `true` when it is a conversation they
    *  took a turn in, or a shared one; `false` when it is a conversation
@@ -811,6 +814,8 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     record: conversationRecords(deps.dataDir).record,
+
+    delivered: deliveredBy,
 
     async all() {
       await ensureBuilt();
