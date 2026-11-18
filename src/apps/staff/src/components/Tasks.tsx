@@ -169,7 +169,8 @@ function TaskList(props: Props) {
                       {t.reply && <Badge variant="outline">replied</Badge>}
                     </span>
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{t.workflow ? `${t.workflow} · ${t.runId.slice(0, 8)}` : t.test ? "a test" : "—"}</TableCell>
+                  {/* The whole run id: it is Date.now(), so a prefix is the same for runs a minute apart. */}
+                  <TableCell className="font-mono text-xs">{t.workflow ? `${t.workflow} · ${t.runId}` : t.test ? "a test" : "—"}</TableCell>
                   <TableCell className="whitespace-nowrap">{t.status === "open" ? fmtWhen(t.due) : "—"}</TableCell>
                   <TableCell>
                     {t.by ? who(t.by) : (t.copies ?? 1) > 1 ? `${t.leases.filter((l) => l.status === "submitted").length} of ${t.copies}` : "—"}
