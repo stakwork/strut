@@ -1,7 +1,7 @@
 // The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/staff.test.ts tests them.
-import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
+import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, SentFile, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
@@ -341,6 +341,18 @@ export function reviewSummary(t: Pick<Task, "test" | "leases">): string {
   for (const l of answers) n[l.review?.verdict ?? "none"]++;
   const parts = [n.ok && `${answers.length > 1 ? `${n.ok} ` : ""}ok`, n.rejected && `${answers.length > 1 ? `${n.rejected} ` : ""}rejected`, n.none && `${answers.length > 1 ? `${n.none} ` : ""}to review`];
   return parts.filter(Boolean).join(", ");
+}
+
+/** A file the task page draws at once, as a picture: an image's media type,
+ *  or — a task's own files are paths alone — an image's extension. */
+export function isPicture(path: string, mediaType?: string): boolean {
+  return mediaType ? mediaType.startsWith("image/") : /\.(png|jpe?g|gif|webp|avif)$/i.test(path);
+}
+
+/** The files the task's answer carried: on the lease that gave it (a copies
+ *  task's, the first that agreed). */
+export function answerFiles(t: Pick<Task, "by" | "leases">): SentFile[] {
+  return t.leases.find((l) => l.worker === t.by && l.status === "submitted")?.attachments ?? [];
 }
 
 /** A verdict in words (§9.6): `rejected: blurry box · by ada, 14:02 ·

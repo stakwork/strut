@@ -72,7 +72,8 @@ index. A change in this area updates this file, not AGENTS.md.
   times, computed on read; a lease past its expiry is waiting and lost, a
   task past due expired, before the sweep marks them), the tasks a worker
   answered (`?by=`), one worker's week and newest leases, a task's run as
-  it stands and its files without a lease. Its `staff/*` steps go through
+  it stands, its files without a lease (a picture drawn as it comes into
+  view) and the run's reply beside the answer. Its `staff/*` steps go through
   the STAFF DOOR, `/tasks…` alone in the admin's name, which only strut's
   own page shown to an admin reaches; none is kept as a run or hands the
   deployment's `onRunEvent` an event, so a test's expected answer and a
@@ -235,7 +236,9 @@ index. A change in this area updates this file, not AGENTS.md.
   lease, path }` through a lease they answered serves exactly a path the
   reply lists, whatever their status now, and nothing else of the run (with
   no reply, `lease_closed` as before). Staff read it on `GET /tasks/:id`
-  (`task.reply`) and through `GET /tasks/:id/files/<path>`. A standing type
+  (`task.reply`) and through `GET /tasks/:id/files/<path>`; `strut/staff`
+  draws it on the task's page beside the answer, its pictures at once
+  (docs/apps.md, `src/apps/staff/`). A standing type
   works the same: its run launches under the task's run id. Opt-in: a
   workflow that never calls it shows the worker nothing new. The worker page
   draws it (docs/apps.md, "The worker app"). KNOWN LIMIT, for the owner to

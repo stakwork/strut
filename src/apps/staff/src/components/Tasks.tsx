@@ -6,13 +6,15 @@
 // answers, a test instance's grade, and "make a test of it"; with 5a, each
 // answer's earning and a take-back inside its hold. The verdict (§9.6): each
 // answer marked ok or rejected with why, a mark on the answer and never an
-// undo of the run; the review filter is the review queue.
-import { useEffect, useMemo, useState } from "react";
+// undo of the run; the review filter is the review queue. The run's reply to
+// its workers (`task/reply`) beside the answer, and every picture drawn as it
+// comes into view.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, FileText } from "lucide-react";
+import { ExternalLink, FileText, Image as ImageIcon, Paperclip } from "lucide-react";
 import { formProblem } from "@strut/kit/folds";
 import { useHost, useStrutClient } from "@strut/kit";
-import { TaskForm } from "strut/views";
+import { TaskForm, TaskReplyView } from "strut/views";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,11 +22,11 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  earningText, fmtWhen, jsonText, leaseOutcome, parseJson, REVIEW_FILTERS, REVIEW_WORDS, reviewable, reviewSummary, reviewText, runOf, shortActor, STATUS_WORDS, whoOf,
+  answerFiles, earningText, fmtWhen, isPicture, jsonText, leaseOutcome, parseJson, REVIEW_FILTERS, REVIEW_WORDS, reviewable, reviewSummary, reviewText, runOf, shortActor, STATUS_WORDS, whoOf,
   type Place, type ReviewFilter, type Shown,
 } from "../lib/view";
 import type { Lease, Task, TaskFile, TaskRun, TaskStatus, TaskType, Test, Verdict, Worker } from "../lib/types";
-import { Back, Empty, ErrorLine, JsonTree, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { Back, Empty, ErrorLine, JsonTree, Loading, Note, Picture, ReasonButton, Section, useAct } from "./bits";
 
 const PAGE = 50;
 
@@ -162,11 +164,22 @@ function TaskList(props: Props) {
                     {t.type} {t.test && <Badge variant="outline">test</Badge>}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={t.status} />
+                    <span className="flex flex-wrap items-center gap-1">
+                      <StatusBadge status={t.status} />
+                      {t.reply && <Badge variant="outline">replied</Badge>}
+                    </span>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{t.workflow ? `${t.workflow} · ${t.runId.slice(0, 8)}` : t.test ? "a test" : "—"}</TableCell>
                   <TableCell className="whitespace-nowrap">{t.status === "open" ? fmtWhen(t.due) : "—"}</TableCell>
-                  <TableCell>{t.by ? who(t.by) : (t.copies ?? 1) > 1 ? `${t.leases.filter((l) => l.status === "submitted").length} of ${t.copies}` : "—"}</TableCell>
+                  <TableCell>
+                    {t.by ? who(t.by) : (t.copies ?? 1) > 1 ? `${t.leases.filter((l) => l.status === "submitted").length} of ${t.copies}` : "—"}
+                    {answerFiles(t).length > 0 && (
+                      <span className="ml-1.5 inline-flex items-center gap-0.5 text-xs text-muted-foreground" title="Files the answer carried">
+                        <Paperclip className="size-3" />
+                        {answerFiles(t).length}
+                      </span>
+                    )}
+                  </TableCell>
                   {props.shown.review && <TableCell className={t.leases.some((l) => l.review?.verdict === "rejected") ? "text-destructive" : undefined}>{reviewSummary(t) || "—"}</TableCell>}
                   <TableCell className="text-right tabular-nums">{t.leases.length}</TableCell>
                 </TableRow>
@@ -268,24 +281,36 @@ function TaskDetail(props: Props & { id: string }) {
         )}
       </Section>
 
-      <Section title={copies ? "The answers" : "The answer"}>
-        {t.status === "settled" && t.answer !== undefined ? (
-          <>
+      {/* With a reply, the answer and the reply side by side on a wide
+          screen: the answer's pictures beside what the run made of them. */}
+      <div className={t.reply ? "grid items-start gap-5 md:grid-cols-2" : "contents"}>
+        <Section title={copies ? "The answers" : "The answer"} className="min-w-0">
+          {t.status === "settled" && t.answer !== undefined ? (
+            <>
+              <Note>
+                {copies ? "Agreed on; first given by" : "Given by"} {t.by ? who(t.by) : "—"}
+              </Note>
+              {draws ? <TaskForm task={{ lease: t.id, answer: type!.answer }} readOnly value={t.answer as Record<string, unknown>} /> : <div className="rounded-md border p-2"><JsonTree value={t.answer} /></div>}
+              {/* The files the answer carried (§5.6): in the run, read through staff/file. */}
+              {answerFiles(t).map((a) => (
+                <TaskFileView key={a.path} task={t.id} path={a.path} mediaType={a.mediaType} />
+              ))}
+            </>
+          ) : t.status === "disputed" ? (
+            <Note>The copies did not agree: the step failed task_disputed, and its onError ran. Each copy's answer is under its lease below.</Note>
+          ) : (
+            <Note>No answer {t.status === "open" ? "yet" : `: ${STATUS_WORDS[t.status]}`}.</Note>
+          )}
+        </Section>
+        {t.reply && (
+          <Section title="The reply" className="min-w-0">
             <Note>
-              {copies ? "Agreed on; first given by" : "Given by"} {t.by ? who(t.by) : "—"}
+              What the run told {copies ? "the workers who answered" : "the worker"} after the answer, {fmtWhen(t.reply.at)}
             </Note>
-            {draws ? <TaskForm task={{ lease: t.id, answer: type!.answer }} readOnly value={t.answer as Record<string, unknown>} /> : <div className="rounded-md border p-2"><JsonTree value={t.answer} /></div>}
-            {/* The files the answer carried (§5.6): in the run, read through staff/file. */}
-            {(t.leases.find((l) => l.worker === t.by)?.attachments ?? []).map((a) => (
-              <TaskFileView key={a.path} task={t.id} path={a.path} />
-            ))}
-          </>
-        ) : t.status === "disputed" ? (
-          <Note>The copies did not agree: the step failed task_disputed, and its onError ran. Each copy's answer is under its lease below.</Note>
-        ) : (
-          <Note>No answer {t.status === "open" ? "yet" : `: ${STATUS_WORDS[t.status]}`}.</Note>
+            <TaskReplyView reply={t.reply} file={(f) => <TaskFileView task={t.id} path={f.path} mediaType={f.mediaType} />} />
+          </Section>
         )}
-      </Section>
+      </div>
 
       {props.shown.review && reviewable(t).length > 0 && (
         <Section title="Review">
@@ -340,7 +365,7 @@ function TaskDetail(props: Props & { id: string }) {
                     {copies && (
                       <TableCell className="max-w-72">
                         {l.answer !== undefined ? <JsonTree value={l.answer} /> : "—"}
-                        {l.attachments?.map((a) => <TaskFileView key={a.path} task={t.id} path={a.path} />)}
+                        {l.attachments?.map((a) => <TaskFileView key={a.path} task={t.id} path={a.path} mediaType={a.mediaType} />)}
                         {l.agrees !== undefined && <Badge variant={l.agrees ? "secondary" : "outline"}>{l.agrees ? "agreed" : "disagreed"}</Badge>}
                       </TableCell>
                     )}
@@ -415,34 +440,73 @@ function ReviewLine(props: { lease: Lease; who?: string; busy: boolean; onReview
   );
 }
 
-/** One of the task's files through `staff/file`: an image drawn, text shown,
- *  anything else to download. Read when opened. */
-function TaskFileView(props: { task: string; path: string }) {
+/** One of a task's files through `staff/file`. A picture is read as it
+ *  comes into view and drawn (a click shows it full size); text and any other
+ *  file are read when opened. Each is read once — its key is outside
+ *  ["staff", …], so a review's reads again never read it again — and its
+ *  error is its own: a file that is gone says so, and the rest still draw. */
+function TaskFileView(props: { task: string; path: string; mediaType?: string }) {
   const client = useStrutClient();
+  const picture = isPicture(props.path, props.mediaType);
   const [open, setOpen] = useState(false);
-  const q = useQuery({ queryKey: ["staff", "file", props.task, props.path], queryFn: () => client.run<TaskFile>("staff/file", { task: props.task, path: props.path }), enabled: open });
+  const [box, seen] = useSeen<HTMLDivElement>(picture);
+  const q = useQuery({
+    queryKey: ["staff-file", props.task, props.path],
+    queryFn: () => client.run<TaskFile>("staff/file", { task: props.task, path: props.path }),
+    enabled: picture ? seen : open,
+    staleTime: Infinity,
+    retry: false,
+  });
   const f = q.data;
   return (
-    <div className="rounded-md border p-2">
-      <button type="button" className="flex items-center gap-2 text-sm font-medium" onClick={() => setOpen((o) => !o)}>
-        <FileText className="size-4" /> {props.path}
-      </button>
-      {open && (q.error ? <ErrorLine error={q.error} className="mt-2" /> : !f ? <Loading /> : (
-        <div className="mt-2">
-          {f.base64 && f.mediaType.startsWith("image/") ? (
-            <img alt={props.path} className="max-h-96 max-w-full rounded" src={`data:${f.mediaType};base64,${f.base64}`} />
-          ) : f.text !== undefined ? (
-            <pre className="max-h-96 overflow-auto rounded bg-muted p-2 font-mono text-xs whitespace-pre-wrap">{f.text}</pre>
-          ) : f.base64 ? (
-            <a className="text-sm underline" download={props.path.split("/").pop()} href={`data:${f.mediaType};base64,${f.base64}`}>
-              Download ({f.bytes.toLocaleString("en-US")} bytes)
-            </a>
-          ) : null}
-          {f.truncated && <Note>Cut at the size a page can be handed.</Note>}
+    <div ref={box} className="min-w-0 rounded-md border p-2">
+      {picture ? (
+        <div className="flex items-center gap-2 text-sm font-medium break-all">
+          <ImageIcon className="size-4 shrink-0" /> {props.path}
         </div>
-      ))}
+      ) : (
+        <button type="button" className="flex items-center gap-2 text-left text-sm font-medium break-all" onClick={() => setOpen((o) => !o)}>
+          <FileText className="size-4 shrink-0" /> {props.path}
+        </button>
+      )}
+      {(picture || open) &&
+        (q.error ? (
+          <ErrorLine error={q.error} className="mt-2" />
+        ) : !f ? (
+          picture ? <div className="mt-2 h-48 w-full max-w-sm animate-pulse rounded bg-muted" /> : <Loading />
+        ) : (
+          <div className="mt-2">
+            {f.base64 && f.mediaType.startsWith("image/") ? (
+              <Picture alt={props.path} className="max-h-96 max-w-full rounded" src={`data:${f.mediaType};base64,${f.base64}`} />
+            ) : f.text !== undefined ? (
+              <pre className="max-h-96 overflow-auto rounded bg-muted p-2 font-mono text-xs whitespace-pre-wrap">{f.text}</pre>
+            ) : f.base64 ? (
+              <a className="text-sm underline" download={props.path.split("/").pop()} href={`data:${f.mediaType};base64,${f.base64}`}>
+                Download ({f.bytes.toLocaleString("en-US")} bytes)
+              </a>
+            ) : null}
+            {f.truncated && <Note>Cut at the size a page can be handed.</Note>}
+          </div>
+        ))}
     </div>
   );
+}
+
+/** Whether the element has come into view, once (`on` false: never asked).
+ *  A page with ten pictures reads the ones in view, then each as it is
+ *  scrolled to, not all ten at once. */
+function useSeen<T extends Element>(on: boolean) {
+  const ref = useRef<T>(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!on || seen || !el) return;
+    if (typeof IntersectionObserver === "undefined") return setSeen(true);
+    const watch = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setSeen(true));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [on, seen]);
+  return [ref, seen] as const;
 }
 
 /** Make a test of a real task (§7.1): its show and files, and the expected

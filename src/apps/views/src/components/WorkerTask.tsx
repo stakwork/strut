@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
   appLink, fieldsOf, formProblem, useAccountWidget, useApp, useCamera, useHost, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
@@ -754,9 +754,11 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
  * `show.ask` or `show.title` as a line, `show`'s other plain fields, its
  * pictures drawn and any other file named. Its files are read through the
  * answered lease (`useTaskFile(item, path)`); a page whose answers' replies
- * it shows grants `task/history` and `task/file`.
+ * it shows grants `task/history` and `task/file`. A page that reads them
+ * another way (strut/staff, through `staff/file`) passes `file`, which draws
+ * each one, and no `item`.
  */
-export function TaskReplyView({ item, reply, className }: { item: Pick<WorkerHistoryItem, "lease">; reply: TaskReply; className?: string }) {
+export function TaskReplyView({ item, reply, file, className }: { item?: Pick<WorkerHistoryItem, "lease">; reply: TaskReply; file?: (f: TaskReplyFile) => ReactNode; className?: string }) {
   const heading = taskAsk(reply.show);
   const fields = shownFields(reply.show);
   return (
@@ -772,16 +774,14 @@ export function TaskReplyView({ item, reply, className }: { item: Pick<WorkerHis
           ))}
         </dl>
       )}
-      {(reply.files ?? []).map((f) => (
-        <ReplyFile key={f.path} item={item} file={f} />
-      ))}
+      {(reply.files ?? []).map((f) => (file ? <Fragment key={f.path}>{file(f)}</Fragment> : <ReplyFile key={f.path} item={item} file={f} />))}
     </div>
   );
 }
 
 /** One file of a reply: a picture drawn, anything else (or a picture that
  *  cannot be read here) named. */
-function ReplyFile({ item, file }: { item: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
+function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
   const picture = file.mediaType.startsWith("image/");
   const read = useTaskFileUrl(item, file.path, { enabled: picture });
   if (picture && !read.error) {

@@ -2517,6 +2517,10 @@ the host as `ui/open-link`, so its address bar follows.
   review queue: not reviewed, marked ok, rejected), with a Review column;
   a task with what it showed and its files, its leases (a copy's answer,
   each earning with Take back), the answer in its type's form read only,
+  the run's **reply** (`task.reply`) beside the answer on a wide screen,
+  every picture among their files drawn as it comes into view (other
+  files read when opened); the list marks a task `replied` and counts the
+  answer's files, with no thumbnails;
   a **Review** section — each answer's verdict, by whom, when and until
   when it can change, with Mark ok and Reject (the reason on a line in the
   page: an app frame has no `prompt`) while it can — its run now, and
