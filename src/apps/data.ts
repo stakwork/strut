@@ -186,22 +186,20 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 function prepareOne(db: DatabaseSync, sql: string): StatementSync {
   const refused = sqlRefusal(sql);
   if (refused) throw new Error(refused);
+  // Read from the text, never from what `prepare` makes of it: Node 22 hands
+  // back a finalized statement for comments alone where Node 24 throws.
+  if (isEmptySql(sql)) throw new Error("no statement: the SQL holds only comments or semicolons");
   if (TX_CONTROL.test(stripSql(sql))) throw new Error("a statement may not open or end a transaction: sqlite/batch runs several statements in one");
   const stmt = db.prepare(sql);
+  // What SQLite left after the first statement: comments, or another.
   const tail = sql.startsWith(stmt.sourceSQL) ? sql.slice(stmt.sourceSQL.length) : "";
-  if (tail.trim()) {
-    let more = true;
-    try {
-      db.prepare(tail);
-    } catch (e) {
-      // Comments alone.
-      if (/contains no statements/i.test(message(e))) more = false;
-    }
-    if (more) throw new Error("one statement per call: sqlite/batch runs several in one transaction");
-  }
+  if (!isEmptySql(tail)) throw new Error("one statement per call: sqlite/batch runs several in one transaction");
   stmt.setReadBigInts(true);
   return stmt;
 }
+
+/** Nothing but whitespace, comments and semicolons. */
+const isEmptySql = (sql: string): boolean => !stripSql(sql).replace(/[\s;]/g, "");
 
 // ── Statements ───────────────────────────────────────────────────────────
 

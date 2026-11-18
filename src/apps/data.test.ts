@@ -207,6 +207,9 @@ describe("the statements", () => {
     assert.throws(() => runExec(db, "DELETE FROM notes WHERE id = 1; DELETE FROM notes"), /one statement per call/);
     assert.throws(() => runQuery(db, "SELECT 1; SELECT 2"), /one statement per call/);
     assert.equal(runQuery(db, "SELECT 1 AS one; -- and a comment").rows[0]!["one"], 1, "a trailing comment is no statement");
+    assert.equal(runQuery(db, "SELECT 1 AS one /* a */ ; ; ").rows[0]!["one"], 1, "nor are stray semicolons");
+    assert.throws(() => runQuery(db, "SELECT 1; SELECT ';'"), /one statement per call/, "a second statement, whatever its strings hold");
+    assert.throws(() => runExec(db, "-- nothing here\n;"), /no statement/);
     for (const sql of ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT s", "RELEASE s"]) assert.throws(() => runExec(db, sql), /may not open or end a transaction/, sql);
     assert.throws(() => runExec(db, "ATTACH ':memory:' AS o"), /ATTACH is refused/);
     assert.equal(db.isTransaction, false);
