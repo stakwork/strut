@@ -96,6 +96,9 @@ export interface GitSourceOptions {
   token?: string;
   /** The secret's NAME, for the errors. */
   tokenSecret?: string;
+  /** The ref must name a branch (a subscription follows one): a tag or a
+   *  commit is refused. */
+  branch?: boolean;
   timeoutMs?: number;
 }
 
@@ -127,8 +130,9 @@ export async function fetchGitRef<T>(ref: string, opts: GitSourceOptions, then: 
       if (!rev) throw new Error(`package_ref_not_found: ${ref}: ${parsed.repo.url} has no default branch — name a branch, tag or commit after @`);
       // The remote's branch first, then a tag, then a commit — never a
       // branch an agent made in the cache's working copies.
-      const names = [`refs/remotes/origin/${rev}`, `refs/tags/${rev}`, ...(SHA_RE.test(rev) ? [rev] : [])];
+      const names = [`refs/remotes/origin/${rev}`, ...(opts.branch ? [] : [`refs/tags/${rev}`, ...(SHA_RE.test(rev) ? [rev] : [])])];
       let commit = await commitOf(shell, cacheDir, names, o);
+      if (!commit && opts.branch) throw new Error(`package_ref_not_found: ${ref}: no branch "${rev}" in ${parsed.repo.url} — a subscription follows a branch, not a tag or a commit`);
       if (!commit && SHA_RE.test(rev) && rev.length === 40) {
         // A commit on no branch or tag: GitHub serves reachable shas.
         await git(shell, ["fetch", "--quiet", "origin", rev], { cwd: cacheDir, ...o });

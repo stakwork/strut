@@ -2697,15 +2697,21 @@ export interface PackageSearch {
 export const searchPackages = (q: string, limit = 30) =>
   fetchJSON<PackageSearch>(`/packages/search?q=${encodeURIComponent(q)}&limit=${limit}`);
 
-/** `GET /packages/subscriptions`: the catalogs this strut follows. Never a token. */
+/** `GET /packages/subscriptions`: the catalogs and git branches this strut
+ *  follows. Never a token. */
 export interface SubscriptionInfo {
   id: string;
-  key: string;
-  url: string;
+  /** A catalog's: the publisher's key, the strut serving it, the channel. */
+  key?: string;
+  url?: string;
   channel?: string;
-  token: boolean;
+  token?: boolean;
+  /** A git branch's: the `git+` ref and the NAME of the secret it is read with. */
+  ref?: string;
+  tokenSecret?: string;
   accepted?: { seq: number; digest: string; at: string };
-  applied?: { seq: number; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
+  /** A catalog's `seq`, or a branch's ref and the commit it was last at. */
+  applied?: { seq?: number; ref?: string; commit?: string; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
   checkedAt?: string;
   /** What stopped the last sync: this strut stays on the release it applied last. */
   error?: string;

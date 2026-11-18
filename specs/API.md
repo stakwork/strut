@@ -2903,8 +2903,9 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
-| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. The operator's act: full scope (a peer is 403). 400 `subscription_invalid` |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name |
+| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "error", seq?, from?, to?, error?, result? }`: one sync now, answered when it is done — `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
 | PUT    | `/packages/indexes/:id` | `{ key, urls, label? }` → the `IndexSubscriptionInfo`, its card read at once (a wrong key or URL shows as `error`). `key` is the index key; `urls` where its card is served (an index strut's `…/index/catalog`). Kept in `<dataDir>/packages/indexes.json`; `STRUT_PACKAGE_INDEXES` and `createStrut({ packageIndexes })` put entries on file at boot. Full scope; 400 `package_index_invalid` |
@@ -2912,7 +2913,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | GET    | `/packages/search?q=&limit=&peers=0` | `PackageSearch`: `{ packages: [IndexHit & { index }], peers: [{ peer, package, version?, digest?, source? }], errors: [{ index? \| peer?, error }] }` — each followed index strut's `GET /index/packages` (unsigned: install a hit by its NAME, which goes through the index's signed card) and, unless `peers=0`, every peer's `GET /packages` matched against `q`. A peer asking gets the indexes alone. `limit` 50 (≤ 500) |
 | —      | `package/install` (step) | The agent's INSTALL door (`src/steps/lib/package/install.ts`, over `ctx.services.packages.install`; the READS — `package/search`, `package/get`, `package/concepts` — are the steps table below). `package/install { package, index?, digest?, url? }` — a name through the followed indexes, or a `pk:` ref with its `url` — runs ONLY as a proposal a person accepted (plans/marketplace.md §8, ruled 2026-10-29) — and only an ADMIN accepts it (`approver: "admin"`, §12): a member's or a person token's accept is `403 admin_required:`, and a turn whose person is known not to be an admin proposes nothing. The seeds that grant it (`orchestrator`, `builder`, `job`) list it in `approve:`, so the agent's call records a proposal and returns `{ proposal, status: "pending" }`; its card's `summary` is the step's `describe` at proposal time — the index's reading of the package: publisher and key, which index lists it, digest, license, what it brings, what it can spend or act on, the secrets it needs — or that no followed index lists it; `POST /proposals/:id/decide { action: "accept" }` then installs as `POST /packages/install` would, with the decider as actor, and the result reaches the session on its next turn. The door behind the step (`services.packages.install`) checks the ACCEPTED record on disk for that very ref, so no step reaches it any other way; a direct call, a DAG step or `meta/run-step` is refused |
 | —      | `package/commit` (step) | The agent's COMMIT door for a package opened here as a git repository (`src/steps/lib/package/commit.ts`, over `ctx.services.packages.commit`): `{ package, message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted, like `package/install` — the card says where it pushes and which items changed here; the accept commits and pushes as `POST /packages/repos/:publisher/:name/commit` would ("Working on a repository" below). The same seeds grant it and list it in `approve:` |
-| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing |
+| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing. It never reads a `git+` subscription: no publisher pings one |
 | GET    | `/index` | **Index role only** (`STRUT_INDEX=1`, `createStrut({ index })`; `src/packages/index.ts`). `IndexInfo`: `{ key, createdAt, urls, publishers: { "<prefix>": { key, urls, description?, url? } }, crawled: [{ prefix, key, accepted?: { seq, digest, at, url }, checkedAt?, error?, packages? }] }` — the rows as the card has them and each listed publisher's catalog as last read. Any credential; 404 before the first row |
 | PUT    | `/index/:prefix` | `{ key, urls, description?, url? }` → `IndexInfo`: list a publisher — its PUBLIC key and where its public catalog is served (`urls`, tried in order) — the index key minted first when there is none, the card re-sealed, that publisher read now. Full scope. 400 `index_row_invalid`; 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
 | DELETE | `/index/:prefix` | Drop the row and re-seal → `{ ok, prefix }`; its crawl state goes. 404 when there is none |
@@ -3576,6 +3577,44 @@ publish and after a channel move.
   "checkedAt": "…", "error": "…",          // the last read, and what stopped it
   "warnings": [],
   "packages": [{ "package": "acme/linear", "version": "1.1.0", "digest": "sha256:…", "diverged": ["acme/linear/report"] }]
+}
+```
+
+A subscription may follow a **git branch** instead (`plans/followed-repos.md`
+§1): the package in a repository's folder, released by moving the branch.
+
+```jsonc
+// PUT /packages/subscriptions/pods — a host's first boot
+{
+  "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
+  "tokenSecret": "GITHUB_TOKEN"   // optional: the NAME of the secret the repo is read with; a public repo needs none
+}
+```
+
+The branch is the channel. A SYNC of one (on the `PUT`, at boot, every
+`STRUT_DISTRO_POLL_MINUTES`, and on `POST /packages/subscriptions/:id/sync`;
+never on the publisher's ping) fetches the branch into git/checkout's bare
+cache, as serve mode reads its ref, and reads the package at its commit into
+the package cache — skipped while the commit is the one applied. A package
+whose digest is the one applied installs nothing (`current`; the commit is
+recorded). Any other goes in as ONE install through the distro's door, as
+above, each version's `upstream` recording `subscription:<id>` and the
+commit. An older commit goes in the same way, so a branch moved back is a
+rollback. A package it installed under another name is uninstalled. A
+failure — the remote does not answer, the token is refused, the install is
+refused — keeps what is installed, with `error` on the `GET`. A tag or a
+commit has nothing to follow: a full sha is refused at the `PUT`, and a tag
+(or a short sha) at the first sync, `package_ref_not_found: … a
+subscription follows a branch, not a tag or a commit`.
+
+```jsonc
+// GET /packages/subscriptions → subscriptions[]
+{
+  "id": "pods", "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods", "tokenSecret": "GITHUB_TOKEN",
+  "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…",   // no seq: a branch has no catalog
+               "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
+  "checkedAt": "…", "error": "…", "warnings": [],
+  "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…", "diverged": [] }]
 }
 ```
 

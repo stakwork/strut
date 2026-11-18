@@ -880,10 +880,10 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
               <div class="auto-card" key={s.id}>
                 <div class="auto-card-head">
                   <span class="package-name">{s.id}</span>
-                  <span class="badge">{s.channel ?? "newest releases"}</span>
+                  <span class="badge">{s.ref ? "git branch" : (s.channel ?? "newest releases")}</span>
                 </div>
                 <div class="auto-meta">
-                  <span class="package-url">{s.url}</span>
+                  <span class="package-url">{s.ref ?? s.url}</span>
                   {s.checkedAt && <span title={new Date(s.checkedAt).toLocaleString()}>checked {ago(secs(s.checkedAt))}</span>}
                   {s.applied && <span title={new Date(s.applied.at).toLocaleString()}>applied {ago(secs(s.applied.at))}</span>}
                 </div>
