@@ -4,6 +4,7 @@ import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
 import type { HistoryCapability } from "./history.js";
 import type { Channels } from "./channels.js";
+import type { AppDatabases } from "./apps/data.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -442,6 +443,11 @@ export interface StrutCapabilities {
    *  between the people on an app. What the `channel/*` steps reach, for code
    *  an app runs (`ctx.app`). Set by the standard server. */
   channels?: Channels;
+  /** Every APP's own SQLite database (src/apps/data.ts; plans/apps.md §4.4):
+   *  `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on —
+   *  `ctx.app`'s, or the one a call with no app names. Set by the standard
+   *  server. */
+  appDb?: AppDatabases;
   /** The package STORE (src/packages/indexes.ts): the reads — `search`
    *  over the indexes this strut follows and the peers' installed packages,
    *  `get` a package's page, `concepts` / `concept` the Concept tree — what

@@ -15,13 +15,15 @@
  * §5.1); a graph WRITE refused on a type the manifest's `data.graph` does
  * not declare — the type from the config for a create, the node read first
  * for an edit or delete by `ref_id` (so a page can never rewrite a Concept
- * or a `StrutWorkflow` node); `sqlite/*` and `automation/*` not available
- * until their work items land. A job id the page names is the APP's — kept
+ * or a `StrutWorkflow` node); `sqlite/*` only with `grants.sqlite`, on the
+ * app's own database (`ctx.app`'s, src/apps/data.ts); `automation/*` not
+ * available until its work item lands. A job id the page names is the APP's — kept
  * under `app/<name>/` (`scopeAppJobs`, plans/apps.md §12), where its
  * uploads (`job/upload`) and the runs it launches under the job meet. The
  * call runs through `runStep` with the
  * viewer as actor and `ctx.app` set, so a run `run/launch` starts carries
- * the app too. A write — a graph write, an error report — is KEPT under
+ * the app too. A write — a graph write, `sqlite/exec` or `sqlite/batch`, an
+ * error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
  * not, and a WORKER's step (`worker: true`, the `task/*` steps of
  * plans/human-steps.md §5) never is: its lease and answer are the record.
@@ -113,10 +115,10 @@ const NOT_A_PAGES: Record<string, string> = {
 };
 
 /** Families this strut does not serve to an app yet, by work item. */
-const NOT_YET: Array<[prefix: string, what: string]> = [
-  ["sqlite/", "an app's own SQLite file is plans/apps.md work item 3"],
-  ["automation/", "schedules from an app are plans/apps.md work item 7"],
-];
+const NOT_YET: Array<[prefix: string, what: string]> = [["automation/", "schedules from an app are plans/apps.md work item 7"]];
+
+/** SQL on the app's own database (plans/apps.md §4.4). */
+const SQLITE_PREFIX = "sqlite/";
 
 /** Where an app's jobs live (plans/apps.md §12): a job id a page names is
  *  kept under `app/<name>/`, as a peer's is kept under `peer/` — so a
@@ -179,6 +181,10 @@ export function grantRefusal(
   if (never) return `"${type}" is not a thing a page does: ${never}`;
   const job = config["job"];
   if (job !== undefined && (typeof job !== "string" || hasTemplate(job))) return `${type}: \`job\` must be a literal job id, not a template`;
+  // `grants.sqlite` is the grant; the step reaches `ctx.app`'s file alone.
+  if (type.startsWith(SQLITE_PREFIX)) {
+    return manifest.grants.sqlite ? null : `"${type}" runs on the app's own database, and this app does not grant it — app.yaml grants: { sqlite: true } (plans/apps.md §4.4)`;
+  }
   if (type.startsWith("run/")) {
     const wf = config["workflow"];
     if (typeof wf !== "string" || !wf) return `${type} needs \`workflow\``;
@@ -306,12 +312,15 @@ export async function graphWriteRefusal(
   return null;
 }
 
+/** The writes on an app's own database (§4.4): kept, as a graph write is. */
+export const SQLITE_WRITES: ReadonlySet<string> = new Set(["sqlite/exec", "sqlite/batch"]);
+
 /** Is this a write the door KEEPS as a step run (§9)? A worker's step
  *  (`worker: true`) never is (plans/human-steps.md §5.2), whatever claims
  *  it carries: the door hands its run no claims reader either. */
 export function keptFromApp(type: string, registry?: StepRegistry): boolean {
   if (registry?.[type]?.worker) return false;
-  return GRAPH_WRITES.has(type) || type === "app/report-error";
+  return GRAPH_WRITES.has(type) || SQLITE_WRITES.has(type) || type === "app/report-error";
 }
 
 export interface AppToolDeps {
@@ -521,7 +530,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       description: deps.host
         ? "A HOST's door to an app's tools (plans/people-and-hosts.md §3): run one step the app's hosts: lets this host call, as the account x-strut-account names. `app` is the app's name (its live version runs), `type` the step, `config` its fields. " +
           "A refused call is an error naming why; a step's own failure is an error with its message. The result is the step's whole output, and the call returns once the step finished."
-        : "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files, run/provenance on a granted workflow; graph/* and any step grants.steps names; app/report-error and app/state always), " +
+        : "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files, run/provenance on a granted workflow; graph/* and any step grants.steps names; sqlite/query, sqlite/exec, sqlite/batch on the app's own database when grants.sqlite; app/report-error and app/state always), " +
           "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
           "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
       inputSchema: z.object({

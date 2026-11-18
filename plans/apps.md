@@ -90,6 +90,12 @@
 > planned in stakwork/strut#305 and BUILT in #307
 > (`src/apps/peer-host.test.ts` runs them across two struts).
 >
+> **Work item 3 (SQLite) is BUILT** (2026-11-18, stakwork/strut#737, with
+> plans/people-and-hosts.md item 4, which adds a seeded app's migrations at
+> boot). §4.4 marks what was built differently: the job's-app half is not
+> built (job apps are retired), a preview applies the migrations and a
+> build tries them, and the kit's `useSql` came with it.
+>
 > **2026-10-28: the Neo4j-only gate is lifted.** Ladybug's ontology is now
 > dynamic (plans/memory-in-workspace-graph.md, ladybug-backend.md §3), so
 > an app's `data.graph` builds and registers on a LadybugDB file as on
@@ -854,6 +860,49 @@ first. Reads may touch any type: the viewer can read the graph anyway.
   A job's app's database is one of the job's files.
 - **Not shared.** An app's database is its own; anything shared goes in the
   graph. A second app never opens another app's file in v1.
+
+**Built differently (#737):** (src/apps/data.ts, src/steps/lib/sqlite/,
+specs/API.md §14.17)
+- **No job's app half.** Job apps were retired after this section was
+  written (plans/chained-orchestrators.md §6), and `AppRef` lost its `{ job,
+  path }` form, so no page or run is ever a job's app. There is no
+  `<path>/data.db`, no `{ job, path }` argument (a step with no `ctx.app`
+  names `{ app }` alone, an app that exists), and no migration at a job's
+  build. Instead `app/build` runs the migrations on an empty database in
+  memory and reports the one that fails, so the builder meets it before the
+  publish does.
+- **A preview applies them.** `app/look { path }` applies the directory's
+  migrations to the app's file, as it registers the graph types: the page
+  it shows needs its tables. A migration applied there is applied for good.
+- **One statement per call.** SQLite would run the first statement of a
+  text and drop the rest silently, so a second one is refused (`sqlite/batch`
+  takes several), as is one that opens or ends a transaction: the
+  connection is every caller's. `sqlite/query` runs under `PRAGMA
+  query_only`, so a read never writes and is never a write left unkept.
+- **The cap**: `maxRows`, 1000 by default and 10000 at most, and 4 MB of
+  rows, then `truncated: true`. Rows are objects keyed by column, as
+  `graph/query` answers.
+- **Values as JSON carries them**: a whole number binds as an INTEGER
+  (`node:sqlite` binds every number as a REAL), a boolean as 1 or 0,
+  `{ base64 }` as a blob and any other object as its JSON text; a blob
+  comes back as `{ base64 }`, an integer past 2^53 as text.
+- **`_strut_migrations` keeps each file's sha256**: an applied migration
+  whose file changed since is a publish warning, never a re-run.
+- **No WAL.** The rollback journal, so the file at rest is the whole
+  database and nothing sits beside it. The export is a `VACUUM INTO` copy
+  (consistent while pages write), and it is full scope only.
+- **The kit's `useSql` and `useSqlMutation`** (§3.2) are built with it; a
+  write that lands refetches every `useSql`.
+- **What reaches it:** the app door needs `grants.sqlite: true` (`sqlite/*`
+  in `grants.steps` grants nothing); a host's call needs the step in its
+  `hosts:` entry and `grants.sqlite`; a visitor's page gets none of it.
+  "An automation it set" carries nothing yet: `automation/*` under
+  `ctx.app` is work item 7.
+- **`engines` was already `>=22.13`** (since the ledger, f081fb89).
+- **Not bounded: a statement's run time.** `node:sqlite` has no progress
+  handler or interrupt, so a statement that never ends holds the server's
+  event loop. A worker thread would keep the server up but could not stop
+  the statement either; left for when it bites.
 
 ## 5. The backend — the registry, through one tool
 
@@ -1725,10 +1774,17 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    by its hash; "Publish as an app" made `visits` v1, which opens under
    Apps — and reads no job, since the implicit grant is the job app's
    alone: a prototype's data reaches the workspace as `data.db` (item 3).
-3. **SQLite.** The file per app, migrations at publish and at build, the
+3. **SQLite.** **BUILT** (2026-11-18, stakwork/strut#737). The file per
+   app, migrations at publish and at build, the
    `sqlite/*` steps and their refusals (the file from `ctx.app`, or named
    when there is none), the export, writes kept as step runs, and the
-   `engines` bump.
+   `engines` bump. As built (§4.4 "Built differently"): no job's app half,
+   the build tries the migrations in memory, a preview applies them, and the
+   kit's `useSql` / `useSqlMutation`. Tests: `src/apps/data.test.ts` (the
+   pre-check, migrations in order and once, rollback with nothing
+   activated, the three steps, `ctx.app`'s file against a named one, a
+   seeded app's migrations at boot, the grant and the kept writes through
+   `step_run`, the export), `kit/src/hooks.test.ts`.
 4. **Graph data.** **BUILT on Neo4j only** (2026-10-26; the Ladybug half
    dropped by ruling, open question 2). Declared types checked at every
    build and registered at publish (`createNodeSchema` + edge schemas),

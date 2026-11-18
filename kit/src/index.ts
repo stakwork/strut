@@ -26,6 +26,7 @@ export {
   RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, RUN_EVENTS_MAX, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
   useRuns, useRun, useRunEvents, useWorkProducts, useTranscript, useTranscripts, useRunFile, useRunFileUrl, runFileBlob, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
   useNames, PEOPLE_NAMES_STEP,
+  useSql, useSqlMutation, SQL_STEPS, type SqlRows, type SqlStatement, type UseSqlOptions, type UseSqlMutation,
   useAssistant, assistantJobs, ASSISTANT_WORKFLOW,
   useJobUpdates, useGraphChanges, GRAPH_CHANGES_STEP, FEED_WAIT_MS,
   useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, useTaskFileUrl, taskErrorCode, TASK_STEPS, TASK_WAIT_S,

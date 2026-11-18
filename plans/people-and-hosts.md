@@ -1,7 +1,8 @@
 # People and hosts: one identity, names, and Support as an app
 
 > **Status (2026-11-18): ruled in outline; items 1 (names), 2 (host keys
-> and accounts) and 3 (a host calls an app's tools) built on #737.**
+> and accounts), 3 (a host calls an app's tools) and 4 (an app's own
+> SQLite) built on #737.**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -13,7 +14,8 @@
 > - **Companion to:**
 >   - `jamie-in-tribes.md`: host keys (§5.1) and linked accounts (§5.2).
 >     This plan builds on both and changes two things (§2);
->   - `apps.md`: §4.4 and item 3, an app's own SQLite, ruled and not built;
+>   - `apps.md`: §4.4 and item 3, an app's own SQLite, built on #737 as item
+    4 here;
 >   - `support-chat.md`: Support as built (#719, #720), which §5 rebuilds
 >     without keeping its data (ruling 7). Ruling 3 here replaces its ruling
 >     16 ("polled");
@@ -361,7 +363,7 @@ stacked.
 | 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | **Built (#737).** No memory twin (§1) |
 | 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | **Built (#737).** `accounts` in `people.db`, `actorOf`, the name on an account (§1); the rest as `jamie-in-tribes.md` item 1 says, with its own marks |
 | 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | **Built (#737).** The status says how the step ended, the page's call-time refusals still hold, a model's `hosts:` is refused (§3); an unlinked account's name is its key's actor's (§1) |
-| 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | — |
+| 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | **Built (#737).** As `apps.md` §4.4 marks: no job's app half (job apps are retired), the build tries the migrations, a preview applies them, the kit's `useSql`. A seeded app's `db/*.sql` are applied at every boot, from its live version's directory, once the seeds are in. For item 5: `strut/staff` grants `sqlite: true` and ships `db/001-support.sql`; `support/receive`, called by the host with `ctx.app` set, opens the file with `ctx.services.appDb.open(ctx.app.name)` and keeps a batch in one transaction (`runBatch`, or its own `BEGIN`…`COMMIT` on that connection, never across an `await`) |
 | 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |
 
 `scripts/fake-sphinx-daemon.ts` gains the push, so item 5 is tested before

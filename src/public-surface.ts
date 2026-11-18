@@ -820,6 +820,8 @@ export function visitorRefusal(
   if (type === "app/state" || type === "app/report-error") return "nothing is kept for a visitor: the page keeps its state for the visit";
   if (type.startsWith("graph/")) return `"${type}" is not available in the public view (the graph reads are ${[...VISITOR_GRAPH_READS].join(", ")})`;
   if (type.startsWith("job/") || type.startsWith("app/")) return `"${type}" is not available in the public view`;
+  // An app's own database (plans/apps.md §4.4) is its people's, not its visitors'.
+  if (type.startsWith("sqlite/")) return `"${type}" is not available in the public view: an app's own database is not open to its visitors`;
   if (entry.reads?.includes(type)) return null;
   return `"${type}" is not one of this app's public reads — a person adds it in the Publish dialog's Public view tab`;
 }

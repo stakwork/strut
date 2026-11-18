@@ -132,6 +132,7 @@ import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapabilit
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { createAppDatabases } from "./apps/data.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
@@ -196,7 +197,7 @@ import { createChannels, type ChannelApp, type Channels, type ChannelTransport }
 import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
-import type { Duplex } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import { fmtBytes, positiveBytes } from "./output-cap.js";
 import { installEscapeGuard } from "./escaped-errors.js";
@@ -1556,6 +1557,10 @@ export async function createStrut<TServices = unknown>(
   // `GET /people` and the `people/names` step. Opened on the first name;
   // memory where the run store is.
   const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir));
+  // Each app's own SQLite (plans/apps.md §4.4, src/apps/data.ts):
+  // `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on and an
+  // app's migrations are applied to. Memory where the run store is.
+  const appDb = createAppDatabases(store instanceof MemoryRunStore ? { memory: true } : { dataDir });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1590,6 +1595,9 @@ export async function createStrut<TServices = unknown>(
     proposals: ownProposals,
     // Names, read alone (`people/names`); a visitor's bag carries their own.
     people: peopleReader(people),
+    // The apps' own databases (`sqlite/*`): `ctx.app`'s, or the app a call
+    // with none names.
+    appDb,
     // A person's linked accounts and a code to link one (`account/*`,
     // plans/jamie-in-tribes.md §5.2): strut's own app's page alone.
     accounts: accountsCapability(people, { hosts: () => [...hostKeys().keys()], sphinx: () => sphinxAccount() }),
@@ -2156,6 +2164,8 @@ export async function createStrut<TServices = unknown>(
       grants: appGrants,
       // The viewers' state (src/apps/state.ts), dropped with the app.
       dataDir,
+      // Its migrations, applied at publish and tried at build (src/apps/data.ts).
+      appDb,
       manifests: appVersions,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
@@ -2286,6 +2296,21 @@ export async function createStrut<TServices = unknown>(
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
     await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
+  }
+  // A seeded app's migrations (plans/people-and-hosts.md item 4): its
+  // version's `db/*.sql`, applied to its database at every boot, once each,
+  // since a seed is published here and never through `apps.publish`. A seed
+  // that will not migrate is a warning, as one that will not seed is.
+  for (const { name } of await workspace.listApps().catch(() => [])) {
+    try {
+      if (!(await apps.manifestOf(name))?.seeded) continue;
+      const at = await apps.versionDir(name);
+      const r = at ? await appDb.migrate(name, at.path) : null;
+      if (r && !r.ok) console.warn(`[apps] ${name}'s migrations: ${r.errors.join("; ")}`);
+      else if (r?.applied.length) console.log(`[apps] ${name}: applied ${r.applied.join(", ")}`);
+    } catch (err) {
+      console.warn(`[apps] could not migrate ${name}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
@@ -4723,6 +4748,26 @@ export async function createStrut<TServices = unknown>(
   // names, and a new list saved as a new version — a draft when the app is
   // held. `take` looks at a version as a person opening it sees it
   // (`app/look`) and hands back the PNG, which a save then includes.
+  // The app's own SQLite (plans/apps.md §4.4): the file as it is now, a
+  // copy taken in one go (VACUUM INTO). Every row of every table, so an
+  // admin's read (full scope), as GET /people is.
+  app.get("/apps/:name/data", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: an app's database is an admin's read (the deployment key or an admin's session)" }, 403);
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    if (!(await workspace.getApp(at.name).catch(() => null))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const copy = await appDb.copy(at.name);
+    if (!copy) return c.json({ error: `App "${at.name}" has no database yet: its migrations (db/*.sql) make one at publish` }, 404);
+    return new Response(Readable.toWeb(copy.stream) as ReadableStream, {
+      headers: {
+        "content-type": "application/vnd.sqlite3",
+        "content-length": String(copy.bytes),
+        "content-disposition": `attachment; filename="${at.name.replace(/\//g, "-")}.db"`,
+        "cache-control": "no-store",
+      },
+    });
+  });
+
   app.get("/apps/:name/screenshots", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
@@ -10883,6 +10928,8 @@ export async function createStrut<TServices = unknown>(
     ledgerOpen = undefined;
     // And the people store's.
     await people.close();
+    // And the apps' own databases.
+    appDb.close();
     // And the task store's, and Support's connection to it.
     await tasks.close();
     await support.close();

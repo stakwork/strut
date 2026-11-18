@@ -11,6 +11,7 @@ import {
   JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
   useNames, PEOPLE_NAMES_STEP,
+  useSql, useSqlMutation, SQL_STEPS,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
@@ -217,6 +218,32 @@ describe("the run hooks name their step and pass what they were given", () => {
     await h.unmount();
     const none = fakeClient();
     const h2 = await renderHook(() => useNames([]), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    await h2.unmount();
+  });
+
+  it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {
+    let n = 0;
+    const { client, calls } = fakeClient({
+      [SQL_STEPS.query]: () => ({ columns: ["n"], rows: [{ n }], truncated: false }),
+      [SQL_STEPS.exec]: () => ({ changes: 1, lastInsertRowid: ++n }),
+      [SQL_STEPS.batch]: (c) => ({ results: (c.config!.statements as unknown[]).map(() => ({ changes: 1, lastInsertRowid: ++n })) }),
+    });
+    const h = await renderHook(() => ({ read: useSql<{ n: number }>("SELECT count(*) AS n FROM t WHERE k = ?", ["a"], { maxRows: 5 }), write: useSqlMutation() }), { client });
+    await until(() => h.result().read.data !== undefined, "rows");
+    assert.deepEqual(calls[0], { type: "sqlite/query", config: { sql: "SELECT count(*) AS n FROM t WHERE k = ?", params: ["a"], maxRows: 5 } });
+    assert.equal(h.result().read.data!.rows[0]!.n, 0);
+    await act(async () => { await h.result().write.exec("INSERT INTO t (k) VALUES (?)", ["a"]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 1, "refetched after the exec");
+    await act(async () => { await h.result().write.batch(["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 3, "refetched after the batch");
+    assert.deepEqual(calls.filter((c) => c.type !== "sqlite/query").map((c) => c.type), ["sqlite/exec", "sqlite/batch"]);
+    assert.deepEqual(calls.find((c) => c.type === "sqlite/batch")!.config, { statements: ["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }] });
+    await h.unmount();
+    // No SQL: nothing asked.
+    const none = fakeClient();
+    const h2 = await renderHook(() => useSql(undefined), { client: none.client });
     await sleep(20);
     assert.equal(none.calls.length, 0);
     await h2.unmount();

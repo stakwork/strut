@@ -22,6 +22,12 @@
  * recorded (./graph-types.ts), on Neo4j and on a LadybugDB file alike; on
  * the filesystem workspace, which has no graph, it does not build.
  *
+ * An app's own SQLite (./data.ts, plans/apps.md §4.4): a publish applies the
+ * directory's `db/*.sql` migrations to the app's database after the build
+ * and before the version is recorded, so a failing one publishes nothing; a
+ * preview applies them as a publish would; a build tries them on an empty
+ * database in memory and reports what fails.
+ *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version
  * and the newest few keep their directory, and an older one is restored
@@ -49,6 +55,7 @@ import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, reservedAppName, 
 import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
 import { removeAppState } from "./state.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
+import type { AppDatabases } from "./data.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
@@ -163,6 +170,8 @@ export type AppPublishResult =
       note?: string;
       /** The graph types and edges the publish registered (`data.graph`). */
       graph?: RegisteredGraph;
+      /** The migrations (`db/*.sql`) the publish applied to the app's database. */
+      migrations?: string[];
     }
   | { ok: false; errors: string[]; warnings: string[] };
 
@@ -178,7 +187,7 @@ export interface AppPreview {
 }
 
 export type AppPreviewResult =
-  | { ok: true; name: string; version: string; hash: string; bytes: number; warnings: string[]; graph?: RegisteredGraph }
+  | { ok: true; name: string; version: string; hash: string; bytes: number; warnings: string[]; graph?: RegisteredGraph; migrations?: string[] }
   | { ok: false; errors: string[]; warnings: string[] };
 
 /** How long a preview is hosted, and how many at once. */
@@ -363,6 +372,10 @@ export interface AppsDeps {
   grants?: AppGrantStore;
   /** Where the viewers' state lives (./state.ts), dropped with the app. */
   dataDir?: string;
+  /** The apps' own databases (./data.ts): a publish and a preview apply the
+   *  directory's migrations to the app's, a build tries them in memory.
+   *  Absent: migrations are neither applied nor tried. */
+  appDb?: AppDatabases;
   /** What `manifestOf` remembers. Pass the one a host also hands
    *  `watchAppWrites` when something writes app records past this
    *  capability (createStrut: the seeds, a package install). Default: its own. */
@@ -622,6 +635,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async build(dir, opts) {
       const graph = await graphCheck(dir, opts?.name);
       if (graph.errors.length) return { ok: false, errors: graph.errors, warnings: graph.warnings };
+      // The migrations on an empty database in memory: one that does not
+      // apply is the build's error, before the publish meets it.
+      const tried = deps.appDb ? await deps.appDb.check(dir) : null;
+      if (tried && !tried.ok) return { ok: false, errors: tried.errors, warnings: graph.warnings };
       const built = await buildApp(dir, buildDeps(opts?.name));
       return graph.warnings.length ? { ...built, warnings: [...graph.warnings, ...built.warnings] } : built;
     },
@@ -659,6 +676,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
+      // The tables before the version (§4.4): a migration that fails rolls
+      // back and publishes nothing; the ones before it stay applied.
+      const migrated = deps.appDb ? await deps.appDb.migrate(name, dir) : null;
+      if (migrated && !migrated.ok) return { ok: false, errors: migrated.errors, warnings: [...check.warnings, ...built.warnings, ...migrated.warnings] };
       // The types before the version: a version is never live without them.
       const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const publisher = opts.publisher ?? (opts.surface === "ai" ? "ai" : undefined);
@@ -700,9 +721,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
         changed: r.changed,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: [...check.warnings, ...built.warnings],
+        warnings: [...check.warnings, ...built.warnings, ...(migrated?.warnings ?? [])],
         live: !held,
         ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+        ...(migrated?.applied.length ? { migrations: migrated.applied } : {}),
         ...(held
           ? {
               liveVersion: held.active,
@@ -727,7 +749,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
-      // As a publish does: the page's writes need the types it declares.
+      // As a publish does: the page's queries need its tables, and its
+      // writes the types it declares.
+      const migrated = deps.appDb ? await deps.appDb.migrate(name, dir) : null;
+      if (migrated && !migrated.ok) return { ok: false, errors: migrated.errors, warnings: [...check.warnings, ...built.warnings, ...migrated.warnings] };
       const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const now = nowMs();
       for (const [label, p] of previews) if (now - p.at > PREVIEW_TTL_MS) previews.delete(label);
@@ -740,8 +765,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
         version,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: [...check.warnings, ...built.warnings],
+        warnings: [...check.warnings, ...built.warnings, ...(migrated?.warnings ?? [])],
         ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+        ...(migrated?.applied.length ? { migrations: migrated.applied } : {}),
       };
     },
 

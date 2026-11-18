@@ -266,7 +266,8 @@ describe("step_run — the app door", () => {
     const paid = appIdentity("paid", "v1");
     for (const type of ["llm", "exec", "agent", "acp/prompt"]) await refused({ type, config: {}, app: paid }, /paid or shell-shaped/);
     await refused({ type: "meta/run-workflow", config: {}, app: paid }, /sealed/);
-    await refused({ type: "sqlite/query", config: { sql: "select 1" }, app: paid }, /not available in this strut server yet: .*work item 3/);
+    // `sqlite/*` in grants.steps grants nothing: grants.sqlite does (plans/apps.md §4.4).
+    await refused({ type: "sqlite/query", config: { sql: "select 1" }, app: paid }, /runs on the app's own database, and this app does not grant it/);
     await refused({ type: "automation/list", config: {}, app: paid }, /not available in this strut server yet: .*work item 7/);
     await refused({ type: "job/start", config: {}, app: paid }, /run\/launch \{ job \}.*an agent's door/);
     await refused({ type: "app/publish", config: {}, app: paid }, /does not author apps/);

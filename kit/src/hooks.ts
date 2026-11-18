@@ -1424,6 +1424,73 @@ export function useNames(actors: readonly string[] | undefined, opts: { enabled?
   });
 }
 
+/** The steps behind `useSql` and `useSqlMutation`: the app's own SQLite
+ *  (plans/apps.md §4.4; grant it with `grants: { sqlite: true }`). */
+export const SQL_STEPS = { query: "sqlite/query", exec: "sqlite/exec", batch: "sqlite/batch" } as const;
+
+/** What `sqlite/query` answers: one object per row, keyed by column. */
+export interface SqlRows<Row = Record<string, unknown>> {
+  columns: string[];
+  rows: Row[];
+  /** There were more rows than `maxRows` (default 1000): page with LIMIT … OFFSET. */
+  truncated: boolean;
+}
+
+export interface UseSqlOptions {
+  enabled?: boolean;
+  /** At most this many rows (default 1000, at most 10000). */
+  maxRows?: number;
+  /** Read again every this many ms (react-query's `refetchInterval`). */
+  refetchInterval?: number | false;
+}
+
+/** ONE read of the app's own tables (`sqlite/query`), as a query: refetched
+ *  when a `useSqlMutation` write lands. Values go in `params` (`?` as a list,
+ *  `:name` as an object), never into the text. A blob comes back as `{ base64 }`. */
+export function useSql<Row = Record<string, unknown>>(sql: string | undefined, params?: unknown[] | Record<string, unknown>, opts: UseSqlOptions = {}): UseQueryResult<SqlRows<Row>> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["strut", "sqlite", sql, params ?? null, opts.maxRows ?? null],
+    queryFn: () =>
+      client.run<SqlRows<Row>>(SQL_STEPS.query, {
+        sql,
+        ...(params !== undefined ? { params } : {}),
+        ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
+      }),
+    enabled: (opts.enabled ?? true) && !!sql,
+    ...(opts.refetchInterval !== undefined ? { refetchInterval: opts.refetchInterval } : {}),
+  });
+}
+
+/** A statement to write: SQL text, or `{ sql, params }`. */
+export type SqlStatement = string | { sql: string; params?: unknown[] | Record<string, unknown> };
+
+export interface UseSqlMutation {
+  /** ONE statement (`sqlite/exec`): `{ changes, lastInsertRowid }`. */
+  exec: (sql: string, params?: unknown[] | Record<string, unknown>) => Promise<{ changes: number; lastInsertRowid: number | string }>;
+  /** Several in ONE transaction, all or none (`sqlite/batch`). */
+  batch: (statements: SqlStatement[]) => Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>;
+  pending: boolean;
+  error: Error | null;
+}
+
+/** Writes to the app's own tables — functions to call, never on a render.
+ *  Each one that lands refetches every `useSql` read. */
+export function useSqlMutation(): UseSqlMutation {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (v: { exec: { sql: string; params?: unknown[] | Record<string, unknown> } } | { batch: SqlStatement[] }) =>
+      "exec" in v
+        ? client.run(SQL_STEPS.exec, { sql: v.exec.sql, ...(v.exec.params !== undefined ? { params: v.exec.params } : {}) })
+        : client.run(SQL_STEPS.batch, { statements: v.batch }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["strut", "sqlite"] }),
+  });
+  const exec = useCallback((sql: string, params?: unknown[] | Record<string, unknown>) => m.mutateAsync({ exec: { sql, ...(params !== undefined ? { params } : {}) } }) as Promise<{ changes: number; lastInsertRowid: number | string }>, [m.mutateAsync]);
+  const batch = useCallback((statements: SqlStatement[]) => m.mutateAsync({ batch: statements }) as Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>, [m.mutateAsync]);
+  return { exec, batch, pending: m.isPending, error: m.error };
+}
+
 /** The step behind `useAppState` (src/apps/state.ts on the server). */
 export const APP_STATE_STEP = "app/state";
 /** A page's state writes go out at most this often, every key set since

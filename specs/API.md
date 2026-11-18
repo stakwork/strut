@@ -1830,8 +1830,8 @@ curl -s https://strut.box.example/mcp -H "authorization: Bearer $HOST_TOKEN" \
 
 `plans/apps.md`. An APP is a directory with an `app.yaml` (title, `grants`,
 the graph types it declares, extra resource domains), `src/` (TSX, its own
-shadcn overrides, CSS), `public/` (assets) and `db/` (migrations, a later
-item), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
+shadcn overrides, CSS), `public/` (assets) and `db/` (its SQLite
+migrations, §14.17), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
 the bootstrap, the hooks) into ONE self-contained document,
 `dist/index.html`, that any MCP Apps host frames. An app lives in the
 workspace (below; a JOB's app directory is retired, §14.4). A workspace app is
@@ -1854,10 +1854,11 @@ components as an app other apps import (`import { RunTimeline } from
 | GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, admin?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `admin: true` only on an ADMIN-ONLY app, which is listed to full scope alone (§14.14); `warnings` (§14.6) only when the active version has some from the last day |
 | GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`, `title?`, `wallet?`, `permissions?` — what the version's frame is granted beyond every app's, `motion` / `camera` / `geolocation` from `app.yaml`'s `permissions:`, which a host adds to the frame's `allow` before the document loads), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
+| GET    | `/apps/:name/data` | the app's own SQLite database (§14.17) as a file: `application/vnd.sqlite3`, `content-disposition: attachment; filename="<name, / as ->.db"`, a copy taken in one go (`VACUUM INTO`), so consistent while pages write. Full scope only (the deployment key, an admin's session), 403 otherwise; 404 for an unknown app or one with no database yet |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph?, migrations? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. Then the directory's `db/*.sql` migrations are applied to the app's database (§14.17), `migrations` naming those that ran; one that fails is a `400` the same way, and no version is recorded. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | GET    | `/apps/:name/screenshots` | `?version=` → `{ name, version, screenshots: [{ file, caption? }] }`: the list the version's `app.yaml` names (the live version without `version`). `404` for an unknown app or version |
@@ -1908,7 +1909,8 @@ the call against that app's manifest, in every host:
 | a sealed step | refused |
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
-| `sqlite/*`, `automation/*` | "not available in this strut yet" (work items 3, 7) |
+| `sqlite/query`, `sqlite/exec`, `sqlite/batch` | only when the manifest says `grants: { sqlite: true }` (`sqlite/*` in `grants.steps` grants nothing), on the app's own database alone (§14.17) |
+| `automation/*` | "not available in this strut yet" (work item 7) |
 | `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
@@ -1918,8 +1920,9 @@ step's own failure are error results: `isError: true` with a text
 `{ "error": "…" }` the kit throws as a `StrutError`. A result is the
 step's whole output — `structuredContent` when it is an object, the same
 JSON as text — never trimmed for a model; past 5 MB it is an error naming
-the cap. **Writes are kept** (§9): a graph write and an error report land
-under `step:<type>` with the actor and `app` on their summary
+the cap. **Writes are kept** (§9): a graph write, `sqlite/exec`,
+`sqlite/batch` and an error report land under `step:<type>` with the actor
+and `app` on their summary
 (`GET /workflows/step:<type>/runs`); reads are not. A run `run/launch`
 starts records `origin: "app"` and `app` on `run.start` and its summary and
 hands `ctx.app` to every step.
@@ -2871,6 +2874,65 @@ leased until it is pressed) and Back to your work. Strut's account widget
 visitor's page gets no first-party rights, and its grants are the worker's
 steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
 `"worker": false` seeds nothing.
+
+### 14.17 An app's own SQLite (`src/apps/data.ts`; `plans/apps.md` §4.4)
+
+**The file.** One per app, `<dataDir>/apps/<name>/data.db`, beside its
+versions and shared by all of them; owner-only (the file `600`), on
+`node:sqlite`, extensions never enabled; the rollback journal, so the file
+at rest is the whole database. A strut whose run store is in memory keeps
+them in memory. A delete of the app keeps it.
+
+**Migrations.** `db/*.sql` in the app's directory, applied in name order
+(code-unit order: `001-…`, `002-…`, `010-…`), each ONCE, each in its own
+transaction, and recorded in the database's `_strut_migrations` (`name`,
+`sha256`, `applied_at`). Applied:
+- at every publish (`POST /apps`, `app/publish`, a package install — they
+  all go through it), after the build and before the version is recorded:
+  the first that fails rolls back and the publish is refused with its
+  error (`400 { error, errors }`), recording no version; those before it
+  stay applied;
+- at a preview (`app/look { path }`), as a publish would;
+- for strut's own seeded apps, at every boot.
+
+`app/build` runs them on an empty database in memory and reports the one
+that fails as a build error. A migration that ran is never run again: one
+whose file changed since is a publish WARNING, never a re-run. Rolling
+the app back never rolls its schema back, so migrations are additive. A
+migration that commits or rolls back strut's transaction itself fails.
+
+**The steps.** Each runs ONE statement (text holding another is refused,
+never cut short; comments after it are fine):
+
+| Step | Config | Answer |
+| ---- | ------ | ------ |
+| `sqlite/query` | `{ sql, params?, maxRows?, app? }` | `{ columns, rows, truncated }` — one object per row keyed by column; at most `maxRows` rows (default 1000, at most 10000) and 4 MB of them, `truncated: true` past either. It runs under `PRAGMA query_only`: a write in it fails |
+| `sqlite/exec` | `{ sql, params?, app? }` | `{ changes, lastInsertRowid }` |
+| `sqlite/batch` | `{ statements: [sql \| { sql, params? }], app? }` (at most 1000) | `{ results: [{ changes, lastInsertRowid }] }` — in ONE transaction: a failing statement rolls all of them back and is named (`statement 2: …`) |
+
+`params` is a list for `?` or an object for `:name` / `@name` / `$name`. A
+whole number goes in as an INTEGER, a boolean as `1` or `0`, `{ base64 }`
+as a blob and any other object or list as its JSON text. A blob comes back
+as `{ base64 }`, an integer past 2^53 as its decimal text. Refused, by a
+keyword pre-check that reads past strings, comments and quoted names:
+`ATTACH`, `DETACH`, `VACUUM INTO`, `load_extension`, a PRAGMA outside
+`table_info`, `table_xinfo`, `table_list`, `index_list`, `index_info`,
+`index_xinfo`, `foreign_key_list`, `foreign_key_check`, `integrity_check`,
+`quick_check`, `user_version`, `page_count`, `page_size`, `freelist_count`
+(and any of them set, `= x` or `(x)` on the last four), the same names as
+`pragma_<name>` functions, and a statement that opens or ends a transaction
+(`BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`). A
+statement's run time is not bounded: `node:sqlite` has no interrupt.
+
+**Which database.** `ctx.app`'s: a page's `step_run`, a host's call of the
+app's tools (§13.5: listed in its `hosts:` entry, and the manifest grants
+`sqlite`), a run the app launched. There, `app` is refused, even naming
+itself, so a page never reaches another app's file. With no `ctx.app` (a
+workflow of its own, an agent granted `sqlite/*`), `app` names an app that
+exists. A visitor's page (§17) gets none of them. The kit's `useSql(sql,
+params?, { maxRows?, refetchInterval? })` and `useSqlMutation()` → `{
+exec, batch }` are over them, and a write that lands refetches every
+`useSql`.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 

@@ -1490,8 +1490,9 @@ describe("the API key gate", () => {
     // And a round type's items and the workflows that can feed a type
     // (Send a round, the type editor's When there is work): staff reads.
     // And people's names (plans/people-and-hosts.md §1): an admin's read.
+    // And an app's database, every row of it (plans/apps.md §4.4).
     // And whether an account is linked (plans/jamie-in-tribes.md §5.2): a host key's alone.
-    const fullOnlyReads = ["GET /people", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
+    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

@@ -45,7 +45,7 @@ namespace `src/steps/lib/x/`.
 | Automations (schedules) | [docs/automations.md](docs/automations.md) | `automations.ts`, `scheduler.ts`, `automations-routes.ts`, `automation/*` |
 | Claims, sealing, Concepts, the dream, history | [docs/knowledge.md](docs/knowledge.md) | `claims-*.ts`, `verify.ts`, `work.ts`, `branches.ts`, `branch-merge.ts`, `concept-sources.ts`, `ledger.ts`, `sealed.ts`, `knowledge.ts`, `history.ts`, `concept-seed.ts`, `concepts/`, `graph/claims*.ts`, `knowledge/*`, `dream/*`, `history/*`, `context/*` |
 | The graph layer: Neo4j and LadybugDB | [docs/graph.md](docs/graph.md) | `graph/`, `graph-writes.ts`, `graph/*`, `memory/*` |
-| Apps, the kit, channels | [docs/apps.md](docs/apps.md) | `apps/`, `channels.ts`, `channels-peer.ts`, `brand.ts`, `app/*`, `channel/*`; `kit/` at the root |
+| Apps, the kit, channels, an app's own SQLite | [docs/apps.md](docs/apps.md) | `apps/`, `channels.ts`, `channels-peer.ts`, `brand.ts`, `app/*`, `channel/*`, `sqlite/*`; `kit/` at the root |
 | Packages, indexes, the store, serve mode | [docs/packages.md](docs/packages.md) | `packages/`, `package-lookup.ts`, `tar.ts`, `package/*` |
 | The public view, visitors, public runs and tools | [docs/public.md](docs/public.md) | `public-surface.ts`, `public-routes.ts`, `public-runs.ts`, `public-tools.ts`, `public-agents.ts`, `public-call.ts`, `public-runnable.ts`, `public-view.ts`, `visitors.ts`, `visitor-address.ts`, `guarded-http.ts` |
 | Payments: credit, the wallet, earnings, buying from another strut | [docs/payments.md](docs/payments.md) | `payments/`, `l402.ts`, `public-credit.ts`, `remote.ts`, `run-cap.ts`, `earnings/*`, `remote/*` |
