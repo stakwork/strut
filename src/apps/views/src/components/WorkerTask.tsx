@@ -682,34 +682,40 @@ function InHand({ holding, onContinue, onGone }: { holding: NonNullable<WorkerIn
   };
   return (
     <div className="rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4" data-testid="in-hand">
-      <button type="button" onClick={onContinue} className="flex w-full items-center gap-3 text-left">
-        <div className="min-w-0 flex-1">
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
           <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">In your hand</div>
           <div className="truncate text-base font-semibold">{typeLabel(holding.type)}</div>
-        </div>
-        <span className="inline-flex items-center gap-1 text-sm font-semibold">
-          Continue <ChevronRight className="size-4" />
-        </span>
-      </button>
-      {holding.lease &&
-        (asking ? (
-          <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
-            <p className="text-sm">Let go of this task? Someone else can take it, and you can pick other work.</p>
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" className="h-10 rounded-xl" disabled={skip.pending} onClick={() => setAsking(false)}>
-                Keep it
-              </Button>
-              <Button className={cn("h-10 rounded-xl font-semibold", ACCENT_BUTTON)} disabled={skip.pending} onClick={() => void letGo()}>
-                {skip.pending ? <Loader2 className="animate-spin" /> : <X />} Let go
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <button type="button" onClick={() => setAsking(true)} className="mt-2 text-sm font-medium text-muted-foreground underline underline-offset-4">
-            Let go
+        </button>
+        {holding.lease && !asking && (
+          <button
+            type="button"
+            aria-label="Let go"
+            title="Let go"
+            onClick={() => setAsking(true)}
+            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-amber-400/25 hover:text-foreground"
+          >
+            <X className="size-4" />
           </button>
-        ))}
+        )}
+        <button type="button" onClick={onContinue} className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold">
+          Continue <ChevronRight className="size-4" />
+        </button>
+      </div>
+      {asking && (
+        <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
+          <p className="text-sm">Let go of this task? Someone else can take it, and you can pick other work.</p>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" className="h-10 rounded-xl" disabled={skip.pending} onClick={() => setAsking(false)}>
+              Keep it
+            </Button>
+            <Button className={cn("h-10 rounded-xl font-semibold", ACCENT_BUTTON)} disabled={skip.pending} onClick={() => void letGo()}>
+              {skip.pending ? <Loader2 className="animate-spin" /> : <X />} Let go
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
