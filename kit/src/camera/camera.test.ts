@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_DEFAULT_SIDE, NO_CAMERA, createBridgeCamera, parseCaptureParams } from "./index.js";
+import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_DEFAULT_SIDE, NO_CAMERA, cameraTitle, createBridgeCamera, parseCaptureParams } from "./index.js";
 
 describe("the host's camera contract", () => {
   it("is available only when the host offers it; capture asks the host and answers a File, null when cancelled", async () => {
@@ -31,6 +31,12 @@ describe("the host's camera contract", () => {
     assert.match((parseCaptureParams({ zoom: 2 }) as { error: string }).error, /unknown field "zoom"/);
     assert.match((parseCaptureParams({ facing: "back" }) as { error: string }).error, /facing/);
     assert.match((parseCaptureParams({ maxSide: 10_000 }) as { error: string }).error, /maxSide/);
-    assert.match((parseCaptureParams({ title: "x".repeat(121) }) as { error: string }).error, /title/);
+    // A task's whole ask is often longer than the camera's line: cut, never refused.
+    const long = parseCaptureParams({ title: `Visit Bean There at 412 Main St.\nTake 3 photos: ${"the counter and seating area, ".repeat(6)}` }) as { ok: true; params: { title: string } };
+    assert.equal(long.ok, true);
+    assert.equal(long.params.title.length, 120);
+    assert.ok(long.params.title.startsWith("Visit Bean There at 412 Main St. Take 3 photos:") && long.params.title.endsWith("…"), long.params.title);
+    assert.equal(cameraTitle("Fit the page"), "Fit the page");
+    assert.match((parseCaptureParams({ title: 7 }) as { error: string }).error, /title is text/);
   });
 });

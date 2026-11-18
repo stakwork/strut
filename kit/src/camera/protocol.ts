@@ -43,6 +43,17 @@ export function cameraCapabilityOf(hostCapabilities: unknown): boolean {
   return typeof c === "object" && c !== null && (c as { v?: unknown }).v === 1;
 }
 
+/** The longest title the camera shows over its viewfinder. */
+export const CAMERA_TITLE_MAX = 120;
+
+/** A title as the camera shows it: one line, at most `CAMERA_TITLE_MAX`
+ *  characters, a longer one cut with "…" — a task's whole ask is often
+ *  longer, and a photo is never refused for its words. */
+export function cameraTitle(title: string): string {
+  const line = title.replace(/\s+/g, " ").trim();
+  return line.length > CAMERA_TITLE_MAX ? `${line.slice(0, CAMERA_TITLE_MAX - 1).trimEnd()}…` : line;
+}
+
 /** A page's capture params, checked: `{ facing?, maxSide?, title? }` and nothing else. */
 export function parseCaptureParams(params: unknown): { ok: true; params: Required<Pick<CameraCaptureParams, "facing" | "maxSide">> & Pick<CameraCaptureParams, "title"> } | { ok: false; error: string } {
   const p = (params ?? {}) as Record<string, unknown>;
@@ -51,13 +62,13 @@ export function parseCaptureParams(params: unknown): { ok: true; params: Require
   if (p["facing"] !== undefined && p["facing"] !== "environment" && p["facing"] !== "user") return { ok: false, error: 'capture: facing is "environment" or "user"' };
   const side = p["maxSide"];
   if (side !== undefined && (typeof side !== "number" || !Number.isInteger(side) || side < 64 || side > CAMERA_MAX_SIDE)) return { ok: false, error: `capture: maxSide is a whole number of pixels, 64 to ${CAMERA_MAX_SIDE}` };
-  if (p["title"] !== undefined && (typeof p["title"] !== "string" || p["title"].length > 120)) return { ok: false, error: "capture: title is a line of at most 120 characters" };
+  if (p["title"] !== undefined && typeof p["title"] !== "string") return { ok: false, error: "capture: title is text, one line (a longer one is cut)" };
   return {
     ok: true,
     params: {
       facing: (p["facing"] as "environment" | "user" | undefined) ?? "environment",
       maxSide: (side as number | undefined) ?? CAMERA_DEFAULT_SIDE,
-      ...(typeof p["title"] === "string" && p["title"] ? { title: p["title"] } : {}),
+      ...(typeof p["title"] === "string" && cameraTitle(p["title"]) ? { title: cameraTitle(p["title"]) } : {}),
     },
   };
 }

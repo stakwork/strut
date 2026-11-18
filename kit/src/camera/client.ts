@@ -1,7 +1,7 @@
 /** The app's side of the host's camera (./protocol): `available` when the
  *  host offers `experimental["strut/camera"]`; `capture` asks it for a photo
  *  and answers it as a `File`, or null when the person cancelled. No React. */
-import { CAMERA_CAPTURE_METHOD, CAMERA_CAPTURE_TIMEOUT_MS, CAMERA_PASS_THROUGH, cameraCapabilityOf, type CameraCaptureParams } from "./protocol.js";
+import { CAMERA_CAPTURE_METHOD, CAMERA_CAPTURE_TIMEOUT_MS, CAMERA_PASS_THROUGH, cameraCapabilityOf, cameraTitle, type CameraCaptureParams } from "./protocol.js";
 
 /** What of the MCP Apps `App` the client uses. */
 export interface CameraBridgeApp {
@@ -22,7 +22,9 @@ export function createBridgeCamera(app: CameraBridgeApp): CameraClient {
     available,
     async capture(params = {}) {
       if (!available()) throw new Error(NO_CAMERA_ERROR);
-      const r = (await app.request({ method: CAMERA_CAPTURE_METHOD, params: { ...params } }, CAMERA_PASS_THROUGH, { timeout: CAMERA_CAPTURE_TIMEOUT_MS })) as {
+      // A long title is cut to the camera's one line here, as the host would.
+      const sent = typeof params.title === "string" ? { ...params, title: cameraTitle(params.title) } : { ...params };
+      const r = (await app.request({ method: CAMERA_CAPTURE_METHOD, params: sent }, CAMERA_PASS_THROUGH, { timeout: CAMERA_CAPTURE_TIMEOUT_MS })) as {
         cancelled?: unknown; name?: unknown; mediaType?: unknown; data?: unknown;
       } | undefined;
       if (!r || r.cancelled === true || typeof r.data !== "string") return null;
