@@ -31,7 +31,8 @@
  * answer saved, JSON) the same way. Standing types (§5.7, item 9) add
  * `task_types.standing` (the rule, JSON, null: not standing),
  * `tasks.standing` (1 on a standing type's task) and `tasks.launched_at`
- * (when its run was launched) the same way.
+ * (when its run was launched) the same way, and a run's reply to its
+ * workers `tasks.reply` (JSON: `{ show?, files?, at }`, null: none).
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -63,6 +64,7 @@ import {
   type StandingRule,
   type TaskListQuery,
   type TaskRecord,
+  type TaskReply,
   type TaskSettled,
   type TaskStatus,
   type TaskStore,
@@ -106,6 +108,7 @@ create table if not exists ${name} (
   grade_note text,
   standing integer,
   launched_at integer,
+  reply text,
   unique (workflow, run_id, path),
   unique (test, served_to)
 ) strict;`;
@@ -198,6 +201,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["tasks", "standing", "integer"],
   ["tasks", "launched_at", "integer"],
   ["task_types", "round_rule", "text"],
+  ["tasks", "reply", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -395,6 +399,7 @@ export class SqliteTaskStore implements TaskStore {
       ),
       launched: p("update tasks set launched_at = ? where id = ? and standing = 1 and launched_at is null"),
       unlaunched: p("select * from tasks where standing = 1 and status = 'settled' and launched_at is null order by settled_at limit ?"),
+      reply: p("update tasks set reply = ? where id = ? and status = 'settled' and test is null"),
       // §7.2's takeTest: the tests this worker may be served, least-served first.
       servable: p(
         `select * from tests x
@@ -844,6 +849,10 @@ export class SqliteTaskStore implements TaskStore {
     return (this.s.unlaunched.all(Math.max(0, Math.floor(limit))) as Row[]).map(taskOf);
   }
 
+  async reply(task: string, reply: TaskReply): Promise<boolean> {
+    return this.db.tx(() => Number(this.s.reply.run(JSON.stringify(reply), task).changes) === 1);
+  }
+
   async putTest(t: NewTest): Promise<TestRecord> {
     return this.db.tx(() => {
       this.s.insertTest.run(
@@ -1072,6 +1081,8 @@ function taskOf(r: Row): TaskRecord {
   if (opt<number>(r.standing) === 1) t.standing = true;
   const launchedAt = opt<number>(r.launched_at);
   if (launchedAt !== undefined) t.launchedAt = launchedAt;
+  const reply = opt<string>(r.reply);
+  if (reply !== undefined) t.reply = JSON.parse(reply) as TaskReply;
   return t;
 }
 

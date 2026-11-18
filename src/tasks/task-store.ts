@@ -223,6 +223,19 @@ export interface TaskRecord {
    *  `launchedAt` when it was. */
   standing?: true;
   launchedAt?: number;
+  /** What the run that asked told the workers who answered, after their
+   *  answer (`task/reply`): only on a settled real task, replaced whole by
+   *  a later reply. */
+  reply?: TaskReply;
+}
+
+/** A run's reply to the workers who answered its task (`task/reply`): a
+ *  JSON object and files of the run (under its artifacts, the shape of an
+ *  answer's `attachments`), and when it was made. */
+export interface TaskReply {
+  show?: Record<string, unknown>;
+  files?: RunAttachment[];
+  at: number;
 }
 
 export interface Lease {
@@ -577,6 +590,11 @@ export interface TaskStore {
   /** Settled standing tasks whose run is not launched yet, oldest answer
    *  first, at most `limit`: what the sweep launches. */
   unlaunched(limit: number): Promise<TaskRecord[]>;
+
+  /** A run's reply on its task (`task/reply`), replacing any before: only
+   *  while it is settled and a real task, never a test instance. False when
+   *  the guard failed. */
+  reply(task: string, reply: TaskReply): Promise<boolean>;
 
   putTest(t: NewTest): Promise<TestRecord>;
   test(id: string): Promise<TestRecord | undefined>;
@@ -1071,6 +1089,13 @@ export class MemoryTaskStore implements TaskStore {
       .sort((a, b) => (a.settledAt ?? 0) - (b.settledAt ?? 0))
       .slice(0, Math.max(0, limit))
       .map(clone);
+  }
+
+  async reply(task: string, reply: TaskReply): Promise<boolean> {
+    const t = this.tasks.get(task);
+    if (!t || t.status !== "settled" || t.test !== undefined) return false;
+    t.reply = clone(reply);
+    return true;
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {

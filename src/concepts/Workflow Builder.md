@@ -60,6 +60,14 @@ worker app upload the file another way and put a path or a run id in the
 answer: nothing then ties the file to the worker or the task. An answer that
 is the photo alone has no fields: `answer: { type: object, properties: {} }`.
 
+To tell the worker what came of their answer (a picture made from their
+photo, what was read off it), a later step replies: `type: task/reply`,
+`task: "{{ <the human step's id>.task }}"`, `show` an object they see
+(`show.ask` or `show.title` as its line, its other plain fields under it)
+and `files` files of the run (an `image` step's `"{{ <id>.path }}"`).
+Their worker app shows it with the task, and staff see it on the task. Only
+the run that asked can reply, and only once the task is answered.
+
 ## One task for each item: a round
 
 When a run makes one task for each item of a list (each shop, each page),
