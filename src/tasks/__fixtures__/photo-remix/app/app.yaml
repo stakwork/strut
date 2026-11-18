@@ -1,0 +1,10 @@
+title: Photo Remix
+description: "Snap anything and watch an image model reimagine it: before and after, side by side."
+icon: sparkles
+entry: src/App.tsx
+permissions: [camera]
+# Strut's account widget: who is signed in, what they earned, and Withdraw.
+account:
+  corner: top-right
+grants:
+  steps: [task/next, task/submit, task/me, task/history, task/file, task/withdraw]

@@ -229,7 +229,7 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
 
   it("no step on the shared bag reaches a payout, its settings or the payer", async () => {
     const bag = strut.services as Record<string, unknown>;
-    assert.deepEqual(Object.keys(bag["tasks"] as object), ["ensure"]);
+    assert.deepEqual(Object.keys(bag["tasks"] as object), ["ensure", "reply"]);
     for (const [k, v] of Object.entries(bag)) {
       if (!v || typeof v !== "object") continue;
       for (const name of ["withdraw", "pay", "reservePayout", "saveSettings", "setPayoutSettings", "keysend"]) {

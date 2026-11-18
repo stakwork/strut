@@ -485,8 +485,9 @@ export interface StrutCapabilities {
    *  `remote/buy-credit` proposal pays through. The payer is not on it. */
   remote?: RemoteCapability;
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
-   *  a step of a workflow. On the shared bag, `ensure` alone — the `human`
-   *  step's call (§9.2): no step, workflow or agent tool reaches the
+   *  a step of a workflow. On the shared bag, `ensure` and `reply` alone —
+   *  the `human` step's and `task/reply`'s calls, each held to the run that
+   *  calls it (§9.2): no step, workflow or agent tool reaches the
    *  worker's calls or the staff's. A `worker: true` step's own call on an
    *  app door (`step_run`) gets the worker's calls in its place (§5.2,
    *  `TasksService.worker`); the staff reach the store through the `/tasks`

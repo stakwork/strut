@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ChevronLeft, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -113,6 +113,30 @@ export function useAct() {
     }
   };
   return { act, busy, error, setError };
+}
+
+/** A picture at the size `className` gives it; a click shows it full size
+ *  over the page, and a click or Esc closes that. */
+export function Picture(props: { src: string; alt: string; className?: string }) {
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFull(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
+  return (
+    <>
+      <button type="button" className="w-fit max-w-full cursor-zoom-in" onClick={() => setFull(true)} title="Full size">
+        <img alt={props.alt} src={props.src} className={props.className} />
+      </button>
+      {full && (
+        <button type="button" className="fixed inset-0 z-50 grid cursor-zoom-out place-items-center bg-black/80 p-4" onClick={() => setFull(false)} aria-label="Close">
+          <img alt={props.alt} src={props.src} className="max-h-full max-w-full" />
+        </button>
+      )}
+    </>
+  );
 }
 
 /** A small figure: a label over a number. */

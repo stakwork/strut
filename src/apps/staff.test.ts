@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  fmtWhen, grantedBy, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
+  answerFiles, fmtWhen, grantedBy, isPicture, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, tasksWords, whatsappUrl,
   earlierEnd, fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
@@ -392,6 +392,24 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
       `rejected: a cat · by ada, ${fmtWhen(at, at)} · changeable until ${fmtWhen(at + 3_600_000, at)}`,
     );
     assert.equal(reviewText({ verdict: "ok", at, until: at, final: true }, at), `ok · ${fmtWhen(at, at)} · final`);
+  });
+
+  it("a task's pictures, drawn at once: an image's media type, or a path's extension; the answer's files from the lease that gave it", () => {
+    assert.equal(isPicture("tasks/t/photo-1.jpg", "image/jpeg"), true);
+    assert.equal(isPicture("images/remix.png", "image/png"), true);
+    assert.equal(isPicture("photo.jpg", "text/plain"), false, "the media type wins over the name");
+    assert.equal(isPicture("notes.txt", "text/plain"), false);
+    // A task's own files are paths alone.
+    for (const p of ["found.jpg", "a/b.JPEG", "x.png", "x.gif", "x.webp", "x.avif"]) assert.equal(isPicture(p), true, p);
+    for (const p of ["found.txt", "doc.pdf", "jpg", "x.svg"]) assert.equal(isPicture(p), false, p);
+
+    const photo = { name: "IMG_1.jpg", mediaType: "image/jpeg", size: 9, path: "tasks/t/photo-1.jpg" };
+    const lease = (worker: string, status: "submitted" | "skipped", attachments?: (typeof photo)[]) => ({
+      id: worker, task: "t", worker, type: "photo", taken: 0, expires: 0, status, ...(attachments ? { attachments } : {}),
+    });
+    assert.deepEqual(answerFiles({ by: "ann", leases: [lease("bob", "skipped"), lease("ann", "submitted", [photo])] }), [photo]);
+    assert.deepEqual(answerFiles({ by: "ann", leases: [lease("ann", "skipped", [photo]), lease("ann", "submitted")] }), [], "the lease that answered, not one put back");
+    assert.deepEqual(answerFiles({ leases: [lease("ann", "submitted", [photo])] }), [], "no answer accepted (disputed): each copy's are on its lease");
   });
 });
 

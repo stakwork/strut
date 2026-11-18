@@ -64,6 +64,7 @@ const CATALOG = JSON.stringify({
   },
   "gemini/imagen-3.0-generate-001": { mode: "image_generation", output_cost_per_image: 0.04 },
   "openrouter/google/gemini-2.5-flash-image": { mode: "chat", input_cost_per_token: 3e-7, output_cost_per_token: 0.0000025, output_cost_per_image: 3e-7 },
+  "gemini/gemini-2.5-flash-image": { mode: "image_generation", input_cost_per_token: 3e-7, output_cost_per_image_token: 0.00003, output_cost_per_image: 0.039 },
   "claude-sonnet-5-5": { input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 },
 });
 
@@ -195,6 +196,165 @@ describe("image step", () => {
         assert.equal(s.headers["x-macaroon"], "mac-1");
         assert.equal(out.cost, 0.014);
       }
+    });
+  });
+
+  describe("an edit: source images from the run's files", () => {
+    /** The start of a JPEG: enough for the AI SDK to know it by its bytes. */
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+    /** What a `human` step's `attachments` hands out. */
+    const photo = { name: "photo.jpg", mediaType: "image/jpeg", size: JPEG.length, path: "tasks/t1/photo.jpg" };
+    beforeEach(async () => {
+      await artifacts.write("r1", photo.path, JPEG);
+      await artifacts.write("r1", "sketch.png", Buffer.from(PNG, "base64"));
+      await artifacts.write("r1", "notes.md", Buffer.from("# notes"));
+    });
+    const bytesOf = async (b: Blob) => Buffer.from(await b.arrayBuffer());
+
+    it("OpenAI: the files reach /images/edits as the images, and the source's image tokens are priced at their own rate", async () => {
+      stub = stubFetch(() => ({
+        data: [{ b64_json: PNG }],
+        usage: { input_tokens: 277, input_tokens_details: { text_tokens: 21, image_tokens: 256 }, output_tokens: 272, total_tokens: 549 },
+      }));
+      const out = await image.run(
+        { prompt: "make it a watercolour", model: "openai/gpt-image-1-mini", images: [photo, "sketch.png"], providerOptions: { openai: { quality: "low" } } },
+        ctx(),
+      );
+      const s = stub.sent[0]!;
+      assert.equal(s.url, "https://api.openai.com/v1/images/edits");
+      const form = s.body as FormData;
+      assert.equal(form.get("model"), "gpt-image-1-mini");
+      assert.equal(form.get("prompt"), "make it a watercolour");
+      assert.equal(form.get("quality"), "low");
+      const sent = form.getAll("image[]") as Blob[];
+      assert.deepEqual(
+        await Promise.all(sent.map(bytesOf)),
+        [JPEG, Buffer.from(PNG, "base64")],
+        "each file's bytes, in order",
+      );
+      assert.deepEqual(
+        sent.map((b) => b.type),
+        ["image/jpeg", "image/png"],
+      );
+      // 21 text tokens at $2/M + 256 image tokens at $2.5/M + 272 made at $8/M.
+      assert.ok(Math.abs(out.cost - (21 * 2 + 256 * 2.5 + 272 * 8) / 1e6) < 1e-12, String(out.cost));
+      assert.equal(usageOf(out)!.cost, out.cost);
+      assert.equal(out.path, "images/hero.png");
+    });
+
+    it("xAI: a JSON edit with the image as a data URL, at its reported cost", async () => {
+      stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { cost_in_usd_ticks: 220_000_000 } }));
+      const out = await image.run({ prompt: "watercolour", model: "xai/grok-imagine-image", images: [photo] }, ctx());
+      const s = stub.sent[0]!;
+      assert.equal(s.url, "https://api.x.ai/v1/images/edits");
+      assert.equal(s.body.prompt, "watercolour");
+      assert.deepEqual(s.body.image, { url: `data:image/jpeg;base64,${JPEG.toString("base64")}`, type: "image_url" });
+      assert.equal(out.cost, 0.022);
+    });
+
+    it("Google: the image is the prompt's inline data, and its input tokens are in the cost", async () => {
+      stub = stubFetch(() => ({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG } }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 1305, candidatesTokenCount: 1290, totalTokenCount: 2595 },
+      }));
+      const out = await image.run({ prompt: "watercolour", model: "google/gemini-2.5-flash-image", images: [photo] }, ctx());
+      const s = stub.sent[0]!;
+      assert.equal(s.url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent");
+      const parts = s.body.contents[0].parts;
+      assert.deepEqual(parts[0], { text: "watercolour" });
+      assert.deepEqual(parts[1], { inlineData: { mimeType: "image/jpeg", data: JPEG.toString("base64") } });
+      // 1305 input tokens (the photo's among them) at $0.3/M + 1290 made at $30/M.
+      assert.ok(Math.abs(out.cost - (1305 * 0.3 + 1290 * 30) / 1e6) < 1e-12, String(out.cost));
+    });
+
+    it("OpenRouter: the images are its /images input_references", async () => {
+      stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { prompt_tokens: 1024, completion_tokens: 4096, total_tokens: 5120, cost: 0.015 } }));
+      const out = await image.run({ prompt: "watercolour", model: "openrouter/black-forest-labs/flux.2-klein-4b", images: [photo] }, ctx());
+      const s = stub.sent[0]!;
+      assert.equal(s.url, "https://openrouter.ai/api/v1/images");
+      assert.deepEqual(s.body.input_references, [{ type: "image_url", image_url: { url: `data:image/jpeg;base64,${JPEG.toString("base64")}` } }]);
+      assert.equal(out.cost, 0.015);
+    });
+
+    it("an edit costs its source's input tokens more than the same call without one (the datasheet-priced providers)", async () => {
+      // What OpenAI answered live for gpt-image-1-mini at low 1024x1024
+      // (2026-11-17), direct and through the gateway alike: the edit's 256
+      // input image tokens come split out in input_tokens_details.
+      const openaiUsage = (imageTokens: number) => ({
+        input_tokens: 21 + imageTokens,
+        input_tokens_details: { text_tokens: 21, image_tokens: imageTokens },
+        output_tokens: 272,
+      });
+      stub = stubFetch((url) => ({ data: [{ b64_json: PNG }], usage: openaiUsage(url.endsWith("/images/edits") ? 256 : 0) }));
+      for (const [i, services] of [{}, { llmAuth: async () => ({ apiKey: "vk-1", baseUrl: "https://gw.test" }) }].entries()) {
+        const run = (images?: any[]) =>
+          image.run({ prompt: "watercolour", model: "openai/gpt-image-1-mini", ...(images ? { images } : {}) }, ctx({ path: `pics/o${i}` }, services));
+        const plain = await run();
+        const edit = await run([photo]);
+        assert.ok(Math.abs(edit.cost - plain.cost - (256 * 2.5) / 1e6) < 1e-12, `${edit.cost} - ${plain.cost}: the 256 image tokens at $2.5/M`);
+      }
+      // Gemini does not split them: the photo's tokens are in its prompt
+      // count, at the input rate (one rate for text and images).
+      let calls = 0;
+      stub.restore();
+      stub = stubFetch(() => ({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG } }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: calls++ === 0 ? 15 : 15 + 1290, candidatesTokenCount: 1290 },
+      }));
+      const plain = await image.run({ prompt: "watercolour", model: "google/gemini-2.5-flash-image" }, ctx());
+      const edit = await image.run({ prompt: "watercolour", model: "google/gemini-2.5-flash-image", images: [photo] }, ctx());
+      assert.ok(Math.abs(edit.cost - plain.cost - (1290 * 0.3) / 1e6) < 1e-12, `${edit.cost} - ${plain.cost}: the 1290 image tokens at $0.3/M`);
+    });
+
+    it("no images (none listed, or a step that sent none) draws from the prompt alone", async () => {
+      stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { cost_in_usd_ticks: 200_000_000 } }));
+      await image.run({ prompt: "a fox", model: "xai/grok-imagine-image", images: [] }, ctx());
+      assert.equal(stub.sent[0]!.url, "https://api.x.ai/v1/images/generations");
+    });
+
+    it("a file that is not the run's, or not an image, fails the step before anything is sent", async () => {
+      stub = stubFetch(() => ({ data: [{ b64_json: PNG }] }));
+      const run = (images: any[], c = ctx()) => image.run({ prompt: "x", model: "openai/gpt-image-1-mini", images }, c);
+      await assert.rejects(run(["tasks/t1/missing.jpg"]), /image: images: "tasks\/t1\/missing\.jpg" is not a file of this run/);
+      await assert.rejects(run(["../r2/secret.png"]), /image: images: "\.\.\/r2\/secret\.png" is not a file of this run/);
+      await assert.rejects(run(["notes.md"]), /image: images: notes\.md is not an image \(text\/markdown\)/);
+      await artifacts.write("r1", "big.png", Buffer.alloc(5 * 1024 * 1024 + 1));
+      await assert.rejects(run(["big.png"]), /image: images: big\.png is 5\.0 MB; the limit is 5\.0 MB/);
+      await assert.rejects(run([photo], ctx({}, { artifacts: undefined })), /image: images lists files of the run, and this run has no artifacts capability/);
+      assert.equal(stub.sent.length, 0);
+    });
+
+    describe("through a gateway grant", () => {
+      const grant = (direct = false): LlmAuth => async () => ({ apiKey: "vk-1", baseUrl: "https://gw.test", headers: { "x-macaroon": "mac-1" }, direct });
+
+      it("openai and google edits ride the gateway's /images/edits", async () => {
+        stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { input_tokens: 277, input_tokens_details: { image_tokens: 256 }, output_tokens: 272 } }));
+        await image.run({ prompt: "x", model: "openai/gpt-image-1-mini", images: [photo] }, ctx({}, { llmAuth: grant() }));
+        await image.run({ prompt: "x", model: "google/gemini-2.5-flash-image", images: [photo] }, ctx({ path: "pics/two" }, { llmAuth: grant() }));
+        assert.deepEqual(
+          stub.sent.map((s) => [s.url, (s.body as FormData).get("model"), s.headers["authorization"]]),
+          [
+            ["https://gw.test/openai/v1/images/edits", "gpt-image-1-mini", "Bearer vk-1"],
+            ["https://gw.test/openai/v1/images/edits", "gemini/gemini-2.5-flash-image", "Bearer vk-1"],
+          ],
+        );
+      });
+
+      it("a model the gateway cannot edit with is refused before anything is sent, unless the grant allows a direct call", async () => {
+        stub = stubFetch(() => ({ data: [{ b64_json: PNG }], usage: { cost_in_usd_ticks: 220_000_000 } }));
+        for (const model of ["xai/grok-imagine-image", "openrouter/black-forest-labs/flux.2-klein-4b"]) {
+          await assert.rejects(
+            image.run({ prompt: "x", model, images: [photo] }, ctx({}, { llmAuth: grant() })),
+            /image models cannot edit a source image through this deployment's LLM gateway .* Edits through the gateway: google, openai/,
+          );
+        }
+        assert.equal(stub.sent.length, 0);
+        // A grant that allows a direct call: the provider's own API, with the host's key.
+        const out = await image.run({ prompt: "x", model: "xai/grok-imagine-image", images: [photo] }, ctx({}, { llmAuth: grant(true) }));
+        assert.equal(stub.sent[0]!.url, "https://api.x.ai/v1/images/edits");
+        assert.equal(stub.sent[0]!.headers["authorization"], "Bearer key-for-XAI_API_KEY");
+        assert.equal(out.cost, 0.022);
+      });
     });
   });
 

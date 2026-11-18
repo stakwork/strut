@@ -43,7 +43,7 @@ import {
 } from "../lib/view";
 import { base64Of, shrinkImage } from "../lib/shrink";
 import type { SupportConversation, SupportFile, SupportFilter, SupportMessage, SupportSettings, SupportThread, Worker, WorkerActivity } from "../lib/types";
-import { Back, ErrorLine, Field, Loading, Note } from "./bits";
+import { Back, ErrorLine, Field, Loading, Note, Picture } from "./bits";
 
 /** How often the list and the open thread are read again (ruling 16). */
 const POLL_MS = 3_000;
@@ -604,7 +604,6 @@ function FileView(props: { worker: string; m: SupportMessage }) {
   const f = props.m.file!;
   const kind = f.mediaType?.startsWith("image/") ? "image" : f.mediaType?.startsWith("audio/") ? "audio" : f.mediaType?.startsWith("video/") ? "video" : "other";
   const [want, setWant] = useState(kind !== "other");
-  const [full, setFull] = useState(false);
   // Read once, in pieces (a step's result is capped at 5 MB), and kept: its
   // key is outside ["staff", …], so the page's reads again never read it again.
   const q = useQuery({
@@ -631,16 +630,7 @@ function FileView(props: { worker: string; m: SupportMessage }) {
   if (q.error) return <ErrorLine error={q.error} />;
   if (kind === "image") {
     return url ? (
-      <>
-        <button type="button" onClick={() => setFull(true)} title="Full size">
-          <img alt={f.name ?? "Photo"} src={url} className="max-h-64 max-w-full rounded-lg" />
-        </button>
-        {full && (
-          <button type="button" className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={() => setFull(false)} aria-label="Close">
-            <img alt={f.name ?? "Photo"} src={url} className="max-h-full max-w-full" />
-          </button>
-        )}
-      </>
+      <Picture alt={f.name ?? "Photo"} src={url} className="max-h-64 max-w-full rounded-lg" />
     ) : (
       <span className="flex items-center gap-1.5 text-xs opacity-80"><Loader2 className="size-3 animate-spin" /> {label}</span>
     );

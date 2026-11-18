@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronRight, Clock, ImagePlus, Loader2, LogIn, Plus, RotateCcw, X, Zap } from "lucide-react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
   appLink, fieldsOf, formProblem, useAccountWidget, useApp, useCamera, useHost, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
-  type FormSchema, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
+  type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -349,6 +349,8 @@ export interface WorkerPageProps {
 
 /** What was sent, for the screen after: what it earned and the answer as given. */
 interface Sent {
+  /** The lease it was answered by: what the workflow's reply comes back on. */
+  lease?: string;
   msat: number;
   answer: Record<string, unknown>;
   schema: unknown;
@@ -413,7 +415,7 @@ export function WorkerPage({ type, title = "Work", subtitle = "Do tasks · get p
       setPaused(false);
       throw err;
     }
-    setSent({ msat: held?.payMsat ?? 0, answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
+    setSent({ ...(held ? { lease: held.lease } : {}), msat: held?.payMsat ?? 0, answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
   };
   const next = () => {
     setSent(null);
@@ -707,7 +709,7 @@ function HistoryRow({ item }: { item: WorkerHistoryItem }) {
   else if (e.releases > Date.now()) badge = <Badge>Held · clears {until(e.releases)}</Badge>;
   else badge = <Badge tone="done">Cleared</Badge>;
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
+    <li className={cn("flex items-center gap-3 px-4 py-3", item.reply && "flex-wrap")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type)}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -719,7 +721,115 @@ function HistoryRow({ item }: { item: WorkerHistoryItem }) {
         {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{satsText(e.msat)}</span>}
         {badge}
       </div>
+      {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
+  );
+}
+
+/** A history row's reply: one line saying what it is, opened to draw it
+ *  (its pictures are read only then, so a long list loads none). */
+function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; reply: TaskReply }) {
+  const [open, setOpen] = useState(false);
+  const files = reply.files ?? [];
+  const pictures = files.filter((f) => f.mediaType.startsWith("image/")).length;
+  const said = taskAsk(reply.show) ?? shownFields(reply.show)[0]?.[1];
+  const summary = said ?? (pictures ? `${pictures} ${pictures === 1 ? "picture" : "pictures"}` : `${files.length} ${files.length === 1 ? "file" : "files"}`);
+  return (
+    <div className="basis-full">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] text-amber-700 dark:text-amber-300">
+        <MessageSquare className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-semibold">Reply</span>
+          {open ? null : ` · ${summary}`}
+        </span>
+        <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && <TaskReplyView item={item} reply={reply} className="mt-2.5" />}
+    </div>
+  );
+}
+
+/**
+ * What a workflow told the worker after their answer (its `task/reply`):
+ * `show.ask` or `show.title` as a line, `show`'s other plain fields, its
+ * pictures drawn and any other file named. Its files are read through the
+ * answered lease (`useTaskFile(item, path)`); a page whose answers' replies
+ * it shows grants `task/history` and `task/file`. A page that reads them
+ * another way (strut/staff, through `staff/file`) passes `file`, which draws
+ * each one, and no `item`.
+ */
+export function TaskReplyView({ item, reply, file, className }: { item?: Pick<WorkerHistoryItem, "lease">; reply: TaskReply; file?: (f: TaskReplyFile) => ReactNode; className?: string }) {
+  const heading = taskAsk(reply.show);
+  const fields = shownFields(reply.show);
+  return (
+    <div className={cn("flex flex-col gap-2.5", className)} data-testid="task-reply">
+      {heading && <p className="m-0 text-[15px] leading-snug font-medium">{heading}</p>}
+      {fields.length > 0 && (
+        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+          {fields.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-muted-foreground">{labelOf(k)}</dt>
+              <dd className="m-0 font-medium break-words whitespace-pre-line">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {(reply.files ?? []).map((f) => (file ? <Fragment key={f.path}>{file(f)}</Fragment> : <ReplyFile key={f.path} item={item} file={f} />))}
+    </div>
+  );
+}
+
+/** One file of a reply: a picture drawn, anything else (or a picture that
+ *  cannot be read here) named. */
+function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
+  const picture = file.mediaType.startsWith("image/");
+  const read = useTaskFileUrl(item, file.path, { enabled: picture });
+  if (picture && !read.error) {
+    return (
+      <div className="overflow-hidden rounded-2xl border bg-muted/50">
+        {read.url ? <img src={read.url} alt={file.name} className="max-h-[55vh] w-full object-contain" /> : <div className="aspect-square w-full animate-pulse bg-muted" />}
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
+      <FileText className="size-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+    </div>
+  );
+}
+
+/** How often the screen after an answer reads the worker's history again,
+ *  for the workflow's reply. */
+const REPLY_POLL_MS = 4_000;
+/** How long it asks: most workflows never reply, and an image model has
+ *  answered well before. A reply later shows on the task's history row. */
+const REPLY_WAIT_MS = 120_000;
+
+/** The workflow's reply to an answer just sent, drawn once it comes while
+ *  the worker is still here, for up to `REPLY_WAIT_MS`; nothing until then,
+ *  so a type whose workflow never replies shows nothing more. */
+function SentReply({ lease }: { lease: string }) {
+  const [done, setDone] = useState(false);
+  const history = useTaskHistory({ refetchInterval: done ? false : REPLY_POLL_MS });
+  const item = history.data?.items.find((i) => i.lease === lease);
+  const reply = item?.reply;
+  // A reply, a page that cannot read its history, or the wait over: stop asking.
+  useEffect(() => {
+    if (reply || history.error) setDone(true);
+  }, [reply, history.error]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDone(true), REPLY_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!item || !reply) return null;
+  return (
+    <div className="relative mt-4 w-full rounded-2xl border border-amber-500/40 bg-card p-4 text-left shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">
+        <MessageSquare className="size-3.5" /> Reply
+      </div>
+      <TaskReplyView item={item} reply={reply} />
+    </div>
   );
 }
 
@@ -842,6 +952,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
           )}
         </div>
       )}
+      {sent.lease && <SentReply lease={sent.lease} />}
     </Screen>
   );
 }
