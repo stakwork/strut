@@ -60,6 +60,17 @@ worker app upload the file another way and put a path or a run id in the
 answer: nothing then ties the file to the worker or the task. An answer that
 is the photo alone has no fields: `answer: { type: object, properties: {} }`.
 
+## One task for each item: a round
+
+When a run makes one task for each item of a list (each shop, each page),
+its `human` step in a `foreach` over the run's input, name that workflow on
+the type: ask for it with `round: { workflow: "<name>" }`. The person can
+then send a round from Tasks and workers (Send a round: the items ticked,
+all of them to start) as well as by asking in the conversation. The items
+the dialog lists are the workflow's first `json` input whose default is the
+list, so give that input the person's list as its default. A type is
+standing or sent in rounds, never both.
+
 ## When the worker starts the work
 
 Some work has no subject until a worker brings one: a photo of a nutrition

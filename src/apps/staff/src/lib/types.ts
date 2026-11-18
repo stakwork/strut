@@ -48,6 +48,9 @@ export interface TaskType {
    *  task, and each answer starts this workflow. Absent: a human step makes
    *  its tasks. */
   standing?: { workflow: string };
+  /** A ROUND type: this workflow's runs make its tasks, one for each item,
+   *  and Send a round launches it (`staff/send-round`). */
+  round?: { workflow: string };
   changedAt: number;
   changedBy?: string;
   /** Where its workers answer it (§9.5): whether its app is in the public
@@ -294,6 +297,17 @@ export interface TaskFile {
 }
 
 /** `earnings/read`'s parts the Queue's line reads (§8.1, "The books"). */
+/** What a round of a round type sends (`staff/round-items`): the workflow's
+ *  list, each item as a person reads it, and the newest round. `input`:
+ *  the name the ticked items go under; absent, the workflow has no list. */
+export interface RoundInfo {
+  type: string;
+  workflow: string;
+  input?: string;
+  items: Array<{ label: string; value: unknown }>;
+  last?: { runId: string; at: number; tasks: number };
+}
+
 export interface Books {
   workers?: { owedMsat: number; heldMsat: number; withdrawableMsat: number; payees: number; accepted: { answers: number; msat: number; days: Array<{ day: string; answers: number; msat: number; takenBackAnswers: number; takenBackMsat: number }> }; takenBack: { answers: number; msat: number } };
   wallet?: { balance?: { msat: number; usd?: number }; rate?: number; owedToWorkersMsat?: number; coverMsat?: number; error?: string };

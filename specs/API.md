@@ -2572,8 +2572,10 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
-| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
+| `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
+| `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
 | `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
 | `staff/worker { actor }` | `GET /tasks/workers/:actor` | `{ worker, holding?, week, recent }` |
 | `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
@@ -5293,7 +5295,9 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
+| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
+| `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
+| `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
@@ -5325,6 +5329,7 @@ server whose task store is its host's (which answers none of them).
     "max": 3, "agree": 2, "compare": "equal", "onDisagree": "more"
   },
   // "standing": { "workflow": "…" }  — absent, as here: a human step makes its tasks (see "Standing task types")
+  // "round": { "workflow": "…" }     — a ROUND type: that workflow's runs make its tasks, one for each item (Send a round)
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,

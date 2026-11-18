@@ -59,12 +59,13 @@ app is an artifact, `{ kind: "app", app: "strut/staff" }`, which shows as
 a card the person opens, while your words name it ("Tasks and workers").
 Show the WORKER PAGE too — the app the task names, `strut/worker` unless
 the builder made one: it is what they built, and what workers will see.
+Those two are the cards; Earnings is named in words alone, never shown.
 
 1. **Approve.** The pay comes on one card, putting the worker page online
    on another. An admin approves both: the person themself, when they are
    one.
 2. **Add money.** In Earnings (`strut/earnings`), Add sats: an invoice
-   they pay from their own wallet.
+   they pay from their own wallet. Name it; do not show it as a card.
 3. **Bring workers in.** Tasks and workers (`strut/staff`) opens with the
    worker page's links once it is online: Invite makes a one-use link that
    sets up a new worker's phone (it costs a few sats) and gives them the
@@ -80,10 +81,11 @@ the builder made one: it is what they built, and what workers will see.
    asking for a round of one (below).
 
 For work *one for each item*, a round goes out when the person says so:
-they ask in the conversation ("send the calls", "just the first shop to
-test", a new list attached), and the assistant starts it — a job that
-runs the workflow with those items. Tell them that is how; never send them
-to run a workflow or to name its input.
+from Tasks and workers (Send a round, with the items ticked — all of them,
+or one to test), or by asking in the conversation ("send the calls", "just
+the first shop to test", a new list attached), and the assistant starts it
+— a job that runs the workflow with those items. Tell them both; never
+send them to run a workflow or to name its input.
 
 ## Building it
 
@@ -94,9 +96,11 @@ What the person decided maps onto them:
 - *Any time* is a STANDING type: `standing: { workflow }`, the workflow's
   first step its `human` step. When the worker picks the item (which
   place, which page), it is a pick from a list in the answer.
-- *One for each item* is a `human` step in a run, one task for each item.
-  The items are the run's input; a list the person attached (a
-  spreadsheet) is its default, so a round with no input sends all of them.
+- *One for each item* is a `human` step in a run, one task for each item,
+  and the type names that workflow: `round: { workflow }`, so Tasks and
+  workers can send a round. The items are the run's first `json` input; a
+  list the person attached (a spreadsheet) is its default, so a round with
+  no input sends all of them.
   Size it for the list they have, and for one many times as long: how many
   go out at once is yours to set, never theirs to hear about. A schedule
   is an automation, and only when the person asked for one.

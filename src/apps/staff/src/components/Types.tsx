@@ -23,6 +23,7 @@ import type { TaskStats, TaskType, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
 import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { TypeShareLine } from "./Share";
+import { RoundNote, SendRound } from "./SendRound";
 
 interface Props {
   go: (p: Place) => void;
@@ -174,10 +175,17 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         {was && !was.enabled && <Badge variant="outline">off</Badge>}
         {was && was.open === false && <Badge variant="outline">invite-only</Badge>}
         {was?.standing && <Badge variant="outline">standing</Badge>}
+        {was?.round && <Badge variant="outline">rounds</Badge>}
         {was?.changedBy && <Note>last saved by {was.changedBy}</Note>}
+        {was?.round && (
+          <div className="ml-auto">
+            <SendRound type={was} />
+          </div>
+        )}
       </div>
       {was && <TypeShareLine type={was} />}
       {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}. Saving here keeps it.</Note>}
+      {was?.round && <RoundNote type={was} />}
 
       <div className="grid gap-4 md:grid-cols-2">
         {!was && (
@@ -190,7 +198,8 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <NativeSelectOption value="">Choose an app…</NativeSelectOption>
             {d.app && !appRow && <NativeSelectOption value={d.app}>{d.app} (not here)</NativeSelectOption>}
             {(apps.data?.apps ?? [])
-              .filter((a) => !a.name.startsWith("strut/"))
+              // Strut's own apps are not worker apps — but strut/worker is.
+              .filter((a) => !a.name.startsWith("strut/") || a.name === "strut/worker")
               .map((a) => (
                 <NativeSelectOption key={a.name} value={a.name}>
                   {a.title ? `${a.title} (${a.name})` : a.name}

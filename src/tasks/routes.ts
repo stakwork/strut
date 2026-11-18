@@ -112,6 +112,7 @@ import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/pay
 import { WithdrawError } from "../payments/withdrawals.js";
 import { entryView } from "../payments/earnings-routes.js";
 import { InviteError, type Invites } from "../payments/invites.js";
+import type { RoundItems } from "./round.js";
 
 export interface TaskRoutesDeps {
   isFull: (c: Context) => Promise<boolean>;
@@ -141,6 +142,14 @@ export interface TaskRoutesDeps {
    *  page's in-process request). Absent: the invite routes answer 501. */
   invites?: Invites;
   publicUrl?: (c: Context) => string;
+  /** A ROUND type's workflow (Tasks and workers' Send a round): the items a
+   *  round sends by default, read off it, and a round sent — the workflow
+   *  launched as the admin, with `input` (a subset of the items) or its
+   *  defaults; answers the run id. Absent: the round routes refuse. */
+  rounds?: {
+    items(workflow: string): Promise<RoundItems>;
+    send(workflow: string, input: Record<string, unknown> | undefined, actor: string | undefined): Promise<string>;
+  };
 }
 
 const PAYOUT_STATUS: Partial<Record<PayoutErrorCode, 400 | 404 | 409>> = { bad_request: 400, unknown_payout: 404 };
@@ -312,12 +321,43 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
         ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
         ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
+        ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
       };
       return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
     }),
   );
 
   app.delete("/tasks/types/:name", (c) => answer(c, async () => tasks.deleteType(c.req.param("name"), (await by(c)).by)));
+
+  // ── rounds: a round type's items, and Send a round ──
+  /** The round type named, and the routes' rounds: refused for any other. */
+  const roundOf = async (name: string) => {
+    if (!deps.rounds) throw new TaskError("refused", "this server sends no rounds");
+    const kind = (await tasks.types()).find((t) => t.name === name);
+    if (!kind) throw new TaskError("unknown_type", `no task type ${name} here`);
+    if (!kind.round) throw new TaskError("bad_request", `task type ${name} is not sent in rounds: save it with round: { workflow }`);
+    return { kind, round: kind.round, rounds: deps.rounds };
+  };
+  app.get("/tasks/types/:name/round", (c) =>
+    answer(c, async () => {
+      const { kind, round, rounds } = await roundOf(c.req.param("name"));
+      const read = await rounds.items(round.workflow);
+      // The last round: the newest task of the type, and how many its run made.
+      const [newest] = await tasks.list({ type: kind.name, test: false, limit: 1 });
+      const last = newest ? { runId: newest.runId, at: newest.created, tasks: (await tasks.list({ type: kind.name, runId: newest.runId, limit: 500 })).length } : undefined;
+      return { type: kind.name, workflow: round.workflow, ...read, ...(last ? { last } : {}) };
+    }),
+  );
+  app.post("/tasks/types/:name/round", (c) =>
+    answer(c, async () => {
+      const { round, rounds } = await roundOf(c.req.param("name"));
+      const b = await body(c);
+      const input = b["input"];
+      if (input !== undefined && (!input || typeof input !== "object" || Array.isArray(input))) throw new TaskError("bad_request", "input is an object: the round's items under the input's name, or left out for all of them");
+      const runId = await rounds.send(round.workflow, input as Record<string, unknown> | undefined, await deps.actorOf(c));
+      return { runId, workflow: round.workflow };
+    }),
+  );
 
   app.get("/tasks/workers", (c) =>
     answer(c, async () => {
