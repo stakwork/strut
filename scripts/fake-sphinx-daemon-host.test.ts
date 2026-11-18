@@ -16,6 +16,7 @@ import { createStrut } from "../src/createStrut.js";
 import { MemoryRunStore } from "../src/store.js";
 import { WorkspaceManager } from "../src/workspace.js";
 import { RUN_STEP_FLOW } from "../src/run-step.js";
+import type { Conversations } from "../src/conversations.js";
 import { setEnv } from "../src/test-util/public-door.js";
 import linkCode from "../src/steps/lib/account/link-code.js";
 import { startFakeSphinxDaemon, type FakeSphinxDaemon } from "./fake-sphinx-daemon.js";
@@ -111,5 +112,15 @@ describe("the stand-in Sphinx daemon as strut's host", () => {
     const stranger = await launch(`sphinx:03${"cd".repeat(32)}`);
     assert.equal(stranger.status, 403);
     assert.match(((await stranger.json()) as { error: string }).error, /^not_linked: /);
+    // The turn ends here, its end written to Ada's list: her row is the
+    // last file the end writes. Left in flight, that write raced the temp
+    // dir's removal after close (ENOTEMPTY on conversations/viewers).
+    const conversations = (strut.services as { conversations: Conversations }).conversations;
+    let row: { status?: string } | undefined;
+    for (let i = 0; i < 500 && !row?.status; i++) {
+      row = (await conversations.list({}, { actor: "ada-1" })).conversations.find((c) => c.id === "host/sphinx/0123456789ab");
+      if (!row?.status) await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(row?.status, "success");
   });
 });
