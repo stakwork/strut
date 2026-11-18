@@ -988,6 +988,27 @@ export interface WorkerHistoryItem {
   /** A paid answer: what it earned, when its hold ends (then it can be
    *  withdrawn), and whether it was taken back. */
   earned?: { msat: number; releases: number; takenBack?: true };
+  /** What the workflow told them after their answer (its `task/reply`
+   *  step), on an answer of theirs alone: open its files with
+   *  `useTaskFile(item, file.path)`. Absent: it told them nothing (yet). */
+  reply?: TaskReply;
+}
+
+/** What a workflow tells the workers who answered a task, after the answer
+ *  (`task/reply`): a JSON object and files of its run. */
+export interface TaskReply {
+  show?: Record<string, unknown>;
+  files?: TaskReplyFile[];
+  /** When it was made, epoch ms: a later reply replaces it. */
+  at: number;
+}
+
+/** One file of a reply: read it with `useTaskFile(item, path)`. */
+export interface TaskReplyFile {
+  name: string;
+  mediaType: string;
+  size: number;
+  path: string;
 }
 
 /** Who the viewer is as a worker here (`task/me`). */
@@ -1179,15 +1200,18 @@ export function useWorker(opts: { enabled?: boolean; all?: boolean } = {}): UseQ
 
 /** The viewer's own tasks here, newest first, at most 50 (`task/history`;
  *  with `all`, of every app they can open here, each naming its type):
- *  what they did, how each ended, and what each answer earned. Grant
- *  `task/history`. An answer or a skip in `useTask` reads it again. */
-export function useTaskHistory(opts: { enabled?: boolean; all?: boolean } = {}): UseQueryResult<{ items: WorkerHistoryItem[] }> {
+ *  what they did, how each ended, what each answer earned, and what the
+ *  workflow replied (`reply`). Grant `task/history`. An answer or a skip in
+ *  `useTask` reads it again; `refetchInterval` (ms) reads it again while the
+ *  page is shown, to wait for a reply after an answer. */
+export function useTaskHistory(opts: { enabled?: boolean; all?: boolean; refetchInterval?: number | false } = {}): UseQueryResult<{ items: WorkerHistoryItem[] }> {
   const client = useStrutClient();
   return useQuery({
     queryKey: opts.all ? [...HISTORY_QUERY_KEY, "all"] : HISTORY_QUERY_KEY,
     queryFn: () => client.run<{ items: WorkerHistoryItem[] }>(TASK_STEPS.history, opts.all ? { all: true } : {}),
     enabled: opts.enabled ?? true,
     retry: false,
+    ...(opts.refetchInterval ? { refetchInterval: opts.refetchInterval } : {}),
   });
 }
 
@@ -1258,7 +1282,9 @@ export function useWithdraw(): UseWithdraw {
 /** `task/file`: one file the task in hand names (`task.files`), read
  *  through its lease — as text or base64, `run/files`' shape, so
  *  `runFileBlob` turns it into a Blob. Only a path on the task's list. Pass
- *  `useTask().task`; nothing is read without one. */
+ *  `useTask().task`; nothing is read without one. After an answer, pass the
+ *  `useTaskHistory()` item instead: its lease reads the files of the
+ *  workflow's `reply`, and nothing else. */
 export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<RunFile> {
   const client = useStrutClient();
   const lease = task?.lease;

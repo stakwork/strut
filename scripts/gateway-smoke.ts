@@ -12,9 +12,11 @@
  * thinking through the gateway (plans/agent-sessions.md), (b3) a session that
  * changes provider (anthropic → xai → anthropic), xai naming the colour of an
  * image a tool returned on the Anthropic turn, (e) an agent run
- * that compacts (plans/compaction.md; the overlay's STRUT_COMPACT_AT), (c) an
- * xai chat turn (OpenAI-compatible route), (d) the gateway's log has the calls
- * under their session dims (the workflow name, the chat id).
+ * that compacts (plans/compaction.md; the overlay's STRUT_COMPACT_AT), (f) an
+ * `image` step that edits a photo the run was launched with (openai), and an
+ * xai edit refused, (c) an xai chat turn (OpenAI-compatible route), (d) the
+ * gateway's log has the calls under their session dims (the workflow name,
+ * the chat id).
  *
  * Routed through a gateway, strut never uses Anthropic's server-executed web
  * tools (`createWebTools({ routed })` → aieo's Exa + HTTP shims), because
@@ -421,6 +423,85 @@ steps:
   check("(e) compaction run: a compaction event", events.some((e) => e.type === "step.end" && e.stepType === "compaction"));
   check("(e) compaction run: output.compactions ≥ 1", (end?.output?.compactions ?? 0) >= 1, JSON.stringify(end?.output?.usage));
   check("(e) compaction run: carried on from the summary", result.includes(`strut-compact-${lines}`), JSON.stringify(result).slice(0, 160));
+}
+
+// ── (f) an image EDIT: the `image` step's `images` ────────────────────────
+//
+// The run is launched with a red swatch; the image step edits it on the
+// gateway's /openai/v1/images/edits (Bifrost's image_edit), and grok says
+// what colour the result's background is: still red only if the edit kept
+// the source. An xai edit is refused before anything is sent (Bifrost's xai
+// provider has no image_edit). Its own actor and VK (openai + xai), so openai
+// never sits beside anthropic in one VK (the load-balancing note above).
+
+if (XAI_MODEL !== "off") {
+  const actor = `${ACTOR}-img`;
+  const headers = { ...strutHeaders, "x-strut-actor": actor };
+  const imgVk = await json(
+    await fetch(`${GATEWAY}/api/governance/virtual-keys`, {
+      method: "POST",
+      headers: { authorization: ADMIN, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: `strut-smoke-img-${tag}`,
+        provider_configs: ["openai", "xai"].map((provider) => ({ provider, weight: 1, key_ids: ["*"], allowed_models: ["*"] })),
+      }),
+    }),
+    "create image virtual key",
+  );
+  const delegation = mintDelegation({ actor, orgPriv, userPriv: randomBytes(32) });
+  await json(
+    await fetch(`${STRUT}/llm/delegations/${encodeURIComponent(actor)}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ macaroon: delegation.macaroon, apiKey: imgVk?.virtual_key?.value ?? imgVk?.value, baseUrl: GATEWAY_INNER }),
+    }),
+    "PUT image delegation",
+  );
+  const name = `${WORKFLOW}-edit`;
+  const editYaml = `name: ${name}
+input:
+  model: { type: string }
+steps:
+  - id: remix
+    type: image
+    config:
+      model: "{{ input.model }}"
+      prompt: Add a small white star in the centre of this picture. Keep the background colour exactly as it is.
+      images: [attachments/swatch.png]
+      size: 1024x1024
+      providerOptions: { openai: { quality: low } }
+  - id: look
+    type: agent
+    config:
+      cwd: /tmp
+      model: ${XAI_MODEL}
+      toolFilter: [none]
+      maxSteps: 2
+      system: You are a terse test agent.
+      attachments: ["{{ remix.path }}"]
+      prompt: What colour is the background of the attached picture? Answer with one word.
+`;
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers, body: JSON.stringify({ name, yaml: editYaml }) }), "publish edit workflow");
+  const edit = async (model: string) => {
+    const launched = await json(
+      await fetch(`${STRUT}/workflows/${name}/run`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ input: { model }, attachments: [{ name: "swatch.png", mediaType: "image/png", data: solidPng(256, [220, 20, 20]) }] }),
+      }),
+      "launch edit run",
+    );
+    return sse(`${STRUT}/workflows/${name}/runs/${launched.runId}/stream`);
+  };
+  const ok = await edit("openai/gpt-image-1-mini");
+  const errs = errorsOf(ok);
+  const remix = ok.find((e) => e.type === "step.end" && e.path === `${name}/remix`);
+  const said = String(ok.find((e) => e.type === "step.end" && e.path === `${name}/look`)?.output?.result ?? "");
+  check("(f) openai edit: run.end, no errors", ok.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+  check("(f) openai edit: an image, at a cost", !!remix?.output?.path && remix.output.cost > 0, JSON.stringify(remix?.output && { ...remix.output, usage: undefined }));
+  check("(f) openai edit: kept the source (grok sees red)", /red/i.test(said), JSON.stringify(said).slice(0, 160));
+  const refused = errorsOf(await edit("xai/grok-imagine-image")).join(" | ");
+  check("(f) xai edit: refused before it is sent", refused.includes("cannot edit a source image through this deployment's LLM gateway"), refused.slice(0, 200));
 }
 
 // ── (c) xai chat turn (OpenAI-compatible route; web_fetch is aieo's shim) ──

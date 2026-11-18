@@ -20,6 +20,7 @@ import { kitForTests } from "../test-util/app-kit.js";
 import { jpeg, keySignIn, publicAppToken, setEnv, stepCall } from "../test-util/public-door.js";
 import { STEP_RUN_TOOL } from "../apps/tools.js";
 import { createRegistry } from "../steps/registry.js";
+import replyStep from "../steps/lib/task/reply.js";
 import { TASK_REQUESTS_PER_MINUTE } from "./tasks.js";
 import { PUBLIC_REQUESTS_PER_MINUTE } from "../public-routes.js";
 import { registerModelWrapper } from "../extensions.js";
@@ -55,6 +56,53 @@ const writeFiles = defineStep({
     return cfg.paths;
   },
 });
+
+/** Writes `size` bytes of a JPEG under the run's artifacts: what an image step draws. */
+const writeBytes = defineStep({
+  type: "test/write-bytes",
+  input: z.object({ path: z.string(), size: z.number() }),
+  output: z.any(),
+  async run(cfg, ctx?: StepContext<StrutCapabilities>) {
+    await ctx!.services.artifacts!.write(ctx!.runId, cfg.path, jpeg(cfg.size));
+    return cfg.path;
+  },
+});
+
+/** A run's reply to its worker (task/reply): a photo asked for, a picture
+ *  made of it (3 MB, a big PNG's size), and the reply with both. */
+const REMIX = `name: remix
+steps:
+  - id: shot
+    type: human
+    config:
+      task: remix-photo
+      show:
+        ask: Take a picture
+  - id: draw
+    type: test/write-bytes
+    config:
+      path: images/remix.jpg
+      size: 3145728
+  - id: tell
+    type: task/reply
+    config:
+      task: "{{ shot.task }}"
+      show:
+        note: Here it is
+      files: ["{{ draw }}"]
+`;
+/** Another run that names a task it did not ask. */
+const MEDDLE = `name: meddle
+input:
+  task: { type: string }
+steps:
+  - id: tell
+    type: task/reply
+    config:
+      task: "{{ input.task }}"
+      show:
+        note: not yours
+`;
 
 const PETS = `name: pets
 steps:
@@ -164,7 +212,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     root = await mkdtemp(join(tmpdir(), "strut-worker-door-"));
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
-      workspace, kit, registry: await createRegistry([writeFiles]),
+      workspace, kit, registry: await createRegistry([writeFiles, writeBytes]),
       scheduler: false, serveUi: false, autoResume: false, wakeDelayMs: 0,
       // $100,000 a bitcoin: a sat is $0.001.
       payments: { rate: async () => ({ usdPerBtc: 100_000, at: new Date().toISOString(), source: "test" }) },
@@ -175,6 +223,8 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     await workspace.publishWorkflowByContent("pets", PETS);
     await workspace.publishWorkflowByContent("paid", PAID);
     await workspace.publishWorkflowByContent("papers", PAPERS);
+    await workspace.publishWorkflowByContent("remix", REMIX);
+    await workspace.publishWorkflowByContent("meddle", MEDDLE);
     const apps: Array<[string, string]> = [
       ["workers", "steps: [task/next, task/submit, task/skip, task/file, task/me, task/history]"],
       ["other", "steps: [\"task/*\"]"],
@@ -303,6 +353,78 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     const read = await staff("GET", `/tasks/${task!.id}/files/${saved[0]!.path.split("/").map(encodeURIComponent).join("/")}`);
     assert.equal(read.status, 200, await read.clone().text());
     assert.equal(((await read.json()) as { base64?: string }).base64, photo.toString("base64"));
+  });
+
+  it("a run's reply (task/reply): the worker reads it on their history and opens its 3 MB picture through /public/mcp; staff read it; no page, other run or other worker reaches it", async () => {
+    const put = await staff("PUT", "/tasks/types/remix-photo", { app: "workers", answer: { type: "object", properties: {} }, open: false });
+    assert.equal(put.status, 200, await put.clone().text());
+    const [worker, other] = [await signIn(), await signIn()];
+    for (const w of [worker, other]) await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}/grants/remix-photo`);
+    const runOf = async (name: string, input: Record<string, unknown>, status: string) => {
+      const res = await req(`/workflows/${name}/run`, { method: "POST", headers: auth, body: JSON.stringify({ input }) });
+      assert.equal(res.status, 202, await res.clone().text());
+      const { runId } = (await res.json()) as { runId: string };
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const s = await strut.store.getRunSummary(name, runId);
+        if (s?.status === status) return { runId, summary: s };
+        if (Date.now() > deadline) throw new Error(`${name} never ${status}: ${JSON.stringify(s?.status)} ${JSON.stringify(s?.error ?? "")}`);
+        await sleep(10);
+      }
+    };
+
+    // The run asks, the worker answers, the run draws and replies.
+    const { runId } = await runOf("remix", {}, "waiting");
+    const [task] = await strut.tasks.capability.list({ runId });
+    const got = (await call(worker.token, "task/next", { wait: 1, type: "remix-photo" })).result as { lease: string };
+    assert.deepEqual(await call(worker.token, "task/submit", { lease: got.lease, answer: {} }), { result: { ok: true } });
+    const deadline = Date.now() + 8000;
+    let done = await strut.store.getRunSummary("remix", runId);
+    while (done?.status !== "success" && Date.now() < deadline) {
+      await sleep(10);
+      done = await strut.store.getRunSummary("remix", runId);
+    }
+    assert.equal(done?.status, "success", JSON.stringify(done?.error ?? done?.status));
+    const picture = jpeg(3 * 1024 * 1024);
+    const reply = { show: { note: "Here it is" }, files: [{ name: "remix.jpg", mediaType: "image/jpeg", size: picture.length, path: "images/remix.jpg" }] };
+    const at = (done!.output as { at: number }).at;
+    assert.deepEqual(done!.output, { task: task!.id, at });
+
+    // The worker: on their history, and the picture through the lease they answered by —
+    // 3 MB of JPEG, 4 MB as base64, inside the door's 5 MB answer.
+    const history = (await call(worker.token, "task/history")).result as { items: Array<{ lease: string; reply?: unknown }> };
+    assert.deepEqual(history.items.find((i) => i.lease === got.lease)!.reply, { ...reply, at });
+    const fileCall = await call(worker.token, "task/file", { lease: got.lease, path: "images/remix.jpg" });
+    assert.ok(fileCall.result, fileCall.error);
+    const file = fileCall.result as { mediaType: string; bytes: number; base64: string };
+    assert.deepEqual([file.mediaType, file.bytes], ["image/jpeg", picture.length]);
+    assert.equal(file.base64, picture.toString("base64"), "byte for byte");
+    assert.match((await call(worker.token, "task/file", { lease: got.lease, path: "images/other.jpg" })).error ?? "", /^not_listed: /);
+    assert.match((await call(other.token, "task/file", { lease: got.lease, path: "images/remix.jpg" })).error ?? "", /^no_lease: /, "another worker");
+    assert.equal(((await call(other.token, "task/history")).result as { items: unknown[] }).items.length, 0);
+
+    // Staff: the reply on the task, and its picture without a lease.
+    const view = (await (await staff("GET", `/tasks/${task!.id}`)).json()) as { task: { reply?: unknown } };
+    assert.deepEqual(view.task.reply, { ...reply, at });
+    const read = await staff("GET", `/tasks/${task!.id}/files/images/remix.jpg`);
+    assert.equal(read.status, 200);
+    assert.equal(((await read.json()) as { base64?: string }).base64, picture.toString("base64"));
+
+    // A page calling the step itself — a member's or a visitor's, on an app that grants task/* — is no step of the run.
+    const minted = await req("/auth/ticket", { method: "POST", headers: auth, body: JSON.stringify({ actor: "eve-1" }) });
+    const { ticket } = (await minted.json()) as { ticket: string };
+    const traded = await req("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+    const member = { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, "x-strut-ui": "1" };
+    const otherVersion = otherIdentity.match(/^app:other@(v\d+)\./)![1]!;
+    const forged = { task: task!.id, show: { note: "forged" } };
+    assert.match((await mcp("/mcp", "task/reply", forged, member, appIdentity("other", otherVersion))).error ?? "", /unknown_task: no task \S+ asked by this run/);
+    assert.ok((await call(worker.token, "task/reply", forged, otherIdentity)).error, "a visitor's page is refused too");
+    // Another run naming it fails, and the reply stays the run's own.
+    const meddled = await runOf("meddle", { task: task!.id }, "error");
+    assert.match(JSON.stringify(meddled.summary.error), /unknown_task: no task \S+ asked by this run/);
+    assert.deepEqual((await strut.tasks.capability.task(task!.id))!.reply, { ...reply, at });
+    // An agent's tool call is refused before it reaches the store.
+    await assert.rejects(replyStep.run({ task: task!.id, show: { note: "x" } }, { agentTool: true } as never), /never an agent's tool/);
   });
 
   it("the door's size (§5.6.7): a signed-in page's request may carry 20 MB of files; an anonymous one stays at 4 MB", async () => {

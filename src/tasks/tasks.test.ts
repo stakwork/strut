@@ -25,6 +25,7 @@ import { createRegistry } from "../steps/registry.js";
 import { defineStep, workflowOf, type StepContext } from "../core.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
+import { RunController } from "../run-control.js";
 import type { StrutCapabilities } from "../capabilities.js";
 
 /**
@@ -956,13 +957,13 @@ describe("the task store in a strut", () => {
     async run(cfg, ctx?: StepContext<StrutCapabilities>) {
       const tasks = ctx!.services.tasks!;
       assert.ok(Object.isFrozen(tasks), "the capability is frozen");
-      assert.deepEqual(Object.keys(tasks), ["ensure"], "the human step's call alone (§9.2)");
+      assert.deepEqual(Object.keys(tasks), ["ensure", "reply"], "the human step's and task/reply's calls alone (§9.2)");
       const { task, created } = await tasks.ensure({ type: cfg.type, workflow: workflowOf(ctx!), runId: ctx!.runId, path: ctx!.path, show: { hi: 1 } });
       return { id: task.id, created };
     },
   });
 
-  it("is ctx.services.tasks (ensure alone), and makes <dataDir>/tasks/tasks.db only once used", async () => {
+  it("is ctx.services.tasks (ensure and reply alone), and makes <dataDir>/tasks/tasks.db only once used", async () => {
     const ws = join(dir, "ws");
     const strut = await createStrut({ workspace: new WorkspaceManager(ws), serveUi: false, scheduler: false, autoResume: false, registry: await createRegistry([ask]) });
     try {
@@ -1025,3 +1026,153 @@ describe("task/file's read (§5.5): only a path on the task's list, through the 
     }
   });
 });
+
+// ── a run's reply to its workers (task/reply) ─────────────────────────────
+
+/** A picture the run made, as `task/reply` hands the store one. */
+const REMIX = { name: "remix.png", mediaType: "image/png", size: 3, path: "images/remix.png" };
+const NONE = { type: "object", properties: {} };
+
+for (const impl of impls) {
+  describe(`a run's reply to its workers: ${impl.name}`, () => {
+    let dir: string;
+    let clock: number;
+    let svc: TasksService;
+    /** Every file read, `<root>:<run>:<path>`. */
+    let read: string[];
+    const now = () => clock;
+    const make = () =>
+      createTasks({
+        ...(impl.reopen ? { open: () => openTaskStores({ dataDir: dir }), exists: () => existsSync(tasksPath(dir)) } : { open: async () => memoryTaskStores() }),
+        now,
+        file: async (t, path) => {
+          read.push(`${t.root}:${t.runId}:${path}`);
+          return { path, mediaType: "image/png", bytes: 3, base64: "AAAA" };
+        },
+      });
+    const tasks = () => svc.capability;
+    /** The control of a run: what the step's call carries, and what the store reads the run off. */
+    const run = (runId: string, workflow = "remix") => new RunController(runId, workflow).forUnit();
+
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), "strut-task-reply-"));
+      clock = T0;
+      read = [];
+      svc = make();
+      await tasks().setType("photo", { app: "workers", answer: NONE, open: false }, "staff");
+      for (const w of ["ann", "bob"]) await tasks().grant(w, "photo", "staff");
+    });
+    afterEach(async () => {
+      await svc.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const ask = async (path = "remix/shot", o: { runId?: string; withinHours?: number } = {}) =>
+      (await tasks().ensure({ type: "photo", workflow: "remix", runId: o.runId ?? "r1", path, files: ["found.jpg"], ...(o.withinHours ? { withinHours: o.withinHours } : {}) })).task;
+    const take = async (actor: string) => (await tasks().next(actor, { app: "workers" })) as WorkerTask;
+
+    it("only the run that asked, only once its task is answered; replaced whole; read by the worker who answered and by staff, and nothing else of the run", async () => {
+      const t = await ask();
+      const here = run("r1");
+      const tell = (o: Record<string, unknown>, control: unknown = here) => tasks().reply({ task: t.id, ...o } as never, { control } as never);
+      await assert.rejects(tell({ show: { note: "x" } }), refused("not_answered", /is open/));
+      const skipped = await take("bob");
+      await tasks().skip("bob", { lease: skipped.lease });
+      const l = await take("ann");
+      await tasks().submit("ann", { lease: l.lease, answer: {} });
+
+      // Another run, no run, a forged workflow, a task not on file: none is this run's.
+      await assert.rejects(tell({ show: { note: "x" } }, run("r2")), refused("unknown_task", /asked by this run/));
+      await assert.rejects(tell({ show: { note: "x" } }, null), refused("unknown_task"));
+      await assert.rejects(tell({ show: { note: "x" } }, run("r1", "other")), refused("unknown_task"));
+      await assert.rejects(tasks().reply({ task: "nope", show: { note: "x" } }, { control: here }), refused("unknown_task"));
+      // What a reply may hold.
+      await assert.rejects(tell({}), refused("bad_request", /show, files or both/));
+      await assert.rejects(tell({ show: ["x"] }), refused("bad_request", /JSON object/));
+      await assert.rejects(tell({ show: { big: "x".repeat(256 * 1024) } }), refused("bad_request", /at most 262144/));
+      await assert.rejects(tell({ files: [{ ...REMIX, path: "../up.png" }] }), refused("bad_request", /not a path under the run's files/));
+      await assert.rejects(tell({ files: [{ ...REMIX, size: 3_800_001 }] }), refused("bad_request", /reads at most 3800000/));
+      await assert.rejects(tell({ files: Array.from({ length: 11 }, (_, i) => ({ ...REMIX, path: `images/${i}.png` })) }), refused("bad_request", /at most 10/));
+      assert.equal((await tasks().task(t.id))!.reply, undefined, "nothing refused was kept");
+
+      clock += MIN;
+      assert.deepEqual(await tell({ show: { note: "first" }, files: [REMIX] }), { task: t.id, at: clock });
+      clock += MIN;
+      await tell({ show: { note: "Here it is" } });
+      assert.deepEqual((await tasks().task(t.id))!.reply, { show: { note: "Here it is" }, at: clock }, "a later reply replaces the one before, whole");
+      clock += MIN;
+      await tell({ show: { note: "Here it is" }, files: [REMIX] });
+      const reply = { show: { note: "Here it is" }, files: [REMIX], at: clock };
+
+      // The worker who answered: on their history, and its file through the lease they answered by.
+      assert.deepEqual((await tasks().history("ann", { app: "workers" })).items.map((i) => [i.lease, i.status, i.reply]), [[l.lease, "submitted", reply]]);
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "workers" }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: "found.jpg" }), refused("not_listed", /replied with/), "the task's own files are no longer theirs");
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: "images/other.png" }), refused("not_listed"), "only a path the reply lists");
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "other-app" }), refused("wrong_app"));
+      // A worker who skipped sees none of it; another worker cannot use the answering lease.
+      assert.deepEqual((await tasks().history("bob", { app: "workers" })).items.map((i) => [i.status, i.reply]), [["skipped", undefined]]);
+      await assert.rejects(tasks().file("bob", { lease: skipped.lease, path: REMIX.path }), refused("lease_closed"));
+      await assert.rejects(tasks().file("bob", { lease: l.lease, path: REMIX.path }), refused("no_lease"));
+      // The same worker on another task: its own reply alone, and none until there is one.
+      const t2 = await ask("remix/again");
+      const l2 = await take("ann");
+      await tasks().submit("ann", { lease: l2.lease, answer: {} });
+      await assert.rejects(tasks().file("ann", { lease: l2.lease, path: REMIX.path }), refused("lease_closed", /already answered/), "no reply, no files: as before");
+      await tasks().reply({ task: t2.id, files: [{ ...REMIX, path: "images/again.png" }] }, { control: here });
+      await assert.rejects(tasks().file("ann", { lease: l2.lease, path: REMIX.path }), refused("not_listed"), "another task's reply is not this one's");
+
+      // Staff: the reply on the task, its file without a lease, nothing off its list.
+      assert.deepEqual((await tasks().task(t.id))!.reply, reply);
+      assert.deepEqual(await tasks().taskFile(t.id, REMIX.path), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      await assert.rejects(tasks().taskFile(t.id, "images/other.png"), refused("not_listed"));
+      assert.deepEqual(read, [`run:r1:${REMIX.path}`, `run:r1:${REMIX.path}`], "nothing else of the run was read");
+
+      if (impl.reopen) {
+        await svc.close();
+        svc = make();
+        assert.deepEqual((await tasks().task(t.id))!.reply, reply, "kept on file");
+        assert.deepEqual((await tasks().history("ann", { app: "workers" })).items.find((i) => i.lease === l.lease)!.reply, reply);
+      }
+    });
+
+    it("a task expired, disputed or a test instance takes no reply; on a copies task every worker who answered reads it", async () => {
+      // Expired: nobody answered in time.
+      const late = await ask("remix/late", { withinHours: 1 });
+      clock += 2 * HOUR;
+      await svc.sweep();
+      await assert.rejects(tasks().reply({ task: late.id, show: { note: "x" } }, { control: run("r1") }), refused("not_answered", /is expired/));
+
+      // Copies: two answers asked for; agreed, both read the reply; disagreed, it is disputed.
+      await tasks().setType("photo", { app: "workers", answer: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }, open: false, copies: { max: 2, agree: 2, onDisagree: "fail" } }, "staff");
+      const both = (await tasks().ensure({ type: "photo", workflow: "remix", runId: "r1", path: "remix/both", copies: 2 })).task;
+      const [a, b] = [await take("ann"), await take("bob")];
+      await tasks().submit("ann", { lease: a.lease, answer: { ok: true } });
+      await tasks().submit("bob", { lease: b.lease, answer: { ok: true } });
+      await tasks().reply({ task: both.id, show: { note: "agreed" }, files: [REMIX] }, { control: run("r1") });
+      for (const [w, l] of [["ann", a], ["bob", b]] as const) {
+        assert.deepEqual((await tasks().history(w, { app: "workers" })).items.find((i) => i.lease === l.lease)!.reply?.show, { note: "agreed" }, w);
+        assert.equal((await tasks().file(w, { lease: l.lease, path: REMIX.path })).path, REMIX.path, w);
+      }
+      const split = (await tasks().ensure({ type: "photo", workflow: "remix", runId: "r1", path: "remix/split", copies: 2 })).task;
+      const [c, d] = [await take("ann"), await take("bob")];
+      await tasks().submit("ann", { lease: c.lease, answer: { ok: true } });
+      await tasks().submit("bob", { lease: d.lease, answer: { ok: false } });
+      assert.equal((await tasks().task(split.id))!.status, "disputed");
+      await assert.rejects(tasks().reply({ task: split.id, show: { note: "x" } }, { control: run("r1") }), refused("not_answered", /is disputed/));
+
+      // A test instance has no run: no run's control names it, and the store's guard holds.
+      await tasks().setType("quiz", { app: "workers", answer: NONE, open: false, tests: { qualify: 0, rate: 1, newRate: 1 } }, "staff");
+      await tasks().grant("cat", "quiz", "staff");
+      await svc.tests.create({ type: "quiz", expected: {} });
+      // A test is served in place of a real task the worker would take.
+      await tasks().ensure({ type: "quiz", workflow: "remix", runId: "r1", path: "remix/quiz" });
+      const served = await take("cat");
+      await tasks().submit("cat", { lease: served.lease, answer: {} });
+      const [instance] = await tasks().list({ test: true });
+      assert.equal(instance!.status, "settled");
+      await assert.rejects(tasks().reply({ task: instance!.id, show: { note: "x" } }, { control: new RunController(instance!.runId, instance!.workflow).forUnit() }), refused("unknown_task"));
+      assert.equal((await tasks().history("cat", { app: "workers" })).items[0]!.reply, undefined);
+    });
+  });
+}

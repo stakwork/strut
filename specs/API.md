@@ -2517,6 +2517,10 @@ the host as `ui/open-link`, so its address bar follows.
   review queue: not reviewed, marked ok, rejected), with a Review column;
   a task with what it showed and its files, its leases (a copy's answer,
   each earning with Take back), the answer in its type's form read only,
+  the run's **reply** (`task.reply`) beside the answer on a wide screen,
+  every picture among their files drawn as it comes into view (other
+  files read when opened); the list marks a task `replied` and counts the
+  answer's files, with no thumbnails;
   a **Review** section — each answer's verdict, by whom, when and until
   when it can change, with Mark ok and Reject (the reason on a line in the
   page: an app frame has no `prompt`) while it can — its run now, and
@@ -2583,8 +2587,8 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/grant { actor, type, qualify? }` | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
 | `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
 | `staff/tasks { type?, status?, workflow?, runId?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
-| `staff/task { id }` | `GET /tasks/:id` | `{ task, run }` |
-| `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers |
+| `staff/task { id }` | `GET /tasks/:id` | `{ task, run }`; `task.reply` is the run's reply to its workers, when it made one (§22, "A run's reply") |
+| `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers: the task's own, an answer's, or one its reply lists |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
 | `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
@@ -2642,13 +2646,20 @@ another app draws says "in <app>" and opens that app on it,
 `?app=<app>&input=type%3D<type>`, with a Back bar returning here — "Opening
 another app from a visitor's page", above), what they earned
 here (ready to withdraw, held), and their own tasks newest first with how
-each ended and what it earned. Choosing a kind (or Start working, any kind)
+each ended and what it earned — and, on an answer the workflow replied to
+(`task/reply`, §22), a "Reply" line that opens to draw it (`TaskReplyView`:
+`show.ask` or `show.title`, `show`'s other plain fields, its pictures read
+through the answered lease, any other file named; a picture is read only
+when its line is opened). Choosing a kind (or Start working, any kind)
 takes its tasks one after another (`useTask(type)`), each drawn by
 `WorkerTask`: what it pays, what
 it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
 photo or Choose one when the type takes files (held to its `attachments`
 rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
-one earned, with Next task (only when there is more of that kind; no task is
+one earned — and the workflow's reply, drawn as it lands while they are
+still there (`task/history` read every 4 s for at most 2 minutes, stopping
+when it comes; a later one shows on the task's row; a type whose workflow
+never replies shows nothing more) — with Next task (only when there is more of that kind; no task is
 leased until it is pressed) and Back to your work. Strut's account widget
 (`account:`) shows the balance and Withdraw. Grants `task/next`,
 `task/submit`, `task/skip`, `task/file`, `task/me`, `task/history` and
@@ -5169,7 +5180,8 @@ as an app page's own call (`step_run` on `POST /mcp` or `POST
 kept as a run (`worker: true` on the step's definition). The app must name
 the step in `grants.steps`. The worker's calls of the task store reach that
 call alone: no other step, workflow, agent tool or proposal finds them on
-`ctx.services.tasks`, which carries the `human` step's `ensure` alone
+`ctx.services.tasks`, which carries the `human` step's `ensure` and
+`task/reply`'s `reply` alone, each held to the run that calls it
 (`plans/human-steps.md` §9.2); the staff's calls are the routes below.
 
 | Step | Config | Answers |
@@ -5179,7 +5191,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
-| `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? } }] }` |
+| `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at } }] }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -5228,13 +5240,18 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   out or closed); `earned` on a paid answer: what it earned, when its hold
   ends (`releases`), and `takenBack: true` once it was taken back. Never the
   run, other workers' answers, whether it was a test, or why anything was
-  skipped, closed or taken back. `all: true` reads the tasks of every app
+  skipped, closed or taken back. `reply` on an answer of theirs the
+  workflow replied to ("A run's reply" below): never on a skipped or
+  run-out lease. `all: true` reads the tasks of every app
   the caller can open here, as `task/me { all }` does. A host's own task
   store without `history` answers `{ items: [] }`.
 - **`task/file`**: only a path on the task's `files` (`not_listed`
   whatever else the run holds), only through the caller's own live lease;
   read where the run's files are (the job's directory on a job run, else
-  the run's artifacts).
+  the run's artifacts). Through a lease the caller ANSWERED, on a task its
+  run replied to, only a path the reply's `files` lists (`not_listed`
+  otherwise, the task's own files included), whatever the worker's status
+  now; with no reply such a lease is `lease_closed`, as before.
 - **`task/me`**: the first call of an actor the store has not seen writes
   them as a `new` worker. `types` are those they hold that this app draws,
   then this app's open types they may enter (none for a suspended or banned
@@ -5313,7 +5330,7 @@ server whose task store is its host's (which answers none of them).
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
 | `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
-| `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
+| `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, one its run's reply lists (`task.reply.files`), or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
 
@@ -5835,6 +5852,49 @@ opts in with `attachments` (an admin's, as its answer and pay are):
   visitor's session, and any on `POST /mcp`, may be as large as a public
   launch with files (`PUBLIC_RUN_FILES_BODY_MAX_BYTES`, about 20.3 MB); an
   anonymous visitor's stays at 4 MB (`413`).
+
+### A run's reply — `task/reply`
+
+After a worker answers, the run that asked can tell them what came of it —
+the mirror of the `human` step's `show`, read after the answer (a picture
+an `image` step drew from their photo):
+
+```yaml
+- id: tell
+  type: task/reply
+  config:
+    task: "{{ shot.task }}"          # the human step's task
+    show: { note: "Here it is" }      # a JSON object they see
+    files: ["{{ remix.path }}"]       # files of this run they can open
+```
+
+| Step | Config | Answers |
+| --- | --- | --- |
+| `task/reply` | `{ task, show?, files? }` | `{ task, at }` |
+
+- **Only the run that asked.** A workflow's step (`effect: "write"`, on the
+  shared bag): the store reads the CALLING run off the step's run control
+  — its id and workflow, never an input — and the task must be one that run
+  asked (`unknown_task` otherwise). An app page's own call (a one-step run),
+  another run naming the id, or a custom step forging one are refused; so is
+  an agent's tool call.
+- **Only on an answered task**: settled by an answer. Open, expired,
+  cancelled or disputed is `not_answered`; a test instance has no run.
+- **What it holds.** `show`: a JSON object, at most 256 KB. `files`: files
+  of the run's artifacts, each a path or `{ path, name?, mediaType? }` (what
+  a `human` step's `attachments` lists), at most 10, each at most 3,800,000
+  bytes — what `task/file` can hand a page inside `step_run`'s 5 MB answer
+  (a 3 MB picture, 4 MB as base64, passes). One of the two at least. The
+  task keeps `reply: { show?, files?: [{ name, mediaType, size, path }],
+  at }`; the files stay in the run.
+- **Replaced whole** by a later reply.
+- **Read by** the workers who answered (every one, on a copies task): on
+  `task/history`'s `reply`, its files through `task/file` with the lease
+  they answered by — never a worker who skipped or whose lease ran out. And
+  by staff: `GET /tasks/:id`'s `task.reply`, `GET /tasks/:id/files/<path>`.
+- **A standing type** works the same: its run launches under the task's run
+  id after the answer.
+- **Opt-in**: a workflow that never calls it shows the worker nothing new.
 
 ### Review (`plans/human-steps.md` §9.6)
 

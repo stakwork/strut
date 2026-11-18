@@ -1331,7 +1331,8 @@ export function getModel(
 // Through a gateway (Bifrost) every kind rides the OpenAI-compatible route
 // with the model id naming the provider, as the chat models of xai and
 // google do. A provider whose entry has no `routed` cannot be reached
-// there, and is refused before anything is sent.
+// there, and is refused before anything is sent; so is an edit (source
+// images in the prompt) to one whose entry has no `routedEdits`.
 
 /** What a model of each media kind is. */
 export interface MediaModels {
@@ -1350,6 +1351,10 @@ interface MediaRoute<M> {
    *  gateway also returns as `usage.cost`). The others are priced from the
    *  datasheet (`computeImageCost`). */
   reportsCost?: true;
+  /** The gateway also takes an EDIT (`prompt.images`, the source images):
+   *  the OpenAI client sends it to the compatible route's `/images/edits`,
+   *  Bifrost's image_edit. Direct, every provider's SDK sends them. */
+  routedEdits?: true;
 }
 
 const MEDIA_MODELS: { [K in MediaKind]: Partial<Record<Provider, MediaRoute<MediaModels[K]>>> } = {
@@ -1359,13 +1364,19 @@ const MEDIA_MODELS: { [K in MediaKind]: Partial<Record<Provider, MediaRoute<Medi
       // The bare id: @ai-sdk/openai sends `response_format` for any id not
       // starting "gpt-image-", which OpenAI refuses for those models.
       routed: (c, base) => createOpenAI(clientSettings(c, base)).image(c.modelId),
+      routedEdits: true,
     },
     google: {
       direct: (c) => createGoogleGenerativeAI(clientSettings(c)).image(c.modelId),
       routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`gemini/${c.modelId}`),
+      // Bifrost's gemini provider edits (generateContent with the images;
+      // Imagen's :predict).
+      routedEdits: true,
     },
     xai: {
       direct: (c) => createXai(clientSettings(c)).image(c.modelId),
+      // No routedEdits: Bifrost's xai provider answers an edit
+      // `unsupported_operation` (core v1.10.1).
       routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`xai/${c.modelId}`),
       reportsCost: true,
     },
@@ -1375,7 +1386,9 @@ const MEDIA_MODELS: { [K in MediaKind]: Partial<Record<Provider, MediaRoute<Medi
       // version to v2.5.1), so the gateway holds a custom OpenAI-type
       // provider, `openrouter-images`, on OpenRouter's images API
       // (stakwork/stakgraph#1859); a virtual key reaches it only once Hive
-      // lists it among the key's providers.
+      // lists it among the key's providers. No routedEdits: that provider
+      // maps only generation onto OpenRouter's `/images`, and OpenRouter has
+      // no `/images/edits` (404).
       routed: (c, base) => createOpenAI(clientSettings(c, base)).image(`openrouter-images/${c.modelId}`),
       reportsCost: true,
     },
@@ -1395,11 +1408,12 @@ function clientSettings(c: Connection, base?: string) {
   };
 }
 
-/** The providers that make `kind`, direct; and those a gateway reaches. */
-export function mediaProviders(kind: MediaKind): { direct: Provider[]; routed: Provider[] } {
+/** The providers that make `kind`, direct; and those a gateway reaches —
+ *  for an edit (`edit`), those it takes source images for. */
+export function mediaProviders(kind: MediaKind, edit = false): { direct: Provider[]; routed: Provider[] } {
   const table = MEDIA_MODELS[kind] as Partial<Record<Provider, MediaRoute<unknown>>>;
   const direct = PROVIDERS.filter((p) => table[p]);
-  return { direct, routed: direct.filter((p) => table[p]!.routed) };
+  return { direct, routed: direct.filter((p) => table[p]!.routed && (!edit || table[p]!.routedEdits)) };
 }
 
 /** Whether every `kind` call to `provider` reports its own cost. */
@@ -1410,12 +1424,17 @@ export function mediaReportsCost(kind: MediaKind, provider: Provider | string): 
 /**
  * A media model of `kind` (an `ImageModel` for "image"), connected as
  * `getModel` connects a language model. Throws when the provider makes no
- * such media, or makes it only directly and the call goes through a gateway.
+ * such media, or makes it only directly and the call goes through a gateway
+ * — or, for an `edit` (source images in the prompt), edits only directly.
  * The cost a response reports (OpenRouter's and a gateway's `usage.cost`,
  * xAI's `cost_in_usd_ticks`) is put on each call's provider metadata as
  * `aieo.cost` (`mediaCostOf`).
  */
-export function getMediaModel<K extends MediaKind>(kind: K, provider: Provider | string, opts?: GetModelOptions): MediaModels[K] {
+export function getMediaModel<K extends MediaKind>(
+  kind: K,
+  provider: Provider | string,
+  opts?: GetModelOptions & { edit?: boolean },
+): MediaModels[K] {
   const route = (MEDIA_MODELS[kind] as Partial<Record<string, MediaRoute<MediaModels[K]>>>)[provider];
   const { direct, routed } = mediaProviders(kind);
   if (!route) {
@@ -1425,6 +1444,12 @@ export function getMediaModel<K extends MediaKind>(kind: K, provider: Provider |
     throw new Error(
       `${provider} ${kind} models cannot go through this deployment's LLM gateway (it has no ${kind} generation for ${provider}). ` +
         `Through the gateway: ${routed.join(", ")}`,
+    );
+  }
+  if (opts?.baseUrl && opts.edit && !route.routedEdits) {
+    throw new Error(
+      `${provider} ${kind} models cannot edit a source ${kind} through this deployment's LLM gateway (it has no ${kind} editing for ${provider}). ` +
+        `Edits through the gateway: ${mediaProviders(kind, true).routed.join(", ")}`,
     );
   }
   const costs = new Map<string, number>();

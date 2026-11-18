@@ -245,6 +245,16 @@ export interface Task {
   grade?: "pass" | "fail" | "error";
   gradedAt?: number;
   leases: Lease[];
+  /** What the run told the workers who answered (its `task/reply`), its
+   *  files read through `staff/file`. Absent: it told them nothing. */
+  reply?: TaskReply;
+}
+
+/** A run's reply after the answer: a JSON object and files of its run. */
+export interface TaskReply {
+  show?: Record<string, unknown>;
+  files?: SentFile[];
+  at: number;
 }
 
 export interface TaskRun {

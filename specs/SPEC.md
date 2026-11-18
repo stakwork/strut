@@ -278,12 +278,15 @@ Config:
   seed?: number,
   providerOptions?: Record<string, Record<string, unknown>>, // passed through: { openai: { quality: low } }
   name?: string,          // the file's name; default the step's own place in the run
+  images?: Array<string | { path: string, name?: string, mediaType?: string }>,
+                          // source images to EDIT: files of the run, e.g. "{{ photo.attachments }}"
 }
 ```
 
 - Makes ONE image (the AI SDK's `generateImage`) and writes it where the run's files go: `images/<name>.<ext>` under the run's artifacts, or the job's directory on a job run (as browser screenshots do).
 - Output: `{ path, url, mediaType, bytes, model, cost, usage, revisedPrompt? }`. `path` is relative, so a workflow declares the image as a deliverable: `artifacts: [{ id, kind: image, path: "{{ <step>.path }}" }]`.
 - `cost` is the call's dollars: what the provider reported (OpenRouter's and a gateway's `usage.cost`, xAI's `cost_in_usd_ticks`), else the model's datasheet price (image tokens, else per image). A model with neither is refused before the call (`image_unpriced:`): a cost is never guessed. It is reported through `withUsage`, so a run's totals and a public run's charge count it.
+- With `images` the model EDITS them (`generateImage`'s `prompt: { images, text }`): files of the run, read through `ctx.services.artifacts` like an `agent`'s `attachments` list (a `human` step's `attachments` hands them out), png, jpeg, gif or webp, at most 10, 5 MB each, 15 MB together. A file that is not the run's, or not an image, fails the step before anything is sent; no list draws from the prompt alone. Models that edit: openai `gpt-image-…`, google `gemini-…-image`, xai `grok-imagine-image`, and OpenRouter's image models (`input_references`) directly; through a gateway only openai and google (its `/openai/v1/images/edits`) — an xai or OpenRouter edit there is refused before anything is sent unless the grant allows a direct call. The source images are in the cost (OpenAI's input image tokens; Gemini's input tokens; xAI's and OpenRouter's reported cost).
 - Through an `llmAuth` grant (a gateway), image models ride the gateway's OpenAI-compatible route: xai and google named by provider (`xai/…`, `gemini/…`), openai by its bare id, and OpenRouter's as `openrouter-images/<org>/<model>`, the gateway's custom provider on OpenRouter's images API (Bifrost's own openrouter provider has no image generation).
 - As an agent's tool (`agentTools`), the model sees a 0.6× copy of the image (`withMedia`).
 - `image` spends like `llm` and `agent`: never a page's call, a public tool or an AI-published app's grant.

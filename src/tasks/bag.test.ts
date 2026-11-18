@@ -1,6 +1,7 @@
 // The task store on the services bags (plans/human-steps.md §9.2): any step
 // reaches the shared bag, a custom step the builder wrote included, so it
-// carries the `human` step's `ensure` alone. The worker's calls (which take
+// carries the `human` step's `ensure` and `task/reply`'s `reply` alone,
+// each held to the run that calls it. The worker's calls (which take
 // any actor) reach only a `worker: true` step's own call on an app door —
 // src/tasks/worker-door.test.ts takes and answers tasks there — and the
 // staff's only the `/tasks` routes.
@@ -122,7 +123,7 @@ describe("the task store on the services bags (plans/human-steps.md §9.2)", () 
         "the step, then the agent's tool call",
       );
       for (const s of seen) {
-        assert.deepEqual(s.keys, ["ensure"], "the human step's call alone");
+        assert.deepEqual(s.keys, ["ensure", "reply"], "the human step's and task/reply's calls alone");
         assert.deepEqual(s.reachable, [], "no worker's call and no staff's");
         assert.equal(s.frozen, true);
       }
@@ -154,7 +155,7 @@ export default defineStep({
     try {
       const result = await strut.run("custom", {});
       assert.equal(result.status, "success", JSON.stringify(result.error));
-      assert.deepEqual(result.output, { keys: ["ensure"], reachable: [] });
+      assert.deepEqual(result.output, { keys: ["ensure", "reply"], reachable: [] });
     } finally {
       await strut.close();
     }

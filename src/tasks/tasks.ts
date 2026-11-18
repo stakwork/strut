@@ -78,7 +78,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import type { RunControl } from "../run-control.js";
+import { runLineage, type RunControl } from "../run-control.js";
 import type { TaskDb } from "./db.js";
 import type { RunFile } from "../runs.js";
 import type { RunAttachment } from "../core.js";
@@ -110,6 +110,7 @@ import {
   type Verdict,
   type TaskListQuery,
   type TaskRecord,
+  type TaskReply,
   type LeaseStatus,
   type TaskSettled,
   type TaskStore,
@@ -124,11 +125,11 @@ import { gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson,
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { answerAttachments, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
-import type { Attachment } from "../ai/attachments.js";
+import { MAX_ATTACHMENTS, type Attachment } from "../ai/attachments.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
 export type { Standing } from "./task-tests.js";
@@ -278,7 +279,8 @@ export type TaskErrorCode =
   | "unknown_test"
   | "bad_grader"
   | "no_answer"
-  | "final";
+  | "final"
+  | "not_answered";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -472,6 +474,10 @@ export interface WorkerHistoryItem {
   closed?: number;
   status: LeaseStatus;
   earned?: { msat: number; releases: number; takenBack?: true };
+  /** What the run told them after their answer (`task/reply`): on an
+   *  answer of theirs alone, never a skipped or run-out lease. Its files
+   *  are read through `task/file` with this lease. */
+  reply?: TaskReply;
 }
 
 /** An answer's earning as staff read it (§8.1): booked in the ledger. */
@@ -661,6 +667,14 @@ export interface TasksCapability {
    *  answers earned (`pay`, §8.1), when they earned anything, and a copies
    *  task's settled with every answer (`answers`, §7.6). */
   ensure(input: EnsureInput, o?: EnsureOptions): Promise<{ task: TaskRecord; created: boolean; pay?: TaskPay; answers?: CopyAnswer[]; attachments?: RunAttachment[] }>;
+  /** The `task/reply` step's: what a run tells the workers who answered a
+   *  task IT asked — the run `control` belongs to must be the task's (its
+   *  id and workflow, never an input: `unknown_task` otherwise), and the
+   *  task settled by an answer (`not_answered`). `show` a JSON object of at
+   *  most 256 KB, `files` of the run's artifacts (at most 10, each at most
+   *  what `task/file` can hand a page); one of them at least. Replaces the
+   *  reply before. */
+  reply(input: ReplyInput, o: { control?: RunControl }): Promise<{ task: string; at: number }>;
 
   // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
   // app's name, when the call comes from one: a lease of a type another app
@@ -685,7 +699,9 @@ export interface TasksCapability {
   skip(actor: string, o: { lease: string; reason?: string; app?: string; apps?: string[] }): Promise<{ ok: true }>;
   /** One file the leased task names (`files`), as `run/files` answers one
    *  (§5.5): only a path on the task's list, only through the caller's own
-   *  live lease, whether or not another path exists. */
+   *  live lease, whether or not another path exists. Through a lease they
+   *  ANSWERED, only a file the run's reply lists (`task/reply`), and
+   *  nothing else of the run. */
   file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
   /** Who the worker is here, what they may take, what they are owed, and
    *  whether they may withdraw (`address`: the Sphinx address their session
@@ -730,7 +746,8 @@ export interface TasksCapability {
   /** §9.4: what one worker holds and did; undefined for nobody here. */
   activity(actor: string): Promise<WorkerActivity | undefined>;
   /** §9.4: one of a task's files, as `file` answers it, read by staff
-   *  without a lease: only a path on the task's list (`not_listed`). */
+   *  without a lease: only a path on the task's list, an answer's files or
+   *  the reply's (`not_listed`). */
   taskFile(id: string, path: string): Promise<RunFile>;
 }
 
@@ -738,8 +755,9 @@ export interface TasksService {
   /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
    *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
-  /** Frozen: `ensure` alone, the `human` step's — what every step's
-   *  `ctx.services.tasks` is on the shared bag (§9.2). */
+  /** Frozen: `ensure` and `reply` alone, the `human` step's and
+   *  `task/reply`'s — what every step's `ctx.services.tasks` is on the
+   *  shared bag (§9.2). */
   human: HumanTasksCapability;
   /** Frozen: the worker's calls alone — what a `worker: true` step's own
    *  call bag carries on an app door (`step_run` on `POST /mcp` and `POST
@@ -808,8 +826,19 @@ export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "s
   history?: TasksCapability["history"];
 };
 
-/** What the shared services bag carries (§9.2): the `human` step's call. */
-export type HumanTasksCapability = Pick<TasksCapability, "ensure">;
+/** What the shared services bag carries (§9.2): the `human` step's call,
+ *  and `task/reply`'s, each held to the run that calls it. */
+export type HumanTasksCapability = Pick<TasksCapability, "ensure"> & {
+  /** Strut's own store's; a host's may have none (`task/reply` refuses). */
+  reply?: TasksCapability["reply"];
+};
+
+/** What `task/reply` hands the store: the task, and what its workers see. */
+export interface ReplyInput {
+  task: string;
+  show?: Record<string, unknown>;
+  files?: RunAttachment[];
+}
 
 export interface TasksDeps {
   /** The stores, opened on first use. */
@@ -1481,6 +1510,36 @@ export function createTasks(deps: TasksDeps): TasksService {
       return made;
     },
 
+    async reply(input, o) {
+      const id = need("task", input?.task);
+      const show = input.show;
+      if (show !== undefined) {
+        if (!show || typeof show !== "object" || Array.isArray(show)) throw new TaskError("bad_request", "show is a JSON object");
+        const bytes = jsonBytes(show);
+        if (bytes === undefined) throw new TaskError("bad_request", "show must be JSON");
+        if (bytes > SHOW_MAX_BYTES) throw new TaskError("bad_request", `show is ${bytes} bytes as JSON; at most ${SHOW_MAX_BYTES} (send files instead of inlining them)`);
+      }
+      const files = input.files ?? [];
+      if (!Array.isArray(files) || files.length > MAX_ATTACHMENTS) throw new TaskError("bad_request", `files is a list of at most ${MAX_ATTACHMENTS} of the run's files`);
+      filesOf(files.map((f) => f?.path));
+      for (const f of files) {
+        if (typeof f.name !== "string" || typeof f.mediaType !== "string" || !Number.isSafeInteger(f.size)) throw new TaskError("bad_request", `files: ${JSON.stringify(f.path)} needs its name, mediaType and size`);
+        // What `task/file` can hand a page (§5.5): a worker can read every file of a reply.
+        if (f.size > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `files: ${f.path} is ${f.size} bytes; a worker's page reads at most ${TEST_FILE_MAX_BYTES} a file`);
+      }
+      if (show === undefined && !files.length) throw new TaskError("bad_request", "a reply has show, files or both");
+      // The task's run is the CALLING run, read off its control — never an
+      // input — so no other run, page or step names another run's task.
+      const run = runLineage(o?.control)[0];
+      const s = await storesIfAny();
+      const t = s && run ? await s.tasks.task(id) : undefined;
+      if (!t || t.test !== undefined || t.runId !== run!.runId || t.workflow !== run!.workflow) throw new TaskError("unknown_task", `no task ${id} asked by this run`);
+      if (t.status !== "settled") throw new TaskError("not_answered", `task ${id} is ${t.status}: a reply goes only to a task its worker answered`);
+      const reply: TaskReply = { ...(show !== undefined ? { show } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, size: f.size, path: f.path })) } : {}), at: now() };
+      if (!(await s!.tasks.reply(id, reply))) throw new TaskError("not_answered", `task ${id} is no longer answered`);
+      return { task: id, at: reply.at };
+    },
+
     async next(actor, o = {}) {
       count(actor);
       const wait = o.wait ?? 0;
@@ -1594,11 +1653,23 @@ export function createTasks(deps: TasksDeps): TasksService {
     async file(actor, o) {
       count(actor);
       const { s, w } = await worker(actor);
+      const path = o?.path;
+      if (typeof path !== "string" || !path) throw new TaskError("bad_request", "path is required");
+      // A lease they ANSWERED, on a task its run replied to, reads the
+      // reply's files alone — whatever their status now, as their history
+      // shows it — and nothing else of the run.
+      const answered = typeof o.lease === "string" && o.lease ? await s.tasks.lease(o.lease) : undefined;
+      const replied = answered?.worker === w.actor && answered.status === "submitted" ? await s.tasks.task(answered.task) : undefined;
+      if (replied?.reply) {
+        await appOk(s, answered!, o.app);
+        if (!replied.reply.files?.some((f) => f.path === path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of the files the run replied with`);
+        const f = deps.file ? await deps.file({ ...replied, root: "run" }, path) : null;
+        if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
+        return f;
+      }
       mayWork(w);
       const l = await ownLease(s, w, o?.lease);
       await appOk(s, l, o.app);
-      const path = o.path;
-      if (typeof path !== "string" || !path) throw new TaskError("bad_request", "path is required");
       const t = (await s.tasks.task(l.task))!;
       // Whether or not a file of that name exists: a task shows what its
       // step named, never the rest of its run (§5.5).
@@ -1658,7 +1729,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         const k = kinds.get(l.type);
         return k && drawnBy(k, o);
       });
-      const shown = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, askOf(t.show)]));
+      const byId = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, t]));
       const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);
       const ledger = paid.length ? await deps.ledgerIfAny?.() : undefined;
       const earned = ledger ? new Map((await ledger.payFor([...new Set(paid.map((l) => l.task))])).map((e) => [e.lease, e])) : new Map<string, Earning>();
@@ -1668,8 +1739,11 @@ export function createTasks(deps: TasksDeps): TasksService {
           // An answer not booked yet is booked by the next sweep: its hold
           // runs from when it was answered, as booking will set it.
           const pay = l.status === "submitted" && l.payMsat ? { msat: e?.msat ?? l.payMsat, releases: holdEnd(l, kinds.get(l.type), e), ...(e?.takenBack !== undefined ? { takenBack: true as const } : {}) } : undefined;
-          const ask = shown.get(l.task);
-          return { lease: l.id, type: l.type, ...(ask ? { ask } : {}), taken: l.taken, ...(l.closed !== undefined ? { closed: l.closed } : {}), status: l.status, ...(pay ? { earned: pay } : {}) };
+          const t = byId.get(l.task);
+          const ask = askOf(t?.show);
+          // The run's reply reaches those who answered, never a skip or a lease run out.
+          const reply = l.status === "submitted" ? t?.reply : undefined;
+          return { lease: l.id, type: l.type, ...(ask ? { ask } : {}), taken: l.taken, ...(l.closed !== undefined ? { closed: l.closed } : {}), status: l.status, ...(pay ? { earned: pay } : {}), ...(reply ? { reply } : {}) };
         }),
       };
     },
@@ -1889,9 +1963,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       const t = s && typeof id === "string" ? await s.tasks.task(id) : undefined;
       if (!t) throw new TaskError("unknown_task", `no task ${id}`);
       // A path not on the list is refused whether or not it exists (§5.5) —
-      // the task's own, or one its answers carried (§5.6.4), which are in
-      // the run's artifacts whatever the task's root.
-      const sent = !t.files.includes(path) && (await s!.tasks.leasesOf([t.id])).some((l) => l.attachments?.some((a) => a.path === path));
+      // the task's own, or one its answers carried (§5.6.4) or its run's
+      // reply lists, which are in the run's artifacts whatever the task's root.
+      const sent =
+        !t.files.includes(path) &&
+        (!!t.reply?.files?.some((f) => f.path === path) || (await s!.tasks.leasesOf([t.id])).some((l) => l.attachments?.some((a) => a.path === path)));
       if (!sent && !t.files.includes(path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of this task's files`);
       const f = deps.file ? await deps.file(sent ? { ...t, root: "run" } : t, path) : null;
       if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
@@ -2379,7 +2455,7 @@ export function createTasks(deps: TasksDeps): TasksService {
   };
   return {
     capability: frozen,
-    human: Object.freeze({ ensure: frozen.ensure }),
+    human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),
     worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
     isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {

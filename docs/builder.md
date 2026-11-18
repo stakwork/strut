@@ -204,7 +204,8 @@ index. A change in this area updates this file, not AGENTS.md.
   may instead LIST files of the run's artifacts — paths, or `{ path, name?,
   mediaType? }` as a `human` step's `attachments` hands them out (a worker's
   photo, plans/human-steps.md §5.6.4): exactly those on its prompt, read and
-  held to the same caps (`listedParts`, src/steps/core/agent.ts); in a session they are that
+  held to the same caps (`loadListedFiles`, src/ai/attachments.ts, which the
+  `image` step's `images` reads too; `listedParts`, src/steps/core/agent.ts); in a session they are that
   turn's message, replayed like the chat's, and the turn line records them
   (`SessionTurn.attachments`). `job/start` / `job/continue` take
   `attachments: [name]`: the files the job needs — this turn's, or, from an
@@ -388,7 +389,7 @@ POST /chat { callback }: every turn end POSTs to the host with `settled` (expect
 
 ### `src/ai/attachments.ts`
 
-files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash. A run's (`POST …/run { attachments }`) the same, saved under the run's artifacts (`saveRunAttachments` / `loadRunAttachments`) and put on its agents' prompts
+files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash. A run's (`POST …/run { attachments }`) the same, saved under the run's artifacts (`saveRunAttachments` / `loadRunAttachments`) and put on its agents' prompts. Files a step LISTS (`listedFileSchema`: a path, or what a `human` step's `attachments` hands out) are read back by `loadListedFiles`, held to the same caps: the agent's `attachments` list, the `image` step's `images`
 
 ### `src/ai/mcp.ts`
 

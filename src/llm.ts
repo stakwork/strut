@@ -227,21 +227,23 @@ export interface ResolvedMediaModel {
  * Name → a media model of `kind`, as `resolveModel` resolves a language
  * model: the same names (`provider/id`), keys and `llmAuth` grant. A grant
  * sends the call through its gateway when the gateway can route that kind
- * for the provider (aieo's `mediaProviders`); when it cannot, the call goes
+ * for the provider — for an `edit` (source images), edit it — (aieo's
+ * `mediaProviders`); when it cannot, the call goes
  * to the provider directly only if the grant allows that (`direct`), else it
  * is refused before anything is sent. Throws for a provider that makes no such
  * media (anthropic, maple, …).
  */
-export async function resolveMediaModel(kind: MediaKind, opts: ResolveModelOptions): Promise<ResolvedMediaModel> {
+export async function resolveMediaModel(kind: MediaKind, opts: ResolveModelOptions & { edit?: boolean }): Promise<ResolvedMediaModel> {
   const aieo = await loadAieo();
   const secrets = opts.secrets;
   const ref = aieo.canonicalModelName(opts.model, opts.provider);
   let grant: LlmAuthResult | undefined;
   if (opts.llmAuth && opts.auth) grant = await opts.llmAuth({ ...opts.auth, provider: ref.provider });
-  const viaGateway = !!grant?.baseUrl && (aieo.mediaProviders(kind).routed.includes(ref.provider) || !grant.direct);
+  const viaGateway = !!grant?.baseUrl && (aieo.mediaProviders(kind, opts.edit).routed.includes(ref.provider) || !grant.direct);
   const r = await aieo.resolveMediaModel(kind, {
     model: opts.model,
     provider: opts.provider,
+    edit: opts.edit,
     getSecret: secrets ? (name) => secrets.get(name) : undefined,
     ...(viaGateway && grant?.apiKey ? { apiKey: grant.apiKey } : {}),
     ...(viaGateway ? { baseUrl: grant!.baseUrl, headers: grant!.headers } : {}),

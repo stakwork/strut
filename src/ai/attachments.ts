@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
+import { z } from "zod";
 import type { ArtifactsCapability } from "../capabilities.js";
 import type { RunAttachment } from "../core.js";
 
@@ -61,6 +62,10 @@ export interface Attachment {
 type Kind = "image" | "pdf" | "word" | "text" | "file";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** Whether a file of this type is shown to a model as an image. */
+export const isImageType = (mediaType: string): boolean => IMAGE_TYPES.has(mediaType);
+
 const WORD_TYPES = new Set([
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -242,6 +247,40 @@ export async function loadRunAttachments(
       savedAt: join(dir, r.path),
     })),
   );
+}
+
+/** One file a step LISTS (the agent's `attachments`, the image step's
+ *  `images`): a path under the run's artifacts, or what a `human` step's
+ *  `attachments` hands out. */
+export const listedFileSchema = z.union([
+  z.string().min(1),
+  z.object({ path: z.string().min(1), name: z.string().optional(), mediaType: z.string().optional() }),
+]);
+export type ListedFile = z.infer<typeof listedFileSchema>;
+
+/** The files a step lists, read from the run's artifacts and held to the
+ *  caps (`checkAttachmentCaps`). Throws naming the first that is not a file
+ *  of the run, or the cap it breaks. */
+export async function loadListedFiles(
+  artifacts: ArtifactsCapability,
+  runId: string,
+  list: ListedFile[],
+): Promise<Array<Attachment & { path: string; savedAt: string }>> {
+  const dir = await artifacts.dir(runId);
+  const loaded = await Promise.all(
+    list.map(async (e) => {
+      const path = typeof e === "string" ? e : e.path;
+      const name = (typeof e === "string" ? undefined : e.name) || basename(path);
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(await artifacts.read(runId, path));
+      } catch (err) {
+        throw new Error(`${JSON.stringify(path)} is not a file of this run (${err instanceof Error ? err.message : String(err)})`);
+      }
+      return { name, mediaType: normalizeType(typeof e === "string" ? undefined : e.mediaType, name), bytes, path, savedAt: join(dir, path) };
+    }),
+  );
+  return checkAttachmentCaps(loaded);
 }
 
 /** The user-message parts for one saved attachment (see the module doc). */
