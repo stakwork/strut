@@ -139,9 +139,23 @@ describe("strut/staff: the type editor's draft", () => {
     // A server from before open types: no choice shown, and nothing sent, so its own default holds.
     const { open: _o, ...older } = type;
     assert.equal("open" in (saveOf(draftOf(older), { pay: true, tests: true, copies: true }, older) as { input: Record<string, unknown> }).input, false);
-    // A standing type (plans/human-steps.md §5.7): not edited here, kept.
+    // A standing type (plans/human-steps.md §5.7) and a round type keep what they are on a save.
     const standing = { ...type, standing: { workflow: "nutrition-label" } };
     assert.deepEqual((saveOf(draftOf(standing), all, standing) as { input: Record<string, unknown> }).input["standing"], { workflow: "nutrition-label" });
+    const round = { ...type, round: { workflow: "shop-visits" } };
+    assert.deepEqual([draftOf(round).when, draftOf(round).workflow], ["round", "shop-visits"]);
+    assert.deepEqual((saveOf(draftOf(round), all, round) as { input: Record<string, unknown> }).input["round"], { workflow: "shop-visits" });
+  });
+
+  it("When there is work: sent names no workflow; any time and rounds name the one picked, and ask for one", () => {
+    const input = (d: ReturnType<typeof draftOf>) => (saveOf(d, all, type) as { input: Record<string, unknown> }).input;
+    const sent = input({ ...draftOf(type), when: "sent", workflow: "left-over" });
+    assert.deepEqual(["standing" in sent, "round" in sent], [false, false], "a PUT of the whole type: neither, so neither is kept");
+    assert.deepEqual(input({ ...draftOf(type), when: "standing", workflow: "label-flow" })["standing"], { workflow: "label-flow" });
+    const r = input({ ...draftOf(type), when: "round", workflow: "shop-visits" });
+    assert.deepEqual([r["round"], "standing" in r], [{ workflow: "shop-visits" }, false]);
+    assert.deepEqual(saveOf({ ...draftOf(type), when: "round", workflow: "" }, all, type), { problem: "pick the workflow a round runs" });
+    assert.deepEqual(saveOf({ ...draftOf(type), when: "standing", workflow: "" }, all, type), { problem: "pick the workflow each answer starts" });
   });
 
   it("tests and copies turned off are sent as null; a new type starts from the store's defaults; a changed shape is seen", () => {

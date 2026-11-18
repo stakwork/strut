@@ -114,6 +114,74 @@ const openOf = (s: TaskStats | undefined, type: string) => {
   return r ? r.waiting + r.working : 0;
 };
 
+const WHEN_HINT: Record<Draft["when"], string> = {
+  sent: "A workflow's human step makes each task, when it runs.",
+  standing: "Any time: a worker starts one whenever they like, and their answer starts the workflow. Its first step is this type's human step.",
+  round: "One for each item: you send a round (here, or by asking the assistant), and the workflow makes a task for each item ticked.",
+};
+
+/** When there is work (plans/human-steps.md §5.7, rounds): when a workflow
+ *  sends one, any time, or in rounds — the last two with the workflow, from
+ *  those that can feed this type (`staff/type-workflows`). */
+function WhenField(props: { d: Draft; set: (patch: Partial<Draft>) => void }) {
+  const { d, set } = props;
+  const client = useStrutClient();
+  const fits = useQuery({
+    queryKey: ["staff", "type-workflows", d.name],
+    queryFn: () => client.run<{ workflows: Array<{ name: string; standing: boolean }> }>("staff/type-workflows", { type: d.name }),
+    enabled: d.when !== "sent" && !!d.name,
+  });
+  const choices = (fits.data?.workflows ?? []).filter((w) => d.when !== "standing" || w.standing).map((w) => w.name);
+  const none = fits.data && choices.length === 0;
+  return (
+    <>
+      <Field label="When there is work" htmlFor="type-when" hint={WHEN_HINT[d.when]}>
+        <NativeSelect
+          id="type-when"
+          value={d.when}
+          onChange={(e) => {
+            const when = e.target.value as Draft["when"];
+            // The workflow picked stays only where it can be one.
+            const keep = fits.data?.workflows.some((w) => w.name === d.workflow && (when !== "standing" || w.standing));
+            set({ when, workflow: keep ? d.workflow : "" });
+          }}
+        >
+          <NativeSelectOption value="sent">When a workflow sends one</NativeSelectOption>
+          <NativeSelectOption value="standing">Any time: a worker starts one</NativeSelectOption>
+          <NativeSelectOption value="round">In rounds: one for each item</NativeSelectOption>
+        </NativeSelect>
+      </Field>
+      {d.when !== "sent" && (
+        <Field
+          label={d.when === "standing" ? "Workflow each answer starts" : "Workflow a round runs"}
+          htmlFor="type-workflow"
+          hint={
+            !d.name ? (
+              "Name the type first: the workflows listed are those with a human step of it."
+            ) : none ? (
+              <span className="text-destructive">
+                No workflow here has {d.when === "standing" ? "this type's human step as its first step" : "a human step of this type"} yet: ask the assistant to build one.
+              </span>
+            ) : (
+              "Workflows with a human step of this type."
+            )
+          }
+        >
+          <NativeSelect id="type-workflow" value={d.workflow} onChange={(e) => set({ workflow: e.target.value })}>
+            <NativeSelectOption value="">Choose a workflow…</NativeSelectOption>
+            {d.workflow && !choices.includes(d.workflow) && <NativeSelectOption value={d.workflow}>{d.workflow}</NativeSelectOption>}
+            {choices.map((w) => (
+              <NativeSelectOption key={w} value={w}>
+                {w}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </Field>
+      )}
+    </>
+  );
+}
+
 function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTasks: number; readyTests?: number; onDone: (name?: string) => void }) {
   const client = useStrutClient();
   const { act, busy, error } = useAct();
@@ -184,7 +252,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         )}
       </div>
       {was && <TypeShareLine type={was} />}
-      {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}. Saving here keeps it.</Note>}
+      {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}.</Note>}
       {was?.round && <RoundNote type={was} />}
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -216,6 +284,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         <Field label="On" hint={d.enabled ? "A human step makes tasks of it, and workers are handed them." : "Off: a human step can make no new task of it, and its open tasks are not handed out and expire when due."}>
           <Switch checked={d.enabled} onCheckedChange={(c) => set({ enabled: c })} aria-label="On" />
         </Field>
+        <WhenField d={d} set={set} />
         {props.shown.open && (
           <Field
             label="Who takes it"

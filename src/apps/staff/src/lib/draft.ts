@@ -45,6 +45,12 @@ export interface Draft {
   /** §5.6: the files an answer carries; `types` comma-separated. */
   filesOn: boolean;
   files: { max: string; min: string; types: string };
+  /** When there is work: `sent` — a workflow's human step makes each task;
+   *  `standing` — any time, a worker's ask makes it (plans/human-steps.md
+   *  §5.7); `round` — one for each item, sent in rounds. The last two name
+   *  `workflow`. */
+  when: "sent" | "standing" | "round";
+  workflow: string;
 }
 
 const s = (n: number | undefined) => (n === undefined ? "" : String(n));
@@ -87,6 +93,8 @@ export function draftOf(t?: TaskType): Draft {
     copies: { max: s(copies.max), agree: s(copies.agree), onDisagree: copies.onDisagree, compare: gradeDraftOf(copies.compare) },
     filesOn: !!t?.attachments,
     files: { max: s(files.max), min: s(files.min), types: files.types.join(", ") },
+    when: t?.standing ? "standing" : t?.round ? "round" : "sent",
+    workflow: t?.standing?.workflow ?? t?.round?.workflow ?? "",
   };
 }
 
@@ -181,10 +189,12 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
     input["attachments"] = { max, min, types };
   }
   // Off: left out, which a whole-type PUT saves as none.
-  // Standing (plans/human-steps.md §5.7) is not edited here: sent back as it was.
-  if (was?.standing) input["standing"] = was.standing;
-  // So is a round's workflow.
-  if (was?.round) input["round"] = was.round;
+  // When there is work: a standing type or a round type names its workflow;
+  // the store checks it can be one, and says why not.
+  if (d.when !== "sent") {
+    if (!d.workflow) return { problem: d.when === "standing" ? "pick the workflow each answer starts" : "pick the workflow a round runs" };
+    input[d.when] = { workflow: d.workflow };
+  }
   return { input };
 }
 

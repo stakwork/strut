@@ -6656,6 +6656,15 @@ export async function createStrut<TServices = unknown>(
         if (!parsed.success) throw new TaskError("bad_request", `the round's input does not fit workflow ${workflow}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
         return launchDetached(flow, { runId: generateRunId(), ...(input ? { input } : {}) }, actor ? { actor } : undefined);
       },
+      workflowsFor: async (type) => {
+        const out: Array<{ name: string; standing: boolean }> = [];
+        for (const { name } of await workspace.listWorkflows()) {
+          const flow = await workspace.getWorkflow(name).catch(() => null);
+          if (!flow || flow.sealed || roundProblem(flow, type)) continue;
+          out.push({ name, standing: !("problem" in standingTask(flow, type)) });
+        }
+        return out.sort((a, b) => a.name.localeCompare(b.name));
+      },
     },
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,

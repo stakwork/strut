@@ -149,6 +149,10 @@ export interface TaskRoutesDeps {
   rounds?: {
     items(workflow: string): Promise<RoundItems>;
     send(workflow: string, input: Record<string, unknown> | undefined, actor: string | undefined): Promise<string>;
+    /** The workflows that can make tasks of `type` — a `human` step of it at
+     *  any depth — each with whether it can be its STANDING workflow (its
+     *  first step that step): the type editor's picker. */
+    workflowsFor(type: string): Promise<Array<{ name: string; standing: boolean }>>;
   };
 }
 
@@ -338,6 +342,15 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     if (!kind.round) throw new TaskError("bad_request", `task type ${name} is not sent in rounds: save it with round: { workflow }`);
     return { kind, round: kind.round, rounds: deps.rounds };
   };
+  // The type editor's "When there is work": which workflows can feed a type.
+  app.get("/tasks/workflows", (c) =>
+    answer(c, async () => {
+      if (!deps.rounds) throw new TaskError("refused", "this server starts no workflow from a task type");
+      const type = c.req.query("type") ?? "";
+      if (!type) throw new TaskError("bad_request", "type is the task type's name");
+      return { type, workflows: await deps.rounds.workflowsFor(type) };
+    }),
+  );
   app.get("/tasks/types/:name/round", (c) =>
     answer(c, async () => {
       const { kind, round, rounds } = await roundOf(c.req.param("name"));
