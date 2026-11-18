@@ -2,7 +2,7 @@
 
 > **Status (2026-11-18): every work item is built: 1 (`git+`
 > subscriptions, stakwork/strut#739), 2 (the secrets gate,
-> stakwork/strut#740) and 3 (the `job` grant, stakwork/strut#PR).** First written
+> stakwork/strut#740) and 3 (the `job` grant, stakwork/strut#741).** First written
 > 2026-11-17 (stakwork/strut#732) around a new follower, `STRUT_REPOS`, that
 > opened each package as a repo and pulled it on a poll. Revised 2026-11-18
 > after a review against the code: strut already follows packages
@@ -371,7 +371,7 @@ Each is its own PR against `main`. Items 1 and 2 both change
    page or grant); the secret set, so the next sync installs it; the secret
    removed, so the next sync takes the package out with its edits kept; the
    same for a `pk:` subscription. Docs: `docs/packages.md`.
-3. **The `job` grant** (§3). **Built: stakwork/strut#PR.** The manifest
+3. **The `job` grant** (§3). **Built: stakwork/strut#741.** The manifest
    key and its check (`format.ts`), the seed's merged delta
    (`packageJobGrants`, `withJobGrants` in `job-seed.ts`) and the re-seed
    (`seedJob` inside `oneAtATime`, `createStrut.ts`), the package page and
