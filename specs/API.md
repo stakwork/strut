@@ -3586,7 +3586,7 @@ A subscription may follow a **git branch** instead (`plans/followed-repos.md`
 ```jsonc
 // PUT /packages/subscriptions/pods — a host's first boot
 {
-  "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
+  "ref": "git+https://github.com/stakwork/pods@stable#package",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
   "tokenSecret": "GITHUB_TOKEN"   // optional: the NAME of the secret the repo is read with; a public repo needs none
 }
 ```
@@ -3610,7 +3610,7 @@ subscription follows a branch, not a tag or a commit`.
 ```jsonc
 // GET /packages/subscriptions → subscriptions[]
 {
-  "id": "pods", "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods", "tokenSecret": "GITHUB_TOKEN",
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
   "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…",   // no seq: a branch has no catalog
                "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
   "checkedAt": "…", "error": "…", "warnings": [],
@@ -3635,13 +3635,13 @@ install (`POST /packages/install`) is not gated: it installs and lists what
 is missing.
 
 ```jsonc
-// POST /packages/subscriptions/pods/sync, with AWS_ACCESS_KEY_ID unset
-{ "id": "pods", "status": "waiting", "from": "9531ac85…", "to": "9531ac85…", "waiting": { "secrets": ["AWS_ACCESS_KEY_ID"] } }
+// POST /packages/subscriptions/pods/sync, with PODS_URL and PODS_TOKEN unset
+{ "id": "pods", "status": "waiting", "from": "9531ac85…", "to": "9531ac85…", "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] } }
 // GET /packages/subscriptions → subscriptions[]
 {
-  "id": "pods", "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods", "tokenSecret": "GITHUB_TOKEN",
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
   "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…", "packages": [] },   // read, nothing went in
-  "waiting": { "secrets": ["AWS_ACCESS_KEY_ID"] },
+  "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] },
   "checkedAt": "…", "warnings": [],
   "packages": []   // what is left here: an item edited here before it went out
 }

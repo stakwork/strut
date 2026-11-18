@@ -12,7 +12,11 @@
 > against strut `main` @5b33e939. Companions: `marketplace.md` (§12.1:
 > subscriptions and the distro's door), `app-repos.md` (§3: Open, Commit
 > and Pull of a package repo; §4.3: serve mode following a branch). The
-> first package is Stadeum's pods (stakwork/stadeum `plans/pods.md`).
+> first package is pods (stakwork/stadeum `plans/pods.md`). Its examples
+> follow the owner's 2026-11-18 ruling: pods live in a new public repo,
+> `stakwork/pods` (not created yet), and a box's strut holds only
+> `PODS_URL` and a tenant `PODS_TOKEN` for a pods service that holds the
+> cloud keys (stakwork/stadeum#53).
 
 ## Goal
 
@@ -22,7 +26,7 @@ from a branch, moves it when the host says the branch moved, and the job
 agent can use the steps the package names.
 
 The first use is the Stadeum boxes Stakwork hosts for customers, with
-Stadeum's pods as the package. Self-hosted boxes come later. The owner, on
+pods as the package. Self-hosted boxes come later. The owner, on
 2026-11-17: *"Stadeum should add functionality to strut as well (pods). But
 not 'embedded'.. but via a package … a repo(s) that strut pulls from
 automatically when it starts and just embeds all those workflows, tools,
@@ -51,13 +55,13 @@ Strut already follows packages, twice:
 Three things are missing:
 
 - **A subscription to a git branch.** Subscriptions take only `pk:`
-  catalogs, which need a publishing strut. Stadeum's pods live in a public
-  GitHub repo, and Stadeum releases them by moving a `stable` branch.
+  catalogs, which need a publishing strut. Pods live in a public GitHub
+  repo, `stakwork/pods`, released by moving a `stable` branch.
 - **Keeping out a package that can't work.** A package installs without
   the secrets it requires: the install reports them and goes on
-  (`src/packages/install.ts`). Pods without an AWS account would put ten
-  failing tools on the job agent, and a `Code Change` page under `Job`
-  that tells Jamie it can change code.
+  (`src/packages/install.ts`). Pods without a pods service would put
+  eleven failing tools on the job agent, and a `Code Change` page under
+  `Job` that tells Jamie it can change code.
 - **Tools for the job agent.** Only a host's delta appends to the `job`
   workflow's `params.tools`. A package's steps can be agent tools
   (package-first lookup, `src/package-lookup.ts`), but nothing grants them
@@ -77,21 +81,21 @@ Three things are missing:
 | 8 | How does a package give the job agent tools? | **A `job:` key in `strut.yaml`** naming steps of the package. The `job` seed grants what each installed package's manifest names. | proposed |
 | 9 | Why `strut.yaml`, when `serve.yaml` is a top-level file? | **An older strut should refuse the package.** The manifest is strict, so an older strut fails to read a package with a `job:` key instead of installing it without its tools. Only a serving strut reads `serve.yaml`; every strut that installs this package needs the grant. | proposed |
 | 10 | May a package grant strut's own steps, or another package's? | **No, only its own.** A grant widens what the job agent can do. Limiting it to the package's own steps keeps it to code the subscription (or the person's install) already named. | proposed |
-| 11 | Can a package's steps import npm packages? | **Not now.** A step imports `strut` and its own helper files (`src/strut-resolve-hook.ts`); a package vendors what it needs. Pods sign their AWS calls with `node:crypto`. | **owner** (2026-11-17: "Vendor for now") |
+| 11 | Can a package's steps import npm packages? | **Not now.** A step imports `strut` and its own helper files (`src/strut-resolve-hook.ts`); a package vendors what it needs. Pods' steps only call the pods service. | **owner** (2026-11-17: "Vendor for now") |
 | 12 | Who opens pull requests on a package? | **Jamie, on a box that develops it,** through `package/commit` and the repo door as built (§5). Never a box that follows the package. | **owner** (Jamie makes PRs from strut); the scope is proposed |
 
 ## Design in one paragraph
 
 **A hosted Stadeum box subscribes to a package's git branch, and its host
 moves it.** At first boot, Stadeum's ops subscribes the box to
-`git+https://github.com/stakwork/stadeum@stable#packages/pods` with the
-deployment key. Each night it syncs the subscription in the window where it
-updates strut's image; strut never moves it by itself. A sync fetches the
-branch. When the commit moved and the package's digest with it, the package
-at that commit goes in through the distro's door, an older one included, so
-moving `stable` back is a rollback. Until every secret the package requires
-is set, nothing of it is installed. The package's `strut.yaml` names its
-steps for the job agent (`job: { tools: [...] }`), and the `job` seed grants
+`git+https://github.com/stakwork/pods@stable#package` with the deployment
+key. Each night it syncs the subscription in the window where it updates
+strut's image; strut never moves it by itself. A sync fetches the branch.
+When the commit moved and the package's digest with it, the package at that
+commit goes in through the distro's door, an older one included, so moving
+`stable` back is a rollback. Until every secret the package requires is
+set, nothing of it is installed. The package's `strut.yaml` names its steps
+for the job agent (`job: { tools: [...] }`), and the `job` seed grants
 them.
 
 ## 1. `git+` subscriptions
@@ -214,10 +218,10 @@ waiting subscription and the secrets it needs.
 package: stadeum/pods
 version: 0.1.0
 job:
-  tools: [claim, release, bash, edit, overview, search, fetch, latest, push, workspace]  # the package's own steps, or globs over them
+  tools: [claim, release, bash, edit, overview, search, fetch, latest, push, link, workspace]  # the package's own steps, or globs over them
   approve: [workspace]  # among those, the ones whose call becomes a proposal
 requires:
-  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, PODS_REGION, PODS_BUCKET, PODS_BUILD_ROLE, PODS_EXEC_ROLE]
+  secrets: [PODS_URL, PODS_TOKEN]
 ```
 
 `readPackage` resolves each name against the package's steps (`claim` →
@@ -261,12 +265,16 @@ Not work in strut: what Stadeum's side (its pods plan) does with §1–§3.
 
 - Strut runs with `STRUT_DISTRO_POLL_MINUTES=0`. It still reads its
   subscriptions once at boot, and Stadeum restarts strut in its window.
-- At provisioning, Stakwork sets the package's secrets: in strut's
-  environment, which its secrets fall back to, or with
-  `PUT /secrets/:name`.
+- At provisioning, Stakwork makes the box a tenant of its pods service and
+  sets the package's two secrets, `PODS_URL` and the tenant's
+  `PODS_TOKEN`: in strut's environment, which its secrets fall back to, or
+  with `PUT /secrets/:name`. No cloud keys go in strut: the service holds
+  them. A box without a pods service has neither, so the gate (§2) keeps
+  pods out.
 - At first boot, ops subscribes the box with the deployment key (strut's
-  `STRUT_API_KEY`): `PUT /packages/subscriptions/pods { ref }`. The list
-  rides Stadeum's release, so a release can add a package to every box.
+  `STRUT_API_KEY`): `PUT /packages/subscriptions/pods { "ref":
+  "git+https://github.com/stakwork/pods@stable#package" }`. The list rides
+  Stadeum's release, so a release can add a package to every box.
 - Each night, inside the drain it takes for strut's image and after that
   image moved, ops calls `POST /packages/subscriptions/:id/sync` and
   records the commits from and to, as it records an image's. A package
