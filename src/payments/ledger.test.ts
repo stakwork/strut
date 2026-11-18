@@ -696,6 +696,34 @@ for (const impl of impls) {
       assert.deepEqual(await store.payDaily({ to: dayOf(T0 - day) }), []);
     });
 
+    it("a release moves a held earning to now, once, and never one taken back; a take-back after it is released (§9.6)", async () => {
+      await store.pay({ lease: "r1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
+      await store.pay({ lease: "r2", task: "t2", worker: "ann", type: "pet-match", msat: 5_000, at: T0, releases: T0 + DAY });
+      assert.equal((await store.payeeBalance("ann", { now: T0 + HOUR })).withdrawableMsat, 0);
+      const rel = await store.release({ lease: "r1", at: T0 + HOUR });
+      assert.equal(rel.result, "released");
+      assert.equal(rel.earning?.releases, T0 + HOUR);
+      const bal = await store.payeeBalance("ann", { now: T0 + HOUR });
+      assert.equal(bal.withdrawableMsat, 21_000);
+      assert.equal(bal.heldMsat, 5_000);
+      assert.equal(bal.nextReleaseAt, T0 + DAY, "only r2 still held");
+      // Again: past its hold already, unchanged.
+      const again = await store.release({ lease: "r1", at: T0 + 2 * HOUR });
+      assert.equal(again.result, "already");
+      assert.equal(again.earning?.releases, T0 + HOUR);
+      // Released: the worker's, a take-back is refused.
+      assert.equal((await store.takeBack({ lease: "r1", why: "late", at: T0 + 2 * HOUR })).result, "released");
+      // Taken back: nothing moves.
+      await store.takeBack({ lease: "r2", why: "bad", at: T0 + HOUR });
+      const t = await store.release({ lease: "r2", at: T0 + 2 * HOUR });
+      assert.equal(t.result, "taken");
+      assert.equal(t.earning?.releases, T0 + DAY);
+      assert.deepEqual(await store.release({ lease: "never", at: T0 }), { lease: "never", result: "none" });
+      // Never before the earning's own `at`.
+      await store.pay({ lease: "r3", task: "t3", worker: "bo", type: "pet-match", msat: 1_000, at: T0 + HOUR, releases: T0 + DAY });
+      assert.equal((await store.release({ lease: "r3", at: T0 })).earning?.releases, T0 + HOUR);
+    });
+
     it("a restore undoes a take-back inside the hold, keeps what it cleared, and the earning can be taken back again (§9.6)", async () => {
       const day = 24 * HOUR;
       await earn("l1", { msat: 10_000 });
@@ -1032,10 +1060,12 @@ describe("the ledger file", () => {
     await store.restore({ lease: "l1", at: T0 + 2 });
     await store.close();
     const db = new DatabaseSync(ledgerPath(dir));
-    const refused = /take-back, or that take-back undone/;
+    const refused = /a pay row changes only by/;
     try {
       assert.throws(() => db.exec("update pay set msat = 1 where lease = 'l1'"), refused);
-      assert.throws(() => db.exec("update pay set releases = 0 where lease = 'l1'"), refused);
+      assert.throws(() => db.exec("update pay set releases = 0 where lease = 'l1'"), refused, "never before its at");
+      assert.throws(() => db.exec(`update pay set releases = ${T0 + 2 * DAY} where lease = 'l1'`), refused, "never later");
+      assert.throws(() => db.exec(`update pay set releases = ${T0 + 5}, msat = 1 where lease = 'l1'`), refused, "earlier, nothing else");
       assert.throws(() => db.exec("delete from pay where lease = 'l1'"), /kept/);
       db.exec(`update pay set taken_back = ${T0}, taken_back_why = 'bad' where lease = 'l1'`);
       assert.throws(() => db.exec(`update pay set taken_back = ${T0 + 1}, taken_back_why = 'again' where lease = 'l1'`), refused, "never rewritten");
@@ -1054,7 +1084,7 @@ describe("the ledger file", () => {
     await one.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
     await one.close();
     const db = new DatabaseSync(ledgerPath(dir));
-    db.exec(`drop trigger pay_take_back_or_restore; drop trigger pay_restores_append_only; drop trigger pay_restores_kept; drop table pay_restores;
+    db.exec(`drop trigger pay_take_back_restore_release; drop trigger pay_restores_append_only; drop trigger pay_restores_kept; drop table pay_restores;
       create trigger pay_take_back_once before update on pay
         when old.taken_back is not null or new.taken_back is null
         begin select raise(abort, 'a pay row changes only by its take-back, once'); end;`);
@@ -1070,7 +1100,7 @@ describe("the ledger file", () => {
     const after = new DatabaseSync(ledgerPath(dir));
     try {
       const triggers = (after.prepare("select name from sqlite_master where type = 'trigger' and tbl_name = 'pay' order by name").all() as Array<{ name: string }>).map((t) => t.name);
-      assert.deepEqual(triggers, ["pay_kept", "pay_take_back_or_restore"]);
+      assert.deepEqual(triggers, ["pay_kept", "pay_take_back_restore_release"]);
     } finally {
       after.close();
     }
@@ -1082,7 +1112,7 @@ describe("the ledger file", () => {
     await one.close();
     // What a file made before §8.1 holds: none of pay's tables.
     const db = new DatabaseSync(ledgerPath(dir));
-    db.exec("drop trigger pay_take_back_or_restore; drop trigger pay_kept; drop table pay; drop table payees; drop table pay_daily; drop table pay_restores");
+    db.exec("drop trigger pay_take_back_restore_release; drop trigger pay_kept; drop table pay; drop table payees; drop table pay_daily; drop table pay_restores");
     db.close();
     const two = await openLedger({ dataDir: dir });
     try {

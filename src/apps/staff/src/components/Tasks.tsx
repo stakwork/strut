@@ -323,8 +323,8 @@ function TaskDetail(props: Props & { id: string }) {
           <Note>
             A mark on {copies ? "each answer" : "the answer"}: the run has gone on and is not touched.
             {type?.tests ? " A rejection counts against the worker's standing in this type as a failed test does, and Mark ok takes it out." : ""}
-            {props.shown.earnings && reviewable(t).some((l) => l.payMsat) ? " While the earning is held, a rejection takes it back and Mark ok gives it back (a take-back by hand stays)." : ""} It
-            can change until the answer's hold ends; then it is final.
+            {props.shown.earnings && reviewable(t).some((l) => l.payMsat) ? " While the earning is held, a rejection takes it back, and Mark ok gives it back if a rejection took it and releases it to the worker now, which makes the verdict final (a take-back by hand stays)." : ""} It
+            can change until the answer's hold ends (Mark ok ends it); then it is final.
           </Note>
           <ul className="flex flex-col gap-2">
             {reviewable(t).map((l) => (

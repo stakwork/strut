@@ -7,7 +7,7 @@ export default defineStep({
   type: "staff/review",
   effect: "write",
   description:
-    "Mark one answer to a task ok or rejected, with why (PUT /tasks/:id/review); a rejection says why. worker only when the task has several answers. A mark: the run is not touched. A rejection counts against the worker's standing as a failed test does. Changeable until the answer's hold ends, then refused (final). Answers { task, worker, lease, review, earning? }. Only strut's own staff app, shown to an admin.",
+    "Mark one answer to a task ok or rejected, with why (PUT /tasks/:id/review); a rejection says why. worker only when the task has several answers. A mark: the run is not touched. A rejection counts against the worker's standing as a failed test does. Changeable until the answer's hold ends, then refused (final). ok releases a held earning to the worker at once, which makes the verdict final. Answers { task, worker, lease, review, earning? }. Only strut's own staff app, shown to an admin.",
   input: z.object({ task: z.string().min(1), worker: z.string().optional(), verdict: z.enum(["ok", "rejected"]), why: z.string().optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

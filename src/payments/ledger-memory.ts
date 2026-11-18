@@ -66,6 +66,8 @@ import {
   type SweepResult,
   type PayRestore,
   type RestoreInput,
+  type ReleaseInput,
+  type ReleaseResult,
   type RestoreResult,
   type TakeBackInput,
   type TakeBackResult,
@@ -493,6 +495,19 @@ export class MemoryLedgerStore implements LedgerStore {
     day.takenBackAnswers -= 1;
     day.takenBackMsat -= e.msat;
     return { lease: input.lease, result: "restored", earning: { ...e } };
+  }
+
+  async release(input: ReleaseInput): Promise<ReleaseResult> {
+    const at = input.at ?? Date.now();
+    need("lease", input.lease);
+    int("at", at);
+    const e = this.pays.get(input.lease);
+    if (!e) return { lease: input.lease, result: "none" };
+    if (e.takenBack !== undefined) return { lease: input.lease, result: "taken", earning: { ...e } };
+    const to = Math.max(at, e.at);
+    if (e.releases <= to) return { lease: input.lease, result: "already", earning: { ...e } };
+    e.releases = to;
+    return { lease: input.lease, result: "released", earning: { ...e } };
   }
 
   async restoresOf(lease: string): Promise<PayRestore[]> {

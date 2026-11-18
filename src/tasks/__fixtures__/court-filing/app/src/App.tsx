@@ -113,7 +113,7 @@ export default function App() {
             {stage.earnedMsat > 0 && <span className="court-earned"><Zap size={13} /> +{sats(stage.earnedMsat)}</span>}
           </div>
           <h2>Thanks: we're reading it</h2>
-          <p>What you earned is held for a while in case the photo can't be read, then you can withdraw it from your account.</p>
+          <p>What you earned is held for a while in case the photo can't be read (or until a reviewer marks it ok), then you can withdraw it from your account.</p>
           <button className="court-btn court-btn-ghost" onClick={again}><Camera size={16} /> Next document</button>
         </section>
       )}

@@ -119,7 +119,7 @@ export const typeChangeInput = z.object({
     .optional()
     .refine((v) => v === undefined || Math.abs(v * 1000 - Math.round(v * 1000)) <= 1e-6, "paySats is sats to the msat (at most three decimals)")
     .describe("What one accepted answer earns its worker, in sats (0: unpaid, a new type's default). A rise is shown to the admin as a danger."),
-  holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 72 for a new type).`),
+  holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours; marking the answer ok releases it at once (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 72 for a new type).`),
   tests: z
     .preprocess(
       fromJsonText,
@@ -624,7 +624,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     : "Only people you invite: give it to each of them in Tasks and workers.";
   fields.push({ label: "Who can do it", value: who, ...(warn ? { danger: true } : {}) });
   let pay = after.paySats
-    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${holdText(after.holdHours)} later.`
+    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${holdText(after.holdHours)} later, or as soon as you mark the answer ok.`
     : "Unpaid.";
   if (before && payBefore !== after.paySats) pay += ` It is ${money(payBefore)} now.`;
   const week = existing?.answeredWeek;
