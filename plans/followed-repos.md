@@ -1,6 +1,8 @@
 # Followed packages: a deployment follows a package's git branch
 
-> **Status (2026-11-18): proposed. Nothing is built.** First written
+> **Status (2026-11-18): work items 1 (`git+` subscriptions,
+> stakwork/strut#739) and 2 (the secrets gate, stakwork/strut#PR2) are
+> built; item 3 (the `job` grant) is proposed.** First written
 > 2026-11-17 (stakwork/strut#732) around a new follower, `STRUT_REPOS`, that
 > opened each package as a repo and pulled it on a poll. Revised 2026-11-18
 > after a review against the code: strut already follows packages
@@ -68,7 +70,7 @@ Three things are missing:
 | 1 | How does a deployment add a feature like pods? | **A package in a git repo that strut follows.** Not an embed: no host process around strut. | **owner** |
 | 2 | Which follower? | **A subscription, through the distro's door.** No new follower. The first version of this plan opened each package as a repo (the repo door) and pulled it. That door is for a box that develops a package, not one that runs it: an edit here stops the package's updates, the box can't push to the repo it follows, and a Commit takes along the Concept pages made under the package's pages (§5). | **owner** (2026-11-18) |
 | 3 | How is a git branch followed? | **`git+` refs in subscriptions:** `{ ref, tokenSecret? }` beside `{ key, url, channel?, token? }`. The branch is the channel. | **owner** (2026-11-18: "git+ refs in subscriptions is the way") |
-| 4 | A package that lacks a required secret? | **Disabled completely, tools and Concepts.** A subscription doesn't install it, and takes it out at the next sync when a secret goes (§2). | **owner** (2026-11-18: "disable the package completely (tools and concepts)"); how is proposed |
+| 4 | A package that lacks a required secret? | **Disabled completely, tools and Concepts.** A subscription doesn't install it, and takes it out at the next sync when a secret goes (§2). | **owner** (2026-11-18: "disable the package completely (tools and concepts)"); how: §2, built |
 | 5 | When does a hosted box's package move? | **When the host says, in the window where it updates strut's image.** Strut's poll is off and the host syncs the subscription (§4). | **owner** (2026-11-18: "the same schedule as updating images"); the route is proposed |
 | 6 | Which boxes first? | **The Stadeum boxes Stakwork hosts for customers.** Self-hosted boxes later: what they add is in §2 and §4. | **owner** (2026-11-18) |
 | 7 | A push webhook? | **No.** A `git+` subscription has no publisher to ping, and a peer's ping doesn't read it (§1.3): it would move a box outside its host's window. | proposed |
@@ -100,9 +102,13 @@ them.
 
 - `{ key, url, channel?, token? }`: a publisher's catalog, as today; or
 - `{ ref, tokenSecret? }`: `ref` is a
-  `git+https://host/org/repo@<branch>[#<folder>]` ref, the form
-  `git-source.ts` parses. It names a branch. A tag or a commit has nothing
-  to follow, so it's refused (`subscription_invalid`). `tokenSecret` is the
+  `git+https://host/org/repo[@<branch>][#<folder>]` ref, the form
+  `git-source.ts` parses. It names a branch; without `@<branch>` the
+  remote's default branch is followed. A tag or a commit has nothing to
+  follow. A full commit sha is refused at the `PUT`
+  (`subscription_invalid`). A tag can only be told from a branch after a
+  fetch, so the first sync refuses it (`package_ref_not_found`) and
+  installs nothing. `tokenSecret` is the
   NAME of the deployment secret the repo is read with (default
   `GITHUB_TOKEN`, as serve mode and `STRUT_PACKAGES` read it). A public repo
   needs none.
@@ -116,19 +122,24 @@ For a `git+` subscription, the sync reads the ref as serve mode's
 `fetchRef` does: `resolvePackage(ref, { cache, dataDir, tokenSecret, … ,
 known })` fetches the branch and reads the package at its commit into the
 cache. It skips that read when the commit is the one applied (`known`).
-Then:
+Then, in this order:
 
-- **Current:** the digest is the one applied. A commit that changed
-  nothing in the package's folder is recorded, and nothing is installed.
-- **Waiting:** a secret the package requires is unset (§2).
+- **Waiting:** a secret the package requires is unset (§2). Checked first,
+  on every sync: the package is not installed, or is taken out, even when
+  nothing moved.
+- **Current:** the digest is the one applied, and it went in then. A
+  commit that changed nothing in the package's folder is recorded, and
+  nothing is installed.
 - **Applied:** otherwise, one install through the distro's door. It
   records `ref: subscription:<id>` as today, and the commit on each
   version's upstream.
 
 A failure (the remote doesn't answer, the token is refused, the install is
 refused because the package needs a newer strut) keeps what's installed.
-It's kept as `error` on the subscription, as today. The state gains `ref`
-and `applied.commit`. A catalog's `seq` is absent for a `git+` subscription.
+It's kept as `error` on the subscription, as today. `applied` gains `ref`
+and `commit`: the ref is kept on the applied state too, so a sync never
+reuses a commit read from a different ref. A catalog's `seq` is absent for
+a `git+` subscription.
 
 A branch moved back installs the older commit's package. That's how a
 channel rolls back.
@@ -152,10 +163,11 @@ each package it installed with the items `diverged` here.
 
 ## 2. A package that lacks a secret stays out
 
-Before it installs, a sync checks every secret the package's
-`requires.secrets` names, as the install's `missing` list does
-(`missingFor` in `install.ts`: the deployment's store, then its
-environment). While one is unset:
+On every sync, before it installs and before it finds nothing new, a
+subscription checks every secret the package's `requires.secrets` names,
+as the install's `missing` list does (`missingFor` in `install.ts`: the
+deployment's secrets capability, which falls back to strut's environment;
+never the subscription's own store). While one is unset:
 
 - nothing of the package is installed: no steps, workflows, apps or
   Concept pages, and no grant to the job agent;
@@ -164,9 +176,24 @@ environment). While one is unset:
   as when a channel drops one. What was edited here stays as the box's own
   (the distro's uninstall rule), and isn't granted.
 
-The next sync after the secrets are set installs it. This holds for every
-subscription, `pk:` included. A person's install is unchanged: its ask
-lists what's missing, and the person decides.
+The next sync after the secrets are set installs it, with no new commit or
+release: "nothing moved" means the digest is the one applied AND what went
+in then is what the gate lets in now (`applied.packages` lists what went
+in, not what waits). This holds for every subscription, `pk:` included. A
+person's install is unchanged: its ask lists what's missing, and the
+person decides.
+
+**A channel of several packages** (`pk:`) is gated per package, over the
+set ordered requirements first: a package waits when it lacks a secret,
+or when it requires a package of the channel that waits. The rest of the
+channel goes in, and the sync says `waiting` with the install's result. A
+release is gated on the `requires` its catalog carries, sealed with it, so
+a waiting package's archive isn't fetched. A package required from outside
+the channel (resolved from its source hint at install) isn't gated.
+
+A take-out that fails (a run in flight in one of its workflows) is a
+warning on the subscription, as a channel's drop is today. It is tried
+again only when the release moves.
 
 This makes `requires.secrets` mean what it says. Today a package lists
 every secret its steps may read, needed or not, because the fence
@@ -286,22 +313,22 @@ way:
 Each is its own PR against `main`. Items 1 and 2 both change
 `subscriptions.ts`, so they land in order.
 
-1. **`git+` subscriptions** (§1). The record and its check, the `git+`
-   sync over serve mode's resolve (`subscriptions.ts`), the per-id sync
-   route, the peer's ping leaving `git+` subscriptions alone
-   (`createStrut.ts`). Tests over a local bare repo (`file://`, as
-   `serve.test.ts` and `repos.test.ts` do): a push goes in at the next sync
-   and not before; a branch moved back installs the older commit; a commit
-   outside the package's folder installs nothing; an edit here stays active
-   with the release beside it; a remote that doesn't answer keeps what's
-   installed; a peer's ping leaves it alone. Docs: `docs/packages.md`,
-   `specs/API.md` §16, `docs/environment.md` (`STRUT_DISTRO_POLL_MINUTES`
-   covers `git+`).
-2. **The secrets gate** (§2). Tests: a secret unset, so `waiting` names it
-   and nothing of the package is here (no step, page or grant); the secret
-   set, so the next sync installs it; the secret removed, so the next sync
-   takes the package out with its edits kept; the same for a `pk:`
-   subscription. Docs: `docs/packages.md`.
+1. **`git+` subscriptions** (§1). **Built: stakwork/strut#739.** The record
+   and its check, the `git+` sync over serve mode's resolve
+   (`subscriptions.ts`), the per-id sync route, the peer's ping leaving
+   `git+` subscriptions alone (`createStrut.ts`). Tests over a local bare
+   repo (`file://`, as `serve.test.ts` and `repos.test.ts` do): a push goes
+   in at the next sync and not before; a branch moved back installs the
+   older commit; a commit outside the package's folder installs nothing; an
+   edit here stays active with the release beside it; a remote that doesn't
+   answer keeps what's installed; a peer's ping leaves it alone. Docs:
+   `docs/packages.md`, `specs/API.md` §16, `docs/environment.md`
+   (`STRUT_DISTRO_POLL_MINUTES` covers `git+`).
+2. **The secrets gate** (§2). **Built: stakwork/strut#PR2.** Tests: a secret
+   unset, so `waiting` names it and nothing of the package is here (no step,
+   page or grant); the secret set, so the next sync installs it; the secret
+   removed, so the next sync takes the package out with its edits kept; the
+   same for a `pk:` subscription. Docs: `docs/packages.md`.
 3. **The `job` grant** (§3). The manifest key and its check (`format.ts`),
    the seed's merged delta and the re-seed (`job-seed.ts`, `createStrut.ts`),
    the package page and the install ask. Tests: a package whose step the

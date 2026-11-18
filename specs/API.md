@@ -2903,9 +2903,9 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
 | PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name |
-| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "error", seq?, from?, to?, error?, result? }`: one sync now, answered when it is done — `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
+| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
 | PUT    | `/packages/indexes/:id` | `{ key, urls, label? }` → the `IndexSubscriptionInfo`, its card read at once (a wrong key or URL shows as `error`). `key` is the index key; `urls` where its card is served (an index strut's `…/index/catalog`). Kept in `<dataDir>/packages/indexes.json`; `STRUT_PACKAGE_INDEXES` and `createStrut({ packageIndexes })` put entries on file at boot. Full scope; 400 `package_index_invalid` |
@@ -3615,6 +3615,35 @@ subscription follows a branch, not a tag or a commit`.
                "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
   "checkedAt": "…", "error": "…", "warnings": [],
   "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…", "diverged": [] }]
+}
+```
+
+**The secrets gate** (`plans/followed-repos.md` §2), on every subscription,
+`pk:` and `git+`: before a sync installs a package, it checks every secret
+the package's `requires.secrets` names, as an install's `missing` does (the
+deployment's secrets, which fall back to strut's environment). While one is
+unset the package WAITS: nothing of it is installed (no step, workflow, app
+or Concept page), one the subscription installed earlier is uninstalled
+through the distro's door (what was edited here is kept), the `GET` shows
+`waiting: { secrets: [...] }`, and the sync's status is `waiting`. In a
+channel of several packages the gate is per package: one that requires a
+waiting package of the channel waits too, and the rest go in (`result`). It
+runs even when nothing moved, so the next sync after a secret is set installs
+the package with no new release, and the next after one is removed takes it
+out. `applied.packages` lists what went in, not what waits. A person's
+install (`POST /packages/install`) is not gated: it installs and lists what
+is missing.
+
+```jsonc
+// POST /packages/subscriptions/pods/sync, with AWS_ACCESS_KEY_ID unset
+{ "id": "pods", "status": "waiting", "from": "9531ac85…", "to": "9531ac85…", "waiting": { "secrets": ["AWS_ACCESS_KEY_ID"] } }
+// GET /packages/subscriptions → subscriptions[]
+{
+  "id": "pods", "ref": "git+https://github.com/stakwork/stadeum@stable#packages/pods", "tokenSecret": "GITHUB_TOKEN",
+  "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…", "packages": [] },   // read, nothing went in
+  "waiting": { "secrets": ["AWS_ACCESS_KEY_ID"] },
+  "checkedAt": "…", "warnings": [],
+  "packages": []   // what is left here: an item edited here before it went out
 }
 ```
 

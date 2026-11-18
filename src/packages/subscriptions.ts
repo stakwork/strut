@@ -35,6 +35,17 @@
  * refused at the `PUT`, a tag at the first sync. No publisher pings one, so
  * the publisher's ping leaves it alone (`syncAll({ git: false })`); the poll
  * and `POST /packages/subscriptions/:id/sync` read it.
+ *
+ * THE SECRETS GATE (plans/followed-repos.md §2): every sync, of either kind,
+ * checks each package's `requires.secrets` against the deployment's secrets
+ * (the capability, which falls back to strut's environment, as an install's
+ * `missing` does). A package that lacks one WAITS: nothing of it is
+ * installed, one this subscription installed earlier is uninstalled through
+ * the distro's door (edits kept), and the subscription says `waiting: {
+ * secrets }`. So does a package of the set that requires a waiting one. The
+ * gate runs even when nothing moved, so a secret set (or removed) since the
+ * last sync is acted on with no new release. A person's install is not
+ * gated: its `missing` reports, and the person decides.
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -46,6 +57,7 @@ import { archiveUrl, fetchArchive } from "./archive.js";
 import { resolvePackage, type PackageCache } from "./cache.js";
 import { DEFAULT_TOKEN_SECRET, parseGitRef } from "./git-source.js";
 import { readCard, releaseFor, z32Decode, type Catalog, type CatalogRelease } from "./card.js";
+import type { PackageManifest } from "./format.js";
 import type { InstallResult, PackageDoor } from "./install.js";
 import type { InstalledPackage } from "./installed.js";
 import { CHANNEL_NAME } from "./publisher.js";
@@ -83,11 +95,15 @@ export interface SubscriptionState {
   /** The last catalog accepted (§13's order: never back). */
   accepted?: { seq: number; digest: string; at: string };
   /** The release last applied here: a catalog's `seq` and digest, or for a
-   *  `git+` ref the ref, the commit last read and its package's digest. */
+   *  `git+` ref the ref, the commit last read and its package's digest;
+   *  `packages`, what of it went in (not what waits). */
   applied?: { seq?: number; ref?: string; commit?: string; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
   /** The last sync: when, and what stopped it. */
   checkedAt?: string;
   error?: string;
+  /** The secrets a package of the release requires and this deployment has
+   *  not set: it is not installed until the next sync after they are. */
+  waiting?: { secrets: string[] };
   /** What the last apply said without failing (a removal it could not make, a claim that did not record). */
   warnings?: string[];
 }
@@ -101,14 +117,18 @@ export interface SubscriptionInfo extends Omit<Subscription, "token">, Subscript
 
 export interface SyncOutcome {
   id: string;
-  /** `applied`: a new release is in; `current`: nothing new; `error`: see `error`. */
-  status: "applied" | "current" | "error";
+  /** `applied`: a new release is in; `current`: nothing new; `waiting`: a
+   *  package lacks a secret and is not here (the rest of the set may have
+   *  gone in: `result`); `error`: see `error`. */
+  status: "applied" | "current" | "waiting" | "error";
   seq?: number;
   /** A `git+` ref's: the commit applied before, and the one the branch is at
    *  (absent when the read failed). */
   from?: string;
   to?: string;
   error?: string;
+  /** With `waiting`: the secrets to set. */
+  waiting?: { secrets: string[] };
   result?: InstallResult;
 }
 
@@ -124,8 +144,11 @@ export interface SubscriptionsDeps {
   installed(): Promise<InstalledPackage[]>;
   fetch?: typeof fetch;
   /** A `git+` ref's: where `repos/` (the bare caches) lives (default the
-   *  cache's parent), its token read by secret NAME, and git's shell. */
+   *  cache's parent), and git's shell. */
   dataDir?: string;
+  /** The deployment's secrets by NAME (the capability, which falls back to
+   *  strut's environment): a `git+` ref's token, and the gate's
+   *  `requires.secrets`. Without it, every required secret is unset. */
   secret?(name: string): Promise<string | undefined>;
   shell?: ShellCapability;
 }
@@ -287,18 +310,43 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
     }
   };
 
-  /** What this subscription installed and no longer holds goes out
-   *  through the distro's door; what could not, said as warnings. */
-  const dropOthers = async (id: string, holds: Set<string>, warnings: string[], by: "channel" | "branch") => {
+  /** What this subscription installed that is not going in (the release
+   *  dropped it, or it waits for a secret) goes out through the distro's
+   *  door; what could not, said as warnings. */
+  const dropOthers = async (id: string, release: Array<{ package: string }>, go: Array<{ package: string }>, warnings: string[], by: "channel" | "branch") => {
+    const holds = new Set(release.map((p) => p.package));
+    const keep = new Set(go.map((p) => p.package));
     for (const p of await deps.installed()) {
-      if (p.source?.ref !== subscriptionRef(id) || holds.has(p.package)) continue;
+      if (p.source?.ref !== subscriptionRef(id) || keep.has(p.package)) continue;
       try {
         await deps.uninstall(p.package, { door: "distro" });
       } catch (err) {
-        warnings.push(`${p.package}, which the ${by} no longer holds, was not uninstalled: ${err instanceof Error ? err.message : String(err)}`);
+        const why = holds.has(p.package) ? "which waits for its secrets" : `which the ${by} no longer holds`;
+        warnings.push(`${p.package}, ${why}, was not uninstalled: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   };
+
+  /** The secrets gate (§2), over a set ordered requirements first: a
+   *  package waits when its `requires.secrets` names one this deployment
+   *  has not set, or when it requires a package of the set that waits.
+   *  `go` is what may go in; `waiting`, the secrets to set. */
+  const gate = async <T extends { package: string; requires?: PackageManifest["requires"] }>(set: T[]): Promise<{ go: T[]; waiting?: { secrets: string[] } }> => {
+    const held = new Set<string>();
+    const secrets = new Set<string>();
+    for (const t of set) {
+      for (const name of t.requires?.secrets ?? []) {
+        if ((await deps.secret?.(name).catch(() => undefined)) !== undefined) continue;
+        secrets.add(name);
+        held.add(t.package);
+      }
+      if (t.requires?.packages?.some((r) => held.has(r.package))) held.add(t.package);
+    }
+    return { go: set.filter((t) => !held.has(t.package)), ...(secrets.size ? { waiting: { secrets: [...secrets].sort() } } : {}) };
+  };
+  /** The last sync put in exactly what may go in now. */
+  const sameAs = (applied: SubscriptionState["applied"], go: Array<{ package: string }>) =>
+    !!applied && applied.packages.map((p) => p.package).sort().join("\n") === go.map((p) => p.package).sort().join("\n");
 
   /** A `git+` ref: the branch read as serve mode reads it, its package
    *  installed when its digest moved. */
@@ -319,22 +367,26 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
         ...(last?.commit ? { known: { commit: last.commit, digest: last.digest } } : {}),
       });
       to = info.commit!;
-      const { error: _error, ...kept } = state;
-      if (last?.digest === info.digest) {
-        // The branch moved and the package did not: the commit is recorded.
-        await writeState(id, { ...kept, applied: { ...last, commit: to }, checkedAt: at });
-        return { id, status: "current", ...(from ? { from } : {}), to };
+      const { error: _error, waiting: _waiting, ...kept } = state;
+      const release = [{ package: info.manifest.package, version: info.manifest.version, digest: info.digest, requires: info.manifest.requires }];
+      const { go, waiting } = await gate(release);
+      const wait = waiting ? { waiting } : {};
+      if (last?.digest === info.digest && sameAs(last, go)) {
+        // The package did not move, and neither did the gate: the commit is recorded.
+        await writeState(id, { ...kept, ...wait, applied: { ...last, commit: to }, checkedAt: at });
+        return { id, status: waiting ? "waiting" : "current", ...(from ? { from } : {}), to, ...wait };
       }
-      const result = await deps.install([{ ref: subscriptionRef(id), digest: info.digest, commit: to }], { door: "distro" });
-      const warnings = [...result.warnings];
-      await dropOthers(id, new Set([info.manifest.package]), warnings, "branch");
+      const result = go.length ? await deps.install([{ ref: subscriptionRef(id), digest: info.digest, commit: to }], { door: "distro" }) : undefined;
+      const warnings = [...(result?.warnings ?? [])];
+      await dropOthers(id, release, go, warnings, "branch");
       await writeState(id, {
         ...kept,
-        applied: { ref, commit: to, digest: info.digest, at, packages: [{ package: info.manifest.package, version: info.manifest.version, digest: info.digest }] },
+        ...wait,
+        applied: { ref, commit: to, digest: info.digest, at, packages: go.map((p) => ({ package: p.package, version: p.version, digest: p.digest })) },
         checkedAt: at,
         warnings,
       });
-      return { id, status: "applied", ...(from ? { from } : {}), to, result };
+      return { id, status: waiting ? "waiting" : "applied", ...(from ? { from } : {}), to, ...wait, ...(result ? { result } : {}) };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       await writeState(id, { ...state, checkedAt: at, error }).catch(() => undefined);
@@ -352,31 +404,36 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
       const { card, digest, bytes } = await catalogOf(sub, state);
       state.accepted = { seq: card.seq, digest, at };
       await write(fileOf(id, "catalog.json"), bytes);
-      if (state.applied?.digest === digest && !state.error) {
-        await writeState(id, { ...state, checkedAt: at });
-        return { id, status: "current", seq: card.seq };
-      }
       const targets = targetsOf(sub, card);
+      // The catalog carries each release's `requires`, sealed with it: a
+      // package that waits is never fetched.
+      const { go, waiting } = await gate(targets.map((t) => ({ ...t, requires: t.release.requires })));
+      const { error: _error, waiting: _waiting, ...kept } = state;
+      const wait = waiting ? { waiting } : {};
+      if (state.applied?.digest === digest && !state.error && sameAs(state.applied, go)) {
+        await writeState(id, { ...kept, ...wait, checkedAt: at });
+        return { id, status: waiting ? "waiting" : "current", seq: card.seq, ...wait };
+      }
       const warnings: string[] = [];
       let result: InstallResult | undefined;
-      if (targets.length) {
-        await fetchAll(sub, card, targets);
+      if (go.length) {
+        await fetchAll(sub, card, go);
         result = await deps.install(
-          targets.map((t) => ({ ref: subscriptionRef(id), digest: t.release.digest })),
+          go.map((t) => ({ ref: subscriptionRef(id), digest: t.release.digest })),
           { door: "distro" },
         );
         warnings.push(...result.warnings);
       }
-      // What it installed that the channel no longer holds goes the same way.
-      await dropOthers(id, new Set(targets.map((t) => t.package)), warnings, "channel");
-      const { error: _error, ...kept } = state;
+      // What it installed that the channel no longer holds, or that waits, goes the same way.
+      await dropOthers(id, targets, go, warnings, "channel");
       await writeState(id, {
         ...kept,
-        applied: { seq: card.seq, digest, at, packages: targets.map((t) => ({ package: t.package, version: t.release.version, digest: t.release.digest })) },
+        ...wait,
+        applied: { seq: card.seq, digest, at, packages: go.map((t) => ({ package: t.package, version: t.release.version, digest: t.release.digest })) },
         checkedAt: at,
         ...(warnings.length ? { warnings } : { warnings: [] }),
       });
-      return { id, status: "applied", seq: card.seq, ...(result ? { result } : {}) };
+      return { id, status: waiting ? "waiting" : "applied", seq: card.seq, ...wait, ...(result ? { result } : {}) };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       await writeState(id, { ...state, checkedAt: at, error }).catch(() => undefined);

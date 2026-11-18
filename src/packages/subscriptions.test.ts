@@ -9,6 +9,10 @@
  * And a box following a git BRANCH (plans/followed-repos.md §1): a fixture
  * repository on disk (`file://`), its package under `#pkg`, moved by the
  * test's commits and synced by the host alone.
+ *
+ * And the secrets gate (§2), over both: a package whose required secret is
+ * unset waits, with nothing of it here — on a graph, its Concept page
+ * neither — and goes in, or out, at the next sync after the secret moves.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -20,8 +24,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createStrut, type Strut } from "../createStrut.js";
+import type { GraphBackend } from "../graph/backend.js";
+import { seedStrutDomain } from "../graph/schema-seed.js";
+import { testBackends } from "../graph/test-util.js";
+import { GraphWorkspaceStore } from "../graph/workspace-store.js";
 import { MemoryRunStore } from "../store.js";
-import { WorkspaceManager } from "../workspace.js";
+import { WorkspaceManager, type WorkspaceStore } from "../workspace.js";
 import type { SubscriptionInfo, SyncOutcome } from "./subscriptions.js";
 
 const KEY = "fleet-api-key";
@@ -33,7 +41,13 @@ const STEP = (out: string) =>
   `import { z, defineStep } from "strut";\nexport default defineStep({ type: "acme/linear/fetch", input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
 const FLOW = (name: string, description = "Fetch the issues") => `name: ${name}\ndescription: ${description}\nsteps:\n  - { id: s, type: acme/linear/fetch }\n`;
 
-const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
+/** A step that reads a secret, so a package built with it requires that secret. */
+const KEYED_STEP = (type: string, secret: string) =>
+  `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run(_cfg, ctx) { return (await ctx.services.secrets.get(${JSON.stringify(secret)})) ? "keyed" : "none"; } });\n`;
+const setSecret = (strut: Strut, name: string, value: string | null) =>
+  strut.app.request(`/secrets/${name}`, value === null ? { method: "DELETE", headers: auth } : json({ value }, "PUT"));
+
+const boot = (ws: WorkspaceStore, extra: Record<string, unknown> = {}) =>
   createStrut({
     workspace: ws,
     store: new MemoryRunStore(),
@@ -228,6 +242,62 @@ describe("a fleet fed by its central strut", () => {
     const bad = await subscribe({ key: "not-a-key", url: centralUrl });
     assert.equal(bad.status, 400);
     assert.match(((await bad.json()) as { error: string }).error, /^subscription_invalid: key is the publisher's key/);
+  });
+
+  it("holds back a package whose secret is unset, and what requires it; the rest of the channel goes in", async () => {
+    // acme/linear's step reads LINEAR_KEY, so its release requires it;
+    // acme/digest requires acme/linear; acme/notes needs nothing.
+    const publishPkg = async (body: Record<string, unknown>) => {
+      const res = await central.app.request("/packages/publish", json({ channel: "stable", ...body }));
+      const out = (await res.json()) as { digest: string; manifest?: { requires?: unknown } };
+      assert.equal(res.status, 201, JSON.stringify(out));
+      return out;
+    };
+    await centralWs.publishStep("acme/linear/fetch", KEYED_STEP("acme/linear/fetch", "LINEAR_KEY"));
+    const linear = await publish("1.0.0", "stable");
+    await centralWs.publishWorkflow("acme/notes/daily", "v1", LOG("acme/notes/daily", "notes"));
+    await publishPkg({ package: "acme/notes", version: "1.0.0", workflows: ["acme/notes/daily"] });
+    await centralWs.publishWorkflow("acme/digest/weekly", "v1", FLOW("acme/digest/weekly"));
+    await publishPkg({ package: "acme/digest", version: "1.0.0", workflows: ["acme/digest/weekly"], requires: { packages: [{ package: "acme/linear", digest: linear.digest }] } });
+    const here = async () => ({
+      linear: !!(await childWs.getWorkflowMetadata("acme/linear/sync")) && !!(await childWs.getStepMetadata("acme/linear/fetch")),
+      digest: !!(await childWs.getWorkflowMetadata("acme/digest/weekly")),
+      notes: !!(await childWs.getWorkflowMetadata("acme/notes/daily")),
+    });
+
+    // LINEAR_KEY unset: acme/linear waits, and acme/digest with it.
+    await subscribe({ key, url: centralUrl, channel: "stable", token });
+    let out = await child.subscriptions.sync("acme");
+    assert.equal(out.status, "waiting", out.error);
+    assert.deepEqual(out.waiting, { secrets: ["LINEAR_KEY"] });
+    assert.deepEqual(await here(), { linear: false, digest: false, notes: true });
+    let s = await state();
+    assert.deepEqual(s.waiting, { secrets: ["LINEAR_KEY"] });
+    assert.deepEqual(s.applied?.packages.map((p) => p.package), ["acme/notes"]);
+    out = await child.subscriptions.sync("acme");
+    assert.deepEqual([out.status, out.result], ["waiting", undefined], "nothing new: no install");
+
+    // Set: the next sync brings them in, with no new release.
+    assert.equal((await setSecret(child, "LINEAR_KEY", "lin_1")).status, 200);
+    out = await child.subscriptions.sync("acme");
+    assert.deepEqual([out.status, out.waiting], ["applied", undefined]);
+    assert.deepEqual(await here(), { linear: true, digest: true, notes: true });
+    assert.equal((await child.run("acme/digest/weekly", {})).output, "keyed");
+    s = await state();
+    assert.equal(s.waiting, undefined);
+    assert.deepEqual(s.applied?.packages.map((p) => p.package).sort(), ["acme/digest", "acme/linear", "acme/notes"]);
+    assert.equal((await child.subscriptions.sync("acme")).status, "current");
+
+    // Edited here, then the secret removed: both out, the edit kept, acme/notes stays.
+    await childWs.publishWorkflow("acme/linear/report", "v2", FLOW("acme/linear/report", "forked on the child"));
+    assert.equal((await setSecret(child, "LINEAR_KEY", null)).status, 200);
+    out = await child.subscriptions.sync("acme");
+    assert.deepEqual([out.status, out.waiting], ["waiting", { secrets: ["LINEAR_KEY"] }]);
+    assert.deepEqual(await here(), { linear: false, digest: false, notes: true });
+    assert.equal((await childWs.getWorkflowMetadata("acme/linear/report"))?.active, "v2", "an edit is kept");
+    s = await state();
+    assert.deepEqual(s.applied?.packages.map((p) => p.package), ["acme/notes"]);
+    assert.deepEqual(s.warnings, []);
   });
 });
 
@@ -430,3 +500,88 @@ describe("a box following a git branch", () => {
     assert.deepEqual([(await state()).applied?.ref, (await state()).applied?.commit], [canary, c1]);
   });
 });
+
+for (const tb of testBackends()) {
+  describe(`a box following a git branch, gated on its secrets (${tb.name})`, { skip: tb.skip }, () => {
+    let backend: GraphBackend;
+    let root: string;
+    let repo: string;
+    let ws: GraphWorkspaceStore;
+    let strut: Strut;
+
+    before(async () => {
+      backend = await tb.open();
+      await tb.wipe(backend);
+      await seedStrutDomain(backend);
+      backend.schemas.invalidate();
+    });
+    after(async () => {
+      await tb.close(backend);
+    });
+    beforeEach(async () => {
+      await tb.clear(backend);
+      root = await mkdtemp(join(tmpdir(), "strut-git-gate-"));
+      repo = join(root, "stadeum");
+      await mkdir(join(repo, "pkg", "workflows"), { recursive: true });
+      await mkdir(join(repo, "pkg", "steps"), { recursive: true });
+      await mkdir(join(repo, "pkg", "concepts"), { recursive: true });
+      await writeFile(join(repo, "pkg", "strut.yaml"), "package: acme/pods\nversion: 0.1.0\nrequires:\n  secrets: [PODS_KEY]\n");
+      await writeFile(join(repo, "pkg", "steps", "claim.ts"), KEYED_STEP("acme/pods/claim", "PODS_KEY"));
+      await writeFile(join(repo, "pkg", "workflows", "sync.yaml"), LOG("acme/pods/sync", "one"));
+      await writeFile(join(repo, "pkg", "concepts", "Code Change.md"), "---\ndescription: Change a repository's code in a pod\n---\nYou can change code.\n");
+      git(repo, "-c", "init.defaultBranch=stable", "init", "--quiet");
+      git(repo, "add", ".");
+      git(repo, "commit", "--quiet", "-m", "pods");
+      ws = new GraphWorkspaceStore(backend, { materializeDir: join(root, "steps"), appsDir: join(root, "apps") });
+      strut = await boot(ws, { dataDir: join(root, "data") });
+    });
+    afterEach(async () => {
+      await strut.close();
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const page = async (name: string) =>
+      ((await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns", name: "$name" })} WHERE ${backend.dialect.live("c")} RETURN ${backend.dialect.project("c", ["ref_id"])} AS p`, { ns: backend.namespace, name }))[0]?.["p"] as { ref_id: string } | undefined) !== undefined;
+    const here = async () => ({
+      step: !!(await ws.getStepMetadata("acme/pods/claim")),
+      workflow: !!(await ws.getWorkflowMetadata("acme/pods/sync")),
+      page: await page("Code Change"),
+    });
+    const state = async (): Promise<SubscriptionInfo> => (await strut.subscriptions.get("pods"))!;
+
+    it("waits with nothing of the package here, goes in once the secret is set, and out (edits kept) once it is removed — with no new commit", async () => {
+      const put = await strut.app.request("/packages/subscriptions/pods", json({ ref: `git+${pathToFileURL(repo).href}@stable#pkg` }, "PUT"));
+      assert.equal(put.status, 200, await put.clone().text());
+      const c1 = git(repo, "rev-parse", "HEAD");
+
+      // PODS_KEY unset: nothing of it is here.
+      let out = await strut.subscriptions.sync("pods");
+      assert.deepEqual([out.status, out.to, out.waiting, out.result], ["waiting", c1, { secrets: ["PODS_KEY"] }, undefined], out.error);
+      assert.deepEqual(await here(), { step: false, workflow: false, page: false });
+      let s = await state();
+      assert.deepEqual([s.waiting, s.applied?.commit, s.applied?.packages, s.packages], [{ secrets: ["PODS_KEY"] }, c1, [], []]);
+      assert.equal((await strut.subscriptions.sync("pods")).status, "waiting");
+
+      // Set: the next sync installs it, at the same commit.
+      assert.equal((await setSecret(strut, "PODS_KEY", "pk_1")).status, 200);
+      out = await strut.subscriptions.sync("pods");
+      assert.deepEqual([out.status, out.from, out.to, out.waiting], ["applied", c1, c1, undefined], out.error);
+      assert.deepEqual(await here(), { step: true, workflow: true, page: true });
+      s = await state();
+      assert.equal(s.waiting, undefined);
+      assert.deepEqual(s.applied?.packages.map((p) => p.package), ["acme/pods"]);
+      assert.equal((await strut.subscriptions.sync("pods")).status, "current");
+
+      // Edited here, then the secret removed: out, the edit kept.
+      await ws.publishWorkflow("acme/pods/sync", "v2", LOG("acme/pods/sync", "mine"));
+      assert.equal((await setSecret(strut, "PODS_KEY", null)).status, 200);
+      out = await strut.subscriptions.sync("pods");
+      assert.deepEqual([out.status, out.waiting], ["waiting", { secrets: ["PODS_KEY"] }], out.error);
+      assert.deepEqual(await here(), { step: false, workflow: true, page: false });
+      assert.equal((await ws.getWorkflowMetadata("acme/pods/sync"))?.active, "v2", "the edit is the box's own");
+      s = await state();
+      assert.deepEqual([s.waiting, s.applied?.packages, s.warnings], [{ secrets: ["PODS_KEY"] }, [], []]);
+      assert.deepEqual(s.packages, [{ package: "acme/pods", version: "0.1.0", digest: s.applied?.digest, diverged: ["acme/pods/sync"] }], "what is left of it: the edit");
+    });
+  });
+}
