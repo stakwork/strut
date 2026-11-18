@@ -3,14 +3,15 @@
 > **Status (2026-11-18): ruled in outline; every item built on #737: 1
 > (names), 2 (host keys and accounts), 3 (a host calls an app's tools), 4
 > (an app's own SQLite) and 5 (Support rebuilt as an app: no polling, no
-> `/support` routes, no heads-up).**
+> `/support` routes, no heads-up). Item 6 (Peel links to a box, ruling 9)
+> is proposed.**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
 >   `master` @554793fa1.
 > - **The Rulings** are from one conversation with Evan on 2026-11-17. 1–3
 >   are his own points. 4–6 were proposed in that conversation and he
->   accepted them. 7 and 8 are his, from 2026-11-18.
+>   accepted them. 7, 8 and 9 are his, from 2026-11-18.
 > - **The decisions in §8** are this plan's defaults. Evan may overrule them.
 > - **Companion to:**
 >   - `jamie-in-tribes.md`: host keys (§5.1) and linked accounts (§5.2).
@@ -27,7 +28,7 @@
 > something other than what was built, the PR marks it **Built differently
 > (#N):**, with what was built and why.
 
-## Rulings (2026-11-17; 7 and 8 on 2026-11-18)
+## Rulings (2026-11-17; 7, 8 and 9 on 2026-11-18)
 
 | # | Question | Ruled |
 | --- | --- | --- |
@@ -39,6 +40,7 @@
 | 6 | A message arriving | **A direct tool call**, not a workflow run |
 | 7 | What the rebuild keeps of Support as built | **Nothing: no migration, no backward compatibility.** Support holds only Evan's test messages on prod. Rebuilding it now, before anyone uses it, is what makes that possible |
 | 8 | The staff heads-up (`support-chat.md` §6) | **Dropped from the rebuild.** Revisit later (§11) |
+| 9 | How a person links their Sphinx account | **Through Peel, the way Peel links to Hive. The daemon has no part.** "We dont need to support old Sphinx apps. Peel is the new way forward", and Peel may gain features for it. Replaces `jamie-in-tribes.md` decision 1, a code DM'd to the daemon (§2.1) |
 
 ## Problem
 
@@ -172,8 +174,8 @@ hold it, and a Nostr or LNURL key gives the same actor.
 **What this changes in `jamie-in-tribes.md`:**
 
 - **One store.** Linked accounts are the `accounts` table, not
-  `linked-accounts.json`. Linking works as that plan says (a code sent by
-  DM, `POST /hosts/link`, the `account/*` steps).
+  `linked-accounts.json`.
+- **Linking is Peel's** (§2.1, ruling 9), not a code DM'd to the daemon.
 - **An unlinked key is its own person**, at a visitor's level. A workflow a
   host launches still needs a linked person, so a tribe behaves as that plan
   says. The rule matters only where an app says `unlinked: true` (§3).
@@ -184,6 +186,72 @@ hold it, and a Nostr or LNURL key gives the same actor.
 
 The address on a worker's session (`Session.sphinxAddress`) stays where it
 is. It is proved at sign-in and is what a payout goes to.
+
+### 2.1 Linking Peel to a box
+
+A member links Peel from the page they are already signed in to, and Peel
+proves its key by signing. The key is the lasting credential: there is no
+device flow and no device record.
+
+1. **The challenge.** In the box's Jamie app, Connect → **Link Peel**. The
+   `account/link` step mints a link challenge,
+   `strut-link.<base64url { host, actor, name?, nonce, exp }>.<hmac>`.
+   - It is signed like strut's other tokens, lasts ten minutes, works once,
+     and names the person who asked.
+   - Connect shows it as a QR and as an **Open in Peel** link,
+     `peel://strut/link?url=<strut's origin>&challenge=<…>`. The scheme is
+     Peel's to choose.
+   - Connect lists the person's links as it does now, refetching while it
+     waits.
+2. **Peel signs.** Peel reads `host` and `name` from the challenge and asks
+   "Link Peel to `<host>` as `<name>`?". On yes, it signs the challenge's
+   bytes as a Lightning signed message with its account key (child 0), as
+   its visitor `sign_in` does, and calls `POST /people/link { challenge, key,
+   sig, name?, address? }`. The call carries no other credential.
+3. **Strut links.**
+   - It checks the challenge: its HMAC, `host`, expiry, and that it is
+     unused.
+   - It checks that `sig` recovers `key`, with the `ln-message` check
+     `POST /visitors/session` already uses.
+   - It links `sphinx:<key>` to the challenge's `actor` and keeps the name
+     and address on the account.
+   - A key linked to someone else is a `409`.
+   - It answers `{ actor, name?, token, exp }`.
+4. **The token.** A person token (`strut-person`, the scope `peer:person`)
+   whose claims also name the account. It lasts seven days.
+   - On every request strut checks that the account is still linked to
+     that actor, so removing the link in Connect ends the token at once.
+   - Peel renews it by signing again: `GET /people/challenge` (`host`,
+     `nonce`, 60 s), then `POST /people/token { challenge, key, sig }`. A
+     linked key gets a new token; an unlinked one gets `403 not_linked`.
+5. **Peel keeps the box** beside Hive's link: its URL, actor, name and
+   token, with several links allowed and not one. It opens the box's apps
+   with the token the way it opens an org's (Bearer on the first load,
+   handed to `sessionStorage`), and renews daily.
+
+Afterwards:
+- A tribe mention from that key runs as the member (`actorOf`).
+- The box's apps open in Peel as the member.
+- Ruling 8's heads-up, when it comes back, knows each admin's Sphinx
+  account.
+
+**Why not Hive's device flow** (`chained-orchestrators.md` §4). On a box it
+would need a pairing table, a polling route, an approve page, a credential
+store, a second signature format (Hive's signed timestamp) and a peers
+route, all for a single strut. Starting where the member is already signed
+in removes the polling and the store, and Peel's key stands in for the
+credential. It is built in strut, not Stadeum, so any strut can link Peel
+this way: the path off Hive.
+
+**What it replaces from item 2:**
+- `POST /hosts/link` and its place among the host key's routes;
+- the in-memory `link-` codes;
+- the Connect panel's code, the daemon's address and the `hosts` warning;
+- the stand-in daemon's linking and its `GET /me`.
+
+`accounts`, `actorOf`, `account/links`, `account/unlink` and
+`GET /hosts/links/:key` stay. The daemon still checks a tribe's owner with
+that last route (`jamie-in-tribes.md` §4).
 
 ## 3. A host calls an app's tools
 
@@ -386,7 +454,7 @@ daemon pushes it.
 | --- | --- | --- |
 | The Sphinx daemon | In its strut mode (`jamie-in-tribes.md` item 4), also hands strut each record of its DM feed: in order, one call at a time, a file's bytes with it, again until a `2xx`. It keeps how far strut has taken | Support receiving messages |
 | Stadeum | Sends `name` on the ticket. Sets `STRUT_HOST_KEYS` and the daemon's strut URL and key | Names for members and admins; the daemon as a host |
-| Peel | `sign_in` answers `alias` | A name for a worker who never wrote to Support |
+| Peel | `sign_in` answers `alias`. Opens a link challenge from its QR or link, asks, signs it and keeps the box's link and token; opens the box's apps with that token and renews it (§2.1) | A name for a worker who never wrote to Support; a member's Sphinx account linked; the box's apps in Peel |
 | Hive | Nothing | Its actors show as today |
 
 ## 8. Decisions (defaults; Evan may overrule)
@@ -404,6 +472,9 @@ daemon pushes it.
 | 9 | Support's place | A tab of `strut/staff` | The thread sits beside the worker's work and pay |
 | 10 | The welcome | One workflow, started by a message | Auto-resume covers a restart, so nothing needs a clock |
 | 11 | Names in other answers | None. The UI asks `people/names` | One read path. No run, task or conversation answer changes shape |
+| 12 | How Peel links to a box | The member's signed-in page shows a challenge, and Peel signs it (§2.1). No device flow | The member is already signed in where the challenge appears, and Peel's key proves itself. Nothing to poll, approve elsewhere or store |
+| 13 | Peel's credential for a box | A seven-day person token that names the account, renewed by signing | The key is what lasts. A token tied to the link ends the moment the link is removed |
+| 14 | How a tribe is linked | Unchanged: its owner DMs the tribe's link to the account (`jamie-in-tribes.md` §4), from Peel | The DM proves ownership, and the daemon, which must join, is the one that sees it. Through Peel's token instead, as Hive does, strut would need a new way to tell the daemon to join |
 
 ## 9. Security
 
@@ -412,6 +483,8 @@ daemon pushes it.
 | A name | Nothing. It is shown, never checked. The staff app keeps the short key beside a name |
 | A host key | Call the tools an app names for it, as the account it names. A stolen one can put false messages into Support. It cannot send, read a secret or reach the task store |
 | An unlinked key | Reach only a tool whose app says `unlinked: true` |
+| A link challenge | Link one key to the person whose session minted it, within ten minutes, once. Only that person's own session mints one naming them, and only the key's holder can sign it. Peel shows the box and the name before it signs, so nobody can get your key linked to their account without you seeing it |
+| Peel's token for a box | Act as the member, as any person token does, until it expires or the link is removed |
 | The message token | Send as Support. Strut no longer reads DMs with it. The capability is on fewer bags than a secret would be (§4) |
 | An admin's page | Read every column of Support's tables, who replied included. `support-chat.md` ruling 4 holds in what the page shows |
 
@@ -428,8 +501,10 @@ stacked.
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | **Built (#737).** As `apps.md` §4.4 marks: no job's app half (job apps are retired), the build tries the migrations, a preview applies them, the kit's `useSql`. A seeded app's `db/*.sql` are applied at every boot, from its live version's directory, once the seeds are in. For item 5: `strut/staff` grants `sqlite: true` and ships `db/001-support.sql`; `support/receive`, called by the host with `ctx.app` set, opens the file with `ctx.services.appDb.open(ctx.app.name)` and keeps a batch in one transaction (`runBatch`, or its own `BEGIN`…`COMMIT` on that connection, never across an `await`) |
 | 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | **Built (#737).** One contact's records a call, a bad record skipped, the daemon's `seq` kept, `support/file` by key, the page's viewer as `:actor`, "seen" only when unread (§5); `sphinx` on a run by its app (§4). The stand-in daemon pushes |
 
+| 6 | **Peel links to a box** (§2.1, ruling 9): `account/link` minting the link challenge; `POST /people/link`, `GET /people/challenge` and `POST /people/token`; person tokens that name an account, checked against the link on every request; Connect's QR and Open in Peel. `POST /hosts/link`, the `link-` codes, Connect's code and daemon address, and the stand-in daemon's linking and `GET /me` go. `specs/API.md`, `docs/security.md`, `docs/apps.md` | 2 | — |
+
 `scripts/fake-sphinx-daemon.ts` gains the push, so item 5 is tested before
-the daemon's side has merged.
+the daemon's side has merged. Peel's side of item 6 (§7) is Peel's own PR.
 
 ## 11. Later
 
