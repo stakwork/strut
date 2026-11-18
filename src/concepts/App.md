@@ -580,6 +580,17 @@ grants:
   steps: [task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]
 ```
 
+A worker app is for WORKERS alone: keep the person's reports out of it.
+It goes in the public view, and every workflow it grants goes with it,
+runs and all: anyone with the link reads each run in full, every worker's
+answers and photos with them. So what the answers come to (a report, a
+tally, the photos marked up) is never a tab of the worker app, and never
+grant it the workflow whose runs hold them. Hiding a tab behind
+`useHost().public` locks nothing: the grant is what opens the runs. The
+person reads the answers in Tasks and workers (each task with its answer,
+its photos and its run); a page of their own over the runs, when they ask
+for one, is a separate app that is never made public.
+
 The worker is always the page's signed-in viewer: the steps read it from
 the session, never from the page. `useWorker()` is who they are here —
 `status` (`new` until they take up an open type or an admin grants them

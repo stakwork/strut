@@ -106,6 +106,9 @@ What the person decided maps onto them:
   is an automation, and only when the person asked for one.
 - *Only people you invite* is `open: false`; *anyone* is open.
 - Photos are the type's `attachments`.
+- What the answers come to (a report, a tally) is the person's: never in
+  the worker app, which goes online for anyone with the link (`App`,
+  "Worker apps"). They read the answers in Tasks and workers.
 - The pay is `paySats`. You have no exchange rate: never turn dollars into
   sats yourself and state the result as the dollars. Ask for the type with
   your figure, say it in sats, and say the approval card shows it in
