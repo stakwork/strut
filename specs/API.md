@@ -2653,8 +2653,9 @@ it asks (`show.ask`, `show`'s other plain fields, its image files), Take a
 photo or Choose one when the type takes files (held to its `attachments`
 rule), the answer's fields in `TaskForm`, Send and Skip; then what the last
 one earned — and the workflow's reply, drawn as it lands while they are
-still there (`task/history` read every 4 s until it comes; a type whose
-workflow never replies shows nothing more) — with Next task (only when there is more of that kind; no task is
+still there (`task/history` read every 4 s for at most 2 minutes, stopping
+when it comes; a later one shows on the task's row; a type whose workflow
+never replies shows nothing more) — with Next task (only when there is more of that kind; no task is
 leased until it is pressed) and Back to your work. Strut's account widget
 (`account:`) shows the balance and Withdraw. Grants `task/next`,
 `task/submit`, `task/skip`, `task/file`, `task/me`, `task/history` and

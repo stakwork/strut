@@ -800,21 +800,28 @@ function ReplyFile({ item, file }: { item: Pick<WorkerHistoryItem, "lease">; fil
 }
 
 /** How often the screen after an answer reads the worker's history again,
- *  for the workflow's reply, until one comes. */
+ *  for the workflow's reply. */
 const REPLY_POLL_MS = 4_000;
+/** How long it asks: most workflows never reply, and an image model has
+ *  answered well before. A reply later shows on the task's history row. */
+const REPLY_WAIT_MS = 120_000;
 
 /** The workflow's reply to an answer just sent, drawn once it comes while
- *  the worker is still here; nothing until then, so a type whose workflow
- *  never replies shows nothing more. */
+ *  the worker is still here, for up to `REPLY_WAIT_MS`; nothing until then,
+ *  so a type whose workflow never replies shows nothing more. */
 function SentReply({ lease }: { lease: string }) {
   const [done, setDone] = useState(false);
   const history = useTaskHistory({ refetchInterval: done ? false : REPLY_POLL_MS });
   const item = history.data?.items.find((i) => i.lease === lease);
   const reply = item?.reply;
-  // A reply, or a page that cannot read its history: stop asking.
+  // A reply, a page that cannot read its history, or the wait over: stop asking.
   useEffect(() => {
     if (reply || history.error) setDone(true);
   }, [reply, history.error]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDone(true), REPLY_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
   if (!item || !reply) return null;
   return (
     <div className="relative mt-4 w-full rounded-2xl border border-amber-500/40 bg-card p-4 text-left shadow-sm">

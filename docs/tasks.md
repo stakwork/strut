@@ -238,7 +238,11 @@ index. A change in this area updates this file, not AGENTS.md.
   (`task.reply`) and through `GET /tasks/:id/files/<path>`. A standing type
   works the same: its run launches under the task's run id. Opt-in: a
   workflow that never calls it shows the worker nothing new. The worker page
-  draws it (docs/apps.md, "The worker app").
+  draws it (docs/apps.md, "The worker app"). KNOWN LIMIT, for the owner to
+  rule on: a test instance has no run, so it never gets a reply; on a type
+  whose workflow always replies, a worker can tell afterwards which of their
+  answers were tests (the ones with no reply), which §7.2's "a page cannot
+  tell them apart" rules out. Nothing is built for it.
 - **Withdraw** (`plans/human-steps.md` §8.2, item 5b; `src/payments/payouts.ts`,
   `task/withdraw`, the `/tasks/payouts` routes). A worker withdraws what
   passed its hold: the page asks for an AMOUNT, and strut keysends it to
