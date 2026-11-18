@@ -133,6 +133,10 @@ export function missingRequired(schema: FormSchema, content: Record<string, unkn
   return (schema.required ?? []).filter((name) => empty(content[name]));
 }
 
+/** What keeps a form's content from being an answer, by its fields' labels:
+ *  `required` ones left empty, or text in a `number` or `integer` field. */
+export type AnswerIssue = { kind: "required"; fields: string[] } | { kind: "number" | "integer"; field: string };
+
 /** The content to send: the schema's fields only, empties dropped. */
 export function contentToSubmit(schema: FormSchema, content: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -145,11 +149,12 @@ export function contentToSubmit(schema: FormSchema, content: Record<string, unkn
  * text in a number field read as a number (whole for `integer`), a select's
  * text mapped back to the schema's own value (`enum: [1, 2]` gives 1, not
  * "1"), empties left out, a required one missing named. For a task's
- * answer, whose schema the server checks again.
+ * answer, whose schema the server checks again. The problem comes as a
+ * sentence and as an `issue`, for a page that says it in its own language.
  */
-export function answerOf(schema: FormSchema, content: Record<string, unknown>): { answer: Record<string, unknown> } | { problem: string } {
+export function answerOf(schema: FormSchema, content: Record<string, unknown>): { answer: Record<string, unknown> } | { problem: string; issue: AnswerIssue } {
   const missing = missingRequired(schema, content);
-  if (missing.length) return { problem: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required` };
+  if (missing.length) return { problem: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required`, issue: { kind: "required", fields: missing.map((n) => schema.properties?.[n]?.title ?? n) } };
   const answer: Record<string, unknown> = {};
   for (const [name, p] of Object.entries(schema.properties ?? {})) {
     const v = content[name];
@@ -165,8 +170,8 @@ export function answerOf(schema: FormSchema, content: Record<string, unknown>): 
         answer[name] = back(p.enum, v);
         continue;
       }
-      if (!Number.isFinite(n)) return { problem: `${label} is a number` };
-      if (p.type === "integer" && !Number.isInteger(n)) return { problem: `${label} is a whole number` };
+      if (!Number.isFinite(n)) return { problem: `${label} is a number`, issue: { kind: "number", field: label } };
+      if (p.type === "integer" && !Number.isInteger(n)) return { problem: `${label} is a whole number`, issue: { kind: "integer", field: label } };
       answer[name] = n;
     } else if (p.type === "boolean") {
       answer[name] = v === true || v === "true";

@@ -177,11 +177,13 @@ describe("installing a package on a filesystem workspace", () => {
 
     const upstream = { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"] };
     const wf = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
-    assert.deepEqual(wf.versions["v1"]?.upstream, upstream);
+    const at = wf.versions["v1"]?.upstream?.at;
+    assert.match(at ?? "", /^\d{4}-\d\d-\d\dT[\d:.]+Z$/, "when the release went in");
+    assert.deepEqual(wf.versions["v1"]?.upstream, { ...upstream, at });
     assert.equal(wf.versions["v1"]?.source, "install");
     assert.equal(wf.versions["v1"]?.description, "Sync the issues");
     const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
-    assert.deepEqual(step.versions["v1"]?.upstream, upstream);
+    assert.deepEqual(step.versions["v1"]?.upstream, { ...upstream, at }, "one time for the whole release");
     assert.equal(step.versions["v1"]?.source, "install");
     assert.ok(await ws.getStepMetadata("acme/linear/_shared"), "the helper rides with its namespace");
 
@@ -330,6 +332,10 @@ describe("installing a package on a filesystem workspace", () => {
     );
     assert.equal(r.status, 201);
     assert.deepEqual(r.body.missing, { secrets: ["NOTION_KEY"], binaries: ["no-such-binary-strut"], runtimes: ["kali"] });
+    // A person's install is not gated (only a subscription's is): it is all here.
+    assert.equal(r.body.packages[0]!.status, "installed");
+    assert.ok(await ws.getWorkflowMetadata("acme/linear/sync"));
+    assert.ok(await ws.getStepMetadata("acme/linear/create-issue"));
   });
 
   it("uninstalls what is still the package's own, keeps the forks, and frees the prefix once nothing of it is left", async () => {
@@ -430,6 +436,38 @@ describe("installing a package on a filesystem workspace", () => {
       const third = await strut.packages.install(`file:${d3}`, distro);
       assert.equal(third.packages[0]!.items.find((i) => i.name === "acme/linear/report")?.status, "updated");
       assert.equal((await ws.getWorkflowMetadata("acme/linear/report"))?.active, "v4");
+    });
+
+    it("reads as the release moved back to once a fork is active, and as the release waiting beside a fork once the fork is edited again", async () => {
+      const type = "acme/linear/create-issue";
+      const release = (v: string) => writeTree({ ...RELEASE_1, "strut.yaml": RELEASE_1["strut.yaml"]!.replace("1.0.0", v), "steps/create-issue.ts": `${STEP(type)}// ${v}\n` }, v);
+      const [d1, d2, d3] = await Promise.all(["1.0.0", "1.1.0", "1.2.0"].map(release));
+      const [{ digest: digest1 }, { digest: digest3 }] = await Promise.all([readPackage(d1!), readPackage(d3!)]);
+      const installedStep = async () => (await api.list())[0]!.items.find((i) => i.name === type);
+      await strut.packages.install(`file:${d1}`, distro);
+      await strut.packages.install(`file:${d2}`, distro);
+
+      // Moved back: the older release's version made active again, none written.
+      assert.equal((await strut.packages.install(`file:${d1}`, distro)).packages[0]!.from?.version, "1.1.0");
+      const step = (await ws.getStepMetadata(type))!;
+      assert.deepEqual([step.active, Object.keys(step.versions)], ["v1", ["v1", "v2"]]);
+      assert.ok(step.versions["v1"]!.upstream!.at! > step.versions["v2"]!.upstream!.at!, "stamped when it went in again");
+
+      // Edited here: still at the release it was moved back to.
+      await ws.publishStep(type, `${STEP(type)}// mine\n`);
+      let [listed] = await api.list();
+      assert.deepEqual([listed!.version, listed!.digest], ["1.0.0", digest1]);
+      assert.deepEqual(await installedStep(), { kind: "step", name: type, installed: "v1", active: "v3", modified: true });
+
+      // A release waits beside the fork; the fork edited again (it carries
+      // 1.0.0's upstream forward) leaves that release the one here.
+      const next = (await strut.packages.install(`file:${d3}`, distro)).packages[0]!;
+      assert.deepEqual(next.from, { version: "1.0.0", digest: digest1 });
+      assert.equal(next.items.find((i) => i.name === type)?.status, "diverged");
+      await ws.publishStep(type, `${STEP(type)}// mine, again\n`);
+      [listed] = await api.list();
+      assert.deepEqual([listed!.version, listed!.digest], ["1.2.0", digest3]);
+      assert.deepEqual(await installedStep(), { kind: "step", name: type, installed: "v4", active: "v5", modified: true });
     });
 
     it("refuses a release whose step does not load, before it writes anything", async () => {

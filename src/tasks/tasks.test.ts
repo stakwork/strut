@@ -118,6 +118,21 @@ for (const impl of impls) {
       assert.deepEqual((await tasks().types()).map((x) => x.name), ["acme/pet-match"]);
     });
 
+    it("a type's title is what workers call it, in any words; saved whole, it goes when left out (plans/i18n.md)", async () => {
+      const t = await tasks().setType("shops/receipt-check", { app: "workers", answer: BOX, title: "  Revisión   de recibo " }, "staff");
+      assert.equal(t.title, "Revisión de recibo", "trimmed, its spaces one");
+      assert.equal((await tasks().types())[0]!.title, "Revisión de recibo");
+      await tasks().grant("ann", "shops/receipt-check", "staff");
+      assert.deepEqual((await tasks().me("ann")).types.map((x) => [x.name, x.title]), [["shops/receipt-check", "Revisión de recibo"]], "the worker's dashboard carries it");
+      await assert.rejects(tasks().setType("shops/receipt-check", { app: "workers", answer: BOX, title: "x".repeat(81) }), refused("bad_request", /at most 80/));
+      await assert.rejects(tasks().setType("shops/receipt-check", { app: "workers", answer: BOX, title: 7 as unknown as string }), refused("bad_request"));
+      for (const none of [undefined, null, "   "]) {
+        const again = await tasks().setType("shops/receipt-check", { app: "workers", answer: BOX, title: none }, "staff");
+        assert.equal(again.title, undefined, `${JSON.stringify(none)}: none, a save is whole`);
+        assert.equal("title" in (await tasks().me("ann")).types[0]!, false);
+      }
+    });
+
     // ── rule 1: one task per key ──────────────────────────────────────
 
     it("one task per workflow, run and step path, whatever happens to its type since", async () => {

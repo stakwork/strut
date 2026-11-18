@@ -6,7 +6,8 @@ import { WorkerPage } from "strut/views";
 // WorkerPage — the ask, the photos the type takes, the answer's fields — and
 // a type another app draws opens that app on it, Back returning here. An app
 // with a view of its own starts from the same pieces: WorkerTask, TaskPhotos
-// and TaskForm.
+// and TaskForm. Its words are WorkerPage's own, in the worker's language
+// (plans/i18n.md): no title or intro here, which would be English alone.
 export default function App() {
-  return <WorkerPage everyApp title="Work" intro="Sign in, then do the tasks that show up here. Each one pays what it says." />;
+  return <WorkerPage everyApp />;
 }

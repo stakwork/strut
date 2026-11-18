@@ -20,6 +20,7 @@
 // server's base, and its links read against that server. Either may sign
 // the visitor in (./visitor-signin): in a native host's web view (Peel), as
 // the person's Sphinx account (`sign_in`, ./native-pay `signInAsk`).
+import { LOCALE } from "./words";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -268,7 +269,9 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): M
     ...(variables ? { styles: { variables } } : {}),
     displayMode: "fullscreen",
     availableDisplayModes: ["fullscreen"],
-    locale: typeof navigator !== "undefined" ? navigator.language : undefined,
+    // The link's `lang=`, else the browser's (./words): the app and the
+    // sheets strut draws over it speak one language.
+    locale: LOCALE,
     timeZone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined,
     userAgent: "strut-ui",
     platform: "web",

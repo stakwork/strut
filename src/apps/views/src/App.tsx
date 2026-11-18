@@ -3,7 +3,7 @@
 // builder, can see each one as it draws against a strut, with no grant.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
+import { LANGS, StrutProvider, useStrutClient, useStrutHost, type HostState, type Lang, type StrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
@@ -487,8 +487,33 @@ const ENTRIES: Entry[] = [
   },
 ];
 
+/** The host as it is, but for its locale: the gallery's language switch
+ *  (plans/i18n.md). Its state is one object until the host's changes, as
+ *  `useSyncExternalStore` needs. */
+function withLocale(host: StrutHost, locale: string): StrutHost {
+  let seen: HostState | undefined;
+  let made: HostState | undefined;
+  return {
+    getState: () => {
+      const s = host.getState();
+      if (s !== seen) {
+        seen = s;
+        made = { ...s, locale };
+      }
+      return made!;
+    },
+    subscribe: (listener) => host.subscribe(listener),
+    sendMessage: (text) => host.sendMessage(text),
+    openLink: (url) => host.openLink(url),
+    requestDisplayMode: (mode) => host.requestDisplayMode(mode),
+  };
+}
+
 export default function App() {
-  const host = useStrutHost();
+  const outer = useStrutHost();
+  /** The gallery's language: the host's, or one picked here. */
+  const [lang, setLang] = useState<Lang | null>(null);
+  const host = useMemo(() => (lang ? withLocale(outer, lang) : outer), [outer, lang]);
   const client = useMemo(() => createFixtureClient(), []);
   const [shown, setShown] = useState(ENTRIES[0]!.name);
   const entry = ENTRIES.find((e) => e.name === shown) ?? ENTRIES[0]!;
@@ -499,6 +524,19 @@ export default function App() {
           <div className="px-2 pb-2">
             <div className="font-semibold">strut/views</div>
             <div className="text-xs text-muted-foreground">import {"{ … }"} from "strut/views"</div>
+            <div className="mt-2 flex gap-1" role="group" aria-label="Language">
+              {LANGS.map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  aria-pressed={lang === l}
+                  onClick={() => setLang(lang === l ? null : l)}
+                  className={cn("rounded-md border px-2 py-0.5 text-xs uppercase", lang === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
           </div>
           {ENTRIES.map((e) => (
             <button

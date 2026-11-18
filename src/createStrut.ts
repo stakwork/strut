@@ -117,7 +117,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
-import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
+import { packageJobGrants, seedJobWorkflow, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -2214,14 +2214,32 @@ export async function createStrut<TServices = unknown>(
   // host's delta changed; before the claims reconcile below, which records
   // a seeded workflow's `claims:` block. A workspace that will not take it
   // is a warning, never a failed boot.
-  if (opts.job !== false) {
+  //
+  // `job` takes the installed packages' grants too (plans/followed-repos.md
+  // §3; src/job-seed.ts `packageJobGrants`), so it is seeded again after
+  // every package write — inside `oneAtATime` (below), which every install,
+  // update, uninstall, subscription sync and repo Open, Pull or Commit goes
+  // through, so two re-seeds never race on the publish. A re-seed that
+  // finds the packages granting what they granted last publishes nothing:
+  // a workspace edit of `job` lasts until what packages grant changes, or
+  // the next boot.
+  const packageStore = packageCache(dataDir);
+  let jobGrants: string | undefined;
+  const seedJob = async (): Promise<void> => {
+    if (opts.job === false) return;
     try {
-      const { version, changed } = await seedJobWorkflow(workspace, opts.job);
-      if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
+      const grants = await packageJobGrants({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      const key = JSON.stringify(grants);
+      if (key === jobGrants) return;
+      const { version, changed } = await seedJobWorkflow(workspace, withJobGrants(opts.job, grants));
+      jobGrants = key;
+      const n = grants.tools.length;
+      if (changed) console.log(`[job] seeded workflow: job @ ${version}${n ? ` (${n} tool${n === 1 ? "" : "s"} from packages)` : ""}`);
     } catch (err) {
       console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
     }
-  }
+  };
+  await seedJob();
   if (opts.orchestrator !== false) {
     try {
       // A host that keeps the person's own pages: the orchestrator follows them.
@@ -5179,7 +5197,6 @@ export async function createStrut<TServices = unknown>(
   // every byte, so the answer never changes: an ETag of the digest, kept a
   // year. Behind the gate like every route; a package a catalog publishes
   // is opened to anyone with the catalog (§13), a sold one by its token (§6).
-  const packageStore = packageCache(dataDir);
   app.get("/packages/:publisher/:name/archive", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
@@ -5276,8 +5293,15 @@ export async function createStrut<TServices = unknown>(
   // Every install as it goes, whichever door (src/packages/progress.ts).
   const installs = createInstallTracker();
   let packageWrites: Promise<unknown> = Promise.resolve();
+  // Each write seeds `job` again after it, in its turn (`seedJob`, above).
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
-    const next = packageWrites.then(fn);
+    const next = packageWrites.then(async () => {
+      try {
+        return await fn();
+      } finally {
+        await seedJob();
+      }
+    });
     packageWrites = next.catch(() => undefined);
     return next;
   };
@@ -5959,6 +5983,10 @@ export async function createStrut<TServices = unknown>(
     },
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
+    // A `git+` subscription's branch, read as serve mode reads its ref.
+    dataDir,
+    ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+    ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
   });
 
   // ── Serve mode (src/packages/serve.ts; plans/app-repos.md §4) ──────────
@@ -6065,16 +6093,25 @@ export async function createStrut<TServices = unknown>(
     }
   });
   // The publisher's ping (a peer may send it): read the catalogs now — of
-  // the subscriptions to `key`, or all of them. Answered at once.
+  // the subscriptions to `key`, or all of them. Answered at once. A `git+`
+  // subscription has no publisher: its host syncs it by id (below), in its
+  // own window (plans/followed-repos.md §1.3).
   app.post("/packages/subscriptions/sync", async (c) => {
     const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
     if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
-    void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    void subscriptions.syncAll({ ...(body.key ? { key: body.key } : {}), git: false });
     // A served ref is followed the same way (src/packages/serve.ts).
     if (served?.follows(body.key)) void served.sync();
     // The index follows the same ping: a listed publisher's public catalog moved.
     if (index) void index.crawl(body.key ? { key: body.key } : {}).catch(() => undefined);
     return c.json({ ok: true }, 202);
+  });
+  // One subscription read now, answered with the outcome — the operator's
+  // (full scope: the peer gate lets a peer POST only the ping above). How a
+  // host moves a `git+` subscription in its window.
+  app.post("/packages/subscriptions/:id/sync", async (c) => {
+    const out = await subscriptions.sync(c.req.param("id"));
+    return c.json(out, out.error?.startsWith("subscription_unknown:") ? 404 : 200);
   });
 
   // ── The package INDEX (plans/marketplace.md §7, step 7) ─────────────────

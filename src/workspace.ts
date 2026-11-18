@@ -257,6 +257,12 @@ export interface Upstream {
    *  re-resolves is `source.ref` — the branch or tag — never this. */
   commit?: string;
   secrets: string[];
+  /** When a package's door wrote this version or, a known one, stamped it
+   *  the release's again (ISO; one time for the whole release): what the
+   *  installed fold reads to tell which release is here once a fork is
+   *  active (src/packages/installed.ts). Absent on a version written
+   *  before 2026-11-18. A fork carries it forward with the rest. */
+  at?: string;
 }
 
 /** Provenance a publish records on the version it writes. */
@@ -267,9 +273,11 @@ export interface PublishOptions {
   upstream?: Upstream | null;
   /** KNOWN content: record this publish's `source`, `actor` and `upstream`
    *  on the version that holds it, in place of what it recorded — how a
-   *  repo's apply makes a version the package's (app-repos.md §3.3: a fork
-   *  committed to the repo is no longer one). New content records them as
-   *  any publish does. */
+   *  package's door makes a version the release's: a repo's apply (app-repos.md
+   *  §3.3: a fork committed to the repo is no longer one), and a release
+   *  whose content is an older version's (a branch or channel moved back),
+   *  whose `upstream.at` then says when. New content records them as any
+   *  publish does. */
   stamp?: boolean;
 }
 

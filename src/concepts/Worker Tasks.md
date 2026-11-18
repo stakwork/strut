@@ -106,6 +106,11 @@ What the person decided maps onto them:
   is an automation, and only when the person asked for one.
 - *Only people you invite* is `open: false`; *anyone* is open.
 - Photos are the type's `attachments`.
+- The workers' language is the person's to say, never to ask. `strut/worker`
+  speaks it already: its screens are in English or Spanish, whichever the
+  worker's phone is set to. What the type says is yours: write its ask, its
+  questions and their choices, and its `title` (what workers call it, any
+  words: "Revisión de recibo") in the language the person's workers speak.
 - What the answers come to (a report, a tally) is the person's: never in
   the worker app, which goes online for anyone with the link (`App`,
   "Worker apps"). They read the answers in Tasks and workers.

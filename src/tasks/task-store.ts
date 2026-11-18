@@ -143,6 +143,10 @@ export interface RoundRule {
  *  tests (§7). */
 export interface TaskType {
   name: string;
+  /** What workers call it, in their own words and language (plans/i18n.md):
+   *  "Revisión de recibo" for `shops/receipt-check`, whose name is ASCII.
+   *  Absent: the name's last segment, words spaced. */
+  title?: string;
   /** The app that draws it. */
   app: string;
   /** The answer's shape (§4.5), checked when the type was saved. */

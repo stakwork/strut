@@ -2827,7 +2827,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
-| `staff/save-type { name, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
 | `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
@@ -3177,7 +3177,10 @@ kept or recorded as a run.
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `license?` — an SPDX expression, never
-enforced — `requires?`) and the folders `workflows/`,
+enforced — `requires?`, `job?: { tools, approve? }` — steps of the package
+the `job` workflow's agent may call, by their names inside it or globs over
+them, and the ones among them that ask first; a name that matches none of
+its steps refuses the package, `plans/followed-repos.md` §3) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
@@ -3211,8 +3214,9 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
-| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. The operator's act: full scope (a peer is 403). 400 `subscription_invalid` |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name |
+| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
 | PUT    | `/packages/indexes/:id` | `{ key, urls, label? }` → the `IndexSubscriptionInfo`, its card read at once (a wrong key or URL shows as `error`). `key` is the index key; `urls` where its card is served (an index strut's `…/index/catalog`). Kept in `<dataDir>/packages/indexes.json`; `STRUT_PACKAGE_INDEXES` and `createStrut({ packageIndexes })` put entries on file at boot. Full scope; 400 `package_index_invalid` |
@@ -3220,7 +3224,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | GET    | `/packages/search?q=&limit=&peers=0` | `PackageSearch`: `{ packages: [IndexHit & { index }], peers: [{ peer, package, version?, digest?, source? }], errors: [{ index? \| peer?, error }] }` — each followed index strut's `GET /index/packages` (unsigned: install a hit by its NAME, which goes through the index's signed card) and, unless `peers=0`, every peer's `GET /packages` matched against `q`. A peer asking gets the indexes alone. `limit` 50 (≤ 500) |
 | —      | `package/install` (step) | The agent's INSTALL door (`src/steps/lib/package/install.ts`, over `ctx.services.packages.install`; the READS — `package/search`, `package/get`, `package/concepts` — are the steps table below). `package/install { package, index?, digest?, url? }` — a name through the followed indexes, or a `pk:` ref with its `url` — runs ONLY as a proposal a person accepted (plans/marketplace.md §8, ruled 2026-10-29) — and only an ADMIN accepts it (`approver: "admin"`, §12): a member's or a person token's accept is `403 admin_required:`, and a turn whose person is known not to be an admin proposes nothing. The seeds that grant it (`orchestrator`, `builder`, `job`) list it in `approve:`, so the agent's call records a proposal and returns `{ proposal, status: "pending" }`; its card's `summary` is the step's `describe` at proposal time — the index's reading of the package: publisher and key, which index lists it, digest, license, what it brings, what it can spend or act on, the secrets it needs — or that no followed index lists it; `POST /proposals/:id/decide { action: "accept" }` then installs as `POST /packages/install` would, with the decider as actor, and the result reaches the session on its next turn. The door behind the step (`services.packages.install`) checks the ACCEPTED record on disk for that very ref, so no step reaches it any other way; a direct call, a DAG step or `meta/run-step` is refused |
 | —      | `package/commit` (step) | The agent's COMMIT door for a package opened here as a git repository (`src/steps/lib/package/commit.ts`, over `ctx.services.packages.commit`): `{ package, message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted, like `package/install` — the card says where it pushes and which items changed here; the accept commits and pushes as `POST /packages/repos/:publisher/:name/commit` would ("Working on a repository" below). The same seeds grant it and list it in `approve:` |
-| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing |
+| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing. It never reads a `git+` subscription: no publisher pings one |
 | GET    | `/index` | **Index role only** (`STRUT_INDEX=1`, `createStrut({ index })`; `src/packages/index.ts`). `IndexInfo`: `{ key, createdAt, urls, publishers: { "<prefix>": { key, urls, description?, url? } }, crawled: [{ prefix, key, accepted?: { seq, digest, at, url }, checkedAt?, error?, packages? }] }` — the rows as the card has them and each listed publisher's catalog as last read. Any credential; 404 before the first row |
 | PUT    | `/index/:prefix` | `{ key, urls, description?, url? }` → `IndexInfo`: list a publisher — its PUBLIC key and where its public catalog is served (`urls`, tried in order) — the index key minted first when there is none, the card re-sealed, that publisher read now. Full scope. 400 `index_row_invalid`; 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
 | DELETE | `/index/:prefix` | Drop the row and re-seal → `{ ok, prefix }`; its crawl state goes. 404 when there is none |
@@ -3234,8 +3238,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/index/requests/:id/approve` | List it: the catalog read again, then the row written (a takeover replaces the key; a move the URL) → `{ status: "listed", … }`. Full scope; 404 `listing_unknown`, 422 `listing_no_catalog` |
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
-| GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, can, files, bytes }` (names inside the package; `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, job?: { tools, approve }, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/packages/:publisher/:name/screenshot?path=&digest=` | One of the package's app screenshots (app.yaml `screenshots`, `src/apps/manifest.ts`): `path` one an app of the current release lists in `detail` (`apps/<app>/public/shot.png`), read from the index's cache of the archive, `content-type` by extension (png, jpeg, webp, gif), `x-content-type-options: nosniff`, `content-security-policy: sandbox`, an `ETag`. With `digest` (the store's links carry it) only that release's, `cache-control: public, max-age=31536000, immutable`; without, the current one, `no-cache`. 404 for any path the page does not list, or a `digest` that is no longer the current release. **Open to anyone** |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
@@ -3422,9 +3426,12 @@ the build is the compatibility check — then published after the workflows
 through the apps capability (`POST /apps`'s publish), each after the apps
 of the set it imports. Each step, workflow and app version it
 writes records `source: "install"`, the installing actor, and
-`upstream: { package, version, digest, source: { ref }, secrets }` (what
+`upstream: { package, version, digest, source: { ref }, secrets, at }` (what
 `GET /workflows/:name`, the step version records and `GET /apps/:name`
-show); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
+show; `at` is when the release went in, rewritten when a later release's
+item is that version again — a branch or channel moved back — and what
+`GET /packages` reads to tell which release is here once a fork is
+active); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
 `pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
 A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
 with the package as their speaker, and `publish` checks fire. GRAPH TYPES
@@ -3884,6 +3891,73 @@ publish and after a channel move.
   "checkedAt": "…", "error": "…",          // the last read, and what stopped it
   "warnings": [],
   "packages": [{ "package": "acme/linear", "version": "1.1.0", "digest": "sha256:…", "diverged": ["acme/linear/report"] }]
+}
+```
+
+A subscription may follow a **git branch** instead (`plans/followed-repos.md`
+§1): the package in a repository's folder, released by moving the branch.
+
+```jsonc
+// PUT /packages/subscriptions/pods — a host's first boot
+{
+  "ref": "git+https://github.com/stakwork/pods@stable#package",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
+  "tokenSecret": "GITHUB_TOKEN"   // optional: the NAME of the secret the repo is read with; a public repo needs none
+}
+```
+
+The branch is the channel. A SYNC of one (on the `PUT`, at boot, every
+`STRUT_DISTRO_POLL_MINUTES`, and on `POST /packages/subscriptions/:id/sync`;
+never on the publisher's ping) fetches the branch into git/checkout's bare
+cache, as serve mode reads its ref, and reads the package at its commit into
+the package cache — skipped while the commit is the one applied. A package
+whose digest is the one applied installs nothing (`current`; the commit is
+recorded). Any other goes in as ONE install through the distro's door, as
+above, each version's `upstream` recording `subscription:<id>` and the
+commit. An older commit goes in the same way, so a branch moved back is a
+rollback. A package it installed under another name is uninstalled. A
+failure — the remote does not answer, the token is refused, the install is
+refused — keeps what is installed, with `error` on the `GET`. A tag or a
+commit has nothing to follow: a full sha is refused at the `PUT`, and a tag
+(or a short sha) at the first sync, `package_ref_not_found: … a
+subscription follows a branch, not a tag or a commit`.
+
+```jsonc
+// GET /packages/subscriptions → subscriptions[]
+{
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
+  "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…",   // no seq: a branch has no catalog
+               "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
+  "checkedAt": "…", "error": "…", "warnings": [],
+  "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…", "diverged": [] }]
+}
+```
+
+**The secrets gate** (`plans/followed-repos.md` §2), on every subscription,
+`pk:` and `git+`: before a sync installs a package, it checks every secret
+the package's `requires.secrets` names, as an install's `missing` does (the
+deployment's secrets, which fall back to strut's environment). While one is
+unset the package WAITS: nothing of it is installed (no step, workflow, app
+or Concept page), one the subscription installed earlier is uninstalled
+through the distro's door (what was edited here is kept), the `GET` shows
+`waiting: { secrets: [...] }`, and the sync's status is `waiting`. In a
+channel of several packages the gate is per package: one that requires a
+waiting package of the channel waits too, and the rest go in (`result`). It
+runs even when nothing moved, so the next sync after a secret is set installs
+the package with no new release, and the next after one is removed takes it
+out. `applied.packages` lists what went in, not what waits. A person's
+install (`POST /packages/install`) is not gated: it installs and lists what
+is missing.
+
+```jsonc
+// POST /packages/subscriptions/pods/sync, with PODS_URL and PODS_TOKEN unset
+{ "id": "pods", "status": "waiting", "from": "9531ac85…", "to": "9531ac85…", "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] } }
+// GET /packages/subscriptions → subscriptions[]
+{
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
+  "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…", "packages": [] },   // read, nothing went in
+  "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] },
+  "checkedAt": "…", "warnings": [],
+  "packages": []   // what is left here: an item edited here before it went out
 }
 ```
 
@@ -5498,7 +5572,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
 | `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at } }] }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
@@ -5625,7 +5699,7 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
+| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
 | `GET /tasks/workflows?type=` | The type editor's "When there is work" picker: `{ type, workflows: [{ name, standing }] }`, the workflows (not sealed) with a `human` step of that type at any depth — each can be its round workflow — and `standing` true for those whose FIRST step is that step (its standing workflow), by name. `400` without `type` |
 | `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
 | `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
@@ -6251,7 +6325,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
 | Step | Config | Answers |
 | --- | --- | --- |
 | `task/types` | `{}` | `{ types: [TaskType less changedBy, plus openTasks?, workers?, answeredWeek?, readyTests?] }`: each type (`open`: open or invite-only), its open tasks (`openTasks`), how many workers hold it (`workers`, a count: who is the staff's to read), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`). The four counts are absent on a server whose task store is its host's and answers no queue |
-| `task/set-type` | `{ name, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
 
 - **Only as a proposal an admin accepted** (`approver: "admin"`, as
   `package/install`): a direct call, a workflow's step, `meta/run-step`

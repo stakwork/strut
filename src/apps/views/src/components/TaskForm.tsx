@@ -8,6 +8,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
+import { useWorkerWords } from "../lib/words";
 
 export interface TaskFormProps {
   /** The task in hand (`useTask().task`): its `answer` schema is the form. */
@@ -21,7 +22,7 @@ export interface TaskFormProps {
   value?: Record<string, unknown>;
   /** Passes on the task: `useTask().skip`. No Skip button without it. */
   onSkip?: () => Promise<unknown> | unknown;
-  /** The submit button's text. */
+  /** The submit button's text: "Submit" in the page's language without one. */
   label?: string;
   /** Submit stays off while this is set, and it is said above the buttons:
    *  what the answer still lacks that the form does not hold (a photo). */
@@ -66,7 +67,8 @@ const CHOICE = "flex min-h-12 items-center gap-3 rounded-xl border bg-background
  * own UI. The page draws what the task shows (`task.show`, `useTaskFileUrl`);
  * this is only the answer.
  */
-export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, label = "Submit", waitingFor, bar = false, className }: TaskFormProps) {
+export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, label, waitingFor, bar = false, className }: TaskFormProps) {
+  const w = useWorkerWords();
   const problem = useMemo(() => formProblem(task.answer), [task.answer]);
   const schema = task.answer as FormSchema;
   const fields = useMemo(() => (problem ? [] : fieldsOf(schema, { other: false })), [problem, schema]);
@@ -83,7 +85,7 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
   if (problem) {
     return (
       <p className={cn("text-sm text-muted-foreground", className)} data-testid="task-form-custom">
-        This task type needs its own UI: {problem}.
+        {w.needsOwnUi(problem)}
       </p>
     );
   }
@@ -93,7 +95,7 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
     e.preventDefault();
     if (readOnly || !onSubmit || waitingFor) return;
     const read = answerOf(schema, content);
-    if ("problem" in read) return setError(read.problem);
+    if ("problem" in read) return setError(w.issue(read.issue));
     setError(null);
     setBusy("submit");
     try {
@@ -126,13 +128,13 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
       {onSkip && (
         <Button type="button" disabled={busy !== null} variant={bar ? "secondary" : "outline"} className={cn(bar && "h-12 rounded-xl px-5 text-base")} onClick={() => void skip()}>
           {busy === "skip" ? <Loader2 className="animate-spin" /> : <SkipForward />}
-          Skip
+          {w.skip}
         </Button>
       )}
       {onSubmit && (
         <Button type="submit" disabled={!!waitingFor || busy !== null} className={cn(bar && cn("h-12 flex-1 rounded-xl text-base font-semibold", ACCENT_BUTTON))}>
           {busy === "submit" ? <Loader2 className="animate-spin" /> : <Check />}
-          {label}
+          {label ?? w.submit}
         </Button>
       )}
     </div>
@@ -156,6 +158,7 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
 }
 
 function Field({ field: f, long, scale, value, set }: { field: FormField; long: boolean; scale: number[] | undefined; value: unknown; set: (v: unknown) => void }) {
+  const w = useWorkerWords();
   const id = `task-${f.name}`;
   const head = (
     <div className="grid gap-1">
@@ -180,7 +183,7 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
         {[true, false].map((b) => (
           <button key={String(b)} type="button" role="radio" aria-checked={value === b} className={cn(CHOICE, "h-14 justify-center font-semibold", value === b && PICKED)} onClick={() => set(b)}>
             {b ? <Check className="size-5" /> : <X className="size-5" />}
-            {b ? "Yes" : "No"}
+            {b ? w.yes : w.no}
           </button>
         ))}
       </div>,
@@ -201,7 +204,7 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
   if (f.kind === "enum") {
     return wrap(
       <NativeSelect id={id} className="h-12 w-full rounded-xl text-base" value={value === undefined ? "" : String(value)} onChange={(e) => set(e.target.value || undefined)}>
-        <NativeSelectOption value="">Choose…</NativeSelectOption>
+        <NativeSelectOption value="">{w.chooseOne}</NativeSelectOption>
         {(f.enumValues ?? []).map((v) => (
           <NativeSelectOption key={v} value={v}>
             {text(v)}
@@ -250,7 +253,7 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
   const shown = value === undefined || value === null ? "" : String(value);
   return wrap(
     f.kind === "string" && long ? (
-      <Textarea id={id} rows={4} className="min-h-28 rounded-xl px-3.5 py-3 text-base" placeholder="Write here…" value={shown} onChange={(e) => set(e.target.value)} />
+      <Textarea id={id} rows={4} className="min-h-28 rounded-xl px-3.5 py-3 text-base" placeholder={w.writeHere} value={shown} onChange={(e) => set(e.target.value)} />
     ) : (
       <Input
         id={id}

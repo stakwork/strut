@@ -4,7 +4,9 @@
  * each workflow with its inputs and what it can do, the steps with the
  * secrets they read and what the lint says, the Concept pages, the README.
  * The index derives it at the crawl and the store's package page draws it,
- * so a person sees an app before the package under it.
+ * so a person sees an app before the package under it. It also says which
+ * of the package's steps the manifest's `job:` gives the job agent, and
+ * which of those ask first (plans/followed-repos.md §3.3).
  *
  * A READING, never a check: nothing here is loaded or run — a step's facts
  * are regexes over its source, a workflow's over its YAML — and an install
@@ -124,6 +126,9 @@ export interface PackageDetail {
   /** Every secret the package needs: the manifest's `requires.secrets` and
    *  what the workflows and steps name. */
   secrets: string[];
+  /** The steps the manifest's `job:` gives the job agent, by their names
+   *  inside the package, and the ones among them that ask first. */
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   files: number;
   bytes: number;
@@ -439,6 +444,7 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     steps: steps.sort((a, b) => a.name.localeCompare(b.name)),
     concepts: concepts.sort((a, b) => a.name.localeCompare(b.name)),
     secrets: [...secrets].sort(),
+    ...(info.job ? { job: { tools: info.job.tools.map(inside), approve: info.job.approve.map(inside) } } : {}),
     can,
     files: info.files.length,
     bytes,
@@ -452,6 +458,7 @@ export interface DetailSummary {
   steps: number;
   concepts: number;
   secrets: string[];
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   readme: boolean;
 }
@@ -463,6 +470,7 @@ export function summarizeDetail(d: PackageDetail): DetailSummary {
     steps: d.steps.filter((s) => !s.helper).length,
     concepts: d.concepts.length,
     secrets: d.secrets,
+    ...(d.job ? { job: d.job } : {}),
     can: d.can,
     readme: d.readme !== undefined,
   };

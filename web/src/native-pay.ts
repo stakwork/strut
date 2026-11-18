@@ -34,6 +34,7 @@
 // covers it (native-pay.test.ts); ./app-host wires it, the sheets
 // (components/PaymentSheet.tsx, components/SignInSheet.tsx) draw it.
 
+import { HOST_WORDS, type HostWords } from "./words";
 import {
   NATIVE_WALLET_HANDLER, buyCreditNatively, connectionRequestProblems, creditStatusNatively, nativeWalletAppProblems, nativeWalletOf,
   probeHostWallet, signInNatively, signInRequestProblems, visitorChallengeClaims,
@@ -230,12 +231,14 @@ export function signInAsk(o: {
   };
 }
 
-/** The sheet's line after the wallet did not sign the visitor in. */
-export function signInNote(a: Extract<SignInAnswerOf, { outcome: "refused" }>, name = "your wallet"): string {
-  const Name = name[0]!.toUpperCase() + name.slice(1);
-  if (a.declined) return `You declined in ${name}.`;
-  if (a.code === "RESTRICTED") return `${Name} did not sign you in (${a.message}). Press Sign in with ${name} to confirm there.`;
-  return `${Name} did not sign you in (${a.message}).`;
+/** The sheet's line after the wallet did not sign the visitor in, in `w`'s
+ *  language (./words: the page's is `words`; English by default). */
+export function signInNote(a: Extract<SignInAnswerOf, { outcome: "refused" }>, name?: string, w: HostWords = HOST_WORDS.en): string {
+  const who = name ?? w.yourWallet;
+  const Who = who[0]!.toUpperCase() + who.slice(1);
+  if (a.declined) return w.declinedIn(who);
+  const note = w.didNotSignIn(Who, a.message);
+  return a.code === "RESTRICTED" ? note + w.pressToConfirm(who) : note;
 }
 
 // ── The app's own wallet connection (specs/WALLET.md §1.1) ────────────────

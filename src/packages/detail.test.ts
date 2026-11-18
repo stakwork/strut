@@ -161,6 +161,26 @@ describe("a package's detail", () => {
     }
   });
 
+  it("says which steps strut.yaml's job: gives the job agent, by their names inside the package, and which ask first; the summary carries it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "strut-detail-job-"));
+    try {
+      const files: Record<string, string> = {
+        ...FILES,
+        "strut.yaml": "package: acme/linear\nversion: 1.4.0\njob:\n  tools: ['*']\n  approve: [update-issue]\n",
+      };
+      for (const [rel, body] of Object.entries(files)) {
+        await mkdir(dirname(join(root, rel)), { recursive: true });
+        await writeFile(join(root, rel), body);
+      }
+      const d = await derivePackageDetail({ ...(await readPackage(root)), dir: root });
+      assert.deepEqual(d.job, { tools: ["list-issues", "update-issue"], approve: ["update-issue"] });
+      assert.deepEqual(summarizeDetail(d).job, d.job);
+      assert.equal((await derivePackageDetail({ ...(await readPackage(root)), job: undefined, dir: root })).job, undefined, "no job: key, no line");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads a step's facts off its source without loading it", () => {
     assert.deepEqual(stepFactsFromSource(FILES["steps/list-issues.ts"]!), { description: "The open issues of a team", effect: "read", secrets: ["LINEAR_API_KEY"] });
     assert.deepEqual(stepFactsFromSource("export default defineStep({ type: 'x', input: z.object({}), output: z.any(), async run(c, ctx) { return ctx?.services?.secrets?.get(`B_KEY`) ?? ctx.services.secrets.get(\"A_KEY\"); } });"), { secrets: ["A_KEY", "B_KEY"] });

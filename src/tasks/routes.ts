@@ -315,6 +315,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       const input = {
         app: b["app"] as string,
         answer: b["answer"],
+        ...(b["title"] !== undefined ? { title: b["title"] as string | null } : {}),
         ...(b["leaseSeconds"] !== undefined ? { leaseSeconds: b["leaseSeconds"] as number } : {}),
         ...(b["withinHours"] !== undefined ? { withinHours: b["withinHours"] as number } : {}),
         ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),

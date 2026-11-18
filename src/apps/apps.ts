@@ -148,7 +148,7 @@ export interface AppPublishOptions {
    *  landing beside a fork, plans/marketplace.md §4). */
   activate?: boolean;
   /** Known content: stamp the version that holds it with `source`, `actor`
-   *  and `upstream` (`PublishOptions.stamp`: a repo's apply). */
+   *  and `upstream` (`PublishOptions.stamp`: a package door's apply). */
   stamp?: boolean;
 }
 

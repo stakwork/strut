@@ -29,6 +29,8 @@ export interface CopiesRule {
 
 export interface TaskType {
   name: string;
+  /** What workers call it, in their language (plans/i18n.md); absent: its name. */
+  title?: string;
   app: string;
   answer: AnswerSchema;
   leaseSeconds: number;

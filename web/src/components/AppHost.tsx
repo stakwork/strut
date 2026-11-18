@@ -14,6 +14,7 @@ import { PaymentSheet } from "./PaymentSheet";
 import { CameraSheet } from "./CameraSheet";
 import type { CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
+import { words } from "../words";
 import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
@@ -255,7 +256,7 @@ export function AppHost(props: {
                         if (r.outcome === "signed") return r.session;
                         // Declined, with nothing else to offer: not signed in.
                         if (r.declined && methods.length === 1) return null;
-                        note = signInNote(r, sphinx.name);
+                        note = signInNote(r, sphinx.name, words);
                       } catch (err) {
                         note = err instanceof Error ? err.message : String(err);
                       }
@@ -405,7 +406,7 @@ export function AppHost(props: {
       )}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
-          {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}
+          {state.status === "loading" ? words.loadingApp : words.couldNotLoad(state.error ?? "")}
         </div>
       )}
     </div>

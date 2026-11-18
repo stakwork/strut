@@ -192,6 +192,8 @@ export const TASK_REQUESTS_PER_MINUTE = 240;
 /** A task type's name (§4.2): lowercase segments joined by "/". */
 export const TYPE_NAME_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$/;
 export const TYPE_NAME_MAX = 128;
+/** The most characters a type's `title` takes. */
+export const TYPE_TITLE_MAX = 80;
 const ACTOR_MAX = 512;
 const TEXT_MAX = 2000;
 
@@ -331,6 +333,9 @@ export interface EnsureOptions {
 
 export interface TaskTypeInput {
   app: string;
+  /** What workers call it (plans/i18n.md), at most `TYPE_TITLE_MAX`
+   *  characters; absent, empty or null: none, and they read its name. */
+  title?: string | null;
   /** The answer's schema (§4.5); refused when it uses what strut does not check. */
   answer: unknown;
   leaseSeconds?: number;
@@ -450,6 +455,8 @@ export interface WorkerView {
  *  its tasks wait that they could take (`TaskStore.waitingFor`). */
 export interface WorkerTypeView {
   name: string;
+  /** What workers call it (`TaskType.title`); absent: its name. */
+  title?: string;
   app: string;
   payMsat: number;
   qualifying: boolean;
@@ -1691,7 +1698,15 @@ export function createTasks(deps: TasksDeps): TasksService {
       const grants = grantsOf(w);
       const rows = await standingRows(s, w.actor, held, grants);
       const at = now();
-      const shown = (k: TaskType, qualifying: boolean) => ({ name: k.name, app: k.app, payMsat: payMsatOf(k) ?? 0, qualifying, standing: !!k.standing, waiting: 0 });
+      const shown = (k: TaskType, qualifying: boolean): WorkerTypeView => ({
+        name: k.name,
+        ...(k.title ? { title: k.title } : {}),
+        app: k.app,
+        payMsat: payMsatOf(k) ?? 0,
+        qualifying,
+        standing: !!k.standing,
+        waiting: 0,
+      });
       const types = held.map((k) => {
         const row = rows.get(k.name);
         return shown(k, !!(k.tests && row) && phaseOf(row!, grants.get(k.name)!) !== "qualified");
@@ -1769,6 +1784,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const open = input.open ?? true;
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
+      const title = titleOk(input.title);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
       const attachments = ruled(() => attachmentRuleOf(input.attachments));
@@ -1780,6 +1796,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       // admin's; nothing here refuses one for want of tests.
       const saved = await s.tasks.putType({
         name,
+        ...(title ? { title } : {}),
         app,
         answer: input.answer as TaskType["answer"],
         leaseSeconds,
@@ -2560,6 +2577,15 @@ function payOk(v: unknown): number | undefined {
     throw new TaskError("bad_request", `paySats is a number of sats from 0 to ${PAY_SATS_MAX}, to the msat (at most three decimals)`);
   }
   return v > 0 ? Math.round(v * 1000) / 1000 : undefined;
+}
+
+/** A type's title, trimmed; undefined for none. */
+function titleOk(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") throw new TaskError("bad_request", "title is what workers call the type, in words");
+  const t = v.trim().replace(/\s+/g, " ");
+  if (t.length > TYPE_TITLE_MAX) throw new TaskError("bad_request", `title is at most ${TYPE_TITLE_MAX} characters`);
+  return t || undefined;
 }
 
 /** A type's hold: hours from `HOLD_HOURS_MIN` to `HOLD_HOURS_MAX`, never 0. */

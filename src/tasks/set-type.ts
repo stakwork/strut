@@ -39,6 +39,7 @@ import {
   PAY_SATS_MAX,
   TYPE_NAME_MAX,
   TYPE_NAME_RE,
+  TYPE_TITLE_MAX,
   WITHIN_HOURS_MAX,
   type TasksCapability,
   type TaskTypeInput,
@@ -83,6 +84,12 @@ export const typeChangeInput = z.object({
     .max(TYPE_NAME_MAX)
     .regex(TYPE_NAME_RE, 'a task type\'s name is lowercase letters, digits, ".", "_" and "-", segments joined by "/"')
     .describe("The task type's name, as a `human` step's `task` names it (pet-match, acme/pet-match). An existing type is changed; a new name makes a new type."),
+  title: z
+    .string()
+    .max(TYPE_TITLE_MAX)
+    .nullable()
+    .optional()
+    .describe("What workers call it, in their own language and words (\"Revisión de recibo\"): the name is ASCII, the title anything. Left out, a type keeps its title; null: none, and workers read its name."),
   app: z.string().min(1).describe("The app that draws its tasks: the worker app, which must grant task/next and task/submit (task/* covers them)."),
   answer: z
     .preprocess(
@@ -215,7 +222,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -224,6 +231,9 @@ export function mergeType(
   const rules = <T extends object>(was: T | undefined, given: Record<string, unknown> | null | undefined): Partial<T> | null | undefined =>
     given === undefined ? was : given === null ? null : ({ ...(was ?? {}), ...given } as Partial<T>);
   const out: TaskTypeInput = { app: change.app ?? existing?.app ?? "", answer };
+  // A title is whole: given, it replaces; null clears it.
+  const title = change.title === undefined ? existing?.title : change.title;
+  if (title) out.title = title;
   const leaseSeconds = change.leaseSeconds ?? existing?.leaseSeconds;
   const withinHours = change.withinHours ?? existing?.withinHours;
   const enabled = change.enabled ?? existing?.enabled;
@@ -303,6 +313,7 @@ export function createTaskTypes(deps: TaskTypesDeps): TaskTypesCapability {
 /** The type as it would be saved, every field filled; what is wrong with a
  *  field the save would refuse (the merged rules), by field. */
 interface Planned {
+  title?: string;
   app: string;
   answer: unknown;
   leaseSeconds: number;
@@ -319,6 +330,7 @@ interface Planned {
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
+  ...(t.title ? { title: t.title } : {}),
   app: t.app,
   answer: t.answer,
   leaseSeconds: t.leaseSeconds,
@@ -364,6 +376,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   return {
     ...(openWarning ? { openWarning } : {}),
     planned: {
+      ...(merged.title ? { title: merged.title.trim() } : {}),
       app: merged.app,
       answer: merged.answer,
       leaseSeconds: merged.leaseSeconds ?? DEFAULT_LEASE_SECONDS,
@@ -531,6 +544,7 @@ function handInText(answer: unknown, a: AttachmentRule | undefined): string {
 
 /** A change's line, in the card's plain labels. */
 const changeLabel: Record<string, string> = {
+  title: "what workers call it",
   "drawn by": "worker app",
   answer: "questions",
   lease: "time to finish",
@@ -560,7 +574,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const { planned: after, problems, openWarning } = plan(name, existing, change);
   const before = existing ? plannedOf(existing) : undefined;
   const turnsOff = !!before?.enabled && !after.enabled;
-  const human = name.replace(/[-_]+/g, " ");
+  const human = after.title ?? name.replace(/[-_]+/g, " ");
   const title = !existing ? `New task: ${human}` : turnsOff ? `Turn off task: ${human}` : `Change task: ${human}`;
   /** "$3.50 (5,500 sats)", or the sats alone with no rate. */
   const money = (sats: number) => (!sats ? "unpaid" : usdPerBtc ? `${usdText((roundMsat(sats) * usdPerBtc) / 1e8)} (${satsText(sats)})` : satsText(sats));
@@ -571,6 +585,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const changes: string[] = [];
   if (before) {
     const line = (key: string, was: string, now: string) => changes.push(`${changeLabel[key] ?? key}: ${was} → ${now}`);
+    if ((before.title ?? "") !== (after.title ?? "")) line("title", before.title ? `“${before.title}”` : "none", after.title ? `“${after.title}”` : "none");
     if (before.app !== after.app) line("drawn by", before.app, after.app);
     if (after.answer !== undefined && !sameJson(before.answer, after.answer)) changes.push("questions: new ones (see A worker hands in)");
     if (before.leaseSeconds !== after.leaseSeconds) line("lease", secondsText(before.leaseSeconds), secondsText(after.leaseSeconds));
@@ -636,7 +651,8 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   fields.push({ label: "Pay", value: pay, ...(rises ? { danger: true } : {}) });
 
   // Under Details: the type's own settings, for whoever wants them.
-  fields.push({ label: "Task type", value: appProblem ? `${name}, in the app ${after.app} — ${appProblem}` : `${name}, in the app ${after.app}`, ...(appProblem ? { danger: true } : { detail: true }) });
+  const named = after.title ? `${name} (“${after.title}”)` : name;
+  fields.push({ label: "Task type", value: appProblem ? `${named}, in the app ${after.app} — ${appProblem}` : `${named}, in the app ${after.app}`, ...(appProblem ? { danger: true } : { detail: true }) });
   fields.push({ label: "The answer", value: answerText(after.answer), detail: true });
   fields.push({
     label: "Time limits",

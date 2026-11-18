@@ -786,6 +786,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
                 <span>brings {[h.detail.apps.length && `${h.detail.apps.length} app${h.detail.apps.length === 1 ? "" : "s"}`, h.detail.workflows && `${h.detail.workflows} workflow${h.detail.workflows === 1 ? "" : "s"}`, h.detail.steps && `${h.detail.steps} step${h.detail.steps === 1 ? "" : "s"}`, h.detail.concepts && `${h.detail.concepts} concept${h.detail.concepts === 1 ? "" : "s"}`].filter(Boolean).join(", ") || "nothing"}</span>
                 <span>{canWords(h.detail.can).join(" · ")}</span>
                 {h.detail.secrets.length > 0 && <span>needs {h.detail.secrets.join(", ")}</span>}
+                {h.detail.job && h.detail.job.tools.length > 0 && <span title={`The job agent's tools: ${h.detail.job.tools.join(", ")}${h.detail.job.approve.length ? `; asks first: ${h.detail.job.approve.join(", ")}` : ""}`}>gives the job agent {h.detail.job.tools.length} tool{h.detail.job.tools.length === 1 ? "" : "s"}</span>}
               </div>
             )}
             {going?.ref === h.package && progressOf(going)}
@@ -880,10 +881,10 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
               <div class="auto-card" key={s.id}>
                 <div class="auto-card-head">
                   <span class="package-name">{s.id}</span>
-                  <span class="badge">{s.channel ?? "newest releases"}</span>
+                  <span class="badge">{s.ref ? "git branch" : (s.channel ?? "newest releases")}</span>
                 </div>
                 <div class="auto-meta">
-                  <span class="package-url">{s.url}</span>
+                  <span class="package-url">{s.ref ?? s.url}</span>
                   {s.checkedAt && <span title={new Date(s.checkedAt).toLocaleString()}>checked {ago(secs(s.checkedAt))}</span>}
                   {s.applied && <span title={new Date(s.applied.at).toLocaleString()}>applied {ago(secs(s.applied.at))}</span>}
                 </div>

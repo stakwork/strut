@@ -85,7 +85,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "round", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "round", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
     for (const k of ["answer", "tests", "copies", "attachments", "standing", "round"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
@@ -134,6 +134,17 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.equal(mergeType("pet-match", { ...was, open: false }, { app: "workers", open: true }).open, true);
     // A new type with no answer: the empty object, a files-only task.
     assert.deepEqual(mergeType("new", undefined, { app: "workers" }), { app: "workers", answer: { type: "object", properties: {} } });
+  });
+
+  it("a title (plans/i18n.md) is kept when left out, replaced when given, gone with null; the card says it", () => {
+    const was = row({ title: "Revisión de recibo" });
+    assert.equal(mergeType("pet-match", was, { app: "workers" }).title, "Revisión de recibo");
+    assert.equal(mergeType("pet-match", was, { app: "workers", title: "Foto del recibo" }).title, "Foto del recibo");
+    assert.equal("title" in mergeType("pet-match", was, { app: "workers", title: null }), false);
+    assert.equal(typeChangeInput.safeParse({ name: "x", app: "a", title: "x".repeat(81) }).success, false, "80 characters at most");
+    const card = typeCard({ name: "pet-match", app: "workers", title: "Foto del recibo" }, { existing: was });
+    assert.equal(card.title, "Change task: Foto del recibo");
+    assert.equal(field(card, "What changes")!.value, "what workers call it: “Revisión de recibo” → “Foto del recibo”");
   });
 
   it("the card's flat-form check gives the kit's verdict, and the answer reads one line per field", () => {
