@@ -307,7 +307,7 @@ function TaskDetail(props: Props & { id: string }) {
             <Note>
               What the run told {copies ? "the workers who answered" : "the worker"} after the answer, {fmtWhen(t.reply.at)}
             </Note>
-            <TaskReplyView reply={t.reply} file={(f) => <TaskFileView task={t.id} path={f.path} mediaType={f.mediaType} />} />
+            <TaskReplyView reply={t.reply} file={(f) => <TaskFileView task={t.id} path={f.path} mediaType={f.mediaType} version={t.reply!.at} />} />
           </Section>
         )}
       </div>
@@ -444,14 +444,16 @@ function ReviewLine(props: { lease: Lease; who?: string; busy: boolean; onReview
  *  comes into view and drawn (a click shows it full size); text and any other
  *  file are read when opened. Each is read once — its key is outside
  *  ["staff", …], so a review's reads again never read it again — and its
- *  error is its own: a file that is gone says so, and the rest still draw. */
-function TaskFileView(props: { task: string; path: string; mediaType?: string }) {
+ *  error is its own: a file that is gone says so, and the rest still draw.
+ *  `version` is in the key: a reply's files are read again when a later
+ *  reply (its `at`) replaces it, even under the same path. */
+function TaskFileView(props: { task: string; path: string; mediaType?: string; version?: number }) {
   const client = useStrutClient();
   const picture = isPicture(props.path, props.mediaType);
   const [open, setOpen] = useState(false);
   const [box, seen] = useSeen<HTMLDivElement>(picture);
   const q = useQuery({
-    queryKey: ["staff-file", props.task, props.path],
+    queryKey: ["staff-file", props.task, props.path, props.version ?? 0],
     queryFn: () => client.run<TaskFile>("staff/file", { task: props.task, path: props.path }),
     enabled: picture ? seen : open,
     staleTime: Infinity,
