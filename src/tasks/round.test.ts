@@ -199,6 +199,17 @@ describe("Send a round on a strut: the save's checks, the items, a round of all 
     assert.match(await errorOf(wrong), /input is an object/);
   });
 
+  it("lists the workflows that can feed a type for the editor's picker: a round's any human step of it, standing only a first one", async () => {
+    const res = await req("GET", "/tasks/workflows?type=shop-visit");
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(((await res.json()) as { workflows: unknown }).workflows, [
+      { name: "label-flow", standing: true },
+      { name: "shop-visits", standing: false },
+    ]);
+    assert.equal((await req("GET", "/tasks/workflows")).status, 400, "names the type");
+    assert.equal((await req("GET", "/tasks/workflows?type=shop-visit", undefined, { "content-type": "application/json" })).status, 401, "an admin's");
+  });
+
   it("is an admin's: no key, no round", async () => {
     assert.equal((await putType({ round: { workflow: "shop-visits" } })).status, 200);
     for (const [method, body] of [["GET", undefined], ["POST", {}]] as const) {
