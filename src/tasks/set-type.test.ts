@@ -85,10 +85,10 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "round", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
-    for (const k of ["answer", "tests", "copies", "attachments", "standing"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
+    for (const k of ["answer", "tests", "copies", "attachments", "standing", "round"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
   });
 
   it("an object field sent as JSON text is parsed, then checked as an object; text that does not parse keeps the shape's refusal", () => {
@@ -222,8 +222,11 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.equal(standing.summary, 'Anyone signed in to the worker page can do the "labels" task whenever they like, as many as they like, unpaid.');
     assert.equal(field(standing, "When")!.value, "Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow nutrition-label.");
     assert.equal(field(standing, "Time limits")!.value, "10 minutes to finish one once started", "a standing task has no expiry: it lives as long as its lease");
+    // A round type: one for each item, sent from Tasks and workers or by asking.
+    const round = typeCard({ name: "visits", app: "workers", answer: MATCH, round: { workflow: "shop-visits" } });
+    assert.equal(field(round, "When")!.value, "One for each item, when you send a round: from Tasks and workers (Send a round), or by asking here. The workflow shop-visits makes them.");
     // What the person decides on is never folded, nor is any danger.
-    for (const c of [card, invite, paid, paidOpen, noTests, standing]) {
+    for (const c of [card, invite, paid, paidOpen, noTests, standing, round]) {
       for (const f of c.fields!) assert.ok(!(f.detail && f.danger), `${f.label}: a danger is never folded`);
       assert.deepEqual(c.fields!.filter((f) => !f.detail && !f.danger).map((f) => f.label).filter((l) => l !== "Pay" && l !== "Who can do it"), ["A worker hands in", "When"]);
     }

@@ -16,6 +16,8 @@ grants:
     - staff/types
     - staff/save-type
     - staff/delete-type
+    - staff/round-items
+    - staff/send-round
     - staff/workers
     - staff/worker
     - staff/set-worker

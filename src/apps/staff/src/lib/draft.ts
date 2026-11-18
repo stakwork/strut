@@ -183,6 +183,8 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
   // Off: left out, which a whole-type PUT saves as none.
   // Standing (plans/human-steps.md §5.7) is not edited here: sent back as it was.
   if (was?.standing) input["standing"] = was.standing;
+  // So is a round's workflow.
+  if (was?.round) input["round"] = was.round;
   return { input };
 }
 

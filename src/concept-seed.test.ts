@@ -144,7 +144,9 @@ describe("concept files (pure)", () => {
     // built. Workspace-general: no one deployment's task.
     const work = await read("Worker Tasks.md");
     assert.deepEqual(work.parents, ["Workflow Builder"]);
-    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about", "an invite is the one step"]) assert.ok(work.docs!.includes(must), must);
+    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about", "an invite is the one step", "strut/worker", "Show the WORKER PAGE too", "paid from their first one", "round: { workflow }", "Send a round", "Earnings is named in words alone, never shown"]) assert.ok(work.docs!.includes(must), must);
+    // Ruling 12: open paid work needs no qualifying test first.
+    assert.doesNotMatch(work.docs!, /first needs a short qualifying test/, "open paid work is not held for a test");
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
     // A worker app's links are shared from Tasks and workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.

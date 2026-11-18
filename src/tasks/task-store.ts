@@ -132,6 +132,13 @@ export interface StandingRule {
   workflow: string;
 }
 
+/** A ROUND type: the workflow whose run makes one task of it for each item
+ *  (a `human` step of the type, in a `foreach`), started from Tasks and
+ *  workers' Send a round. The twin of `StandingRule`; a type is never both. */
+export interface RoundRule {
+  workflow: string;
+}
+
 /** The admin's record for a kind of task (§4.2), its pay (§8.1) and its
  *  tests (§7). */
 export interface TaskType {
@@ -165,6 +172,10 @@ export interface TaskType {
    *  launches this workflow, whose first step is the type's `human` step.
    *  Absent: a `human` step makes its tasks. */
   standing?: StandingRule;
+  /** A ROUND type: its tasks come from this workflow's runs, one for each
+   *  item, and staff send a round of it (`POST /tasks/types/:name/round`).
+   *  Absent: no workflow named (a `human` step anywhere makes its tasks). */
+  round?: RoundRule;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;

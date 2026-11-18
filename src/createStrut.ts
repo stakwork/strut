@@ -54,6 +54,7 @@ import { SupportStore } from "./support/store.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { standingTask } from "./tasks/standing.js";
+import { roundItems, roundProblem } from "./tasks/round.js";
 import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
@@ -70,7 +71,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
+import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -1721,6 +1722,14 @@ export async function createStrut<TServices = unknown>(
         return { problem: `workflow "${workflow}" has no owner and its active version no publisher, so its runs would have nobody to bill; claim the workflow first` };
       }
       return standingTask(flow, type);
+    },
+    // Round types (Tasks and workers' Send a round): the workflow a round
+    // runs must make tasks of the type — a `human` step of it, in a
+    // `foreach` too.
+    round: async (type, workflow) => {
+      const flow = await workspace.getWorkflow(workflow).catch(() => null);
+      if (!flow) return `no workflow ${workflow} here`;
+      return roundProblem(flow, type);
     },
     launch: async (t) => {
       if (controllers.has(`${t.workflow}/${t.runId}`) || (await store.logWrittenAt(t.workflow, t.runId)) !== null) return;
@@ -6627,6 +6636,27 @@ export async function createStrut<TServices = unknown>(
     // page's in-process request is `http://strut.invalid`, so it takes where
     // the page's own request came (`lastBase`), as staff/types' share does.
     publicUrl: (c) => (inProcessOf(c) && lastBase) || baseOfRequest(c),
+    // Send a round: a round type's items read off its workflow, and the
+    // workflow launched as the admin who sent it, with the items they
+    // ticked (or its defaults), as `POST /workflows/:name/run` launches.
+    rounds: {
+      items: async (workflow) => {
+        const flow = await workspace.getWorkflow(workflow).catch(() => null);
+        if (!flow) throw new TaskError("refused", `no workflow ${workflow} here`);
+        return roundItems(flow);
+      },
+      send: async (workflow, input, actor) => {
+        const draining = drain.refusal();
+        if (draining) throw new TaskError("refused", draining);
+        const flow = await workspace.getWorkflow(workflow).catch(() => null);
+        if (!flow) throw new TaskError("refused", `no workflow ${workflow} here`);
+        const disabled = await workflowDisabled(workspace, workflow);
+        if (disabled) throw new TaskError("refused", disabled);
+        const parsed = flow.input.safeParse(input ?? {});
+        if (!parsed.success) throw new TaskError("bad_request", `the round's input does not fit workflow ${workflow}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
+        return launchDetached(flow, { runId: generateRunId(), ...(input ? { input } : {}) }, actor ? { actor } : undefined);
+      },
+    },
     // The queue's check of each type's app, and a task's run now (§9.4).
     appProblem: typeAppProblem,
     runOf: async (workflow, runId) => {

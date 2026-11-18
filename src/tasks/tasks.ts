@@ -105,6 +105,7 @@ import {
   type Lease,
   type ReviewRecord,
   type StandingRow,
+  type RoundRule,
   type StandingRule,
   type Verdict,
   type TaskListQuery,
@@ -359,6 +360,11 @@ export interface TaskTypeInput {
    *  launches `workflow`, whose first step must be this type's `human`
    *  step (`deps.standing` checks it); absent or null: not standing. */
   standing?: { workflow: string } | null;
+  /** A ROUND type: `workflow`'s runs make its tasks, one for each item, and
+   *  staff send a round of it from Tasks and workers. The workflow must
+   *  have a `human` step of this type (in a `foreach` too; `deps.round`
+   *  checks it); never with `standing`. Absent or null: none named. */
+  round?: { workflow: string } | null;
 }
 
 /** §5.7: what a standing type's pick-up is made of — its workflow's first
@@ -855,6 +861,9 @@ export interface TasksDeps {
    *  Asked when the type is saved and at each pick-up. Left out: no type
    *  may be standing here. */
   standing?(type: string, workflow: string): Promise<StandingTask | { problem: string }>;
+  /** A round type's workflow checked at the save: why it cannot make tasks
+   *  of `type`, or undefined. Left out: no round can be set. */
+  round?(type: string, workflow: string): Promise<string | undefined>;
   /** §5.7: a settled standing task's run launched — its workflow under its
    *  run id — or nothing when a run is on file under that id already.
    *  Throws when it cannot be launched now; the sweep tries again. */
@@ -1354,6 +1363,19 @@ export function createTasks(deps: TasksDeps): TasksService {
     if ("problem" in r) throw new TaskError("bad_request", `standing: ${r.problem}`);
     return { workflow };
   };
+  /** A round type's rule (`round`), checked against its workflow; null for none. */
+  const roundRuleOf = async (type: string, raw: TaskTypeInput["round"]): Promise<RoundRule | null> => {
+    if (raw === undefined || raw === null) return null;
+    const keys = typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw) : [];
+    const workflow = (raw as { workflow?: unknown }).workflow;
+    if (typeof workflow !== "string" || !workflow || keys.some((k) => k !== "workflow")) {
+      throw new TaskError("bad_request", "round is { workflow }: the workflow a round runs, or null");
+    }
+    if (!deps.round) throw new TaskError("bad_request", "round: this server sends no rounds of a task type");
+    const problem = await deps.round(type, workflow);
+    if (problem) throw new TaskError("bad_request", `round: ${problem}`);
+    return { workflow };
+  };
   /** Standing types whose pick-up failed, logged once each until one lands. */
   const pickUpFailing = new Set<string>();
   /** §5.7: a pick-up of standing type `kind` for `actor` — the task and
@@ -1671,6 +1693,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
       const attachments = ruled(() => attachmentRuleOf(input.attachments));
       const standing = await standingRuleOf(name, input.standing);
+      const round = await roundRuleOf(name, input.round);
+      if (standing && round) throw new TaskError("bad_request", "a task type is standing (a worker's ask makes its task) or sent in rounds (a workflow makes one for each item), never both");
       const s = await stores();
       // Ruling 12: whether a paid open type qualifies newcomers is the
       // admin's; nothing here refuses one for want of tests.
@@ -1688,6 +1712,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(copies ? { copies } : {}),
         ...(attachments ? { attachments } : {}),
         ...(standing ? { standing } : {}),
+        ...(round ? { round } : {}),
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });

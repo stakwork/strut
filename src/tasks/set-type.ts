@@ -29,7 +29,7 @@ import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
-import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
+import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
   DEFAULT_WITHIN_HOURS,
@@ -153,6 +153,9 @@ export const typeChangeInput = z.object({
   standing: z
     .preprocess(fromJsonText, z.object({ workflow: z.string().min(1) }).strict().nullable().optional())
     .describe("A STANDING type, for work a worker starts — a photo of something they found: { workflow }. A worker's ask makes the task whenever they like, any number of workers at once, and each answer starts `workflow`, whose FIRST step must be this type's `human` step (its show reading only input and params, no files). The workflow runs only once someone answers, billed to its owner. null: not standing — a `human` step in a run makes its tasks."),
+  round: z
+    .preprocess(fromJsonText, z.object({ workflow: z.string().min(1) }).strict().nullable().optional())
+    .describe("A ROUND type, for work one for each item of a list — each shop, each page: { workflow }, the workflow whose run makes one task of this type for each item (its `human` step of this type, in a `foreach`). Name it so the person can send a round from Tasks and workers (Send a round, the items ticked) as well as by asking in the conversation. Never with standing. null: none named."),
 });
 
 /** What `task/set-type` asks, as its schema parsed it. */
@@ -212,7 +215,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -242,6 +245,9 @@ export function mergeType(
   // Standing (§5.7) is whole: given, it replaces; null turns it off.
   const standing = change.standing === undefined ? existing?.standing : change.standing;
   if (standing !== undefined) out.standing = standing;
+  // So is a round's workflow.
+  const round = change.round === undefined ? existing?.round : change.round;
+  if (round !== undefined) out.round = round;
   return out;
 }
 
@@ -309,6 +315,7 @@ interface Planned {
   copies?: CopiesRule;
   attachments?: AttachmentRule;
   standing?: StandingRule;
+  round?: RoundRule;
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
@@ -324,6 +331,7 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   ...(t.copies ? { copies: t.copies } : {}),
   ...(t.attachments ? { attachments: t.attachments } : {}),
   ...(t.standing ? { standing: t.standing } : {}),
+  ...(t.round ? { round: t.round } : {}),
 });
 
 interface Problems {
@@ -368,6 +376,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       ...(copies ? { copies } : {}),
       ...(attachments ? { attachments } : {}),
       ...(merged.standing ? { standing: merged.standing } : {}),
+      ...(merged.round ? { round: merged.round } : {}),
     },
     problems,
   };
@@ -556,7 +565,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   /** "$3.50 (5,500 sats)", or the sats alone with no rate. */
   const money = (sats: number) => (!sats ? "unpaid" : usdPerBtc ? `${usdText((roundMsat(sats) * usdPerBtc) / 1e8)} (${satsText(sats)})` : satsText(sats));
   const whoWords = (open: boolean) => (open ? "anyone signed in to the worker page" : "only people you invite");
-  const whenWords = (standing: StandingRule | undefined) => (standing ? "any time" : "when a workflow sends one");
+  const whenWords = (p: Pick<Planned, "standing" | "round">) => (p.standing ? "any time" : p.round ? "one for each item, when you send a round" : "when a workflow sends one");
 
   // What changes, field by field, in the card's words.
   const changes: string[] = [];
@@ -579,7 +588,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
       if (d) changes.push(d);
     }
     if (!problems.attachments && !sameJson(before.attachments, after.attachments)) line("files", filesWords(before.attachments) || "none", filesWords(after.attachments) || "none");
-    if (before.standing?.workflow !== after.standing?.workflow) line("when", whenWords(before.standing), whenWords(after.standing));
+    if (before.standing?.workflow !== after.standing?.workflow || before.round?.workflow !== after.round?.workflow) line("when", whenWords(before), whenWords(after));
   }
   const shapeChanged = !!before && after.answer !== undefined && !sameJson(before.answer, after.answer);
   const payBefore = before?.paySats ?? 0;
@@ -597,7 +606,9 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     label: "When",
     value: after.standing
       ? `Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow ${after.standing.workflow}.`
-      : "When a workflow sends one out: one for each thing it asks about.",
+      : after.round
+        ? `One for each item, when you send a round: from Tasks and workers (Send a round), or by asking here. The workflow ${after.round.workflow} makes them.`
+        : "When a workflow sends one out: one for each thing it asks about.",
   });
   // A paid type anyone may take (ruling 12), in the person's words: no
   // qualifying test, or too few of its test tasks ready.

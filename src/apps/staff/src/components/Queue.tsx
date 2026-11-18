@@ -12,6 +12,7 @@ import { fmtDuration, owedLine, queueWarnings, sharedApps, type Place } from "..
 import type { Books, TaskStats, TaskType } from "../lib/types";
 import { Empty, ErrorLine, Figure, Loading, Note, Section } from "./bits";
 import { ShareRows } from "./Share";
+import { SendRound } from "./SendRound";
 
 export const STATS_EVERY_MS = 10_000;
 
@@ -92,6 +93,15 @@ export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
                         )}
                       </div>
                       <div className="text-xs text-muted-foreground">{t.app}</div>
+                      {(() => {
+                        // A round type: Send a round in the row, where a wide table never scrolls it away.
+                        const kind = props.types?.find((k) => k.name === t.type);
+                        return kind?.round ? (
+                          <div className="mt-1.5">
+                            <SendRound type={kind} small />
+                          </div>
+                        ) : null;
+                      })()}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {t.waiting} · {t.working}

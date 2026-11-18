@@ -59,6 +59,7 @@ import {
   type LeaseStatus,
   type NewTask,
   type SettleResult,
+  type RoundRule,
   type StandingRule,
   type TaskListQuery,
   type TaskRecord,
@@ -128,7 +129,8 @@ create table if not exists task_types (
   copies text,
   invite_only integer,
   attachments text,
-  standing text
+  standing text,
+  round_rule text
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -195,6 +197,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["task_types", "standing", "text"],
   ["tasks", "standing", "integer"],
   ["tasks", "launched_at", "integer"],
+  ["task_types", "round_rule", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -265,12 +268,12 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
-           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing`,
+           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -506,6 +509,7 @@ export class SqliteTaskStore implements TaskStore {
         t.open === false ? 1 : null,
         t.attachments ? JSON.stringify(t.attachments) : null,
         t.standing ? JSON.stringify(t.standing) : null,
+        t.round ? JSON.stringify(t.round) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -1026,6 +1030,8 @@ function typeOf(r: Row): TaskType {
   if (attachments !== undefined) t.attachments = JSON.parse(attachments) as AttachmentRule;
   const standing = opt<string>(r.standing);
   if (standing !== undefined) t.standing = JSON.parse(standing) as StandingRule;
+  const round = opt<string>(r.round_rule);
+  if (round !== undefined) t.round = JSON.parse(round) as RoundRule;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;
