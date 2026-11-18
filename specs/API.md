@@ -2639,7 +2639,8 @@ page in their assistant's chat, or strut's UI — is signed in already, as
 `task/me` says, and works and earns as themselves. Then it shows their
 DASHBOARD (`WorkHome`, from
 `task/me { all }` and `task/history { all }`): the server's one work link,
-across every app of the public view. The task in their hand (Continue), each
+across every app of the public view. The task in their hand (Continue; a
+standing type's pick-up is not shown, as it holds nothing back), each
 kind of work they can do with its pay and whether there is work of it now
 ("Any time" for a standing type, "3 waiting", "None right now"; a kind
 another app draws says "in <app>" and opens that app on it,
@@ -5201,7 +5202,10 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   or any with no `type`) is entered first: the ask records their grant
   ("Open task types" below). The worker's own live lease comes back as it is (a page that
   reloads gets its task again); a live lease of a type not asked for is
-  `lease_held`. `expires` is epoch ms; `answer` is the type's answer
+  `lease_held` — unless it is a standing type's pick-up, which holds nothing
+  back: it is let go (skipped) and the ask goes on. With no `type`, only
+  tasks a run made are handed out, never a standing type's ("Standing task
+  types" below). `expires` is epoch ms; `answer` is the type's answer
   schema; `files` the paths the `human` step named. `wait` (seconds, 0 to
   25) holds the call until a task appears — woken when one is made or
   skipped, a grant changes, or the sweep frees one — then `{ none: true }`.
@@ -5481,9 +5485,16 @@ server whose task store is its host's (which answers none of them).
 For work a worker starts: a photo of something they found. A type saved
 with `standing: { workflow }` has work whenever a worker asks.
 
+- **Taken only when picked.** A standing type is ANY-TIME work: `task/next`
+  makes one only when it names the type. An ask with no `type` (the
+  dashboard's Start working, a page drawing every type it holds) hands out
+  tasks a run made, never a pick-up. One in hand reserves nothing: asking
+  for another type lets it go (skipped), and `task/history` leaves out a
+  pick-up never answered — the worker's dashboard neither shows it in hand
+  nor blocks other work on it.
 - **The ask makes the task.** With nothing a run made waiting for them,
-  `task/next` makes a task of a standing type they may take and their
-  lease on it in one write — any number of workers at once, one each. The
+  `task/next { type }` makes a task of a standing type they may take and
+  their lease on it in one write — any number of workers at once, one each. The
   task is keyed by the workflow, a run id chosen at the ask and the path of
   the workflow's first step; its `show` is that step's, resolved with the
   workflow's input defaults and params; it has no files. Tests are drawn in

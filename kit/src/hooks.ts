@@ -1068,6 +1068,9 @@ export interface UseTaskOptions {
 /**
  * The next task for the page's viewer (`task/next`): of `type`, or of any
  * type they hold that this app draws — its `type` says which view to show.
+ * Any-time work (a standing type) comes only when `type` names it: with no
+ * `type`, only tasks a workflow sent. A pick-up in hand holds nothing back:
+ * asking for another type lets it go.
  * One held `task/next { wait }` at a time while there is no task in hand,
  * and none while the page is hidden; a page that reloads gets its task back.
  * The task is dropped when its lease runs out or the server says it is no
