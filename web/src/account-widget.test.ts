@@ -134,4 +134,22 @@ describe("what the panel shows", () => {
     assert.equal(workerOf({ error: "refused" }), null);
     assert.equal(workerOf(null), null);
   });
+
+  it("says why there is no Withdraw, and nothing when there is nothing to withdraw", () => {
+    const blocked = (withdrawableMsat: number, payout: object) => workerOf({ balance: { heldMsat: 0, withdrawableMsat }, payout })!.blocked;
+    const open = { on: true, minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
+    // stadeum1, 11-18: 150 sats against a 1,000 sat minimum; the fee is the LSP's 5 sat floor.
+    assert.equal(blocked(150_000, open), "Withdrawals start at 1,000 sats, plus up to 5 sats routing fee.");
+    assert.equal(blocked(1_004_000, open), "Withdrawals start at 1,000 sats, plus up to 5 sats routing fee.");
+    assert.equal(blocked(5_000_000, { ...open, dayLeftMsat: 0 }), "You've reached today's withdrawal limit. Try again tomorrow.");
+    assert.equal(blocked(5_000_000, open), "Withdrawals are paused on this server until tomorrow.");
+    assert.match(blocked(5_000_000, { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 0, maxMsat: 0 })!, /Sign in with Peel/);
+    assert.match(blocked(5_000_000, { on: false, why: "off", minMsat: 1_000_000, dayLeftMsat: 0, maxMsat: 0 })!, /off on this server/);
+    assert.match(blocked(5_000_000, { on: false, why: "no_keysend", minMsat: 1_000_000, dayLeftMsat: 0, maxMsat: 0 })!, /can't pay out/);
+    assert.match(blocked(0, { ...open, out: { key: "k", msat: 2_000_000, maxFeeMsat: 5000, at: 1, stale: false } })!, /^2,000 sats on the way/);
+    assert.equal(blocked(0, { on: false, why: "off", minMsat: 1_000_000, dayLeftMsat: 0, maxMsat: 0 }), undefined);
+    assert.equal(blocked(5_000_000, { ...open, maxMsat: 4_000_000 }), undefined);
+    // An answer without a payout (an older server): nothing to say.
+    assert.equal(workerOf({ balance: { heldMsat: 0, withdrawableMsat: 5000 } })!.blocked, undefined);
+  });
 });
