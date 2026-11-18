@@ -64,12 +64,24 @@
  * `POST /worker-contact { pubkey?, alias? }`, `POST /worker-delete/:id`;
  * `POST /use-invite/:code { pubkey?, alias? }` makes the contact too.
  *
+ * `GET /me`, with the message token (plans/jamie-in-tribes.md §9 decision
+ * 8): the account's own `{ address, pubkey, alias }` — what strut's Connect
+ * panel shows a person to send a link code to; never the balance.
+ *
+ * STRUT'S HOST (plans/jamie-in-tribes.md §3, §5.1), when `strutUrl` and
+ * `strutHostKey` are set (`STRUT_URL`, `STRUT_HOST_KEY`): a worker's DM
+ * holding a link code (`link-` and eight letters and digits) is handed to
+ * strut as `POST /hosts/link { code, key, name, address }` with the host key,
+ * and the account answers the DM ("Linked…", or why not). The worker-dm's
+ * answer carries strut's (`link: { status, body }`).
+ *
  * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
  * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`,
  * `/next-dm`, `/use-invite` and `/worker-*` are open: they are the test's,
  * not strut's.
  *
  *   PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 USD_PER_BTC=100000 \
+ *     STRUT_URL=http://127.0.0.1:3000 STRUT_HOST_KEY=<sphinx's token in STRUT_HOST_KEYS> \
  *     npx tsx scripts/fake-sphinx-daemon.ts
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -96,6 +108,12 @@ export interface FakeSphinxDaemonOptions {
   startSats?: number;
   /** A line per invoice and payout. Default none. */
   log?: (line: string) => void;
+  /** The account's own alias, `GET /me`'s. Default `Support`. */
+  alias?: string;
+  /** Strut, for the host's side: a DM'd link code is handed to its
+   *  `POST /hosts/link` with this host key. Both, or neither. */
+  strutUrl?: string;
+  strutHostKey?: string;
 }
 
 export interface FakeSphinxDaemon {
@@ -198,7 +216,26 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
     dms.set(keyOf(r), r);
   };
   const someKey = () => `02${randomBytes(32).toString("hex")}`;
-  const peerOf = (pubkey: string) => ({ pubkey, address: `${pubkey}_${"03" + "1".repeat(64)}_1`, alias: contacts.get(pubkey) ?? null });
+  const addressOf = (pubkey: string) => `${pubkey}_${"03" + "1".repeat(64)}_1`;
+  const peerOf = (pubkey: string) => ({ pubkey, address: addressOf(pubkey), alias: contacts.get(pubkey) ?? null });
+  /** The account itself: what `GET /me` answers. */
+  const me = { pubkey: `03${"5a".repeat(32)}`, alias: opts.alias ?? "Support" };
+  /** A link code in a worker's DM, handed to strut as its host; the
+   *  account answers the DM with how it went. */
+  const handLink = async (pubkey: string, text: string): Promise<{ status: number; body: unknown } | undefined> => {
+    const code = /\blink-[a-z0-9]{8}\b/i.exec(text)?.[0];
+    if (!code || !opts.strutUrl || !opts.strutHostKey) return undefined;
+    const res = await fetch(`${opts.strutUrl.replace(/\/+$/, "")}/hosts/link`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${opts.strutHostKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ code, key: pubkey, address: addressOf(pubkey), ...(contacts.get(pubkey) ? { name: contacts.get(pubkey) } : {}) }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const answer = res.ok ? "Linked to your account on this server." : res.status === 404 ? "That code is unknown, used or expired: ask for a new one in the Jamie app." : `Could not link: ${body.error ?? res.status}`;
+    put({ ...DM_BLANK, id: randomUUID(), time: new Date().toISOString(), fromMe: true, peer: peerOf(pubkey), kind: "message", text: answer, status: "sent" });
+    log(`link ${code} from ${pubkey.slice(0, 10)}…: ${res.status}`);
+    return { status: res.status, body };
+  };
   /** A new contact's key exchange, once per pubkey (an invite used, or a first DM). */
   const contact = (pubkey: string, alias: string | null) => {
     if (contacts.has(pubkey)) {
@@ -331,7 +368,8 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           ...(file ? { mediaType: type, fileName: nameOfType(type) } : {}),
         });
         log(`dm in ${r.kind} from ${pubkey.slice(0, 10)}…`);
-        return reply(res, 200, { id, pubkey, seq: r.seq });
+        const link = typeof b["text"] === "string" ? await handLink(pubkey, b["text"]) : undefined;
+        return reply(res, 200, { id, pubkey, seq: r.seq, ...(link ? { link } : {}) });
       }
       const deleteOne = /^\/worker-delete\/([^/]+)$/.exec(path);
       if (req.method === "POST" && deleteOne) {
@@ -366,11 +404,12 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
       const auth = req.headers.authorization;
       const pay = auth === `Bearer ${payToken}`;
       const messaging =
-        (req.method === "GET" && (path === "/dms" || /^\/dm\/[^/]+\/file$/.test(path))) ||
+        (req.method === "GET" && (path === "/dms" || path === "/me" || /^\/dm\/[^/]+\/file$/.test(path))) ||
         (req.method === "POST" && (path === "/dm" || /^\/dm\/[^/]+\/delete$/.test(path))) ||
         ((req.method === "PUT" || req.method === "DELETE") && path === "/dm/photo");
       if (auth === `Bearer ${messageToken}`) {
         if (!messaging) return reply(res, 403, { error: "the message token opens the DM routes alone", code: "forbidden" });
+        if (path === "/me") return reply(res, 200, { address: addressOf(me.pubkey), pubkey: me.pubkey, alias: me.alias });
         if (path === "/dm/photo") {
           if (req.method === "DELETE") {
             photo = null;
@@ -611,6 +650,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
     ...(num("USD_PER_BTC") !== undefined ? { usdPerBtc: num("USD_PER_BTC")! } : {}),
     ...(num("START_SATS") !== undefined ? { startSats: num("START_SATS")! } : {}),
+    ...(env("STRUT_URL") && env("STRUT_HOST_KEY") ? { strutUrl: env("STRUT_URL")!, strutHostKey: env("STRUT_HOST_KEY")! } : {}),
     log: (line) => console.log(line),
   });
   console.log(`fake sphinx daemon on ${daemon.url} (invoices settle after ${settleAfterMs ?? 3000} ms)`);

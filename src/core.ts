@@ -488,7 +488,7 @@ export type RunEventType =
 /** Who launched a run, when it was not a person or an API call. `"app"`:
  *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
  *  — a person's click in the viewer's name, so the run carries `app` too. */
-export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public";
+export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public" | "host";
 
 /** The APP a run or a step works for (plans/apps.md §5): what `step_run`
  *  sets as `ctx.app` for the page's call, and what a run the app launches
@@ -590,8 +590,14 @@ export interface RunEvent {
    *  request, plans/federation.md §3) — the only runs a peer may cancel,
    *  pause or resume. `"public"`: launched by anyone through `POST
    *  /public/workflows/:name/run` (plans/paid-runs.md §6) — no actor, the
-   *  workflow as published, its sessions under `public/<runId>/`. */
+   *  workflow as published, its sessions under `public/<runId>/`. `"host"`:
+   *  a turn a HOST launched with its key (plans/jamie-in-tribes.md §5.1) as
+   *  the person it named — never an admin's, its sessions under
+   *  `host/<host>/`, woken like a person's. */
   origin?: RunOrigin;
+  /** On a host run's `run.start` (`origin: "host"`): the host's name, as in
+   *  `STRUT_HOST_KEYS`. Read back by a resume. */
+  host?: string;
   /** On a peer run's `run.start`: launched by a PERSON's credential (scope
    *  `peer:person`), so `actor` is the credential's own and the run may
    *  open that actor's sessions (plans/chained-orchestrators.md §2). Read

@@ -1339,6 +1339,8 @@ describe("orchestrator speaker (SENT edge)", () => {
       assert.equal(projectRunEvents("orchestrator", "1", turnEvents(start), null)!.speaker, undefined, JSON.stringify(start));
     }
     assert.equal(projectRunEvents("orchestrator", "1", turnEvents({ actor: ACTOR, origin: "peer", peerPerson: true }), null)!.speaker?.userId, UID);
+    // A host's turn is the person it named speaking (plans/jamie-in-tribes.md §5.1).
+    assert.equal(projectRunEvents("orchestrator", "1", turnEvents({ actor: ACTOR, origin: "host", host: "sphinx" }), null)!.speaker?.userId, UID);
     assert.equal(projectRunEvents("some-workflow", "1", turnEvents({ actor: ACTOR }).map((e) => ({ ...e, path: e.path.replace("orchestrator", "some-workflow") })), null)!.speaker, undefined);
     // an orchestrator run without a turn session has nobody to attach to
     assert.equal(projectRunEvents("orchestrator", "1", [ev(0, "run.start", "orchestrator", { actor: ACTOR })], null)!.speaker, undefined);

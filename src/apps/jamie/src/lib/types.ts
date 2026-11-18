@@ -23,6 +23,31 @@ export interface ConversationListItem {
   team?: true;
   /** Who took its first turn. */
   startedBy?: string;
+  /** A host's conversation (a Sphinx tribe's, `host/sphinx/…`): the host's
+   *  name. Read-only here: continued where the host is, or forked. */
+  host?: string;
+}
+
+/** An account on another medium linked to the viewer (`account/links`). */
+export interface AccountLink {
+  /** `<kind>:<key>`. */
+  account: string;
+  kind: string;
+  key: string;
+  address?: string;
+  name?: string;
+  host?: string;
+  at: number;
+}
+
+/** A code that links an account to the viewer (`account/link-code`). */
+export interface LinkCode {
+  code: string;
+  expiresAt: number;
+  /** The hosts that can hand a code back; none and nothing links here. */
+  hosts: string[];
+  /** The account to send it to by DM, with its address as a QR. */
+  to?: { kind: string; address: string; alias?: string; qr: string };
 }
 
 /** A job as a list row shows it. */

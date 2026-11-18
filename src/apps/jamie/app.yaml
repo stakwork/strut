@@ -4,8 +4,9 @@ description: >-
   with the workspace's orchestrator — by day, searched, renamed, archived —
   each turn's reply, the jobs it started (live while they run, with their
   claims, captchas and pull requests, merged from here), the changes it
-  proposes for a yes or no, and what it made. Strut ships it and seeds it on
-  every server; it acts as its viewer.
+  proposes for a yes or no, and what it made — and Connect, which links the
+  person's Sphinx account so a tribe's Jamie knows them. Strut ships it and
+  seeds it on every server; it acts as its viewer.
 icon: message-circle
 grants:
   workflows: [orchestrator, job, builder]
@@ -13,6 +14,10 @@ grants:
     - conversation/list
     - conversation/get
     - conversation/update
+    - conversation/fork
+    - account/link-code
+    - account/links
+    - account/unlink
     - llm/models
     - graph/find
     - job/get

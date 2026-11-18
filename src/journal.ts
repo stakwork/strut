@@ -48,6 +48,9 @@ export function readRunStart(
   /** A peer's run a person's credential launched — a resume keeps it, so
    *  the run opens the same person's sessions (plans/chained-orchestrators.md §2). */
   peerPerson?: true;
+  /** A host's turn (`origin: "host"`) — a resume keeps the host, so the run
+   *  stays never an admin's and its sessions under `host/<host>/`. */
+  host?: string;
   /** The conversation a person's turn continues — a resume opens it again
    *  (plans/jamie-app.md §2.2). */
   continues?: string;
@@ -92,6 +95,7 @@ export function readRunStart(
     ...(start.branch ? { branch: start.branch } : {}),
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
+    ...(start.host ? { host: start.host } : {}),
     ...(start.continues ? { continues: start.continues } : {}),
     attachments: start.attachments,
     ...(typeof start.maxCostUsd === "number" ? { maxCostUsd: start.maxCostUsd } : {}),

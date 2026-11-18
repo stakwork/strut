@@ -1,9 +1,19 @@
 /**
- * PEOPLE (plans/people-and-hosts.md §1): one small record per person, their
- * name, in `<dataDir>/people.db` on `node:sqlite`. Whoever learns a name
- * writes it: a host on the sign-in ticket (`host`), a person at their own
- * sign-in (`self`). Every reader goes through `names` (`nameOf` for one):
- * `GET /people`, the `people/names` step and so the kit's `useNames`.
+ * PEOPLE (plans/people-and-hosts.md §1, §2): one small record per person,
+ * in `<dataDir>/people.db` on `node:sqlite`: their name, and the ACCOUNTS
+ * they hold on other media. Whoever learns a name writes it: a host on the
+ * sign-in ticket (`host`), a person at their own sign-in (`self`). Every
+ * reader goes through `names` (`nameOf` for one): `GET /people`, the
+ * `people/names` step and so the kit's `useNames`.
+ *
+ * An account is a key on a medium, `<kind>:<key>`: `sphinx:<66 hex>`, the
+ * pubkey as the Sphinx daemon and an address spell it, is the one spelling
+ * of a Sphinx account. A person links one with a code (`linkCode`) that a
+ * host hands back with the key it vouches for (`POST /hosts/link`,
+ * plans/jamie-in-tribes.md §3). `actorOf` is who an account is: the person
+ * it is linked to; else, for a Sphinx key, the key's own actor
+ * (`secp:<x-only>`, what a signed sign-in with that key gives), unlinked;
+ * else nobody. A code lives in memory only, ten minutes, once.
  *
  * A name is for showing. Nothing checks it, and two people may share one.
  * It is one line, at most 80 characters, trimmed (`cleanName`). A host's
@@ -15,6 +25,7 @@
  * (`PEOPLE_IN_MEMORY`) is the same store in memory: tests, and a strut whose
  * run store is in memory.
  */
+import { randomInt } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -39,14 +50,146 @@ export interface PeopleReader {
 }
 
 export interface People extends PeopleReader {
-  /** The person's name, or undefined. */
+  /** The person's name, else the name on an account that is theirs, or undefined. */
   nameOf(actor: string): Promise<string | undefined>;
   /** Keeps `raw` (cleaned) as `actor`'s name, said by `by`. False when
    *  nothing was kept: no name left after cleaning, or a person's own name
    *  under one a host gave. */
   setName(actor: string, raw: unknown, by: NameBy): Promise<boolean>;
+  /** Who `account` is (§2). Undefined: nobody (`not_linked`). */
+  actorOf(account: Account): Promise<AccountActor | undefined>;
+  /** The link `account` has, or undefined. */
+  linkOf(account: Account): Promise<AccountLink | undefined>;
+  /** The accounts `actor` linked, the newest first. */
+  accountsOf(actor: string): Promise<AccountLink[]>;
+  /** Links `account` to `actor`, replacing any link it had: whoever holds
+   *  the key says whose it is. */
+  link(account: Account, actor: string, extra?: { host?: string; name?: unknown; address?: unknown }): Promise<AccountLink>;
+  /** Removes `actor`'s link of `account`. False when they had none. */
+  unlink(account: Account, actor: string): Promise<boolean>;
+  /** A new link code for `actor`, replacing one they had: single use, for
+   *  `LINK_CODE_MS`, in memory only. */
+  linkCode(actor: string): { code: string; expiresAt: number };
+  /** The actor a code was made for, using it up; undefined for one unknown,
+   *  used or expired. */
+  redeemLinkCode(code: unknown): string | undefined;
   /** Folds the WAL into the file. */
   close(): Promise<void>;
+}
+
+// ── Accounts (§2) ────────────────────────────────────────────────────────
+
+/** A key on a medium. Spelled `<kind>:<key>` (`accountText`). */
+export interface Account {
+  kind: string;
+  key: string;
+}
+
+/** Who an account is: the person it is linked to (`linked`), or a Sphinx
+ *  key's own actor, which nobody linked. */
+export interface AccountActor {
+  actor: string;
+  linked: boolean;
+}
+
+/** One account a person linked. */
+export interface AccountLink {
+  /** `<kind>:<key>`. */
+  account: string;
+  kind: string;
+  key: string;
+  actor: string;
+  /** Where the account is reached (a Sphinx address: `<key>_<lsp>_<scid>`). */
+  address?: string;
+  /** The account's own name, as its holder wrote it (an alias). */
+  name?: string;
+  /** The host that vouched for the key. */
+  host?: string;
+  at: number;
+}
+
+/** The header a host names the speaker by: `<kind>:<key>`. */
+export const ACCOUNT_HEADER = "x-strut-account";
+/** A kind of account, and so a host's name (`STRUT_HOST_KEYS`). */
+export const KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** How long a link code is good for. */
+export const LINK_CODE_MS = 10 * 60_000;
+const SPHINX_KEY = /^0[23][0-9a-f]{64}$/;
+const CODE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
+const CODE_LENGTH = 8;
+
+/** `key` on `kind` as kept, or undefined when it is not one: a Sphinx key
+ *  is the 66-hex compressed pubkey, lowercase; any other kind's is up to 200
+ *  printable characters with no space. */
+export function accountKey(kind: string, key: unknown): string | undefined {
+  if (typeof key !== "string" || !KIND_PATTERN.test(kind)) return undefined;
+  const k = key.trim();
+  if (kind === "sphinx") return SPHINX_KEY.test(k.toLowerCase()) ? k.toLowerCase() : undefined;
+  return /^[\x21-\x7e]{1,200}$/.test(k) ? k : undefined;
+}
+
+/** `<kind>:<key>` as an account, or undefined. */
+export function parseAccount(raw: unknown): Account | undefined {
+  if (typeof raw !== "string") return undefined;
+  const at = raw.indexOf(":");
+  if (at < 1) return undefined;
+  const kind = raw.slice(0, at).trim();
+  const key = accountKey(kind, raw.slice(at + 1));
+  return key ? { kind, key } : undefined;
+}
+
+/** The one spelling of an account: `<kind>:<key>`. */
+export function accountText(a: Account): string {
+  return `${a.kind}:${a.key}`;
+}
+
+/** Where `a` is reached, as kept, or undefined: a Sphinx address names the
+ *  account's own key (`<key>_<lsp key>_<scid>`); another kind's is up to 300
+ *  printable characters with no space. */
+export function accountAddress(a: Account, raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const address = raw.trim();
+  if (a.kind !== "sphinx") return /^[\x21-\x7e]{1,300}$/.test(address) ? address : undefined;
+  const m = /^(0[23][0-9a-f]{64})_0[23][0-9a-f]{64}_\d+$/.exec(address.toLowerCase());
+  return m && m[1] === a.key ? address.toLowerCase() : undefined;
+}
+
+/** A link code, as a person sends it: `link-` and eight letters and digits
+ *  with none that read alike. */
+function newCode(): string {
+  let out = "link-";
+  for (let i = 0; i < CODE_LENGTH; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  return out;
+}
+
+/** A code as kept, from what a person typed: case and `link-` optional. */
+function codeOf(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const m = /^(?:link-)?([a-z0-9]{8})$/.exec(raw.trim().toLowerCase());
+  return m ? `link-${m[1]}` : undefined;
+}
+
+interface AccountRow {
+  kind: string;
+  key: string;
+  actor: string;
+  address: string | null;
+  name: string | null;
+  host: string | null;
+  at: number;
+}
+
+function linkOfRow(r: AccountRow): AccountLink {
+  return {
+    account: `${r.kind}:${r.key}`,
+    kind: r.kind,
+    key: r.key,
+    actor: r.actor,
+    ...(r.address ? { address: r.address } : {}),
+    ...(r.name ? { name: r.name } : {}),
+    ...(r.host ? { host: r.host } : {}),
+    at: r.at,
+  };
 }
 
 /** `<dataDir>/people.db`. */
@@ -86,6 +229,20 @@ async function openDb(file: string): Promise<DatabaseSync> {
        name_at INTEGER NOT NULL
      )`,
   );
+  // One person per account; a person may hold several.
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS accounts (
+       kind TEXT NOT NULL,
+       key TEXT NOT NULL,
+       actor TEXT NOT NULL,
+       address TEXT,
+       name TEXT,
+       host TEXT,
+       at INTEGER NOT NULL,
+       PRIMARY KEY (kind, key)
+     )`,
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS accounts_actor ON accounts (actor)");
   return db;
 }
 
@@ -100,13 +257,24 @@ export function createPeople(file: string): People {
     });
     return db;
   };
+  /** Is there anything to read? A read never makes the file. */
+  const kept = () => !!db || file === PEOPLE_IN_MEMORY || existsSync(file);
+  /** Link codes: in memory only, so a restart drops one still waiting. */
+  const codes = new Map<string, { actor: string; exp: number }>();
   const people: People = {
     async names(actors) {
       const asked = [...new Set(actors)];
       const out = blank(asked);
-      if (!asked.length || !(db || file === PEOPLE_IN_MEMORY || existsSync(file))) return out;
-      const rows = (await open()).prepare(`SELECT actor, name FROM people WHERE actor IN (${asked.map(() => "?").join(", ")})`).all(...asked) as Array<{ actor: string; name: string }>;
+      if (!asked.length || !kept()) return out;
+      const conn = await open();
+      const marks = (list: readonly string[]) => list.map(() => "?").join(", ");
+      const rows = conn.prepare(`SELECT actor, name FROM people WHERE actor IN (${marks(asked)})`).all(...asked) as Array<{ actor: string; name: string }>;
       for (const r of rows) out[r.actor] = { name: r.name };
+      // Else the name on an account that is theirs: the newest link's.
+      const rest = asked.filter((a) => !out[a]!.name);
+      if (!rest.length) return out;
+      const linked = conn.prepare(`SELECT actor, name FROM accounts WHERE name IS NOT NULL AND actor IN (${marks(rest)}) ORDER BY at`).all(...rest) as Array<{ actor: string; name: string }>;
+      for (const r of linked) out[r.actor] = { name: r.name };
       return out;
     },
     async nameOf(actor) {
@@ -124,6 +292,55 @@ export function createPeople(file: string): People {
         )
         .run(actor, name, by, Date.now());
       return Number(r.changes) > 0;
+    },
+    async actorOf(account) {
+      const link = await people.linkOf(account);
+      if (link) return { actor: link.actor, linked: true };
+      // A Sphinx key nobody linked is its own person: the actor a signed
+      // sign-in with it gives, the compressed key without its parity byte.
+      if (account.kind === "sphinx") return { actor: `secp:${account.key.slice(2)}`, linked: false };
+      return undefined;
+    },
+    async linkOf(account) {
+      if (!kept()) return undefined;
+      const r = (await open()).prepare("SELECT * FROM accounts WHERE kind = ? AND key = ?").get(account.kind, account.key) as AccountRow | undefined;
+      return r ? linkOfRow(r) : undefined;
+    },
+    async accountsOf(actor) {
+      if (!kept()) return [];
+      return ((await open()).prepare("SELECT * FROM accounts WHERE actor = ? ORDER BY at DESC").all(actor) as unknown as AccountRow[]).map(linkOfRow);
+    },
+    async link(account, actor, extra = {}) {
+      const name = cleanName(extra.name);
+      const address = accountAddress(account, extra.address);
+      const at = Date.now();
+      (await open())
+        .prepare(
+          `INSERT INTO accounts (kind, key, actor, address, name, host, at) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (kind, key) DO UPDATE SET actor = excluded.actor, address = excluded.address, name = excluded.name, host = excluded.host, at = excluded.at`,
+        )
+        .run(account.kind, account.key, actor, address ?? null, name ?? null, extra.host ?? null, at);
+      return linkOfRow({ kind: account.kind, key: account.key, actor, address: address ?? null, name: name ?? null, host: extra.host ?? null, at });
+    },
+    async unlink(account, actor) {
+      if (!kept()) return false;
+      return Number((await open()).prepare("DELETE FROM accounts WHERE kind = ? AND key = ? AND actor = ?").run(account.kind, account.key, actor).changes) > 0;
+    },
+    linkCode(actor) {
+      const now = Date.now();
+      for (const [code, c] of codes) if (c.exp <= now || c.actor === actor) codes.delete(code);
+      let code = newCode();
+      while (codes.has(code)) code = newCode();
+      const exp = now + LINK_CODE_MS;
+      codes.set(code, { actor, exp });
+      return { code, expiresAt: exp };
+    },
+    redeemLinkCode(raw) {
+      const code = codeOf(raw);
+      const c = code ? codes.get(code) : undefined;
+      if (!c) return undefined;
+      codes.delete(code!);
+      return c.exp > Date.now() ? c.actor : undefined;
     },
     async close() {
       const conn = await db?.catch(() => undefined);
@@ -149,6 +366,48 @@ export function ownName(people: PeopleReader, actor: string): PeopleReader {
       const out = blank([...new Set(actors)]);
       if (Object.hasOwn(out, actor)) out[actor] = (await people.names([actor]))[actor] ?? {};
       return out;
+    },
+  });
+}
+
+/** A link code as strut's own app shows it (`account/link-code`). */
+export interface LinkCode {
+  code: string;
+  expiresAt: number;
+  /** The hosts this server has keys for (`STRUT_HOST_KEYS`): who can hand a
+   *  code back. None: nothing links here yet. */
+  hosts: string[];
+  /** The account to send the code to by DM, when strut knows it: the Sphinx
+   *  daemon's own (its `GET /me`). */
+  to?: { kind: string; address: string; alias?: string };
+}
+
+/** What the `account/*` steps reach (`ctx.services.accounts`,
+ *  plans/jamie-in-tribes.md §5.2): a person's own links, and a code to make
+ *  one. Strut's own app's page alone calls them (the steps check). */
+export interface AccountsCapability {
+  linkCode(actor: string): Promise<LinkCode>;
+  links(actor: string): Promise<AccountLink[]>;
+  /** False when `actor` had no link of `account` (`<kind>:<key>`). */
+  unlink(actor: string, account: string): Promise<boolean>;
+}
+
+export function accountsCapability(
+  people: People,
+  deps: { hosts: () => string[]; sphinx: () => Promise<{ address: string; alias?: string } | undefined> },
+): AccountsCapability {
+  return Object.freeze({
+    async linkCode(actor: string): Promise<LinkCode> {
+      const { code, expiresAt } = people.linkCode(actor);
+      const hosts = deps.hosts();
+      const sphinx = hosts.includes("sphinx") ? await deps.sphinx().catch(() => undefined) : undefined;
+      return { code, expiresAt, hosts, ...(sphinx ? { to: { kind: "sphinx", ...sphinx } } : {}) };
+    },
+    links: (actor: string) => people.accountsOf(actor),
+    async unlink(actor: string, raw: string) {
+      const account = parseAccount(raw);
+      if (!account) throw new Error(`"${raw}" is not an account: <kind>:<key>, such as sphinx:<66 hex>`);
+      return people.unlink(account, actor);
     },
   });
 }

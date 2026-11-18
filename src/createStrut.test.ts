@@ -1490,7 +1490,8 @@ describe("the API key gate", () => {
     // And a round type's items and the workflows that can feed a type
     // (Send a round, the type editor's When there is work): staff reads.
     // And people's names (plans/people-and-hosts.md §1): an admin's read.
-    const fullOnlyReads = ["GET /people", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
+    // And whether an account is linked (plans/jamie-in-tribes.md §5.2): a host key's alone.
+    const fullOnlyReads = ["GET /people", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
@@ -1763,6 +1764,37 @@ describe("the API key gate", () => {
       .filter((r) => r.method !== "ALL" && r.path !== "*")
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
+
+  it("a host key (STRUT_HOST_KEYS) passes its five routes, and every other route is 403 — reads included", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const saved = process.env["STRUT_HOST_KEYS"];
+    process.env["STRUT_HOST_KEYS"] = "sphinx:host-key, bad entry";
+    try {
+      const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
+      // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
+      // back, a proposal there decided, and linking an account.
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "POST /hosts/link", "GET /hosts/links/x"];
+      for (const r of allowed) assert.ok(routes.includes(r), r);
+      const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
+      for (const route of routes) {
+        const [method, path] = route.split(" ") as [string, string];
+        const write = method !== "GET" && method !== "HEAD";
+        const res = await strut.app.request(path, { method, headers: host, ...(write ? { body: "{}" } : {}) });
+        const text = res.status === 403 ? await res.text() : (await res.body?.cancel(), "");
+        if (allowed.includes(route)) assert.ok(res.status !== 401 && !text.includes("forbidden: a host key"), `${route} → ${res.status} ${text}`);
+        else assert.equal(res.status, 403, route);
+      }
+      // Not the deployment key's equal, and not a host's without its entry.
+      assert.equal((await strut.app.request("/hosts/links/x", { headers: auth.headers })).status, 403, "a host's route: the key is no host");
+      assert.equal((await strut.app.request("/workflows", { headers: { authorization: "Bearer entry" } })).status, 401);
+      process.env["STRUT_HOST_KEYS"] = "";
+      assert.equal((await strut.app.request("/conversations/item?id=host/sphinx/x", { headers: host })).status, 401, "unset, it opens nothing");
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_HOST_KEYS"];
+      else process.env["STRUT_HOST_KEYS"] = saved;
+    }
+  });
 
   it("a member's session (a ticket with no role) passes the routes strut's page calls to show an app, and every other route is 403 — reads included", async () => {
     const strut = await boot();

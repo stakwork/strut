@@ -4,17 +4,21 @@
 // the turn runs; then the reply, its question, on a wake what the job
 // delivered, the jobs it started, the changes it proposes and what it made. The composer under it; Send is Stop
 // while a turn runs. A conversation is followed live
-// (`conversation/get { wait }`) and marked read while it is open.
+// (`conversation/get { wait }`) and marked read while it is open. A host's
+// conversation (a Sphinx tribe's) is read-only here: its host alone takes a
+// turn in it, so in place of the composer a line says where to reply, and
+// Continue here forks it into the viewer's own.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
+import { Hash, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { inFlight, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
+import { hostPlace, inFlight, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
 import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
-import { useConversation, useSend, useStop, useUpdateConversation } from "../hooks";
+import { useConversation, useFork, useSend, useStop, useUpdateConversation } from "../hooks";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
 import { ThreadPrs } from "./PullRequestCard";
 import { prKey, prOf } from "../lib/pr";
@@ -30,18 +34,21 @@ export interface ThreadProps {
   draft: boolean;
   /** The draft's first turn was sent: it is a conversation now. */
   onStarted: (id: string) => void;
+  /** Open another conversation (a fork of this one). */
+  onOpen: (id: string) => void;
   onShowList?: () => void;
   /** Show this job's newest card (a click on it in the list). */
   focusJob?: { job: string; at: number };
 }
 
-export function Thread({ session, draft, onStarted, onShowList, focusJob }: ThreadProps) {
+export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob }: ThreadProps) {
   const host = useHost();
   const qc = useQueryClient();
   const conv = useConversation(draft ? null : session);
   const send = useSend();
   const stop = useStop();
   const update = useUpdateConversation();
+  const fork = useFork();
   const [refusal, setRefusal] = useState<SendRefusal | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -117,6 +124,12 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
   };
 
   const title = draft ? "New chat" : (conv.view?.conversation.title || (conv.view ? "Untitled" : ""));
+  const hosted = draft ? undefined : conv.view?.conversation.host;
+  const continueHere = async () => {
+    if (!session) return;
+    const row = await fork.mutateAsync({ session }).catch(() => null);
+    if (row) onOpen(row.id);
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
@@ -127,6 +140,7 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
         )}
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h1>
         {conv.view?.conversation.shared && <span className="shrink-0 text-xs text-muted-foreground">Shared</span>}
+        {hosted && <span className="shrink-0 text-xs text-muted-foreground">In {hostPlace(hosted)}</span>}
         <span className="shrink-0 text-xs text-muted-foreground">Jamie</span>
       </header>
       <div
@@ -158,13 +172,27 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-2">
           {refusal && <Notice tone={refusal.kind === "error" ? "error" : "warn"}>{refusal.text}</Notice>}
-          <Composer
-            placeholder="Message Jamie"
-            disabled={!session}
-            sending={send.isPending}
-            onSend={onSend}
-            running={running ? { stopping: stop.isPending, onStop: () => stop.mutate({ workflow: running.workflow, runId: running.runId }) } : null}
-          />
+          {hosted ? (
+            <>
+              {fork.isError && <Notice tone="error">{errorText(fork.error)}</Notice>}
+              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2.5" data-testid="hosted-bar">
+                <Hash className="size-4 shrink-0 text-muted-foreground" />
+                <p className="min-w-0 flex-1 text-sm">In {hostPlace(hosted)}: reply there.</p>
+                <Button size="sm" variant="outline" onClick={() => void continueHere()} disabled={fork.isPending}>
+                  {fork.isPending && <Loader2 className="animate-spin" />}
+                  Continue here
+                </Button>
+              </div>
+            </>
+          ) : (
+            <Composer
+              placeholder="Message Jamie"
+              disabled={!session}
+              sending={send.isPending}
+              onSend={onSend}
+              running={running ? { stopping: stop.isPending, onStop: () => stop.mutate({ workflow: running.workflow, runId: running.runId }) } : null}
+            />
+          )}
         </div>
       </div>
     </div>

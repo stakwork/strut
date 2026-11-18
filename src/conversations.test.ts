@@ -87,7 +87,7 @@ describe("conversations through a whole strut", () => {
   let dir = "";
   const servers: http.Server[] = [];
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "STRUT_HOST_KEYS", "AI_SDK_LOG_WARNINGS"];
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "strut-conversations-"));
@@ -95,6 +95,7 @@ describe("conversations through a whole strut", () => {
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     process.env["AI_SDK_LOG_WARNINGS"] = "false";
     delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_HOST_KEYS"];
   });
   afterEach(async () => {
     for (const s of servers.splice(0)) s.close();
@@ -500,5 +501,88 @@ describe("conversations through a whole strut", () => {
     assert.equal((await turn("alice", "scratch", "hello")).status, 202);
     await idle();
     assert.deepEqual(await sessionIds(), ["c-1", "c-2", "peer/scratch"]);
+  });
+
+  it("a host key (plans/jamie-in-tribes.md §5.1): turns of its own conversations as a linked person, read back; continued by it alone", async () => {
+    process.env["STRUT_HOST_KEYS"] = "sphinx:host-token-1";
+    const { strut, req, say, list, idle, as } = await boot();
+    const ADA = `02${"ab".repeat(32)}`;
+    const BOB = `03${"cd".repeat(32)}`;
+    const host = (account?: string) => ({ authorization: "Bearer host-token-1", ...(account ? { "x-strut-account": account } : {}) });
+    const session = "host/sphinx/3f9a0c21b7e4";
+    const launch = { input: { prompt: "Ada: @jamie what did we decide?", session }, wake: true };
+    const turn = (account: string | undefined, body: Record<string, unknown>) =>
+      req(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { method: "POST", body, headers: host(account) });
+
+    // A turn needs a linked person: no account, another kind's, or one
+    // nobody linked is refused, and nothing launches.
+    assert.equal((await turn(undefined, launch)).status, 400);
+    assert.equal((await turn("email:ada@example.com", launch)).status, 400);
+    const unlinked = await turn(`sphinx:${ADA}`, launch);
+    assert.equal(unlinked.status, 403);
+    assert.match(unlinked.body.error, /^not_linked: sphinx:02abab/);
+
+    // Ada links her key: a code she was shown, handed back with the key.
+    const { code } = strut.people.linkCode("ada");
+    assert.equal((await req(`/hosts/links/${ADA}`, { headers: host() })).status, 404);
+    assert.equal((await req("/hosts/link", { method: "POST", body: { code, key: "nope" }, headers: host() })).status, 400);
+    const linked = await req("/hosts/link", { method: "POST", body: { code, key: ADA, name: "ada on sphinx" }, headers: host() });
+    assert.equal(linked.status, 200, JSON.stringify(linked.body));
+    assert.deepEqual([linked.body.account, linked.body.actor, linked.body.host], [`sphinx:${ADA}`, "ada", "sphinx"]);
+    assert.equal((await req("/hosts/link", { method: "POST", body: { code, key: ADA }, headers: host() })).status, 404, "a code links once");
+    assert.equal((await req(`/hosts/links/sphinx:${ADA}`, { headers: host() })).body.actor, "ada");
+    assert.equal((await req("/hosts/link", { method: "POST", body: { code: strut.people.linkCode("bob").code, key: BOB }, headers: host() })).status, 200);
+
+    // The workflow as published, on the host's own namespace, a conversation workflow.
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, params: { model: "x" } })).status, 403);
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, input: { prompt: "hi", session: "ada/1" } })).status, 403);
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, input: { prompt: "hi", session: "host/email/1" } })).status, 403);
+    assert.equal((await req("/workflows/job/run", { method: "POST", body: { input: { prompt: "x", session } }, headers: host(`sphinx:${ADA}`) })).status, 403);
+
+    // As Ada: woken like her own turn, never an admin's.
+    const ok = await turn(`sphinx:${ADA}`, launch);
+    assert.equal(ok.status, 202, JSON.stringify(ok.body));
+    assert.equal(ok.body.wake, true);
+    await idle();
+    const start = ((await req(`/workflows/${ORCHESTRATOR_WORKFLOW}/runs/${ok.body.runId}/events`)).body as any[]).find((e) => e.type === "run.start");
+    assert.deepEqual([start.origin, start.host, start.actor, start.wakeAsked], ["host", "sphinx", "ada", true]);
+
+    // The host reads its own conversations, whoever spoke, and no other.
+    const read = await req(`/conversations/item?id=${encodeURIComponent(session)}`, { headers: host() });
+    assert.equal(read.status, 200);
+    assert.equal(read.body.conversation.host, "sphinx");
+    assert.deepEqual(read.body.turns.map((t: any) => [t.prompt, t.status]), [["Ada: @jamie what did we decide?", "success"]]);
+    await say("bob", "c-2", "bob's own");
+    assert.equal((await req("/conversations/item?id=c-2", { headers: host() })).status, 404);
+    // Listed for Ada, who took a turn, with its host; for nobody named "host".
+    assert.deepEqual((await list("ada")).body.conversations.map((c: any) => [c.id, c.host]), [[session, "sphinx"]]);
+    assert.deepEqual((await list("host")).body.conversations, []);
+
+    // Continued by its host alone; Ada forks it to continue it in the app.
+    const hers = await req(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { method: "POST", body: { input: { prompt: "from the app", session } }, headers: as("ada", "peer:person") });
+    assert.equal(hers.status, 403);
+    assert.match(hers.body.error, /^conversation_hosted: /);
+    const fork = await req("/conversations/fork", { method: "POST", body: { session }, headers: as("ada", "peer:person") });
+    assert.equal(fork.status, 201, JSON.stringify(fork.body));
+    assert.ok(fork.body.id.startsWith("ada/"));
+    assert.equal(fork.body.host, undefined);
+
+    // A proposal made there: decided as the person the turn ran as, never as an admin.
+    const root = proposalsRoot(dir);
+    const by = { workflow: ORCHESTRATOR_WORKFLOW, runId: ok.body.runId, path: "orchestrator/agent", conversation: session, actor: "ada" };
+    const install = await createProposal(root, { step: "package/install", input: {}, title: "Install a package", approver: "admin", by });
+    const decide = (id: string, account: string, action = "accept") => req(`/proposals/${id}/decide`, { method: "POST", body: { action }, headers: host(account) });
+    const refused = await decide(install.id, `sphinx:${ADA}`);
+    assert.equal(refused.status, 403);
+    assert.match(refused.body.error, /^admin_required:/);
+    assert.equal((await decide(install.id, `sphinx:${BOB}`, "reject")).status, 403, "not Bob's");
+    assert.equal((await decide(install.id, `sphinx:${ADA}`, "reject")).status, 200);
+    const elsewhere = await createProposal(root, { step: "package/install", input: {}, title: "x", by: { ...by, conversation: "ada/other" } });
+    assert.equal((await decide(elsewhere.id, `sphinx:${ADA}`, "reject")).status, 404);
+
+    // Nothing else opens to the host key.
+    for (const [method, path] of [["GET", "/workflows"], ["GET", "/conversations"], ["POST", "/conversations/fork"], ["GET", "/people"], ["POST", `/workflows/${ORCHESTRATOR_WORKFLOW}/runs/${ok.body.runId}/cancel`], ["POST", `/workflows/${ORCHESTRATOR_WORKFLOW}/v1/run`]] as const) {
+      assert.equal((await req(path, { method, headers: host(`sphinx:${ADA}`), ...(method === "POST" ? { body: {} } : {}) })).status, 403, `${method} ${path}`);
+    }
   });
 });

@@ -78,7 +78,7 @@ import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { executedWorkflowHash } from "../journal.js";
 import { countUsage, stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
-import { idProblem, peerSessionId, publicSessionId } from "../session-store.js";
+import { hostSessionId, idProblem, peerSessionId, publicSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { ConversationRecord, Conversations } from "../conversations.js";
@@ -333,12 +333,15 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   const person = start?.peerPerson ? start.actor : undefined;
   // A public run's, under `public/<runId>/`, a priced one's under
   // `public/<token id>/` (`bindPublic`).
+  // A host's, under `host/<host>/` (`bindHost`).
   const threadOf =
     start?.origin === "peer"
       ? (id: string) => peerSessionId(id, person, start?.continues)
       : start?.origin === "public"
         ? (id: string) => publicSessionId(id, start.credit ?? start.runId)
-        : (id: string) => id;
+        : start?.origin === "host" && start.host
+          ? (id: string) => hostSessionId(id, start.host!)
+          : (id: string) => id;
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));
@@ -434,7 +437,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   let speaker: RunProjection["speaker"];
   const origin = start?.origin ?? summary?.origin;
   const actor = start?.actor ?? summary?.actor;
-  const personLaunch = origin === undefined || origin === "app" || (origin === "peer" && start?.peerPerson === true);
+  const personLaunch = origin === undefined || origin === "app" || origin === "host" || (origin === "peer" && start?.peerPerson === true);
   const userId = speakerUserId(actor);
   if (workflow === ORCHESTRATOR_WORKFLOW_NAME && personLaunch && userId && actor && sessionPaths.includes(ORCHESTRATOR_TURN_PATH)) {
     speaker = { userId, actor, sessionPath: ORCHESTRATOR_TURN_PATH };

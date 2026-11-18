@@ -996,6 +996,16 @@ step's error from the app's `run/launch`). Having opened it while it was
 shared is not a turn. An id that is no conversation stays in the caller's
 own namespace (`peer/<id>`, `app/<name>/<viewer>/<id>`), as before.
 
+**A host's conversation** (`host/<name>/…`, §13.4; `plans/jamie-in-tribes.md`
+§5.1): a host opened it, not a person, so several people may speak in it (a
+Sphinx tribe's thread). It is listed for each person who took a turn in it,
+with `host: "<name>"` on the row, and for nobody named by its id. Only that
+host takes a turn in it: a person's token, strut's own app (`run/launch`,
+and a job turn's `conversation`) are refused with `conversation_hosted:`. A
+person forks it (`/conversations/fork`) to continue it as their own. The
+deployment key still launches on any id. The host reads it with
+`/conversations/item`, whoever spoke, and no other conversation.
+
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
 | GET    | `/conversations?q=&archived=1&limit=&before=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page |
@@ -1022,6 +1032,7 @@ interface ConversationListItem {
   moreJobs?: number;     // jobs past those listed
   team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
   startedBy?: string;    // who took its first turn
+  host?: string;         // a host's conversation (`host/<name>/…`, §13.4): the host's name; continued by it alone
 }
 
 // A job as a row shows it. A conversation keeps its job ids, read from each
@@ -1665,6 +1676,80 @@ keep the actor, and a page asks for the names of its list once.
 ```bash
 curl -s "https://strut.acme.com/people?actor=evanfeenstra-cm3k9x&actor=secp:3fa2…" -H "authorization: Bearer $STRUT_API_KEY"
 # → { "people": { "evanfeenstra-cm3k9x": { "name": "Evan Feenstra" }, "secp:3fa2…": {} } }
+```
+
+With no name of their own, a person's name is the one on an account linked
+to them (§13.4), the newest link's.
+
+### 13.4 Hosts — a host key, and accounts linked to people
+
+`plans/jamie-in-tribes.md` §1, §3, §5.1, §5.2; `plans/people-and-hosts.md`
+§2; `src/auth.ts` "Host keys", `src/people.ts`. A HOST is a program that
+brings people to strut: it knows who is speaking and where, launches each
+turn as that person, and carries the answer back. The Sphinx daemon on a box
+is the first. It holds a HOST KEY, narrower than the deployment key:
+`STRUT_HOST_KEYS="sphinx:<token>"` (a comma between hosts) names each host
+and its token, sent as `Authorization: Bearer <token>`. The name is also the
+KIND of account it vouches for.
+
+**An account** is a key on a medium, spelled `<kind>:<key>`: `sphinx:<66
+hex>`, the pubkey as the daemon and an address spell it. A person LINKS one
+to themselves; one person per account, a person may hold several. Who an
+account is (`actorOf`): the person it is linked to; else, for a Sphinx key,
+the key's own actor (`secp:<the key without its first byte>`, what a signed
+sign-in with it gives), UNLINKED; else nobody.
+
+**What a host key may do**, as the person it names in `x-strut-account:
+<kind>:<key>` (its own kind; another is `400`). Every other route is `403`,
+reads included.
+
+| Method | Path | As whom | Description |
+| ------ | ---- | ------- | ----------- |
+| POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
+| GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
+| POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
+| POST   | `/hosts/link` | — | `{ code, key, name?, address? }` → the link: the code a person was shown (`account/link-code`), handed back with the key it came from — the host vouches for it, as for who spoke. `key` bare or as `<kind>:<key>`; `name` the account's own (the sender's alias), one line, 80 characters; `address` where it is reached (a Sphinx address names its own key). A link replaces the account's earlier one. `400` for a bad key, name or address; `404 no_code:` for a code unknown, used or expired |
+| GET    | `/hosts/links/:key` | — | The link, or `404 not_linked:` |
+
+A launch or a decision with no `x-strut-account` is `400`; with an account
+nobody linked, `403 not_linked:` — the host falls back to someone who is (a
+tribe's linker). The deployment key is no host: `/hosts/*` answer it `403`.
+
+```ts
+interface AccountLink {
+  account: string;   // "<kind>:<key>"
+  kind: string;      // the host's name: "sphinx"
+  key: string;       // a Sphinx key: 66 hex, lowercase
+  actor: string;     // the person
+  address?: string;  // where the account is reached
+  name?: string;     // the account's own name, as its holder wrote it
+  host?: string;     // the host that vouched for the key
+  at: number;        // when it was linked (ms)
+}
+```
+
+**Linking, from strut's own app** (the Jamie app's Connect, §14.10). Three
+steps, refused to anything but a first-party page's own call for its viewer
+(never an agent's tool: a code is worth the person it was made for):
+
+- `account/link-code {}` → `{ code, expiresAt, hosts, to? }`. `code`:
+  `link-` and eight letters and digits, single use, ten minutes, in memory
+  (a restart drops it); a new one replaces the viewer's last. `hosts`: the
+  hosts with a key here — none, and nothing links. `to: { kind, address,
+  alias?, qr }`: the account to DM it to, read from the Sphinx daemon's
+  `GET /me` with Support's message token, its address as a QR (an SVG data
+  URL); absent when strut cannot read it.
+- `account/links {}` → `{ links: AccountLink[] }`, the viewer's, newest first, without `actor`.
+- `account/unlink { account }` → `{ removed }`.
+
+```bash
+# The daemon, holding the host key, hands back a code it was DM'd:
+curl -s https://strut.box.example/hosts/link -H "authorization: Bearer $HOST_TOKEN" \
+  -H "content-type: application/json" -d '{"code":"link-k7m3q9x2","key":"02ab…","name":"Ada"}'
+# A mention in a tribe, as Ada:
+curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
+  -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
+  -d '{"input":{"prompt":"Ada: @jamie what did we decide?","session":"host/sphinx/3f9a0c21b7e4"},"wake":true,"callback":{"url":"http://treasury:8095/strut/end?m=1&token=…"}}'
 ```
 
 ## 14. Apps — a front-end project over workflows
@@ -2347,7 +2432,14 @@ The page sends into whatever conversation `conversation/list` shows; a
 person continues one they took a turn in, or a shared one
 (`plans/jamie-app.md` §2.2), and a refused turn
 (`conversation_not_yours: …`, someone who read it while it was shared) is
-a plain notice. A captcha's answer
+a plain notice. A HOST's conversation (a Sphinx tribe's, `host: "sphinx"`
+on its row, §13.4) shows with a `#` in the list and, in place of the
+composer, "In a Sphinx tribe: reply there" and **Continue here**, which
+forks it (`conversation/fork`) and opens the copy. **Connect** (the list's
+header) lists the viewer's linked Sphinx accounts with Remove
+(`account/links`, `account/unlink`) and, on Connect Sphinx, shows a code
+from `account/link-code` with the account to DM it to and its QR, reading
+`account/links` every 3 s until the link shows (§13.4). A captcha's answer
 is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
 "[captcha-answer] {…}" }, conversation }`; so is a pull request's Fix, when
 its checks failed (`prompt`: which checks, and the branch to push the fix

@@ -193,7 +193,54 @@ container in the compose (strut and any service that registers steps).
   on an anonymous one's (each actor answers with none). `signedInRefusal`
   lets a signed-in visitor call it where the app grants it. A name is
   shown, never checked: nothing authorizes by it, and no other answer
-  carries one (runs, tasks and conversations keep the actor).
+  carries one (runs, tasks and conversations keep the actor). With no name
+  of their own, a person's name is the one on an account linked to them
+  (the newest link's; "Host keys" below).
+- **Host keys and linked accounts** (plans/jamie-in-tribes.md §5.1, §5.2;
+  plans/people-and-hosts.md §2; specs/API.md §13.4). A HOST is a program
+  that brings people to strut — the Sphinx daemon on a box — and should not
+  hold the deployment key: it reads messages from strangers and holds money.
+  `STRUT_HOST_KEYS="sphinx:<token>"` (auth.ts "Host keys", `hostKeys` /
+  `hostOf`; Bearer only, read per request, a bad entry skipped with one
+  warning) gives each host a token; a request carrying one is scope `host`
+  (`scopeFromKey`, and createStrut's `resolveScope` before a host hook, as a
+  member's session is). The gate passes it `HOST_ROUTES` alone — `POST
+  /workflows/:name/run`, `GET /conversations/item`, `POST
+  /proposals/:id/decide`, `POST /hosts/link`, `GET /hosts/links/:key` — and
+  403s every other route, reads included (`createStrut.test.ts` "a host
+  key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
+  (the host's own kind, else 400) and asks `people.actorOf` once
+  (`hostCalls`); `resolveActor` answers that person only when the account
+  is LINKED, never an `x-strut-actor`. A launch or a decision needs a linked
+  person (`hostPerson`: 400 with no account, `403 not_linked:` for one
+  nobody linked). A launch is a turn of a conversation workflow on the
+  host's own `host/<name>/…` session, as published (`hostLaunchRefusal`):
+  `run.start` says `origin: "host"` and `host`, the runner opens its agents'
+  sessions under `host/<name>/` (`bindHost`), a resume keeps both, and
+  strut wakes it (`announcesWake`; wake.ts's `relay` is peers' and apps'
+  alone). **Never an admin's** (ruling 8): `personIsAdmin` answers false for
+  `origin: "host"` and so for the jobs and wakes it starts, and
+  `decideProposal` takes `host` like a person token — only the proposal's
+  own person decides, `admin` false; the decide route first holds the
+  proposal to a conversation under the host's namespace. A host's
+  conversation is continued by it alone: `continuesFor` and the app door's
+  job-turn check refuse `host/…` with `conversation_hosted:`, and the
+  conversation index gives such an id no owner (an actor named `host` owns
+  nothing). ACCOUNTS live in `people.db`'s `accounts (kind, key, actor,
+  address, name, host, at)`, one person per account (a link replaces
+  another's: whoever holds the key says whose it is). `actorOf(account)`:
+  the linked person; else, for a `sphinx` key, `secp:<the key without its
+  first byte>` marked unlinked (its own person, at a visitor's level — a
+  host's launch still refuses it); else nobody. A LINK CODE (`link-` and
+  eight letters and digits, ten minutes, once, one per person, in memory)
+  is made by `account/link-code` and handed back with the key that sent it
+  by `POST /hosts/link`. The `account/*` steps (`src/steps/lib/account/`)
+  run only as a first-party page's own call for its viewer (`requireAccounts`,
+  as `secret/add`): a code is worth the person it was made for, and in a
+  tribe that shows no senders every turn runs as its linker, so no agent
+  may mint one. `ctx.services.accounts` (`accountsCapability`) is their
+  door; `to` is the daemon's own account from its `GET /me` on Support's
+  message token (createStrut `sphinxAccount`).
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the
@@ -420,7 +467,7 @@ What each file and folder in this area is, in the order of the tree.
 
 ### `src/auth.ts`
 
-the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches a `peer: true` workflow, controls a run a peer launched, and the gate 403s the rest) + the PERSON TOKEN (personToken / verifyPersonToken / personOf: the peer key attenuated to one actor, `strut-person.<claims>.<hmac>` signed like a session, Bearer only, minted by `POST /peers/tokens` — scope `peer:person`, `isPeerScope`: a peer whose actor is its credential's own, which alone launches a `peer: person` workflow, opens its actor's own sessions and gets an app's `step_run` alone on `POST /mcp`; plans/chained-orchestrators.md §2, plans/apps.md §7.4) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key; a person token's actor wins) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read. The app IDENTITY a served document carries: `appIdentity` (`app:<name>@<vN>.<token>`), read back by `appOfIdentity` → `ctx.app`. The INVITE TOKEN (`inviteToken` / `inviteOf`, plans/human-steps.md §5.8): `strut-invite.<claims>.<hmac>` naming a Sphinx invite's code and the worker app, what an invite link opens that app with — it gives the one worker who comes with it the app's invite-only task types, while the daemon still has the invite. The CHANNEL TICKET (`channelTicket` / `channelTicketOf`, plans/app-channels.md §2): `strut-channel.<claims>.<hmac>` naming the viewer, the app and its version for a minute, the one credential that opens `GET /channels` — a browser host's upgrade, which carries no header (unsigned, and taken at its word, with no secret to sign under) + the VISITOR's session (plans/app-repos.md §5): role `visitor`, scope `visitor`, in a cookie of its own (`strut_visitor`, so a visitor's sign-in never replaces the operator's console session on one origin) and accepted as `Authorization: Bearer <token>` or `x-strut-visitor` (a page framed by another site keeps the token, ruled 4) — `visitorOf`, `startVisitorSession`; and the visitor's CHALLENGE (`strut-visitor.<claims>.<hmac>`, `{ host, visitorKey, nonce, exp }`, a minute, good once: `visitorChallenge` / `redeemVisitorChallenge`). `fullSession` — "is this session the key's equal" — is an ALLOWLIST (no role, or `admin`), so a member's, a visitor's or a role strut does not know opens nothing
+the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches a `peer: true` workflow, controls a run a peer launched, and the gate 403s the rest) + the PERSON TOKEN (personToken / verifyPersonToken / personOf: the peer key attenuated to one actor, `strut-person.<claims>.<hmac>` signed like a session, Bearer only, minted by `POST /peers/tokens` — scope `peer:person`, `isPeerScope`: a peer whose actor is its credential's own, which alone launches a `peer: person` workflow, opens its actor's own sessions and gets an app's `step_run` alone on `POST /mcp`; plans/chained-orchestrators.md §2, plans/apps.md §7.4) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key; a person token's actor wins) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read. The app IDENTITY a served document carries: `appIdentity` (`app:<name>@<vN>.<token>`), read back by `appOfIdentity` → `ctx.app`. The INVITE TOKEN (`inviteToken` / `inviteOf`, plans/human-steps.md §5.8): `strut-invite.<claims>.<hmac>` naming a Sphinx invite's code and the worker app, what an invite link opens that app with — it gives the one worker who comes with it the app's invite-only task types, while the daemon still has the invite. The CHANNEL TICKET (`channelTicket` / `channelTicketOf`, plans/app-channels.md §2): `strut-channel.<claims>.<hmac>` naming the viewer, the app and its version for a minute, the one credential that opens `GET /channels` — a browser host's upgrade, which carries no header (unsigned, and taken at its word, with no secret to sign under) + the VISITOR's session (plans/app-repos.md §5): role `visitor`, scope `visitor`, in a cookie of its own (`strut_visitor`, so a visitor's sign-in never replaces the operator's console session on one origin) and accepted as `Authorization: Bearer <token>` or `x-strut-visitor` (a page framed by another site keeps the token, ruled 4) — `visitorOf`, `startVisitorSession`; and the visitor's CHALLENGE (`strut-visitor.<claims>.<hmac>`, `{ host, visitorKey, nonce, exp }`, a minute, good once: `visitorChallenge` / `redeemVisitorChallenge`). `fullSession` — "is this session the key's equal" — is an ALLOWLIST (no role, or `admin`), so a member's, a visitor's or a role strut does not know opens nothing. The HOST KEYS (`hostKeys` / `hostOf`, `STRUT_HOST_KEYS`, plans/jamie-in-tribes.md §5.1): a program that brings people to strut, scope `host`
 
 ### `src/secret-store.ts`
 
@@ -437,6 +484,10 @@ the ENV BOUNDARY: `bootEnv()` is the one way strut's own code reads the environm
 ### `src/step-lint.ts`
 
 the static check on a custom step's SOURCE — imports of child_process / fs / net / http (RISKY_MODULES), a `process.env` read, the global `fetch`, opening the graph itself (`openGraphBackend` and its siblings — the deployment's shared connection; a step that closed it took swarm38's graph down, 2026-10-28) — each with what to use instead. The builder's create_step / edit_step (+ meta/* twins) REFUSE on a finding (authoring.ts); `POST /steps` publishes and answers with `warnings`; the registry WARNS when it loads a workspace step from disk, whoever put it there (registry.ts `warnPastServices`, once per file version; static, so it holds under tsx, which loads a workspace `.ts` as CommonJS past any ESM resolve hook) — the place a later strut refuses to load it
+
+### `src/steps/lib/account/`
+
+`account/link-code`, `account/links`, `account/unlink` (plans/jamie-in-tribes.md §3, §5.2): the viewer's linked accounts and the one-time code that links one (with the account to DM it to, its address as a QR), over `ctx.services.accounts` (src/people.ts `accountsCapability`). `_shared.ts`'s `requireAccounts`: only a FIRST-PARTY page's own call for its viewer (`RUN_STEP_FLOW`), never an agent's tool or another app's — the Jamie app's Connect panel
 
 ### `src/steps/lib/secret/`
 

@@ -1,6 +1,7 @@
 # People and hosts: one identity, names, and Support as an app
 
-> **Status (2026-11-18): ruled in outline; item 1 (names) built on #737.**
+> **Status (2026-11-18): ruled in outline; items 1 (names) and 2 (host keys
+> and accounts) built on #737.**
 >
 > - **Written against:** strut `main` @2681b6f9, stakwork/sphinx `master`
 >   @cb1026fe, stakwork/stadeum @ab997cc (`fix/ops-pull-retry`), hive
@@ -121,6 +122,13 @@ file is made on the first name, never on a read.
 - A name is for showing. Nothing checks it, and two people may share one.
 - Nothing is copied from Support's table (ruling 7). Until §5 is built, a
   worker's name comes from Peel's sign-in alone.
+
+**Built differently (#737):** an account's name is also written when it is
+linked: `POST /hosts/link` takes `name` (and `address`), what the DM that
+carried the code says of its sender (`jamie-in-tribes.md` §3). Without it the
+fallback below would have nothing to read until item 3 brings
+`x-strut-account-name`. Kept on the account as the holder wrote it, the
+newest link's first.
 
 **Who reads one.** `nameOf(actor)`: the person's name, else the name on an
 account that is theirs, else nothing.
@@ -321,7 +329,7 @@ stacked.
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
 | 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | **Built (#737).** No memory twin (§1) |
-| 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | — |
+| 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | **Built (#737).** `accounts` in `people.db`, `actorOf`, the name on an account (§1); the rest as `jamie-in-tribes.md` item 1 says, with its own marks |
 | 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | — |
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | — |
 | 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |

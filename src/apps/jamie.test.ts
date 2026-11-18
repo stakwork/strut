@@ -23,7 +23,7 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
@@ -577,6 +577,27 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.ok(published.ok, JSON.stringify(published));
     const plain = page("plain", "alice");
     assert.match((await plain.call("run/launch", { workflow: "job", job: "j", input: { prompt: "x" }, conversation: "alice/c1" })).error!, /only strut's own app/);
+  });
+
+  it("Connect and tribe conversations (plans/jamie-in-tribes.md §3, §5.1): the viewer's own code and links; a host's conversation forked, never continued here", async () => {
+    assert.equal(hostPlace("sphinx"), "a Sphinx tribe");
+    assert.equal(hostPlace("email"), "email");
+    const alice = page(JAMIE_APP, "alice");
+    const made = await alice.ok("account/link-code");
+    assert.match(made.code, /^link-[a-z0-9]{8}$/);
+    assert.deepEqual(made.hosts, [], "no host key here: nothing hands a code back");
+    assert.equal(strut.people.redeemLinkCode(made.code), "alice", "the code is the viewer's");
+    const KEY_HEX = `02${"ab".repeat(32)}`;
+    await strut.people.link({ kind: "sphinx", key: KEY_HEX }, "alice", { host: "sphinx", name: "alice on sphinx" });
+    assert.deepEqual((await alice.ok("account/links")).links.map((l: any) => [l.account, l.name]), [[`sphinx:${KEY_HEX}`, "alice on sphinx"]]);
+    assert.deepEqual((await page(JAMIE_APP, "bob").ok("account/links")).links, [], "never another's");
+    assert.deepEqual(await page(JAMIE_APP, "bob").ok("account/unlink", { account: `sphinx:${KEY_HEX}` }), { removed: false });
+    assert.deepEqual(await alice.ok("account/unlink", { account: `sphinx:${KEY_HEX}` }), { removed: true });
+
+    // A host's conversation: its host alone takes a turn in it.
+    const hosted = await alice.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "from the app", session: "host/sphinx/0123456789ab" } });
+    assert.match(hosted.error!, /conversation_hosted: "host\/sphinx\/0123456789ab"/);
+    assert.match((await alice.call("run/launch", { workflow: "job", job: "alice-jh", input: { prompt: "x" }, conversation: "host/sphinx/0123456789ab" })).error!, /conversation_hosted/);
   });
 
   it("a run launched elsewhere is the viewer's before its first event lands: run/get waits on it, never 'not found'", async () => {

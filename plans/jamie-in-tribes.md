@@ -1,6 +1,7 @@
 # Jamie in tribes: the Sphinx daemon as a strut host
 
-> **Status (2026-11-17): proposed. Nothing built.**
+> **Status (2026-11-18): proposed; item 1 (host keys and linked accounts)
+> built on #737, with `people-and-hosts.md` §2's accounts.**
 >
 > - **Written against:** strut `main` @53364a3d, stakwork/sphinx `master`
 >   @f5baba75, stakwork/hive `master` @64260e485 (what is built today),
@@ -158,6 +159,14 @@ who spoke in a tribe.
 
 - The code: short, single use, ten minutes, bound to the person who asked.
 - The Jamie app lists the person's linked accounts and removes one.
+
+**Built differently (#737):** `POST /hosts/link { code, key, name?,
+address? }`: the daemon also passes the sender's alias (the account's own
+name, which strut shows for a person with none of their own,
+`people-and-hosts.md` §1) and their address. The code is `link-` and eight
+letters and digits, so the daemon tells it from a Support message; a new one
+replaces the person's last. `GET /hosts/links/:key` answers the link
+(`{ account, actor, name?, … }`) or `404 not_linked:`.
 - A Peel sign-in (strut's `ln-message` verifier, which already checks a
   Sphinx signature) could bind a key with no DM. It needs Peel to open the
   box, which nothing does yet (`org-home-swarm.md` §1.2).
@@ -262,7 +271,13 @@ The store: `{ kind, key, actor, host, at }`, one person per account. It is
 one JSON file under `dataDir` (`linked-accounts.json`), read into memory at
 boot and written whole on each change (temporary file, then rename), as the
 wake queue's files are: a link is rare, and every host request reads it.
-It is not on the workspace graph, so it needs no schema entries. A code
+It is not on the workspace graph, so it needs no schema entries.
+
+**Built differently (#737):** as `people-and-hosts.md` §2 has it, the store
+is the `accounts` table in `<dataDir>/people.db` (`src/people.ts`), beside
+the names: `kind, key, actor, address?, name?, host?, at`. A Sphinx key
+nobody linked is `secp:<x-only>` there, marked unlinked; a host's launch or
+decision still needs a linked person (`403 not_linked`). A code
 lives in memory only: a restart drops one still waiting, and the person
 asks for another. What reaches the store:
 
@@ -270,6 +285,15 @@ asks for another. What reaches the store:
   `account/links`, `account/unlink`. The Jamie app's Connect panel calls
   them. As `conversation/*` are, they are refused to every app's page but
   strut's own (first-party), so a public app's visitor links nothing;
+
+  **Built differently (#737):** narrower, as `secret/add` is: only as a
+  first-party page's OWN call, for its viewer, never an agent's tool. A
+  code is worth the person it was made for, and in a tribe that does not
+  show its senders every turn runs as the linker: a Jamie that could mint
+  one would let any member link their key as the linker. `account/link-code`
+  answers `{ code, expiresAt, hosts, to? }`: `hosts`, the hosts with a key
+  here (none: the panel says linking is not set up), and `to`, the account
+  to DM with its address as a QR;
 - the host's two routes above.
 
 The Connect panel shows the account's Sphinx address, which strut reads
@@ -444,7 +468,7 @@ Each is its own PR against its repo's default branch, never stacked.
 
 | Item | Repo | What | Needs | State |
 | --- | --- | --- | --- | --- |
-| 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | — |
+| 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link` |
 | 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | — |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | — |
 | 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply, `GET /me` on the message token | 1 (a stand-in strut in its tests until 1 merges) | — |

@@ -270,6 +270,15 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   admin a ticket names (`POST /auth/ticket { actor, role: "admin" }`), and
   that admin gets the heads-up when their actor is `secp:` + a contact's
   key without its first byte.
+- **Strut's host** (plans/jamie-in-tribes.md §3, §5.1): `GET /me` (the
+  message token) answers the account's `{ address, pubkey, alias }`, what
+  the Jamie app's Connect shows a person to DM a link code to. Started with
+  `STRUT_URL` and `STRUT_HOST_KEY` (strut's `STRUT_HOST_KEYS=sphinx:<it>`), a
+  worker's DM holding a link code is handed to strut's `POST /hosts/link`
+  with the sender's key, alias and address, the account answers the DM, and
+  the `/worker-dm` answer carries strut's (`link`). A mention is played with
+  curl (specs/API.md §13.4). scripts/fake-sphinx-daemon-host.test.ts runs
+  the whole link against a strut served on a port.
 - **The rate**: `GET /prices` answers mempool's `{ time, USD }`
   (`USD_PER_BTC`, default 100,000, so $1 is 1,000 sats).
 - In a test, `startFakeSphinxDaemon({ port: 0, … })` starts it in-process and

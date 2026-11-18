@@ -619,9 +619,9 @@ export interface Decision {
   reason?: string;
   /** Who decided (the request's actor). */
   by?: string;
-  /** The request's scope. A person token (`peer:person`) decides only a
-   *  proposal its actor made; a plain `peer` decides none. Absent or `full`:
-   *  unchanged. */
+  /** The request's scope. A person token (`peer:person`) and a host
+   *  (`host`, as the person it names) decide only a proposal their actor
+   *  made; a plain `peer` decides none. Absent or `full`: unchanged. */
   scope?: Scope;
   /** Is the decider an ADMIN of this strut server (plans/member-rights.md)?
    *  Only an admin accepts a proposal of a step with `approver: "admin"`.
@@ -669,7 +669,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   const rec = await readProposal(root, id);
   if (!rec) return { status: 404, body: { error: `No proposal "${id}"` } };
   if (decision.scope === "peer") return { status: 403, body: { error: "forbidden: a peer without a person cannot decide a proposal" } };
-  if (decision.scope === "peer:person" && (!rec.by.actor || rec.by.actor !== decision.by)) {
+  if ((decision.scope === "peer:person" || decision.scope === "host") && (!rec.by.actor || rec.by.actor !== decision.by)) {
     return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
   }
   const tell = (p: Proposal) => {
