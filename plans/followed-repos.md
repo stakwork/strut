@@ -1,8 +1,8 @@
 # Followed packages: a deployment follows a package's git branch
 
-> **Status (2026-11-18): work items 1 (`git+` subscriptions,
-> stakwork/strut#739) and 2 (the secrets gate, stakwork/strut#740) are
-> built; item 3 (the `job` grant) is proposed.** First written
+> **Status (2026-11-18): every work item is built: 1 (`git+`
+> subscriptions, stakwork/strut#739), 2 (the secrets gate,
+> stakwork/strut#740) and 3 (the `job` grant, stakwork/strut#PR).** First written
 > 2026-11-17 (stakwork/strut#732) around a new follower, `STRUT_REPOS`, that
 > opened each package as a repo and pulled it on a poll. Revised 2026-11-18
 > after a review against the code: strut already follows packages
@@ -225,9 +225,16 @@ requires:
 ```
 
 `readPackage` resolves each name against the package's steps (`claim` →
-`stadeum/pods/claim`; `*` → every step of the package). A name or glob that
-matches none of its steps refuses the package, and so does an `approve`
-name that isn't among the tools.
+`stadeum/pods/claim`; `*` → every step of the package; a `_` helper is not
+a step). A name is the step's name INSIDE the package: a full type, even
+the package's own (`stadeum/pods/claim`), matches nothing. A name or glob
+that matches none of its steps refuses the package, and so does an
+`approve` name that isn't among the tools.
+
+A package built here (`buildPackage`, the Publish dialog) gets a manifest
+with no `job:`: a package that grants writes its `strut.yaml` by hand, in
+its repo, as pods does. The repo door's Commit never rewrites `strut.yaml`,
+so the key survives a Commit.
 
 ### 3.2 The `job` seed
 
@@ -241,14 +248,37 @@ cache).
 
 There's no stamp on the versions. An edited step keeps its name, so it
 stays granted. A step the package no longer names isn't in the new
-manifest, and a package taken out has no manifest here.
+manifest.
 
-The seed runs at boot, as today, and again after every install, update,
-uninstall or sync that changed a package. A content-hash publish makes a
-run with nothing new a no-op. Re-seeding after an install applies "a seed
-always matches git" sooner than the next boot: a workspace-side edit of
-`job` lasts until the next re-seed, where today it lasts until the next
-boot.
+A package taken out is not always gone from the fold: an uninstall (a
+person's, or a subscription's take-out) keeps a fork, and the package is
+still listed with it (`listInstalledPackages`), at its digest. So a package
+grants while something of it is still its own here: a workflow, step or app
+whose active version it wrote. What an uninstall leaves is only forks and
+the helpers they import, which grant nothing (§2's "isn't granted"). The
+cost: a package whose every workflow, step and app is edited here grants
+nothing until one of them is its own again (an update, or a Commit through
+the repo door).
+
+The seed runs at boot, as today, and again after every package write: in
+createStrut's `oneAtATime`, which every install, update, uninstall,
+subscription sync, serve deploy, boot install and repo Open, Pull, Commit,
+Retire and Close already goes through (and a build, which grants nothing
+new), so re-seeds are serialized with the writes. A content-hash publish makes
+a re-seed with nothing new a no-op only while nobody edited `job`: a text
+seen before is made active again, over a workspace-side edit. So a re-seed compares
+what the packages grant with what it granted last, and publishes only when
+that changed. A workspace-side edit of `job` lasts until what packages
+grant changes, or the next boot.
+
+The seed at boot runs before the boot's subscription sync (a few seconds
+after the boot, or never with the poll off); the re-seed after that sync is
+what grants a newly followed package.
+
+A package's `approve` gates the agent's tool call through `params.approve`,
+like a host's. `hostApprove` (createStrut; proposals' `hostGates`) stays the
+host's alone: `requireApproval` is all that reads it, only
+`strut/run-workflow` calls it, and a package can't grant strut's steps.
 
 A Concept page under `Job` is already a job KIND, put in the prompt when a
 launch names it (`context/concept`). So a package that brings a kind of
@@ -257,7 +287,11 @@ work brings its page, and doesn't need a `system` key.
 ### 3.3 What a person sees
 
 The package's page (`src/packages/detail.ts`) and the install ask list the
-steps the package gives the job agent, and which of them ask first.
+steps the package gives the job agent, and which of them ask first. Built:
+the detail and its summary carry `job: { tools, approve }` by names inside
+the package; the store's Tools section badges each step (`job agent`, `asks
+first`); a search hit in Packages says how many tools it gives;
+`package/install`'s card says which, in its summary and a field.
 
 ## 4. A hosted Stadeum box
 
@@ -337,13 +371,18 @@ Each is its own PR against `main`. Items 1 and 2 both change
    page or grant); the secret set, so the next sync installs it; the secret
    removed, so the next sync takes the package out with its edits kept; the
    same for a `pk:` subscription. Docs: `docs/packages.md`.
-3. **The `job` grant** (§3). The manifest key and its check (`format.ts`),
-   the seed's merged delta and the re-seed (`job-seed.ts`, `createStrut.ts`),
-   the package page and the install ask. Tests: a package whose step the
-   job agent then lists; an uninstall that takes it away; a glob over the
-   package's steps; a grant naming a step outside the package refused; an
-   `approve` name outside `tools` refused. Docs: `docs/packages.md`,
-   `docs/jobs.md`.
+3. **The `job` grant** (§3). **Built: stakwork/strut#PR.** The manifest
+   key and its check (`format.ts`), the seed's merged delta
+   (`packageJobGrants`, `withJobGrants` in `job-seed.ts`) and the re-seed
+   (`seedJob` inside `oneAtATime`, `createStrut.ts`), the package page and
+   the install ask. Tests (`src/packages/job-grant.test.ts`): a package
+   whose step the job agent then lists; an uninstall that takes it away,
+   and one that keeps a fork; a glob over the package's steps; a grant
+   naming a step outside the package refused; an `approve` name outside
+   `tools` refused; the same text whichever order two packages install in;
+   a `git+` subscription that grants once its secret is set and takes the
+   grant away with the package. Docs: `docs/packages.md`, `docs/jobs.md`,
+   `specs/API.md` §16.
 
 ## Validation
 

@@ -773,6 +773,8 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                         <span class="package-name">{s.name}</span>
                         {s.helper && <span class="badge">helper</span>}
                         {s.effect && <span class="badge" title="As the step declares it">{s.effect === "write" ? "acts" : "reads"}</span>}
+                        {d.job?.tools.includes(s.name) && <span class="badge" title="strut.yaml's job: gives it to the job agent as a tool">job agent</span>}
+                        {d.job?.approve.includes(s.name) && <span class="badge badge-warning" title="The job agent's call is a proposal you accept first">asks first</span>}
                         {s.secrets.map((k) => <code key={k} class="store-secret" title="A secret it reads">{k}</code>)}
                       </span>
                       {s.description && <span class="store-line-desc" title={s.description}>{s.description}</span>}
