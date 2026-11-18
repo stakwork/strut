@@ -7,14 +7,15 @@
 >   `master` @554793fa1.
 > - **The Rulings** are from one conversation with Evan on 2026-11-17. 1–3
 >   are his own points. 4–6 were proposed in that conversation and he
->   accepted them.
+>   accepted them. 7 and 8 are his, from 2026-11-18.
 > - **The decisions in §8** are this plan's defaults. Evan may overrule them.
 > - **Companion to:**
 >   - `jamie-in-tribes.md`: host keys (§5.1) and linked accounts (§5.2).
 >     This plan builds on both and changes two things (§2);
 >   - `apps.md`: §4.4 and item 3, an app's own SQLite, ruled and not built;
->   - `support-chat.md`: Support as built (#719, #720), which §5 rebuilds.
->     Ruling 3 here replaces its ruling 16 ("polled");
+>   - `support-chat.md`: Support as built (#719, #720), which §5 rebuilds
+>     without keeping its data (ruling 7). Ruling 3 here replaces its ruling
+>     16 ("polled");
 >   - `human-steps.md`: the task store, which stays as it is (§6).
 >
 > **Keeping this plan current.** Each PR that builds an item edits this file:
@@ -22,7 +23,7 @@
 > something other than what was built, the PR marks it **Built differently
 > (#N):**, with what was built and why.
 
-## Rulings (2026-11-17)
+## Rulings (2026-11-17; 7 and 8 on 2026-11-18)
 
 | # | Question | Ruled |
 | --- | --- | --- |
@@ -32,6 +33,8 @@
 | 4 | Tasks and workers | **Stay in the engine.** Support is rebuilt as an app: the worked example of a whole application in the app format |
 | 5 | Support's backend | **No service of its own.** Tools and workflows over the app's own SQLite |
 | 6 | A message arriving | **A direct tool call**, not a workflow run |
+| 7 | What the rebuild keeps of Support as built | **Nothing: no migration, no backward compatibility.** Support holds only Evan's test messages on prod. Rebuilding it now, before anyone uses it, is what makes that possible |
+| 8 | The staff heads-up (`support-chat.md` §6) | **Dropped from the rebuild.** Revisit later (§11) |
 
 ## Problem
 
@@ -111,8 +114,8 @@ move.
 - A name a host gave is never replaced by one a person gave themself. Among
   those, the newest wins.
 - A name is for showing. Nothing checks it, and two people may share one.
-- At boot, once, strut copies the names Support already holds. Until §5 is
-  built, Support's poller writes each name it reads.
+- Nothing is copied from Support's table (ruling 7). Until §5 is built, a
+  worker's name comes from Peel's sign-in alone.
 
 **Who reads one.** `nameOf(actor)`: the person's name, else the name on an
 account that is theirs, else nothing.
@@ -154,7 +157,6 @@ hold it, and a Nostr or LNURL key gives the same actor.
 **What it replaces:**
 
 - Support's `actorOfPubkey` and its `actor` column.
-- The heads-up's guess: an admin's Sphinx account is the one they linked.
 
 The address on a worker's session (`Session.sphinxAddress`) stays where it
 is. It is proved at sign-in and is what a payout goes to.
@@ -215,7 +217,8 @@ Support stays a tab of `strut/staff`.
 | What the page reads | Read steps over the routes; the list and the thread refetched every 3 s | SQL from the page, refetched when the app's channel says something changed |
 | What the page writes to its own tables (seen, done, taken, settings) | Routes | SQL from the page |
 | A reply, a deletion, Support's picture | Routes | Tools |
-| The welcome and the heads-up | The poller's tick | One workflow |
+| The welcome | The poller's tick | One workflow |
+| The heads-up to admins | The poller's tick | None (ruling 8) |
 
 **The tools** (one file each, in `src/steps/lib/support/`):
 
@@ -223,30 +226,33 @@ Support stays a tab of `strut/staff`.
 | --- | --- | --- |
 | `support/receive { records }` | the host | Keeps a batch of the daemon's DM records, in order, in one transaction: the conversation, the message (a new one, or a change to one: a send's status, a deletion), a file's bytes, the sender's name (§1). Marks a welcome due. Tells the channel. A record already kept changes nothing, so a retry is safe |
 | `support/send { worker, text?, replyTo?, file?, retry? }` | the page, the workflow | Keeps the message as `sending`, sends it, keeps `sent` or `failed` |
-| `support/send-due` | the workflow | Sends each welcome that is due and each heads-up that is due |
+| `support/send-due` | the workflow | Sends each welcome that is due |
 | `support/delete { key }` | the page | Deletes one of Support's own messages for both sides |
 | `support/file { id, offset? }` | the page | A file, in 3 MB pieces |
 | `support/set-photo` | the page | Support's picture |
 
-**The workflow.** `support-outbox` is one step, `support/send-due`. It runs:
+**The workflow.** `support-outbox` is one step, `support/send-due`.
+`support/receive` starts it when it marked a welcome due, one run at a time.
+There is no schedule:
 
-- when `support/receive` marked something due, at once, one at a time;
-- every five minutes, for the heads-up and for anything a restart cut off.
+- a run a restart cut off resumes at boot (`STRUT_AUTO_RESUME`, on by
+  default);
+- a welcome still due goes with the next run.
 
 **The page.** It reads with `sqlite/query`: the list, unread counts, a
 thread, search. It listens on the app's channel and refetches on a message,
 and every 30 s besides, since a channel keeps nothing. It matches a staff
 note against the workers list it already loads.
 
-**Moving what is there.** At boot, once, strut copies the three tables and
-the kept files into the app's database, then drops the old ones.
+**Nothing moves** (ruling 7). Strut drops the three old tables from the task
+store's file and deletes `<dataDir>/support/`, at boot, with no copy.
 
-**Until every daemon pushes.** The poller shrinks to a stand-in host inside
-strut: it reads `GET /dms`, fetches each file, and calls `support/receive`
-in process. Item 6 removes it.
+**No stand-in.** The poller goes in the same PR. On a box whose daemon does
+not push yet, Support receives nothing (§7).
 
 **What goes away:** `src/support/`, the twelve `/support` routes, the eleven
-`staff/support-*` steps, both 3 s polls, and reading DMs with the token.
+`staff/support-*` steps, both 3 s polls, the heads-up, and reading DMs with
+the token.
 
 ## 6. What stays in the engine
 
@@ -265,12 +271,13 @@ The Workers tab gains names (§1) and nothing else.
 
 ## 7. What each caller does
 
-Not work in this repo. Strut works without any of it; each one turns
-something on.
+Not work in this repo. Each one turns something on. Support is the one that
+needs it: once item 5 lands, a worker's message reaches strut only when the
+daemon pushes it.
 
 | Caller | What it does | What that turns on |
 | --- | --- | --- |
-| The Sphinx daemon | In its strut mode (`jamie-in-tribes.md` item 4), also hands strut each record of its DM feed: in order, one call at a time, a file's bytes with it, again until a `2xx`. It keeps how far strut has taken | Support without the poller |
+| The Sphinx daemon | In its strut mode (`jamie-in-tribes.md` item 4), also hands strut each record of its DM feed: in order, one call at a time, a file's bytes with it, again until a `2xx`. It keeps how far strut has taken | Support receiving messages |
 | Stadeum | Sends `name` on the ticket. Sets `STRUT_HOST_KEYS` and the daemon's strut URL and key | Names for members and admins; the daemon as a host |
 | Peel | `sign_in` answers `alias` | A name for a worker who never wrote to Support |
 | Hive | Nothing | Its actors show as today |
@@ -288,9 +295,8 @@ something on.
 | 7 | Who sends a reply | Strut calls the daemon | A send's status has to come back. The daemon collecting replies would add a second queue |
 | 8 | Where Support's files are kept | Rows in the app's database | No new store for an app's files, and the export carries them. If they grow large, an app's files directory is a later primitive |
 | 9 | Support's place | A tab of `strut/staff` | The thread sits beside the worker's work and pay |
-| 10 | The welcome and the heads-up | One workflow, started by a message and by a five-minute schedule | A schedule alone would delay the welcome; a message alone cannot count five minutes. The cost: the schedule makes 288 short runs a day, most of them sending nothing |
+| 10 | The welcome | One workflow, started by a message | Auto-resume covers a restart, so nothing needs a clock |
 | 11 | Names in other answers | None. The UI asks `people/names` | One read path. No run, task or conversation answer changes shape |
-| 12 | How the schedule is set | Strut sets it when it seeds the workflow, if there is none | A seeded app has no admin's click to set it |
 
 ## 9. Security
 
@@ -308,18 +314,20 @@ Each is its own PR against `main`, never stacked.
 
 | Item | What | Needs | State |
 | --- | --- | --- | --- |
-| 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, the boot copy of Support's names, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | — |
+| 1 | **People: names** (§1). `people.db` and its memory twin, `nameOf`, `name` on the ticket and on a visitor's sign-in, `GET /people`, `people/names`, the kit's `useNames`. Names in strut's UI and in `strut/staff` (the Workers tab first). `specs/API.md`, `specs/WALLET.md`, `docs/security.md` | — | — |
 | 2 | **Host keys and accounts** (§2): `jamie-in-tribes.md` item 1, with the accounts in `people.db` and the unlinked rule. One PR builds this row and that one | 1 | — |
 | 3 | **A host calls an app's tools** (§3): `hosts:` in `app.yaml`, the host's door on `POST /mcp`, `ctx.host`, `x-strut-account-name`. `specs/API.md`, `docs/apps.md`, `docs/security.md` | 2 | — |
 | 4 | **An app's own SQLite**: `apps.md` item 3 as written, and a seeded app's migrations applied at boot | — | — |
-| 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the migration, the page on SQL and the channel, `support-outbox` and its schedule, the boot move, the stand-in host. `src/support/`'s store and routes and the `staff/support-*` steps go. `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |
-| 6 | **Remove the stand-in host** | 5; the daemon pushing on every box | — |
+| 5 | **Support as an app** (§4, §5): the `sphinx` capability, the six tools, the app's schema (`db/001-support.sql`), the page on SQL and the channel, `support-outbox`. `src/support/` (the poller and the heads-up with it), its routes and tables, and the `staff/support-*` steps go, with no copy (ruling 7). `docs/tasks.md`, `specs/API.md`, `specs/LIGHTNING.md` | 3, 4 | — |
 
 `scripts/fake-sphinx-daemon.ts` gains the push, so item 5 is tested before
 the daemon's side has merged.
 
 ## 11. Later
 
+- **The staff heads-up** (ruling 8): a DM to admins when a worker's message
+  waits unread. `support-chat.md` §6 has how it works today. Linking (§2)
+  gives it what it lacked: an admin's own Sphinx account.
 - **A name set by an admin** in the staff app, in place of the note's first
   line.
 - **A worker's picture**: the daemon keeps the newest photo URL per contact
