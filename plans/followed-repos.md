@@ -1,7 +1,7 @@
 # Followed packages: a deployment follows a package's git branch
 
 > **Status (2026-11-18): work items 1 (`git+` subscriptions,
-> stakwork/strut#739) and 2 (the secrets gate, stakwork/strut#PR2) are
+> stakwork/strut#739) and 2 (the secrets gate, stakwork/strut#740) are
 > built; item 3 (the `job` grant) is proposed.** First written
 > 2026-11-17 (stakwork/strut#732) around a new follower, `STRUT_REPOS`, that
 > opened each package as a repo and pulled it on a poll. Revised 2026-11-18
@@ -324,7 +324,7 @@ Each is its own PR against `main`. Items 1 and 2 both change
    answer keeps what's installed; a peer's ping leaves it alone. Docs:
    `docs/packages.md`, `specs/API.md` §16, `docs/environment.md`
    (`STRUT_DISTRO_POLL_MINUTES` covers `git+`).
-2. **The secrets gate** (§2). **Built: stakwork/strut#PR2.** Tests: a secret
+2. **The secrets gate** (§2). **Built: stakwork/strut#740.** Tests: a secret
    unset, so `waiting` names it and nothing of the package is here (no step,
    page or grant); the secret set, so the next sync installs it; the secret
    removed, so the next sync takes the package out with its edits kept; the
