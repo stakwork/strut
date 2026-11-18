@@ -5176,9 +5176,9 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | --- | --- | --- |
 | `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
-| `task/skip` | `{ lease, reason? }` | `{ ok: true }` |
+| `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
 | `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? } }] }` |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
@@ -5216,6 +5216,10 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   per lease). A booking that fails never fails the answer: the store's
   sweep books it within a minute, once.
 - **`task/skip`**: the task reopens for another worker, never this one.
+  `all: true` takes the lease of a type any app the caller can open here
+  draws, as `task/me { all }` lists (else `wrong_app`), still only the
+  caller's own (`no_lease`): the worker dashboard's Let go of the task in
+  hand, `task/me`'s `holding.lease`, whichever app draws it.
 - **`task/history`**: the worker's own tasks of the types this app draws,
   newest first, at most 50 — their dashboard's list. `ask` is what the task
   asked as they saw it (`show.ask`, else `show.title`, else a string `show`;

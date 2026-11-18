@@ -998,8 +998,10 @@ export interface WorkerInfo {
   /** The task types they hold that this app draws: the app's menu. */
   types: WorkerType[];
   /** The task in their hand now: `useTask` hands it back before any other,
-   *  and asking for another type is refused until it is answered or skipped. */
-  holding?: { type: string; expires: number };
+   *  and asking for another type is refused until it is answered or skipped.
+   *  `lease` lets a dashboard let it go whichever app draws it:
+   *  `task/skip { lease, all: true }` (strut/views' WorkHome). */
+  holding?: { type: string; expires: number; lease?: string };
   /** What they are owed here: zeros with nothing earned. */
   balance: WorkerBalance;
   /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
