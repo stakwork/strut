@@ -10235,7 +10235,9 @@ export async function createStrut<TServices = unknown>(
     // List chat sessions (newest first): the newest `limit`, reading no other
     // chat's meta.
     app.get("/chats", async (c) => {
-      const list = await chatStore.listChats({ limit: pageLimit(c.req.query("limit"), CHAT_LIST_DEFAULT_LIMIT, CHAT_LIST_MAX_LIMIT) });
+      const limit = pageLimit(c.req.query("limit"), CHAT_LIST_DEFAULT_LIMIT, CHAT_LIST_MAX_LIMIT);
+      // Sliced too: a host's own store may list them all.
+      const list = (await chatStore.listChats({ limit })).slice(0, limit);
       return c.json((await Promise.all(list.map((m) => reconcileStaleChat(m)))).map(publicMeta));
     });
 
