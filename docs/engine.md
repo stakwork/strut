@@ -688,7 +688,7 @@ resume journal: step.end outputs → {path→output}; `from` invalidation; `chan
 
 ### `src/store.ts`
 
-RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs). The archive tier's store half (`useArchive`, `archiveRun`, restore before a read, `local()` / `localRuns` for scans): "The archive tier for run logs" above
+RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs; the verifier keeps their spend tally beside it, checks/<id>/spend.json — src/check-spend.ts). The archive tier's store half (`useArchive`, `archiveRun`, restore before a read, `local()` / `localRuns` for scans): "The archive tier for run logs" above
 
 ### `src/run-archive.ts`
 

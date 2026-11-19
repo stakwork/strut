@@ -99,6 +99,7 @@ import { bootEnv } from "./env.js";
 import { executedWorkflowHash } from "./journal.js";
 import { foldWork, membersOf, rootsOf, workCapability, workDone, workSubject, type RunRef, type WorkMember } from "./work.js";
 import type { ArtifactsCapability } from "./capabilities.js";
+import { addSpend, dropSpend, readSpend, spentOn, utcDay, writeSpend, type CheckSpend } from "./check-spend.js";
 
 // ── What a run observed ─────────────────────────────────────────────────────
 
@@ -513,6 +514,58 @@ export function createVerifier(deps: VerifierDeps) {
   const inflightWorks = new Map<string, { explicit: boolean; promise: Promise<VerifyResult | null> }>();
   const dataDir = () => (deps.services() as { dataDir?: string } | undefined)?.dataDir ?? join(tmpdir(), "strut");
 
+  /** Each check's spend tally (src/check-spend.ts) is read and written one
+   *  thing at a time: a recount and a kept run's add never interleave. */
+  const spendQueue = new Map<string, Promise<unknown>>();
+  function withSpend<T>(checkId: string, fn: () => Promise<T>): Promise<T> {
+    const next = (spendQueue.get(checkId) ?? Promise.resolve()).then(fn, fn);
+    const tail = next.catch(() => {});
+    spendQueue.set(checkId, tail);
+    void tail.then(() => spendQueue.get(checkId) === tail && spendQueue.delete(checkId));
+    return next;
+  }
+  /** A check's tally, from its run bucket: each kept run's `reportedCost`,
+   *  by the subject its `run.start` names, on the day it ran. Read run by
+   *  run (restoring an archived log), once per check: its first tally. */
+  async function recountSpend(checkId: string): Promise<CheckSpend> {
+    const bucket = checkRunKey(checkId);
+    let spend: CheckSpend = {};
+    for (const id of await store.listRuns(bucket)) {
+      const events = await store.getRunEvents(bucket, id);
+      const start = events.find((e) => e.type === "run.start");
+      const cost = reportedCost(events);
+      if (start?.verify?.subject && cost > 0) spend = addSpend(spend, start.verify.subject, cost, Date.parse(start.ts) || Number(id));
+    }
+    return spend;
+  }
+  /** The check's tally; recounted and written where there is none. Call
+   *  inside `withSpend`. */
+  async function tallyOf(checkId: string): Promise<CheckSpend> {
+    const have = await readSpend(dataDir(), checkId);
+    if (have) return have;
+    const spend = await recountSpend(checkId);
+    await writeSpend(dataDir(), checkId, spend);
+    return spend;
+  }
+  /** Keep a paid check run, and add its cost to the check's tally. The tally
+   *  is made BEFORE the run is in the bucket, so a recount never counts it
+   *  twice. A tally that cannot be made or written is left absent (dropped),
+   *  and the next read recounts — the run itself is kept either way. */
+  function keepPaidRun(checkId: string, subject: string, run: RunStepResult, cost: number): Promise<void> {
+    return withSpend(checkId, async () => {
+      const spend = await tallyOf(checkId).catch((err) => {
+        console.error(`[verify] check ${checkId}: its spend could not be tallied:`, err);
+        return null;
+      });
+      await persistRunUnder(store, checkRunKey(checkId), run);
+      if (!spend) return;
+      await writeSpend(dataDir(), checkId, addSpend(spend, subject, cost, Date.now())).catch(async (err) => {
+        console.error(`[verify] check ${checkId}: its spend tally was not written, and is recounted next:`, err);
+        await dropSpend(dataDir(), checkId).catch(() => {});
+      });
+    });
+  }
+
   /** What the check would execute as right now: `exec`, `clip/judge@<hash>`,
    *  `fuzzy-match@<hash>` — recorded on the Evidence, and what `on_change`
    *  compares to notice a republished instrument under a frozen Check node. */
@@ -648,22 +701,17 @@ export function createVerifier(deps: VerifierDeps) {
     return pass.evidence.get(k)!;
   };
 
-  /** A subject's verify spend so far today, from the store alone: today's
-   *  runs in the buckets of the checks on its claims, tagged with it. */
+  /** A subject's verify spend so far today (UTC): what the tallies of the
+   *  checks on its claims say it spent today. A pass is not a request: a
+   *  check with no tally yet is recounted here, once. */
   async function spentToday(pass: Pass, s: SubjectRef): Promise<number> {
     const k = subjectKey(s);
     if (pass.spentToday.has(k)) return pass.spentToday.get(k)!;
-    const midnight = new Date();
-    midnight.setUTCHours(0, 0, 0, 0);
+    const today = utcDay(Date.now());
     let total = 0;
     for (const claim of await claimsOf(pass, s)) {
       for (const check of await reader.checksFor(claim.id, { includeRetired: true })) {
-        const bucket = checkRunKey(check.id);
-        for (const id of await store.listRuns(bucket)) {
-          if (Number(id) < midnight.getTime()) break; // newest first
-          const events = await store.getRunEvents(bucket, id);
-          if (events.find((e) => e.type === "run.start")?.verify?.subject === k) total += reportedCost(events);
-        }
+        if (check.step_type) total += spentOn((await withSpend(check.id, () => tallyOf(check.id)))[k], today);
       }
     }
     pass.spentToday.set(k, total);
@@ -785,10 +833,9 @@ export function createVerifier(deps: VerifierDeps) {
     // can open when the screenshot looks wrong. Still never a turn.
     const leftFiles = subject.kind === "job" && mapped.kind === "evidence" && typeof mapped.locator?.path === "string";
     let checkRun: string | undefined;
-    if (cost > 0 || leftFiles) {
-      await persistRunUnder(store, checkRunKey(check.id), run);
-      checkRun = run.runId;
-    }
+    if (cost > 0) await keepPaidRun(check.id, subjectKey(subject), run, cost);
+    else if (leftFiles) await persistRunUnder(store, checkRunKey(check.id), run);
+    if (cost > 0 || leftFiles) checkRun = run.runId;
     if (cost > 0) {
       // On record exactly like any agent step — and counted against the caps,
       // which is how a presumed-free check that turns out to cost money is caught.
@@ -1336,22 +1383,23 @@ export function createVerifier(deps: VerifierDeps) {
   }
 
   /**
-   * What keeping this subject's claims true has cost, all time — from the
-   * run store alone: every persisted (paid) check run in the buckets of the
-   * checks on its claims, retired ones included, tagged with this subject.
-   * Cost is a constraint, not telemetry (EVOLVE_SPEC §7): the builder, a
-   * person and the evolve loop all read the same number.
+   * What keeping this subject's claims true has cost, all time: every kept
+   * (paid) check run of the checks on its claims, retired ones included,
+   * that verified this subject — read off each check's tally
+   * (src/check-spend.ts), never its runs. Read on every `GET /claims`, so a
+   * check with no tally yet is recounted OFF the request, and counts from
+   * the next read on. Cost is a constraint, not telemetry (EVOLVE_SPEC §7):
+   * the builder, a person and the evolve loop all read the same number.
    */
   async function costOf(subject: SubjectRef): Promise<number> {
     const k = subjectKey(subject);
     let total = 0;
     for (const claim of await reader.claimsFor(subject, { includeRetired: true })) {
       for (const check of await reader.checksFor(claim.id, { includeRetired: true })) {
-        const bucket = checkRunKey(check.id);
-        for (const id of await store.listRuns(bucket)) {
-          const events = await store.getRunEvents(bucket, id);
-          if (events.find((e) => e.type === "run.start")?.verify?.subject === k) total += reportedCost(events);
-        }
+        if (!check.step_type) continue; // an external check runs nothing
+        const spend = await readSpend(dataDir(), check.id);
+        if (spend) total += spend[k]?.usd ?? 0;
+        else void withSpend(check.id, () => tallyOf(check.id)).catch((err) => console.error(`[verify] check ${check.id}: its spend could not be recounted:`, err));
       }
     }
     return total;
