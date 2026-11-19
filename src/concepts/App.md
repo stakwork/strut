@@ -471,6 +471,16 @@ more than read:
   cap) — as for anyone.
 - Never another app, the assistant, jobs or anything of the server's.
 
+A step of your own that a visitor's page calls runs on what a visitor's
+call carries: `ctx.services.http`, `secrets`, the graph, `runs` and
+`people` — no `shell`, no files, no app tables (`appDb`). Such a step works
+for a member and fails for every visitor, each worker who signs in through
+Peel included, and `app/build` warns naming it. So keep a list the page
+shows in rows of a type the app declares (a worker's page: what the run
+replied, see "Worker apps"), and put work on files, a shell or the app's
+tables in a workflow the app grants and launches — not one launched on
+every load: launches count against the visitor's daily budget.
+
 Each visitor has a daily budget of writes and launches (the server's,
 which `serve.yaml`'s `limits` changes), refused with a `visitor_limit:`
 error past it: save on a change that matters (a level done, a new best),
@@ -679,6 +689,21 @@ found) always has a task for a worker who may take it: `useTask` hands one
 over as soon as the page asks, and each answer starts the type's workflow.
 Draw it as a call to act ("Snap a label"), never as a queue that may be
 empty; a worker who leaves lets it go with nothing started.
+
+A worker's page has no server of its own. Workers sign in through Peel as
+visitors, so a step of yours the page calls gets no shell and no app
+tables ("Signed-in visitors"): it works for the member who built it and
+fails for every worker. What the page shows of a worker's own work comes
+from the run's REPLY: each `useTaskHistory()` item they answered carries
+the workflow's `reply`, its `show` (the book, the page, a flag) and its
+`files`, opened with `useTaskFileUrl(item, file.path)` (a thumbnail). So
+the workflow replies with what the page draws (`task/reply`, the
+`Workflow Builder` page). What workers share (who took which book,
+closing a book) stays in the workflow. When the page needs it, grant a
+workflow that spends nothing and start it with `useLaunch` on a tap,
+never on load: a step of yours in it reads the worker as `ctx.actor` and
+the app as `ctx.app`, which the server sets; never trust an actor the
+input names.
 
 Workers are signed-in visitors of the public view (or the server's own
 members). Once the app is published and draws its task types, ask for it
@@ -927,6 +952,9 @@ file, shared by every version of the app.
   10000): page with `LIMIT … OFFSET`, or aggregate.
 - **A workflow the app launches** reads and writes the same database with
   the `sqlite/*` steps, naming no app: it is the app's.
+- **Members only.** A visitor's page (the public view, every worker) is
+  refused `useSql`: a public or worker app keeps its rows in a type it
+  declares (Graph types).
 - Refused everywhere: `ATTACH`, `DETACH`, `VACUUM INTO`, `load_extension`
   and a `PRAGMA` that sets anything.
 

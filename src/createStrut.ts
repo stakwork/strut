@@ -10573,6 +10573,8 @@ export async function createStrut<TServices = unknown>(
         query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
       });
       const reader = publicSurface.reader();
+      // Its keys (and `signedInBag`'s) are `VISITOR_SERVICES` (step-lint.ts):
+      // an app build warns on a granted custom step that reaches past them.
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
