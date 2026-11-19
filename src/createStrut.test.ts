@@ -2868,3 +2868,34 @@ steps:
     }
   });
 });
+
+describe("GET /workflows/:name/versions", () => {
+  it("counts the newest RUN_LIST_SCAN_MAX runs, no further, and says so", async () => {
+    const dir = join(tmpdir(), `strut-versions-test-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    try {
+      const ws = new WorkspaceManager(dir);
+      await ws.publishWorkflow("busy", "v1", { steps: [{ id: "a", type: "log", config: { message: "one" } }] });
+      await ws.publishWorkflow("busy", "v2", { steps: [{ id: "a", type: "log", config: { message: "two" } }] });
+      const [h1, h2] = [await ws.getWorkflowHash("busy", "v1"), await ws.getWorkflowHash("busy", "v2")];
+      const store = new MemoryRunStore();
+      const at = Date.now();
+      // 200 old runs of v1, then 1,000 of v2.
+      for (let i = 0; i < 1_200; i++) {
+        const runId = String(at + i);
+        await store.finalize("busy", runId, { runId, workflow: "busy", startedAt: new Date(at + i).toISOString(), finishedAt: "", durationMs: 0, status: "success", input: {}, workflowHash: (i < 200 ? h1 : h2)! } as RunSummary);
+      }
+      let reads = 0;
+      const getRunSummary = store.getRunSummary.bind(store);
+      store.getRunSummary = (w, r) => (reads++, getRunSummary(w, r));
+      const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
+      reads = 0;
+      const body = (await (await strut.app.request("/workflows/busy/versions")).json()) as { versions: Array<{ version: string; runs: number }>; scanned: number; more?: boolean };
+      assert.equal(reads, 1_000, "the newest 1,000 summaries, not all 1,200");
+      assert.deepEqual(body.versions.map((v) => [v.version, v.runs]), [["v2", 1_000], ["v1", 0]]);
+      assert.deepEqual([body.scanned, body.more], [1_000, true]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
