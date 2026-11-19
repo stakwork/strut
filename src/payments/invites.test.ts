@@ -23,7 +23,7 @@ import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from 
 import inviteStep from "../steps/lib/staff/invite.js";
 import invitesStep from "../steps/lib/staff/invites.js";
 import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
-import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, PEEL_ANDROID_RELEASES } from "../public-join.js";
+import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
 import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
@@ -381,6 +381,28 @@ describe("worker invites on a server (§5.8)", () => {
     const g = { exports: undefined } as Record<string, unknown>;
     runInNewContext(`${lib}; this.svg = qrcode(0, "M"); this.svg.addData("x"); this.svg.make(); this.out = this.svg.createSvgTag({ cellSize: 4, margin: 4, scalable: true });`, g);
     assert.match(String(g["out"]), /^<svg /);
+  });
+
+  it("GET /public/join speaks the worker's language (plans/i18n.md): the link's lang=, else the browser's first; one script in each", async () => {
+    const es = await req("/public/join", { headers: { "accept-language": "es-MX,es;q=0.9,en;q=0.8" } });
+    const page = await es.text();
+    assert.equal(page, joinPage(undefined, "es"));
+    assert.match(page, /<html lang="es">/);
+    assert.match(page, /<h1>Tienes una invitación<\/h1>/);
+    assert.match(page, />Abrir en Peel</);
+    assert.equal(es.headers.get("vary"), "accept-language");
+    assert.equal(es.headers.get("content-security-policy"), JOIN_HEADERS["content-security-policy"], "the same script, the same hash");
+    assert.equal(/<script>([\s\S]*)<\/script>/.exec(page)![1], JOIN_SCRIPT);
+    // lang= on the link wins over the browser, both ways.
+    assert.equal(await (await req("/public/join?lang=es", { headers: { "accept-language": "en-US" } })).text(), joinPage(undefined, "es"));
+    assert.equal(await (await req("/public/join?lang=en", { headers: { "accept-language": "es-ES" } })).text(), JOIN_PAGE);
+    // No language, or one the page does not speak: English.
+    assert.equal(await (await req("/public/join", { headers: { "accept-language": "pt-BR,es;q=0.5" } })).text(), JOIN_PAGE);
+    for (const [lang, accept, want] of [[undefined, undefined, "en"], ["", "es", "es"], ["es_MX", undefined, "es"], [" ES ", "en", "es"], ["fr", "es", "en"], [undefined, "*", "en"], [undefined, "es;q=0.8", "es"], ["constructor", undefined, "en"]] as const) {
+      assert.equal(joinLang(lang, accept), want, `${lang} / ${accept}`);
+    }
+    // A name, escaped, in Spanish's word order.
+    assert.match(joinPage("Acme & <Co>", "es"), /<h1>Acme &amp; &lt;Co&gt; te invita<\/h1>/);
   });
 });
 
