@@ -217,6 +217,10 @@ describe("chat endpoints", () => {
     const res = await strut.app.request("/chats");
     const list = (await res.json()) as { id: string }[];
     assert.equal(list.length, 2);
+    // A page: the newest `limit`.
+    await new Promise((r) => setTimeout(r, 5));
+    await chatStore.setMeta("a", { title: "newest" });
+    assert.deepEqual(((await (await strut.app.request("/chats?limit=1")).json()) as { id: string }[]).map((c) => c.id), ["a"]);
   });
 
   it("GET /chat/:id/stream replays a completed turn then sends done", async () => {

@@ -336,6 +336,20 @@ for (const impl of chatImpls) {
       assert.equal(await store.getMeta("c1"), null);
     });
 
+    it("lists the newest `limit` chats, reading no other chat's meta", async () => {
+      for (const id of ["c1", "c2", "c3"]) {
+        await store.createChat({ id });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await store.setMeta("c1", { title: "touched" }); // now the newest
+      let reads = 0;
+      const getMeta = store.getMeta.bind(store);
+      store.getMeta = (id) => (reads++, getMeta(id));
+      assert.deepEqual((await store.listChats({ limit: 2 })).map((c) => c.id), ["c1", "c3"]);
+      if (impl.name === "FileChatStore") assert.equal(reads, 2, "two metas read, not three");
+      assert.deepEqual((await store.listChats()).map((c) => c.id), ["c1", "c3", "c2"]);
+    });
+
     it("system prompt: null until set, then read back verbatim; gone with the chat", async () => {
       await store.createChat({ id: "c1" });
       assert.equal(await store.getSystem("c1"), null);
@@ -414,6 +428,20 @@ for (const impl of sessionImpls) {
         [info?.id, info?.turns, info?.messages, info?.createdBy, info?.createdAt, info?.updatedAt, info?.jobs],
         ["s1", 2, 5, "ann", t0.at, t1.at, ["j-1"]],
       );
+    });
+
+    it("lists the newest `limit` sessions, reading no other session's turn lines", async () => {
+      for (const id of ["s1", "s2", "s3"]) {
+        await store.appendTurn(id, { system: "w", messages: [user(id)], record: turnOf("1") });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await store.appendTurn("s1", { system: "w", messages: [user("again")], record: turnOf("2") }); // now the newest
+      let reads = 0;
+      const turns = store.turns.bind(store);
+      store.turns = (id) => (reads++, turns(id));
+      assert.deepEqual((await store.list({ limit: 2 })).map((i) => i.id), ["s1", "s3"]);
+      if (impl.name === "FileSessionStore") assert.equal(reads, 2, "two sessions read, not three");
+      assert.deepEqual((await store.list()).map((i) => i.id), ["s1", "s3", "s2"]);
     });
 
     it("a slash is part of the id, not a hierarchy: abc and abc/review never meet", async () => {

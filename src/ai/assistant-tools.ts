@@ -37,7 +37,7 @@ import { z } from "zod";
 import { tool, type Tool, type ToolSet } from "ai";
 import type { WorkspaceStore } from "../workspace.js";
 import type { RunStore } from "../store.js";
-import type { ChatMeta, ChatStore } from "../chat-store.js";
+import { CHAT_LIST_MAX_LIMIT, type ChatMeta, type ChatStore } from "../chat-store.js";
 import type { ArtifactRef } from "../artifact-refs.js";
 import type { Automations } from "../scheduler.js";
 import { listWorkflowEntries, DEFAULT_WORKFLOW_LIST_LIMIT } from "../authoring.js";
@@ -298,14 +298,15 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
 
     list_workflow_builder_chats: tool({
       description:
-        "The workflow builder chats on this strut server, newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
+        "The workflow builder chats on this strut server (the newest 500), newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
       inputSchema: z.object({
         q: z.string().optional().describe("Words that must all appear in the title (case-insensitive)."),
         limit: z.number().int().positive().default(20).describe("At most this many (default 20)."),
         mine: z.boolean().default(true).describe("Only chats started by this connection's actor (default true; nothing is filtered when the connection carries no actor)."),
       }),
       execute: async ({ q, limit, mine }) => {
-        const all = await Promise.all((await deps.chatStore.listChats()).map((m) => deps.chat.reconcile(m)));
+        // The newest CHAT_LIST_MAX_LIMIT are looked through, as GET /chats pages them.
+        const all = await Promise.all((await deps.chatStore.listChats({ limit: CHAT_LIST_MAX_LIMIT })).map((m) => deps.chat.reconcile(m)));
         const words = (q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
         const matched = all
           .filter((m) => !mine || !deps.actor || m.createdBy === deps.actor || m.actor === deps.actor)
