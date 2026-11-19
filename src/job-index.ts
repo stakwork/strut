@@ -27,7 +27,7 @@ import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem, sessionInfo } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
-import { jobFilePath, jobHolder, jobRoot, listJobFiles, noteJobSessions, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
+import { jobFilePath, jobHolder, jobRoot, jobsByUse, listJobFiles, noteJobSessions, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
 import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
 
@@ -153,13 +153,18 @@ export interface JobFile {
 }
 
 export interface JobIndex {
-  /** Every job, newest-used first. `q` is the one matcher behind every
-   *  search box (src/search.ts): every word must hit the title (the id
-   *  without one) or a current artifact's title or summary. `workflow`
-   *  keeps the jobs with a recorded run of that workflow (the sidebar's
-   *  filter when one is selected); `actor` the jobs that actor launched a
-   *  run of (`GET /jobs?mine=1`); `prefix` the jobs whose id starts with it
-   *  (an app's own, `app/<name>/`, plans/apps.md §12). */
+  /** Every job, newest-used first, at most `limit`. Records are read
+   *  newest first and the reading stops once `limit` rows are found
+   *  (`jobsByUse`), so a listing never reads every record on the server;
+   *  a filter reads further back to fill it. `q` is the one matcher behind
+   *  every search box (src/search.ts): every word must hit the title (the
+   *  id without one) or a current artifact's title or summary. With
+   *  `limit`, it answers the newest `limit` matches, title hits first.
+   *  `workflow` keeps the jobs with a recorded run of that workflow (the
+   *  sidebar's filter when one is selected); `actor` the jobs that actor
+   *  launched a run of (`GET /jobs?mine=1`); `prefix` the jobs whose id
+   *  starts with it (an app's own, `app/<name>/`, plans/apps.md §12),
+   *  decided before a record is read. */
   list(opts?: { q?: string; workflow?: string; actor?: string; prefix?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
@@ -306,20 +311,6 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     return { artifacts, ...(text !== undefined ? { text } : {}) };
   };
 
-  const records = async (): Promise<JobRecord[]> => {
-    const base = join(deps.dataDir, "jobs");
-    let files: string[];
-    try {
-      files = (await readdir(base)).filter((f) => f.endsWith(".json"));
-    } catch {
-      return [];
-    }
-    const recs = await Promise.all(files.map((f) => readJobRecord(join(base, f.slice(0, -".json".length)))));
-    return recs
-      .filter((r): r is JobRecord => r !== null)
-      .sort((a, b) => (Date.parse(b.usedAt) || 0) - (Date.parse(a.usedAt) || 0));
-  };
-
   /** The job's record; a directory with no record beside it (the record
    *  was removed by hand) is still a job, with files and nothing else.
    *  `null` for neither. */
@@ -390,24 +381,27 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     })().catch((err) => console.warn("[job-index] threads not indexed — records keep what they have:", err)));
 
   return {
+    // Newest-used first through `jobsByUse`, one record at a time, stopping
+    // at `limit`: a listing reads what it returns, plus the jobs its
+    // filters pass over on the way.
     async list(opts = {}) {
-      let recs = await records();
-      if (opts.workflow) recs = recs.filter((rec) => rec.runs?.some((r) => r.workflow === opts.workflow));
-      if (opts.actor) recs = recs.filter((rec) => actorsOf(rec).includes(opts.actor!));
-      if (opts.prefix) recs = recs.filter((rec) => rec.name.startsWith(opts.prefix!));
-      let rows = recs.map(listing);
-      if (opts.q?.trim()) {
-        const readable = readableOnce();
-        const searchable = await Promise.all(
-          recs.map(async (rec, i) => {
-            const { artifacts } = await fold(rec, readable);
-            const description = [rec.name, ...artifacts.map((a) => [a.title, a.summary].filter(Boolean).join(" — "))].join(" ");
-            return { name: rec.title ?? rec.name, description, row: rows[i]! };
-          }),
-        );
-        rows = searchWorkflows(searchable, opts.q).map((m) => m.row);
+      const q = opts.q?.trim();
+      const readable = readableOnce();
+      const found: Array<{ name: string; description?: string; row: JobListing }> = [];
+      for await (const rec of jobsByUse(deps.dataDir, opts.prefix ? (job) => job.startsWith(opts.prefix!) : undefined)) {
+        if (opts.workflow && !rec.runs?.some((r) => r.workflow === opts.workflow)) continue;
+        if (opts.actor && !actorsOf(rec).includes(opts.actor)) continue;
+        const entry = { name: rec.title ?? rec.name, row: listing(rec) };
+        if (q) {
+          const { artifacts } = await fold(rec, readable);
+          const description = [rec.name, ...artifacts.map((a) => [a.title, a.summary].filter(Boolean).join(" — "))].join(" ");
+          if (!searchWorkflows([{ ...entry, description }], q).length) continue;
+          found.push({ ...entry, description });
+        } else found.push(entry);
+        if (opts.limit && found.length >= opts.limit) break;
       }
-      return opts.limit ? rows.slice(0, opts.limit) : rows;
+      // With `q`, the newest `limit` matches, title hits first.
+      return (q ? searchWorkflows(found, q) : found).map((f) => f.row);
     },
 
     async get(job, opts = {}) {
