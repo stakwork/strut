@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProposal, listProposals, proposalsRoot, readProposal, type NewProposal, type Proposal } from "./proposals.js";
+import { createProposal, decideProposal, listProposals, proposalsRoot, readProposal, type NewProposal, type Proposal } from "./proposals.js";
 import { proposalsCapability } from "./proposals.js";
+import { z } from "zod";
+import { defineStep } from "./core.js";
+import { RUN_STEP_FLOW } from "./run-step.js";
+import listStep from "./steps/lib/proposal/list.js";
+import { countReads } from "./test-util/count-reads.js";
 
 // The list index: filters in memory, files read only for what matched.
 
@@ -103,5 +108,83 @@ describe("proposals index", () => {
     const [x, y] = await Promise.all([listProposals(root, { status: "pending" }), listProposals(root, { status: "pending" })]);
     assert.notEqual(x, y);
     assert.equal(x[0], y[0]); // the very same parsed record: one read
+  });
+
+  // A server holds 100k+ proposals after months, and failed ones pile up in
+  // the archive: a call opens the files of what it returns, never every match.
+  describe("reads only what it returns", () => {
+    const idOf = (file: string) => file.slice(file.lastIndexOf("/") + 1, -".json".length);
+
+    it("proposal/list reads its page (one more, for `more`), the viewer decided on the index", async () => {
+      const cap = proposalsCapability(dir, {});
+      const failed: string[] = [];
+      for (let i = 0; i < 30; i++) {
+        const p = await createProposal(root, mk(`f${i}`, { workflow: "dream" }));
+        failed.push((await decideFailed(p.id)).id);
+      }
+      const run = (cfg: Record<string, unknown>, ctx: Record<string, unknown> = {}) =>
+        countReads(root, () => listStep.run(listStep.input.parse(cfg), { services: { proposals: cap }, ...ctx } as never) as Promise<{ proposals: Array<{ id: string }>; more?: true }>);
+
+      const { value, reads } = await run({ workflow: "dream", status: "failed", limit: 5, input: true });
+      assert.deepEqual(value.proposals.map((p) => p.id), failed.slice(-5).reverse());
+      assert.equal(value.more, true);
+      assert.equal(reads.length, 6, `read ${reads.length} records for a page of 5`);
+
+      // A page's viewer: their own, found on the index; the 30 nobody's are never opened.
+      const mine = await createProposal(root, mk("mine", { actor: "alice", session: "alice/1" }));
+      const page = await run({ limit: 5 }, { app: { name: "x" }, actor: "alice" });
+      assert.deepEqual([page.value.proposals.map((p) => p.id), page.value.more], [[mine.id], undefined]);
+      assert.deepEqual(page.reads.map(idOf), [mine.id]);
+      // Strut's own page, called by the page itself: an admin also sees what no conversation made.
+      const own = await run({ limit: 3 }, { app: { name: "jamie", firstParty: true, admin: true }, actor: "alice", workflow: RUN_STEP_FLOW });
+      assert.deepEqual([own.value.proposals.length, own.value.more, own.reads.length], [3, true, 4]);
+      const member = await run({ limit: 3 }, { app: { name: "jamie", firstParty: true }, actor: "alice", workflow: RUN_STEP_FLOW });
+      assert.deepEqual(member.reads.map(idOf), [mine.id]);
+    });
+
+    it("waiting reads only the pending proposals of that step in that thread", async () => {
+      const cap = proposalsCapability(dir, { conversationOf: async (runId) => (runId === "r1" ? "alice/1" : undefined) });
+      for (let i = 0; i < 20; i++) await createProposal(root, mk(`other${i}`, { session: i % 2 ? "alice/1" : "bob/1" }));
+      const ask = await createProposal(root, { ...mk("ask", { session: "alice/1" }), step: "app/make-public" });
+      await createProposal(root, { ...mk("elsewhere", { session: "bob/1" }), step: "app/make-public" });
+      const { value, reads } = await countReads(root, () => cap.waiting!("app/make-public", { runId: "r1" }));
+      assert.deepEqual(value.map((p) => p.id), [ask.id]);
+      assert.deepEqual(reads.map(idOf), [ask.id]);
+      // No thread known: the job's.
+      const ofJob = await createProposal(root, { ...mk("job", { job: "j1", runId: "r9" }), step: "app/make-public" });
+      assert.deepEqual((await countReads(root, () => cap.waiting!("app/make-public", { runId: "r9", job: "j1" }))).reads.map(idOf), [ofJob.id]);
+    });
+
+    it("accepting a step with `after` reads only the proposals of the step it names", async () => {
+      const ran: unknown[] = [];
+      const schedule = defineStep({
+        type: "dev/schedule",
+        input: z.object({ workflow: z.string() }),
+        output: z.any(),
+        after: { step: "dev/publish", when: (cfg, input) => (input as { name?: unknown } | null)?.name === cfg.workflow },
+        run: async (cfg) => void ran.push(cfg),
+      });
+      const deps = { registry: { "dev/schedule": schedule }, services: {} } as never;
+      const others: string[] = [];
+      for (let i = 0; i < 20; i++) others.push((await decideFailed((await createProposal(root, mk(`w${i}`))).id)).id);
+      const publish = await createProposal(root, { ...mk("p"), step: "dev/publish", input: { name: "weekly" } });
+      const ask = await createProposal(root, { ...mk("s"), step: "dev/schedule", input: { workflow: "weekly" } });
+
+      const early = await countReads(root, () => decideProposal(root, ask.id, { action: "accept" }, deps));
+      assert.equal(early.value.status, 409);
+      assert.deepEqual(new Set(early.reads.map(idOf)), new Set([ask.id, publish.id]), "the other steps' proposals are never opened");
+      await decideProposal(root, publish.id, { action: "reject" }, { registry: {}, services: {} } as never);
+      assert.equal((await decideProposal(root, ask.id, { action: "accept" }, deps)).status, 200);
+      assert.deepEqual(ran, [{ workflow: "weekly" }]);
+      void others;
+    });
+
+    /** A proposal accepted and failed: `failed`, in the archive. */
+    const decideFailed = async (id: string) => {
+      const boom = defineStep({ type: "dev/write", input: z.any(), output: z.any(), run: async () => { throw new Error("boom"); } });
+      const out = await decideProposal(root, id, { action: "accept" }, { registry: { "dev/write": boom }, services: {} } as never);
+      assert.equal((out.body as Proposal).status, "failed");
+      return out.body as Proposal;
+    };
   });
 });

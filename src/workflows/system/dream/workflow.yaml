@@ -208,6 +208,7 @@ steps:
     config:
       tree: "{{ input.root }}"
       cursor: "{{ turns.cursor }}"
+      since: "{{ turns.since }}"
   - id: result
     type: pack
     depends: done

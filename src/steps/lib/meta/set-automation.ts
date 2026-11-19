@@ -41,7 +41,7 @@ export default defineStep({
     remove: z.literal(true).optional().describe("Delete the automation `id`."),
   }),
   output: z.any(),
-  after: (cfg, pending) => pending.step === "meta/publish-workflow" && (pending.input as { name?: unknown } | null)?.name === cfg.workflow,
+  after: { step: "meta/publish-workflow", when: (cfg, input) => (input as { name?: unknown } | null)?.name === cfg.workflow },
   async run(cfg, ctx) {
     // A person's yes, positively: never a direct tool call, a DAG step,
     // meta/run-step or a subflow.

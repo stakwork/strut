@@ -6,6 +6,9 @@ import { branchOfDream, dataDirOf, readState } from "./_state.js";
 
 /** A turn still in flight: the dream waits for it, and for the turns after it. */
 const LIVE = new Set(["running", "paused", "stale"]);
+/** A record stamped just before a read may reach its day log just after it:
+ *  the next dream reads from this much earlier than this one began. */
+const WRITE_SLACK_MS = 10 * 60_000;
 const cut = (s: string, max: number) => (s.length > max ? `${s.slice(0, max)} […${s.length - max} more chars]` : s);
 
 /** A run, named as `knowledge/add-evidence` takes it, with the Concept pages
@@ -63,10 +66,10 @@ export default defineStep({
   // step the meta surface runs or an app's page calls (src/sealed.ts).
   sealed: true,
   description:
-    "The turns of the conversations with the assistant that no dream has read yet, oldest first: { count, turns: [{ session, turn, at, status, workflow, run, opened, said, reply, said_by?, jobs? }], cursor, more, text }. " +
+    "The turns of the conversations with the assistant that no dream has read yet, oldest first: { count, turns: [{ session, turn, at, status, workflow, run, opened, said, reply, said_by?, jobs? }], cursor, since, more, text }. " +
     "`workflow` + `run` name the turn's own run and `opened` the Concept pages it opened (null: its log does not say). A turn with no `said` is a WAKE, the assistant reporting on a job that ended: " +
     "it is kept so that what a person then corrects is in the transcript, with `jobs`, the job run(s) it reports on and the pages each opened. " +
-    "`text` is the same turns as a transcript. `cursor` is what dream/done takes once they are dealt with; `more` says turns were left for the next run. " +
+    "`text` is the same turns as a transcript. `cursor` and `since` are what dream/done takes once they are dealt with; `more` says turns were left for the next run. " +
     "A turn the person stopped has status `cancelled`. The first dream reads the last `days` only. It refuses when the tree's root Concept does not exist.",
   input: z.object({
     tree: z.string().optional().default("Personal").describe("The tree this dream tends (its root Concept's name): each tree keeps its own marks."),
@@ -85,12 +88,18 @@ export default defineStep({
 
     // A dream on a Concept branch reads by marks of its own (_state.ts).
     const state = await readState(dataDirOf(ctx, "dream/turns"), cfg.tree, await branchOfDream(ctx));
+    // Before anything is read: a conversation written from now on is the next dream's.
+    const now = new Date(Date.now() - WRITE_SLACK_MS).toISOString();
     const floor = state ? 0 : Date.now() - cfg.days * 86_400_000;
     // The dream is strut's own job over the conversations: it reads them all, as the run logs can be.
     const viewer = { all: true } as const;
     const pool: Array<{ c: string; t: ConversationTurn }> = [];
     const seen: Record<string, number> = {};
-    for (const c of await conversations.all()) {
+    const updated: Record<string, string> = {};
+    // Only the conversations written since the last dream's `since` (the first dream's window,
+    // a state from before `since` every one, once): one with a turn no dream read was written since.
+    for (const c of await conversations.changed(state ? state.since : new Date(floor).toISOString())) {
+      updated[c.id] = c.updatedAt;
       const mark = state?.marks[c.id] ?? -1;
       if (c.turns - 1 <= mark || Date.parse(c.updatedAt) < floor) continue;
       const fresh: ConversationTurn[] = [];
@@ -118,6 +127,9 @@ export default defineStep({
     const cursor: Record<string, number> = {};
     if (more) for (const { c, t } of kept) cursor[c] = Math.max(cursor[c] ?? -1, t.turn);
     else Object.assign(cursor, seen);
+    // Where the next dream reads from: now, or, when turns were left, the oldest write of a
+    // conversation that holds one, so it is read again. A turn in flight writes its record when it ends.
+    const since = pool.slice(kept.length).reduce((m, { c }) => (updated[c]! < m ? updated[c]! : m), now);
 
     // Which pages each run opened, off its log: what tells "never opened" from "opened and not followed".
     const opened = (workflow: string, run: string) => knowledge.opened(workflow, run).catch(() => null);
@@ -144,6 +156,6 @@ export default defineStep({
         ...(jobs.length ? { jobs } : {}),
       });
     }
-    return { count: turns.length, turns, cursor, ...(more ? { more: true } : {}), text: renderTurns(turns) };
+    return { count: turns.length, turns, cursor, since, ...(more ? { more: true } : {}), text: renderTurns(turns) };
   },
 });
