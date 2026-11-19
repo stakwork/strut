@@ -47,6 +47,7 @@ import type { AppRef, StepRegistry } from "../core.js";
 import { globToRegExp } from "../closure.js";
 import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
+import { servicesPastVisitor } from "../step-lint.js";
 import { treeHash } from "../version.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
@@ -482,11 +483,43 @@ export function createApps(deps: AppsDeps): AppsCapability {
     ...(deps.now ? { now: deps.now } : {}),
   });
 
-  /** The graph check a build of `dir` runs (./graph-types.ts); nothing when
-   *  its manifest does not parse — the build reports that. */
-  const graphCheck = async (dir: string, name?: string) => {
+  /** A WARNING for each custom step the app grants that reaches a service a
+   *  visitor's call never carries (src/step-lint.ts `servicesPastVisitor`):
+   *  a member's page runs it, a public page's — every worker's — fails. */
+  const pastVisitor = async (manifest: AppManifest): Promise<string[]> => {
+    const registry = deps.getRegistry?.() ?? {};
+    const types = new Set<string>();
+    for (const g of manifest.grants.steps) {
+      const re = g.includes("*") ? globToRegExp(g) : null;
+      for (const t of re ? Object.keys(registry).filter((k) => re.test(k)) : [g]) types.add(t);
+    }
+    const out: string[] = [];
+    for (const type of types) {
+      const src = await workspace.getStepSource(type).catch(() => null);
+      const past = src?.origin === "custom" ? servicesPastVisitor(src.code) : [];
+      if (!past.length) continue;
+      out.push(
+        `grants.steps: "${type}" uses ${past.map((s) => `ctx.services.${s}`).join(", ")}, which a visitor's call never carries — ` +
+          `a member's page runs it, but on a public page it fails for every visitor, each worker who signs in through Peel included. ` +
+          `Keep what the page lists in rows of a type the app declares (data.graph) or in useAppState, and do shell, file or ` +
+          `app-database work in a workflow the app grants and launches (the App Concept, "Signed-in visitors")`,
+      );
+    }
+    return out;
+  };
+
+  /** What a build checks of the manifest: the graph types (./graph-types.ts)
+   *  and the granted steps a visitor cannot run (`pastVisitor`). */
+  const manifestCheck = async (manifest: AppManifest, name?: string) => {
+    const graph = await checkAppGraph(manifest, deps.graph, name);
+    return { errors: graph.errors, warnings: [...graph.warnings, ...(await pastVisitor(manifest))] };
+  };
+
+  /** The check a build of `dir` runs; nothing when its manifest does not
+   *  parse — the build reports that. */
+  const dirCheck = async (dir: string, name?: string) => {
     const read = await readManifest(dir);
-    return read.ok ? checkAppGraph(read.manifest, deps.graph, name) : { errors: [], warnings: [] };
+    return read.ok ? manifestCheck(read.manifest, name) : { errors: [], warnings: [] };
   };
 
   /** What a model-written manifest may not grant (§5.1, §9) — a sealed
@@ -633,14 +666,14 @@ export function createApps(deps: AppsDeps): AppsCapability {
     versionDir,
 
     async build(dir, opts) {
-      const graph = await graphCheck(dir, opts?.name);
-      if (graph.errors.length) return { ok: false, errors: graph.errors, warnings: graph.warnings };
+      const check = await dirCheck(dir, opts?.name);
+      if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       // The migrations on an empty database in memory: one that does not
       // apply is the build's error, before the publish meets it.
       const tried = deps.appDb ? await deps.appDb.check(dir) : null;
-      if (tried && !tried.ok) return { ok: false, errors: tried.errors, warnings: graph.warnings };
+      if (tried && !tried.ok) return { ok: false, errors: tried.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(opts?.name));
-      return graph.warnings.length ? { ...built, warnings: [...graph.warnings, ...built.warnings] } : built;
+      return check.warnings.length ? { ...built, warnings: [...check.warnings, ...built.warnings] } : built;
     },
 
     async getDir(dir) {
@@ -672,7 +705,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
-      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      const check = await manifestCheck(read.manifest, name);
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
@@ -745,7 +778,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
-      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      const check = await manifestCheck(read.manifest, name);
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };

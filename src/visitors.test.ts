@@ -247,6 +247,18 @@ const whoami = defineStep({
   },
 });
 
+/** What a run's step knows of who launched it: `ctx.actor` and `ctx.app`,
+ *  set by the door, beside what the input claims. */
+const launcher = defineStep({
+  type: "test/launcher",
+  input: z.object({ claimed: z.string().optional() }),
+  output: z.any(),
+  async run(cfg, ctx) {
+    return { actor: ctx?.actor ?? null, app: ctx?.app?.name ?? null, claimed: cfg.claimed ?? null };
+  },
+});
+const mineYaml = "name: mine\ninput:\n  actor: { type: string, default: \"\" }\nsteps:\n  - id: who\n    type: test/launcher\n    config:\n      claimed: \"{{ input.actor }}\"\n";
+
 const scoreYaml = "name: score\ninput:\n  n: { type: number, default: 1 }\nsteps:\n  - id: t\n    type: test/tally\n    config:\n      n: \"{{ input.n }}\"\n";
 const spendingYaml = (name: string) => `name: ${name}\ninput:\n  q: { type: string, default: hi }\nsteps:\n  - id: ask\n    type: llm\n    config:\n      prompt: hello\n`;
 
@@ -303,16 +315,17 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     root = await mkdtemp(join(tmpdir(), "strut-visitors-"));
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
-      workspace, store, kit, registry: await createRegistry([tally, whoami]),
+      workspace, store, kit, registry: await createRegistry([tally, whoami, launcher]),
       scheduler: false, serveUi: false, views: false, jamie: false, knowledge: false,
       job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     await workspace.publishWorkflowByContent("score", scoreYaml);
+    await workspace.publishWorkflowByContent("mine", mineYaml);
     for (const name of ["ghost", "paid"]) {
       await workspace.publishWorkflowByContent(name, spendingYaml(name));
       await workspace.setWorkflowOwner(name, "owner-1");
     }
-    for (const [name, grants] of [["game", "[score, ghost, paid]"], ["other", "[score]"]] as const) {
+    for (const [name, grants] of [["game", "[score, ghost, paid, mine]"], ["other", "[score]"]] as const) {
       const dir = join(root, "apps", name);
       await mkdir(join(dir, "src"), { recursive: true });
       await writeFile(join(dir, "app.yaml"), `title: ${name}\ngrants:\n  workflows: ${grants}\n  steps: [test/whoami, people/names]\n`);
@@ -617,6 +630,16 @@ describe("a signed-in visitor on a public app (plans/app-repos.md §5.1)", () =>
     assert.ok((paid.result as { runId?: string } | undefined)?.runId, JSON.stringify(paid));
     // And an anonymous visitor launches no workflow that is not runnable.
     assert.match((await call("run/launch", { workflow: "score" })).error ?? "", /not open to visitors to run/);
+  });
+
+  it("a step in a run the visitor launched knows who launched it from ctx.actor (and the app from ctx.app), never from what the input claims", async () => {
+    const a = await signIn(await p256Key());
+    const b = await signIn(await p256Key());
+    const launched = await call("run/launch", { workflow: "mine", input: { actor: b.got.actor } }, bearer(a.got.token));
+    const runId = (launched.result as { runId?: string } | undefined)?.runId;
+    assert.ok(runId, JSON.stringify(launched));
+    const got = await call("run/get", { workflow: "mine", runId, wait: 10 }, bearer(a.got.token));
+    assert.deepEqual((got.result as Record<string, unknown>)["output"], { actor: a.got.actor, app: "game", claimed: b.got.actor });
   });
 
   it("per-visitor limits from the public view, per actor, counted when they went", async () => {
