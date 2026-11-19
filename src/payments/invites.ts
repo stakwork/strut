@@ -1,58 +1,119 @@
 /**
- * WORKER INVITES (plans/human-steps.md §5.8): staff invite a new worker with
+ * WORKER INVITES (plans/human-steps.md §5.8): staff invite a worker with
  * one https link. Strut asks the treasury daemon for a Sphinx invite (the
  * daemon pays the mixer for it, so it goes through the payer, which alone
  * holds the pay token) and hands staff
  *
- *     https://<public view>/public/join#action=i&d=…&c=…&a=<worker app URL>
+ *     https://<public view>/public/join#action=i&d=…&c=…&a=<Tasks' URL>
  *
  * The invite rides after `#`, so it never reaches a server; `/public/join`
  * (src/public-join.ts) turns it back into `sphinx.chat://?action=i&…` for
- * Peel. `a=` is strut's own section, in the link alone: the worker app's
- * share `link` (`publicAppLinks`, what strut/staff's Share block hands a
- * Peel user), percent-encoded, which Peel opens once the worker is signed up
- * (or at once, for a Peel user). The mixer keeps only
- * code → starting sats, and the core's parser ignores a section it does not
- * know.
+ * Peel. `a=` is strut's own section, in the link alone: the share `link` of
+ * TASKS (`strut/worker`, `publicAppLinks`), percent-encoded, which Peel
+ * opens once the worker is signed up (or at once, for someone who has Peel
+ * already: Peel ignores the invite then). Every link opens Tasks, the
+ * server's one work page, so a worker keeps one page per employer; the kind
+ * of work an invite is FOR rides along (`type=`), and Tasks opens it — in
+ * the app that draws it, with Back to Tasks. The mixer keeps only code →
+ * starting sats, and the core's parser ignores a section it does not know.
  *
- * The worker app's URL carries the invite's own token (`input=invite=…`,
- * auth.ts `inviteToken`), handed to the app as its tool input: the worker's
- * page sends it with `task/me` and `task/next`, and the task service gives
- * that worker the app's INVITE-ONLY task types (`enterInvite`), one worker
- * per invite, while the daemon still has it. So one link lets someone in
- * and gives them the work; an open type lets anyone in on their first
- * `task/next` (ruling 9).
+ * Tasks' URL carries the invite's own token (`input=invite=…`, auth.ts
+ * `inviteToken`), handed to the page as its tool input: the page sends it
+ * with `task/me` and `task/next`, and the task service gives that worker
+ * the invite's kind of work when it is INVITE-ONLY (`enterInvite`), one
+ * worker per invite, while the daemon still has it. An invite for open
+ * work, or for none, gives no grant: open work lets anyone in on their
+ * first `task/next` (ruling 9).
  *
- * Nothing is kept here: the daemon keeps the invites, and the task store
- * keeps the grant an invite made (`by: invite:<code>`), nothing more.
+ * The daemon keeps the invites (code, sats, status); strut keeps only what
+ * each was for (`InviteNotes`, the kind of work), so a listing hands out
+ * the link the worker was sent, and the task store keeps the grant an
+ * invite made (`by: invite:<code>`).
  *
  * Never on a services bag: only the staff's `/tasks/invites` routes hold it.
  */
-import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { LightningError } from "./lightning.js";
 import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvite } from "./payer.js";
 import { INVITE_SATS_MAX } from "./ledger.js";
 import { publicAppLinks } from "../public-routes.js";
 import { inviteToken } from "../auth.js";
+import { WORKER_APP } from "../apps/worker-seed.js";
 
 /** How long an invite's token lets its worker in. */
 export const INVITE_TOKEN_DAYS = 90;
 
-/** The worker app's URL an invite opens: its share link with the invite's
- *  token as the app's input (`?input=invite=…`, plans/apps.md §7.1), so the
- *  page that opens with it hands it back. Fixed by the invite's code, app
- *  and creation time, so a listing shows the link the worker was sent. */
-export function invitedAppUrl(base: string, app: string, code: string, createdAt?: string): string {
-  const link = publicAppLinks(base, app).link;
-  const made = createdAt ? Date.parse(createdAt) : NaN;
-  const token = inviteToken(code, app, (Number.isFinite(made) ? made : Date.now()) + INVITE_TOKEN_DAYS * 86_400_000);
-  return token ? `${link}&input=${encodeURIComponent(`invite=${token}`)}` : link;
+/** The URL an invite opens: Tasks' share link with the invite's token as
+ *  the page's input (`?input=invite=…`, plans/apps.md §7.1) and the kind of
+ *  work it is for (`type=…`, which Tasks opens). `types` is what the token
+ *  gives (`inviteToken`); left out, as for an invite made before invites
+ *  named their work, every invite-only type Tasks draws. Fixed by the
+ *  invite's code, creation time and note, so a listing shows the link the
+ *  worker was sent. */
+export function invitedAppUrl(base: string, code: string, o: { createdAt?: string | undefined; type?: string | undefined; types?: string[] | undefined } = {}): string {
+  const link = publicAppLinks(base, WORKER_APP).link;
+  const made = o.createdAt ? Date.parse(o.createdAt) : NaN;
+  const token = inviteToken(code, WORKER_APP, (Number.isFinite(made) ? made : Date.now()) + INVITE_TOKEN_DAYS * 86_400_000, o.types);
+  const input = new URLSearchParams({ ...(token ? { invite: token } : {}), ...(o.type ? { type: o.type } : {}) }).toString();
+  return input ? `${link}&input=${encodeURIComponent(input)}` : link;
+}
+
+/** What strut keeps of an invite (the daemon keeps the rest): the kind of
+ *  work it is for, none for open work alone. */
+export interface InviteNote {
+  type?: string;
+}
+
+/** The invites' notes, by code. */
+export interface InviteNotes {
+  all(): Promise<Record<string, InviteNote>>;
+  set(code: string, note: InviteNote): Promise<void>;
+}
+
+export function memoryInviteNotes(): InviteNotes {
+  const notes: Record<string, InviteNote> = {};
+  return {
+    all: async () => ({ ...notes }),
+    set: async (code, note) => {
+      notes[code] = { ...note };
+    },
+  };
+}
+
+/** The notes in one JSON file (`<dataDir>/tasks/invites.json`), written whole
+ *  through a temporary file, one write after another. */
+export function fileInviteNotes(path: string): InviteNotes {
+  let queue: Promise<unknown> = Promise.resolve();
+  const read = async (): Promise<Record<string, InviteNote>> => {
+    const text = await readFile(path, "utf8").catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return "{}";
+      throw err;
+    });
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, InviteNote>) : {};
+  };
+  return {
+    all: () => queue.then(read),
+    set(code, note) {
+      const next = queue.then(async () => {
+        const notes = await read();
+        notes[code] = { ...note };
+        await mkdir(dirname(path), { recursive: true });
+        const tmp = `${path}.${process.pid}.tmp`;
+        await writeFile(tmp, JSON.stringify(notes));
+        await rename(tmp, path);
+      });
+      queue = next.catch(() => undefined);
+      return next;
+    },
+  };
 }
 
 export type InviteErrorCode =
   | "bad_request"
   | "no_worker_app"
-  | "pick_app"
+  | "not_online"
   | "no_pay_credential"
   | "no_invites"
   | "unknown_invite"
@@ -62,7 +123,7 @@ export type InviteErrorCode =
 const STATUS: Record<InviteErrorCode, 400 | 404 | 409 | 501 | 502> = {
   bad_request: 400,
   no_worker_app: 409,
-  pick_app: 409,
+  not_online: 409,
   no_pay_credential: 409,
   no_invites: 501,
   unknown_invite: 404,
@@ -83,22 +144,22 @@ export class InviteError extends Error {
   }
 }
 
-/** An invite as staff see it: the daemon's, with `link` the join link. */
+/** An invite as staff see it: the daemon's, with `link` the join link and
+ *  `type` the kind of work it is for. */
 export interface InviteView {
   code: string;
-  /** `https://<public view>/public/join#…`, when the daemon gave an invite. */
+  /** `https://<public view>/public/join#…`, when the daemon gave an invite
+   *  and Tasks is in the public view. */
   link?: string;
   sats: number;
   status: InviteStatus;
   createdAt?: string;
+  /** The kind of work it opens (and gives, when invite-only); none: open work. */
+  type?: string;
 }
 
 export interface InvitesList {
   invites: InviteView[];
-  /** The worker apps: the apps task types name that are in the public view. */
-  apps: string[];
-  /** The app the links open: the one asked for, or the only one. */
-  app?: string;
   /** What an invite starts a worker with when staff name none. */
   sats: number;
   /** Why this server cannot invite: no pay credential, or a daemon without
@@ -111,26 +172,25 @@ export interface InvitesDeps {
   payer(): Promise<Payer | null>;
   /** The payout settings' `inviteSats`. */
   inviteSats(): Promise<number>;
-  /** The apps task types name that are in the public view, sorted. */
-  workerApps(): Promise<string[]>;
+  /** The apps in the public view. */
+  publicApps(): Promise<string[]>;
+  /** The app that draws task type `name`; undefined when there is no such type. */
+  typeApp(name: string): Promise<string | undefined>;
+  /** What each invite is for. Left out: kept in memory. */
+  notes?: InviteNotes;
 }
 
 export interface Invites {
-  /** A new invite, its link opening `app` (or the one worker app). */
-  create(o: { sats?: number; app?: string; base: string }): Promise<InviteView & { app: string }>;
-  /** Every invite the daemon keeps, newest first, each link opening `app`
-   *  (or the one worker app); with several and none asked, no links. */
-  list(o: { app?: string; base: string }): Promise<InvitesList>;
+  /** A new invite, its link opening Tasks on `type` when given. */
+  create(o: { sats?: number; type?: string; base: string }): Promise<InviteView>;
+  /** Every invite the daemon keeps, newest first. */
+  list(o: { base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
-  /** A GRANT LINK for someone who already has Peel: the worker app's share
-   *  link carrying a signed invite token whose code is strut's own
-   *  (`GRANT_LINK_PREFIX`), no Sphinx invite and no sats behind it. Its
-   *  first worker gets the app's invite-only types, as an invite's does,
-   *  and nobody after them (one worker per code). */
-  grantLink(o: { app?: string; base: string }): Promise<{ app: string; code: string; link: string; peelLink: string }>;
 }
 
-/** A grant link's code begins so: strut's own, live without the daemon. */
+/** A grant link's code begins so: strut's own, live without the daemon.
+ *  Staff make none now (an invite works for someone who has Peel too); the
+ *  links already sent keep working. */
 export const GRANT_LINK_PREFIX = "link_";
 
 /** The join link for a daemon's invite: its query after `#` (the
@@ -156,22 +216,23 @@ function fromWallet(err: unknown): never {
 }
 
 export function createInvites(deps: InvitesDeps): Invites {
-  /** The app the link opens: the one asked for, which must be a worker
-   *  app, or the only one. */
-  const appOf = async (asked: string | undefined, apps: string[]): Promise<string | undefined> => {
-    if (asked !== undefined) {
-      if (!apps.includes(asked)) {
-        throw new InviteError("bad_request", `${asked} is not a worker app in the public view${apps.length ? `: one of ${apps.join(", ")}` : ""}`);
-      }
-      return asked;
-    }
-    return apps.length === 1 ? apps[0] : undefined;
+  const notes = deps.notes ?? memoryInviteNotes();
+  const view = (inv: WalletInvite, base: string, online: boolean, note: InviteNote | undefined): InviteView => {
+    // Tasks offline, no link: one that opened nothing after the sign-up would mislead.
+    const link =
+      inv.link && online
+        ? joinLink(base, inv.link, invitedAppUrl(base, inv.code, { createdAt: inv.createdAt, type: note?.type, types: note ? (note.type ? [note.type] : []) : undefined }))
+        : undefined;
+    return {
+      code: inv.code,
+      ...(link ? { link } : {}),
+      sats: inv.sats,
+      status: inv.status,
+      ...(inv.createdAt ? { createdAt: inv.createdAt } : {}),
+      ...(note?.type ? { type: note.type } : {}),
+    };
   };
-  const view = (inv: WalletInvite, base: string, app: string | undefined): InviteView => {
-    // No app, no link: one that opened nothing after the sign-up would mislead.
-    const link = inv.link && app ? joinLink(base, inv.link, invitedAppUrl(base, app, inv.code, inv.createdAt)) : undefined;
-    return { code: inv.code, ...(link ? { link } : {}), sats: inv.sats, status: inv.status, ...(inv.createdAt ? { createdAt: inv.createdAt } : {}) };
-  };
+  const tasksOnline = async () => (await deps.publicApps()).includes(WORKER_APP);
   const payerOf = async (): Promise<Payer & Required<Pick<Payer, "invite" | "invites" | "cancelInvite">>> => {
     const payer = await deps.payer();
     if (!payer) throw new InviteError("no_pay_credential", "this server's wallet has no pay credential: an invite is paid for by the Sphinx daemon's pay token");
@@ -180,35 +241,29 @@ export function createInvites(deps: InvitesDeps): Invites {
   };
 
   return {
-    async grantLink(o) {
-      const apps = await deps.workerApps();
-      if (!apps.length) throw new InviteError("no_worker_app", "no task type's app is in the public view: make the worker app public first, so the link has somewhere to open");
-      const app = await appOf(o.app, apps);
-      if (!app) throw new InviteError("pick_app", `the task types name several worker apps: pick one of ${apps.join(", ")}`);
-      const code = `${GRANT_LINK_PREFIX}${randomBytes(9).toString("hex")}`;
-      const link = invitedAppUrl(o.base, app, code);
-      return { app, code, link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
-    },
-
     async create(o) {
       const sats = o.sats ?? (await deps.inviteSats());
       if (!Number.isSafeInteger(sats) || sats < 1 || sats > INVITE_SATS_MAX) throw new InviteError("bad_request", `sats is a whole number from 1 to ${INVITE_SATS_MAX}`);
-      const apps = await deps.workerApps();
-      if (!apps.length) {
-        throw new InviteError("no_worker_app", "no task type's app is in the public view: make the worker app public first, so the link has somewhere to open");
+      const apps = await deps.publicApps();
+      if (!apps.includes(WORKER_APP)) {
+        throw new InviteError("no_worker_app", `the Tasks page (${WORKER_APP}) is not in the public view: put it online first, so the link has somewhere to open`);
       }
-      const app = await appOf(o.app, apps);
-      if (!app) throw new InviteError("pick_app", `the task types name several worker apps: pick one of ${apps.join(", ")}`);
+      if (o.type !== undefined) {
+        const app = await deps.typeApp(o.type);
+        if (!app) throw new InviteError("bad_request", `no task type ${o.type}`);
+        if (!apps.includes(app)) throw new InviteError("not_online", `${o.type} is answered in ${app}, which is not in the public view: put it online first`);
+      }
       // Before anything is paid: the wallet that can.
       const payer = await payerOf();
       const inv = await payer.invite({ sats }).catch(fromWallet);
-      return { ...view(inv, o.base, app), app };
+      const note: InviteNote = o.type ? { type: o.type } : {};
+      await notes.set(inv.code, note);
+      return view(inv, o.base, true, note);
     },
 
     async list(o) {
-      const [apps, sats] = await Promise.all([deps.workerApps(), deps.inviteSats()]);
-      const app = await appOf(o.app, apps);
-      const head = { apps, ...(app ? { app } : {}), sats };
+      const [online, sats] = await Promise.all([tasksOnline(), deps.inviteSats()]);
+      const head = { sats };
       let payer: Awaited<ReturnType<typeof payerOf>>;
       try {
         payer = await payerOf();
@@ -223,9 +278,10 @@ export function createInvites(deps: InvitesDeps): Invites {
         if (err instanceof LightningError && err.walletCode === NO_INVITES) return { invites: [], ...head, why: "no_invites" };
         return fromWallet(err);
       }
+      const noted = await notes.all();
       // Newest first; one with no time keeps the daemon's order, last.
       const sorted = invites.map((inv, i) => ({ inv, i })).sort((a, b) => (b.inv.createdAt ?? "").localeCompare(a.inv.createdAt ?? "") || a.i - b.i);
-      return { invites: sorted.map(({ inv }) => view(inv, o.base, app)), ...head };
+      return { invites: sorted.map(({ inv }) => view(inv, o.base, online, noted[inv.code])), ...head };
     },
 
     async cancel(code) {

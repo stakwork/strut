@@ -61,7 +61,7 @@ import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
-import { createInvites, GRANT_LINK_PREFIX } from "./payments/invites.js";
+import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX } from "./payments/invites.js";
 import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -137,7 +137,7 @@ import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
-import { seedWorkerApp } from "./apps/worker-seed.js";
+import { seedWorkerApp, WORKER_APP } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -252,7 +252,7 @@ export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
 const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
-import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
+import { createPublicViewDoor, publicViewNeeds, withNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -6986,18 +6986,27 @@ export async function createStrut<TServices = unknown>(
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
-    // A new worker's invite (§5.8): the daemon's, through the payer; its
-    // link on the base the share links use, opening the worker app — an app
-    // the task types name that is in the public view.
+    // A worker's invite (§5.8): the daemon's, through the payer; its link
+    // on the base the share links use, opening Tasks on the kind of work it
+    // is for — which strut notes beside tasks.db, as the daemon keeps no
+    // more than code, sats and status.
     invites: createInvites({
       payer: () => payments.payer(),
       inviteSats: async () => (await payouts.settings()).inviteSats,
-      workerApps: async () => {
-        const [types, surface] = await Promise.all([(hostTasks ?? tasks.capability).types(), publicSurface.get()]);
-        const shown = new Set(surface.apps.map((a) => a.name));
-        return [...new Set(types.map((t) => t.app))].filter((a) => shown.has(a)).sort();
-      },
+      publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
+      typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
+      ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
     }),
+    // Tasks online (§5.8): the one app a staff page puts in the public view
+    // itself, as the Public view tab saves it with nothing unticked —
+    // strut's own seed, calling only the worker's task/* steps.
+    tasksOnline: async (actor) => {
+      const needs = await publicViewNeeds(publicViewDeps, { app: WORKER_APP });
+      if ("error" in needs) throw new TaskError("refused", needs.error);
+      const out = await savePublicView(withNeeds(await publicSurface.get(), needs), actor ? { actor } : {});
+      if (out.status !== 200) throw new TaskError("refused", out.body.error ?? `the public view was not saved (${out.status})`);
+      return { app: WORKER_APP, public: true as const };
+    },
     // The share links' base (`baseOfRequest`, with a mount path): a staff
     // page's in-process request is `http://strut.invalid`, so it takes where
     // the page's own request came (`lastBase`), as staff/types' share does.

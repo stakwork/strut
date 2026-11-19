@@ -526,6 +526,11 @@ describe("worker invite tokens (plans/human-steps.md §5.8)", () => {
     assert.match(token, /^strut-invite\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     assert.deepEqual(inviteOf(token), { code: "c0de", app: "workers" });
     assert.equal(inviteToken("c0de", "workers", exp), token, "fixed by its code, app and exp: a listing shows the link sent");
+    // The work it gives: named (none is [], open work alone), or left out as before invites named it.
+    assert.deepEqual(inviteOf(inviteToken("c0de", "strut/worker", exp, ["pets"])!), { code: "c0de", app: "strut/worker", types: ["pets"] });
+    assert.deepEqual(inviteOf(inviteToken("c0de", "strut/worker", exp, [])!), { code: "c0de", app: "strut/worker", types: [] });
+    const badTypes = Buffer.from(JSON.stringify({ c: "c0de", a: "workers", exp, t: "pets" })).toString("base64url");
+    assert.equal(inviteOf(`strut-invite.${badTypes}.${token.split(".")[2]}`), undefined, "a forged list is a forged token");
     assert.equal(inviteOf(token, exp), undefined, "expired");
     const [, payload, sig] = token.split(".") as [string, string, string];
     const forged = Buffer.from(JSON.stringify({ c: "c0de", a: "other", exp })).toString("base64url");

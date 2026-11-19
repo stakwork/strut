@@ -8,15 +8,15 @@ import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { fmtDuration, owedLine, queueWarnings, sharedApps, type Place } from "../lib/view";
-import type { Books, TaskStats, TaskType } from "../lib/types";
+import { fmtDuration, owedLine, queueWarnings, type Place } from "../lib/view";
+import type { Books, TaskStats, TaskType, TypeShare } from "../lib/types";
 import { Empty, ErrorLine, Figure, Loading, Note, Section } from "./bits";
-import { ShareRows } from "./Share";
+import { BringWorkersIn } from "./Share";
 import { SendRound } from "./SendRound";
 
 export const STATS_EVERY_MS = 10_000;
 
-export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
+export function Queue(props: { go: (p: Place) => void; types?: TaskType[]; tasks?: TypeShare }) {
   const client = useStrutClient();
   // React Query refetches on the interval only while the page is visible.
   const stats = useQuery({ queryKey: ["staff", "stats"], queryFn: () => client.run<TaskStats>("staff/stats", {}), refetchInterval: STATS_EVERY_MS });
@@ -28,13 +28,12 @@ export function Queue(props: { go: (p: Place) => void; types?: TaskType[] }) {
   if (stats.error) return <ErrorLine error={stats.error} />;
   if (!s) return <Loading>Reading the queue…</Loading>;
   const warnings = queueWarnings(s);
-  // How workers get in: a closed row each public worker app, first.
-  const shared = sharedApps(props.types);
   const p = (x: { p50: number; p90: number } | undefined) => (x ? `${fmtDuration(x.p50)} · ${fmtDuration(x.p90)}` : "—");
 
   return (
     <>
-      <ShareRows apps={shared} />
+      {/* How workers get in, first: one invite, and the one link for a group. */}
+      {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} />}
 
       {warnings.length > 0 && (
         <ul className="flex flex-col gap-1.5" aria-label="Needs a person">

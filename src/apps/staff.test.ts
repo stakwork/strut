@@ -21,8 +21,8 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  answerFiles, fmtWhen, grantedBy, isPicture, sharedApps, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
-  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, tasksWords, whatsappUrl,
+  anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
+  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -353,10 +353,6 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     // Plain first, for an admin who is not technical; the cause in brackets for whoever runs the server.
     assert.match(inviteWhyText("no_pay_credential"), /^To invite people, this server's wallet has to be set up first, in Earnings\. \(.*pay token\.\)$/);
     assert.match(inviteWhyText("no_invites"), /^This server's wallet cannot make invites yet: it needs an update\. \(.*invite routes\.\)$/);
-    // The Share area names the tasks a worker app's workers do, in words.
-    assert.equal(tasksWords(["coffee-shop-visit"]), 'the "coffee shop visit" task');
-    assert.equal(tasksWords(["a", "b-c", "d"]), 'the "a", "b c" and "d" tasks');
-    assert.equal(tasksWords([]), "");
     const link = "https://s.example/public/join#action=i&d=AA&a=https%3A%2F%2Fs.example%2F%3Fapp%3Dw";
     const wa = new URL(whatsappUrl(link));
     assert.equal(wa.origin, "https://wa.me");
@@ -687,27 +683,37 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
   });
 
-  it("staff/types answers each type's share: not public, then public with its links on the request's base and a QR of the Peel link", async () => {
+  it("staff/types answers each type's share and Tasks': not public, then public with its links on the request's base and a QR of the Peel link", async () => {
     const cookie = await signIn("ada", "admin");
     // As mcp's /lab proxies it: another host, a mount path.
     const lab = { cookie, "x-forwarded-host": "box.example", "x-forwarded-proto": "https", "x-forwarded-prefix": "/lab" };
-    const types = async () => {
+    const answer = async () => {
       const r = await door("/mcp", lab, "staff/types");
       assert.equal(r.error, undefined, r.error);
-      return r.result.types.find((t: { name: string }) => t.name === "pets") as TaskType;
+      return r.result as { types: TaskType[]; tasks?: TaskType["share"] };
     };
+    const types = async () => (await answer()).types.find((t: { name: string }) => t.name === "pets") as TaskType;
     assert.deepEqual((await types()).share, { public: false }, "workers is not in the public view: no links");
-    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }] }) });
+    assert.deepEqual((await answer()).tasks, { public: false }, "nor is Tasks, which every invite opens");
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "strut/worker" }] }) });
     assert.equal(put.status, 200, await put.clone().text());
     const share = (await types()).share!;
     const link = "https://box.example/lab/?app=workers&solo=1&public=1";
     assert.deepEqual([share.public, share.link, share.peelLink], [true, link, `peel://open?url=${encodeURIComponent(link)}`]);
     assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
-    const shared = sharedApps([await types()]);
-    assert.deepEqual(shared.map((a) => [a.app, a.types]), [["workers", ["pets"]]], "the Queue's block: each public worker app once");
-    // An invite gives its worker the app's invite-only types (§5.8): the block names them.
-    assert.deepEqual(shared.map((a) => a.invited), [["pets"]], "pets is invite-only here");
-    assert.deepEqual(sharedApps([{ ...(await types()), open: true }]).map((a) => a.invited), [[]], "an open type needs no invite");
+    const tasks = (await answer()).tasks!;
+    assert.deepEqual([tasks.public, tasks.link], [true, "https://box.example/lab/?app=strut%2Fworker&solo=1&public=1"]);
+    assert.equal(tasks.qrSvg, qrSvg(tasks.peelLink!));
+    // The invite panel's choices: each type that is on, open or invite-only, its app online or not.
+    const pets = await types();
+    assert.deepEqual(inviteChoices([pets, { ...pets, name: "off", enabled: false }, { ...pets, name: "drafts", app: "drafts", open: true, share: { public: false } }]), [
+      { name: "drafts", label: "drafts", open: true, app: "drafts", online: false },
+      { name: "pets", label: "pets", open: false, app: "workers", online: true },
+    ]);
+    assert.equal(inviteWorkText(undefined), "Tasks shows them every kind of open work.");
+    assert.equal(inviteWorkText(inviteChoices([pets])[0]), "Invite-only: this link makes it theirs.");
+    assert.equal(anyOpenWork([pets]), false, "pets is invite-only here: no link for a group");
+    assert.equal(anyOpenWork([{ ...pets, open: true }]), true);
     await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 

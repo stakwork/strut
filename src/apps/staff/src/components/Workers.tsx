@@ -21,15 +21,18 @@ import { cn } from "@/lib/utils";
 import {
   balanceCells, fmtWhen, grantedBy, leaseOutcome, liveTypesText, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, workersInOrder, type Place, type Shown,
 } from "../lib/view";
-import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
+import type { TaskType, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { Invites } from "./Invite";
+import { BringWorkersIn } from "./Share";
 
 interface Props {
   go: (p: Place) => void;
   place: Place;
   shown: Shown;
   types?: TaskType[];
+  /** Tasks' share (`staff/types`' `tasks`): every invite opens it. */
+  tasks?: TypeShare;
   workers?: Worker[];
   error: unknown;
 }
@@ -40,8 +43,9 @@ export function Workers(props: Props) {
   if (props.place.worker) return <WorkerDetail {...props} actor={props.place.worker} />;
   return (
     <>
+      {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} />}
       <WorkerList {...props} workers={props.workers} />
-      <Invites />
+      <Invites types={props.types} />
     </>
   );
 }
@@ -76,7 +80,7 @@ function WorkerList(props: Props & { workers: Worker[] }) {
   return (
     <Section title="Workers" aside={<Note>{fresh.length ? `${fresh.length} new, waiting for a grant` : `${list.length} here`}</Note>}>
       {list.length === 0 ? (
-        <Empty>No worker has signed in yet. A worker is anyone who signed in to a worker app and asked for a task (a worker app's Share block, on the Queue, hands them its link, or invites someone new to Peel); they appear here as new. An open type lets them in on their first ask; an invite-only one, a grant.</Empty>
+        <Empty>No worker has signed in yet. A worker is anyone who signed in to Tasks and asked for work (Invite a worker, above, makes their link); they appear here as new. Open work lets them in on their first ask; invite-only work, their invite or a grant.</Empty>
       ) : (
         <>
           {fresh.length > 0 && (

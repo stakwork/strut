@@ -391,14 +391,9 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
   const [working, setWorking] = useState<string | null | undefined>(undefined);
   // Opened on one kind of work (`appLink(app, { type })`, as another app's
-  // dashboard opens it): straight to it, once.
+  // dashboard opens it, or an invite's link): straight to it, once.
   const opened = useToolInput<{ type?: string }>()?.type;
   const openedOnce = useRef(false);
-  useEffect(() => {
-    if (!signedIn || !opened || openedOnce.current) return;
-    openedOnce.current = true;
-    setWorking(opened);
-  }, [signedIn, opened]);
   /** From the moment an answer goes until Next task: no next task is
    *  leased meanwhile, so a worker who stops here holds nothing. */
   const [paused, setPaused] = useState(false);
@@ -409,6 +404,14 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
     if (app && here && app !== here) void host.openLink(appLink(app, { type: kind }));
     else setWorking(kind);
   };
+  // Once `task/me` has answered — an invite's grant made by then — and only
+  // when the worker may do it: else the dashboard, which says what they can.
+  useEffect(() => {
+    if (!signedIn || !opened || openedOnce.current || !me.data) return;
+    openedOnce.current = true;
+    if (me.data.types.some((t) => t.name === opened)) start(opened);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `start` reads me.data, which is a dependency
+  }, [signedIn, opened, me.data]);
   const [sent, setSent] = useState<Sent | null>(null);
   const submit: UseTask["submit"] = async (answer, files) => {
     const held = work.task;

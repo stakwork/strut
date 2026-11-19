@@ -22,7 +22,7 @@ import { useAppLink, useChannel, useHost, useNames, useSql, useStrutClient, useT
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TABS, TAB_LABELS, inputOf, placeOf, shownOf, testsAnswerOf, type Place, type Tab } from "./lib/view";
-import type { TaskType, Test, Worker } from "./lib/types";
+import type { TaskType, Test, TypeShare, Worker } from "./lib/types";
 import { ErrorLine } from "./components/bits";
 import { Queue } from "./components/Queue";
 import { Types } from "./components/Types";
@@ -48,7 +48,7 @@ export default function App() {
     if (host.connected) void host.openLink(link(inputOf(p))).catch(() => {});
   };
 
-  const types = useQuery({ queryKey: ["staff", "types"], queryFn: () => client.run<{ types: TaskType[] }>("staff/types", {}) });
+  const types = useQuery({ queryKey: ["staff", "types"], queryFn: () => client.run<{ types: TaskType[]; tasks?: TypeShare }>("staff/types", {}) });
   const workers = useQuery({ queryKey: ["staff", "workers"], queryFn: () => client.run<{ workers: Worker[] }>("staff/workers", {}) });
   // Their names (plans/people-and-hosts.md §1), asked once for the list;
   // each worker carries theirs for `whoOf`, after the staff's own note.
@@ -122,9 +122,9 @@ export default function App() {
         />
       ) : (
         <main className="flex min-w-0 flex-col gap-5">
-          {tab === "queue" && <Queue go={go} types={types.data?.types} />}
-          {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} workers={listed} error={types.error} />}
-          {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} workers={listed} error={workers.error} />}
+          {tab === "queue" && <Queue go={go} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} />}
+          {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={types.error} />}
+          {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={workers.error} />}
           {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={listed} />}
           {tab === "tests" && shown.tests && <Tests go={go} place={place} types={types.data?.types} />}
           {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={listed} />}

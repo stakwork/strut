@@ -11,12 +11,13 @@ export interface TypeShare extends AppShare {
 }
 
 /** `staff/types` (plans/human-steps.md §9.3): The task types, each with its
- *  app's share (§9.5): what an admin hands that type's workers. */
+ *  app's share (§9.5), and Tasks' own share (`tasks`): every invite opens
+ *  Tasks, and its link is the one for a group. */
 export default defineStep({
   type: "staff/types",
   effect: "read",
   description:
-    "The task types (GET /tasks/types): each with its app, answer shape, lease, expiry, on or off, pay and hold, tests and copies, and `share`: whether its app is in the public view, and its links for workers (`link`, `peelLink`, a QR of the Peel one). Only strut's own staff app, shown to an admin.",
+    "The task types (GET /tasks/types): each with its app, answer shape, lease, expiry, on or off, pay and hold, tests and copies, and `share`: whether its app is in the public view, and its links for workers (`link`, `peelLink`, a QR of the Peel one); and `tasks`, the same for Tasks (strut/worker), the page every invite opens. Only strut's own staff app, shown to an admin.",
   input: z.object({}),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
@@ -43,6 +44,8 @@ export default defineStep({
         return share ? { ...t, share } : t;
       }),
     );
-    return { ...out, types: withShare };
+    const { WORKER_APP } = await import("../../../apps/worker-seed.js");
+    const tasks = await shareOf(WORKER_APP);
+    return { ...out, types: withShare, ...(tasks ? { tasks } : {}) };
   },
 });
