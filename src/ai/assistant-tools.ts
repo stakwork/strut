@@ -41,6 +41,7 @@ import type { ChatMeta, ChatStore } from "../chat-store.js";
 import type { ArtifactRef } from "../artifact-refs.js";
 import type { Automations } from "../scheduler.js";
 import { listWorkflowEntries, DEFAULT_WORKFLOW_LIST_LIMIT } from "../authoring.js";
+import { RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX } from "../runs.js";
 import { buildChatView, DEFAULT_CHAT_VIEW_LIMIT, type ChatView } from "../chat-view.js";
 import { fileScopeOf, fileToken } from "../auth.js";
 import { jobFileUrl } from "../artifact-refs.js";
@@ -360,17 +361,21 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         "A workflow's runs, newest first: id, status (running | success | error | cancelled), when it started, how long it took, what its model calls cost, who or what launched it, the error if any, and `artifacts` — the deliverables the run declared, as absolute links you can share (the usual way to hand a report or a file on). `since` (ISO time) and `status` filter. get_run reads one run's output.",
       inputSchema: z.object({
         workflow: z.string().describe("The workflow name."),
-        limit: z.number().int().positive().default(20).describe("Max runs (default 20)."),
-        status: z.enum(["running", "success", "error", "cancelled"]).optional().describe("Only runs with this status."),
+        limit: z.number().int().positive().default(20).describe(`Max runs (default 20, at most ${RUN_LIST_MAX_LIMIT}).`),
+        status: z.enum(["running", "success", "error", "cancelled"]).optional().describe(`Only runs with this status — among the newest ${RUN_LIST_SCAN_MAX} runs.`),
         since: z.string().optional().describe("Only runs started at or after this ISO time (e.g. your last check)."),
       }),
       execute: async ({ workflow, limit, status, since }) => {
         const ids = await deps.store.listRuns(workflow);
         const sinceMs = since ? Date.parse(since) : NaN;
         const runs: Array<Record<string, unknown>> = [];
+        // A status few runs have would otherwise read every summary the
+        // workflow ever wrote: the newest RUN_LIST_SCAN_MAX are looked through, as run/list does.
+        let read = 0;
         for (const runId of ids) {
-          if (runs.length >= limit) break;
+          if (runs.length >= Math.min(limit, RUN_LIST_MAX_LIMIT) || read >= RUN_LIST_SCAN_MAX) break;
           if (!Number.isNaN(sinceMs) && Number(runId) < sinceMs) break; // ids are ms timestamps, newest first
+          read++;
           const s = await deps.store.getRunSummary(workflow, runId);
           const st = s?.status ?? "running";
           if (status && st !== status) continue;
@@ -387,7 +392,8 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
             ui: ui.workflow(workflow, runId),
           });
         }
-        return { workflow, runs, total: ids.length };
+        const cut = read >= RUN_LIST_SCAN_MAX && ids.length > read && runs.length < Math.min(limit, RUN_LIST_MAX_LIMIT);
+        return { workflow, runs, total: ids.length, ...(cut ? { note: `Only the newest ${RUN_LIST_SCAN_MAX} runs were looked through.` } : {}) };
       },
     }),
 

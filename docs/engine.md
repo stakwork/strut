@@ -704,7 +704,7 @@ what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (
 
 ### `src/step-stats.ts`
 
-GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active version can run the type (direct, or via subflow) + execution counts summed from their runs' `RunSummary.stepCounts` (written at finalize; older summaries backfilled from the log on first read) and the `step:<type>` bucket
+GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active version can run the type (direct, or via subflow) + execution counts summed from their runs' `RunSummary.stepCounts` (written at finalize; older summaries backfilled from the log on first read) and the `step:<type>` bucket — over the newest `RUN_LIST_SCAN_MAX` (1,000) of those runs across every key, no further (`scanned`, and `more` when older ones were not read)
 
 ### `src/run-step.ts`
 

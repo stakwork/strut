@@ -3940,6 +3940,8 @@ export async function createStrut<TServices = unknown>(
   // tab. A run is attributed by the content hash it recorded (summary, else
   // `run.start` for runs that predate the summary stamp); identical content
   // published twice goes to the newest twin that existed when the run started.
+  // Counted over the newest `RUN_LIST_SCAN_MAX` runs, no further (`scanned`;
+  // `more`: older runs were not read): a busy workflow holds 100k runs.
   app.get("/workflows/:name/versions", async (c) => {
     const name = c.req.param("name");
     const meta = await workspace.getWorkflowMetadata(name);
@@ -3974,12 +3976,15 @@ export async function createStrut<TServices = unknown>(
       if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
       stats.set(v.version, s);
     };
-    const runIds = await store.listRuns(name);
+    const all = await store.listRuns(name);
+    const runIds = all.slice(0, RUN_LIST_SCAN_MAX);
     for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
     return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
       unattributed,
+      scanned: runIds.length,
+      ...(all.length > runIds.length ? { more: true } : {}),
     });
   });
 
