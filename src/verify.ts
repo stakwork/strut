@@ -468,7 +468,7 @@ export interface VerifierDeps extends ClaimsReaderDeps {
   /** The job index the reader needs, and `notify`: evidence written about a
    *  job, and a job's pass ending, reach the job's host as they happen
    *  (plans/live-artifacts.md §3). */
-  jobs?: Pick<JobsCapability, "get" | "notify">;
+  jobs?: Pick<JobsCapability, "get" | "runs" | "notify">;
   graph: GraphBackend;
   store: RunStore;
   workspace: WorkspaceStore;
@@ -1138,12 +1138,12 @@ export function createVerifier(deps: VerifierDeps) {
     const noop = (runId: string, key: string, skipped: VerifyResult["skipped"], claims: LedgerClaim[] = []): JobVerifyResult => ({
       key, runId, job, skipped, subjects: [], checks: [], evidence: 0, slots: 0, costUsd: 0, claims,
     });
-    const view = await deps.jobs?.get?.(job, { threads: false });
-    if (!view) return noop(opts.runId ?? "", "", "unknown-job");
+    const runs = await deps.jobs?.runs?.(job);
+    if (!runs) return noop(opts.runId ?? "", "", "unknown-job");
     let turn = opts.runId;
-    for (let line = turn ? view.runs.find((r) => r.runId === turn) : undefined; line?.parentRunId; line = view.runs.find((r) => r.runId === line!.parentRunId)) turn = line.parentRunId;
-    turn ??= activeTurnOf(view.runs) ?? undefined;
-    const line = turn ? view.runs.find((r) => r.runId === turn) : undefined;
+    for (let line = turn ? runs.find((r) => r.runId === turn) : undefined; line?.parentRunId; line = runs.find((r) => r.runId === line!.parentRunId)) turn = line.parentRunId;
+    turn ??= activeTurnOf(runs) ?? undefined;
+    const line = turn ? runs.find((r) => r.runId === turn) : undefined;
     if (!turn || !line) return noop(turn ?? "", "", "unknown-run", (await jobLedger(job, { known: true })) ?? []);
 
     const key = line.workflow;
@@ -1181,7 +1181,7 @@ export function createVerifier(deps: VerifierDeps) {
    *  /jobs/:id/claims`, `claims` on `GET /jobs/:id` and `job/get` carry.
    *  Null when the job is not on file (`known` skips that read). */
   async function jobLedger(job: string, opts: { result?: VerifyResult; known?: boolean } = {}): Promise<LedgerClaim[] | null> {
-    if (!opts.known && !(await deps.jobs?.get?.(job, { threads: false }))) return null;
+    if (!opts.known && !(await deps.jobs?.runs?.(job))) return null;
     return (await buildLedger(reader, [{ kind: "job", id: job }], opts.result ? { result: opts.result } : {}))[job] ?? [];
   }
 
@@ -1271,7 +1271,7 @@ export function createVerifier(deps: VerifierDeps) {
     let name = input.name;
     let subject = input.subject;
     if (input.job) {
-      const line = (await deps.jobs?.get?.(input.job, { threads: false }))?.runs.find((r) => r.runId === input.runId);
+      const line = (await deps.jobs?.runs?.(input.job))?.find((r) => r.runId === input.runId);
       if (!line) return { error: `run ${input.runId} does not carry job "${input.job}" — cite one of the job's turns` };
       name ??= line.workflow;
       subject ??= { kind: "job", id: input.job };
