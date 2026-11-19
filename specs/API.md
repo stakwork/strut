@@ -4179,7 +4179,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Installed Peel? Continue" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
@@ -5725,7 +5725,7 @@ server whose task store is its host's (which answers none of them).
   "leaseSeconds": 600, "withinHours": 72, "enabled": true,
   "open": true,                     // any signed-in worker takes it, no grant; false: invite-only. True for a type saved before it existed
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
-  "holdHours": 72,                  // how long an earning waits before it can be withdrawn
+  "holdHours": 0,                   // how long an earning waits before it can be withdrawn; 0 (the default): at once
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
     "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
     "window": 20, "minGraded": 10, "threshold": 0.8, "grade": "equal", "gradeCapUsd": 0.05
@@ -5893,7 +5893,7 @@ with `standing: { workflow }` has work whenever a worker asks.
 
 - **The admin's, never the workflow's.** A task type's `paySats` (sats to
   the msat, at most 1,000,000 an answer; 0 or absent: unpaid) and `holdHours`
-  (1 to 720, 72 by default; never 0: earnings wait) are set by `PUT
+  (0 to 720, 0 by default: no hold, withdrawable at once) are set by `PUT
   /tasks/types/:name`, or by a `task/set-type` proposal an admin accepted
   ("Asking for a task type" below). A workflow names a type and cannot set
   its pay; no step a page or a model reaches writes it without an admin's

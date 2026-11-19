@@ -126,7 +126,7 @@ export const typeChangeInput = z.object({
     .optional()
     .refine((v) => v === undefined || Math.abs(v * 1000 - Math.round(v * 1000)) <= 1e-6, "paySats is sats to the msat (at most three decimals)")
     .describe("What one accepted answer earns its worker, in sats (0: unpaid, a new type's default). A rise is shown to the admin as a danger."),
-  holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 72 for a new type).`),
+  holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 0, no hold, for a new type).`),
   tests: z
     .preprocess(
       fromJsonText,
@@ -502,8 +502,8 @@ function rulesDiff(label: string, before: object | undefined, after: object | un
 /** What the save would refuse, first by field: the card's "Approving it fails". */
 const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments;
 
-/** A hold in days when it is a whole number of them. */
-const holdText = (hours: number) => (hours % 24 === 0 ? plural(hours / 24, "day") : plural(hours, "hour"));
+/** A hold in days when it is a whole number of them; "none" for 0. */
+const holdText = (hours: number) => (hours === 0 ? "none" : hours % 24 === 0 ? plural(hours / 24, "day") : plural(hours, "hour"));
 
 /** "4 photos", "1 to 3 photos", "up to 2 files": what an answer carries, in
  *  the person's words; "" for none. */
@@ -639,7 +639,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     : "Only people you invite: give it to each of them in Tasks and workers.";
   fields.push({ label: "Who can do it", value: who, ...(warn ? { danger: true } : {}) });
   let pay = after.paySats
-    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${holdText(after.holdHours)} later.`
+    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${after.holdHours ? `${holdText(after.holdHours)} later` : "at once"}.`
     : "Unpaid.";
   if (before && payBefore !== after.paySats) pay += ` It is ${money(payBefore)} now.`;
   const week = existing?.answeredWeek;

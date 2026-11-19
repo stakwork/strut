@@ -130,7 +130,7 @@ export function Support(props: Props) {
             </>
           ) : (
             <div className="m-auto max-w-sm p-6 text-center text-sm text-muted-foreground">
-              Workers write to “Support” from Peel. Pick a conversation to read it and answer; every answer goes from Support.
+              Workers write to Support from Peel, where it carries your organisation’s name (“Acme Support”). Pick a conversation to read it and answer; every answer goes from Support.
             </div>
           )}
         </main>

@@ -67,7 +67,8 @@ for (const impl of IMPLS) {
     });
 
     const typeWith = async (o: { paySats?: number; holdHours?: number; copies?: Record<string, unknown>; tests?: Record<string, unknown> } = {}, workers = ["ann", "bob", "cat"]) => {
-      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, open: false, ...o }, "staff");
+      // A hold, for the verdicts and take-backs inside it (a new type has none).
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, open: false, holdHours: 72, ...o }, "staff");
       for (const w of workers) await tasks().grant(w, TYPE, "staff");
     };
     let n = 0;
@@ -166,8 +167,8 @@ for (const impl of IMPLS) {
       const kept = await leaseOf(t.id, "ann");
       assert.deepEqual([kept.review?.verdict, kept.review?.final], ["ok", true]);
 
-      // An unpaid answer: the type's hold (72 h by default) from when it was answered.
-      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 480 }, "staff");
+      // An unpaid answer: the type's hold (72 h here) from when it was answered.
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 480, holdHours: 72 }, "staff");
       const late = await ask();
       await answer("bob");
       const answered = (await leaseOf(late.id, "bob")).closed!;
@@ -259,7 +260,7 @@ for (const impl of IMPLS) {
       assert.deepEqual([out.review.final, out.earning?.takenBack], [true, undefined], "after the hold: no money moves");
       assert.equal((await tasks().me("ann")).balance.totalMsat, 5_000);
 
-      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48 }, "staff");
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, holdHours: 72 }, "staff");
       const free = await ask();
       await answer("ann");
       const unpaid = await review({ task: free.id, verdict: "rejected", why: "wrong" });
@@ -303,7 +304,7 @@ describe("the review verdict: a tasks.db from before reviews", () => {
       let clock = T0;
       const make = () => createTasks({ open: () => openTaskStores({ dataDir: dir }), exists: () => existsSync(tasksPath(dir)), now: () => clock });
       let svc = make();
-      await svc.capability.setType(TYPE, { app: "workers", answer: MATCH }, "staff");
+      await svc.capability.setType(TYPE, { app: "workers", answer: MATCH, holdHours: 72 }, "staff");
       await svc.capability.grant("ann", TYPE, "staff");
       const t = (await svc.capability.ensure({ type: TYPE, workflow: "pets", runId: "r1", path: "pets/match", show: {} })).task;
       const got = (await svc.capability.next("ann")) as WorkerTask;

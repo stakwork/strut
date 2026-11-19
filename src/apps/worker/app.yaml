@@ -1,6 +1,8 @@
-title: Worker
+# Shown as "Tasks". Its name stays `strut/worker`: every task type and every
+# link already sent names it.
+title: Tasks
 description: >-
-  Work for this server, from any phone (plans/human-steps.md §5): a worker
+  Tasks for this server, from any phone (plans/human-steps.md §5): a worker
   signs in, takes the tasks of every task type that names this app, one after
   another, and answers each — the photos its type asks for, then its fields —
   for what the type pays. It draws any task with no view of its own

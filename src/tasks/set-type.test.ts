@@ -75,7 +75,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     refused({ copies: { agree: 4, max: 3 } }, /copies\.agree/);
     refused({ paySats: 1.0001 }, /to the msat/);
     refused({ paySats: -1 }, /paySats|too_small|>=/i);
-    refused({ holdHours: 0 }, /holdHours|too_small|>=/i);
+    refused({ holdHours: -1 }, /holdHours|too_small|>=/i);
     refused({ leaseSeconds: 1.5 }, /leaseSeconds|int/i);
     refused({ name: "Pet Match" }, /lowercase letters/);
     assert.ok(typeChangeInput.safeParse({ name: "x", app: "a", tests: null, copies: null, standing: null }).success, "null turns them off");
@@ -208,7 +208,9 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.match(typeCard({ name: "pet-match", app: "workers", answer: MATCH, enabled: false }).summary!, /It starts switched off: nobody gets one until it is turned on\.$/);
     // A paid new type: dollars first, then sats, and the wait; a rise from nothing, so a danger, never folded.
     const paid = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, tests: { qualify: 3 }, copies: { max: 2, agree: 2 } }, { usdPerBtc: 100_000 });
-    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
+    assert.deepEqual(field(paid, "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it at once.", danger: true });
+    const held = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false, paySats: 10, holdHours: 72 }, { usdPerBtc: 100_000 });
+    assert.match(field(held, "Pay")!.value, /Workers can withdraw it 3 days later\.$/);
     assert.match(paid.summary!, /for \$0\.01 \(10 sats\) each, paid from this server's wallet\.$/);
     assert.match(field(paid, "Tests")!.value, /^on: 5% of tasks are tests \(25% until a worker has answered 50 real ones\); 3 tests to qualify before any real task; a grant is revoked under 80% passed of the last 20 graded, read once 10 are; graded by equal answers$/);
     assert.equal(field(paid, "Copies")!.value, "on: a step may ask up to 2 workers, each paid; 2 matching answers settle a task, compared by equal answers; when they disagree one more worker is asked, up to 2");
@@ -502,7 +504,7 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.equal(rec.card?.actions.accept, "Approve");
     // No app named workers here: a danger on the card.
     assert.deepEqual(rec.card?.fields.find((f) => f.label === "Task type"), { label: "Task type", value: "pet-match, in the app workers — no app workers on this server", danger: true });
-    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it 3 days later.", danger: true });
+    assert.deepEqual(rec.card?.fields.find((f) => f.label === "Pay"), { label: "Pay", value: "$0.01 (10 sats) for each one, from this server's wallet. Workers can withdraw it at once.", danger: true });
 
     // A member is refused: their own page's accept (strut's own app, `proposal/decide`), their
     // session at the route, and their person token. Nothing saved, still pending.

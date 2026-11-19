@@ -320,8 +320,8 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <Field label="Sats an answer earns" htmlFor="type-pay" hint="Locked when a worker takes the task. Empty or 0: unpaid. At most 1,000,000.">
               <Input id="type-pay" type="number" min={0} step="any" value={d.paySats} onChange={(e) => set({ paySats: e.target.value })} placeholder="unpaid" />
             </Field>
-            <Field label="Hold, hours" htmlFor="type-hold" hint="How long an earning waits before it can be withdrawn: 1 to 720. A failed test or a take-back inside it loses the earning.">
-              <Input id="type-hold" type="number" min={1} max={720} value={d.holdHours} onChange={(e) => set({ holdHours: e.target.value })} />
+            <Field label="Hold, hours" htmlFor="type-hold" hint="How long an earning waits before it can be withdrawn: 0 (none, at once) to 720. A failed test or a take-back inside it loses the earning.">
+              <Input id="type-hold" type="number" min={0} max={720} value={d.holdHours} onChange={(e) => set({ holdHours: e.target.value })} />
             </Field>
           </div>
         </Section>

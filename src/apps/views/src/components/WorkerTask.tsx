@@ -330,7 +330,7 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
 export interface WorkerPageProps {
   /** One task type alone on the dashboard; left out, every type this app draws. */
   type?: string;
-  /** The app's name, in the header: "Work" in the page's language without one. */
+  /** The app's name, in the header: "Tasks" in the page's language without one. */
   title?: string;
   /** The header's second line: what the work is, in a few words ("Do tasks ·
    *  get paid" without one; "" for none). */

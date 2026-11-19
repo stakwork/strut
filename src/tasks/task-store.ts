@@ -474,8 +474,10 @@ export interface StandingRow {
 /** The most of a grader's `content` kept on an instance (§7.4). */
 export const GRADE_NOTE_MAX = 2000;
 
-/** §8.1: an earning waits this long by default before it can be withdrawn. */
-export const DEFAULT_HOLD_HOURS = 72;
+/** §8.1: how long an earning waits by default before it can be withdrawn:
+ *  none, so it is withdrawable at once. A type that wants a window for a
+ *  take-back or a failed test to cost the earning sets its own. */
+export const DEFAULT_HOLD_HOURS = 0;
 
 export const TASK_LIST_PAGE = 100;
 export const TASK_LIST_MAX = 1000;

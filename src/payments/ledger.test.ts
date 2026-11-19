@@ -642,7 +642,7 @@ for (const impl of impls) {
       assert.deepEqual((await store.payeeBalance("ann", { now: T0 })).totalMsat, 21_000, "counted once");
       await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 0, at: T0, releases: T0 + 1 }), RangeError);
       await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 1.5, at: T0, releases: T0 + 1 }), RangeError);
-      await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 1, at: T0, releases: T0 }), RangeError);
+      await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 1, at: T0, releases: T0 - 1 }), RangeError);
       assert.equal(await store.payOf("x"), undefined, "nothing written by a refused call");
     });
 
@@ -654,6 +654,12 @@ for (const impl of impls) {
       assert.deepEqual(await store.payeeBalance("ann", { now: release }), { totalMsat: 15_000, heldMsat: 5_000, withdrawableMsat: 10_000, nextReleaseAt: T0 + 2 * HOUR });
       assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 2 * HOUR }), { totalMsat: 15_000, heldMsat: 0, withdrawableMsat: 15_000 });
       assert.deepEqual(await store.payeeBalance("nobody", { now: T0 }), { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
+    });
+
+    it("no hold (a type's 0, the default): withdrawable as it is booked, and past taking back", async () => {
+      await earn("l0", { msat: 7_000, hold: 0 });
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 }), { totalMsat: 7_000, heldMsat: 0, withdrawableMsat: 7_000 });
+      assert.equal((await store.takeBack({ lease: "l0", why: "a wrong box", at: T0 })).result, "released");
     });
 
     it("a payee's total is what was accepted less what was taken back; a take-back inside the hold takes it from held and total", async () => {
