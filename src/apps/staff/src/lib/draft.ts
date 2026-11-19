@@ -170,7 +170,8 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
       if (typeof day !== "number") return day;
       limits["perWorkerDay"] = day;
     }
-    input["limits"] = Object.keys(limits).length ? limits : null;
+    // A save is a whole PUT: no limits left out is none.
+    if (Object.keys(limits).length) input["limits"] = limits;
   } else {
     // A part the page does not show is sent back as it was.
     if (was?.paySats !== undefined) input["paySats"] = was.paySats;

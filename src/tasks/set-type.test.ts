@@ -85,7 +85,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "round", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "limits", "tests", "copies", "attachments", "standing", "round", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
     for (const k of ["answer", "tests", "copies", "attachments", "standing", "round"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
@@ -619,14 +619,16 @@ describe("task/set-type in the seeds: the builder's alone", () => {
   const params = (text: string) => (yaml.load(text) as { params: Params }).params;
   const reaches = (grants: string[], type: string) => grants.some((g) => globToRegExp(g).test(type));
 
-  it("the builder grants task/types and task/set-type and gates task/set-type; job and orchestrator reach neither", async () => {
+  it("the builder grants task/types, task/set-type and task/report and gates task/set-type; the assistant reads and asks for grants, never a type; job reaches none", async () => {
     const builder = params(await builderWorkflowYaml());
-    assert.ok(builder.tools.includes("task/types") && builder.tools.includes("task/set-type"));
+    assert.ok(builder.tools.includes("task/types") && builder.tools.includes("task/set-type") && builder.tools.includes("task/report"));
     assert.ok(builder.approve?.includes("task/set-type"), "a proposal: an admin's yes");
     assert.ok(!reaches(builder.tools, "task/next") && !reaches(builder.tools, "task/submit"), "never a worker's steps");
-    for (const [name, text] of [["job", await jobWorkflowYaml()], ["orchestrator", await orchestratorWorkflowYaml()]] as const) {
-      const p = params(text);
-      for (const type of ["task/types", "task/set-type"]) assert.ok(!reaches(p.tools, type), `${name} does not grant ${type}`);
-    }
+    const orchestrator = params(await orchestratorWorkflowYaml());
+    for (const type of ["task/types", "task/report", "task/grant"]) assert.ok(orchestrator.tools.includes(type), `the assistant grants ${type}`);
+    assert.ok(orchestrator.approve?.includes("task/grant"), "a grant is an admin's yes");
+    assert.ok(!reaches(orchestrator.tools, "task/set-type"), "a type is the builder's");
+    const job = params(await jobWorkflowYaml());
+    for (const type of ["task/types", "task/set-type", "task/report", "task/grant"]) assert.ok(!reaches(job.tools, type), `job does not grant ${type}`);
   });
 });
