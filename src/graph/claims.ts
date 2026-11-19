@@ -516,7 +516,8 @@ export function claimStatus(input: ClaimStatusInput): ClaimStatus {
 
 /** What `claimStatus` reads: the claim's evidence about the subject from
  *  its active checks (on the side a Concept is read on), and of it the
- *  COUNTED — collected, with a verdict. */
+ *  COUNTED — collected, with a verdict. `ClaimsReader.scoped` asks the
+ *  database the same, so a read hands this only rows it keeps. */
 function measured(input: ClaimStatusInput): { active: Set<string>; mine: EvidenceRow[]; counted: EvidenceRow[] } {
   const { claim, subject } = input;
   const active = new Set(input.checks.filter((k) => k.retired_at === undefined || k.retired_at === null).map((k) => k.id));
@@ -535,8 +536,8 @@ function measured(input: ClaimStatusInput): { active: Set<string>; mine: Evidenc
  *  where it is read — main, or a branch — and what the works judged there
  *  said. `supports` / `refutes` count the verdicts on that side's CURRENT
  *  page (one per check per work: what the status rests on, every measurement
- *  rather than the newest); `works` is every verdict there, any version,
- *  newest first. */
+ *  rather than the newest), counted by the database; `works` is the newest
+ *  verdicts there, any version, newest first (`ClaimsReader.compareFor`). */
 export interface ClaimSide {
   /** The page's version on that side; null: no page of that name there. */
   version: string | null;
@@ -546,17 +547,11 @@ export interface ClaimSide {
   works: EvidenceRow[];
 }
 
-/** A claim read on one side. Pure. */
-export function claimSide(input: ClaimStatusInput): ClaimSide {
-  const { counted } = measured(input);
-  const current = input.activeVersion === null ? [] : counted.filter((e) => e.about?.content_hash === input.activeVersion);
-  return {
-    version: input.activeVersion,
-    status: claimStatus(input),
-    supports: current.filter((e) => e.strength! > 0).length,
-    refutes: current.filter((e) => e.strength! < 0).length,
-    works: [...counted].sort(newestFirst),
-  };
+/** Where a Concept's status is read (`ClaimsReader.scopeOf`): main (no
+ *  branch), or a branch, counted from when it was made. */
+export interface ClaimScope {
+  branch?: string;
+  since?: number;
 }
 
 // ── Reads ───────────────────────────────────────────────────────────────────
@@ -794,17 +789,109 @@ export class ClaimsReader {
    * Every `Evidence` a claim's live `EVIDENCED_BY` edges reach — planned
    * slots included — with its check, the version it is about, and its
    * source. Pass `subject` to keep only evidence about that subject's
-   * versions. Newest first.
+   * versions (asked of the database). Newest first. All of its history:
+   * a status reads `statusEvidence` instead.
    */
   async evidenceFor(claimId: string, subject?: SubjectRef): Promise<EvidenceRow[]> {
     const d = this.d;
-    const rows = await this.evidenceRows(
-      `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e", EVIDENCE_TYPE)}
+    const { match, params } = subject
+      ? this.scoped(claimId, subject)
+      : {
+          match: `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e", EVIDENCE_TYPE)}
        WHERE ${d.edgeLive("eb")} AND ${d.live("e")}`,
-      { ns: this.ns, id: claimId },
-    );
-    const out = rows.map(({ claim_text: _, ...e }): EvidenceRow => e).sort(newestFirst);
+          params: { ns: this.ns, id: claimId },
+        };
+    const out = (await this.evidenceRows(match, params)).map(withoutText).sort(newestFirst);
     return subject ? out.filter((e) => isVersionOf(e.about, subject)) : out;
+  }
+
+  /**
+   * A claim's evidence about one subject as a MATCH that binds `c`, `eb`
+   * and `e` — the conditions `measured` applies, asked of the database. It
+   * is ABOUT a version of the subject. With `checks`, it came from one of
+   * them or from no check. With `side`, a Concept's came from a work run
+   * there (`evidenceOn`): its source (bound as `hs`, `src`) recorded the
+   * version read and the branch — none on main — as JSON (`SourceContext`,
+   * matched as text), and on a re-made branch the source run started since
+   * (run ids are ms start times: the same length, so compared as text).
+   * Every parameter is set, never null (Ladybug types a null as a boolean).
+   */
+  private scoped(claimId: string, subject: SubjectRef, opts: { checks?: readonly string[]; side?: ClaimScope } = {}): { match: string; params: Record<string, unknown> } {
+    const d = this.d;
+    const n = SUBJECT_NODE[subject.kind];
+    const params: Record<string, unknown> = { ns: this.ns, id: claimId, name: subjectName(subject) };
+    let match = `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e", EVIDENCE_TYPE)}-[ab:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("v", n.version, { [n.versionKey]: "$name" })}`;
+    const where = [d.edgeLive("eb"), d.live("e"), d.edgeLive("ab")];
+    if (opts.checks) {
+      where.push(`NOT EXISTS { MATCH ${this.produced} WHERE ${d.edgeLive("pb")}${opts.checks.length ? " AND NOT (k.id IN $checks)" : ""} }`);
+      if (opts.checks.length) params["checks"] = [...opts.checks];
+    }
+    if (subject.kind === "concept" && opts.side) {
+      match += `, (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src)`;
+      where.push(d.edgeLive("hs"), `hs.context CONTAINS '"version":'`);
+      if (opts.side.branch) {
+        where.push("hs.context CONTAINS $branch");
+        params["branch"] = `"branch":${JSON.stringify(opts.side.branch)}`;
+        if (opts.side.since !== undefined) {
+          where.push("src.run_id >= $since");
+          params["since"] = String(opts.side.since);
+        }
+      } else where.push(`NOT (hs.context CONTAINS '"branch":')`);
+    }
+    return { match: `${match}\n       WHERE ${where.join(" AND ")}`, params };
+  }
+
+  /** The pattern of a scoped evidence's check: `pb`, `k`. */
+  private get produced(): string {
+    return `(e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->${this.d.node("k", CHECK_TYPE)}`;
+  }
+
+  /** A scoped evidence is about `$active`: the version node's hash, or for a
+   *  Concept the version its source recorded. */
+  private onVersion(subject: SubjectRef, version: string): { cond: string; active: string } {
+    const n = SUBJECT_NODE[subject.kind];
+    return n.versionHash ? { cond: `v.\`${n.versionHash}\` = $active`, active: version } : { cond: "hs.context CONTAINS $active", active: `"version":${JSON.stringify(version)}` };
+  }
+
+  /**
+   * The evidence a claim's status about one subject is computed from, and
+   * no more however many passes it has had: `claimStatus` over it is
+   * `claimStatus` over the whole history. Every open slot; of the counted
+   * evidence (from `checks` or no check, on `side` for a Concept), each
+   * stream's newest MEASUREMENT — its newest evidence with the rest of that
+   * evidence's source — and each check's newest about `activeVersion`
+   * (what `unverified` asks). The database finds each stream's newest
+   * second; only the evidence of those seconds and of their sources is read.
+   * Newest first.
+   */
+  async statusEvidence(claimId: string, subject: SubjectRef, opts: { checks: readonly string[]; activeVersion: string | null; side?: ClaimScope }): Promise<EvidenceRow[]> {
+    const d = this.d;
+    const { match, params } = this.scoped(claimId, subject, { checks: opts.checks, side: opts.side ?? {} });
+    const counted = `${match} AND e.evidence_status = 'collected' AND eb.strength <> 0`;
+    const current = opts.activeVersion === null ? null : this.onVersion(subject, opts.activeVersion);
+    const newest = `max(e.observed_at) AS t${current ? `, max(CASE WHEN ${current.cond} THEN e.observed_at END) AS ta` : ""}`;
+    const heads = { ...params, ...(current ? { active: current.active } : {}) };
+    const [checked, unchecked] = await Promise.all([
+      opts.checks.length ? this.graph.query(`${counted} MATCH ${this.produced} WHERE ${d.edgeLive("pb")} RETURN k.id AS k, ${newest}`, heads) : [],
+      this.graph.query(`${counted} AND NOT EXISTS { MATCH ${this.produced} WHERE ${d.edgeLive("pb")} } RETURN ${newest}`, heads),
+    ]);
+    const seconds = [...new Set([...checked, ...unchecked].flatMap((r) => [r["t"], r["ta"]]).filter((t): t is number => typeof t === "number"))];
+    // Evidence with no `observed_at` (none strut writes) orders by when it
+    // was written, which these seconds do not reach: it is always read.
+    const at = `(e.observed_at IS NULL${seconds.length ? " OR e.observed_at IN $seconds" : ""})`;
+    const sources = seconds.length
+      ? await this.graph.query(
+          `${counted} AND ${at} MATCH (e)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r) WHERE ${d.edgeLive("hr")} RETURN DISTINCT r.ref_id AS r`,
+          { ...params, seconds },
+        )
+      : [];
+    const runs = sources.map((r) => r["r"]).filter((r): r is string => typeof r === "string");
+    const sameSource = runs.length ? ` OR EXISTS { MATCH (e)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r) WHERE ${d.edgeLive("hr")} AND r.ref_id IN $runs }` : "";
+    const rows = await this.evidenceRows(
+      `${match} AND (e.evidence_status = 'planned' OR (e.evidence_status = 'collected' AND eb.strength <> 0 AND (${at}${sameSource})))`,
+      { ...params, ...(seconds.length ? { seconds } : {}), ...(runs.length ? { runs } : {}) },
+    );
+    return rows.map(withoutText).sort(newestFirst);
   }
 
   /**
@@ -933,32 +1020,63 @@ export class ClaimsReader {
   /** Every active claim on a subject with its active checks and computed
    *  status — the rows the ledger is built from. A Concept's is read on
    *  main, or on `branch`: its page there, the evidence of works run on it
-   *  since it was made (`claimStatus`); `evidence` is still every side's. */
+   *  since it was made (`claimStatus`). `evidence` is what the status was
+   *  read from (`statusEvidence`), slots included. */
   async statusFor(subject: SubjectRef, opts: { branch?: string } = {}): Promise<SubjectLedgerRow[]> {
     const branch = subject.kind === "concept" ? opts.branch : undefined;
     const [claims, activeVersion, where] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject, branch), this.scopeOf(branch)]);
     return mapLimit(claims, STATUS_CONCURRENCY, async (claim) => {
-      const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
+      const checks = await this.checksFor(claim.id);
+      const evidence = await this.statusEvidence(claim.id, subject, { checks: checks.map((k) => k.id), activeVersion, side: where });
       return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion, ...where }), evidence };
     });
   }
 
   /** Every active claim on a Concept read on main and on `branch` side by
-   *  side, from one read of its evidence (item d's compare): each side's
-   *  page version, status and what the works run there said. */
-  async compareFor(subject: Extract<SubjectRef, { kind: "concept" }>, branch: string): Promise<Array<{ claim: ClaimRow; main: ClaimSide; branch: ClaimSide }>> {
+   *  side (item d's compare): each side's page version, status, verdicts on
+   *  its page, and its newest `works` verdicts. */
+  async compareFor(subject: Extract<SubjectRef, { kind: "concept" }>, branch: string, works: number): Promise<Array<{ claim: ClaimRow; main: ClaimSide; branch: ClaimSide }>> {
     const [claims, onMain, onBranch, where] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject), this.activeVersion(subject, branch), this.scopeOf(branch)]);
     return mapLimit(claims, STATUS_CONCURRENCY, async (claim) => {
-      const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
-      const base = { claim, checks, subject, evidence };
-      return { claim, main: claimSide({ ...base, activeVersion: onMain }), branch: claimSide({ ...base, activeVersion: onBranch, ...where }) };
+      const checks = await this.checksFor(claim.id);
+      const [main, onIt] = await Promise.all([this.sideOf(claim, checks, subject, {}, onMain, works), this.sideOf(claim, checks, subject, where, onBranch, works)]);
+      return { claim, main, branch: onIt };
     });
+  }
+
+  /** A claim read on one side of a compare: its status, the verdicts on the
+   *  side's page counted by the database, its newest `works` verdicts. */
+  private async sideOf(claim: ClaimRow, checks: CheckRow[], subject: SubjectRef, side: ClaimScope, activeVersion: string | null, works: number): Promise<ClaimSide> {
+    const ids = checks.map((k) => k.id);
+    const { match, params } = this.scoped(claim.id, subject, { checks: ids, side });
+    const counted = `${match} AND e.evidence_status = 'collected' AND eb.strength <> 0`;
+    const current = activeVersion === null ? null : this.onVersion(subject, activeVersion);
+    const [evidence, tally, newest] = await Promise.all([
+      this.statusEvidence(claim.id, subject, { checks: ids, activeVersion, side }),
+      current
+        ? this.graph.query(
+            `${counted} AND ${current.cond}
+             RETURN count(CASE WHEN eb.strength > 0 THEN 1 END) AS supports, count(CASE WHEN eb.strength < 0 THEN 1 END) AS refutes`,
+            { ...params, active: current.active },
+          )
+        : [],
+      this.evidenceRows(`${counted} WITH c, eb, e ORDER BY coalesce(e.observed_at, 0) DESC LIMIT ${Math.max(1, Math.trunc(works))}`, params),
+    ]);
+    return {
+      version: activeVersion,
+      status: claimStatus({ claim, checks, subject, evidence, activeVersion, ...side }),
+      supports: Number(tally[0]?.["supports"] ?? 0),
+      refutes: Number(tally[0]?.["refutes"] ?? 0),
+      works: newest.map(withoutText).sort(newestFirst),
+    };
   }
 }
 
-/** Claims `statusFor` and `compareFor` read at once: each is about seven statements, and a
+/** Claims `statusFor` and `compareFor` read at once: each is about a dozen statements, and a
  *  subject with dozens of claims would otherwise send them all together. */
 const STATUS_CONCURRENCY = 4;
+
+const withoutText = ({ claim_text: _, ...e }: RunEvidenceRow): EvidenceRow => e;
 
 /** `Promise.all(items.map(fn))` with at most `limit` in flight, in order. */
 async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
