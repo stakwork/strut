@@ -748,7 +748,10 @@ export interface TasksCapability {
   /** Saves the whole type (a PUT: what is left out is the default — unpaid,
    *  a 72-hour hold). A change of pay reaches the next lease taken, never one
    *  in hand (§8.1). */
-  setType(name: string, input: TaskTypeInput, by?: string): Promise<TaskType>;
+  /** `holders`: the people who made it — whoever asked for it and the
+   *  admin who saved it. A NEW invite-only type is theirs from the start
+   *  (granted, no qualifying), so they can try it at once. */
+  setType(name: string, input: TaskTypeInput, by?: string, o?: { holders?: Array<string | undefined> }): Promise<TaskType>;
   /** Removes a type no open task is of (`in_use` otherwise: turn it off
    *  and let them settle), and revokes its live grants. Its tasks on file
    *  keep its name. */
@@ -1823,7 +1826,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       return s ? s.tasks.types() : [];
     },
 
-    async setType(name, input, by) {
+    async setType(name, input, by, o = {}) {
       if (typeof name !== "string" || name.length > TYPE_NAME_MAX || !TYPE_NAME_RE.test(name)) {
         throw new TaskError("bad_request", `a task type's name is lowercase letters, digits, ".", "_" and "-", segments joined by "/", at most ${TYPE_NAME_MAX} characters (got ${JSON.stringify(name)})`);
       }
@@ -1849,6 +1852,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const round = await roundRuleOf(name, input.round);
       if (standing && round) throw new TaskError("bad_request", "a task type is standing (a worker's ask makes its task) or sent in rounds (a workflow makes one for each item), never both");
       const s = await stores();
+      const existed = await s.tasks.type(name);
       // Ruling 12: whether a paid open type qualifies newcomers is the
       // admin's; nothing here refuses one for want of tests.
       const saved = await s.tasks.putType({
@@ -1871,6 +1875,15 @@ export function createTasks(deps: TasksDeps): TasksService {
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
+      // A new invite-only type is its makers' from the start, so "try it"
+      // works the moment it is saved (an open one needs no grant).
+      if (!existed && !open) {
+        const at = now();
+        for (const actor of new Set(o.holders ?? [])) {
+          if (typeof actor !== "string" || !actor || actor.length > 200) continue;
+          await s.workers.grant(actor, name, by ?? actor, at, 0);
+        }
+      }
       // Turned on, or now drawn by another app: what a waiter may take changed.
       wakeAll();
       return saved;

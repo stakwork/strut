@@ -341,7 +341,9 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
         ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
       };
-      return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
+      // The admin saving a new invite-only type holds it, to try it.
+      const who = (await by(c)).by;
+      return { type: await tasks.setType(c.req.param("name"), input, who, { holders: [who] }) };
     }),
   );
 

@@ -558,6 +558,12 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.deepEqual([saved!.name, saved!.app, saved!.paySats, saved!.enabled, saved!.leaseSeconds, saved!.changedBy], ["pet-match", "workers", 10, true, 600, "ada"]);
     assert.deepEqual(saved!.answer, MATCH);
     assert.equal(saved!.open, false);
+    // A new invite-only type is its makers' from the start: who asked (ann) and the admin who said yes.
+    for (const who of ["ann", "ada"]) {
+      const w = await strut.tasks.capability.worker(who);
+      assert.deepEqual(w?.grants.filter((g) => g.revokedAt === undefined).map((g) => [g.type, g.qualify]), [["pet-match", 0]], `${who} made it: theirs to try`);
+    }
+    assert.equal(await strut.tasks.capability.worker("bo"), undefined, "nobody else");
     await assert.rejects(taskTypes().save("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 10 }, { proposal: out.proposal }), /set_type_needs_admin: .*is applied/);
   });
 

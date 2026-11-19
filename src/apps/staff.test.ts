@@ -628,7 +628,8 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const stats = await admin("staff/stats");
     assert.equal(stats.error, undefined, stats.error);
     const pets = stats.result.types.find((t: { type: string }) => t.type === "pets");
-    assert.deepEqual([pets.waiting, pets.working, pets.granted, pets.app, pets.appProblem], [1, 0, 1, "workers", undefined]);
+    // Granted to w1, and to ada, who made it (a new invite-only type is its maker's, to try it).
+    assert.deepEqual([pets.waiting, pets.working, pets.granted, pets.app, pets.appProblem], [1, 0, 2, "workers", undefined]);
     const tasks = await admin("staff/tasks", { runId });
     const id = tasks.result.tasks[0].id as string;
     const one = await admin("staff/task", { id });

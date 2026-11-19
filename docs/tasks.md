@@ -317,8 +317,13 @@ index. A change in this area updates this file, not AGENTS.md.
   plus the next take's. `numbers` (`GET /tasks/numbers`, `staff/numbers`,
   `task/report`) is each type's spend against its limits and, over the last
   `days`, each worker's answered, minutes (taken → answered), per hour and
-  earned; the staff's type page shows it ("How it's going"). "Try it
-  yourself" there is `staff/grant { actor: "@me" }`. A GRANT LINK
+  earned; the staff's type page shows it ("How it's going"). A NEW
+  invite-only type is granted to its makers when it is saved (`setType`'s
+  `holders`, qualify 0): the admin saving it in the staff editor (the
+  route's actor), or for a `task/set-type` proposal the person who asked
+  and the admin who accepted; an open type needs none, a change grants
+  nobody. "Try it yourself" on the staff's type page is
+  `staff/grant { actor: "@me" }`, for any other admin. A GRANT LINK
   (`POST /tasks/invites/link`, `staff/grant-link`, the share block's "Someone
   who already has Peel") is an invite token whose code is `link_…`: live
   without the daemon (createStrut's `invite.live`), one worker per code by

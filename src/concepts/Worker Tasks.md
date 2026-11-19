@@ -22,16 +22,17 @@ time and pay") rather than building a stand-in.
   holds which work, grant and revoke; the answers and a verdict on each;
   tests; payouts; Support (workers' messages). Its share block makes an
   invite (someone new to Peel) and a link for someone who already has
-  Peel. "Try it yourself" on a task gives the admin its work, to try it
-  in the worker page here.
+  Peel. A new invite-only task is its makers' from the start (whoever
+  asked for it and the admin who approved it), so they try it at once;
+  "Try it yourself" on a task gives any other admin its work.
 - **Earnings** (`strut/earnings`): the wallet, adding money, what was paid.
 - **Limits on the task**, enforced by the server whenever it hands one
   out: a BUDGET (the most it pays in all; then no more is handed out) and
   a DAILY CAP (the most one worker does in a day). A budget or a cap in a
   spec is these two, never code.
 - **Your own tools**: `task/report` answers "how is it going", "what have
-  we spent", "who did what" inside the turn; `task/grant` gives someone
-  the work (a card an admin approves) — "give it to me so I can try it".
+  we spent", "who did what" inside the turn; `task/grant` gives a worker
+  already here the work (a card an admin approves).
 
 ## Before it is built: what the person decides
 
@@ -110,9 +111,10 @@ Those two are the cards; Earnings is named in words alone, never shown.
    someone with Peel. Point there; never paste a link in the conversation.
 4. **Try it.** In the worker page, right here: they are signed in as
    themselves, see the work as a worker does, do one and see what comes
-   back (and earn its pay). Invite-only work is theirs to try only once
-   they hold it: "Try it yourself" on the task in Tasks and workers, or
-   ask for it for them with `task/grant` (no `worker`: the person). On their phone, Tasks and workers' link shows
+   back (and earn its pay). They hold invite-only work they asked for
+   already; on their phone in Peel they are another account until Peel is
+   linked to this server, so there the link for someone with Peel is the
+   way in. On their phone, Tasks and workers' link shows
    it as a worker opens it. For work one for each item, that is after
    asking for a round of one (below).
 

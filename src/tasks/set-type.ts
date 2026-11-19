@@ -331,7 +331,9 @@ export function createTaskTypes(deps: TaskTypesDeps): TaskTypesCapability {
       }
       const existing = (await tasks.types()).find((t) => t.name === name);
       const by = rec.decision?.by ?? o.actor;
-      return tasks.setType(name, mergeType(name, existing, change), by);
+      // Whoever asked for it and the admin who said yes hold a new
+      // invite-only type from the start, to try it in the worker page.
+      return tasks.setType(name, mergeType(name, existing, change), by, { holders: [rec.by.actor, by] });
     },
 
     async report(q = {}) {
