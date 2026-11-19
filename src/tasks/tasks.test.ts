@@ -112,8 +112,8 @@ for (const impl of impls) {
       const t = await tasks().setType("acme/pet-match", { app: "workers", answer: BOX }, "staff");
       assert.deepEqual(
         { ...t, changedAt: 0 },
-        { name: "acme/pet-match", app: "workers", answer: BOX, leaseSeconds: 600, withinHours: 72, enabled: true, open: true, holdHours: 72, changedAt: 0, changedBy: "staff" },
-        "the defaults are §4.2's, unpaid with §8.1's hold, open (ruling 9)",
+        { name: "acme/pet-match", app: "workers", answer: BOX, leaseSeconds: 600, withinHours: 72, enabled: true, open: true, holdHours: 0, changedAt: 0, changedBy: "staff" },
+        "the defaults are §4.2's, unpaid with no hold (§8.1), open (ruling 9)",
       );
       assert.deepEqual((await tasks().types()).map((x) => x.name), ["acme/pet-match"]);
     });
@@ -683,21 +683,20 @@ for (const impl of earningsImpls) {
       return got as WorkerTask;
     };
 
-    it("a type's pay and hold: sats to the msat, at most 1,000,000; a hold from 1 to 720 hours, 72 by default", async () => {
+    it("a type's pay and hold: sats to the msat, at most 1,000,000; a hold from 0 to 720 hours, 0 (none) by default", async () => {
       const bad = async (input: Record<string, unknown>) => assert.rejects(tasks().setType("t", { app: "a", answer: MATCH, ...input }), refused("bad_request"));
       await bad({ paySats: -1 });
       await bad({ paySats: 1_000_001 });
       assert.equal((await tasks().setType("t", { app: "a", answer: MATCH, open: false, paySats: 1_000_000 })).paySats, 1_000_000, "the cap itself");
       await bad({ paySats: 1.0005 });
       await bad({ paySats: "21" });
-      await bad({ holdHours: 0 });
-      await bad({ holdHours: 0.5 });
+      await bad({ holdHours: -1 });
       await bad({ holdHours: 721 });
       const t = await tasks().setType("t", { app: "a", answer: MATCH, open: false, paySats: 1.234, holdHours: 24 });
       assert.deepEqual([t.paySats, t.holdHours], [1.234, 24]);
       assert.deepEqual([(await tasks().types())[0]!.paySats, (await tasks().types())[0]!.holdHours], [1.234, 24], "as saved");
       const unpaid = await tasks().setType("t", { app: "a", answer: MATCH, paySats: 0 });
-      assert.deepEqual([unpaid.paySats, unpaid.holdHours], [undefined, 72], "a PUT: what is left out is the default");
+      assert.deepEqual([unpaid.paySats, unpaid.holdHours], [undefined, 0], "a PUT: what is left out is the default");
       assert.equal(ledgerOpen, undefined, "saving a type opens no ledger");
     });
 
@@ -871,7 +870,7 @@ for (const impl of earningsImpls) {
     });
 
     it("takeBack books an answer not yet booked first, so it never loses a race with the sweep", async () => {
-      const [t] = await paid();
+      const [t] = await paid({ holdHours: 72 });
       const l = await take("ann");
       failPay = 1;
       await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
@@ -922,7 +921,7 @@ for (const impl of earningsImpls) {
 
         svc = make();
         const types = await tasks().types();
-        assert.deepEqual([types[0]!.name, types[0]!.paySats, types[0]!.holdHours, types[0]!.open], ["pet-match", undefined, 72, true], "an old type is unpaid, with the default hold, and open (ruling 9)");
+        assert.deepEqual([types[0]!.name, types[0]!.paySats, types[0]!.holdHours, types[0]!.open], ["pet-match", undefined, 0, true], "an old type is unpaid, with the default hold, and open (ruling 9)");
         const view = (await tasks().task("t1"))!;
         assert.deepEqual([view.status, view.leases[0]!.id, view.leases[0]!.payMsat], ["open", "l1", undefined], "its rows kept; the old lease earns nothing");
         await svc.close();

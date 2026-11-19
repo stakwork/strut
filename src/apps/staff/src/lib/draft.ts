@@ -11,7 +11,7 @@ import type { AttachmentRule, CopiesRule, GradeRule, TaskType, TestRules } from 
 export const DEFAULTS = {
   leaseSeconds: 600,
   withinHours: 72,
-  holdHours: 72,
+  holdHours: 0,
   tests: { rate: 0.05, newRate: 0.25, newTasks: 50, qualify: 10, window: 20, minGraded: 10, threshold: 0.8, grade: "equal", gradeCapUsd: 0.05 } as TestRules,
   copies: { max: 3, agree: 2, compare: "equal", onDisagree: "more" } as CopiesRule,
   attachments: { max: 1, min: 0, types: ["image/*", "application/pdf"] } as AttachmentRule,

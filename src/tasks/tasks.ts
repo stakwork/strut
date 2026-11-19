@@ -144,10 +144,10 @@ export const DEFAULT_WITHIN_HOURS = 72;
 export const LEASE_SECONDS_MAX = 24 * 60 * 60;
 export const WITHIN_HOURS_MAX = 365 * 24;
 /** §8.1: the most one answer may earn — a guard against a slip, not a
- *  policy — and the bounds of a type's hold, in hours (never 0: earnings
- *  wait). */
+ *  policy — and the bounds of a type's hold, in hours (0: none, the
+ *  default). */
 export const PAY_SATS_MAX = 1_000_000;
-export const HOLD_HOURS_MIN = 1;
+export const HOLD_HOURS_MIN = 0;
 export const HOLD_HOURS_MAX = 720;
 /** §8.1: how many unbooked answers one sweep books at most. */
 export const BOOK_BATCH = 500;
@@ -2588,11 +2588,11 @@ function titleOk(v: unknown): string | undefined {
   return t || undefined;
 }
 
-/** A type's hold: hours from `HOLD_HOURS_MIN` to `HOLD_HOURS_MAX`, never 0. */
+/** A type's hold: hours from `HOLD_HOURS_MIN` to `HOLD_HOURS_MAX` (0: none). */
 function holdOk(v: unknown): number {
   if (v === undefined || v === null) return DEFAULT_HOLD_HOURS;
   if (typeof v !== "number" || !Number.isFinite(v) || v < HOLD_HOURS_MIN || v > HOLD_HOURS_MAX) {
-    throw new TaskError("bad_request", `holdHours is a number of hours from ${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}: earnings wait before they can be withdrawn`);
+    throw new TaskError("bad_request", `holdHours is a number of hours from ${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}: how long earnings wait before they can be withdrawn`);
   }
   return v;
 }

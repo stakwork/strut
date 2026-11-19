@@ -165,7 +165,7 @@ describe("strut/staff: the type editor's draft", () => {
     assert.ok("input" in out);
     assert.deepEqual([out.input["tests"], out.input["copies"]], [null, null]);
     const fresh = draftOf();
-    assert.deepEqual([fresh.leaseMinutes, fresh.withinHours, fresh.holdHours, fresh.enabled, fresh.testsOn, fresh.open], ["10", "72", "72", true, false, true], "a new type open, as the store's default");
+    assert.deepEqual([fresh.leaseMinutes, fresh.withinHours, fresh.holdHours, fresh.enabled, fresh.testsOn, fresh.open], ["10", "72", "0", true, false, true], "a new type open, as the store's default");
     assert.match((saveOf(fresh, all) as { problem: string }).problem, /pick the app/);
     assert.equal(shapeChanged(type, { required: ["same"], properties: MATCH.properties, type: "object" } as never), false, "key order is not a change");
     assert.equal(shapeChanged(type, { type: "boolean" } as never), true);

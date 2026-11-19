@@ -10,7 +10,7 @@ import { useWords, type AnswerIssue, type Lang } from "@strut/kit";
 
 const en = {
   // The page.
-  title: "Work",
+  title: "Tasks",
   subtitle: "Do tasks · get paid",
   oneMoment: "One moment…",
   signInHeading: "Get paid for small tasks",
@@ -126,7 +126,7 @@ const REFUSED_ES: Record<string, string> = {
 };
 
 const es: WorkerWords = {
-  title: "Trabajo",
+  title: "Tareas",
   subtitle: "Haz tareas · cobra",
   oneMoment: "Un momento…",
   signInHeading: "Gana dinero con tareas cortas",

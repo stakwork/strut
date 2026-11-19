@@ -962,7 +962,8 @@ export function earningOf(input: PayInput): Earning {
   positiveInt("msat", input.msat);
   int("at", input.at);
   int("releases", input.releases);
-  if (input.releases <= input.at) throw new RangeError(`releases must come after at: ${input.releases} ≤ ${input.at}`);
+  // `releases` at `at` is no hold: withdrawable as it is booked (a type's 0, the default).
+  if (input.releases < input.at) throw new RangeError(`releases must not come before at: ${input.releases} < ${input.at}`);
   return {
     lease: input.lease,
     task: input.task,

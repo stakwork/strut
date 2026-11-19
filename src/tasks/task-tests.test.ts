@@ -127,7 +127,7 @@ for (const impl of IMPLS) {
 
     /** The type with tests on (§7.8's defaults under `tests`). */
     const typeWith = (tests: Record<string, unknown>, o: { paySats?: number; answer?: unknown; by?: string } = {}) =>
-      tasks().setType(TYPE, { app: "workers", answer: o.answer ?? MATCH, leaseSeconds: 600, withinHours: 48, tests, ...(o.paySats ? { open: false, paySats: o.paySats } : {}) }, o.by ?? "staff");
+      tasks().setType(TYPE, { app: "workers", answer: o.answer ?? MATCH, leaseSeconds: 600, withinHours: 48, tests, ...(o.paySats ? { open: false, paySats: o.paySats, holdHours: 72 } : {}) }, o.by ?? "staff");
     let n = 0;
     /** `count` real tasks of one run. */
     const real = async (count = 1, o: { files?: string[] } = {}) => {

@@ -82,7 +82,7 @@ describe("strut/worker: the worker app every server has", () => {
   it("is seeded at boot and built, first-party but not an admin's; a reboot is a no-op; `worker: false` and STRUT_HOST_CONFIG turn it off", async () => {
     const app = await strut.apps.get(WORKER_APP);
     assert.ok(app, "seeded");
-    assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, undefined, "Worker"]);
+    assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, undefined, "Tasks"]);
     assert.deepEqual(app.manifest.permissions, ["camera"]);
     assert.equal(app.hash, await treeHash(WORKER_DIR));
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
@@ -161,9 +161,9 @@ describe("strut/worker: the worker app every server has", () => {
     const read = await staff("GET", `/tasks/${answered!.id}/files/${saved.path.split("/").map(encodeURIComponent).join("/")}`);
     assert.equal(read["base64"], photo.toString("base64"));
 
-    // ── What it earned is held; the next ask is another pick-up.
-    const after = (await call("task/me")).result as { balance: { heldMsat: number } };
-    assert.equal(after.balance.heldMsat, 50_000);
+    // ── What it earned is withdrawable at once (no hold by default); the next ask is another pick-up.
+    const after = (await call("task/me")).result as { balance: { heldMsat: number; withdrawableMsat: number } };
+    assert.deepEqual([after.balance.heldMsat, after.balance.withdrawableMsat], [0, 50_000]);
     const again = (await call("task/next", { wait: 1 })).result as { lease: string };
     assert.ok(again.lease && again.lease !== task.lease);
   });

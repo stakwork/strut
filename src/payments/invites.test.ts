@@ -308,18 +308,19 @@ describe("worker invites on a server (§5.8)", () => {
 });
 
 /** The join page's script in a stand-in browser: what it shows and links. */
-async function runJoin(o: { hash: string; userAgent: string; release?: unknown }) {
+async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
   const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "again", "qr"].map((id) => [id, el(id)]));
   const appended: Array<Record<string, unknown>> = [];
   const fetched: string[] = [];
   const drawn: string[] = [];
+  const copied: string[] = [];
   const href = `https://s.example/public/join${o.hash}`;
   runInNewContext(JOIN_SCRIPT, {
     // What /public/join/qrcode.js defines, once the page has loaded it.
     qrcode: () => ({ addData: (t: string) => drawn.push(t), make: () => {}, createSvgTag: () => "<svg>qr</svg>" }),
     location: { hash: o.hash, href },
-    navigator: { userAgent: o.userAgent },
+    navigator: o.noClipboard ? { userAgent: o.userAgent } : { userAgent: o.userAgent, clipboard: { writeText: async (t: string) => void copied.push(t) } },
     document: { getElementById: (id: string) => els[id], createElement: () => ({}), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
       fetched.push(url);
@@ -329,7 +330,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown }
   });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  return { els, appended, fetched, drawn, href };
+  return { els, appended, fetched, drawn, copied, href };
 }
 
 describe("the join page's script (§5.8)", () => {
@@ -356,6 +357,19 @@ describe("the join page's script (§5.8)", () => {
     // The daemon's whole link after # reads the same.
     const whole = await runJoin({ hash: `#sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`, userAgent: ANDROID });
     assert.equal(whole.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
+  });
+
+  it("on Android: a tap on either button copies the invite link, for a Peel installed after it to read; nothing before a tap", async () => {
+    const r = await runJoin({ hash, userAgent: ANDROID });
+    assert.deepEqual(r.copied, [], "the clipboard is written only on a gesture");
+    const tap = (id: string) => (r.els[id] as unknown as { onclick: () => void }).onclick();
+    tap("open");
+    tap("again");
+    assert.deepEqual(r.copied, [`sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`, `sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`]);
+    // No clipboard (an old browser, a refusal): the tap still opens Peel.
+    const none = await runJoin({ hash, userAgent: ANDROID, noClipboard: true });
+    assert.doesNotThrow(() => (none.els["open"] as unknown as { onclick: () => void }).onclick());
+    assert.equal(none.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
   });
 
   it("anywhere else: open it on an Android phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {

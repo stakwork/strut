@@ -138,6 +138,7 @@ describe("the photo-remix demo: a photo snapped, reimagined, and shown back", ()
       answer: { type: "object", properties: {} },
       attachments: { max: 1, min: 1, types: ["image/*"] },
       paySats: 21,
+      holdHours: 72,
       standing: { workflow: "photo-remix" },
     });
     assert.deepEqual([type["type"].open, type["type"].standing], [true, { workflow: "photo-remix" }]);

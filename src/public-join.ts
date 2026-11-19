@@ -11,9 +11,14 @@
  *   Peel opens the worker app named by `a=`; an existing user goes straight
  *   to it). Without, Chrome goes to `S.browser_fallback_url`: the newest APK
  *   on stakwork/peel-android's GitHub releases, which the page looks up
- *   (falling back to the releases page). "Installed Peel? Continue" fires the
- *   same intent again once it is installed. Each is a link the person taps:
- *   Chrome opens an app from a page only on a gesture.
+ *   (falling back to the releases page). Nothing carries an intent across an
+ *   install, so each tap also COPIES the invite link (`sphinx.chat://?…`):
+ *   a Peel opened with no account and no invite reads it off the clipboard
+ *   (peel-android's onboarding), and a new worker goes from install to
+ *   signup to the worker app without coming back here. "Opened Peel without
+ *   the invite?" fires the same intent again, for a Peel too old to read the
+ *   clipboard. Each is a link the person taps: Chrome opens an app from a
+ *   page only on a gesture, and writes the clipboard only on one.
  * - **Anywhere else** it says to open the link on an Android phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
@@ -55,6 +60,12 @@ export const JOIN_SCRIPT = `(function () {
       document.getElementById("again").href = href;
     };
     point(RELEASES);
+    // The tap that downloads Peel also hands it the invite, through the clipboard.
+    var copy = function () {
+      try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
+    };
+    document.getElementById("open").onclick = copy;
+    document.getElementById("again").onclick = copy;
     show("android");
     // The newest APK itself, so no Peel yet is one tap to download.
     fetch(LATEST, { headers: { accept: "application/vnd.github+json" }, credentials: "omit", referrerPolicy: "no-referrer" })
@@ -113,8 +124,8 @@ export const JOIN_PAGE = `<!doctype html>
 <section id="android" hidden>
 <p>Peel signs you up with this invite, then opens the work.</p>
 <a id="open" class="button" href="#">Open in Peel</a>
-<p class="muted">No Peel yet? The button downloads it. Install it, then come back here.</p>
-<a id="again" class="button secondary" href="#">Installed Peel? Continue</a>
+<p class="muted">No Peel yet? The button downloads it and copies your invite. Install Peel and open it: it finds the invite and signs you up.</p>
+<a id="again" class="button secondary" href="#">Opened Peel without the invite? Tap here</a>
 </section>
 <section id="elsewhere" hidden>
 <p>Open this link on an Android phone: scan the code with its camera.</p>
