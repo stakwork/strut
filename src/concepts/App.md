@@ -373,7 +373,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 | `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
 | `useCamera()` → `{ available, capture({ facing?, maxSide?, title? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
-| `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors") |
+| `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors"). `signIn({ silent: true })` as the page loads signs in only when nobody has to say yes (in Peel, a page Peel already lets sign them in), drawing nothing; keep a Sign in button for the rest |
 
 **Deep links.** The page is opened with whatever its link carries
 (`?app=<name>&input=…`), as `useToolInput()`. The starter template's router

@@ -192,6 +192,19 @@ export async function signInWithSphinx(ask: SignInAsk, from?: string): Promise<S
   return { outcome: "signed", session };
 }
 
+/** A page's SILENT sign-in (`{ silent: true }`, @strut/kit/visitor), asked
+ *  as it loads: the native wallet alone, and only its answer as it stands —
+ *  Peel signs at once a page it holds a sign-in grant for (the page it opened
+ *  from the worker's own invite) and refuses anything else, untapped, without
+ *  a sheet. No strut sheet, no browser key made, no other method: null
+ *  unless signed. A refusal, or a server that would not take the signature,
+ *  is null too: the page's own button asks plainly. */
+export async function signInSilently(methods: readonly SignInMethod[], sphinx: SignInAsk | undefined, from?: string): Promise<VisitorSession | null> {
+  if (!sphinx || !methods.includes("sphinx")) return null;
+  const r = await signInWithSphinx(sphinx, from).catch(() => null);
+  return r?.outcome === "signed" ? r.session : null;
+}
+
 // ── `nostr`: NIP-07 + NIP-98 ─────────────────────────────────────────────
 
 interface Nip07 {

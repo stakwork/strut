@@ -392,29 +392,67 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   const known = !host.public;
   const me = useWorker({ enabled: !!visitor.actor || known, all: everyApp });
   const signedIn = !!visitor.actor || (known && !!me.data?.actor);
+  // A visitor in Peel may be signed in already as far as Peel goes: the page
+  // it opened from the worker's own invite holds Peel's sign-in grant. So the
+  // page asks as it loads, silently — Peel answers a grant with a toast and
+  // nothing else; anything less draws nothing here and leaves Sign in to
+  // start. One ask a page.
+  const [signingIn, setSigningIn] = useState(false);
+  const askedSilently = useRef(false);
+  useEffect(() => {
+    if (askedSilently.current || known || !visitor.available || visitor.actor) return;
+    askedSilently.current = true;
+    setSigningIn(true);
+    void visitor
+      .signIn({ silent: true })
+      .catch(() => undefined)
+      .finally(() => setSigningIn(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the page can sign in at all
+  }, [known, visitor.available, visitor.actor]);
   /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
   const [working, setWorking] = useState<string | null | undefined>(undefined);
   // Opened on one kind of work (`appLink(app, { type })`, as another app's
   // dashboard opens it, or an invite's link): straight to it, once.
-  const opened = useToolInput<{ type?: string }>()?.type;
+  const input = useToolInput<Record<string, unknown>>();
+  const opened = typeof input?.["type"] === "string" ? input["type"] : undefined;
   const openedOnce = useRef(false);
   /** From the moment an answer goes until Next task: no next task is
    *  leased meanwhile, so a worker who stops here holds nothing. */
   const [paused, setPaused] = useState(false);
   const work = useTask(working ?? type, { enabled: signedIn && working !== undefined && !paused });
+  /** The app that draws a kind, when it is not this one. */
+  const drawnElsewhere = (kind: string) => {
+    const app = me.data?.types.find((t) => t.name === kind)?.app;
+    return app && here && app !== here ? app : undefined;
+  };
   /** Work on a kind: here when this app draws it, else in the app that does. */
   const start = (kind: string | null) => {
-    const app = kind === null ? undefined : me.data?.types.find((t) => t.name === kind)?.app;
-    if (app && here && app !== here) void host.openLink(appLink(app, { type: kind }));
+    const app = kind === null ? undefined : drawnElsewhere(kind);
+    if (app) void host.openLink(appLink(app, { type: kind }));
     else setWorking(kind);
   };
   // Once `task/me` has answered — an invite's grant made by then — and only
   // when the worker may do it: else the dashboard, which says what they can.
+  // A kind another app draws opens that app, and first this page's own link
+  // loses its `type`: Back from that app comes back to this page, which must
+  // be the dashboard then, not this link again, which would open the app
+  // again (Back bounced forward, 2026-11-19).
   useEffect(() => {
     if (!signedIn || !opened || openedOnce.current || !me.data) return;
     openedOnce.current = true;
-    if (me.data.types.some((t) => t.name === opened)) start(opened);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `start` reads me.data, which is a dependency
+    if (!me.data.types.some((t) => t.name === opened)) return;
+    const app = drawnElsewhere(opened);
+    if (!app || !here) {
+      setWorking(opened);
+      return;
+    }
+    const { type: _opened, ...rest } = input ?? {};
+    const own = Object.fromEntries(Object.entries(rest).filter(([, v]) => typeof v === "string")) as Record<string, string>;
+    void host
+      .openLink(appLink(here, own))
+      .catch(() => undefined)
+      .then(() => host.openLink(appLink(app, { type: opened })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `drawnElsewhere` reads me.data, which is a dependency
   }, [signedIn, opened, me.data]);
   const [sent, setSent] = useState<Sent | null>(null);
   const submit: UseTask["submit"] = async (answer, files) => {
@@ -444,7 +482,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   const mark = icon ?? <Briefcase className="size-4" />;
 
   let body: ReactNode;
-  if (!signedIn && known && me.isLoading) {
+  if (!signedIn && ((known && me.isLoading) || signingIn)) {
     body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
   } else if (!signedIn) {
     body = (
