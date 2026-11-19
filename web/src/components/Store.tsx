@@ -812,6 +812,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
             <dl class="store-facts">
               <dt>Secrets</dt>
               <dd>{d?.secrets.length ? d.secrets.map((s) => <code key={s}>{s} </code>) : newest?.requires?.secrets?.length ? newest.requires.secrets.map((s) => <code key={s}>{s} </code>) : <span class="auto-meta">none</span>}</dd>
+              {d?.optional?.length ? <><dt>Optional</dt><dd>{d.optional.map((s) => <code key={s}>{s} </code>)}</dd></> : null}
               {newest?.requires?.binaries?.length ? <><dt>Binaries</dt><dd>{newest.requires.binaries.map((b) => <code key={b}>{b} </code>)}</dd></> : null}
               {newest?.requires?.runtimes?.length ? <><dt>Runtimes</dt><dd>{newest.requires.runtimes.map((r) => <code key={r}>{r} </code>)}</dd></> : null}
               {newest?.requires?.packages?.length ? (

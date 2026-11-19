@@ -71,7 +71,7 @@ import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import { gitOrigin } from "./git-source.js";
-import type { PackageItem } from "./format.js";
+import { readableSecrets, type PackageItem } from "./format.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
@@ -282,7 +282,7 @@ async function installSet(
     version: m.info.manifest.version,
     digest: m.info.digest,
     source: m.source,
-    secrets: m.info.manifest.requires?.secrets ?? [],
+    secrets: readableSecrets(m.info.manifest),
     at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };

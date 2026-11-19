@@ -225,6 +225,22 @@ describe("installing a package on a filesystem workspace", () => {
     assert.match((await strut.run("pinned", { secret: "GITHUB_TOKEN" })).error!.message, /secret_fenced/);
   });
 
+  it("lets a step read an optional secret, which the install does not ask for", async () => {
+    const r = await api.install(
+      `file:${await writeTree({
+        ...PACKAGE,
+        "strut.yaml": "package: acme/linear\nversion: '1'\nrequires:\n  secrets: [LINEAR_API_KEY]\n  optional: [GITHUB_TOKEN, NOTION_KEY]\n",
+        "steps/create-issue.ts": STEP("acme/linear/create-issue", "hello"),
+      })}`,
+    );
+    assert.equal(r.status, 201);
+    assert.deepEqual(r.body.missing, { secrets: [], binaries: [], runtimes: [] }, "NOTION_KEY is unset, and optional");
+    assert.deepEqual((await strut.run("acme/linear/sync", { secret: "GITHUB_TOKEN" })).output, { greeting: "hello", GITHUB_TOKEN: "ghp_456" });
+    assert.deepEqual((await strut.run("acme/linear/sync", { secret: "NOTION_KEY" })).output, { greeting: "hello", NOTION_KEY: null });
+    const fenced = await strut.run("acme/linear/sync", { secret: "OPENAI_API_KEY" });
+    assert.match(fenced.error!.message, /secret_fenced: .* declares only LINEAR_API_KEY, GITHUB_TOKEN, NOTION_KEY — it may not read OPENAI_API_KEY/);
+  });
+
   it("refuses the whole install, writing nothing, over a local item under the prefix or a file it cannot install", async () => {
     const nothing = async () => {
       assert.deepEqual(await api.list(), []);

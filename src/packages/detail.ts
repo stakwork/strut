@@ -126,6 +126,9 @@ export interface PackageDetail {
   /** Every secret the package needs: the manifest's `requires.secrets` and
    *  what the workflows and steps name. */
   secrets: string[];
+  /** The manifest's `requires.optional`: secrets its steps may read, but a
+   *  strut without them still installs it. Not in `secrets`. */
+  optional?: string[];
   /** The steps the manifest's `job:` gives the job agent, by their names
    *  inside the package, and the ones among them that ask first. */
   job?: { tools: string[]; approve: string[] };
@@ -429,6 +432,8 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   const secrets = new Set<string>(info.manifest.requires?.secrets ?? []);
   for (const w of workflows) for (const s of w.secrets) secrets.add(s);
   for (const s of steps) for (const sec of s.secrets) secrets.add(sec);
+  const optional = [...new Set(info.manifest.requires?.optional ?? [])].sort();
+  for (const name of optional) secrets.delete(name);
   const can: PackageCan = {
     spends: workflows.some((w) => w.can.spends) || apps.some((a) => a.can.spends),
     acts: workflows.some((w) => w.can.acts) || apps.some((a) => a.can.acts),
@@ -444,6 +449,7 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     steps: steps.sort((a, b) => a.name.localeCompare(b.name)),
     concepts: concepts.sort((a, b) => a.name.localeCompare(b.name)),
     secrets: [...secrets].sort(),
+    ...(optional.length ? { optional } : {}),
     ...(info.job ? { job: { tools: info.job.tools.map(inside), approve: info.job.approve.map(inside) } } : {}),
     can,
     files: info.files.length,

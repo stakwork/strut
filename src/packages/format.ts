@@ -76,6 +76,10 @@ const manifestSchema = z
     requires: z
       .object({
         secrets: names.optional(),
+        // Secrets its steps may read but can do without, such as a person's
+        // own token (plans/followed-repos.md §2): the fence lets a step read
+        // them, and neither the gate nor an install's `missing` asks for them.
+        optional: names.optional(),
         binaries: names.optional(),
         runtimes: z.array(z.object({ name: z.string().min(1), image: z.string().optional(), binaries: names.optional() }).strict()).optional(),
         packages: z
@@ -96,6 +100,12 @@ const manifestSchema = z
   .strict();
 
 export type PackageManifest = z.infer<typeof manifestSchema>;
+
+/** Every secret a package's steps may read: `requires.secrets` and
+ *  `requires.optional` — its fence. */
+export function readableSecrets(manifest: Pick<PackageManifest, "requires">): string[] {
+  return [...new Set([...(manifest.requires?.secrets ?? []), ...(manifest.requires?.optional ?? [])])];
+}
 
 /** One item: what the install publishes. A workflow, step or app is named
  *  `<package>/<path>`; a Concept by its page's name — the new form's `name`,
