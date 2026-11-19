@@ -17,7 +17,9 @@
  * nothing left is removed, and so is the record unless it holds the job's
  * history (runs or holds). `DELETE /jobs/:id` (`deleteJob`) is the only
  * other thing that removes a job's files, and the only thing that removes
- * a record with runs. The read side — the index — is `job-index.ts`.
+ * a record with runs. The read side — the index — is `job-index.ts`. Two
+ * small indexes beside the records (`.used`, `.sweep`) keep the sweep and
+ * the listing from reading every record on the server.
  *
  * A job also keeps HOLDS (§6): what a tool claimed that must outlive the
  * run — a pod — recorded through `ctx.services.jobs.hold` with the step
@@ -169,10 +171,13 @@ async function writeJobRecord(root: string, rec: JobRecord): Promise<void> {
 async function updateJobRecord(root: string, name: string, edit: (rec: JobRecord) => void): Promise<JobRecord> {
   return withLock(`${root}.json`, async () => {
     const now = new Date().toISOString();
-    const rec = (await readJobRecord(root)) ?? { name, createdAt: now, usedAt: now, repos: {} };
+    const read = await readJobRecord(root);
+    const was = read?.usedAt;
+    const rec = read ?? { name, createdAt: now, usedAt: now, repos: {} };
     edit(rec);
     rec.usedAt = now;
     await writeJobRecord(root, rec);
+    await indexJob(root, rec, was);
     return rec;
   });
 }
@@ -186,6 +191,141 @@ export async function touchJob(
   return updateJobRecord(root, name, (rec) => {
     if (repo) rec.repos[repo.dir] = { cache: repo.cache, ref: repo.ref };
   });
+}
+
+// ── the indexes beside the records ────────────────────────────────────────
+
+/*
+ * Two indexes beside the records, so neither a turn's sweep nor `GET /jobs`
+ * reads every record on the server. A swarm holds 100k jobs after months,
+ * and both used to read them all: the sweep on every turn, the listing on
+ * every call.
+ *
+ * - `jobs/.used/<day>/<usedAt ms>-<encoded id>`: an empty file per job, at
+ *   its `usedAt`. `jobsByUse` reads it newest first, so a listing stops at
+ *   its `limit`.
+ * - `jobs/.sweep/<encoded id>`: an empty file per job the sweep has
+ *   something to look at (`needsSweep`). The sweep reads those records alone.
+ *
+ * `updateJobRecord` keeps both under the record's lock: it is every write
+ * that makes a record, stamps `usedAt`, or adds a repository or a hold. The
+ * sweep and `deleteJob` take a job out with its record. No job id starts
+ * with a dot, so neither folder is ever a job's. Records from before the
+ * indexes are put in by one pass per data directory (`jobsIndexed`).
+ */
+const USED_DIR = ".used";
+const SWEEP_DIR = ".sweep";
+const INDEXED_FILE = ".indexed";
+
+/** A job's entry in `.used` at `usedAt`. Fixed-width milliseconds, so a
+ *  day's names sort by time. */
+function usedFile(root: string, usedAt: string): string {
+  const ms = Math.max(0, Date.parse(usedAt) || 0);
+  return join(dirname(root), USED_DIR, new Date(ms).toISOString().slice(0, 10), `${String(ms).padStart(15, "0")}-${basename(root)}`);
+}
+
+const sweepFile = (root: string): string => join(dirname(root), SWEEP_DIR, basename(root));
+
+/** Whether the sweep has anything to look at in a job: repositories to
+ *  remove, holds to let go, or (for a record with no runs, which no history
+ *  keeps) a directory that may be empty once the job is `idle`. A job the
+ *  sweep has seen idle with none of these leaves `.sweep` until a write
+ *  puts it back. A record of runs alone is history: the sweep never
+ *  changes it. */
+function needsSweep(rec: JobRecord, idle: boolean): boolean {
+  return Object.keys(rec.repos).length > 0 || !!rec.holds?.length || (!rec.runs?.length && !idle);
+}
+
+/** Put a record just written into both indexes. Its entry at `was` (the
+ *  `usedAt` before this write) goes after the new one is in, so a listing
+ *  never misses the job. */
+async function indexJob(root: string, rec: JobRecord, was?: string): Promise<void> {
+  const used = usedFile(root, rec.usedAt);
+  await mkdir(dirname(used), { recursive: true });
+  await writeFile(used, "");
+  if (was !== undefined && usedFile(root, was) !== used) await rm(usedFile(root, was), { force: true });
+  if (needsSweep(rec, false)) {
+    await mkdir(dirname(sweepFile(root)), { recursive: true });
+    await writeFile(sweepFile(root), "");
+  }
+}
+
+/** Take a removed job out of both indexes. */
+async function unindexJob(root: string, rec: JobRecord | null): Promise<void> {
+  if (rec) await rm(usedFile(root, rec.usedAt), { force: true });
+  await rm(sweepFile(root), { force: true });
+}
+
+const indexing = new Map<string, Promise<void>>();
+
+/**
+ * The one pass that puts the records from before the indexes into them:
+ * once per data directory, each record under its lock, stamped in
+ * `jobs/.indexed`. The sweep and the listing await it, so the first of them
+ * after an upgrade reads every record once, as each of them used to every
+ * time. A pass that fails is logged and the next caller tries again. Never
+ * throws.
+ */
+export function jobsIndexed(dataDir: string): Promise<void> {
+  const base = resolve(dataDir, "jobs");
+  let pass = indexing.get(base);
+  if (pass) return pass;
+  pass = (async () => {
+    if (existsSync(join(base, INDEXED_FILE))) return;
+    let files: string[];
+    try {
+      files = await readdir(base);
+    } catch (err) {
+      // No jobs yet: every record will be written through `updateJobRecord`.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      const root = join(base, file.slice(0, -".json".length));
+      await withLock(`${root}.json`, async () => {
+        const rec = await readJobRecord(root);
+        if (rec) await indexJob(root, rec);
+      });
+    }
+    await writeFile(join(base, INDEXED_FILE), `${new Date().toISOString()}\n`);
+  })().catch((err) => {
+    indexing.delete(base);
+    console.warn("[jobs] the job indexes were not built; the next sweep or listing tries again:", err);
+  });
+  indexing.set(base, pass);
+  return pass;
+}
+
+/**
+ * The job records newest-used first, read one at a time from `.used`, so a
+ * reader that stops at its `limit` reads about what it returns. `keep` (on
+ * the job's id) passes a job over before its record is read. A job's newest
+ * entry wins; one whose record is gone is passed over.
+ */
+export async function* jobsByUse(dataDir: string, keep?: (job: string) => boolean): AsyncGenerator<JobRecord> {
+  await jobsIndexed(dataDir);
+  const base = join(dataDir, "jobs");
+  const newestFirst = async (dir: string) => (await readdir(dir).catch(() => [] as string[])).sort().reverse();
+  const seen = new Set<string>();
+  for (const day of await newestFirst(join(base, USED_DIR))) {
+    for (const entry of await newestFirst(join(base, USED_DIR, day))) {
+      const file = entry.slice("000000000000000-".length);
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (keep) {
+        let job: string;
+        try {
+          job = decodeURIComponent(file);
+        } catch {
+          continue; // not a name strut wrote
+        }
+        if (!keep(job)) continue;
+      }
+      const rec = await readJobRecord(join(base, file));
+      if (rec) yield rec;
+    }
+  }
 }
 
 // ── live updates (plans/live-artifacts.md) ────────────────────────────────
@@ -695,54 +835,67 @@ export interface SweepOptions {
  * record is the job's history (it has runs — the index, plans/job-index.md;
  * only `DELETE /jobs/:id` removes that). Run by every
  * `job/dir` and kept checkout, so disk — and a pod — is reclaimed without
- * a timer. Returns the names it touched. Never throws: a job that cannot
- * be swept, and a hold that will not release, are tried again next time.
+ * a timer. It reads only the jobs in `.sweep` (`needsSweep`): jobs with
+ * repositories or holds, and fresh records with no runs. A job of runs
+ * alone, which is most of them, costs a turn nothing. Returns the names it
+ * touched. Never throws: a job that cannot be swept, and a hold that will
+ * not release, are tried again next time.
  */
 export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: number, opts: SweepOptions = {}): Promise<string[]> {
   if (!ttlMs) return [];
   const now = opts.now ?? Date.now();
+  const idle = (rec: JobRecord) => now - Date.parse(rec.usedAt) > ttlMs;
   const base = join(dataDir, "jobs");
-  let files: string[];
+  await jobsIndexed(dataDir);
+  let marks: string[];
   try {
-    files = (await readdir(base)).filter((f) => f.endsWith(".json"));
+    marks = await readdir(join(base, SWEEP_DIR));
   } catch {
     return [];
   }
   const swept: string[] = [];
-  for (const file of files) {
-    const root = join(base, file.slice(0, -".json".length));
+  for (const mark of marks) {
+    const root = join(base, mark);
     if (held.has(root)) continue;
     const rec = await readJobRecord(root);
-    if (!rec || !(now - Date.parse(rec.usedAt) > ttlMs)) continue;
-    const repos = Object.entries(rec.repos);
-    try {
-      let released = 0;
-      if (rec.holds?.length) {
-        if (!opts.release) continue;
-        released = (await releaseHolds(root, rec, opts.release)).released.length;
-      }
-      for (const [dir, { cache }] of repos) {
-        await removeJobRepo(shell, dir, cache);
-        delete rec.repos[dir];
-      }
-      let left: string[] = [];
+    if (rec && idle(rec)) {
+      const repos = Object.entries(rec.repos);
       try {
-        left = await readdir(root);
-      } catch {
-        /* the directory is already gone */
+        let released = 0;
+        if (rec.holds?.length) {
+          if (!opts.release) continue;
+          released = (await releaseHolds(root, rec, opts.release)).released.length;
+        }
+        for (const [dir, { cache }] of repos) {
+          await removeJobRepo(shell, dir, cache);
+          delete rec.repos[dir];
+        }
+        let left: string[] = [];
+        try {
+          left = await readdir(root);
+        } catch {
+          /* the directory is already gone */
+        }
+        if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
+          await rm(root, { recursive: true, force: true });
+          await rm(`${root}.json`, { force: true });
+          await setJobCallback(root, null);
+          await unindexJob(root, rec);
+          swept.push(rec.name);
+        } else if (repos.length || released) {
+          await withLock(`${root}.json`, () => writeJobRecord(root, rec));
+          swept.push(rec.name);
+        }
+      } catch (err) {
+        console.warn(`[jobs] could not sweep job "${rec.name}":`, (err as Error).message);
+        continue;
       }
-      if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
-        await rm(root, { recursive: true, force: true });
-        await rm(`${root}.json`, { force: true });
-        await setJobCallback(root, null);
-        swept.push(rec.name);
-      } else if (repos.length || released) {
-        await withLock(`${root}.json`, () => writeJobRecord(root, rec));
-        swept.push(rec.name);
-      }
-    } catch (err) {
-      console.warn(`[jobs] could not sweep job "${rec.name}":`, (err as Error).message);
     }
+    // Read again under the lock: a write since may have given it more to sweep.
+    await withLock(`${root}.json`, async () => {
+      const after = await readJobRecord(root);
+      if (!after || !needsSweep(after, idle(after))) await rm(sweepFile(root), { force: true });
+    });
   }
   return swept;
 }
@@ -779,6 +932,7 @@ export async function deleteJob(
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.json`, { force: true });
   await setJobCallback(root, null);
+  await unindexJob(root, rec);
   return { released };
 }
 
