@@ -212,7 +212,7 @@ import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.j
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
 import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
@@ -6607,7 +6607,7 @@ export async function createStrut<TServices = unknown>(
     // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
       viewer: { scope, ...(actor ? { actor } : {}) },
-      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
+      limit: limitQ !== undefined ? Number(limitQ) : PROPOSAL_LIST_DEFAULT,
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),

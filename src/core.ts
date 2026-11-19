@@ -67,10 +67,12 @@ export interface StepDef<
    *  typed that no log may hold — `secret/add`'s `value`. */
   redact?: readonly string[];
   /** For a step an agent's `approve:` gates (src/proposals.ts): a proposal
-   *  of it waits for every PENDING proposal this returns true for — accepting
-   *  it first is refused (409), so it applies after them. `meta/set-automation`
-   *  waits for the publish of the workflow it schedules. */
-  after?: (cfg: z.infer<TInput>, pending: { step: string; input: unknown }) => boolean;
+   *  of it waits for every proposal of the step `step` not yet applied
+   *  (pending, being applied, failed) whose input `when` returns true for —
+   *  accepting it first is refused (409), so it applies after them. Named by
+   *  step type so the check reads that step's proposals alone.
+   *  `meta/set-automation` waits for the publish of the workflow it schedules. */
+  after?: { step: string; when: (cfg: z.infer<TInput>, input: unknown) => boolean };
   /** For a gated step (plans/proposals.md §7): what the person's CARD says
    *  beyond the input — a title in their words and a summary read at
    *  proposal time (`package/install` reads the index's page of the
@@ -1131,7 +1133,7 @@ export interface AnyStepDef {
   /** Config fields its run events never keep (see `StepDef.redact`). */
   redact?: readonly string[];
   /** Which pending proposals one of its own waits for (see `StepDef.after`). */
-  after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
+  after?: { step: string; when: (cfg: any, input: unknown) => boolean };
   /** The person's card's title and summary (see `StepDef.describe`). */
   describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
   /** Its own answer to a gated call (see `StepDef.answerGated`). */

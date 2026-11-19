@@ -1413,7 +1413,7 @@ lines).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/proposals?job=&session=&runId=&status=&limit=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five; `limit` a positive integer, applied after what the caller may see (a person token: its own) |
+| GET    | `/proposals?job=&session=&runId=&status=&limit=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five; `limit` a positive integer (200 when none is given), applied after what the caller may see (a person token: its own) |
 | GET    | `/proposals/changes?cursor=&wait=&limit=` | `{ cursor, reset?, more?, events: [{ event: "created" \| "decided" \| "applied" \| "failed", id, status, kind: "tool" \| "step", title, summary?, actor?, at }] }` — what happened to proposals after a cursor (`plans/live-feeds.md`, "Proposal feed"; the `proposal/changes` step is the same read), for a reader that would otherwise poll the list: one event per change, oldest first, never folded — `decided` is an accept or a reject (`status` says which), then `applied` or `failed`. The envelope only: title and summary cut at 200 chars, never the input, rationale, card or result — read the record by id. `actor` is the proposer on `created`, the decider after. Scoped like the list: the deployment key every event, a person token its own threads', the plain peer key none. The last 1 000 events, in memory. `cursor` (`since` also accepted), `wait` (at most 55 000) and `reset` as `GET /jobs/:id/updates`; `limit` at most 200 (`more: true`, read again from `cursor`) |
 | GET    | `/proposals/:id` | one record (a person token: any, by its id); 404 |
 | GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, approver?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
@@ -1428,7 +1428,8 @@ accepted proposal (`ctx.proposal`, set by the apply alone). A workflow step
 agent's ungated tool is refused. No host gate: unchanged.
 
 The steps `proposal/list` ({ job?, session?, workflow?, status?, input?,
-limit? } → the briefs; `workflow` keeps those a run of that workflow made,
+limit? } → `{ proposals: [brief], more? }`, at most `limit` (50), `more:
+true` when there are others; `workflow` keeps those a run of that workflow made,
 `input: true` adds each one's `input`) and `proposal/get` ({ id } → the
 record) are the same reads for an agent. Called from an app's page, or in a
 run an app launched, `proposal/list` holds the list to the viewer's own, as

@@ -17,6 +17,10 @@ import { dirname, join } from "node:path";
 export interface DreamState {
   /** Conversation id → the last turn number read. */
   marks: Record<string, number>;
+  /** Where the next read starts: only the conversations written at or after
+   *  this time can hold a turn past the marks (`conversations.changed`). A
+   *  state from before it has none: that dream reads every conversation. */
+  since?: string;
   /** When a dream last finished. */
   at?: string;
   /** A branch's file: the branch it was written for. */
@@ -38,6 +42,7 @@ async function readAt(file: string): Promise<DreamState | null> {
     const s = JSON.parse(await readFile(file, "utf-8")) as Partial<DreamState>;
     return {
       marks: s.marks && typeof s.marks === "object" ? s.marks : {},
+      ...(typeof s.since === "string" ? { since: s.since } : {}),
       ...(typeof s.at === "string" ? { at: s.at } : {}),
       ...(s.branch && typeof s.branch.name === "string" ? { branch: s.branch } : {}),
     };
@@ -54,14 +59,17 @@ export async function readState(dataDir: string, tree: string, branch?: DreamBra
     if (own && own.branch?.createdAt === branch.createdAt) return own;
   }
   const main = await readAt(fileOf(dataDir, tree));
-  return main && branch ? { marks: main.marks, ...(main.at ? { at: main.at } : {}) } : main;
+  return main && branch ? { marks: main.marks, ...(main.since ? { since: main.since } : {}), ...(main.at ? { at: main.at } : {}) } : main;
 }
 
-/** Move each mark forward to `cursor`'s, never back: main's, or the branch's own. */
-export async function advanceState(dataDir: string, tree: string, cursor: Record<string, number>, now: Date, branch?: DreamBranch): Promise<DreamState> {
-  const marks = { ...((await readState(dataDir, tree, branch))?.marks ?? {}) };
+/** Move each mark forward to `cursor`'s, never back, and the next read's
+ *  start to `since` (dream/turns gave both); main's, or the branch's own. */
+export async function advanceState(dataDir: string, tree: string, cursor: Record<string, number>, now: Date, branch?: DreamBranch, since?: string): Promise<DreamState> {
+  const prev = await readState(dataDir, tree, branch);
+  const marks = { ...(prev?.marks ?? {}) };
   for (const [id, turn] of Object.entries(cursor)) if (Number.isInteger(turn) && turn > (marks[id] ?? -1)) marks[id] = turn;
-  const state: DreamState = { marks, at: now.toISOString(), ...(branch ? { branch } : {}) };
+  const start = since ?? prev?.since;
+  const state: DreamState = { marks, ...(start ? { since: start } : {}), at: now.toISOString(), ...(branch ? { branch } : {}) };
   const file = fileOf(dataDir, tree, branch?.name);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(state, null, 2), "utf-8");

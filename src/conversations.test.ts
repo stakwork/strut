@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +11,8 @@ import { MemoryRunStore } from "./store.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { Scope } from "./auth.js";
 import type { RunEvent } from "./core.js";
-import { isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs } from "./conversations.js";
+import { createConversations, isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs, type ConversationRecord } from "./conversations.js";
+import { countReads } from "./test-util/count-reads.js";
 import { encodeId } from "./session-store.js";
 import listStep from "./steps/lib/conversation/list.js";
 import { createProposal, proposalsRoot } from "./proposals.js";
@@ -80,6 +81,82 @@ describe("conversations: the pure parts", () => {
       () => listStep.run({}, { app: { name: "x", version: "v1" }, services: { conversations: {} } } as never),
       /not available to an app's page/,
     );
+  });
+});
+
+// A server holds 100k+ conversations after months: a call opens the records
+// it returns, or those written since a mark, never every one on file.
+describe("conversations: reads bounded by what is returned", () => {
+  let dir = "";
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "strut-conversations-reads-"));
+  });
+  afterEach(() => rm(dir, { recursive: true, force: true }));
+
+  const index = () =>
+    createConversations({
+      dataDir: dir,
+      store: new MemoryRunStore(),
+      sessions: { turns: async () => [], list: async () => [] } as never,
+      getWorkflow: async () => ({ params: { wake: "w" } }) as never,
+      running: () => false,
+      liveState: () => undefined,
+      artifactRefs: async () => undefined,
+    });
+  const sessions = () => join(dir, "conversations", "sessions");
+  /** A record an older process wrote, last changed `daysAgo` days ago. */
+  const older = async (id: string, daysAgo: number, extra: Partial<ConversationRecord> = {}) => {
+    const at = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    const rec: ConversationRecord = { id, title: id, createdAt: at, updatedAt: at, rev: 1, viewers: ["alice"], turns: [{ runId: `r-${id}`, workflow: "orchestrator", at, by: "alice", status: "success" }], jobs: [], ...extra };
+    await mkdir(sessions(), { recursive: true });
+    await writeFile(join(sessions(), `${encodeId(id)}.json`), JSON.stringify(rec));
+  };
+  const turn = (c: ReturnType<typeof index>, id: string, actor = "alice") => c.launched(id, { runId: `r-${id}-${Math.random()}`, workflow: "orchestrator", actor, prompt: `about ${id}` });
+
+  it("changed(since) opens the records written since, off the day logs; the log of older records is filled once", async () => {
+    for (let i = 0; i < 30; i++) await older(`old-${i}`, 10 + (i % 5));
+    const c = index();
+    const before = new Date(Date.now() - 1000).toISOString();
+    // The first read fills the day logs from the records on file, once.
+    assert.deepEqual((await c.changed(before)).map((e) => e.id), []);
+    await turn(c, "old-3");
+    await turn(c, "new-1");
+
+    const { value, reads } = await countReads(dir, () => c.changed(before));
+    assert.deepEqual(value.map((e) => e.id).sort(), ["new-1", "old-3"]);
+    assert.equal(reads.filter((f) => f.startsWith(sessions())).length, 2, `opened ${reads.length} files: ${reads.join(", ")}`);
+    assert.equal(reads.filter((f) => f.endsWith(".log")).length, 1, "today's log alone");
+    // Older windows come off the logs the fill wrote, each record in its day's.
+    assert.equal((await c.changed(new Date(Date.now() - 12.5 * 86_400_000).toISOString())).length, 2 + 18);
+    // No mark: every one on file.
+    assert.equal((await c.changed()).length, 31);
+  });
+
+  it("a list reads the viewer's file and one file of the shared ones, never their records", async () => {
+    const c = index();
+    for (let i = 0; i < 20; i++) {
+      await turn(c, `alice/${i}`);
+      await c.update({ session: `alice/${i}`, shared: true }, { actor: "alice" });
+    }
+    const { value, reads } = await countReads(dir, () => c.list({ limit: 5 }, { actor: "carol" }));
+    assert.deepEqual([value.conversations.length, value.conversations.every((r) => r.team), !!value.next], [5, true, true]);
+    assert.equal(reads.filter((f) => f.startsWith(sessions())).length, 0, `opened ${reads.join(", ")}`);
+    // Unshared: out of the list of whoever never opened it; a turn in a shared one moves its row.
+    await c.update({ session: "alice/0", shared: false }, { actor: "alice" });
+    await turn(c, "alice/1", "bob");
+    const rows = (await c.list({ limit: 50 }, { actor: "carol" })).conversations;
+    assert.deepEqual([rows.length, rows[0]!.id, rows[0]!.turns], [19, "alice/1", 2]);
+  });
+
+  it("a shared.json from before the rows (ids alone) still lists them, and is rewritten as rows at its next write", async () => {
+    await older("alice/a", 1, { shared: true });
+    await older("alice/b", 2, { shared: true });
+    await writeFile(join(dir, "conversations", "shared.json"), JSON.stringify({ ids: ["alice/a", "alice/b"] }));
+    const c = index();
+    assert.deepEqual((await c.list({}, { actor: "carol" })).conversations.map((r) => r.id), ["alice/a", "alice/b"]);
+    await turn(c, "alice/b");
+    const file = JSON.parse(await readFile(join(dir, "conversations", "shared.json"), "utf-8"));
+    assert.deepEqual([file.ids, Object.keys(file.conversations).sort()], [undefined, ["alice/a", "alice/b"]]);
   });
 });
 

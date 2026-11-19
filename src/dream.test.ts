@@ -35,12 +35,21 @@ const turn = (n: number, over: Partial<ConversationTurn> = {}): ConversationTurn
 describe("dream/turns", () => {
   let dir = "";
   let convs: Record<string, ConversationTurn[]>;
+  /** When each conversation's record was last written, past its last turn's launch (a turn's end). */
+  let touched: Record<string, string>;
+  /** The `since` each read asked the conversations for. */
+  let asked: Array<string | undefined>;
   let root: boolean;
+  const updatedAt = (id: string) => [convs[id]!.at(-1)!.at, touched[id] ?? ""].sort().at(-1)!;
   const services = () => ({
     dataDir: dir,
     conversations: {
-      all: async (): Promise<ConversationEntry[]> =>
-        Object.entries(convs).map(([id, ts]) => ({ id, title: id, createdAt: ts[0]!.at, updatedAt: ts.at(-1)!.at, turns: ts.length })),
+      changed: async (since?: string): Promise<ConversationEntry[]> => {
+        asked.push(since);
+        return Object.entries(convs)
+          .map(([id, ts]) => ({ id, title: id, createdAt: ts[0]!.at, updatedAt: updatedAt(id), turns: ts.length }))
+          .filter((c) => !since || c.updatedAt >= since);
+      },
       get: async (q: { session: string }): Promise<ConversationView | null> =>
         convs[q.session] ? ({ turns: [...convs[q.session]!].reverse() } as ConversationView) : null,
     },
@@ -53,13 +62,16 @@ describe("dream/turns", () => {
   /** A step's context: on main, or on a Concept branch made at `made`. */
   const ctxOn = (branch?: string, made = "2026-11-14T00:00:00.000Z") =>
     ({ services: { ...services(), branches: { get: async (n: string) => (n === branch ? { createdAt: made } : null) } }, ...(branch ? { branch } : {}) }) as never;
-  const read = async (cfg: Record<string, unknown> = {}, ctx: never = ctxOn()) =>
-    (await turns.run(turns.input.parse(cfg), ctx)) as { count: number; turns: DreamTurn[]; cursor: Record<string, number>; more?: true; text: string };
-  const mark = (cursor: Record<string, number>, ctx: never = ctxOn()) => done.run(done.input.parse({ cursor }), ctx);
+  type Read = { count: number; turns: DreamTurn[]; cursor: Record<string, number>; since: string; more?: true; text: string };
+  const read = async (cfg: Record<string, unknown> = {}, ctx: never = ctxOn()) => (await turns.run(turns.input.parse(cfg), ctx)) as Read;
+  /** dream/done with what dream/turns gave (a cursor alone: the mark of an older dream, or a hand-made one). */
+  const mark = (r: Pick<Read, "cursor"> & Partial<Pick<Read, "since">>, ctx: never = ctxOn()) => done.run(done.input.parse({ cursor: r.cursor, ...(r.since ? { since: r.since } : {}) }), ctx);
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "strut-dream-turns-"));
     root = true;
+    touched = {};
+    asked = [];
     convs = {
       "c-1": [
         turn(0, { prompt: "write me a plan for the launch", by: "evan" }),
@@ -99,24 +111,57 @@ describe("dream/turns", () => {
   it("marks only move when dream/done is called, and only forward: a dream that failed reads the same turns again", async () => {
     const first = await read();
     assert.equal((await read()).count, 3, "nothing marked yet");
-    await mark(first.cursor);
+    await mark(first);
     assert.deepEqual([(await read()).count, (await read()).cursor], [0, {}]);
-    await mark({ "c-1": 0 });
+    await mark({ cursor: { "c-1": 0 } });
     assert.equal((await read()).count, 0, "a mark never moves back");
     // The turn in flight ended, and the person said more: the next dream reads from there.
     convs["c-1"]![3]!.status = "success";
-    convs["c-1"]!.push(turn(4, { prompt: "thanks" }));
+    convs["c-1"]!.push(turn(4, { prompt: "thanks", at: new Date().toISOString() }));
     const next = await read();
     assert.deepEqual([next.turns.map((t) => t.turn), next.cursor], [[3, 4], { "c-1": 4 }]);
     // Each tree keeps its own marks: another tree's dream reads the same conversations from the start.
     assert.equal((await read({ tree: "Job" })).count, 5);
   });
 
+  it("asks only for the conversations written since the last dream read: `since` moves with the marks", async () => {
+    const t0 = new Date().toISOString();
+    const first = await read({ days: 14 });
+    // The first dream: its window. Then where it began reading, since every turn was dealt with.
+    assert.ok(Math.abs(Date.parse(asked[0]!) - (Date.now() - 14 * 86_400_000)) < 60_000, asked[0]);
+    // Ten minutes early: a record stamped just before the read may reach its day log just after it.
+    assert.ok(Math.abs(Date.parse(first.since) - (Date.parse(t0) - 10 * 60_000)) < 60_000, first.since);
+    await mark(first);
+    asked = [];
+    await read();
+    assert.deepEqual(asked, [first.since]);
+    // The turn in flight ends: its record is written now, so the next dream finds it.
+    convs["c-1"]![3]!.status = "success";
+    touched["c-1"] = new Date().toISOString();
+    assert.deepEqual((await read()).turns.map((t) => t.turn), [3]);
+    // A dream cut by its limit starts the next where a conversation it left turns in was written.
+    const later = (ms: number) => new Date(Date.parse(first.since) + ms).toISOString();
+    convs["c-2"] = [turn(0, { at: later(1) }), turn(1, { at: later(2) }), turn(2, { at: later(3) })];
+    touched["c-2"] = later(4);
+    await new Promise((r) => setTimeout(r, 10));
+    const capped = await read({ limit: 2 });
+    assert.deepEqual([capped.more, capped.cursor, capped.since], [true, { "c-1": 3, "c-2": 0 }, touched["c-2"]]);
+    await mark(capped);
+    asked = [];
+    assert.deepEqual((await read()).turns.map((t) => [t.session, t.turn]), [["c-2", 1], ["c-2", 2]]);
+    assert.deepEqual(asked, [touched["c-2"]]);
+    // dream/done without one (an older dream's) keeps the last.
+    await mark({ cursor: {} });
+    asked = [];
+    await read();
+    assert.deepEqual(asked, [touched["c-2"]]);
+  });
+
   it("a dream on a Concept branch keeps marks of its own: it starts where main's dream is, never moves main's, and a branch made again under the name starts so too", async () => {
-    await mark({ "c-1": 0 });
+    await mark({ cursor: { "c-1": 0 } });
     const onTry = await read({}, ctxOn("try"));
     assert.deepEqual(onTry.turns.map((t) => t.turn), [1, 2], "from main's marks");
-    await mark(onTry.cursor, ctxOn("try"));
+    await mark(onTry, ctxOn("try"));
     assert.equal((await read({}, ctxOn("try"))).count, 0, "the branch's marks moved");
     assert.deepEqual((await read()).turns.map((t) => t.turn), [1, 2], "main's did not");
     assert.equal((await read({}, ctxOn("other"))).count, 2, "nor another branch's");
@@ -126,7 +171,7 @@ describe("dream/turns", () => {
   it("a limit leaves the rest for the next dream; the first dream reads only the last days; no tree, no dream", async () => {
     const capped = await read({ limit: 2 });
     assert.deepEqual([capped.count, capped.more, capped.cursor], [2, true, { "c-1": 1 }]);
-    await mark(capped.cursor);
+    await mark(capped);
     assert.deepEqual((await read({ limit: 2 })).turns.map((t) => t.turn), [2]);
 
     await rm(dir, { recursive: true, force: true });
