@@ -315,6 +315,17 @@ export async function fetchJSON<T>(path: string, opts?: RequestInit): Promise<T>
   return res.json() as Promise<T>;
 }
 
+/** `GET /people`: these actors' names (plans/people-and-hosts.md §1), each
+ *  actor asked with `name` when one is kept; null when the server would not
+ *  answer (a member's session: names are an admin's read). At most 200. */
+export async function getPeople(actors: string[]): Promise<Record<string, { name?: string }> | null> {
+  const q = new URLSearchParams();
+  for (const a of actors) q.append("actor", a);
+  const res = await apiFetch(`/people?${q}`);
+  if (!res.ok) return null;
+  return ((await res.json()) as { people: Record<string, { name?: string }> }).people;
+}
+
 // ── Sign-in ticket ─────────────────────────────────────────────────────────
 // A host that frames the UI for ONE person (stadeum) loads it as
 // `?ticket=<a ticket it minted with the key>` (./ticket). The ticket is
@@ -1470,7 +1481,7 @@ export interface ChatMeta {
   updatedAt: string;
   currentTurn: number;
   /** Who started the chat (the first speaker with an actor) and who spoke
-   *  last. Whole actor ids — `displayActor` shortens them for the UI. */
+   *  last. Whole actor ids — `Who` (components/Who.tsx) names them for the UI. */
   createdBy?: string;
   actor?: string;
   /** The builder is waiting on this question; the flyout shows its form. */
@@ -3315,7 +3326,7 @@ export interface WalletInfo {
   provider: "sphinx" | "nwc" | null;
   receive: boolean;
   pay: boolean;
-  /** A Sphinx daemon's message token is on file: Support answers (plans/support-chat.md §8). */
+  /** A Sphinx daemon's message token is on file: Support can send (plans/people-and-hosts.md §4). */
   messages?: true;
   url?: string;
   relays?: string[];

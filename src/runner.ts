@@ -1,6 +1,7 @@
 import type {
   AppRef,
   Flow,
+  HostRef,
   McpServer,
   RunAttachment,
   Step,
@@ -28,7 +29,7 @@ import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
-import { appSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
+import { appSessionId, hostSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
 import { bindBranch, branchOfServices, type BranchesCapability } from "./branches.js";
 import { outputTooBig } from "./output-cap.js";
@@ -111,6 +112,10 @@ export interface RunOptions<TServices = unknown> {
    *  credential's own and the run may open that actor's sessions
    *  (`bindPeer`). Recorded on `run.start`. */
   peerPerson?: boolean;
+  /** With `origin: "host"`: the host that launched it (plans/jamie-in-tribes.md
+   *  §5.1). Its sessions open under `host/<host>/` (`bindHost`). Recorded on
+   *  `run.start`. */
+  host?: string;
   /** The automation firing this run — recorded on `run.start` and on the
    *  summary (see `RunSummary.automation`), handed to every step as
    *  `ctx.automation`. The scheduler's launch is the one site that sets it. */
@@ -167,6 +172,10 @@ export interface RunOptions<TServices = unknown> {
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
    *  Nothing a launch body sends can set it. */
   app?: AppRef;
+  /** A HOST's call of an app's tool (plans/people-and-hosts.md §3): handed
+   *  to every step as `ctx.host`. The host's door (`runSingleStep { host }`)
+   *  is the one site that sets it; nothing records it. */
+  hostCall?: HostRef;
   /** The package the run's own steps look a bare name up in first
    *  (src/package-lookup.ts) — the workflow's prefix when not given; a
    *  single-step run for an app passes the app's (`runSingleStep`). */
@@ -273,6 +282,21 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
   return { ...(services as object), sessions: view } as TServices;
 }
 
+/** A HOST's run opens its sessions under `host/<host>/` (`hostSessionId`):
+ *  the conversation it was launched on is there already, and a session id a
+ *  workflow makes of the host's input never opens a person's own thread. A
+ *  per-run view like `bindPeer`'s. */
+function bindHost<TServices>(services: TServices, origin: RunOrigin | undefined, host: string | undefined): TServices {
+  if (origin !== "host" || !host || services == null || typeof services !== "object") return services;
+  const sessions = (services as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return services;
+  const view: SessionsCapability = {
+    open: (id, holder) => sessions.open(hostSessionId(id, host), holder),
+    holder: (id) => sessions.holder(hostSessionId(id, host)),
+  };
+  return { ...(services as object), sessions: view } as TServices;
+}
+
 /** A run an APP launched opens its sessions under the app and its viewer
  *  (`appSessionId`): the assistant's thread for a page is that viewer's in
  *  that app, never a conversation a page names. A per-run view like
@@ -340,6 +364,7 @@ interface Exec {
   /** The run's Concept branch (`StepContext.branch`). */
   branch?: string;
   app?: AppRef;
+  hostCall?: HostRef;
   automation?: { id: string };
   wake?: WakeMark;
   mcp?: McpServer[];
@@ -523,7 +548,7 @@ async function executeRun<TServices = unknown>(
     bindBranch(
       bindApp(
         bindPeer(
-          bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId),
+          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
           opts?.origin,
           opts?.peerPerson ? opts.actor : undefined,
           opts?.continues,
@@ -633,6 +658,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.cassette ? { cassette: opts.cassette } : {}),
       ...(opts?.origin ? { origin: opts.origin } : {}),
       ...(opts?.origin === "peer" && opts.peerPerson ? { peerPerson: true as const } : {}),
+      ...(opts?.origin === "host" && opts.host ? { host: opts.host } : {}),
       ...(opts?.continues ? { continues: opts.continues } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
@@ -699,6 +725,7 @@ async function executeRun<TServices = unknown>(
     job: opts?.job,
     ...(branch ? { branch } : {}),
     app: opts?.app,
+    ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
@@ -1274,6 +1301,7 @@ function stepContext(step: Step, validConfig: unknown, scope: Record<string, unk
     ...(exec.job ? { job: exec.job } : {}),
     ...(exec.branch ? { branch: exec.branch } : {}),
     ...(exec.app ? { app: exec.app } : {}),
+    ...(exec.hostCall ? { host: exec.hostCall } : {}),
     ...(exec.automation ? { automation: exec.automation } : {}),
     ...(exec.wake ? { wake: exec.wake } : {}),
     ...(exec.mcp ? { mcp: exec.mcp } : {}),

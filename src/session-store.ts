@@ -92,6 +92,24 @@ export function publicSessionId(id: string, scope: string): string {
   return id.startsWith(prefix) ? id : `${prefix}${id}`;
 }
 
+/** Where a HOST's conversations live (plans/jamie-in-tribes.md §5.1):
+ *  `host/<name>/…`, opened by the host, not by a person — a tribe's thread
+ *  has several speakers. A conversation (src/conversations.ts), listed for
+ *  each person who took a turn in it, continued by its host alone. */
+export const HOST_NAMESPACE = "host/";
+
+/** The host a session id is under (`host/<name>/…`), or undefined. */
+export function hostOfSession(id: string): string | undefined {
+  return /^host\/([^/]+)\/./.exec(id)?.[1];
+}
+
+/** Where a host run's session `id` opens: under `host/<host>/`, left as it
+ *  is when it already is there — a host's run opens no other thread. */
+export function hostSessionId(id: string, host: string): string {
+  const prefix = `${HOST_NAMESPACE}${host}/`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
 /** Where an APP's ids live (plans/apps.md §12): a job id a page names is
  *  kept under `app/<name>/`, as a peer's is kept under `peer/`. */
 export const APP_NAMESPACE = "app/";

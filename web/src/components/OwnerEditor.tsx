@@ -7,9 +7,10 @@
 // (the migration for a workspace that predates owners); the server decides
 // who "you" are. Transfers are an admin action (PUT /workflows/:name/owner).
 
+import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import * as api from "../api";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 
 export function OwnerEditor(props: {
   workflow: string;
@@ -21,7 +22,7 @@ export function OwnerEditor(props: {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<string | null>(null);
+  const [result, setResult] = useState<ComponentChildren>(null);
 
   const toggle = () => {
     setError(null);
@@ -35,7 +36,7 @@ export function OwnerEditor(props: {
     try {
       const r = await api.claimWorkflows(all ? undefined : [props.workflow]);
       const taken = r.skipped.filter((s) => s.owner && s.owner !== r.actor).length;
-      setResult(`Claimed ${r.claimed.length} for ${displayActor(r.actor)}${taken ? `; ${taken} owned by others` : ""}.`);
+      setResult(<>Claimed {r.claimed.length} for <Who actor={r.actor} />{taken ? `; ${taken} owned by others` : ""}.</>);
       await props.onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -51,13 +52,13 @@ export function OwnerEditor(props: {
         title={props.owner ? `Owner (${props.owner}) — scheduled runs are billed to them` : "No owner — scheduled runs have nobody to bill"}
         onClick={toggle}
       >
-        {props.owner ? displayActor(props.owner) : "unowned"}
+        {props.owner ? <Who actor={props.owner} /> : "unowned"}
       </button>
       {open && (
         <div class="cat-popover">
           <div class="cat-popover-text">
             {props.owner
-              ? <>Owned by <b title={props.owner}>{displayActor(props.owner)}</b>. Its scheduled runs are billed to them.</>
+              ? <>Owned by <b><Who actor={props.owner} /></b>. Its scheduled runs are billed to them.</>
               : <>No owner. Scheduled runs of this workflow have nobody to bill.</>}
           </div>
           {result && <div class="cat-popover-text">{result}</div>}

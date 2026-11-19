@@ -7,6 +7,8 @@
 // viewer's own rights. The thread always shows: wide, the list is docked
 // beside it and folds away (remembered per viewer); narrow — a phone, or a
 // host's side panel open beside the page — it is a drawer over the thread.
+// Connect (the list's header) takes the thread's place until it is closed or
+// a conversation is opened.
 import { useEffect, useState } from "react";
 import { useAppState, useToolInput } from "@strut/kit";
 import { cn } from "@/lib/utils";
@@ -15,6 +17,7 @@ import { useConversationList } from "./hooks";
 import { ViewerContext } from "./viewer";
 import { ChatList } from "./components/ChatList";
 import { Thread } from "./components/Thread";
+import { Connect, type Offer } from "./components/Connect";
 import { Notice, errorText } from "./components/bits";
 
 /** Narrower than this, the list is a drawer over the thread. */
@@ -64,16 +67,23 @@ export default function App() {
 
   /** A job to show in the open conversation: a click on it in the list. */
   const [focusJob, setFocusJob] = useState<{ job: string; at: number } | null>(null);
+  /** Connect is open in the thread's place. */
+  const [connect, setConnect] = useState(false);
+  /** Connect's waiting link challenge, kept here so it outlives Connect
+   *  closing: reopened, Connect shows it again and sees Peel's link. */
+  const [linkOffer, setLinkOffer] = useState<Offer>(null);
   const open = (id: string, job?: string) => {
     setDraft(null);
     setActive(id);
     setFocusJob(job ? { job, at: Date.now() } : null);
     setDrawer(false);
+    setConnect(false);
   };
   const newChat = () => {
     if (!viewer) return;
     setDraft(newConversationId(viewer));
     setDrawer(false);
+    setConnect(false);
   };
   const session = draft ?? (active || null);
   const showList = narrow ? drawer : !listHidden;
@@ -88,7 +98,16 @@ export default function App() {
         )}
         {showList && (
           <aside className={cn("w-72 shrink-0 border-r", narrow && "absolute inset-y-0 left-0 z-20 max-w-[85%] shadow-xl")} data-testid="chats">
-            <ChatList active={draft ? null : active || null} onOpen={open} onNewChat={newChat} onHide={hideList} />
+            <ChatList
+              active={draft ? null : active || null}
+              onOpen={open}
+              onNewChat={newChat}
+              onHide={hideList}
+              onConnect={() => {
+                setConnect(true);
+                setDrawer(false);
+              }}
+            />
           </aside>
         )}
         <main className="flex min-w-0 flex-1 flex-col">
@@ -96,6 +115,8 @@ export default function App() {
             <div className="p-6">
               <Notice tone="error">{errorText(list.error)}</Notice>
             </div>
+          ) : connect ? (
+            <Connect offer={linkOffer} setOffer={setLinkOffer} onClose={() => setConnect(false)} />
           ) : (
             <Thread
               session={session}
@@ -105,6 +126,7 @@ export default function App() {
                 setDraft(null);
                 setActive(id);
               }}
+              onOpen={(id) => open(id)}
               {...(showList ? {} : { onShowList: showListAgain })}
             />
           )}

@@ -211,6 +211,10 @@ export const sellerOf = (from?: string) => sellerBase(from, API_BASE, location.h
 /** A link a page may open in a new tab: the web's own, and mail. Never a
  *  `javascript:` URL, which a new window runs on THIS page's origin. */
 const OPENABLE = /^(https?|mailto):$/;
+/** An app's own link the page may hand to the device: Peel's
+ *  (`peel://strut/link?…`, plans/people-and-hosts.md §2.1). Followed in
+ *  place, so the device opens Peel and no blank tab is left behind. */
+const APP_SCHEME = /^peel:$/;
 
 /** This server's, or ANOTHER server's (`from`): one purse per server, so two
  *  servers never see each other's visit or credit. Another server's is the
@@ -399,6 +403,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       return {};
     }
     if (OPENABLE.test(href.protocol)) window.open(href.href, "_blank", "noopener");
+    else if (APP_SCHEME.test(href.protocol)) window.location.assign(href.href);
     return {};
   };
   // `tool-input` goes after the page's `initialized`, as the spec orders it.

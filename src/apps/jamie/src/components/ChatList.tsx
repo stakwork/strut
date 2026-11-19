@@ -6,12 +6,13 @@
 // with a pulse while it runs and its pull requests; a click opens the
 // conversation at that job's card. Share puts a conversation in everyone's
 // list ("Shared"): anyone can read it and reply, as themselves; opening it
-// makes it theirs.
+// makes it theirs. A tribe's conversation is marked with a #. Connect, in the
+// header, links the viewer's Sphinx account.
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, Hash, Link2, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, Users, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { groupByDay } from "../lib/chat";
+import { groupByDay, hostPlace } from "../lib/chat";
 import type { ConversationJob, ConversationListItem, ConversationPr } from "../lib/types";
 import { PAGE, useConversationList, useUpdateConversation } from "../hooks";
 import { IconButton, Notice, errorText } from "./bits";
@@ -24,9 +25,11 @@ export interface ChatListProps {
   onOpen: (id: string, job?: string) => void;
   onNewChat: () => void;
   onHide?: () => void;
+  /** Open Connect: the viewer's linked accounts. */
+  onConnect: () => void;
 }
 
-export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
+export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatListProps) {
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
@@ -71,6 +74,9 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
             <div className="ml-auto flex items-center">
               <IconButton label="Search chats" onClick={() => setSearching(true)}>
                 <Search />
+              </IconButton>
+              <IconButton label="Connect your Sphinx account" onClick={onConnect}>
+                <Link2 />
               </IconButton>
               <IconButton label="New chat" onClick={onNewChat}>
                 <SquarePen />
@@ -217,6 +223,7 @@ function Row({
           {item.title || "Untitled"}
         </button>
       )}
+      {item.host && !editing && <Hash className="relative z-10 size-3 shrink-0 text-muted-foreground" aria-label={`In ${hostPlace(item.host)}`} />}
       {item.shared && !editing && <Users className="relative z-10 size-3 shrink-0 text-muted-foreground" aria-label="Shared" />}
       {prs.length > 0 && !editing && <PrCount prs={prs} />}
       <span className="relative z-10 flex size-5 shrink-0 items-center justify-center">

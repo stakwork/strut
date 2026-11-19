@@ -16,7 +16,8 @@
 //    until the wallet has.
 //  - `sphinx`: the person's Sphinx account, through the native host this
 //    page runs in (Peel): `sign_in` (specs/WALLET.md §1.2, ../native-pay
-//    `signInAsk`) signs the challenge as a Lightning message.
+//    `signInAsk`) signs the challenge as a Lightning message; the account's
+//    alias, when the answer carries one, goes as the visitor's `name`.
 // A host's `ticket` is no provider: it arrives as `?ticket=` (./api).
 //
 // The session is the visitor's cookie, and the token the sign-in returned,
@@ -186,7 +187,8 @@ export async function signInWithSphinx(ask: SignInAsk, from?: string): Promise<S
   const c = await challenge(from);
   const r = await ask.sign(c);
   if (r.outcome !== "signed") return r;
-  const session = (await postSession(JSON.stringify({ challenge: c, method: "sphinx", key: r.key, sig: r.sig, ...(r.address ? { address: r.address } : {}) }), {}, from)) as VisitorSession;
+  // The account's alias goes as the visitor's own name (plans/people-and-hosts.md §1).
+  const session = (await postSession(JSON.stringify({ challenge: c, method: "sphinx", key: r.key, sig: r.sig, ...(r.address ? { address: r.address } : {}), ...(r.alias ? { name: r.alias } : {}) }), {}, from)) as VisitorSession;
   return { outcome: "signed", session };
 }
 

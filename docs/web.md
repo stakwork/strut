@@ -111,7 +111,15 @@ the step palette: PALETTE + paletteKey(type) — the ONE place a step's color is
 
 ### `web/src/actor.ts`
 
-displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
+displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id); what shows for an actor with no name
+
+### `web/src/names.ts`
+
+people's NAMES in the UI (plans/people-and-hosts.md §1): `actorLabel(actor, name)` (the name, else `displayActor`) and `createNameCache(fetch)` — each actor asked once per page, the actors wanted in one tick in one `GET /people` (`api.getPeople`), 200 a read; a read the server refuses (a member's session: names are an admin's read) stops the asking, and every actor shows as before (pure; tested)
+
+### `web/src/components/Who.tsx`
+
+`Who { actor }`: an actor as the UI shows them — the name, else `displayActor`, the whole actor in the tooltip — over one page-wide `names.ts` cache; `useActorLabel(...actors)` for a string (a title). Every place the UI shows an actor uses one or the other: a job's starter, a workflow's owner and its claim, a run's actor, a version's and a release's publisher, a chat's starter, a notice's `by`, a member's own name
 
 ### `web/src/page.ts`
 
@@ -191,7 +199,7 @@ a VISITOR's page paid for by its HOST (plans/paid-runs.md §10, specs/API.md §1
 
 ### `web/src/visitor-signin.ts`
 
-a VISITOR's sign-in, the host page's side (plans/app-repos.md §5.3): the providers — `key` (a non-extractable WebCrypto P-256 key made at the first sign-in, kept as the CryptoKeyPair in this site's IndexedDB), `nostr` (`window.nostr` signs a NIP-98 event for `POST /visitors/session`), `lnurl` (the code, then asked every 2 s until the wallet signed), `sphinx` (`signInWithSphinx`: the seller's challenge, one `sign_in` through ./native-pay `signInAsk`, then `method: "sphinx"` with the wallet's `address` when it kept one: `readSignInReply` keeps it only when its pubkey is `key`) — every one against the SELLER, this server or another one whose public app this page hosts (`from`, ./remote-app), `usableMethods` (what this browser can do; `sphinx` only with a native host that signs in), the session's token kept in this site's localStorage PER SELLER (`strut.visitorSession:<base>`) and sent as `Authorization: Bearer` (`x-strut-visitor` on `/public/mcp`, beside a credit token; another server's never with the UI header nor a cookie), `visitorInfo` (`GET /visitors`), `visitorChannelTicket`, `signOutVisitor`
+a VISITOR's sign-in, the host page's side (plans/app-repos.md §5.3): the providers — `key` (a non-extractable WebCrypto P-256 key made at the first sign-in, kept as the CryptoKeyPair in this site's IndexedDB), `nostr` (`window.nostr` signs a NIP-98 event for `POST /visitors/session`), `lnurl` (the code, then asked every 2 s until the wallet signed), `sphinx` (`signInWithSphinx`: the seller's challenge, one `sign_in` through ./native-pay `signInAsk`, then `method: "sphinx"` with the wallet's `address` when it kept one: `readSignInReply` keeps it only when its pubkey is `key`; and the account's `alias` as `name`, kept as the visitor's own name, plans/people-and-hosts.md §1) — every one against the SELLER, this server or another one whose public app this page hosts (`from`, ./remote-app), `usableMethods` (what this browser can do; `sphinx` only with a native host that signs in), the session's token kept in this site's localStorage PER SELLER (`strut.visitorSession:<base>`) and sent as `Authorization: Bearer` (`x-strut-visitor` on `/public/mcp`, beside a credit token; another server's never with the UI header nor a cookie), `visitorInfo` (`GET /visitors`), `visitorChannelTicket`, `signOutVisitor`
 
 ### `web/src/words.ts`
 

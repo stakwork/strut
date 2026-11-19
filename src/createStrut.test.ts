@@ -1352,6 +1352,9 @@ describe("listen()", () => {
 
 /** The visitor's sign-in routes (plans/app-repos.md §5.2): open to anyone. */
 const VISITOR_SIGN_IN_ROUTES = ["GET /visitors", "GET /visitors/challenge", "GET /visitors/lnurl", "POST /visitors/session", "DELETE /visitors/session"];
+/** And Peel's link (plans/people-and-hosts.md §2.1): the challenge and the
+ *  key's signature are the credential (src/people-link.test.ts). */
+const SIGN_IN_ROUTES = [...VISITOR_SIGN_IN_ROUTES, "POST /people/link", "GET /people/challenge", "POST /people/token"];
 
 describe("the API key gate", () => {
   const KEY = "gate-key";
@@ -1400,7 +1403,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r));
+    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r));
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
     // So is `GET /llms.txt` (plans/paid-runs.md §10): the public view as a page.
@@ -1473,7 +1476,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
+    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
     // A launch, a run's control, and the publisher's ping to sync subscriptions.
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
@@ -1486,10 +1489,12 @@ describe("the API key gate", () => {
     // And the Concept branches (plans/concept-evals.md items b, d): a branch
     // does not cross to another strut, nor does its compare with main. And
     // the worker invites (plans/human-steps.md §5.8), each a link to money.
-    // And Support's conversations with workers (plans/support-chat.md §9).
     // And a round type's items and the workflows that can feed a type
     // (Send a round, the type editor's When there is work): staff reads.
-    const fullOnlyReads = ["GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare", "GET /support", "GET /support/unread", "GET /support/settings", "GET /support/x", "GET /support/x/files/x"];
+    // And people's names (plans/people-and-hosts.md §1): an admin's read.
+    // And an app's database, every row of it (plans/apps.md §4.4).
+    // And whether an account is linked (plans/jamie-in-tribes.md §5.2): a host key's alone.
+    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
@@ -1756,12 +1761,44 @@ describe("the API key gate", () => {
   };
   /** Open to anyone, whoever is signed in. */
   const openToAnyone = (r: string) =>
-    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || VISITOR_SIGN_IN_ROUTES.includes(r);
+    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || SIGN_IN_ROUTES.includes(r);
   const everyRoute = (strut: Awaited<ReturnType<typeof boot>>) => [...new Set(
     strut.app.routes
       .filter((r) => r.method !== "ALL" && r.path !== "*")
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
+
+  it("a host key (STRUT_HOST_KEYS) passes its five routes, and every other route is 403 — reads included", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const saved = process.env["STRUT_HOST_KEYS"];
+    process.env["STRUT_HOST_KEYS"] = "sphinx:host-key, bad entry";
+    try {
+      const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
+      // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
+      // back, a proposal there decided, and who an account is linked to; and an
+      // app's tools its hosts: lets it call (plans/people-and-hosts.md §3).
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "GET /hosts/links/x", "POST /mcp"];
+      for (const r of allowed) assert.ok(routes.includes(r), r);
+      const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
+      for (const route of routes) {
+        const [method, path] = route.split(" ") as [string, string];
+        const write = method !== "GET" && method !== "HEAD";
+        const res = await strut.app.request(path, { method, headers: host, ...(write ? { body: "{}" } : {}) });
+        const text = res.status === 403 ? await res.text() : (await res.body?.cancel(), "");
+        if (allowed.includes(route)) assert.ok(res.status !== 401 && !text.includes("forbidden: a host key"), `${route} → ${res.status} ${text}`);
+        else assert.equal(res.status, 403, route);
+      }
+      // Not the deployment key's equal, and not a host's without its entry.
+      assert.equal((await strut.app.request("/hosts/links/x", { headers: auth.headers })).status, 403, "a host's route: the key is no host");
+      assert.equal((await strut.app.request("/workflows", { headers: { authorization: "Bearer entry" } })).status, 401);
+      process.env["STRUT_HOST_KEYS"] = "";
+      assert.equal((await strut.app.request("/conversations/item?id=host/sphinx/x", { headers: host })).status, 401, "unset, it opens nothing");
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_HOST_KEYS"];
+      else process.env["STRUT_HOST_KEYS"] = saved;
+    }
+  });
 
   it("a member's session (a ticket with no role) passes the routes strut's page calls to show an app, and every other route is 403 — reads included", async () => {
     const strut = await boot();

@@ -9,7 +9,9 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { hostConfigFromEnv } from "../server.js";
 import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore, WorkspaceManager } from "../workspace.js";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { appIdentity } from "../auth.js";
+import { lnSign, stepCall } from "../test-util/public-door.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { treeHash } from "../version.js";
 import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
@@ -23,7 +25,7 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
@@ -444,6 +446,8 @@ describe("strut/jamie — its steps, as its viewer", () => {
       kit: await kitForTests(),
       serveUi: false,
       enableChat: false,
+      // The app door, as a page reaches it (Connect's link challenge).
+      enableMcp: true,
       scheduler: false,
       builder: false,
       autoResume: false,
@@ -577,6 +581,37 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.ok(published.ok, JSON.stringify(published));
     const plain = page("plain", "alice");
     assert.match((await plain.call("run/launch", { workflow: "job", job: "j", input: { prompt: "x" }, conversation: "alice/c1" })).error!, /only strut's own app/);
+  });
+
+  it("Connect and tribe conversations (plans/people-and-hosts.md §2.1; plans/jamie-in-tribes.md §5.1): the viewer's own link challenge and links; a host's conversation forked, never continued here", async () => {
+    assert.equal(hostPlace("sphinx"), "a Sphinx tribe");
+    assert.equal(hostPlace("email"), "email");
+    const alice = page(JAMIE_APP, "alice");
+    // Link Peel, as the page asks on the app door: a challenge naming her,
+    // bound to strut's address as the request reached it.
+    const made = await stepCall((p, i) => strut.app.request(`http://jamie.box${p}`, i), "/mcp", "account/link", {}, { authorization: `Bearer ${KEY}`, "x-strut-actor": "alice" }, appIdentity(JAMIE_APP, "v1"));
+    assert.equal(made.error, undefined, made.error);
+    const offer = made.result as { challenge: string; link: string };
+    assert.equal(new URL(offer.link).searchParams.get("url"), "http://jamie.box");
+    // Peel signs it with its Sphinx key and posts it where the link says.
+    const priv = secp256k1.utils.randomPrivateKey();
+    const KEY_HEX = Buffer.from(secp256k1.getPublicKey(priv, true)).toString("hex");
+    const res = await strut.app.request("http://jamie.box/people/link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challenge: offer.challenge, key: KEY_HEX, sig: Buffer.from(lnSign(priv, offer.challenge)).toString("hex"), name: "alice on sphinx" }),
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(((await res.json()) as { actor: string }).actor, "alice");
+    assert.deepEqual((await alice.ok("account/links")).links.map((l: any) => [l.account, l.name]), [[`sphinx:${KEY_HEX}`, "alice on sphinx"]]);
+    assert.deepEqual((await page(JAMIE_APP, "bob").ok("account/links")).links, [], "never another's");
+    assert.deepEqual(await page(JAMIE_APP, "bob").ok("account/unlink", { account: `sphinx:${KEY_HEX}` }), { removed: false });
+    assert.deepEqual(await alice.ok("account/unlink", { account: `sphinx:${KEY_HEX}` }), { removed: true });
+
+    // A host's conversation: its host alone takes a turn in it.
+    const hosted = await alice.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "from the app", session: "host/sphinx/0123456789ab" } });
+    assert.match(hosted.error!, /conversation_hosted: "host\/sphinx\/0123456789ab"/);
+    assert.match((await alice.call("run/launch", { workflow: "job", job: "alice-jh", input: { prompt: "x" }, conversation: "host/sphinx/0123456789ab" })).error!, /conversation_hosted/);
   });
 
   it("a run launched elsewhere is the viewer's before its first event lands: run/get waits on it, never 'not found'", async () => {

@@ -23,6 +23,32 @@ export interface ConversationListItem {
   team?: true;
   /** Who took its first turn. */
   startedBy?: string;
+  /** A host's conversation (a Sphinx tribe's, `host/sphinx/…`): the host's
+   *  name. Read-only here: continued where the host is, or forked. */
+  host?: string;
+}
+
+/** An account on another medium linked to the viewer (`account/links`). */
+export interface AccountLink {
+  /** `<kind>:<key>`. */
+  account: string;
+  kind: string;
+  key: string;
+  address?: string;
+  name?: string;
+  host?: string;
+  at: number;
+}
+
+/** A link challenge naming the viewer, for Peel to sign (`account/link`). */
+export interface LinkOffer {
+  challenge: string;
+  /** When it stops working (the server's clock). */
+  exp: number;
+  /** Open in Peel: `peel://strut/link?url=…&challenge=…`. */
+  link: string;
+  /** The link as a QR code, an SVG data URI. */
+  qr: string;
 }
 
 /** A job as a list row shows it. */

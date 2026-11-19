@@ -274,6 +274,11 @@ export interface StepContext<TServices = unknown> {
    *  step that keeps something per app (its SQLite file, its declared
    *  graph types, its schedules) finds the app here. Absent otherwise. */
   app?: AppRef;
+  /** The HOST this call came through (plans/people-and-hosts.md §3): set by
+   *  the host's door alone (`step_run` on `POST /mcp` with a host key), never
+   *  by a launch body, and not carried by a run the step launches. Absent
+   *  otherwise. */
+  host?: HostRef;
   /** The AUTOMATION whose fire this run is (plans/automations.md §6): set
    *  by the scheduler's launch alone, recorded on `run.start`, read back by
    *  a resume. Nothing a caller sends (`POST …/run`, `meta/run-workflow`)
@@ -488,7 +493,7 @@ export type RunEventType =
 /** Who launched a run, when it was not a person or an API call. `"app"`:
  *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
  *  — a person's click in the viewer's name, so the run carries `app` too. */
-export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public";
+export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public" | "host";
 
 /** The APP a run or a step works for (plans/apps.md §5): what `step_run`
  *  sets as `ctx.app` for the page's call, and what a run the app launches
@@ -532,6 +537,17 @@ export interface WorkspaceAppRef {
    *  every run the page launches, so a turn knows whether its person may
    *  accept what only an admin accepts (`StepDef.approver`). */
   admin?: true;
+}
+
+/** A HOST's call of an app's tool (plans/people-and-hosts.md §3), as a step
+ *  reads it on `ctx.host`. */
+export interface HostRef {
+  /** The host key's name (`STRUT_HOST_KEYS`). */
+  name: string;
+  /** The account that spoke, `<kind>:<key>` (`x-strut-account`). */
+  account: string;
+  /** Nobody linked the account: the call runs as the key's own actor. */
+  unlinked: boolean;
 }
 
 /** Is this a first-party page's call or run (`AppRef.firstParty`)? */
@@ -590,8 +606,14 @@ export interface RunEvent {
    *  request, plans/federation.md §3) — the only runs a peer may cancel,
    *  pause or resume. `"public"`: launched by anyone through `POST
    *  /public/workflows/:name/run` (plans/paid-runs.md §6) — no actor, the
-   *  workflow as published, its sessions under `public/<runId>/`. */
+   *  workflow as published, its sessions under `public/<runId>/`. `"host"`:
+   *  a turn a HOST launched with its key (plans/jamie-in-tribes.md §5.1) as
+   *  the person it named — never an admin's, its sessions under
+   *  `host/<host>/`, woken like a person's. */
   origin?: RunOrigin;
+  /** On a host run's `run.start` (`origin: "host"`): the host's name, as in
+   *  `STRUT_HOST_KEYS`. Read back by a resume. */
+  host?: string;
   /** On a peer run's `run.start`: launched by a PERSON's credential (scope
    *  `peer:person`), so `actor` is the credential's own and the run may
    *  open that actor's sessions (plans/chained-orchestrators.md §2). Read

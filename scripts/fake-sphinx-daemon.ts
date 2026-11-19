@@ -64,12 +64,25 @@
  * `POST /worker-contact { pubkey?, alias? }`, `POST /worker-delete/:id`;
  * `POST /use-invite/:code { pubkey?, alias? }` makes the contact too.
  *
+ * STRUT'S HOST (plans/jamie-in-tribes.md §5.1), when `strutUrl` and
+ * `strutHostKey` are set (`STRUT_URL`, `STRUT_HOST_KEY`): SUPPORT's push
+ * (plans/people-and-hosts.md §5, §7). Every DM record —
+ * a worker's and the account's own, a new one or one that changed — goes to
+ * strut's `POST /mcp` as `step_run { app: "strut/staff", type:
+ * "support/receive", config: { records: [record] } }` with the host key, as
+ * the contact it is about (`x-strut-account: sphinx:<pubkey>`, their alias
+ * in `x-strut-account-name`). In order, one call at a time, a worker's file
+ * with its bytes (`file: { data, name }`, or `fileError: "too_large"` over
+ * 25 MiB), and again every `pushRetryMs` until strut answers a 2xx. It keeps
+ * how far strut has taken; `drained()` waits until strut has every record.
+ *
  * `GET /prices` answers mempool's `{ time, USD }` for STRUT_RATE_URL, so a
  * dollar is a fixed number of sats. `/prices`, `/settle`, `/next-payout`,
  * `/next-dm`, `/use-invite` and `/worker-*` are open: they are the test's,
  * not strut's.
  *
  *   PORT=3461 TOKEN=demo PAY_TOKEN=demo-pay MESSAGE_TOKEN=demo-message SETTLE_AFTER_MS=3000 USD_PER_BTC=100000 \
+ *     STRUT_URL=http://127.0.0.1:3000 STRUT_HOST_KEY=<sphinx's token in STRUT_HOST_KEYS> \
  *     npx tsx scripts/fake-sphinx-daemon.ts
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -96,10 +109,18 @@ export interface FakeSphinxDaemonOptions {
   startSats?: number;
   /** A line per invoice and payout. Default none. */
   log?: (line: string) => void;
+  /** Strut, for the host's side: Support's push goes to its `POST /mcp`
+   *  with this host key. Both, or neither. */
+  strutUrl?: string;
+  strutHostKey?: string;
+  /** How long Support's push waits before it hands a record again. Default 1000. */
+  pushRetryMs?: number;
 }
 
 export interface FakeSphinxDaemon {
   url: string;
+  /** Strut has taken every DM record (Support's push), or there is no strut. */
+  drained(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -190,15 +211,61 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   const put = (r: Omit<DmRec, "seq">) => {
     const rec = { ...r, seq: ++seq } as DmRec;
     dms.set(keyOf(rec), rec);
+    push();
     return rec;
   };
   const touch = (r: DmRec) => {
     dms.delete(keyOf(r));
     r.seq = ++seq;
     dms.set(keyOf(r), r);
+    push();
+  };
+
+  // SUPPORT's push (plans/people-and-hosts.md §5, §7): each record in order,
+  // one call at a time, until strut answers a 2xx; `pushed` is how far
+  // strut has taken. A record that changes comes again under its new seq.
+  let pushed = 0;
+  let pushing: Promise<void> | null = null;
+  let closed = false;
+  const nextToPush = () => [...dms.values()].filter((r) => r.seq > pushed).sort((a, b) => a.seq - b.seq)[0];
+  const pushOne = async (r: DmRec): Promise<boolean> => {
+    const f = r.kind === "file" && !r.fromMe && r.id ? dmFiles.get(r.id) : undefined;
+    const record = { ...r, ...(f ? (f.size > DM_FILE_MAX_BYTES ? { fileError: "too_large" } : { file: { data: f.bytes.toString("base64"), name: f.name } }) : {}) };
+    const alias = r.peer.alias;
+    const res = await fetch(`${opts.strutUrl!.replace(/\/+$/, "")}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${opts.strutHostKey}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-strut-account": `sphinx:${r.peer.pubkey}`,
+        ...(alias ? { "x-strut-account-name": encodeURIComponent(alias) } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: r.seq, method: "tools/call", params: { name: "step_run", arguments: { app: "strut/staff", type: "support/receive", config: { records: [record] } } } }),
+    });
+    const text = await res.text();
+    if (!res.ok) log(`push ${r.kind} #${r.seq} to strut: ${res.status} ${text.slice(0, 200)}`);
+    return res.ok;
+  };
+  function push(): void {
+    if (!opts.strutUrl || !opts.strutHostKey || pushing || closed) return;
+    pushing = (async () => {
+      for (let r = nextToPush(); r && !closed; r = nextToPush()) {
+        const at = r.seq;
+        if (await pushOne(r).catch((err) => (log(`push #${at} to strut: ${err instanceof Error ? err.message : String(err)}`), false))) pushed = Math.max(pushed, at);
+        else await new Promise((ok) => setTimeout(ok, opts.pushRetryMs ?? 1000));
+      }
+    })().finally(() => {
+      pushing = null;
+      if (nextToPush()) push();
+    });
+  }
+  const drained = async (): Promise<void> => {
+    while (opts.strutUrl && opts.strutHostKey && !closed && (pushing || nextToPush())) await (pushing ?? new Promise((ok) => setTimeout(ok, 10)));
   };
   const someKey = () => `02${randomBytes(32).toString("hex")}`;
-  const peerOf = (pubkey: string) => ({ pubkey, address: `${pubkey}_${"03" + "1".repeat(64)}_1`, alias: contacts.get(pubkey) ?? null });
+  const addressOf = (pubkey: string) => `${pubkey}_${"03" + "1".repeat(64)}_1`;
+  const peerOf = (pubkey: string) => ({ pubkey, address: addressOf(pubkey), alias: contacts.get(pubkey) ?? null });
   /** A new contact's key exchange, once per pubkey (an invite used, or a first DM). */
   const contact = (pubkey: string, alias: string | null) => {
     if (contacts.has(pubkey)) {
@@ -595,7 +662,12 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
   await new Promise<void>((ok, fail) => server.once("error", fail).listen(opts.port ?? 3461, "127.0.0.1", ok));
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-    close: () => new Promise<void>((ok) => server.close(() => ok())),
+    drained,
+    close: async () => {
+      closed = true;
+      await pushing;
+      await new Promise<void>((ok) => server.close(() => ok()));
+    },
   };
 }
 
@@ -611,6 +683,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
     ...(num("USD_PER_BTC") !== undefined ? { usdPerBtc: num("USD_PER_BTC")! } : {}),
     ...(num("START_SATS") !== undefined ? { startSats: num("START_SATS")! } : {}),
+    ...(env("STRUT_URL") && env("STRUT_HOST_KEY") ? { strutUrl: env("STRUT_URL")!, strutHostKey: env("STRUT_HOST_KEY")! } : {}),
     log: (line) => console.log(line),
   });
   console.log(`fake sphinx daemon on ${daemon.url} (invoices settle after ${settleAfterMs ?? 3000} ms)`);

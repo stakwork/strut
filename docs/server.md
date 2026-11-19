@@ -145,6 +145,8 @@ index. A change in this area updates this file, not AGENTS.md.
   it. When the run settles strut POSTs, once, `{ event: "run.end",
   workflow, runId, status: "success" | "error" | "cancelled", output?,
   error?: { message }, transcripts?: [{ step, stepType, url }], durationMs }`
+  (a wake turn's also `delivered?`, what the job runs it woke on
+  delivered, as the conversation index reads it: docs/jobs.md, "ONE WAKE")
   — each agent session as a LINK (`GET …/runs/:runId/transcripts/<step
   path>` serves its bare `messages` array), never inline — detached from the run's teardown,
   with the chat callback's delivery rules (a few retries; a 4xx is the

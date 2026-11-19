@@ -21,7 +21,7 @@ type Vectors = {
   credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
   credit_replies: Array<{ name: string; payment_hash: string; reply: unknown; outcome: "paid" | "pending" | "fallback"; preimage?: string; code?: string }>;
   sign_in_requests: Array<{ name: string; now: number; request: unknown; valid: boolean }>;
-  sign_in_replies: Array<{ name: string; reply: unknown; outcome: "signed" | "refused"; key?: string; sig?: string; address?: string; code?: string }>;
+  sign_in_replies: Array<{ name: string; reply: unknown; outcome: "signed" | "refused"; key?: string; sig?: string; address?: string; alias?: string; code?: string }>;
   sign_in_addresses: Array<{ name: string; signer: { seed: string; idx: number; network: string }; key: string; address: string }>;
   sign_in_signatures: Array<{ name: string; signer?: { seed: string; idx: number; network: string }; message: string; key: string; sig: string; actor: string | null }>;
   scenarios: Array<{
@@ -160,7 +160,7 @@ describe("wallet vectors: sign-in replies (what the host does with sign_in's ans
     it(v.name, () => {
       const r = readSignInReply(v.reply);
       assert.equal(r.outcome, v.outcome);
-      if (r.outcome === "signed") assert.deepEqual({ key: r.key, sig: r.sig, address: r.address }, { key: v.key, sig: v.sig, address: v.address });
+      if (r.outcome === "signed") assert.deepEqual({ key: r.key, sig: r.sig, address: r.address, alias: r.alias }, { key: v.key, sig: v.sig, address: v.address, alias: v.alias });
       else {
         assert.equal(r.code, v.code);
         assert.ok(r.message.length > 0);

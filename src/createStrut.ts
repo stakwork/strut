@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { compress } from "hono/compress";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
@@ -37,7 +38,7 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -48,9 +49,8 @@ import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
-import { createSupport, type Support } from "./support/support.js";
-import { supportRoutes } from "./support/routes.js";
-import { SupportStore } from "./support/store.js";
+import { sphinxCapability, type SphinxDaemon } from "./payments/sphinx-dm.js";
+import { payoutLine, SUPPORT_APP } from "./steps/lib/support/_shared.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { standingTask } from "./tasks/standing.js";
@@ -71,6 +71,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
+import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -80,6 +81,8 @@ import {
   FileSessionStore,
   MemorySessionStore,
   PEER_NAMESPACE,
+  HOST_NAMESPACE,
+  hostOfSession,
   appSessionId,
   idProblem,
   peerSessionId,
@@ -127,8 +130,9 @@ import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
-import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
+import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { createAppDatabases } from "./apps/data.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
@@ -136,7 +140,7 @@ import { seedStaffApp } from "./apps/staff-seed.js";
 import { seedWorkerApp } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
-import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive, packTar } from "./packages/archive.js";
 import { packageTorrent } from "./packages/torrent.js";
@@ -193,7 +197,7 @@ import { createChannels, type ChannelApp, type Channels, type ChannelTransport }
 import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
-import type { Duplex } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import { fmtBytes, positiveBytes } from "./output-cap.js";
 import { installEscapeGuard } from "./escaped-errors.js";
@@ -239,6 +243,13 @@ const LLMS_TXT_CACHE_MS = 30_000;
  *  what a public launch with files may be. An anonymous request stays at
  *  the SDK's 4 MB (`MCP_BODY_MAX_BYTES`). */
 const APP_DOOR_BODY_MAX_BYTES = PUBLIC_RUN_FILES_BODY_MAX_BYTES;
+/** The most a HOST's call on `POST /mcp` may be (plans/people-and-hosts.md
+ *  §3): a 25 MiB file as base64 (about 33.4 MiB), with room for the rest of
+ *  the message. Every other caller keeps its own cap. */
+export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
+/** The most a body Peel posts to link or renew may be (`POST /people/link`,
+ *  `/people/token`): a challenge, a key, a signature, a name, an address. */
+const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
@@ -440,10 +451,10 @@ export interface StrutOptions<TServices = unknown> {
    *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
    *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
   tasks?: { now?: () => number; principal?: string };
-  /** Support (plans/support-chat.md, src/support/): `pollMs`, how often the
-   *  follower reads the daemon's DMs (3 s); `fetch`, how it reaches the
-   *  daemon (a test's). */
-  support?: { pollMs?: number; fetch?: typeof fetch };
+  /** How strut reaches the Sphinx daemon on its MESSAGE token (a test's
+   *  `fetch`): the `sphinx` capability (plans/people-and-hosts.md §4) and
+   *  the account a link code is sent to. */
+  sphinx?: { fetch?: typeof fetch };
   /** The proxies whose `x-forwarded-for` names the visitor every public
    *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
    *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
@@ -942,6 +953,13 @@ export interface Strut<TServices = unknown> {
    *  the file; closed by `close()`. What the launch and the charge write. */
   ledger(): Promise<LedgerStore>;
 
+  /** PEOPLE (plans/people-and-hosts.md §1, src/people.ts): a name per
+   *  person, which a host's ticket and a visitor's own sign-in write and
+   *  `nameOf` / `names` read. Opened on the first name —
+   *  `<dataDir>/people.db`, or memory where the run store is — closed by
+   *  `close()`. */
+  people: People;
+
   /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
    *  a step of a workflow. `capability` is the whole store, which the staff
    *  routes hold; every step's `ctx.services.tasks` is `human` (`ensure`
@@ -951,12 +969,6 @@ export interface Strut<TServices = unknown> {
    *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
    *  every minute, closed by `close()`. */
   tasks: TasksService;
-
-  /** SUPPORT (plans/support-chat.md, src/support/): the staff's chat with
-   *  workers over the treasury daemon's DMs. Its follower reads the daemon
-   *  every few seconds while the wallet has a message token; `tick()` reads
-   *  it now. Closed by `close()`. */
-  support: Support;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -1519,6 +1531,44 @@ export async function createStrut<TServices = unknown>(
     // accepts is refused to one who is not (proposals.ts `proposeCall`).
     personIsAdmin: (runId) => personIsAdmin(runId),
   });
+  // People (plans/people-and-hosts.md §1, src/people.ts): a name per
+  // person, written by a host's ticket and a visitor's own sign-in, read by
+  // `GET /people` and the `people/names` step. Opened on the first name;
+  // memory where the run store is.
+  const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir));
+  // Each app's own SQLite (plans/apps.md §4.4, src/apps/data.ts):
+  // `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on and an
+  // app's migrations are applied to. Memory where the run store is.
+  const appDb = createAppDatabases(store instanceof MemoryRunStore ? { memory: true } : { dataDir });
+  // SENDING AS SUPPORT (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts):
+  // the treasury daemon on its MESSAGE token. Never on the shared bag: on
+  // the admin door's (a first-party page shown to an admin), on a run such
+  // an app launched (`launchDetached`), and in the payout line's hook alone.
+  const sphinxDaemon = async (): Promise<SphinxDaemon | null> => {
+    if (payments.injected) return null;
+    const w = await payments.settings.wallet().catch(() => null);
+    return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
+  };
+  const sphinx = sphinxCapability({ daemon: sphinxDaemon, ...(opts.sphinx?.fetch ? { fetch: opts.sphinx.fetch } : {}) });
+  /** A settled payout's line from Support, the engine's own (§4): to a
+   *  worker who is Support's contact, while strut/staff has its tables and
+   *  the daemon its message token. */
+  const supportPayoutLine = async (p: { key: string; worker: string; msat: number }): Promise<void> => {
+    try {
+      if (!appDb.has(SUPPORT_APP) || !(await sphinxDaemon())) return;
+      await payoutLine(await appDb.open(SUPPORT_APP), sphinx, p);
+    } catch (err) {
+      console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  /** Does a run for this app carry `sphinx` (§4)? An admin's first-party
+   *  app — a `strut/` name at a version strut seeded, its manifest
+   *  `admin: true` — so `strut/staff`'s `support-outbox`. No other run's. */
+  const sendsAsSupport = async (app: AppRef | undefined): Promise<boolean> => {
+    if (!app || !isFirstPartyName(app.name)) return false;
+    const found = await apps.manifestOf(app.name, app.version).catch(() => null);
+    return !!found?.seeded && found.manifest.admin === true;
+  };
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1551,6 +1601,17 @@ export async function createStrut<TServices = unknown>(
     // `agentTools: [mcp/<server>/*]` reaches.
     mcpRegistry,
     proposals: ownProposals,
+    // Names, read alone (`people/names`); a visitor's bag carries their own.
+    people: peopleReader(people),
+    // The apps' own databases (`sqlite/*`): `ctx.app`'s, or the app a call
+    // with none names.
+    appDb,
+    // A person's linked accounts and a challenge that links one
+    // (`account/*`, plans/people-and-hosts.md §2.1): strut's own app's page
+    // alone. A challenge names strut's address, so the app door hands each
+    // request one bound to where it reached strut (`requestServices`); this
+    // one has only `STRUT_PUBLIC_URL`.
+    accounts: accountsCapability(people, opts.publicUrl ? { base: opts.publicUrl.replace(/\/+$/, ""), host: hostOfRequest({ url: opts.publicUrl }) } : undefined),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
@@ -1824,9 +1885,9 @@ export async function createStrut<TServices = unknown>(
     owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
     balance: () => walletBalanceMsat(payments.lightning(), 5_000),
     sweep: () => payouts.sweep(),
-    // A line from Support to the worker (plans/support-chat.md §6), on its
-    // own: the payout is booked whatever becomes of it.
-    paid: (p) => void support.paidOut(p),
+    // A line from Support to the worker (plans/people-and-hosts.md §4), on
+    // its own: the payout is booked whatever becomes of it.
+    paid: (p) => void supportPayoutLine(p),
   });
   // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
   // the payer's THIRD door — a keysend to the Sphinx address the worker's
@@ -1980,9 +2041,24 @@ export async function createStrut<TServices = unknown>(
   // A request strut made to itself (auth.ts `inProcessRequest`, app/look's
   // page) names its actor and is `full`, before any host hook is asked.
   const hostActor = opts.resolveActor ?? actorFromHeader;
+  /** A host key's request, as the gate read it: the host, the account its
+   *  `x-strut-account` named, and who that account is (`people.actorOf`). */
+  interface HostCall {
+    host: string;
+    account?: Account;
+    person?: AccountActor;
+  }
+  const hostCalls = new WeakMap<Request, HostCall>();
+  // A HOST key's request (auth.ts `hostOf`, plans/jamie-in-tribes.md §5.1)
+  // acts as the person its `x-strut-account` names — resolved once, in the
+  // gate (`hostCalls`) — and only when that account is linked: an unlinked
+  // key's own actor runs nothing here (plans/people-and-hosts.md §2).
   const resolveActor = (c: Context) => {
     const own = inProcessOf(c);
-    return own ? own.actor : hostActor(c);
+    if (own) return own.actor;
+    const call = hostCalls.get(c.req.raw);
+    if (call) return call.person?.linked ? call.person.actor : undefined;
+    return hostActor(c);
   };
   // And what it may do: a `peer` (another strut) reads, launches, and
   // controls the runs a peer launched (plans/federation.md §3); a
@@ -1992,12 +2068,22 @@ export async function createStrut<TServices = unknown>(
   // A member's session is strut's own credential, whatever a host's hook
   // maps (plans/member-rights.md): one that carries nothing else is
   // `member`, before the hook is asked.
-  const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && memberOf(c) !== undefined;
+  const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !hostOf(c) && memberOf(c) !== undefined;
   // And a VISITOR's (plans/app-repos.md §5.1): strut's own credential too,
   // whatever a host maps — a visitor is never a member, nor the key's equal.
-  const visitorOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !memberOf(c) && visitorOf(c) !== undefined;
+  const visitorOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !hostOf(c) && !memberOf(c) && visitorOf(c) !== undefined;
+  // And a HOST key (plans/jamie-in-tribes.md §5.1): strut's own, `host`,
+  // whatever a host's hook maps — and never the deployment key's equal.
   const resolveScope = (c: Context) =>
-    inProcessOf(c) ? ("full" as const) : memberOnly(c) ? ("member" as const) : visitorOnly(c) ? ("visitor" as const) : hostScope(c);
+    inProcessOf(c)
+      ? ("full" as const)
+      : hostOf(c)
+        ? ("host" as const)
+        : memberOnly(c)
+          ? ("member" as const)
+          : visitorOnly(c)
+            ? ("visitor" as const)
+            : hostScope(c);
   const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
   const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
@@ -2089,6 +2175,8 @@ export async function createStrut<TServices = unknown>(
       grants: appGrants,
       // The viewers' state (src/apps/state.ts), dropped with the app.
       dataDir,
+      // Its migrations, applied at publish and tried at build (src/apps/data.ts).
+      appDb,
       manifests: appVersions,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
@@ -2237,6 +2325,21 @@ export async function createStrut<TServices = unknown>(
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
     await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
+  }
+  // A seeded app's migrations (plans/people-and-hosts.md item 4): its
+  // version's `db/*.sql`, applied to its database at every boot, once each,
+  // since a seed is published here and never through `apps.publish`. A seed
+  // that will not migrate is a warning, as one that will not seed is.
+  for (const { name } of await workspace.listApps().catch(() => [])) {
+    try {
+      if (!(await apps.manifestOf(name))?.seeded) continue;
+      const at = await apps.versionDir(name);
+      const r = at ? await appDb.migrate(name, at.path) : null;
+      if (r && !r.ok) console.warn(`[apps] ${name}'s migrations: ${r.errors.join("; ")}`);
+      else if (r?.applied.length) console.log(`[apps] ${name}: applied ${r.applied.join(", ")}`);
+    } catch (err) {
+      console.warn(`[apps] could not migrate ${name}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
@@ -2626,10 +2729,28 @@ export async function createStrut<TServices = unknown>(
   ];
   const visitorMay = (method: string, path: string) =>
     VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
+  /** What a HOST key may call (plans/jamie-in-tribes.md §5.1): a turn of
+   *  one of its own conversations, as the person it names, read back; a
+   *  proposal made there, decided as that person; who an account is linked
+   *  to; and the tools an app's `hosts:` lets it call, on `POST /mcp`
+   *  (plans/people-and-hosts.md §3). No other read, no publishing, no
+   *  secret, no other session. */
+  const HOST_ROUTES: Array<[method: string, path: RegExp]> = [
+    ["POST", /^\/workflows\/[^/]+\/run$/],
+    ["GET", /^\/conversations\/item$/],
+    ["POST", PROPOSAL_DECIDE],
+    ["GET", /^\/hosts\/links\/[^/]+$/],
+    ["POST", /^\/mcp$/],
+  ];
+  const hostMay = (method: string, path: string) => HOST_ROUTES.some(([m, re]) => m === method && re.test(path));
   /** The sign-in routes: open to anyone, since signing in is how a visitor
    *  gets a credential (src/visitors.ts). */
   const VISITOR_OPEN_READ = /^\/visitors(?:\/challenge|\/lnurl)?$/;
   const VISITOR_SESSION_PATH = "/visitors/session";
+  /** Peel's link (plans/people-and-hosts.md §2.1): open to anyone, since a
+   *  link challenge and the key's signature over it are the credential. */
+  const PEEL_POSTS = new Set(["/people/link", "/people/token"]);
+  const PEEL_CHALLENGE_PATH = "/people/challenge";
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -2637,9 +2758,50 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
+      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path) || path === PEEL_CHALLENGE_PATH
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && (PUBLIC_POST.test(path) || PEEL_POSTS.has(path))) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
+    // A person token Peel holds for a link (plans/people-and-hosts.md §2.1)
+    // names the account it stands on: it holds while that account is still
+    // linked to its actor, and not a request longer.
+    const person = personOf(c);
+    if (person?.account) {
+      const account = parseAccount(person.account);
+      if ((account ? await people.linkOf(account) : undefined)?.actor !== person.actor) {
+        return c.json({ error: `unauthorized: ${person.account} is no longer linked to ${person.actor} here — link Peel again` }, 401);
+      }
+    }
+    // A HOST key (plans/jamie-in-tribes.md §5.1): `HOST_ROUTES` alone, as the
+    // person its `x-strut-account` names. Read here once: `resolveActor`
+    // answers that person when the account is linked, and nobody else.
+    const host = hostOf(c);
+    if (host) {
+      if (!hostMay(c.req.method, path)) {
+        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, asks who an account is linked to and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
+      }
+      const raw = c.req.header(ACCOUNT_HEADER);
+      const account = raw === undefined ? undefined : parseAccount(raw);
+      if (raw !== undefined && account?.kind !== host.name) {
+        return c.json({ error: `${ACCOUNT_HEADER} must be "${host.name}:<key>": an account of the kind this host vouches for` }, 400);
+      }
+      const person = account ? await people.actorOf(account) : undefined;
+      hostCalls.set(c.req.raw, { host: host.name, ...(account ? { account } : {}), ...(person ? { person } : {}) });
+      // What the speaker goes by there, as they wrote it
+      // (plans/people-and-hosts.md §1): kept as `self`, on the account when
+      // it is linked, else as its key's own actor's name.
+      const named = c.req.header(ACCOUNT_NAME_HEADER);
+      if (named !== undefined) {
+        if (!account) return c.json({ error: `${ACCOUNT_NAME_HEADER} is the name of the account ${ACCOUNT_HEADER} names: send both` }, 400);
+        let name: string;
+        try {
+          name = decodeURIComponent(named);
+        } catch {
+          return c.json({ error: `${ACCOUNT_NAME_HEADER} must be percent-encoded UTF-8` }, 400);
+        }
+        await people.setAccountName(account, name).catch((err) => console.error(`[people] ${accountText(account)}'s name was not kept:`, err));
+      }
+      return next();
+    }
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
       return c.json({ error: "forbidden: a member's session opens the apps here and nothing else; ask an admin for the rest" }, 403);
@@ -2720,21 +2882,57 @@ export async function createStrut<TServices = unknown>(
   // person token and a member off every POST but theirs); the actor and
   // the role are the host's to name, as with `x-strut-actor` beside the
   // key. No role is a member's (plans/member-rights.md): a host that does
-  // not say signs nobody in with the console.
+  // not say signs nobody in with the console. A `name` is the person's as
+  // the host knows them, kept as a host's (plans/people-and-hosts.md §1).
   app.post("/auth/ticket", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = await c.req.json<{ actor?: unknown; role?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown });
+    const body = await c.req.json<{ actor?: unknown; role?: unknown; name?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown; name?: unknown });
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
       return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
     }
     const role = body.role ?? "member";
     if (!isRole(role)) return c.json({ error: 'role must be "admin", "member" or "visitor": an admin runs this strut server, a member uses its apps, a visitor uses its public apps as itself' }, 400);
+    if (body.name != null && typeof body.name !== "string") return c.json({ error: "name must be a string: the person's name, one line, at most 80 characters" }, 400);
     const minted = signInTicket(actor, role)!;
+    if (typeof body.name === "string") await people.setName(actor, body.name, "host").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
   });
 
+  // ── People (plans/people-and-hosts.md §1; src/people.ts) ───────────────
+  // The names of a list of people, for strut's own UI to show in place of
+  // their actors: each actor asked, with `name` when one is kept. An
+  // admin's read (full scope); an app's page asks `people/names`.
+  app.get("/people", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: people's names are an admin's read (an app's page asks people/names)" }, 403);
+    const actors = c.req.queries("actor") ?? [];
+    if (actors.length > PEOPLE_READ_MAX) return c.json({ error: `at most ${PEOPLE_READ_MAX} actors at a time (?actor=…&actor=…), not ${actors.length}` }, 400);
+    if (actors.some((a) => !a || a.length > 512)) return c.json({ error: "each actor is 1 to 512 characters" }, 400);
+    return c.json({ people: await people.names(actors) });
+  });
+
+  // ── Hosts: linked accounts (plans/jamie-in-tribes.md §4, §5.2;
+  // plans/people-and-hosts.md §2; src/people.ts) ──────────────────────────
+  // A person links an account through Peel (`POST /people/link`, below with
+  // the visitors' sign-in). A host asks whether one is linked: the Sphinx
+  // daemon checks a tribe's owner with it. A host key's route alone, for an
+  // account of its own kind.
+  const hostRoute = (c: Context): string | Response =>
+    hostCalls.get(c.req.raw)?.host ?? c.json({ error: "forbidden: a host's route — it takes a host key (STRUT_HOST_KEYS)" }, 403);
+  /** The key a host names, bare or as `<kind>:<key>` of its own kind. */
+  const hostKeyOf = (host: string, raw: unknown) =>
+    accountKey(host, typeof raw === "string" && raw.startsWith(`${host}:`) ? raw.slice(host.length + 1) : raw);
+
+  // Whether an account is a person's here: the link, or 404 `not_linked`.
+  app.get("/hosts/links/:key", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    const key = hostKeyOf(host, c.req.param("key"));
+    if (!key) return c.json({ error: `not a ${host} account's key` }, 400);
+    const link = await people.linkOf({ kind: host, key });
+    return link ? c.json(link) : c.json({ error: `not_linked: ${host}:${key} is not linked to a person here` }, 404);
+  });
   // ── Workflows ────────────────────────────────────────────────────────────
 
   app.get("/workflows", async (c) => {
@@ -3222,6 +3420,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
+        // A host's turn stays the host's: never an admin's, its sessions under it.
+        ...(p.runStart.origin === "host" && p.runStart.host ? { origin: "host" as const, host: p.runStart.host } : {}),
         ...(p.runStart.continues ? { continues: p.runStart.continues } : {}),
         // An app's run stays the app's: its sessions under the app's
         // namespace (runner.ts `bindApp`), never the ids its page passed.
@@ -4571,6 +4771,26 @@ export async function createStrut<TServices = unknown>(
   // names, and a new list saved as a new version — a draft when the app is
   // held. `take` looks at a version as a person opening it sees it
   // (`app/look`) and hands back the PNG, which a save then includes.
+  // The app's own SQLite (plans/apps.md §4.4): the file as it is now, a
+  // copy taken in one go (VACUUM INTO). Every row of every table, so an
+  // admin's read (full scope), as GET /people is.
+  app.get("/apps/:name/data", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: an app's database is an admin's read (the deployment key or an admin's session)" }, 403);
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    if (!(await workspace.getApp(at.name).catch(() => null))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const copy = await appDb.copy(at.name);
+    if (!copy) return c.json({ error: `App "${at.name}" has no database yet: its migrations (db/*.sql) make one at publish` }, 404);
+    return new Response(Readable.toWeb(copy.stream) as ReadableStream, {
+      headers: {
+        "content-type": "application/vnd.sqlite3",
+        "content-length": String(copy.bytes),
+        "content-disposition": `attachment; filename="${at.name.replace(/\//g, "-")}.db"`,
+        "cache-control": "no-store",
+      },
+    });
+  });
+
   app.get("/apps/:name/screenshots", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
@@ -4713,7 +4933,9 @@ export async function createStrut<TServices = unknown>(
   // this request is; `GET /visitors/challenge` mints a challenge for this
   // host; `POST /visitors/session` checks the signature with the method's
   // verifier and answers the visitor's cookie and `{ actor, token, exp }`
-  // (the token for a page framed by another site, ruled 4); `DELETE` signs
+  // (the token for a page framed by another site, ruled 4), keeping a
+  // `name` the body carries as the visitor's own (plans/people-and-hosts.md
+  // §1: Peel's `sign_in` answers `alias`, which strut's UI sends); `DELETE` signs
   // out. LNURL-auth's wallet calls back on `GET /visitors/lnurl`. All open to
   // anyone: signing in is how a visitor gets a credential.
   const lnurlLogins = createLnurlLogins();
@@ -4725,9 +4947,12 @@ export async function createStrut<TServices = unknown>(
     return { methods: offeredMethods(signInOf(surface), visitorKey), visitorKey };
   };
   const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
-  /** Sign `actor` in: the visitor's cookie, and the token beside it. */
-  const signVisitorIn = (c: Context, actor: string, sphinxAddress?: string) => {
+  /** Sign `actor` in: the visitor's cookie, and the token beside it. A
+   *  `name` the visitor gave is kept as their own (plans/people-and-hosts.md
+   *  §1); one that cannot be kept never fails the sign-in. */
+  const signVisitorIn = async (c: Context, actor: string, sphinxAddress?: string, name?: unknown) => {
     const started = startVisitorSession(actor, sphinxAddress)!;
+    if (typeof name === "string") await people.setName(actor, name, "self").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
     c.header("set-cookie", visitorSessionCookie(started.token, started.session.exp, isSecureRequest(c)));
     c.header("cache-control", "no-store");
     return c.json({ actor, token: started.token, exp: started.session.exp });
@@ -4799,7 +5024,7 @@ export async function createStrut<TServices = unknown>(
       const got = lnurlLogins.take(body["k1"], challenge, host);
       if ("error" in got) return refuse(got.error);
       if ("pending" in got) return c.json({ pending: true, exp: got.exp }, 202);
-      return signVisitorIn(c, got.actor);
+      return signVisitorIn(c, got.actor, undefined, body["name"]);
     }
     if (!claims) return refuse("this challenge has expired or is not this server's — ask GET /visitors/challenge for another");
     if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`);
@@ -4846,7 +5071,7 @@ export async function createStrut<TServices = unknown>(
       const { k1, exp } = lnurlLogins.register(challenge, host);
       return c.json({ pending: true, k1, exp, ...lnurlLogin(publicUrlOf(c), k1) }, 202);
     }
-    return signVisitorIn(c, actor!, sphinxAddress);
+    return signVisitorIn(c, actor!, sphinxAddress, body["name"]);
   });
 
   app.delete(VISITOR_SESSION_PATH, (c) => {
@@ -4866,6 +5091,94 @@ export async function createStrut<TServices = unknown>(
     if (!sig || !key) return c.json({ status: "ERROR", reason: "sig and key are required (LUD-04)" }, 400);
     const got = await lnurlLogins.sign(k1, sig, key);
     return "error" in got ? c.json({ status: "ERROR", reason: got.error }) : c.json({ status: "OK" });
+  });
+
+  // ── Peel links to this strut (plans/people-and-hosts.md §2.1) ──────────
+  //
+  // A person signed in here opens Connect in the Jamie app, which shows a
+  // LINK CHALLENGE naming them (`account/link`, auth.ts "Link challenges").
+  // Peel signs it with its Sphinx key as a Lightning signed message, as its
+  // visitor `sign_in` does, and posts it: `POST /people/link` links
+  // `sphinx:<key>` to the challenge's person and answers a person token that
+  // names the account, for seven days. Peel renews it by signing again:
+  // `GET /people/challenge`, then `POST /people/token`. The key is the
+  // lasting credential; removing the link (`account/unlink`) ends the token
+  // at once (the gate checks it on every request). All three are open, as
+  // the visitors' sign-in is: the challenge and the signature are the
+  // credential. Budgeted per address as those are, bodies capped.
+  /** The host name a challenge is bound to: the one in strut's address as
+   *  this request reached it (`STRUT_PUBLIC_URL`, else the request's). */
+  const boxHost = (c: Context) => hostOfRequest({ url: baseOfRequest(c) });
+  const peelBody = bodyLimit({ maxSize: PEEL_BODY_MAX_BYTES, onError: (c) => c.json({ error: `the body is at most ${PEEL_BODY_MAX_BYTES} bytes` }, 413) });
+  /** The signed challenge a body carries: its claims, spent, and the key
+   *  that signed it — or the refusal. */
+  const peelSigned = async (c: Context, body: Record<string, unknown>): Promise<{ claims: LinkChallenge; account: Account } | Response> => {
+    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const claims = readLinkChallenge(body["challenge"]);
+    if (!claims) return refuse("this challenge has expired or is not this server's — ask for another");
+    if (claims.host !== boxHost(c)) return refuse(`this challenge was for ${claims.host}`);
+    const key = fromHex(body["key"]);
+    const sig = fromHex(body["sig"]);
+    const hexKey = accountKey("sphinx", typeof body["key"] === "string" ? body["key"] : "");
+    if (!key || !sig || !hexKey) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
+    if (!(await VERIFIERS["ln-message"]!(new TextEncoder().encode(body["challenge"] as string), key, sig))) return refuse("the signature does not hold for this challenge and key");
+    // Spent once its signature holds, so a challenge someone only saw
+    // cannot be burned.
+    if (!redeemLinkChallenge(body["challenge"])) return refuse("this challenge was already used");
+    return { claims, account: { kind: "sphinx", key: hexKey } };
+  };
+  /** Peel's token for `actor` on `account`, and who that is. */
+  const peelToken = async (c: Context, actor: string, account: Account) => {
+    const minted = personToken(actor, LINKED_TOKEN_DAYS * 86_400_000, { account: accountText(account) });
+    if (!minted) return noSecret(c);
+    const name = await people.nameOf(actor);
+    c.header("cache-control", "no-store");
+    return c.json({ actor, ...(name ? { name } : {}), token: minted.token, exp: minted.exp });
+  };
+  const readPeelBody = async (c: Context): Promise<Record<string, unknown> | Response> => {
+    const body = (await c.req.json().catch(() => null)) as unknown;
+    return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : c.json({ error: "the body is JSON: { challenge, key, sig, … }" }, 400);
+  };
+
+  app.post("/people/link", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    if (body["name"] != null && typeof body["name"] !== "string") return c.json({ error: "name must be a string: the account's own name, as its holder wrote it" }, 400);
+    const key = accountKey("sphinx", body["key"]);
+    if (body["address"] != null && (!key || !accountAddress({ kind: "sphinx", key }, body["address"]))) {
+      return c.json({ error: "address must be where this account is reached: <its key>_<the LSP's key>_<scid>" }, 400);
+    }
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const { claims, account } = signed;
+    if (!claims.actor) return c.json({ error: "unauthorized: this challenge links nobody — it renews a token (POST /people/token); a link starts in the Jamie app's Connect" }, 401);
+    const was = await people.linkOf(account);
+    if (was && was.actor !== claims.actor) return c.json({ error: `linked_elsewhere: ${accountText(account)} is linked to another person here — they remove it in Connect first` }, 409);
+    await people.link(account, claims.actor, { name: body["name"], address: body["address"] });
+    return peelToken(c, claims.actor, account);
+  });
+
+  app.get(PEEL_CHALLENGE_PATH, (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const minted = linkChallenge({ host: boxHost(c) }, RENEW_CHALLENGE_MS);
+    if (!minted) return noSecret(c);
+    c.header("cache-control", "no-store");
+    return c.json(minted);
+  });
+
+  app.post("/people/token", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const link = await people.linkOf(signed.account);
+    if (!link) return c.json({ error: `not_linked: ${accountText(signed.account)} is not linked to a person here — link it from the Jamie app's Connect` }, 403);
+    return peelToken(c, link.actor, signed.account);
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -6334,6 +6647,16 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "input must be an object: the edits merged onto the proposal's input" }, 400);
     }
     if (body.reason !== undefined && typeof body.reason !== "string") return c.json({ error: "reason must be a string" }, 400);
+    // A host decides as the person it names, and only a proposal made in one
+    // of its own conversations (plans/jamie-in-tribes.md §6.1). Never as an
+    // admin: `decideProposal` takes `host` for a person's scope.
+    if (hostCalls.has(c.req.raw)) {
+      const as = hostPerson(c);
+      if (as instanceof Response) return as;
+      const p = await readProposal(proposalsDir, id);
+      const thread = p && (p.by.conversation ?? p.by.session);
+      if (!thread || hostOfSession(thread) !== as.host) return c.json({ error: `No proposal "${id}" in a conversation of this host` }, 404);
+    }
     const actor = await resolveActor(c);
     const outcome = await decide(id, {
       action: body.action,
@@ -6716,35 +7039,10 @@ export async function createStrut<TServices = unknown>(
     },
   });
 
-  // ── Support (plans/support-chat.md; src/support/) ──────────────────────
-  // The staff's chat with workers over the treasury's Sphinx DMs, through
-  // the daemon's MESSAGE token: held here and by the follower alone, never
-  // on a bag. No token, or an NWC wallet: every route says `not_available`.
-  // Its tables are in the task store's file, on a connection of its own;
-  // memory where the run store is.
-  const support = createSupport({
-    daemon: async () => {
-      if (payments.injected) return null;
-      const w = await payments.settings.wallet();
-      return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
-    },
-    open: async () => new SupportStore(await openTaskDb(store instanceof MemoryRunStore ? TASKS_IN_MEMORY : tasksPath(dataDir))),
-    filesDir: join(dataDir, "support", "files"),
-    photoFile: join(dataDir, "support", "photo"),
-    ...(opts.support?.fetch ? { fetch: opts.support.fetch } : {}),
-    ...(opts.support?.pollMs ? { pollMs: opts.support.pollMs } : {}),
-  });
-  supportRoutes(app, {
-    isFull: async (c) => (await scopeOf(c)) === "full",
-    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
-    support,
-  });
-
   // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
   // in-process request, the viewer's own, for the steps strut's own admin
   // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
-  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks, and
-  // /support, plans/support-chat.md).
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks).
   // Handed to the app door's bag for a first-party page shown to an admin,
   // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
   // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
@@ -7526,9 +7824,17 @@ export async function createStrut<TServices = unknown>(
    *  `app/…`) or no conversation stays in the caller's namespace, as
    *  before. Any other the index decides: a conversation they took a turn
    *  in, or a shared one, opens as it is; another person's is refused. */
+  function hostedRefusal(id: string, host: string): string {
+    return `conversation_hosted: "${id}" is a conversation the host "${host}" opened — it is continued there (a tribe: reply there); fork it to continue it here (conversation/fork)`;
+  }
   async function continuesFor(flow: Flow, input: unknown, actor: string | undefined): Promise<{ continues?: string } | { refused: string }> {
     const id = (input as Record<string, unknown> | undefined)?.["session"];
     if (!actor || typeof id !== "string" || !id || !isConversationFlow(flow)) return {};
+    // A host's conversation is continued by its host alone (plans/jamie-in-tribes.md
+    // ruling 9): a turn from here would be answered here, and its jobs'
+    // wakes there. Forking it is how a person continues it here.
+    const host = hostOfSession(id);
+    if (host) return { refused: hostedRefusal(id, host) };
     if (id === actor || id.startsWith(`${actor}/`) || outsideConversations(id) || idProblem(id)) return {};
     const may = await conversations.mayContinue(id, actor);
     if (may === true) return { continues: id };
@@ -7548,7 +7854,10 @@ export async function createStrut<TServices = unknown>(
       /** An automation's fire (plans/automations.md §3), a peer's launch
        *  (plans/federation.md §3), an app's (plans/apps.md §5), or anyone's
        *  (`POST /public/workflows/:name/run`, plans/paid-runs.md §6). */
-      origin?: "schedule" | "peer" | "app" | "public";
+      origin?: "schedule" | "peer" | "app" | "public" | "host";
+      /** A host's turn (`origin: "host"`, plans/jamie-in-tribes.md §5.1):
+       *  the host's name, on `run.start`; its sessions under `host/<host>/`. */
+      host?: string;
       /** The run's own cost cap (a public run's, plans/paid-runs.md §7):
        *  recorded on `run.start`, handed to `llmAuth`. */
       maxCostUsd?: number;
@@ -7674,6 +7983,8 @@ export async function createStrut<TServices = unknown>(
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
+      // An admin's first-party app's run sends as Support (§4); no other does.
+      const bag = (await sendsAsSupport(extra?.app)) ? { ...services, sphinx } : services;
       principal ??= await principalFor(flow.name, extra?.actor);
       // Once who pays is known: an automation's turn is its owner's. On
       // record before the run starts.
@@ -7693,7 +8004,7 @@ export async function createStrut<TServices = unknown>(
         runId,
         store,
         workspace,
-        services,
+        services: bag,
         params: body.params,
         settings: body.settings,
         paramOverrides: body.paramOverrides,
@@ -7706,6 +8017,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.woken ? { woken: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
+        ...(extra?.origin === "host" && extra.host ? { host: extra.host } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
@@ -7910,6 +8222,10 @@ export async function createStrut<TServices = unknown>(
       // What the run proposed (plans/proposals.md §6): from the records,
       // never from the model's output.
       const proposals = (await listProposals(proposalsRoot(dataDir), { runId: res.runId }).catch(() => [])).map(briefOf);
+      // A wake turn's own run holds none of the job's work: what the job
+      // run(s) it woke on delivered, as the conversation index shows it
+      // (plans/jamie-in-tribes.md §5.3).
+      const delivered = typeof wake === "object" ? await conversations.delivered(wake).catch(() => []) : [];
       await postCallback(
         url,
         {
@@ -7926,6 +8242,7 @@ export async function createStrut<TServices = unknown>(
           ...(res.error ? { error: { message: res.error.message } } : {}),
           ...(transcripts.length ? { transcripts } : {}),
           ...(artifacts ? { artifacts } : {}),
+          ...(delivered.length ? { delivered } : {}),
           ...(proposals.length ? { proposals } : {}),
           durationMs,
         },
@@ -7982,7 +8299,8 @@ export async function createStrut<TServices = unknown>(
   /** Is the person the run `runId` is for an ADMIN of this strut server
    *  (plans/member-rights.md), as its records say? Its root's `run.start`:
    *  a page's turn says (`app.admin`, the app door's), a peer's launch is not
-   *  one (a person token, or another strut), a job's run asks the turn that
+   *  one (a person token, or another strut), nor a host's (it vouches for
+   *  who spoke, never their role), a job's run asks the turn that
    *  started it (`startedBy`), a wake the job run it woke on. Undefined when
    *  nothing says — a host's launch with the key, an automation — and the
    *  decision decides (proposals.ts `acceptRefusal`). */
@@ -7992,7 +8310,8 @@ export async function createStrut<TServices = unknown>(
     for (let hop = 0; at && hop < 6; hop++) {
       const start = await store.getRunStart(at.workflow, at.runId).catch(() => null);
       if (!start) return undefined;
-      if (start.origin === "peer") return false;
+      // A host only vouches for who spoke (plans/jamie-in-tribes.md ruling 8).
+      if (start.origin === "peer" || start.origin === "host") return false;
       if (start.origin === "app") return start.app?.admin === true;
       if (start.startedBy) at = { workflow: start.startedBy.workflow, runId: start.startedBy.runId };
       else if (start.wake && !start.wake.peer) {
@@ -8159,14 +8478,15 @@ export async function createStrut<TServices = unknown>(
   };
   /** Whether strut wakes for a launch of `flow` (the 202's `wake: true`,
    *  plans/jamie-app.md §7): the host asked (`wake: true`) with the
-   *  deployment's rights — a peer's turn is a relay, never woken, and its
+   *  deployment's rights or a host's (plans/jamie-in-tribes.md §5.1: its
+   *  runs are not relays) — a peer's turn is a relay, never woken, and its
    *  `wake` is dropped before it launches — on a conversation turn (a
    *  workflow with `params.wake`, on a session: the jobs it starts wake it)
    *  or on a job turn it launched itself naming the `conversation`. */
   const announcesWake = (flow: Flow, body: RunBody, scope: Scope): boolean =>
     wakes.enabled &&
     body.wake === true &&
-    scope === "full" &&
+    (scope === "full" || scope === "host") &&
     ((typeof flow.params?.["wake"] === "string" && typeof (body.input as Record<string, unknown> | undefined)?.["session"] === "string") ||
       (typeof body.conversation === "string" && (JOB_WORKFLOWS as readonly string[]).includes(flow.name)));
 
@@ -8213,6 +8533,32 @@ export async function createStrut<TServices = unknown>(
     // is dropped, not refused, so a relay that passes one through works.
     const { wake: _wake, ...asPublished } = body;
     return typeof asPublished.job === "string" ? { ...asPublished, job: `${PEER_NAMESPACE}${asPublished.job}` } : asPublished;
+  };
+  /** The linked person a HOST key's request acts as (plans/jamie-in-tribes.md
+   *  §5.1), or why not: no account named (400), or one nobody linked (403
+   *  `not_linked`) — a host's turn needs a person here; the host falls back
+   *  to someone who is (a tribe's linker). */
+  const hostPerson = (c: Context): { host: string; actor: string } | Response => {
+    const call = hostCalls.get(c.req.raw)!;
+    if (!call.account) return c.json({ error: `${ACCOUNT_HEADER} is required: the account of the person this is for ("${call.host}:<key>")` }, 400);
+    if (!call.person?.linked) {
+      return c.json({ error: `not_linked: ${accountText(call.account)} is not linked to a person on this strut server — they link it in the Jamie app (Connect)` }, 403);
+    }
+    return { host: call.host, actor: call.person.actor };
+  };
+  /** A HOST's launch (plans/jamie-in-tribes.md §2, §5.1): a turn of one of
+   *  its own conversations — `input.session` under `host/<name>/` — with
+   *  `wake`, `callback` and `attachments` and nothing more: the workflow as
+   *  published, no job, branch or MCP servers. Why not, or null. */
+  const hostLaunchRefusal = (body: RunBody, host: string): string | null => {
+    const set = (["params", "paramOverrides", "runId", "settings", "conversation", "branch", "job", "title", "mcp", "jobCallback"] as const).filter((k) => body[k] != null);
+    if (set.length) return `forbidden: a host launches a turn of the workflow as published — drop ${set.join(", ")}`;
+    const session = (body.input as Record<string, unknown> | undefined)?.["session"];
+    const prefix = `${HOST_NAMESPACE}${host}/`;
+    if (typeof session !== "string" || !session.startsWith(prefix) || idProblem(session)) {
+      return `forbidden: a host's turn names its conversation as input.session, an id under "${prefix}"`;
+    }
+    return null;
   };
   /** May a peer request of `scope` launch a workflow whose YAML says
    *  `peer: <open>`? `true` takes any peer; `person` only a credential that
@@ -8431,6 +8777,8 @@ export async function createStrut<TServices = unknown>(
         if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
         const problem = idProblem(q.conversation);
         if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+        const hosted = hostOfSession(q.conversation);
+        if (hosted) throw new Error(hostedRefusal(q.conversation, hosted));
         const own = q.conversation === by.actor || q.conversation.startsWith(`${by.actor}/`);
         if (!own && (await conversations.mayContinue(q.conversation, by.actor)) !== true) {
           throw new Error(`conversation_not_yours: "${q.conversation}" is not a conversation you may continue — your own (${by.actor}/…), one you took a turn in, or a shared one`);
@@ -8672,6 +9020,10 @@ export async function createStrut<TServices = unknown>(
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
     if (scope === "peer:person") return actor ? { actor, person: true } : null;
+    // A host reads its own conversations whole, whoever spoke (the route
+    // holds it to `host/<name>/`): how it finds a turn's end it missed
+    // (plans/jamie-in-tribes.md §6.2).
+    if (scope === "host") return { all: true };
     if (scope !== "full") return null;
     return actor ? { actor } : { all: true };
   };
@@ -8705,6 +9057,8 @@ export async function createStrut<TServices = unknown>(
     const session = q["id"] ?? "";
     const problem = idProblem(session);
     if (problem) return c.json({ error: `conversation id "${session}" ${problem}` }, 400);
+    const call = hostCalls.get(c.req.raw);
+    if (call && hostOfSession(session) !== call.host) return c.json({ error: `No conversation "${session}" (or not yours to read)` }, 404);
     const [limit, before, wait, since] = [intParam(q["limit"]), intParam(q["before"]), intParam(q["wait"]), intParam(q["since"])];
     const view = by && (await conversations.get(
       { session, ...(limit ? { limit } : {}), ...(before !== undefined ? { before } : {}), ...(wait ? { wait } : {}), ...(since !== undefined ? { since } : {}) },
@@ -8843,6 +9197,16 @@ export async function createStrut<TServices = unknown>(
       if ("refused" in launch) return c.json({ error: launch.refused }, 403);
       body = launch;
     }
+    // A host's turn (plans/jamie-in-tribes.md §5.1): as a linked person, on
+    // its own conversation. Never an admin's: `run.start` says `origin: "host"`.
+    let hosted: { host: string; actor: string } | undefined;
+    if (scope === "host") {
+      const as = hostPerson(c);
+      if (as instanceof Response) return as;
+      const refused = hostLaunchRefusal(body, as.host);
+      if (refused) return c.json({ error: refused }, 403);
+      hosted = as;
+    }
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
@@ -8867,6 +9231,9 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
+    if (hosted && !isConversationFlow(flow)) {
+      return c.json({ error: `forbidden: a host launches a conversation workflow (one with params.wake) — "${name}" is not one` }, 403);
+    }
     const disabled = await workflowDisabled(workspace, name);
     if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
@@ -8880,6 +9247,7 @@ export async function createStrut<TServices = unknown>(
       actor,
       ...(cont.continues ? { continues: cont.continues } : {}),
       ...(peer ? { origin: "peer" as const } : {}),
+      ...(hosted ? { origin: "host" as const, host: hosted.host } : {}),
       ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
@@ -10049,19 +10417,25 @@ export async function createStrut<TServices = unknown>(
   // with no credential.
 
   if (enableMcp) {
+    /** The shared bag, with the `account/*` steps' capability bound to
+     *  strut's address as this request reached it: the link challenge a
+     *  page shows names where Peel posts it (plans/people-and-hosts.md §2.1). */
+    const requestServices = (c: Context) => ({ ...services, accounts: accountsCapability(people, { base: baseOfRequest(c), host: boxHost(c) }) });
     /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
      *  doors — hidden from a model, callable by a page whose host relays
      *  its tools/call here. The viewer is the connection's actor, an ADMIN
      *  when the connection holds full scope (plans/member-rights.md). */
-    const appDoor = async (actor: string | undefined, scope: Scope) => {
+    const appDoor = async (c: Context, actor: string | undefined, scope: Scope) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const appTools = buildAppTools({
         apps,
         registry,
-        services,
+        services: requestServices(c),
         ...(actor ? { actor } : {}),
         admin: scope === "full",
-        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor } } : {}),
+        // And the `sphinx` capability (plans/people-and-hosts.md §4): Support's
+        // sends from strut/staff's page.
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor, sphinx } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
         // calls of the task store on that call's bag alone. A member's
         // session carries no Sphinx address: nothing to withdraw to (§8.2).
@@ -10161,6 +10535,8 @@ export async function createStrut<TServices = unknown>(
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
         ...(graph && reader ? { graph: graphView(reader) } : {}),
         ...(runs ? { runs } : {}),
+        // A signed-in visitor reads their own name alone (people/names).
+        ...(signedIn ? { people: ownName(people, signedIn) } : {}),
       };
       /** A signed-in visitor's bag for one call: its own `app/state`, the
        *  nodes of its app's declared types read whole, and the graph
@@ -10252,7 +10628,7 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c))) };
+      return { publicUrl, actor, deps, ...(await appDoor(c, actor, await scopeOf(c))) };
     };
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
@@ -10263,7 +10639,7 @@ export async function createStrut<TServices = unknown>(
      *  Neither is an admin here. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
-      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
+      const { appTools, appMeta } = await appDoor(c, await resolveActor(c), await scopeOf(c));
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
       return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
@@ -10309,10 +10685,51 @@ export async function createStrut<TServices = unknown>(
       });
       return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
+    /** A HOST key on `/mcp` (plans/people-and-hosts.md §3): `step_run`
+     *  alone, the app named by its name, as the account `x-strut-account`
+     *  names — its person, or the key's own actor where the app says
+     *  `unlinked: true` — under the app's `hosts:`, on the shared bag. It
+     *  is synchronous: one JSON answer once the step is done, 200 only when
+     *  every call in it finished — 403 refused, 500 the step failed, 400 a
+     *  call the tool could not take — so a host sends again until a 2xx,
+     *  and a 2xx means taken. Up to `HOST_CALL_BODY_MAX_BYTES`. */
+    const hostAppHandler = async (c: Context) => {
+      const call = hostCalls.get(c.req.raw)!;
+      if (!call.account) return c.json({ error: `${ACCOUNT_HEADER} is required: the account this call is made as ("${call.host}:<key>")` }, 400);
+      if (!call.person) return c.json({ error: `not_linked: ${accountText(call.account)} is not linked to a person on this strut server` }, 403);
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { buildAppTools } = await import("./apps/tools.js");
+      const outcomes: AppCallStatus[] = [];
+      const tools = buildAppTools({
+        apps,
+        registry,
+        services,
+        actor: call.person.actor,
+        host: { ref: { name: call.host, account: accountText(call.account), unlinked: !call.person.linked }, outcome: (s) => void outcomes.push(s) },
+        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+        monitor: appMonitor,
+      });
+      const instructions = "A host's door to an app's tools: step_run { app, type, config }, as the account x-strut-account names, under the app's hosts:. The answer comes once the step is done; a 2xx means it finished.";
+      const res = await createMcpDoor(() => toolsetServer({ tools, instructions }), { maxBodyBytes: HOST_CALL_BODY_MAX_BYTES, json: true }).handle(c.req.raw);
+      if (res.status !== 200) return res;
+      const text = await res.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined;
+      }
+      const answers = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ error?: unknown; result?: { isError?: boolean } } | undefined>;
+      const failed = answers.some((a) => a?.error !== undefined || a?.result?.isError === true);
+      const status = !failed ? 200 : outcomes.includes("error") ? 500 : outcomes.includes("refused") ? 403 : 400;
+      return new Response(text, { status, headers: res.headers });
+    };
     app.post("/mcp/builder", builderHandler);
-    app.post("/mcp", async (c) =>
-      ["peer:person", "member"].includes(await scopeOf(c)) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
-    );
+    app.post("/mcp", async (c) => {
+      const scope = await scopeOf(c);
+      if (scope === "host") return hostAppHandler(c);
+      return ["peer:person", "member"].includes(scope) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c);
+    });
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     for (const path of ["/mcp", "/mcp/builder", "/public/mcp"]) {
@@ -10599,7 +11016,6 @@ export async function createStrut<TServices = unknown>(
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
     tasks.stop();
-    support.stop();
     publicTools.close();
     withdrawals.stop();
     deposits.stop();
@@ -10627,9 +11043,12 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
-    // And the task store's, and Support's connection to it.
+    // And the people store's.
+    await people.close();
+    // And the apps' own databases.
+    appDb.close();
+    // And the task store's.
     await tasks.close();
-    await support.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -10765,9 +11184,11 @@ export async function createStrut<TServices = unknown>(
   // minute, wherever a store is — dead leases let go, tasks past their time
   // expired.
   tasks.start();
-  // Support's follower (plans/support-chat.md ruling 16): the daemon's DMs
-  // read every few seconds while a message token is set; idle otherwise.
-  support.start();
+  // Support as it was first built kept its files in `<dataDir>/support/`
+  // (and its tables in the task store's file, which its first open drops,
+  // src/tasks/tasks.ts): it is strut/staff's own now, in the app's SQLite,
+  // and nothing of it was copied (plans/people-and-hosts.md §5, ruling 7).
+  if (!(store instanceof MemoryRunStore)) void rm(join(dataDir, "support"), { recursive: true, force: true }).catch((err) => console.warn(`[support] ${join(dataDir, "support")} could not be removed: ${err instanceof Error ? err.message : String(err)}`));
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
@@ -10824,8 +11245,8 @@ export async function createStrut<TServices = unknown>(
     payments,
     remote,
     ledger,
+    people,
     tasks,
-    support,
     claims,
     verifier,
     listen,

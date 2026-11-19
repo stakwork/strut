@@ -6,11 +6,16 @@ description: >-
   them in, suspending them, what they answered and earned), every task with its
   answers, and the payouts (workers' withdrawals: the switch, the caps, the
   list). Strut ships it and seeds it on every server; it is an admin's:
-  listed to an admin alone, and its steps answer an admin alone.
+  listed to an admin alone, and its steps answer an admin alone. Its Support
+  tab is the staff's chat with workers over the treasury's Sphinx DMs
+  (plans/people-and-hosts.md §5): Support's tables are this app's own SQLite
+  (db/001-support.sql), the page reads and writes them with SQL, and the
+  Sphinx daemon hands each DM to support/receive.
 icon: users
 admin: true
 grants:
   workflows: []
+  sqlite: true
   steps:
     - staff/stats
     - staff/types
@@ -42,16 +47,14 @@ grants:
     - staff/invite
     - staff/invites
     - staff/cancel-invite
-    - staff/support-list
-    - staff/support-unread
-    - staff/support-thread
-    - staff/support-send
-    - staff/support-seen
-    - staff/support-file
-    - staff/support-settings
-    - staff/support-save-settings
-    - staff/support-update
-    - staff/support-delete
-    - staff/support-photo
+    - support/send
+    - support/delete
+    - support/file
+    - support/set-photo
     - app/list
     - earnings/read
+    - people/names
+hosts:
+  sphinx:
+    steps: [support/receive]
+    unlinked: true

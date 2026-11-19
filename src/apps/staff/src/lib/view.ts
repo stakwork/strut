@@ -135,9 +135,9 @@ export interface Shown {
   /** Item 5b: the Payouts tab and a worker's link to theirs — `/tasks/payouts`
    *  answers (a host's own store answers `not_available`). */
   payouts: boolean;
-  /** The Support tab and Message on a worker's page (plans/support-chat.md
-   *  §8): `/support` answers — the wallet is a Sphinx daemon with its
-   *  message token; otherwise `not_available`. */
+  /** The Support tab and Message on a worker's page
+   *  (plans/people-and-hosts.md §5): the wallet is a Sphinx daemon with its
+   *  message token, or Support already has a conversation. */
   support: boolean;
 }
 
@@ -248,11 +248,21 @@ export function shortActor(actor: string): string {
   return id.length > 12 ? `${scheme}${id.slice(0, 4)}…${id.slice(-3)}` : actor;
 }
 
-/** Who a worker is to staff (§9.5): the note's first line as a name, else
- *  the actor shortened. The store keeps no name of its own. */
-export function whoOf(w: Pick<Worker, "actor" | "note">): string {
+/** Who a worker is to staff (§9.5): the note's first line, which staff
+ *  typed on purpose, else their name (`people/names`,
+ *  plans/people-and-hosts.md §1 and decision 5), else the actor shortened. */
+export function whoOf(w: Pick<Worker, "actor" | "note" | "name">): string {
   const first = w.note?.split("\n")[0]?.trim();
-  return first ? first : shortActor(w.actor);
+  return first || w.name || shortActor(w.actor);
+}
+
+/** What shows under `whoOf`: their name where the note came first, and the
+ *  short key beside any name (plans/people-and-hosts.md §9: a name is never
+ *  checked). Empty when `whoOf` is the key itself. */
+export function whoElse(w: Pick<Worker, "actor" | "note" | "name">): string {
+  const first = w.note?.split("\n")[0]?.trim();
+  if (!first && !w.name) return "";
+  return [first && w.name ? w.name : "", shortActor(w.actor)].filter(Boolean).join(" · ");
 }
 
 /** Who an open type's grant is by (src/tasks/worker-store.ts): the worker's
@@ -480,8 +490,8 @@ export function inviteSatsOf(text: string): { sats?: number } | { problem: strin
 // ── Support (plans/support-chat.md) ─────────────────────────────────────────
 
 /** Who a conversation is with, to staff: the worker's name as staff wrote it
- *  (their note's first line), else their Sphinx name, else the actor
- *  shortened. */
+ *  (their note's first line), else their own (`useNames`: the Sphinx name
+ *  their DMs carry, plans/people-and-hosts.md §1), else the actor shortened. */
 export function supportName(c: Pick<SupportConversation, "worker" | "alias">, worker?: Pick<Worker, "actor" | "note">): string {
   const noted = worker?.note?.split("\n")[0]?.trim();
   return noted || c.alias || shortActor(c.worker);
@@ -540,7 +550,7 @@ export function messageLine(m: SupportMessage): string {
 }
 
 /** What strut sent on its own, as the bubble names it. */
-export const AUTO_LABELS: Record<NonNullable<SupportMessage["auto"]>, string> = { welcome: "Welcome", payout: "Payout", "heads-up": "Heads-up" };
+export const AUTO_LABELS: Record<NonNullable<SupportMessage["auto"]>, string> = { welcome: "Welcome", payout: "Payout" };
 
 /** The list's filters (plans/support-chat.md §3, item 2), in order. */
 export const SUPPORT_FILTERS: ReadonlyArray<{ id: SupportFilter; label: string }> = [
@@ -579,12 +589,3 @@ export function attachProblem(o: { size: number }): string | undefined {
   return o.size > SUPPORT_FILE_MAX_BYTES ? `Files up to ${fmtBytes(SUPPORT_FILE_MAX_BYTES)}: this one is ${fmtBytes(o.size)}.` : undefined;
 }
 
-/** Messages a worker wrote before Support followed the daemon (§6, the
- *  backlog): where the line saying so goes, or -1. */
-export function earlierEnd(messages: readonly Pick<SupportMessage, "earlier">[]): number {
-  let last = -1;
-  messages.forEach((m, i) => {
-    if (m.earlier) last = i;
-  });
-  return last;
-}

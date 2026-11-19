@@ -107,7 +107,12 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `useAppState(key, initial)` → `[value, set, { loaded, error }]` (`app/state`:
   what this viewer's page remembers across visits — the page has no browser
   storage; writes go out within `APP_STATE_WRITE_MS`, every key set meanwhile
-  in one call). The LIVE
+  in one call), `useSql(sql, params?, { maxRows?, refetchInterval? })` →
+  `{ columns, rows, truncated }` and `useSqlMutation()` → `{ exec(sql,
+  params?), batch(statements) }` (`sqlite/query`, `sqlite/exec`,
+  `sqlite/batch`: the app's own tables, made by its `db/*.sql` migrations,
+  with `grants: { sqlite: true }`; a write that lands refetches every
+  `useSql`). The LIVE
   FEEDS (`plans/live-feeds.md`), one call held on the server at a time and
   none while the page is hidden: `useJobUpdates(job)` → `{ updates,
   latest(kind) }` (`job/updates`: a job's shots, frames, holds, verdicts,

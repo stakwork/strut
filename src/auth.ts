@@ -26,6 +26,10 @@ import { bootEnv } from "./env.js";
  * gate in createStrut lets it read, launch a run, and control a run a peer
  * launched, nothing else. A PERSON TOKEN (`POST /peers/tokens`, "Person
  * tokens" below) is the same key attenuated to one actor: `peer:person`.
+ *
+ * A HOST KEY (`STRUT_HOST_KEYS`, "Host keys" below) is what a program that
+ * brings people to strut holds — the Sphinx daemon on a box: it acts only as
+ * a person it names by their account (`x-strut-account`), scope `host`.
  */
 
 const ENV_VAR = "STRUT_API_KEY";
@@ -167,8 +171,14 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
  * person a host vouched for with `role: "visitor"`. A visitor is not a
  * member: the gate passes the public apps' pages, `POST /public/mcp` as
  * itself, its app's channel ticket and the sign-in routes, nothing else.
+ *
+ * `host` (plans/jamie-in-tribes.md §5.1): a HOST KEY ("Host keys" below), a
+ * program that brings people to strut. It acts only as a person it names by
+ * their account (`x-strut-account`), never as an admin: it launches turns of
+ * its own conversations (`host/<name>/…`), reads them, decides their
+ * proposals and links accounts. The gate refuses it everything else.
  */
-export type Scope = "full" | "peer" | "peer:person" | "member" | "visitor";
+export type Scope = "full" | "peer" | "peer:person" | "member" | "visitor" | "host";
 
 /** Is this a peer's request — a strut server's, or a person's through one? */
 export function isPeerScope(scope: Scope | undefined): boolean {
@@ -176,18 +186,63 @@ export function isPeerScope(scope: Scope | undefined): boolean {
 }
 
 /** The default `resolveScope`: `full` for the deployment key (or its
- *  session, an admin's included), else `peer:person` for a person token,
+ *  session, an admin's included), else `host` for a host key (dev mode
+ *  too), `peer:person` for a person token,
  *  `peer` for the peer key, `member` for a member's session, `visitor` for
  *  a visitor's, and `full` for the rest (dev mode — and a request the gate
  *  already refused). */
 export function scopeFromKey(c: Context): Scope {
   if (inProcessOf(c)) return "full";
   if (configuredKey() && carriesApiKey(c)) return "full";
+  if (hostOf(c)) return "host";
   if (personOf(c)) return "peer:person";
   if (carriesPeerKey(c)) return "peer";
   if (!configuredKey()) return "full";
   if (memberOf(c)) return "member";
   return visitorOf(c) ? "visitor" : "full";
+}
+
+// ── Host keys ────────────────────────────────────────────────────────────
+//
+// A HOST (plans/jamie-in-tribes.md §1, §5.1) is a program that brings people
+// to strut: it knows who is speaking and where, launches each turn as that
+// person, and carries the answer back. The deployment key would let it run
+// as anyone and do anything; a host that reads messages from strangers and
+// holds money should not hold it. `STRUT_HOST_KEYS="sphinx:<token>"` (a
+// comma between hosts) names each host and its token. The name is also the
+// KIND of account it vouches for: the Sphinx daemon names the speaker as
+// `x-strut-account: sphinx:<66 hex>`. Bearer only — a host is a server.
+
+const HOST_ENV = "STRUT_HOST_KEYS";
+const HOST_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+let warnedHosts = "";
+
+/** The configured host keys, `name` → `token`, read at request time. An
+ *  entry that is not `name:token` is skipped, with one warning. */
+export function hostKeys(): Map<string, string> {
+  const raw = bootEnv()[HOST_ENV] ?? "";
+  const out = new Map<string, string>();
+  const bad: string[] = [];
+  for (const entry of raw.split(",").map((e) => e.trim()).filter(Boolean)) {
+    const at = entry.indexOf(":");
+    const name = entry.slice(0, at).trim();
+    const token = entry.slice(at + 1).trim();
+    if (at < 1 || !HOST_NAME.test(name) || !token || out.has(name)) bad.push(at < 1 ? "(no name)" : name);
+    else out.set(name, token);
+  }
+  if (bad.length && warnedHosts !== raw) {
+    warnedHosts = raw;
+    console.warn(`[strut] ${HOST_ENV}: skipped ${bad.join(", ")} — each entry is <name>:<token>, a name of lowercase letters, digits and -, once`);
+  }
+  return out;
+}
+
+/** The host whose key this request carries, as `Authorization: Bearer`. */
+export function hostOf(c: Context): { name: string } | undefined {
+  const got = presentedKey(c.req.header("authorization"));
+  if (!got) return undefined;
+  for (const [name, token] of hostKeys()) if (token === got) return { name };
+  return undefined;
 }
 
 // ── File read tokens ─────────────────────────────────────────────────────
@@ -484,9 +539,10 @@ export function sessionTtlMs(): number {
 }
 
 /** A signed token's kinds: a session cookie, a person token, a catalog
- *  read token, a channel ticket, a sign-in ticket, a visitor's challenge.
- *  The kind is in the HMAC input, so one is never accepted as another. */
-type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket" | "challenge" | "invite";
+ *  read token, a channel ticket, a sign-in ticket, a visitor's challenge,
+ *  a worker invite, a link challenge. The kind is in the HMAC input, so one
+ *  is never accepted as another. */
+type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket" | "challenge" | "invite" | "link";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -789,11 +845,67 @@ export function readVisitorChallenge(challenge: string, now = Date.now()): Visit
  *  a challenge someone only saw cannot be burned. */
 export function redeemVisitorChallenge(challenge: string, now = Date.now()): VisitorChallenge | undefined {
   const claims = readVisitorChallenge(challenge, now);
+  return claims && spendNonce(claims.nonce, claims.exp, now) ? claims : undefined;
+}
+
+/** Remembers `nonce` until `exp`: true the first time, false after. */
+function spendNonce(nonce: string, exp: number, now: number): boolean {
+  for (const [n, e] of redeemedChallenges) if (e <= now) redeemedChallenges.delete(n);
+  if (redeemedChallenges.has(nonce)) return false;
+  redeemedChallenges.set(nonce, exp);
+  return true;
+}
+
+// ── Link challenges (plans/people-and-hosts.md §2.1) ─────────────────────
+//
+// Peel links its Sphinx key to a person here by SIGNING a link challenge:
+// `strut-link.<claims>.<hmac>`, claims `{ host, actor?, name?, nonce, exp }`.
+// The person's own signed-in page mints one naming them (`account/link`, ten
+// minutes): `POST /people/link` links the key that signed it to `actor`.
+// `GET /people/challenge` mints one naming nobody (a minute): Peel signs it
+// again for a new token (`POST /people/token`). Stateless, and good ONCE, as
+// a visitor's challenge is.
+
+const LINK_PREFIX = "strut-link.";
+/** How long a challenge that links a key may wait for Peel. */
+export const LINK_CHALLENGE_MS = 10 * 60_000;
+/** How long a challenge that renews a token lives: to sign, not to keep. */
+export const RENEW_CHALLENGE_MS = 60_000;
+
+/** What a link challenge holds: the box it is for, and the person it
+ *  links (with the name Peel shows), or nobody (a renewal). */
+export interface LinkChallenge {
+  host: string;
+  actor?: string;
+  name?: string;
+  nonce: string;
+  exp: number;
+}
+
+/** A link challenge for `host`, naming `actor` (and their `name`) or
+ *  nobody, living `ttlMs` — or undefined with no secret to sign it. */
+export function linkChallenge(claims: { host: string; actor?: string; name?: string }, ttlMs = LINK_CHALLENGE_MS): { challenge: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("link", { ...claims, nonce: randomBytes(16).toString("hex"), exp });
+  return signed ? { challenge: `${LINK_PREFIX}${signed}`, exp } : undefined;
+}
+
+/** A link challenge's claims, if strut signed it and it has not expired —
+ *  spent or not. */
+export function readLinkChallenge(challenge: unknown, now = Date.now()): LinkChallenge | undefined {
+  if (typeof challenge !== "string" || !challenge.startsWith(LINK_PREFIX)) return undefined;
+  const claims = readClaims("link", challenge.slice(LINK_PREFIX.length), now);
   if (!claims) return undefined;
-  for (const [n, exp] of redeemedChallenges) if (exp <= now) redeemedChallenges.delete(n);
-  if (redeemedChallenges.has(claims.nonce)) return undefined;
-  redeemedChallenges.set(claims.nonce, claims.exp);
-  return claims;
+  const { host, actor, name, nonce } = claims;
+  if (typeof host !== "string" || typeof nonce !== "string" || (actor !== undefined && typeof actor !== "string") || (name !== undefined && typeof name !== "string")) return undefined;
+  return { host, ...(actor ? { actor } : {}), ...(name ? { name } : {}), nonce, exp: claims.exp };
+}
+
+/** Spend a link challenge: its claims, once. Called once its signature
+ *  holds, so a challenge someone only saw cannot be burned. */
+export function redeemLinkChallenge(challenge: unknown, now = Date.now()): LinkChallenge | undefined {
+  const claims = readLinkChallenge(challenge, now);
+  return claims && spendNonce(claims.nonce, claims.exp, now) ? claims : undefined;
 }
 
 // ── Person tokens ────────────────────────────────────────────────────────
@@ -814,21 +926,28 @@ export function redeemVisitorChallenge(challenge: string, now = Date.now()): Vis
 const PERSON_PREFIX = "strut-person.";
 /** A person token's default life, mcp's `lab:peer` default. */
 export const PERSON_TOKEN_DAYS = 60;
+/** The life of the token Peel holds for a link (plans/people-and-hosts.md
+ *  §2.1): Peel renews it by signing again. */
+export const LINKED_TOKEN_DAYS = 7;
 
-/** What a person token holds: the actor, and when it ends (ms). */
+/** What a person token holds: the actor, and when it ends (ms). A token
+ *  Peel holds for a link also names the account (`sphinx:<66 hex>`): it
+ *  holds only while that account is linked to the actor (the gate checks). */
 export interface PersonToken {
   actor: string;
   exp: number;
+  account?: string;
 }
 
 /** A person token for `actor`, living `ttlMs` — or undefined with no
  *  secret to sign it (dev mode with no `STRUT_SECRET_KEY`). `secret` is for
  *  a process that mints for a strut it is not (`strut move serve`, before the
  *  strut it receives has started): that strut's `STRUT_API_KEY`, else its
- *  `STRUT_SECRET_KEY`, as `tokenSecret` picks. */
-export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000, secret?: string): { token: string; exp: number } | undefined {
+ *  `STRUT_SECRET_KEY`, as `tokenSecret` picks. `account`: the linked
+ *  account the token stands on (§2.1). */
+export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000, opts: { secret?: string; account?: string } = {}): { token: string; exp: number } | undefined {
   const exp = Date.now() + ttlMs;
-  const signed = signClaims("person", { actor, exp }, secret ?? tokenSecret());
+  const signed = signClaims("person", { actor, exp, ...(opts.account ? { account: opts.account } : {}) }, opts.secret ?? tokenSecret());
   return signed ? { token: `${PERSON_PREFIX}${signed}`, exp } : undefined;
 }
 
@@ -838,7 +957,8 @@ export function verifyPersonToken(token: string, now = Date.now()): PersonToken 
   if (!token.startsWith(PERSON_PREFIX)) return undefined;
   const claims = readClaims("person", token.slice(PERSON_PREFIX.length), now);
   if (!claims || typeof claims.actor !== "string" || !claims.actor) return undefined;
-  return { actor: claims.actor, exp: claims.exp };
+  if (claims["account"] !== undefined && typeof claims["account"] !== "string") return undefined;
+  return { actor: claims.actor, exp: claims.exp, ...(claims["account"] ? { account: claims["account"] as string } : {}) };
 }
 
 /** The person token this request carries as `Authorization: Bearer`,

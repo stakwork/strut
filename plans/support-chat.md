@@ -1,6 +1,14 @@
 # Support: a chat between workers and a Stadeum's staff
 
-> **Status (2026-11-17): ruled; item 1 built (#719), item 2 built (#720, stacked on #719).**
+> **Status (2026-11-18): ruled; item 1 built (#719), item 2 built (#720,
+> stacked on #719); rebuilt as an app on #737 (`plans/people-and-hosts.md`
+> §4, §5, item 5).** Support is now `strut/staff`'s own SQLite, tools and
+> one workflow: the daemon pushes each DM to `support/receive`, so strut no
+> longer polls (ruling 16 is replaced) and has no `/support` routes; the
+> staff heads-up (§6) is dropped for now; what Support as built kept was
+> not copied. The sections below describe Support as first built; where
+> they speak of the follower, the routes, the task store's tables or
+> `<dataDir>/support/`, read `plans/people-and-hosts.md` §5.
 >
 > - **Written against:** strut `main` @425a9d06, stakwork/sphinx `master`
 >   @c1f55f11, peel-android @efbcccd and peel @78deb6e.

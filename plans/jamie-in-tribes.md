@@ -1,6 +1,9 @@
 # Jamie in tribes: the Sphinx daemon as a strut host
 
-> **Status (2026-11-17): proposed. Nothing built.**
+> **Status (2026-11-18): proposed; items 1 (host keys and linked accounts)
+> and 2 (`delivered` on a wake turn's `run.end`) built on #737, item 1 with
+> `people-and-hosts.md` §2's accounts. Decision 1 is overruled
+> (2026-11-18): a person links through Peel, `people-and-hosts.md` §2.1.**
 >
 > - **Written against:** strut `main` @53364a3d, stakwork/sphinx `master`
 >   @f5baba75, stakwork/hive `master` @64260e485 (what is built today),
@@ -147,6 +150,15 @@ host names the speaker by the account (`x-strut-account`), and strut runs the
 request as the bound person. An account nobody bound is a `403`
 (`not_linked`): the daemon falls back to the linker.
 
+**Replaced (2026-11-18).** Evan overruled decision 1 ("Peel is the new way
+forward"). A person links through Peel: the box's Connect panel shows a
+challenge, and Peel signs it (`people-and-hosts.md` §2.1, ruling 9). The
+daemon has no part. What follows is the DM flow as #737 built it first.
+`people-and-hosts.md` item 6 removed it on #737: `POST /hosts/link`, the
+`link-` codes, `account/link-code`, Connect's code and the daemon's `GET
+/me` are gone, here and in §5.1 and §5.2. `GET /hosts/links/:key` stays, for
+§4.
+
 **How a person links their Sphinx account** (proposed, §9 decision 1). In
 the Jamie app, **Connect Sphinx** shows a one-time code and the account's
 Sphinx address as a QR. The person sends the code to that account by DM,
@@ -158,6 +170,14 @@ who spoke in a tribe.
 
 - The code: short, single use, ten minutes, bound to the person who asked.
 - The Jamie app lists the person's linked accounts and removes one.
+
+**Built differently (#737):** `POST /hosts/link { code, key, name?,
+address? }`: the daemon also passes the sender's alias (the account's own
+name, which strut shows for a person with none of their own,
+`people-and-hosts.md` §1) and their address. The code is `link-` and eight
+letters and digits, so the daemon tells it from a Support message; a new one
+replaces the person's last. `GET /hosts/links/:key` answers the link
+(`{ account, actor, name?, … }`) or `404 not_linked:`.
 - A Peel sign-in (strut's `ln-message` verifier, which already checks a
   Sphinx signature) could bind a key with no DM. It needs Peel to open the
   box, which nothing does yet (`org-home-swarm.md` §1.2).
@@ -262,7 +282,13 @@ The store: `{ kind, key, actor, host, at }`, one person per account. It is
 one JSON file under `dataDir` (`linked-accounts.json`), read into memory at
 boot and written whole on each change (temporary file, then rename), as the
 wake queue's files are: a link is rare, and every host request reads it.
-It is not on the workspace graph, so it needs no schema entries. A code
+It is not on the workspace graph, so it needs no schema entries.
+
+**Built differently (#737):** as `people-and-hosts.md` §2 has it, the store
+is the `accounts` table in `<dataDir>/people.db` (`src/people.ts`), beside
+the names: `kind, key, actor, address?, name?, host?, at`. A Sphinx key
+nobody linked is `secp:<x-only>` there, marked unlinked; a host's launch or
+decision still needs a linked person (`403 not_linked`). A code
 lives in memory only: a restart drops one still waiting, and the person
 asks for another. What reaches the store:
 
@@ -270,6 +296,15 @@ asks for another. What reaches the store:
   `account/links`, `account/unlink`. The Jamie app's Connect panel calls
   them. As `conversation/*` are, they are refused to every app's page but
   strut's own (first-party), so a public app's visitor links nothing;
+
+  **Built differently (#737):** narrower, as `secret/add` is: only as a
+  first-party page's OWN call, for its viewer, never an agent's tool. A
+  code is worth the person it was made for, and in a tribe that does not
+  show its senders every turn runs as the linker: a Jamie that could mint
+  one would let any member link their key as the linker. `account/link-code`
+  answers `{ code, expiresAt, hosts, to? }`: `hosts`, the hosts with a key
+  here (none: the panel says linking is not set up), and `to`, the account
+  to DM with its address as a QR;
 - the host's two routes above.
 
 The Connect panel shows the account's Sphinx address, which strut reads
@@ -366,8 +401,9 @@ And:
   host key) and `DAEMON_CALLBACK_URL` (how strut reaches the daemon).
 - **The callback route**, `POST /strut/end`, opened by a callback token of
   its own and nothing else.
-- **DMs it acts on:** a tribe link from a tribe's owner (§4), a link code
-  (§3), `leave <link>`. Every other DM is Support's, as now. Strut's
+- **DMs it acts on:** a tribe link from a tribe's owner (§4) and `leave
+  <link>`. (A link code is gone: a person links through Peel,
+  `people-and-hosts.md` §2.1.) Every other DM is Support's, as now. Strut's
   Support reads every DM, so these show in the staff's inbox too (§9
   decision 10).
 - **A daily budget for tribes** (ruling 6), `DAEMON_TRIBE_SATS_PER_DAY`
@@ -427,16 +463,16 @@ No stadeum-ui change. In stakwork/stadeum:
 
 | # | Question | Default | Why |
 | --- | --- | --- | --- |
-| 1 | How a person links their Sphinx account | A code sent to the account by DM (§3) | Works from any Sphinx app, today. Peel's sign-in needs Peel to open the box first |
+| 1 | How a person links their Sphinx account | **Overruled (Evan, 2026-11-18):** through Peel, which signs a challenge from the box's Connect panel (`people-and-hosts.md` §2.1, ruling 9). Was: a code sent to the account by DM (§3) | "We dont need to support old Sphinx apps. Peel is the new way forward" |
 | 2 | How a tribe is linked | Its owner DMs the tribe's link to the account (§4) | Needs no Peel change and no strut route, and proves ownership, which Hive never could |
 | 3 | Whose namespace a tribe conversation is in | The host's, `host/<name>/…` | A thread has several speakers; none of them opened it |
 | 4 | A speaker strut doesn't know | Runs as the linker, the line saying so | As today (hive#5688). A public tribe is public (ruled for Hive 2026-10-30) |
 | 5 | Deliverables in a tribe | Text, links with their own address, one link into the Jamie app | Peel cannot open a box's files yet |
 | 6 | Spending on tribes (ruled: a cap) | One budget for all tribes together, 1,000 sats a UTC day, join prices included (§7). The balance is on Earnings | A tribe's owner sets its prices and is paid them; without a cap a linked owner could drain the treasury. One budget, not one per tribe, because a new tribe costs nothing to make. In a 1-sat tribe, 1,000 sats is 1,000 parts: a short reply is one part, a 3 KB reply 11 |
 | 7 | The message log (`DAEMON_LOG`) | Off | Hive's log goes to a placeholder workflow; nothing reads it yet |
-| 8 | How strut learns the account's address | The daemon's `GET /me` opens to the message token, answering `{ address, pubkey, alias }` without the balance and the LSP | A few lines in the daemon; the address is what every contact already holds, and the balance is not the message token's to read |
+| 8 | How strut learns the account's address | **Dropped (2026-11-18).** Only the DM link showed it. Peel's link needs no address, and stakwork/sphinx#438 no longer opens `GET /me` to the message token | — |
 | 9 | Where the host key comes from | `STRUT_HOST_KEYS`, from `.env` | The treasury's tokens are wired this way already |
-| 10 | The DMs the daemon acts on (a tribe link, a link code) in Support's inbox | Shown, like any DM | Rare, and staff seeing "joined #Builders" is harmless. Hiding them needs Support to know what the host acted on |
+| 10 | The DMs the daemon acts on (a tribe link, `leave`) in Support's inbox | Shown, like any DM | Rare, and staff seeing "joined #Builders" is harmless. Hiding them needs Support to know what the host acted on |
 
 ## 10. Work items
 
@@ -444,10 +480,10 @@ Each is its own PR against its repo's default branch, never stacked.
 
 | Item | Repo | What | Needs | State |
 | --- | --- | --- | --- | --- |
-| 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | — |
-| 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | — |
+| 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link`. The DM link is replaced by Peel's (`people-and-hosts.md` item 6) |
+| 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | — |
-| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply, `GET /me` on the message token | 1 (a stand-in strut in its tests until 1 merges) | — |
+| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply | 1 (a stand-in strut in its tests until 1 merges) | — |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4 released | — |
 
 A stand-in for strut's host routes goes into the daemon's tests, so item 4

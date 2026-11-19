@@ -37,7 +37,7 @@ namespace `src/steps/lib/x/`.
 | --- | --- | --- |
 | The engine: workflows, steps, runs, run control, the services bag, artifacts, shell | [docs/engine.md](docs/engine.md) | `core.ts`, `runner.ts`, `expr.ts`, `journal.ts`, `run-control.ts`, `park.ts`, `store.ts`, `workspace.ts`, `closure.ts`, `runs.ts`, `run-view.ts`, `provenance.ts`, `capabilities.ts`, `extensions.ts`, `shell.ts`, `steps/core/`, `steps/registry.ts`, `run/*` |
 | The server: `createStrut()`, callbacks, rooms, the drain, the events sink, MCP servers, peers | [docs/server.md](docs/server.md) | `createStrut.ts`, `server.ts`, `callback.ts`, `rooms.ts`, `drain.ts`, `events-sink.ts`, `mcp-servers.ts`, `mcp-registry.ts`, `peers.ts`, `strut/*`, `specs/` |
-| Auth, secrets and the env boundary | [docs/security.md](docs/security.md) | `auth.ts`, `secret-store.ts`, `actor-secrets.ts`, `env.ts`, `step-lint.ts`, `secret/*` |
+| Auth, people's names, secrets and the env boundary | [docs/security.md](docs/security.md) | `auth.ts`, `people.ts`, `secret-store.ts`, `actor-secrets.ts`, `env.ts`, `step-lint.ts`, `secret/*`, `people/*`, `account/*` |
 | Models: aieo, LLM calls, media, the Mothership | [docs/models.md](docs/models.md) | `aieo/`, `llm.ts`, `media.ts`, `media-seed.ts`, `mothership.ts`, `llm/*`; the npm package in `aieo/` at the root |
 | The `agent` step and agent sessions | [docs/agent-step.md](docs/agent-step.md) | `steps/core/agent.ts`, `session-store.ts`, `acp/*` |
 | The AI workflow builder (chat and `builder` job) | [docs/builder.md](docs/builder.md) | `ai/`, `chat-store.ts`, `chat-view.ts`, `compaction.ts`, `builder-seed.ts`, `meta/*` |
@@ -45,11 +45,11 @@ namespace `src/steps/lib/x/`.
 | Automations (schedules) | [docs/automations.md](docs/automations.md) | `automations.ts`, `scheduler.ts`, `automations-routes.ts`, `automation/*` |
 | Claims, sealing, Concepts, the dream, history | [docs/knowledge.md](docs/knowledge.md) | `claims-*.ts`, `verify.ts`, `work.ts`, `branches.ts`, `branch-merge.ts`, `concept-sources.ts`, `ledger.ts`, `sealed.ts`, `knowledge.ts`, `history.ts`, `concept-seed.ts`, `concepts/`, `graph/claims*.ts`, `knowledge/*`, `dream/*`, `history/*`, `context/*` |
 | The graph layer: Neo4j and LadybugDB | [docs/graph.md](docs/graph.md) | `graph/`, `graph-writes.ts`, `graph/*`, `memory/*` |
-| Apps, the kit, channels | [docs/apps.md](docs/apps.md) | `apps/`, `channels.ts`, `channels-peer.ts`, `brand.ts`, `app/*`, `channel/*`; `kit/` at the root |
+| Apps, the kit, channels, an app's own SQLite | [docs/apps.md](docs/apps.md) | `apps/`, `channels.ts`, `channels-peer.ts`, `brand.ts`, `app/*`, `channel/*`, `sqlite/*`; `kit/` at the root |
 | Packages, indexes, the store, serve mode | [docs/packages.md](docs/packages.md) | `packages/`, `package-lookup.ts`, `tar.ts`, `package/*` |
 | The public view, visitors, public runs and tools | [docs/public.md](docs/public.md) | `public-surface.ts`, `public-routes.ts`, `public-runs.ts`, `public-tools.ts`, `public-agents.ts`, `public-call.ts`, `public-runnable.ts`, `public-view.ts`, `visitors.ts`, `visitor-address.ts`, `guarded-http.ts` |
 | Payments: credit, the wallet, earnings, buying from another strut | [docs/payments.md](docs/payments.md) | `payments/`, `l402.ts`, `public-credit.ts`, `remote.ts`, `run-cap.ts`, `earnings/*`, `remote/*` |
-| Human steps, the task store, Support (the staff's chat with workers) | [docs/tasks.md](docs/tasks.md) | `tasks/`, `support/`, the `human` core step, `task/*` |
+| Human steps, the task store, Support (the staff's chat with workers) | [docs/tasks.md](docs/tasks.md) | `tasks/`, `support/*`, the `human` core step, `task/*` |
 | Speech, dictation, voice | [docs/audio.md](docs/audio.md) | `audio/`, `voice.ts`, `dictation/*`; `fixer/` at the root |
 | Private AI | [docs/privacy.md](docs/privacy.md) | `privacy/`, `privacy/*` |
 | The browser | [docs/browser.md](docs/browser.md) | `browser/`, `browser/*`; `images/browser/` at the root |

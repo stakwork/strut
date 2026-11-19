@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import * as api from "../api";
 import { WaitingOn } from "./WaitingOn";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import { artifactKind, isArtifactPath } from "@strut/kit/folds";
 import { formatTokens } from "../context-meter";
 import { foldRunOverview, type OverviewRow, type RowKind } from "@strut/kit/folds";
@@ -195,7 +195,7 @@ export function RunOverview(props: {
         </div>
         <div class="ov-meta">
           {o.workflow}
-          {o.actor && <> · by {displayActor(o.actor)}</>}
+          {o.actor && <> · by <Who actor={o.actor} /></>}
           {o.startedAt && <> · {fmtTime(o.startedAt)}</>}
         </div>
         {o.status === "waiting" && (

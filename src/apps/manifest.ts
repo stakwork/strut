@@ -17,7 +17,8 @@
  * specs/WALLET.md §5): a REQUEST the person grants or narrows in their host,
  * which nothing here grants. `permissions` is what the host's frame grants
  * the page beyond what every app gets (§9) — motion sensors, the camera,
- * geolocation — only to a version that names them. Every app already gets
+ * geolocation — only to a version that names them. `hosts` is which host
+ * key may call which of the app's tools (`hostsSchema`). Every app already gets
  * what a game needs (fullscreen, pointer lock, the gamepad, the wake lock).
  * `screenshots` are images in the app's own directory that the package
  * store shows beside its title (src/packages/detail.ts): never loaded by
@@ -160,6 +161,39 @@ export const permissionsSchema = z
   // What the version asks for beyond every app's, once each.
   .transform((ps) => [...new Set(ps.filter(isDeclared))]);
 
+/** A host's name, as `STRUT_HOST_KEYS` names it (auth.ts `HOST_NAME`, an
+ *  account's kind in src/people.ts). Copied: the web build imports this
+ *  file, and neither of those. */
+const HOST_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * `hosts:` — which HOST (plans/people-and-hosts.md §3: a program that brings
+ * people to strut, named by its key in `STRUT_HOST_KEYS`) may call which of
+ * this app's tools, as the person who spoke: `step_run { app, type, config }`
+ * on `POST /mcp`, at the app's live version. `unlinked: true` lets an
+ * account nobody linked be the caller, as its key's own actor. Only a
+ * person's publish and strut's seeds may write it, never a model's (as
+ * `peer:` on a workflow): ./apps.ts `refusedGrants`.
+ */
+export const hostsSchema = z
+  .record(
+    z.string(),
+    z
+      .object({
+        /** The step types the host may call (globs as `grants.steps` takes them). */
+        steps: z.array(z.string().min(1)).min(1, "steps names at least one tool the host may call"),
+        /** An account nobody linked may be the caller. */
+        unlinked: z.boolean().optional(),
+      })
+      .strict(),
+  )
+  .superRefine((hosts, ctx) => {
+    for (const name of Object.keys(hosts)) {
+      if (!HOST_NAME.test(name)) ctx.addIssue({ code: "custom", path: [name], message: `"${name}" is not a host's name: a host is named as STRUT_HOST_KEYS names it, lowercase letters, digits and -` });
+    }
+  });
+export type AppHosts = z.infer<typeof hostsSchema>;
+
 /** The image types a screenshot may be: raster only, so a store can serve
  *  one to anyone with nothing in it that runs. */
 export const SCREENSHOT_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
@@ -212,6 +246,8 @@ export const manifestSchema = z
     /** The entry module; its default export is the root component. */
     entry: z.string().min(1).default("src/App.tsx"),
     grants: grantsSchema.default({ workflows: [], steps: [], sqlite: false, automations: [] }),
+    /** The hosts that may call the app's tools, and which (`hostsSchema`). */
+    hosts: hostsSchema.optional(),
     data: z
       .object({
         graph: z

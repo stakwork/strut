@@ -10,6 +10,8 @@ import { StrutProvider } from "./provider.js";
 import {
   JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
+  useNames, PEOPLE_NAMES_STEP,
+  useSql, useSqlMutation, SQL_STEPS,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
@@ -202,6 +204,68 @@ describe("the run hooks name their step and pass what they were given", () => {
     await act(async () => { await sleep(30); });
     assert.deepEqual(none.calls, []);
     await n.unmount();
+  });
+
+  it("useNames → people/names once for the list, 200 actors a call, keeping only those with a name; nothing for none", async () => {
+    const { client, calls } = fakeClient({
+      [PEOPLE_NAMES_STEP]: (c) => ({ people: Object.fromEntries((c.config!.actors as string[]).map((a) => [a, a === "a-1" ? { name: "Ada" } : a === "x-249" ? { name: "X" } : {}])) }),
+    });
+    const actors = ["b-2", "a-1", "a-1", ...Array.from({ length: 250 }, (_, i) => `x-${i}`)];
+    const h = await renderHook(() => useNames(actors), { client });
+    await until(() => h.result().data !== undefined, "names");
+    assert.deepEqual(h.result().data, { "a-1": "Ada", "x-249": "X" });
+    assert.deepEqual(calls.map((c) => (c.config!.actors as string[]).length), [200, 52], "252 distinct actors, two calls");
+    await h.unmount();
+    const none = fakeClient();
+    const h2 = await renderHook(() => useNames([]), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    await h2.unmount();
+  });
+
+  it("useNames: a newer answer for a person reaches every list holding them, so two lists never disagree", async () => {
+    let wendy = "Wendy Worker";
+    const { client } = fakeClient({
+      [PEOPLE_NAMES_STEP]: (c) => ({ people: Object.fromEntries((c.config!.actors as string[]).map((a) => [a, a === "w-1" ? { name: wendy } : a === "a-1" ? { name: "Ada" } : {}])) }),
+    });
+    let second = false;
+    const h = await renderHook(() => ({ workers: useNames(["w-1", "a-1"]), support: useNames(["w-1", "b-2"], { enabled: second }) }), { client });
+    await until(() => h.result().workers.data !== undefined, "the first list");
+    assert.deepEqual(h.result().workers.data, { "w-1": "Wendy Worker", "a-1": "Ada" });
+    wendy = "Wendy W";
+    second = true;
+    await h.rerender();
+    await until(() => h.result().support.data !== undefined, "the second list");
+    assert.deepEqual(h.result().support.data, { "w-1": "Wendy W" });
+    await until(() => h.result().workers.data?.["w-1"] === "Wendy W", "the first list to take the newer name");
+    assert.equal(h.result().workers.data?.["a-1"], "Ada", "a person only the first list holds keeps their name");
+    await h.unmount();
+  });
+
+  it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {
+    let n = 0;
+    const { client, calls } = fakeClient({
+      [SQL_STEPS.query]: () => ({ columns: ["n"], rows: [{ n }], truncated: false }),
+      [SQL_STEPS.exec]: () => ({ changes: 1, lastInsertRowid: ++n }),
+      [SQL_STEPS.batch]: (c) => ({ results: (c.config!.statements as unknown[]).map(() => ({ changes: 1, lastInsertRowid: ++n })) }),
+    });
+    const h = await renderHook(() => ({ read: useSql<{ n: number }>("SELECT count(*) AS n FROM t WHERE k = ?", ["a"], { maxRows: 5 }), write: useSqlMutation() }), { client });
+    await until(() => h.result().read.data !== undefined, "rows");
+    assert.deepEqual(calls[0], { type: "sqlite/query", config: { sql: "SELECT count(*) AS n FROM t WHERE k = ?", params: ["a"], maxRows: 5 } });
+    assert.equal(h.result().read.data!.rows[0]!.n, 0);
+    await act(async () => { await h.result().write.exec("INSERT INTO t (k) VALUES (?)", ["a"]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 1, "refetched after the exec");
+    await act(async () => { await h.result().write.batch(["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 3, "refetched after the batch");
+    assert.deepEqual(calls.filter((c) => c.type !== "sqlite/query").map((c) => c.type), ["sqlite/exec", "sqlite/batch"]);
+    assert.deepEqual(calls.find((c) => c.type === "sqlite/batch")!.config, { statements: ["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }] });
+    await h.unmount();
+    // No SQL: nothing asked.
+    const none = fakeClient();
+    const h2 = await renderHook(() => useSql(undefined), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    await h2.unmount();
   });
 
   it("useWorkflow → run/workflow", async () => {

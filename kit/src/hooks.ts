@@ -1400,6 +1400,120 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
   return { run, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
 }
 
+/** The step behind `useNames` (plans/people-and-hosts.md §1). */
+export const PEOPLE_NAMES_STEP = "people/names";
+/** How many actors one `people/names` call asks for: the server's most. */
+const PEOPLE_NAMES_MAX = 200;
+/** Every `useNames` list's query key starts with this. */
+const NAMES_KEY = ["strut", "people", "names"] as const;
+
+/** People's names, by actor (`people/names`; grant it): only those who have
+ *  one, so `names[actor] ?? <what showed before>` is what to show — a name
+ *  is for showing, and the actor stays the person. Asked once for the list,
+ *  200 actors a call; a visitor's page gets the visitor's own name alone.
+ *  `data` is undefined until the answer, and on an error. Every answer
+ *  also updates the page's other lists holding the same people, so two
+ *  lists never show one person under two names. */
+export function useNames(actors: readonly string[] | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<Readonly<Record<string, string>>> {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const list = [...new Set(actors ?? [])].sort();
+  return useQuery({
+    queryKey: [...NAMES_KEY, list],
+    queryFn: async () => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < list.length; i += PEOPLE_NAMES_MAX) {
+        const got = await client.run<{ people: Record<string, { name?: string }> }>(PEOPLE_NAMES_STEP, { actors: list.slice(i, i + PEOPLE_NAMES_MAX) });
+        for (const [actor, p] of Object.entries(got?.people ?? {})) if (typeof p?.name === "string" && p.name) out[actor] = p.name;
+      }
+      // The newest answer is every list's: another list holding any of these
+      // people takes their names from it.
+      for (const [key, old] of qc.getQueriesData<Record<string, string>>({ queryKey: NAMES_KEY })) {
+        const theirs = key[NAMES_KEY.length];
+        if (!old || !Array.isArray(theirs)) continue;
+        const shared = list.filter((a) => (theirs as string[]).includes(a));
+        if (!shared.length || shared.every((a) => old[a] === out[a])) continue;
+        const next = { ...old };
+        for (const a of shared) {
+          if (out[a] === undefined) delete next[a];
+          else next[a] = out[a];
+        }
+        qc.setQueryData(key, next);
+      }
+      return out;
+    },
+    enabled: (opts.enabled ?? true) && list.length > 0,
+    staleTime: 60_000,
+  });
+}
+
+/** The steps behind `useSql` and `useSqlMutation`: the app's own SQLite
+ *  (plans/apps.md §4.4; grant it with `grants: { sqlite: true }`). */
+export const SQL_STEPS = { query: "sqlite/query", exec: "sqlite/exec", batch: "sqlite/batch" } as const;
+
+/** What `sqlite/query` answers: one object per row, keyed by column. */
+export interface SqlRows<Row = Record<string, unknown>> {
+  columns: string[];
+  rows: Row[];
+  /** There were more rows than `maxRows` (default 1000): page with LIMIT … OFFSET. */
+  truncated: boolean;
+}
+
+export interface UseSqlOptions {
+  enabled?: boolean;
+  /** At most this many rows (default 1000, at most 10000). */
+  maxRows?: number;
+  /** Read again every this many ms (react-query's `refetchInterval`). */
+  refetchInterval?: number | false;
+}
+
+/** ONE read of the app's own tables (`sqlite/query`), as a query: refetched
+ *  when a `useSqlMutation` write lands. Values go in `params` (`?` as a list,
+ *  `:name` as an object), never into the text. A blob comes back as `{ base64 }`. */
+export function useSql<Row = Record<string, unknown>>(sql: string | undefined, params?: unknown[] | Record<string, unknown>, opts: UseSqlOptions = {}): UseQueryResult<SqlRows<Row>> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["strut", "sqlite", sql, params ?? null, opts.maxRows ?? null],
+    queryFn: () =>
+      client.run<SqlRows<Row>>(SQL_STEPS.query, {
+        sql,
+        ...(params !== undefined ? { params } : {}),
+        ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
+      }),
+    enabled: (opts.enabled ?? true) && !!sql,
+    ...(opts.refetchInterval !== undefined ? { refetchInterval: opts.refetchInterval } : {}),
+  });
+}
+
+/** A statement to write: SQL text, or `{ sql, params }`. */
+export type SqlStatement = string | { sql: string; params?: unknown[] | Record<string, unknown> };
+
+export interface UseSqlMutation {
+  /** ONE statement (`sqlite/exec`): `{ changes, lastInsertRowid }`. */
+  exec: (sql: string, params?: unknown[] | Record<string, unknown>) => Promise<{ changes: number; lastInsertRowid: number | string }>;
+  /** Several in ONE transaction, all or none (`sqlite/batch`). */
+  batch: (statements: SqlStatement[]) => Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>;
+  pending: boolean;
+  error: Error | null;
+}
+
+/** Writes to the app's own tables — functions to call, never on a render.
+ *  Each one that lands refetches every `useSql` read. */
+export function useSqlMutation(): UseSqlMutation {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (v: { exec: { sql: string; params?: unknown[] | Record<string, unknown> } } | { batch: SqlStatement[] }) =>
+      "exec" in v
+        ? client.run(SQL_STEPS.exec, { sql: v.exec.sql, ...(v.exec.params !== undefined ? { params: v.exec.params } : {}) })
+        : client.run(SQL_STEPS.batch, { statements: v.batch }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["strut", "sqlite"] }),
+  });
+  const exec = useCallback((sql: string, params?: unknown[] | Record<string, unknown>) => m.mutateAsync({ exec: { sql, ...(params !== undefined ? { params } : {}) } }) as Promise<{ changes: number; lastInsertRowid: number | string }>, [m.mutateAsync]);
+  const batch = useCallback((statements: SqlStatement[]) => m.mutateAsync({ batch: statements }) as Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>, [m.mutateAsync]);
+  return { exec, batch, pending: m.isPending, error: m.error };
+}
+
 /** The step behind `useAppState` (src/apps/state.ts on the server). */
 export const APP_STATE_STEP = "app/state";
 /** A page's state writes go out at most this often, every key set since

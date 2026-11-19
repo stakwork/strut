@@ -192,3 +192,9 @@ export function sentModel(pick: string, catalog: ModelCatalog | undefined): stri
 export function modelParams(model: string): { params?: { model: string } } {
   return model ? { params: { model } } : {};
 }
+
+/** Where a host's conversation is continued, as a person reads it: a Sphinx
+ *  tribe for the Sphinx daemon's, else the host's name. */
+export function hostPlace(host: string): string {
+  return host === "sphinx" ? "a Sphinx tribe" : host;
+}

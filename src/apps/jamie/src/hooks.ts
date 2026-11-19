@@ -2,12 +2,14 @@
 // conversation index (`conversation/*`), a conversation followed live
 // (`conversation/get { wait, since }`), the model catalog (`llm/models`),
 // the Concepts a "/" offers (`graph/find`), and a turn sent
-// (`run/launch` of `orchestrator`) or stopped (`run/cancel`).
+// (`run/launch` of `orchestrator`) or stopped (`run/cancel`); a tribe's
+// conversation forked (`conversation/fork`); the viewer's linked accounts
+// (`account/*`).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fileData, useAppState, useStrutClient } from "@strut/kit";
 import { modelParams, sentModel } from "./lib/chat";
-import type { ConversationList, ConversationListItem, ConversationTurn, ConversationView, ModelCatalog } from "./lib/types";
+import type { AccountLink, ConversationList, ConversationListItem, ConversationTurn, ConversationView, LinkOffer, ModelCatalog } from "./lib/types";
 
 export const ASSISTANT = "orchestrator";
 /** How long one `conversation/get` is held: under the kit's feeds' 25 s, so a
@@ -192,5 +194,43 @@ export function useStop() {
   const client = useStrutClient();
   return useMutation({
     mutationFn: (v: { workflow: string; runId: string }) => client.run("run/cancel", v),
+  });
+}
+
+/** A copy of a conversation the viewer continues here (`conversation/fork`):
+ *  a tribe's, which its host alone continues. Answers its row. */
+export function useFork() {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { session: string }) => client.run<ConversationListItem>("conversation/fork", v),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["assistant", "list"] }),
+  });
+}
+
+/** The viewer's linked accounts (`account/links`): every few seconds while
+ *  a link challenge waits, so the link shows once Peel has signed it. */
+export function useLinks(waiting: boolean) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["assistant", "links"],
+    queryFn: () => client.run<{ links: AccountLink[] }>("account/links", {}),
+    refetchInterval: waiting ? 3_000 : false,
+  });
+}
+
+/** A new link challenge naming the viewer, for Peel to sign (`account/link`). */
+export function useLinkOffer() {
+  const client = useStrutClient();
+  return useMutation({ mutationFn: () => client.run<LinkOffer>("account/link", {}) });
+}
+
+/** Removes one of the viewer's links (`account/unlink`). */
+export function useUnlink() {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { account: string }) => client.run<{ removed: boolean }>("account/unlink", v),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["assistant", "links"] }),
   });
 }

@@ -22,7 +22,10 @@ their listing, so the key never sits in a URL a served page could read
 things served without the key are the web UI's own files, `GET /health`
 (§8), and `GET /public/*` with the POSTs §17 names (a visitor's page, a
 launch and its cancel, buying and claiming credit): what a person put in
-the public view, and nothing when nothing is. The examples below leave the header out for brevity; add
+the public view, and nothing when nothing is. And the sign-ins, where what
+the request carries is the credential: a visitor's (`/visitors/*`, §13.2)
+and Peel's link to a box (`GET /people/challenge`, `POST /people/link`,
+`POST /people/token`, §13.6). The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
@@ -62,7 +65,9 @@ and `POST /proposals/:id/decide` for a proposal its actor
 made — and it lists only those, but reads any proposal by id (§12). The
 plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
-JWT with a `sub`).
+JWT with a `sub`). The token Peel holds for a box (§13.6) is a person
+token that also names a linked account: it holds only while that account
+is still linked to its actor, checked on every request.
 
 ## 1. Publish
 
@@ -996,6 +1001,16 @@ step's error from the app's `run/launch`). Having opened it while it was
 shared is not a turn. An id that is no conversation stays in the caller's
 own namespace (`peer/<id>`, `app/<name>/<viewer>/<id>`), as before.
 
+**A host's conversation** (`host/<name>/…`, §13.4; `plans/jamie-in-tribes.md`
+§5.1): a host opened it, not a person, so several people may speak in it (a
+Sphinx tribe's thread). It is listed for each person who took a turn in it,
+with `host: "<name>"` on the row, and for nobody named by its id. Only that
+host takes a turn in it: a person's token, strut's own app (`run/launch`,
+and a job turn's `conversation`) are refused with `conversation_hosted:`. A
+person forks it (`/conversations/fork`) to continue it as their own. The
+deployment key still launches on any id. The host reads it with
+`/conversations/item`, whoever spoke, and no other conversation.
+
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
 | GET    | `/conversations?q=&archived=1&limit=&before=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page |
@@ -1022,6 +1037,7 @@ interface ConversationListItem {
   moreJobs?: number;     // jobs past those listed
   team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
   startedBy?: string;    // who took its first turn
+  host?: string;         // a host's conversation (`host/<name>/…`, §13.4): the host's name; continued by it alone
 }
 
 // A job as a row shows it. A conversation keeps its job ids, read from each
@@ -1196,7 +1212,9 @@ and lets a page call it), served beside each set so a host relays a frame's
 `tools/call` to whichever door it connects. A PERSON token (`peer:person`,
 Auth) gets `POST /mcp` with `step_run` and nothing else — how a person's own
 strut hosts an app that lives here (§14.3, "A peer's app"); `/mcp/builder`
-and every plain peer stay 403.
+and every plain peer stay 403. A HOST key gets `POST /mcp` with a `step_run`
+of its own — the app by name, the app's `hosts:` in place of its grants,
+one JSON answer whose status says how the step ended (§13.5).
 
 ```bash
 claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: hermes"
@@ -1444,7 +1462,7 @@ and rotating that secret ends every session.
 | POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp, role? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. The key login names no role |
 | GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member` \| `visitor`), none for the key login; a visitor's session (§13.2) as cookie or bearer; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
-| POST   | `/auth/ticket`  | `{ actor, role? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
+| POST   | `/auth/ticket`  | `{ actor, role?, name? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `name`, a string: the person's name as the host knows them, kept as a host's (§13.3); `null` is none, anything else not a string `400`. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
@@ -1481,7 +1499,7 @@ session does — and frames the UI with it:
 ```bash
 curl -s -X POST https://strut.acme.com/auth/ticket \
   -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
-  -d '{"actor":"evanfeenstra-cm3k9x","role":"member"}'
+  -d '{"actor":"evanfeenstra-cm3k9x","role":"member","name":"Evan Feenstra"}'
 # → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
 # frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fjamie&solo=1&theme=light
 ```
@@ -1555,7 +1573,7 @@ none, and nobody signs in.
 | ------ | ---- | ----------- |
 | GET    | `/visitors` | `{ methods, visitorKey, actor?, exp? }`: the sign-ins offered here and who this request is signed in as. Open to anyone, CORS `*` (below) |
 | GET    | `/visitors/challenge` | `{ challenge, exp, methods, visitorKey }` (`cache-control: no-store`). `404` with no method named; `503` with no `STRUT_API_KEY` or `STRUT_SECRET_KEY` to sign it. Open to anyone |
-| POST   | `/visitors/session` | `{ challenge, method, … }` (method `sphinx`: `{ challenge, method, key, sig, address? }`; `address` is the account's own Sphinx address `<pubkey>_<lsp_pubkey>_<scid>`, kept in the session's signed claims for a worker's payout (plans/human-steps.md §8.2) only when its pubkey is the `key` that signed — else dropped, and the sign-in still holds; the answer never carries it) → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
+| POST   | `/visitors/session` | `{ challenge, method, …, name? }` (`name`: the visitor's own name, kept as theirs once the sign-in holds (§13.3); one that is not a string is dropped and the sign-in still holds. Method `sphinx`: `{ challenge, method, key, sig, address?, name? }`, `name` the account's alias from `sign_in`; `address` is the account's own Sphinx address `<pubkey>_<lsp_pubkey>_<scid>`, kept in the session's signed claims for a worker's payout (plans/human-steps.md §8.2) only when its pubkey is the `key` that signed — else dropped, and the sign-in still holds; the answer never carries it) → `200 { actor, token, exp }` + `Set-Cookie: strut_visitor=…` (HttpOnly, SameSite=Lax), or for `lnurl` `202 { pending, … }`. `401 { error }`: a challenge expired, spent, for another host or not strut's; a signature that does not hold; a method not offered. `400`: no such method, or `ticket` (traded at `POST /auth/session`). Open to anyone |
 | DELETE | `/visitors/session` | clears the visitor's cookie → `204` |
 | GET    | `/visitors/lnurl` | LNURL-auth's callback (LUD-04): `?tag=login&k1&sig&key` from the WALLET → `{ status: "OK" }` or `{ status: "ERROR", reason }`. Open to anyone, CORS `*` |
 
@@ -1616,7 +1634,9 @@ On `POST /public/mcp` a signed-in visitor's page (§17) may also:
   if it is runnable, through the public run door (§17);
 - a WORKER's step the app grants — `task/next`, `task/submit`,
   `task/skip`, `task/file`, `task/me` (§22) — the visitor the worker:
-  never kept as a run, and not a daily write.
+  never kept as a run, and not a daily write;
+- `people/names`, when the app grants it: the visitor's own name alone
+  (§13.3).
 
 Everything else is the anonymous visitor's rule. **Limits**: each visitor's
 writes (state sets, graph writes, error reports) and launches per UTC day —
@@ -1633,12 +1653,228 @@ curl -s -X POST https://moon.game/visitors/session -H 'content-type: application
 # → { "actor": "p256:02ab…", "token": "eyJhY3Rvci….hZ…", "exp": 1797… }
 ```
 
+### 13.3 People — a name per person
+
+`plans/people-and-hosts.md` §1; `src/people.ts`. Strut keeps one small
+record per person, their name, in `<dataDir>/people.db`. Whoever learns a
+name writes it:
+
+| Who says it | How | Kept as |
+| ----------- | --- | ------- |
+| A host signing a person in | `name` on `POST /auth/ticket` (§13.1) | `host` |
+| A person signing in to a public app | `name` on `POST /visitors/session` (§13.2): strut's UI sends the alias Peel's `sign_in` answers (`specs/WALLET.md` §1.2) | `self` |
+
+A name is one line, at most 80 characters, trimmed: whitespace and control
+characters fold to one space, and it is cut at 80. A host's name is never
+replaced by one a person gave themself; within each kind the newest wins.
+A name is for showing. Nothing checks it, and two people may share one.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/people?actor=…&actor=…` | → `{ people: { "<actor>": { name? } } }`: each actor asked, with `name` when one is kept. At most 200 actors (`400` past it, or for an actor empty or over 512 characters). `full` scope only: a peer is `403`, and the gate refuses a member's and a visitor's session |
+
+**An app's page** reads the same with the step `people/names { actors }`
+(`effect: "read"`; the kit's `useNames`), granted like any step. It answers
+the same shape. On a signed-in visitor's page it names the visitor alone —
+every other actor answers with none — and an anonymous visitor's page
+reads none. No other answer carries a name: runs, tasks and conversations
+keep the actor, and a page asks for the names of its list once.
+
+```bash
+curl -s "https://strut.acme.com/people?actor=evanfeenstra-cm3k9x&actor=secp:3fa2…" -H "authorization: Bearer $STRUT_API_KEY"
+# → { "people": { "evanfeenstra-cm3k9x": { "name": "Evan Feenstra" }, "secp:3fa2…": {} } }
+```
+
+With no name of their own, a person's name is the one on an account linked
+to them (§13.4), the newest link's.
+
+### 13.4 Hosts — a host key, and accounts linked to people
+
+`plans/jamie-in-tribes.md` §1, §3, §5.1, §5.2; `plans/people-and-hosts.md`
+§2; `src/auth.ts` "Host keys", `src/people.ts`. A HOST is a program that
+brings people to strut: it knows who is speaking and where, launches each
+turn as that person, and carries the answer back. The Sphinx daemon on a box
+is the first. It holds a HOST KEY, narrower than the deployment key:
+`STRUT_HOST_KEYS="sphinx:<token>"` (a comma between hosts) names each host
+and its token, sent as `Authorization: Bearer <token>`. The name is also the
+KIND of account it vouches for.
+
+**An account** is a key on a medium, spelled `<kind>:<key>`: `sphinx:<66
+hex>`, the pubkey as the daemon and an address spell it. A person LINKS one
+to themselves; one person per account, a person may hold several. Who an
+account is (`actorOf`): the person it is linked to; else, for a Sphinx key,
+the key's own actor (`secp:<the key without its first byte>`, what a signed
+sign-in with it gives), UNLINKED; else nobody.
+
+**What a host key may do**, as the person it names in `x-strut-account:
+<kind>:<key>` (its own kind; another is `400`). Every other route is `403`,
+reads included.
+
+| Method | Path | As whom | Description |
+| ------ | ---- | ------- | ----------- |
+| POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
+| GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
+| POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
+| GET    | `/hosts/links/:key` | — | The link (`key` bare or as `<kind>:<key>`), or `404 not_linked:`. How the Sphinx daemon checks a tribe's owner is a person here (`plans/jamie-in-tribes.md` §4). A host links nothing: a person links through Peel (§13.6) |
+| POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
+
+A launch or a decision with no `x-strut-account` is `400`; with an account
+nobody linked, `403 not_linked:` — the host falls back to someone who is (a
+tribe's linker). The deployment key is no host: `/hosts/*` answer it `403`.
+
+**`x-strut-account-name`**, beside `x-strut-account` on any of these
+routes: the name the speaker goes by there, as they wrote it,
+percent-encoded (`encodeURIComponent`). It is kept as the person said it
+of themself (`self`, never over a name a host gave at sign-in, §13.3): on
+the account when it is linked — read beneath the person's own name — else
+as the name of the key's own actor (a Sphinx key's `secp:`). One line, 80
+characters. Malformed, or without `x-strut-account`, it is `400`.
+
+```ts
+interface AccountLink {
+  account: string;   // "<kind>:<key>"
+  kind: string;      // the host's name: "sphinx"
+  key: string;       // a Sphinx key: 66 hex, lowercase
+  actor: string;     // the person
+  address?: string;  // where the account is reached
+  name?: string;     // the account's own name, as its holder wrote it
+  host?: string;     // the host that vouched for the key; none for a link Peel made (§13.6)
+  at: number;        // when it was linked (ms)
+}
+```
+
+```bash
+# Is a tribe's owner a person here?
+curl -s https://strut.box.example/hosts/links/02ab… -H "authorization: Bearer $HOST_TOKEN"
+# A mention in a tribe, as Ada:
+curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
+  -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
+  -d '{"input":{"prompt":"Ada: @jamie what did we decide?","session":"host/sphinx/3f9a0c21b7e4"},"wake":true,"callback":{"url":"http://treasury:8095/strut/end?m=1&token=…"}}'
+```
+
+### 13.5 A host calls an app's tools
+
+`plans/people-and-hosts.md` §3; `src/apps/tools.ts` (`hostRefusal`).
+Besides launching turns, a host key (§13.4) may call the tools an app lists
+for it, directly, as the person who spoke: an email gateway handing a
+message to a ticket app, the Sphinx daemon a DM to an inbox. The app says
+who may call what in its `app.yaml`:
+
+```yaml
+hosts:
+  sphinx:                    # the host key's name in STRUT_HOST_KEYS
+    steps: [tickets/receive] # the step types it may call (globs as grants.steps)
+    unlinked: true           # an account nobody linked may be the caller
+```
+
+Only a person's publish (`POST /apps`, a package a person installs) and
+strut's own seeded apps write `hosts:`: a model's (`app/publish`,
+`app/look`) is refused naming it, as `peer:` on a workflow is.
+
+The door is `POST /mcp` with the host key and `x-strut-account` (none:
+`400`), JSON-RPC as §11, with ONE tool:
+
+```ts
+step_run { app: string /* the app's name: its live version runs */, type: string, config?: object, input?: unknown }
+```
+
+| Check, in order | Refused with |
+| --- | --- |
+| An account with a person: linked, or a Sphinx key's own `secp:` | `403 not_linked:` (HTTP, before the tool) |
+| The app exists | `403`, `no app "…"` |
+| Its `hosts:` names this host | `403`, `hosts: does not name "…"` |
+| Its entry's `steps` lists the type | `403`, `not one this app lets … call` |
+| An unlinked account only where the entry says `unlinked: true` | `403`, `not_linked: … does not say unlinked: true` |
+| What no caller of an app's tools does: a paid or shell step (`llm`, `agent`, `exec`, …), a sealed step, `run/*` outside `grants.workflows`, a graph write on a type `data.graph` does not declare | `403`, as for a page (§14.1) |
+
+The step runs as that account's person (or the key's own actor), with
+`ctx.app` the app and `ctx.host = { name, account, unlinked }`, on the
+shared services bag alone: no admin door, no worker's calls, nothing that
+pays or sends. It is never first-party or an admin's. Nothing is kept as a
+run unless the step's own claim keeps it.
+
+**It is synchronous.** The answer is ONE JSON body (`content-type:
+application/json`, never a stream), sent once the step is done: the
+JSON-RPC result carrying the step's whole output, as §14.1's `step_run`
+does. The HTTP status says how it ended, so a host sends again until a
+`2xx` and a `2xx` means the tool finished:
+
+| Status | |
+| --- | --- |
+| `200` | Every call in the request finished (a `tools/list` or `initialize` too) |
+| `403` | Refused: one of the checks above |
+| `500` | The step itself failed (its message in the result) |
+| `400` | A call the tool could not take: unknown tool, bad arguments, a JSON-RPC error, or a `config` the step's input does not take (`<type> cannot take this config: <field>: …`), which is checked before the step runs. A config with `input` beside it has its templates resolved first, so the step checks it and a bad one is a `500` |
+| `413` | The request is over 36 MiB (`HOST_CALL_BODY_MAX_BYTES`: a 25 MiB file as base64, with room for the rest). Every other caller of `/mcp` keeps its own cap |
+| `406` | No `Accept: application/json, text/event-stream`: MCP's rule, though the answer is never a stream |
+
+```bash
+curl -s https://strut.box.example/mcp -H "authorization: Bearer $HOST_TOKEN" \
+  -H "x-strut-account: sphinx:02ab…" -H "x-strut-account-name: Ad%C3%A1" \
+  -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"step_run","arguments":{"app":"tickets","type":"tickets/receive","config":{"text":"hello"}}}}'
+```
+
+### 13.6 Peel links to a box
+
+`plans/people-and-hosts.md` §2.1 (ruling 9); `src/auth.ts` "Link
+challenges", `src/people.ts`. A person signed in here links their Sphinx
+account by having Peel sign a challenge their own page shows. Peel's key is
+the lasting credential: no device flow, no device record.
+
+1. **The challenge.** In the Jamie app, Connect → **Link Peel** calls the
+   step `account/link {}` → `{ challenge, exp, link, qr }`. `challenge` is
+   `strut-link.<base64url { host, actor, name?, nonce, exp }>.<hmac>`,
+   signed like strut's other tokens, naming the viewer (and their name, for
+   Peel to show), ten minutes, good once. `host` is the host name in
+   strut's address as the page's request reached it (`STRUT_PUBLIC_URL`
+   first). `link` is `peel://strut/link?url=<that address, mount path
+   included>&challenge=<…>`, both percent-encoded; `qr` is it as a QR, an
+   SVG data URL. Refused to anything but a first-party page's own call for
+   its viewer, as the other `account/*` steps are: a challenge is worth the
+   person it names.
+2. **Peel signs** the challenge's UTF-8 bytes as a Lightning signed message
+   with its account key (child 0), as its visitor `sign_in` does
+   (`specs/WALLET.md` §1.2), and posts it with no other credential.
+3. **The token.** A person token ("A person's token" at the top: scope
+   `peer:person`) whose claims also name the account, for seven days. On
+   every request strut checks that the account is still linked to the
+   token's actor: removing the link (`account/unlink`, Connect's Remove)
+   ends it at once (`401`). Peel renews it by signing again.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST   | `/people/link` | `{ challenge, key, sig, name?, address? }` → `200 { actor, name?, token, exp }` (`cache-control: no-store`). `key`: the compressed secp256k1 key, 66 hex; `sig`: the Lightning signed message, 65 bytes as hex. Links `sphinx:<key>` to the challenge's `actor`, keeping `name` (the account's own, its alias: one line, 80 characters) and `address` (`<key>_<lsp key>_<scid>`, naming the same key) on the account. The answer's `name` is the person's as strut shows it (§13.3). `401 unauthorized:` for a challenge not strut's, expired, for another host, already used, or naming nobody (a renewal's), and for a signature that does not hold — a refused signature does not spend the challenge; `400` for a key, sig, name or address that is not one; `409 linked_elsewhere:` when the key is linked to another person (they remove it first); `413` past 8 KB; `503` with nothing to sign a token with |
+| GET    | `/people/challenge` | → `{ challenge, exp }` (`cache-control: no-store`): a challenge naming nobody, `{ host, nonce, exp }`, a minute, good once — what Peel signs to renew |
+| POST   | `/people/token` | `{ challenge, key, sig }` → `200 { actor, name?, token, exp }` as above, for the person the key is linked to; `403 not_linked:` for a key nobody linked here; the same `401`s |
+
+**Open to anyone.** These three answer without the key: the challenge and
+the signature are the credential, as for `/visitors/*` (§13.2). Each is
+budgeted per address as those are (`429`).
+
+```bash
+# Peel, after the person said yes:
+curl -s https://strut.box.example/people/link -H "content-type: application/json" \
+  -d '{"challenge":"strut-link.eyJob3N0Ijoi….Xk2…","key":"02ab…","sig":"1f3c…","name":"Ada"}'
+# → { "actor": "ada-3f9a…", "name": "Ada Lovelace", "token": "strut-person.…", "exp": 1795000000000 }
+# Renewing, a day later:
+curl -s https://strut.box.example/people/challenge
+curl -s https://strut.box.example/people/token -H "content-type: application/json" \
+  -d '{"challenge":"strut-link.…","key":"02ab…","sig":"20aa…"}'
+```
+
+The steps, from strut's own app alone:
+
+- `account/link {}` → `{ challenge, exp, link, qr }` (above).
+- `account/links {}` → `{ links: AccountLink[] }` (§13.4), the viewer's, newest first, without `actor`.
+- `account/unlink { account }` → `{ removed }`. Peel's token for that account stops working at once.
+
 ## 14. Apps — a front-end project over workflows
 
 `plans/apps.md`. An APP is a directory with an `app.yaml` (title, `grants`,
 the graph types it declares, extra resource domains), `src/` (TSX, its own
-shadcn overrides, CSS), `public/` (assets) and `db/` (migrations, a later
-item), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
+shadcn overrides, CSS), `public/` (assets) and `db/` (its SQLite
+migrations, §14.17), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
 the bootstrap, the hooks) into ONE self-contained document,
 `dist/index.html`, that any MCP Apps host frames. An app lives in the
 workspace (below; a JOB's app directory is retired, §14.4). A workspace app is
@@ -1661,10 +1897,11 @@ components as an app other apps import (`import { RunTimeline } from
 | GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, admin?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `admin: true` only on an ADMIN-ONLY app, which is listed to full scope alone (§14.14); `warnings` (§14.6) only when the active version has some from the last day |
 | GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`, `title?`, `wallet?`, `permissions?` — what the version's frame is granted beyond every app's, `motion` / `camera` / `geolocation` from `app.yaml`'s `permissions:`, which a host adds to the frame's `allow` before the document loads), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
+| GET    | `/apps/:name/data` | the app's own SQLite database (§14.17) as a file: `application/vnd.sqlite3`, `content-disposition: attachment; filename="<name, / as ->.db"`, a copy taken in one go (`VACUUM INTO`), so consistent while pages write. Full scope only (the deployment key, an admin's session), 403 otherwise; 404 for an unknown app or one with no database yet |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph?, migrations? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. Then the directory's `db/*.sql` migrations are applied to the app's database (§14.17), `migrations` naming those that ran; one that fails is a `400` the same way, and no version is recorded. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | GET    | `/apps/:name/screenshots` | `?version=` → `{ name, version, screenshots: [{ file, caption? }] }`: the list the version's `app.yaml` names (the live version without `version`). `404` for an unknown app or version |
@@ -1715,7 +1952,8 @@ the call against that app's manifest, in every host:
 | a sealed step | refused |
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
-| `sqlite/*`, `automation/*` | "not available in this strut yet" (work items 3, 7) |
+| `sqlite/query`, `sqlite/exec`, `sqlite/batch` | only when the manifest says `grants: { sqlite: true }` (`sqlite/*` in `grants.steps` grants nothing), on the app's own database alone (§14.17) |
+| `automation/*` | "not available in this strut yet" (work item 7) |
 | `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
@@ -1725,8 +1963,9 @@ step's own failure are error results: `isError: true` with a text
 `{ "error": "…" }` the kit throws as a `StrutError`. A result is the
 step's whole output — `structuredContent` when it is an object, the same
 JSON as text — never trimmed for a model; past 5 MB it is an error naming
-the cap. **Writes are kept** (§9): a graph write and an error report land
-under `step:<type>` with the actor and `app` on their summary
+the cap. **Writes are kept** (§9): a graph write, `sqlite/exec`,
+`sqlite/batch` and an error report land under `step:<type>` with the actor
+and `app` on their summary
 (`GET /workflows/step:<type>/runs`); reads are not. A run `run/launch`
 starts records `origin: "app"` and `app` on `run.start` and its summary and
 hands `ctx.app` to every step.
@@ -2313,7 +2552,15 @@ The page sends into whatever conversation `conversation/list` shows; a
 person continues one they took a turn in, or a shared one
 (`plans/jamie-app.md` §2.2), and a refused turn
 (`conversation_not_yours: …`, someone who read it while it was shared) is
-a plain notice. A captcha's answer
+a plain notice. A HOST's conversation (a Sphinx tribe's, `host: "sphinx"`
+on its row, §13.4) shows with a `#` in the list and, in place of the
+composer, "In a Sphinx tribe: reply there" and **Continue here**, which
+forks it (`conversation/fork`) and opens the copy. **Connect** (the list's
+header) lists the viewer's linked Peel accounts with Remove
+(`account/links`, `account/unlink`) and, on Link Peel, shows a link
+challenge from `account/link` as a QR and an Open in Peel link (the host
+page hands a `peel:` link to the device), reading `account/links` every
+3 s until the link shows (§13.6). A captcha's answer
 is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
 "[captcha-answer] {…}" }, conversation }`; so is a pull request's Fix, when
 its checks failed (`prompt`: which checks, and the branch to push the fix
@@ -2504,7 +2751,10 @@ the host as `ui/open-link`, so its address bar follows.
   group), JSON, and a preview in `TaskForm`; it writes only what the store
   checks. Pay, Tests and Copies sections; the workers who hold it, with
   Revoke and Grant.
-- **Workers**: the workers, `new` first, several granted at once; each with their status,
+- **Workers**: the workers, `new` first, several granted at once; each
+  shown by the first line of the staff's note, else their name
+  (`people/names`, §13.3), else the key shortened, with the short key
+  beside a name; each with their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
   `standing` too), the week, their newest leases with each answer's
   verdict and links to their answers to review and their rejected ones,
@@ -2528,18 +2778,19 @@ the host as `ui/open-link`, so its address bar follows.
 - **Tests**: a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
-- **Support** (`plans/support-chat.md`, §22 "Support"): the chat with
-  workers, shown only when `/support` answers (the wallet is a Sphinx
-  daemon with its message token). The tab carries the unread count
-  (`staff/support-unread`, every 5 s). Conversations on the left — each
-  worker's initials, name (their note's first line, else their Sphinx
-  name), last line, time and unread count, unread first, searchable, "Not
+- **Support** (`plans/support-chat.md`; `plans/people-and-hosts.md` §5;
+  §22 "Support"): the chat with workers, its tables the app's own SQLite,
+  shown when the wallet is a Sphinx daemon with its message token or
+  Support has a conversation. The tab carries the unread count. Every
+  read is SQL, read again when the app's channel `support` says a DM came
+  and every 30 s besides. Conversations on the left — each
+  worker's initials, name (their note's first line, else their own name,
+  `useNames`), last line, time and unread count, unread first, searchable, "Not
   a worker here" for a contact who is none — and the thread on the right,
   with the worker beside it on a wide screen (status, types, the task they
   hold, the week's answers, what they are owed, their note, links to their
   page, answers and payouts); on a phone the list opens a thread and Back
-  returns. The list and the open thread are read every 3 s; an open thread
-  is marked seen. A worker's photo shows inline (tap for full size), a
+  returns. An open thread with something unread is marked seen. A worker's photo shows inline (tap for full size), a
   voice note plays, any other file downloads; a deleted message is
   "Message deleted"; sats are a line; a task's id is a link to the task.
   The composer: Enter sends, Shift+Enter adds a line, Reply quotes a
@@ -2559,7 +2810,7 @@ answers no test route and no review, so the page shows no Tests tab and no
 Review section or filter.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
-(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…` or `/support…`
+(`src/steps/lib/staff/_door.ts`): one request to a `/tasks…`
 route — no other path — in process and in the admin's name (`inProcessRequest`), so a
 grant's `by`, a type's `changedBy`, a take-back's `takenBackBy` and a
 verdict's `by` name the admin. The door and its check are `src/steps/lib/_admin-door.ts`'s, which
@@ -2600,18 +2851,11 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
 | `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
 | `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
-| `staff/support-list { q? }` | `GET /support` | `{ conversations }` |
-| `staff/support-unread` | `GET /support/unread` | `{ unread, conversations }` |
-| `staff/support-thread { worker, before?, limit? }` | `GET /support/:worker` | `{ conversation, messages, more }` |
-| `staff/support-send { worker, text?, replyTo?, retry? }` | `POST /support/:worker` | `{ message }` |
-| `staff/support-seen { worker }` | `POST /support/:worker/seen` | `{ conversation }` |
-| `staff/support-file { worker, id, offset? }` | `GET /support/:worker/files/:id` | `{ id, name?, mediaType, bytes, offset, base64, next? }` — one 3 MB piece |
-| `staff/support-settings` | `GET /support/settings` | `{ settings }` |
-| `staff/support-save-settings { welcome }` | `PUT /support/settings` | `{ settings }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
-grants it checks with `taskAppProblem`) and `earnings/read` (the Queue's
-line on what workers are owed). It launches nothing.
+grants it checks with `taskAppProblem`), `earnings/read` (the Queue's
+line on what workers are owed) and `people/names` (the workers' names,
+§13.3). It launches nothing.
 
 **Sharing the worker app.** The Queue opens with a "Bring workers in"
 list, one closed row for each public app a type is answered in
@@ -2667,6 +2911,70 @@ leased until it is pressed) and Back to your work. Strut's account widget
 visitor's page gets no first-party rights, and its grants are the worker's
 steps alone. `createStrut({ worker: false })` or `STRUT_HOST_CONFIG`'s
 `"worker": false` seeds nothing.
+
+### 14.17 An app's own SQLite (`src/apps/data.ts`; `plans/apps.md` §4.4)
+
+**The file.** One per app, `<dataDir>/apps/<name>/data.db`, beside its
+versions and shared by all of them; owner-only (the file `600`), on
+`node:sqlite`, extensions never enabled; the rollback journal, so the file
+at rest is the whole database. A strut whose run store is in memory keeps
+them in memory. A delete of the app keeps it.
+
+**Migrations.** `db/*.sql` in the app's directory, applied in name order
+(code-unit order: `001-…`, `002-…`, `010-…`), each ONCE, each in its own
+transaction, and recorded in the database's `_strut_migrations` (`name`,
+`sha256`, `applied_at`). Applied:
+- at every publish (`POST /apps`, `app/publish`, a package install — they
+  all go through it), after the build and before the version is recorded:
+  the first that fails rolls back and the publish is refused with its
+  error (`400 { error, errors }`), recording no version; those before it
+  stay applied;
+- at a preview (`app/look { path }`), as a publish would;
+- for strut's own seeded apps, at every boot.
+
+`app/build` runs them on an empty database in memory and reports the one
+that fails as a build error. A migration that ran is never run again: one
+whose file changed since is a publish WARNING, never a re-run. Rolling
+the app back never rolls its schema back, so migrations are additive. A
+migration that commits or rolls back strut's transaction itself fails.
+
+**The steps.** Each runs ONE statement (text holding another is refused,
+never cut short; comments after it are fine):
+
+| Step | Config | Answer |
+| ---- | ------ | ------ |
+| `sqlite/query` | `{ sql, params?, maxRows?, app? }` | `{ columns, rows, truncated }` — one object per row keyed by column; at most `maxRows` rows (default 1000, at most 10000) and 4 MB of them, `truncated: true` past either. It runs under `PRAGMA query_only`: a write in it fails |
+| `sqlite/exec` | `{ sql, params?, app? }` | `{ changes, lastInsertRowid }` |
+| `sqlite/batch` | `{ statements: [sql \| { sql, params? }], app? }` (at most 1000) | `{ results: [{ changes, lastInsertRowid }] }` — in ONE transaction: a failing statement rolls all of them back and is named (`statement 2: …`) |
+
+`params` is a list for `?` or an object for `:name` / `@name` / `$name`.
+`:actor` (or `@actor`, `$actor`) is strut's: the caller's own actor — a
+page's viewer, the person a host's call is for, a run's actor; NULL with
+none — so a page reads and writes "mine" without being told who its
+viewer is; a value the caller names `actor` is replaced, and a statement
+naming it takes its other values by name. A
+whole number goes in as an INTEGER, a boolean as `1` or `0`, `{ base64 }`
+as a blob and any other object or list as its JSON text. A blob comes back
+as `{ base64 }`, an integer past 2^53 as its decimal text. Refused, by a
+keyword pre-check that reads past strings, comments and quoted names:
+`ATTACH`, `DETACH`, `VACUUM INTO`, `load_extension`, a PRAGMA outside
+`table_info`, `table_xinfo`, `table_list`, `index_list`, `index_info`,
+`index_xinfo`, `foreign_key_list`, `foreign_key_check`, `integrity_check`,
+`quick_check`, `user_version`, `page_count`, `page_size`, `freelist_count`
+(and any of them set, `= x` or `(x)` on the last four), the same names as
+`pragma_<name>` functions, and a statement that opens or ends a transaction
+(`BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`). A
+statement's run time is not bounded: `node:sqlite` has no interrupt.
+
+**Which database.** `ctx.app`'s: a page's `step_run`, a host's call of the
+app's tools (§13.5: listed in its `hosts:` entry, and the manifest grants
+`sqlite`), a run the app launched. There, `app` is refused, even naming
+itself, so a page never reaches another app's file. With no `ctx.app` (a
+workflow of its own, an agent granted `sqlite/*`), `app` names an app that
+exists. A visitor's page (§17) gets none of them. The kit's `useSql(sql,
+params?, { maxRows?, refetchInterval? })` and `useSqlMutation()` → `{
+exec, batch }` are over them, and a write that lands refetches every
+`useSql`.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
@@ -4632,8 +4940,8 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 `provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
 `receive`: a receive credential is on file, so the server can sell. `pay`:
 a pay credential is on file, so Withdraw can pay (§19). `messages: true`,
-on a Sphinx daemon only: its message token is on file, so Support answers
-(§22, "Support"). `url` is the
+on a Sphinx daemon only: its message token is on file, so Support can
+send (§22, "Support"). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
 `api`. `env: true` (with a `note` saying so) when the environment names
@@ -4659,8 +4967,8 @@ is not one of these, a daemon URL that is not http(s) or carries a
 credential, an NWC URL that does not parse, a pay credential equal to the
 receive one, or a message token equal to the receive or the pay token;
 what is on file stays. The message token is kept as the pay token is:
-never on the services bag, read only by Support's follower and the
-`/support` routes.
+never on the services bag, read only by the `sphinx` capability, which
+sends as Support (`plans/people-and-hosts.md` §4).
 
 `PUT /secrets/LIGHTNING_…` is refused (`400`): a wallet credential never
 goes in the deployment's secrets, and the secrets capability answers
@@ -6082,102 +6390,80 @@ and the expiry unless standing), **Workers**, for a change **Open tasks**
 shown). It reads a type's rules, never a test: no expected answer is on
 it.
 
-### Support — the staff's chat with workers (`plans/support-chat.md`)
+### Support — the staff's chat with workers (`plans/support-chat.md`; `plans/people-and-hosts.md` §5)
 
 Workers write to the treasury daemon's account, named "Support", from Peel,
 as to any contact; staff answer from the Support tab of `strut/staff`
-(§14.15). Strut reaches the daemon with its MESSAGE token (§18,
-`messageToken`; `specs/LIGHTNING.md`, "Support's DMs"), kept away from the
-services bag. Its FOLLOWER reads `GET /dms?after=<seq>` every 3 s
-(`createStrut({ support: { pollMs } })`) and keeps the conversations in the
-task store's file (`<dataDir>/tasks/tasks.db`, `src/support/store.ts`), the
-cursor with them, one per daemon URL (another daemon is read from its
-start; a record read again changes nothing); a record it cannot keep is
-skipped and said, never the page; a worker's file is fetched when it arrives, up to 25 MB
-(a larger one is a line saying so), into `<dataDir>/support/files/`. What
-was in the daemon's log before Support first followed it shows too,
-marked `earlier`. Each tick also sends the HEADS-UP (`plans/support-chat.md`
-§6): once a worker's message has waited unread 5 minutes, Support DMs each
-admin it knows the count — `"3 messages waiting in Support"`, no content —
-at most once an hour each. An admin Support knows is one who marked a
-conversation seen, replied or took one, and whose actor is the key of one
-of Support's contacts (a conversation): `POST /dm` reaches existing
-contacts alone (ruling 15), so any other admin has the count on the tab
-only. An admin's own messages to Support do not count as waiting, and a
-heads-up that failed to send is tried again on the next read.
+(§14.15). Support is an APP: it has no route of its own. Its tables are
+`strut/staff`'s own SQLite (`src/apps/staff/db/001-support.sql`: `conversations`,
+`messages`, `files`, `settings`; §14.1's `sqlite/*`), the page reads and
+writes them with SQL, and six `support/*` tools do what touches the
+daemon. Strut no longer reads the daemon's DMs: the daemon hands each
+record to `support/receive` through `strut/staff`'s `hosts:` (§13.5).
 
-FULL SCOPE only, reads included: the deployment key or an admin's session;
-a member's session, a peer and a visitor are refused (`403`). With no
-message token, or an NWC wallet, every route answers `501 not_available`.
-`:worker` is the worker's actor (`secp:` and their Sphinx pubkey without
-its first byte), one encoded segment.
+**The daemon's call.** `POST /mcp` with the `sphinx` host key (§13.4),
+`x-strut-account: sphinx:<the contact's pubkey>` and the contact's alias in
+`x-strut-account-name` (which names them, §13.3), calling `step_run { app:
+"strut/staff", type: "support/receive", config: { records } }`. Each record
+is one of the daemon's DM feed (`specs/LIGHTNING.md`, "Support's DMs"),
+all of one contact, oldest first — a worker's file with its bytes (`file: {
+data, name? }`, or `fileError: "too_large"` over 25 MiB). The answer is `{
+kept, skipped: [{ seq?, id?, error }] }`: a record kept before changes
+nothing, so a retry is safe, and one that cannot be kept (another contact's,
+a malformed one) is skipped and named, never the call. The daemon sends
+each record in order, one call at a time, until a `2xx`. A record that
+changes (a send's `status`, a deletion) comes again under a new `seq`;
+Support keeps the newest it saw per message, so an older one never undoes
+a newer one. Each call tells the app's channel `support` (a state, `key:
+"changed"`), and when a welcome is due starts `support-outbox`.
 
-| Route | |
+| Tool (strut/staff's page unless said) | |
 | --- | --- |
-| `GET /support[?q=&filter=]` | `{ conversations }`: unread first, then the newest; `q` over names (the Sphinx alias, the worker's note), actors and text; `filter` `all` (the default), `open`, `mine` (open, taken by the asker), `unassigned` (open, taken by no one) or `done` |
-| `GET /support/unread` | `{ unread, conversations }`: workers' messages no one marked seen, and the conversations they are in — for a host's navigation |
-| `GET /support/settings` | `{ settings }` |
-| `PUT /support/settings { welcome?, payoutLines? }` | `{ settings }`: either or both |
-| `PUT /support/photo { base64, type }` | `{ settings }`: Support's picture through the daemon (`PUT /dm/photo`, which does not resize it), `image/jpeg`, `png`, `webp` or `gif`, at most 1 MiB; `502 daemon_error` when the daemon refuses it (bytes not of that type, its memes server) |
-| `DELETE /support/photo` | `{ settings }`: no picture (`DELETE /dm/photo`) |
-| `GET /support/:worker[?before=&limit=]` | `{ conversation, messages, more }`: the newest 200 (`limit`, at most 500) before the message key `before`, oldest first; `404 no_conversation` for someone who never added Support as a contact |
-| `PUT /support/:worker { status?, assignee? }` | `{ conversation }`: `status` `open` or `done`; `assignee` `"me"` takes it (an admin's session, or the key with `x-strut-actor`), `null` lets it go |
-| `POST /support/:worker { text?, replyTo?, file? }` | `{ message }`: kept, then sent from "Support"; `file` is `{ base64, type, name }`, at most 2.5 MiB, `text` then its caption (with a file, the daemon's 32 KiB counts 1 KiB more); `{ retry: <key> }` sends a failed one again under the same id, its file again from strut's copy (the daemon keeps none) |
-| `POST /support/:worker/delete { key }` | `{ message }`: one of Support's messages deleted for both sides (`POST /dm/:id/delete`); a failed one never went and is deleted here alone; `404 unknown_message` for a worker's; `409 not_yet` ("try again in a moment") while it is still sending or the daemon has not settled it; `502 daemon_error` for the daemon's other refusals |
-| `POST /support/:worker/seen` | `{ conversation }`: seen up to its newest message, for every admin |
-| `GET /support/:worker/files/:id[?offset=]` | `{ id, name?, mediaType, bytes, offset, base64, next? }`: a worker's file by its message's Sphinx id, 3 MB of it from `offset` (a step's result is capped at 5 MB, §14.1); `next` is the next piece's offset, and the pieces' base64 joins as one. `404 no_file` while fetched, too large, or deleted |
+| `support/receive { records }` | The daemon's, above. Never a send: a host's bag has no `sphinx` |
+| `support/send { worker, text?, replyTo?, file?, retry? }` | `{ message }`: kept as `sending`, sent from "Support" (`POST /dm { id, to, text?, reply?, file? }`, `id` 64 hex strut made), kept `sent` or `failed` with `error`. `worker` is the worker's actor; `file` is `{ base64, type, name }`, at most 2.5 MiB, its bytes kept (a Retry sends them again), `text` then its caption; at most 32 KiB as the message's JSON with its quoted id (`bad_request: too long`). `retry: <key>` sends a failed one again under its id, or one still `sending` a minute on with no id; the daemon sends one id once. `no_conversation` for a worker who has not got Support as a contact |
+| `support/delete { key }` | `{ message }`: one of Support's own deleted for both sides (`POST /dm/:id/delete`); a failed one here alone; `not_yet` while still sending |
+| `support/file { key, offset? }` | `{ key, name?, mediaType, bytes, offset, base64, next? }`: a message's file, 3 MB from `offset` (a step's result is capped at 5 MB, §14.1); ask again from `next`; the pieces' base64 joins as one. `no_file` for none kept or deleted |
+| `support/set-photo { photo: { base64, type } \| null }` | `{ url }`: Support's picture through the daemon (`PUT`/`DELETE /dm/photo`), jpeg, png, webp or gif, at most 1 MiB (the page sends a 512 px JPEG); its bytes kept in `settings` to show |
+| `support/send-due` | `support-outbox`'s one step: `{ sent }` |
 
-```json
-{ "conversations": [{ "worker": "secp:a1b2…", "pubkey": "02a1b2…", "alias": "Ana", "unread": 2,
-    "last": { "key": 41, "id": "6f1c…", "fromMe": false, "kind": "message", "text": "When is it paid?", "at": 1794901800000 },
-    "seenAt": 1794890000000, "welcomedAt": 1794880000000, "status": "open", "assigned": "me" }] }
-```
+`support/send`, `support/delete` and `support/set-photo` need the `sphinx`
+capability (`plans/people-and-hosts.md` §4): on a first-party page's bag
+shown to an admin and on a run such an app launched, nowhere else. With no
+message token, or an NWC wallet, they refuse `not_available`.
 
-A CONVERSATION's `status` is `open` or `done` (a worker writing again
-reopens it), and `assigned` says who took it relative to the asker, `me`
-or `other`: admins have no names (ruling 4), so the actor is kept and
-never answered.
+**What the page reads and writes.** Conversations (`actor` is the worker:
+`secp:` and their pubkey without its first byte), unread counts
+(messages from the worker past `seen_key`), a thread and search are SQL. So
+are the page's own columns: `seen_key` / `seen_at` (shared by the staff),
+`status` (`open` or `done`; a worker writing again reopens it),
+`assignee` (taken: the page writes and compares `:actor`, which strut binds
+to the viewer, §14.1), and `settings` (`welcome`, `payout_lines`). Each
+write is a kept `step:sqlite/exec` run with its admin, and the page writes
+"seen" only when there is something unread. A message row is `{ key, id,
+from_me, kind, text, reply_to, sats, deleted, by, status, error,
+media_type, file_name, file_size, file_state, seq, at }`: `kind` is
+`message`, `file`, `payment` (sats a worker sent: a line, not in the
+books) or `contact` (they added Support); a deleted one keeps its row and
+the page shows "Message deleted"; `by` is the admin who sent it, or
+`welcome` / `payout`, and the page never shows an admin's; `file_state` is
+`kept`, `too_large` or `failed`. The page reads again when the channel
+says so, and every 30 s besides. It shows the tab when the wallet is a
+Sphinx daemon with its message token (`earnings/read { wallet }`'s
+`messages`), or Support has a conversation.
 
-A MESSAGE is `{ key, id?, fromMe, kind, text?, replyTo?, sats?, deleted?,
-file?, status?, error?, at, earlier?, auto? }`. `key` is strut's own
-order (what `before` and `retry` take); `id` the Sphinx id, what a reply
-quotes (`replyTo`). `kind` is `message`, `file`, `payment` (sats a worker
-sent: a line, not in the books) or `contact` (they added Support as a
-contact). A message the worker deleted is `deleted: true` with no text or
-file; strut keeps its row. `file` is `{ name?, mediaType?, size?, state,
-error? }`, `state` `fetching`, `kept`, `too_large` or `failed`. A send of
-Support's has `status` `sending`, `sent` or `failed` (with `error`), and
-its `id` as soon as the daemon answers with one. A file of Support's is a
-`file` message too, `state: "kept"`, strut's own copy in
-`<dataDir>/support/files/`, read through the same route. Who sent a reply
-is kept and never answered: every reply is from Support. `auto` marks what
-strut sent on its own: `welcome`, `payout` (a payout's line) or
-`heads-up`. The page's thread polls the
-newest 200 and keeps what it read, with **Show earlier messages** for the
-pages before (`before`).
+**The welcome** (`plans/support-chat.md` §5). Empty, none is sent. Once an
+admin saves it, a trigger on `settings` keeps when it was turned on
+(`welcome_since`); a `contact` record newer than that marks the
+conversation's welcome due, and `support-outbox` sends it, once per worker
+(`welcomed_at`). Saving again keeps `welcome_since`; clearing the text
+turns it off, and the next save starts again from then.
 
 **Payout lines** (`plans/support-chat.md` §6). When a worker's payout
-settles (§22, "Payouts"), Support writes to them `"Paid you 1,200 sats"`,
-once per payout, when they are a contact and `payoutLines` is on (the
-default). `settings.photo` is `{ url, mediaType, savedAt, savedBy?,
-base64? }`: the memes URL the daemon sends as `img` on every message, and
-strut's copy (`<dataDir>/support/photo`) to show, since a page cannot load
-the memes host.
+settles (§22, "Payouts"), the engine writes to them from Support `"Paid you
+1,200 sats"`, once per payout (its id made from the payout's key), when
+they are Support's contact and `payout_lines` is on (the default). It is
+kept in the thread as `by: "payout"`.
 
-**The welcome** (`plans/support-chat.md` §5). `settings` is `{ welcome,
-since?, savedAt?, savedBy?, payoutLines, photo? }`. Empty, none is sent. Once saved, it goes
-automatically, from Support, to each worker whose key exchange (a
-`contact` record) is newer than `since`, once each (`welcomedAt`); saving
-again keeps `since`, clearing the text turns it off, and the next save
-starts again from then. `400` for a body with anything but `welcome` and
-`payoutLines`, or a welcome over 2,000 characters.
-
-A send is kept before it goes: `POST /dm { id, to, text?, reply?, file? }`
-to the daemon, `id` 64 hex strut made; a file as `{ data, type, name }`. One a past process left `sending` with no
-word from the daemon is `failed` when Support next opens its store, so
-Retry shows. `text` is at most 32 KiB as the message's JSON with its quoted
-id, the daemon's own limit (`400 bad_request: too long` before anything is
-kept). A failed
-send keeps its `error`; Retry sends the same `id`, once however many ask.
-Support writes only to someone who has it as a contact (the daemon refuses
-anyone else): a worker who joined by an invite.
+Support as first built (the `/support` routes, its tables in the task
+store's file and `<dataDir>/support/`) is dropped at boot, with no copy
+(`plans/people-and-hosts.md` ruling 7).

@@ -117,7 +117,7 @@ screenshots:                   # what the package store shows (below), in order
 grants:
   workflows: [score-wf]        # the app's ROUTINES: run/* on these — list, read, launch, cancel
   steps: [graph/graph-get]     # cheap, deterministic steps it may call — never llm / agent / exec
-  sqlite: false                # its own tables (a later release)
+  sqlite: false                # true: its own tables, sqlite/* (below: The app's tables)
   automations: []              # schedules (a later release)
 data:
   graph:
@@ -883,7 +883,7 @@ host that carries no channels (some MCP Apps hosts) gives
 | --- | --- | --- |
 | What workflows did, one row per execution: scores, polls, extractions | Runs | Already there: `useRuns` and outputs |
 | Entities and relations others should see too: customers, facts, people | The graph (`graph/*`, declared types) | Agents find them, workflows write them, another app reads them |
-| The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later release; until then keep state in runs or the graph |
+| The app's own tables: line items, a big import, settings | The app's SQLite (`useSql`, `sqlite/*`) | Real queries over many rows: filters, joins, sums, group by |
 | Files a person uploads: photos, PDFs, a CSV to work from | A job of the app's (`useUpload`) | Every run under the job reads them; an agent's thread on it remembers them |
 | What one viewer's page remembers: a tab, a filter, a draft | `useAppState` | Kept by the strut server per app and viewer, on every host and device; 256 KB a viewer |
 | What is happening now between the people on it: moves, cursors, who is here | A channel (`useChannel`) | Live, stamped by the strut server, never kept |
@@ -894,8 +894,36 @@ swaps in an in-memory one, so a library that persists does not break) and
 IndexedDB and cookies are not there. Never write `localStorage` for
 anything that should outlive the page: use `useAppState`.
 
-"If an agent should ever find it, it goes in the graph." Migrations (when
-they come) are additive: a rollback never rolls the schema back.
+"If an agent should ever find it, it goes in the graph."
+
+## The app's tables
+
+An app that keeps rows of its own has a SQLite database of its own: one
+file, shared by every version of the app.
+
+- **Grant it**: `grants: { sqlite: true }`.
+- **Make the tables with migrations**: `db/001-init.sql`, `db/002-….sql`.
+  The strut server applies them at publish, in name order, each ONCE, each
+  in one transaction; a failing one fails the publish and nothing goes
+  live. `app/build` tries them first on an empty database and names the
+  one that fails. No `BEGIN` or `COMMIT` in a migration: it is one
+  transaction already.
+- **Migrations are additive.** One that ran never runs again, so editing it
+  changes nothing: change the schema in a NEW file (`ALTER TABLE … ADD
+  COLUMN`). Rolling the app back to an older version never rolls its
+  schema back, so every version must work with the newest tables: add
+  columns and tables, never drop or rename one a version still reads.
+- **Read and write from the page**: `useSql(sql, params)` → `{ columns,
+  rows, truncated }`, refetched after each write; `useSqlMutation()` →
+  `exec(sql, params)`, and `batch([...])` for several statements in one
+  transaction. One statement per call. Values go in `params` (`?` as a
+  list, `:name` as an object), never spliced into the text; a blob is
+  `{ base64 }`. At most 1000 rows unless you ask for more (`maxRows`, up to
+  10000): page with `LIMIT … OFFSET`, or aggregate.
+- **A workflow the app launches** reads and writes the same database with
+  the `sqlite/*` steps, naming no app: it is the app's.
+- Refused everywhere: `ATTACH`, `DETACH`, `VACUUM INTO`, `load_extension`
+  and a `PRAGMA` that sets anything.
 
 ## Graph types
 
@@ -979,8 +1007,8 @@ a warning.
   button, `useRun({ live })` on the newest run, a tab for its output.
 - **Invoice tracker**: customers, visits and invoices as declared graph
   types written with `graph/*`, a table from `@tanstack/react-table`, a
-  photo-reading workflow launched per invoice (a later release adds SQLite
-  for line items and schedules for reminders).
+  photo-reading workflow launched per invoice, the line items in its own
+  tables (`useSql`; a later release adds schedules for reminders).
 - **Fact library**: a URL goes to an ingest workflow whose agent writes
   `Fact` and `Source` nodes; the app searches them with
   `graph/graph-search` and shows a card per fact.

@@ -19,7 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtWhen, grantedBy, leaseOutcome, liveTypesText, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoOf, workersInOrder, type Place, type Shown,
+  balanceCells, fmtWhen, grantedBy, leaseOutcome, liveTypesText, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, workersInOrder, type Place, type Shown,
 } from "../lib/view";
 import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
@@ -127,8 +127,8 @@ function WorkerList(props: Props & { workers: Worker[] }) {
                         <TableCell onClick={(e) => e.stopPropagation()}>{w.status === "new" && <Checkbox aria-label={`Tick ${whoOf(w)}`} checked={ticked.has(w.actor)} onCheckedChange={(c) => tick(w.actor, c === true)} />}</TableCell>
                       )}
                       <TableCell>
-                        <div className="font-medium">{whoOf(w)}</div>
-                        {w.note && <div className="font-mono text-xs text-muted-foreground">{shortActor(w.actor)}</div>}
+                        <div className="font-medium" title={w.actor}>{whoOf(w)}</div>
+                        {whoElse(w) && <div className="font-mono text-xs text-muted-foreground">{whoElse(w)}</div>}
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={w.status} />
@@ -181,7 +181,10 @@ function WorkerDetail(props: Props & { actor: string }) {
   const back = <Back onClick={() => props.go({ tab: "workers" })}>Workers</Back>;
   if (q.error) return (<div className="flex flex-col gap-3">{back}<ErrorLine error={q.error} /></div>);
   if (!q.data) return <Loading>Reading the worker…</Loading>;
-  const { worker: w, holding, week, recent } = q.data;
+  const { holding, week, recent } = q.data;
+  // Their name as the list carries it (App's `useNames`): the route keeps none.
+  const name = props.workers?.find((x) => x.actor === props.actor)?.name;
+  const w: Worker = name ? { ...q.data.worker, name } : q.data.worker;
   const live = w.grants.filter((g) => g.revokedAt === undefined);
   const revoked = w.grants.filter((g) => g.revokedAt !== undefined);
   const grantable = (props.types ?? []).filter((t) => !live.some((g) => g.type === t.name));
@@ -194,6 +197,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       {back}
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-semibold">{whoOf(w)}</h2>
+        {w.name && w.name !== whoOf(w) && <span className="text-sm text-muted-foreground">{w.name}</span>}
         <StatusBadge status={w.status} />
         <span className="font-mono text-xs break-all text-muted-foreground">{w.actor}</span>
       </div>

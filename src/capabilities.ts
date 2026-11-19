@@ -4,6 +4,7 @@ import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
 import type { HistoryCapability } from "./history.js";
 import type { Channels } from "./channels.js";
+import type { AppDatabases } from "./apps/data.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -39,6 +40,7 @@ import {
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
+import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { HumanTasksCapability } from "./tasks/tasks.js";
 import type { TaskTypesCapability } from "./tasks/set-type.js";
@@ -442,6 +444,11 @@ export interface StrutCapabilities {
    *  between the people on an app. What the `channel/*` steps reach, for code
    *  an app runs (`ctx.app`). Set by the standard server. */
   channels?: Channels;
+  /** Every APP's own SQLite database (src/apps/data.ts; plans/apps.md §4.4):
+   *  `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on —
+   *  `ctx.app`'s, or the one a call with no app names. Set by the standard
+   *  server. */
+  appDb?: AppDatabases;
   /** The package STORE (src/packages/indexes.ts): the reads — `search`
    *  over the indexes this strut follows and the peers' installed packages,
    *  `get` a package's page, `concepts` / `concept` the Concept tree — what
@@ -475,6 +482,13 @@ export interface StrutCapabilities {
    *  wallet is set (`LIGHTNING_*`, `PUT /earnings/wallet`); a host's own
    *  wins. */
   lightning?: LightningCapability;
+  /** SENDING AS SUPPORT through the treasury's Sphinx daemon
+   *  (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts): `send`,
+   *  `delete`, `setPhoto` over its message token. NEVER on the shared bag:
+   *  only on a first-party page's call shown to an admin, and on a run such
+   *  an app launched (`support-outbox`). Not on an agent's tools, not on a
+   *  host's call. */
+  sphinx?: SphinxCapability;
   /** What this server earned (plans/paid-runs.md §8, src/payments/earnings.ts):
    *  the read `GET /earnings` answers, what the `earnings/read` step is thin
    *  over. Reads only: nothing on it pays — the payer is never on the bag. */

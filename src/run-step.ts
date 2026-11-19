@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { stepHashesFor } from "./closure.js";
-import type { AppRef, Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
+import type { AppRef, Flow, HostRef, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
 import type { RunController } from "./run-control.js";
@@ -86,6 +86,9 @@ export interface RunStepOptions {
    *  (`step_run`) stamp, the twin of `job` — `ctx.app` for the step, `app`
    *  on the kept run's summary. */
   app?: AppRef;
+  /** The HOST whose call this is (plans/people-and-hosts.md §3): `ctx.host`
+   *  for the step, set by the host's door alone. */
+  host?: HostRef;
   /** Who launched the run and who pays (see `RunOptions`). */
   actor?: string;
   principal?: string;
@@ -159,6 +162,7 @@ export async function runSingleStep(
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.branch ? { branch: opts.branch } : {}),
     ...(opts.app ? { app: opts.app } : {}),
+    ...(opts.host ? { hostCall: opts.host } : {}),
     ...(pkg ? { package: pkg } : {}),
     ...(opts.aiAuthored ? { aiAuthored: true } : {}),
     // Nothing would wake it: a single-step run is not kept to be resumed

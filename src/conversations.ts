@@ -45,7 +45,7 @@ import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type Proposal, type ProposalBrief } from "./proposals.js";
-import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
+import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, hostOfSession, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
 import { localRuns, type RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
 
@@ -217,6 +217,10 @@ export interface ConversationListItem extends Omit<ConversationEntry, "jobs"> {
   /** Listed because it is SHARED, not the viewer's yet: opening it makes it
    *  theirs. Never unread. */
   team?: true;
+  /** A HOST's conversation (`host/<name>/…`, plans/jamie-in-tribes.md §5.1):
+   *  the host's name. Only that host takes a turn in it; a person forks it
+   *  to continue. */
+  host?: string;
 }
 
 /** A job as a list row shows it. */
@@ -391,6 +395,9 @@ export interface Conversations extends ConversationsCapability {
   /** The record on file, or null: never built here, so a session that is
    *  no conversation costs a file read (the graph projection's reader). */
   record(id: string): Promise<ConversationRecord | null>;
+  /** What the job run(s) a wake woke on delivered: a wake turn's
+   *  `delivered`, on the index and on its `run.end` alike. */
+  delivered(mark: WakeMark): Promise<Delivery[]>;
   /** May `actor` take a turn in `id`, a session that is not under their own
    *  id (plans/jamie-app.md §2.2)? `true` when it is a conversation they
    *  took a turn in, or a shared one; `false` when it is a conversation
@@ -430,9 +437,11 @@ async function writeJson(file: string, value: unknown): Promise<void> {
 }
 
 const keyOf = (by: ConversationViewer) => by.actor ?? "";
-const isOwn = (id: string, actor: string | undefined) => !!actor && (id === actor || id.startsWith(`${actor}/`));
-/** The actor an id is under (`<actor>/…`): listed for them. */
-const ownerOf = (id: string) => (id.includes("/") ? id.slice(0, id.indexOf("/")) : undefined);
+/** A host's conversation (`host/<name>/…`) is nobody's own: the host opened
+ *  it, and it is listed for each person who took a turn in it. */
+const isOwn = (id: string, actor: string | undefined) => !!actor && !hostOfSession(id) && (id === actor || id.startsWith(`${actor}/`));
+/** The actor an id is under (`<actor>/…`): listed for them. None for a host's. */
+const ownerOf = (id: string) => (id.includes("/") && !hostOfSession(id) ? id.slice(0, id.indexOf("/")) : undefined);
 
 function factsOf(rec: ConversationRecord): Omit<ConversationEntry, "archived" | "seenAt"> {
   const last = rec.turns[rec.turns.length - 1];
@@ -616,11 +625,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     return itemOf(idx?.conversations[rec.id] ?? factsOf(rec));
   };
 
-  const itemOf = ({ jobs: _jobs, ...e }: ConversationEntry): ConversationListItem => ({
-    ...e,
-    unread: !e.seenAt || e.seenAt < e.updatedAt,
-    ...(deps.running(e.id) ? { running: true as const } : {}),
-  });
+  const itemOf = ({ jobs: _jobs, ...e }: ConversationEntry): ConversationListItem => {
+    const host = hostOfSession(e.id);
+    return {
+      ...e,
+      unread: !e.seenAt || e.seenAt < e.updatedAt,
+      ...(deps.running(e.id) ? { running: true as const } : {}),
+      ...(host ? { host } : {}),
+    };
+  };
 
   /** The jobs a conversation's turns started or continued, in turn order.
    *  Read from this disk only: it runs for every listed record with none
@@ -801,6 +814,8 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     record: conversationRecords(deps.dataDir).record,
+
+    delivered: deliveredBy,
 
     async all() {
       await ensureBuilt();
