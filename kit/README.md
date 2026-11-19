@@ -98,7 +98,9 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `public: true`, `runnable` — the granted workflows a VISITOR may start —
   and `results`, what it reads of the runs it launched of each (`output`:
   `useRun` and the declared files; `run`: everything) — read off the
-  document's `strut-public-view` and `strut-public-runnable` metas. A priced
+  document's `strut-public-view` and `strut-public-runnable` metas; and
+  everywhere `name`, the server's name when a person gave it one (its
+  brand's, the `strut-name` meta: the employer a worker works for). A priced
   one's host pays before the launch returns (`plans/paid-runs.md` §10,
   specs/API.md §17.6), so `run/launch` waits up to `LAUNCH_TIMEOUT_MS` (15
   minutes); a host that cannot pay leaves a `{ payment_required }` result,

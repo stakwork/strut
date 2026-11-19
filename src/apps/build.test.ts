@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
+import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withPublicIdentity, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
 import { ACCOUNT_CORNERS, ACCOUNT_STYLES, APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, SCREENSHOT_MAX_BYTES, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
 import { ACCOUNT_CORNERS as KIT_CORNERS, ACCOUNT_STYLES as KIT_STYLES } from "@strut/kit/visitor";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
@@ -457,6 +457,12 @@ describe("the document's token", () => {
     const html = `<head>${TOKEN_PLACEHOLDER}</head>`;
     assert.equal(withToken(html, 'a"b<c'), '<head><meta name="strut-app-token" content="a&quot;b&lt;c"></head>');
     assert.equal(withoutTokenMeta(html), "<head></head>");
+    // The server's name (its brand's), escaped, beside whichever identity the document is served with.
+    const named = '<meta name="strut-name" content="Acme &amp; Co &lt;Labels&gt;">';
+    assert.equal(withToken(html, "t", "Acme & Co <Labels>"), `<head>${named}<meta name="strut-app-token" content="t"></head>`);
+    assert.equal(withoutTokenMeta(html, "Acme & Co <Labels>"), `<head>${named}</head>`);
+    assert.equal(withPublicIdentity(html, "v", [], "Acme & Co <Labels>"), `<head><meta name="strut-public-view" content="1">${named}<meta name="strut-app-token" content="v"></head>`);
+    assert.equal(withPublicIdentity(html, "v"), '<head><meta name="strut-public-view" content="1"><meta name="strut-app-token" content="v"></head>', "no name, no meta");
     const lint = lintAppSource('// eval("x") in a comment\n/* fetch(\n) */ const a = 1;\nconst b = window.fetch("/x");\n', "f.ts");
     assert.deepEqual(lint.errors, []);
     assert.deepEqual(lint.warnings, [], "a member call is not the global");

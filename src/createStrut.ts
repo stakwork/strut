@@ -4218,6 +4218,10 @@ export async function createStrut<TServices = unknown>(
   // writes it. Never a "publish": nothing is copied or versioned.
   // The public view reads this disk only: an anonymous caller walking a
   // public workflow's run ids must not be able to restore its whole archive.
+  /** This server's name (the brand's `name`, src/brand.ts), read per use: an
+   *  app document carries it (`<meta name="strut-name">`) and the invite page
+   *  says it. A brand file that does not read is no name. */
+  const serverName = async (): Promise<string | undefined> => (await readBrand(dataDir).catch(() => undefined))?.name;
   const publicSurface = createPublicSurface({
     dataDir,
     store: localStore,
@@ -4321,6 +4325,7 @@ export async function createStrut<TServices = unknown>(
     ...(artifacts ? { artifacts } : {}),
     fileHeaders: (path) => artifactHeaders(path),
     documentHeaders: (path) => artifactHeaders(path, true),
+    serverName,
     liveStatus,
     apps: {
       info: publicAppInfo,
@@ -4340,7 +4345,7 @@ export async function createStrut<TServices = unknown>(
           const item = surface.runnable.find((r) => r.kind === "workflow" && r.name === full);
           if (item) runnable.push({ name: g, results: item.results === "run" ? "run" : "output" });
         }
-        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable, await serverName()) };
       },
     },
     // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
@@ -4666,7 +4671,8 @@ export async function createStrut<TServices = unknown>(
       const html = Buffer.from(bytes).toString("utf8");
       const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
       const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
-      const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
+      const name = await serverName();
+      const served = identity ? withToken(html, identity, name) : withoutTokenMeta(html, name);
       // The same bytes every time a version is served (the identity is a
       // signature of it, not a nonce), so a host keeps them and asks again
       // with If-None-Match: a rebuild, a rotated key or another version

@@ -6,7 +6,7 @@
  *  `@strut/kit/bootstrap`; Node-side helpers for the app build are
  *  `@strut/kit/node`. */
 export {
-  STEP_RUN_TOOL, REPORT_ERROR_STEP, LAUNCH_TIMEOUT_MS, StrutError, appOfToken, createBridgeClient, unwrapToolResult, PUBLIC_VIEW_META, isPublicView, PUBLIC_RUNNABLE_META, publicRunnable, publicRunnableItems, paymentRequiredOf,
+  STEP_RUN_TOOL, REPORT_ERROR_STEP, LAUNCH_TIMEOUT_MS, StrutError, appOfToken, createBridgeClient, unwrapToolResult, PUBLIC_VIEW_META, isPublicView, SERVER_NAME_META, serverName, PUBLIC_RUNNABLE_META, publicRunnable, publicRunnableItems, paymentRequiredOf,
   type AppIdentity, type PaymentRequired, type PublicResults, type StrutClient, type ToolCaller, type ToolResult,
 } from "./client.js";
 export {

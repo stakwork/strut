@@ -141,6 +141,16 @@ export const JOIN_PAGE = `<!doctype html>
 </html>
 `;
 
+/** The page for a server with a name (its brand's, src/brand.ts): "Acme
+ *  invites you", HTML-escaped, in its title and heading; without one,
+ *  `JOIN_PAGE` itself. The script is the same, so is its hash. */
+export function joinPage(name?: string): string {
+  const n = name?.trim();
+  if (!n) return JOIN_PAGE;
+  const said = `${n.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")} invites you`;
+  return JOIN_PAGE.replace("<title>You're invited</title>", `<title>${said}</title>`).replace("<h1>You're invited</h1>", `<h1>${said}</h1>`);
+}
+
 /** The page's headers: its own inline script alone (by hash) and the QR
  *  library beside it; the one request it makes, GitHub's release lookup. */
 export const JOIN_HEADERS: Readonly<Record<string, string>> = Object.freeze({

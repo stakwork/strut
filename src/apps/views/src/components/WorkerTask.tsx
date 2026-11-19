@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { ACCENT_BUTTON, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
 import { useWorkerWords, type WorkerWords } from "../lib/words";
+import { workerHeading } from "../lib/heading";
 
 // The pieces of a WORKER app (plans/human-steps.md §5): what a task asks,
 // the photos an answer carries, the answer's form, and a whole page that
@@ -330,10 +331,12 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
 export interface WorkerPageProps {
   /** One task type alone on the dashboard; left out, every type this app draws. */
   type?: string;
-  /** The app's name, in the header: "Tasks" in the page's language without one. */
+  /** The app's name, in the header: without one, the server's name (the
+   *  employer, `useHost().name`) when it has one, else "Tasks" in the page's
+   *  language. */
   title?: string;
-  /** The header's second line: what the work is, in a few words ("Do tasks ·
-   *  get paid" without one; "" for none). */
+  /** The header's second line: what the work is, in a few words ("Tasks"
+   *  under the server's name; else "Do tasks · get paid"; "" for none). */
   subtitle?: string;
   /** The header's mark (a lucide icon); a briefcase without one. */
   icon?: ReactNode;
@@ -376,12 +379,13 @@ interface Sent {
  */
 export function WorkerPage({ type, title: named, subtitle: line, icon, intro, everyApp = false, className }: WorkerPageProps) {
   const w = useWorkerWords();
-  const title = named ?? w.title;
-  const subtitle = line ?? w.subtitle;
   const visitor = useVisitor();
   const account = useAccountWidget();
   const here = useApp()?.name;
   const host = useHost();
+  // Whose work this is: the server's name (the employer) heads a page that
+  // names itself nothing, "Tasks" under it.
+  const { title, subtitle } = workerHeading({ named, line, server: host.name, words: w });
   // A member's or an admin's page — the app in their assistant's chat, or
   // strut's own UI — is not the public view: strut knows who is looking
   // already, and `task/me` says who. Only a visitor signs in on the page.

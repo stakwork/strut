@@ -2995,7 +2995,7 @@ change shows the next time a page loads.
 
 ```
 GET /brand          any credential
-PUT /brand          full scope: { color?, colorDark?, radius?, font? }
+PUT /brand          full scope: { name?, color?, colorDark?, radius?, font? }
 ```
 
 Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
@@ -3005,6 +3005,7 @@ left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
 
 | Field | What | Sent as (light and dark) |
 |---|---|---|
+| `name` | who this server is to the people who use it — the employer a worker works for, the org: plain text, 1 to 60 characters. Not a style, so `styles` ignores it | each app document as it is served (`<meta name="strut-name">`, the kit's `useHost().name`): Tasks heads its page with it, "Tasks" under it; strut's host signs a visitor in, and a native host (Peel) keeps the connection, under it; the invite page (`/public/join`) says "‹name› invites you" |
 | `color` | `#rrggbb` (or `#rgb`): primary buttons, the selected item, focus rings | `--color-background-inverse`, `--color-ring-primary`, and `--color-text-inverse`: near-black or white, whichever reads better on it |
 | `colorDark` | the color in the dark theme; `color` when unset (and the reverse) | the same, in the dark theme |
 | `radius` | a length in `px`, `rem` or `em` (`0.5rem`) | `--border-radius-md` |
@@ -4187,7 +4188,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12). Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a

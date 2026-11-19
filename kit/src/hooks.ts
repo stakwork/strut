@@ -6,7 +6,7 @@ import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
+import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, serverName, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
@@ -1751,6 +1751,10 @@ export interface UseHost {
    *  `useRunEvents`, `useWorkProducts` and a run timeline are refused — or
    *  `run`, everything. */
   results: Readonly<Record<string, PublicResults>>;
+  /** The strut server's name, when a person gave it one (its brand): who
+   *  the server is to the people who use it — the employer a worker works
+   *  for. Put it where a page says whose it is. */
+  name?: string;
 }
 
 /** The host behind the page: theme, display mode, locale, and the two
@@ -1770,6 +1774,10 @@ export function useHost(): UseHost {
       openLink: (url: string) => host.openLink(url),
       requestDisplayMode: (mode: DisplayMode) => host.requestDisplayMode(mode),
       public: isPublicView(),
+      ...(() => {
+        const name = serverName();
+        return name ? { name } : {};
+      })(),
       ...(() => {
         const items = publicRunnableItems();
         return { runnable: items.map((i) => i.name), results: Object.fromEntries(items.map((i) => [i.name, i.results])) };

@@ -4,7 +4,7 @@ import { formats } from "@strut/kit/folds";
 import { ACCOUNT_CORNERS } from "@strut/kit/visitor";
 import { HOST_WORDS } from "./words";
 import {
-  appIdentityOf, createPlacementController, creditOf, initialState, parsePlacement, PLACEMENT_INTERVAL_MS, workerOf,
+  appIdentityOf, createPlacementController, creditOf, initialState, parsePlacement, PLACEMENT_INTERVAL_MS, serverNameOf, workerOf,
 } from "./account-widget";
 
 /** A controller on a clock and timers the test drives. */
@@ -125,6 +125,12 @@ describe("what the panel shows", () => {
   it("reads the app's identity out of its document, unescaped", () => {
     assert.equal(appIdentityOf('<head><meta name="strut-app-token" content="a&amp;b&quot;c"></head>'), 'a&b"c');
     assert.equal(appIdentityOf("<head></head>"), undefined);
+  });
+
+  it("reads the server's name out of its document, unescaped: what a visitor signs in to", () => {
+    assert.equal(serverNameOf('<head><meta name="strut-name" content="Acme &amp; Co &lt;Labels&gt;"><meta name="strut-app-token" content="t"></head>'), "Acme & Co <Labels>");
+    assert.equal(serverNameOf("<head></head>"), undefined);
+    assert.equal(serverNameOf('<meta name="strut-name" content="  ">'), undefined);
   });
 
   it("reads credit, and reads a worker's balance — nothing for what is not one", () => {
