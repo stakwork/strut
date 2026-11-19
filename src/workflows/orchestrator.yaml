@@ -298,6 +298,13 @@ params:
     # workflow's (remote/run-workflow): a turn never waits on one.
     - remote/list
     - remote/buy-credit
+    # Work by people (Concept "Worker Tasks"): the task types, how the work
+    # is going (spend against its limits, what each worker did) answered
+    # inside the turn, and a worker given a type's work on an admin's yes
+    # (task/grant is a proposal, below) — never an app built for any of it.
+    - task/types
+    - task/report
+    - task/grant
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: app/grant (an
@@ -313,6 +320,7 @@ params:
     - package/install
     - package/commit
     - remote/buy-credit
+    - task/grant
   # The WAKE (src/wake.ts, plans/jamie-app.md §1): when a job this
   # conversation started ends, strut runs one more turn on its session with
   # this as the prompt, so the reply — and the question — reaches this agent

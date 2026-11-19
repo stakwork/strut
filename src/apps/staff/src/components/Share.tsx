@@ -72,6 +72,7 @@ function ShareBody(props: Shared & { heading?: ReactNode }) {
         <Note>Workers do {tasks || "their tasks"} on their phone. Send each of them a way in.</Note>
       </div>
       <InviteMaker app={props.app} invited={props.invited ?? []} />
+      <GrantLinkMaker app={props.app} invited={props.invited ?? []} />
       <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-start sm:gap-5">
         {share.qrSvg && <Qr svg={share.qrSvg} label="QR code: opens the worker page in Peel" />}
         <div className="flex min-w-0 flex-1 flex-col gap-3">
@@ -186,6 +187,35 @@ function InviteMaker(props: { app: string; invited: string[] }) {
       {"problem" in sats && <Note className="text-destructive">{sats.problem}</Note>}
       <ErrorLine error={error ?? q.error} />
       {shown && <MadeCard invite={shown} />}
+    </div>
+  );
+}
+
+/** A link for someone who already has Peel: one person, no sats, and the
+ *  app's invite-only work theirs when they open it. */
+function GrantLinkMaker(props: { app: string; invited: string[] }) {
+  const client = useStrutClient();
+  const { act, busy, error } = useAct();
+  const [made, setMade] = useState<{ peelLink: string } | null>(null);
+  const make = async () => {
+    const out = await act("grant-link", () => client.run<{ peelLink: string }>("staff/grant-link", { app: props.app }));
+    if (out) setMade(out);
+  };
+  return (
+    <div className="flex flex-col gap-2" data-testid="grant-link-maker">
+      <h4 className="flex items-center gap-2 text-sm font-medium">
+        <UserPlus className="size-4 text-muted-foreground" /> Someone who already has Peel
+      </h4>
+      <Note>
+        A link for one person who has Peel already: it opens the worker page in Peel{props.invited.length ? ` with ${tasksWords(props.invited)} theirs` : ""}. No new account, and no sats spent.
+      </Note>
+      <div>
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void make()}>
+          {busy === "grant-link" ? "Making it…" : "Make a link for someone with Peel"}
+        </Button>
+      </div>
+      <ErrorLine error={error} />
+      {made && <CopyLine label="Link for Peel" value={made.peelLink} hint="Send it to them. The first person who opens it gets the work; it gives nothing to anyone after." />}
     </div>
   );
 }

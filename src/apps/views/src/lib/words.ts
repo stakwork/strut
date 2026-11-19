@@ -113,6 +113,7 @@ export type WorkerWords = typeof en;
 const REFUSED_ES: Record<string, string> = {
   not_active: "Un administrador decide quién hace las tareas aquí.",
   not_granted: "No tienes este tipo de trabajo. Un administrador decide quién lo hace.",
+  limit_reached: "Llegaste al límite de este trabajo por ahora. Vuelve más tarde.",
   type_disabled: "Este tipo de trabajo está apagado por ahora.",
   unknown_type: "Este tipo de trabajo ya no existe aquí.",
   wrong_app: "Esta tarea se hace en otra app.",

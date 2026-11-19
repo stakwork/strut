@@ -878,7 +878,8 @@ const HISTORY_QUERY_KEY = ["strut", "task", "history"] as const;
 /** How long `useTask` holds one `task/next`: the server's most. */
 export const TASK_WAIT_S = 25;
 /** After a refused or failed `task/next`, the next waits this long; a worker
- *  who may take nothing here (`not_active`, `not_granted`) waits longer. */
+ *  who may take nothing here (`not_active`, `not_granted`, `limit_reached`)
+ *  waits longer. */
 const TASK_RETRY_MS = 5_000;
 const TASK_INACTIVE_RETRY_MS = 30_000;
 
@@ -1037,7 +1038,7 @@ export interface WorkerInfo {
  *  `lease_expired`, …), or undefined. */
 export function taskErrorCode(err: unknown): string | undefined {
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return /\b(not_active|not_granted|wrong_app|lease_held|no_lease|lease_closed|lease_expired|task_closed|too_many|unknown_type|type_disabled|bad_answer|bad_request|not_listed|no_file)\b:/.exec(message)?.[1];
+  return /\b(not_active|not_granted|limit_reached|wrong_app|lease_held|no_lease|lease_closed|lease_expired|task_closed|too_many|unknown_type|type_disabled|bad_answer|bad_request|not_listed|no_file)\b:/.exec(message)?.[1];
 }
 
 /** Refusals after which the task in hand is no longer the worker's. */
@@ -1128,7 +1129,8 @@ export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
           if (stopped) return;
           const err = e instanceof Error ? e : new Error(String(e));
           const code = taskErrorCode(err);
-          const inactive = code === "not_active" || code === "not_granted";
+          // A type's limit (its budget, the worker's day) waits like no grant.
+          const inactive = code === "not_active" || code === "not_granted" || code === "limit_reached";
           setError(err);
           setStatus(inactive ? "inactive" : "error");
           await pause(inactive ? TASK_INACTIVE_RETRY_MS : TASK_RETRY_MS);

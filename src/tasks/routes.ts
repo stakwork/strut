@@ -159,6 +159,9 @@ export interface TaskRoutesDeps {
 const PAYOUT_STATUS: Partial<Record<PayoutErrorCode, 400 | 404 | 409>> = { bad_request: 400, unknown_payout: 404 };
 const PAYOUT_KEY = /^[0-9a-f]{64}$/;
 
+/** A grant's worker `@me`: the person granting, to try the work themself. */
+export const ME = "@me";
+
 const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   bad_request: 400,
   bad_schema: 400,
@@ -303,6 +306,15 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
     }),
   );
 
+  // A grant link for someone who already has Peel: no Sphinx invite, no sats.
+  app.post("/tasks/invites/link", (c) =>
+    inviteAnswer(c, async (i, base) => {
+      const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (b["app"] !== undefined && typeof b["app"] !== "string") throw new TaskError("bad_request", "app is an app's name");
+      return { ...(await i.grantLink({ base, ...(b["app"] ? { app: b["app"] as string } : {}) })) };
+    }),
+  );
+
   app.get("/tasks/invites", (c) => inviteAnswer(c, async (i, base) => ({ ...(await i.list({ base, ...(c.req.query("app") ? { app: c.req.query("app")! } : {}) })) })));
 
   app.post("/tasks/invites/:code/cancel", (c) => inviteAnswer(c, async (i) => ({ ...(await i.cancel(c.req.param("code") ?? "")) })));
@@ -322,13 +334,16 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["open"] !== undefined ? { open: b["open"] as boolean } : {}),
         ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
+        ...(b["limits"] !== undefined ? { limits: b["limits"] as { budgetSats?: number; perWorkerDay?: number } | null } : {}),
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
         ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
         ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
         ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
       };
-      return { type: await tasks.setType(c.req.param("name"), input, (await by(c)).by) };
+      // The admin saving a new invite-only type holds it, to try it.
+      const who = (await by(c)).by;
+      return { type: await tasks.setType(c.req.param("name"), input, who, { holders: [who] }) };
     }),
   );
 
@@ -399,6 +414,18 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
   });
 
   // The queue (§9.4), before `/tasks/:id`.
+  // Each type's spend against its limits, and what each worker did of it
+  // in the last `days` (the staff's numbers; `task/report` reads the same).
+  app.get("/tasks/numbers", async (c) => {
+    const missing = await lacks(c, "numbers", "numbers");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const type = c.req.query("type") || undefined;
+      const days = c.req.query("days");
+      return { types: await tasks.numbers({ ...(type ? { type } : {}), ...(days ? { days: Number(days) } : {}) }) };
+    });
+  });
+
   app.get("/tasks/stats", async (c) => {
     const missing = await lacks(c, "stats", "queue counts");
     if (missing) return missing;
@@ -446,7 +473,11 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       for (const k of Object.keys(parsed)) if (k !== "qualify") throw new TaskError("bad_request", `a grant's body is { qualify }, not ${k}`);
       const q = (parsed as { qualify?: unknown }).qualify;
       if (q !== undefined && typeof q !== "boolean") throw new TaskError("bad_request", "qualify is true or false");
-      const { notice, ...worker } = await tasks.grant(c.req.param("actor"), c.req.param("type"), (await by(c)).by, q === undefined ? {} : { qualify: q });
+      // `@me`: the admin granting it to themself, to try the work as they are signed in.
+      const named = c.req.param("actor");
+      const actor = named === ME ? await deps.actorOf(c) : named;
+      if (!actor) throw new TaskError("bad_request", "@me needs a signed-in person");
+      const { notice, ...worker } = await tasks.grant(actor, c.req.param("type"), (await by(c)).by, q === undefined ? {} : { qualify: q });
       return { worker, ...(notice ? { notice } : {}) };
     }),
   );

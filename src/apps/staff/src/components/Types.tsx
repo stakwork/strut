@@ -19,7 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { answerOfDraft, draftOf, saveOf, shapeChanged, type Draft, type GradeDraft } from "../lib/draft";
 import { liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
-import type { TaskStats, TaskType, Worker } from "../lib/types";
+import type { TaskStats, TaskType, TypeNumbers, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
 import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { TypeShareLine } from "./Share";
@@ -323,6 +323,12 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <Field label="Hold, hours" htmlFor="type-hold" hint="How long an earning waits before it can be withdrawn: 0 (none, at once) to 720. A failed test or a take-back inside it loses the earning.">
               <Input id="type-hold" type="number" min={0} max={720} value={d.holdHours} onChange={(e) => set({ holdHours: e.target.value })} />
             </Field>
+            <Field label="Budget, sats" htmlFor="type-budget" hint="The most this task pays in all. Once it is spent, no more is handed out. Empty: no budget beyond the wallet.">
+              <Input id="type-budget" type="number" min={0} step="any" value={d.budgetSats} onChange={(e) => set({ budgetSats: e.target.value })} placeholder="no budget" />
+            </Field>
+            <Field label="Most a worker does a day" htmlFor="type-day" hint="Tasks of this type one worker takes in a day (UTC). Empty: no limit.">
+              <Input id="type-day" type="number" min={1} step={1} value={d.perWorkerDay} onChange={(e) => set({ perWorkerDay: e.target.value })} placeholder="no limit" />
+            </Field>
           </div>
         </Section>
       )}
@@ -404,8 +410,17 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
       </div>
       <ErrorLine error={error} />
 
+      {was && <TypeNumbersSection type={was.name} paySats={was.paySats} workers={props.workers} go={props.go} />}
+
       {was && (
-        <Section title="Workers who hold it">
+        <Section
+          title="Workers who hold it"
+          aside={
+            <Button size="sm" variant="outline" disabled={busy !== null} title="Grant it to yourself, as you are signed in here, to do one in the worker page" onClick={() => void act("grant", () => client.run("staff/grant", { actor: "@me", type: was.name }))}>
+              Try it yourself
+            </Button>
+          }
+        >
           {holders.length === 0 ? (
             <Note>{was.open ? "Nobody holds it yet: it is open, so a worker holds it from their first ask." : "Nobody holds it: no worker can take its tasks."}</Note>
           ) : (
@@ -448,6 +463,54 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         </Section>
       )}
     </div>
+  );
+}
+
+/** A type's numbers: what it has paid against its budget, and what each
+ *  worker did of it in the last 7 days. */
+function TypeNumbersSection(props: { type: string; paySats?: number; workers?: Worker[]; go: (p: Place) => void }) {
+  const client = useStrutClient();
+  const numbers = useQuery({ queryKey: ["staff", "numbers", props.type], queryFn: () => client.run<{ types: TypeNumbers[] }>("staff/numbers", { type: props.type }), refetchInterval: 60_000 });
+  const n = numbers.data?.types[0];
+  if (!n) return null;
+  const named = new Map((props.workers ?? []).map((w) => [w.actor, whoOf(w)]));
+  const sats = (v: number) => `${v.toLocaleString("en-US", { maximumFractionDigits: 3 })} sats`;
+  const budget = n.limits?.budgetSats;
+  return (
+    <Section title={`How it's going: last ${n.days} days`}>
+      <Note>
+        {props.paySats ? `Paid ${sats(n.spentSats)} in all${n.workingSats ? `, ${sats(n.workingSats)} more on tasks being done` : ""}${budget !== undefined ? ` of a ${sats(budget)} budget` : ""}. ` : ""}
+        {n.answered} answered in the last {n.days} days{n.limits?.perWorkerDay ? `; at most ${n.limits.perWorkerDay} a worker a day` : ""}.
+      </Note>
+      {n.workers.length > 0 && (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Worker</TableHead>
+              <TableHead className="text-right">Answered</TableHead>
+              <TableHead className="text-right">Time</TableHead>
+              <TableHead className="text-right">Per hour</TableHead>
+              <TableHead className="text-right">Earned</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {n.workers.map((w) => (
+              <TableRow key={w.worker}>
+                <TableCell>
+                  <button type="button" className="underline-offset-2 hover:underline" onClick={() => props.go({ tab: "workers", worker: w.worker })}>
+                    {named.get(w.worker) ?? w.worker}
+                  </button>
+                </TableCell>
+                <TableCell className="text-right">{w.answered}</TableCell>
+                <TableCell className="text-right">{w.workMinutes >= 60 ? `${Math.floor(w.workMinutes / 60)} h ${w.workMinutes % 60} min` : `${w.workMinutes} min`}</TableCell>
+                <TableCell className="text-right">{w.perHour ?? "—"}</TableCell>
+                <TableCell className="text-right">{sats(w.earnedSats)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Section>
   );
 }
 

@@ -120,6 +120,7 @@ import {
   type TestInstance,
   type TestRecord,
   type TestRules,
+  type LimitRule,
 } from "./task-store.js";
 import { gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
@@ -129,6 +130,7 @@ import { MAX_ATTACHMENTS, type Attachment } from "../ai/attachments.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
 export type { AnswerSchema } from "./answer-schema.js";
+export type { LimitRule, LeaseTotals } from "./task-store.js";
 export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
@@ -281,7 +283,8 @@ export type TaskErrorCode =
   | "bad_grader"
   | "no_answer"
   | "final"
-  | "not_answered";
+  | "not_answered"
+  | "limit_reached";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -349,9 +352,12 @@ export interface TaskTypeInput {
   /** What one accepted answer earns, in sats to the msat (§8.1), at most
    *  `PAY_SATS_MAX`; absent or 0: unpaid. */
   paySats?: number;
-  /** How long an earning waits before it can be withdrawn: hours from 1 to
-   *  720, 72 by default. */
+  /** How long an earning waits before it can be withdrawn: hours from 0 to
+   *  720, 0 (none) by default. */
   holdHours?: number;
+  /** Its budget and per-worker daily cap (`LimitRule`), checked whenever a
+   *  task of it is handed out; absent or null: none. */
+  limits?: LimitRule | null;
   /** Its test rules (§7.2, §7.5): §7.8's defaults with these over them;
    *  absent or null: off. */
   tests?: Partial<TestRules> | null;
@@ -667,6 +673,23 @@ export function percentiles(xs: readonly number[]): Percentiles | undefined {
   return { p50: at(0.5), p90: at(0.9) };
 }
 
+/** A type's numbers (`numbers`): what it has paid in all (`spentSats`,
+ *  answered, and `workingSats` on the leases being worked) against its
+ *  limits, and what each worker did of it in the last `days`. */
+export interface TypeNumbers {
+  type: string;
+  title?: string;
+  enabled: boolean;
+  open: boolean;
+  paySats?: number;
+  limits?: LimitRule;
+  spentSats: number;
+  workingSats: number;
+  days: number;
+  answered: number;
+  workers: Array<{ worker: string; answered: number; workMinutes: number; perHour?: number; earnedSats: number }>;
+}
+
 export interface TasksCapability {
   /** The `human` step's: the task keyed by workflow, run and path, made
    *  when there is none (rule 1). A settled task comes with what its
@@ -725,7 +748,10 @@ export interface TasksCapability {
   /** Saves the whole type (a PUT: what is left out is the default — unpaid,
    *  a 72-hour hold). A change of pay reaches the next lease taken, never one
    *  in hand (§8.1). */
-  setType(name: string, input: TaskTypeInput, by?: string): Promise<TaskType>;
+  /** `holders`: the people who made it — whoever asked for it and the
+   *  admin who saved it. A NEW invite-only type is theirs from the start
+   *  (granted, no qualifying), so they can try it at once. */
+  setType(name: string, input: TaskTypeInput, by?: string, o?: { holders?: Array<string | undefined> }): Promise<TaskType>;
   /** Removes a type no open task is of (`in_use` otherwise: turn it off
    *  and let them settle), and revokes its live grants. Its tasks on file
    *  keep its name. */
@@ -749,6 +775,10 @@ export interface TasksCapability {
   /** §9.4: each type's queue (one type with `type`), and the workers across
    *  them. Computed on read. */
   stats(q?: { type?: string }): Promise<TaskStats>;
+  /** Each type's (one with `type`) spend against its limits, and what each
+   *  worker did of it in the last `days` (7 by default, at most 90):
+   *  answered, time on them, earned. Computed on read. */
+  numbers(q?: { type?: string; days?: number }): Promise<TypeNumbers[]>;
   /** §9.4: what one worker holds and did; undefined for nobody here. */
   activity(actor: string): Promise<WorkerActivity | undefined>;
   /** §9.4: one of a task's files, as `file` answers it, read by staff
@@ -1056,11 +1086,17 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (types.includes(live.type)) return { got: await workerTask(s, live), types };
       throw new TaskError("lease_held", `you hold a task of type ${live.type}; answer or skip it first`);
     }
+    // A type's limits (its budget, one worker's day) hold for every task
+    // handed out: a type at one is left out, and when every type the ask
+    // reaches is, the worker is told why.
+    const limited = await limitsReached(s, actor, types.map((n) => kinds.get(n)!), at);
+    const free = types.filter((n) => !limited.has(n));
+    if (types.length && !free.length) throw new TaskError("limit_reached", [...limited.values()][0]!);
     // §7.2: a type with tests serves the worker by where they are with it —
     // a qualifying one only tests, oldest grant first; one waiting for its
     // qualifying grades nothing; a qualified one real tasks, a test drawn in
     // place of one at the type's rate.
-    const { qualifying, open, rows } = await phases(s, w, types.map((n) => kinds.get(n)!));
+    const { qualifying, open, rows } = await phases(s, w, free.map((n) => kinds.get(n)!));
     for (const type of qualifying) {
       const got = await s.tasks.takeTest({ worker: actor, type, lease: randomId(), task: randomId(), now: at, pick });
       if (got) return { got: await workerTask(s, got), types };
@@ -1098,6 +1134,29 @@ export function createTasks(deps: TasksDeps): TasksService {
     // Another call of the same worker may have taken one meanwhile.
     const raced = await s.tasks.heldBy(actor, at);
     return raced && types.includes(raced.type) ? { got: await workerTask(s, raced), types } : { types };
+  };
+  /** The types among `kinds` that `actor` may not be handed a task of now,
+   *  each with why: its `perWorkerDay` done today (UTC), or its budget too
+   *  small for one more answer's pay. */
+  const limitsReached = async (s: TaskStores, actor: string, kinds: TaskType[], at: number): Promise<Map<string, string>> => {
+    const out = new Map<string, string>();
+    const capped = kinds.filter((k) => k.limits?.perWorkerDay !== undefined);
+    if (capped.length) {
+      const today = await s.tasks.totals({ types: capped.map((k) => k.name), worker: actor, since: at - (at % DAY_MS), now: at });
+      for (const k of capped) {
+        const r = today.find((x) => x.type === k.name);
+        if (r && r.answered + r.open >= k.limits!.perWorkerDay!) out.set(k.name, `you have done today's ${k.limits!.perWorkerDay} of ${k.title ?? k.name}; more tomorrow`);
+      }
+    }
+    const budgeted = kinds.filter((k) => k.limits?.budgetSats !== undefined && k.paySats);
+    if (budgeted.length) {
+      const all = await s.tasks.totals({ types: budgeted.map((k) => k.name), since: 0, now: at });
+      for (const k of budgeted) {
+        const spent = all.filter((x) => x.type === k.name).reduce((n, x) => n + x.payMsat + x.openPayMsat, 0);
+        if (spent + Math.round(k.paySats! * 1000) > Math.round(k.limits!.budgetSats! * 1000)) out.set(k.name, `${k.title ?? k.name} has used its budget: there is no more of this work`);
+      }
+    }
+    return out;
   };
   /** §7.2 step 2, §7.5: the types `w` may be served now — `qualifying` (tests
    *  alone, oldest grant first) and `open` (real tasks) — with the standing
@@ -1767,7 +1826,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       return s ? s.tasks.types() : [];
     },
 
-    async setType(name, input, by) {
+    async setType(name, input, by, o = {}) {
       if (typeof name !== "string" || name.length > TYPE_NAME_MAX || !TYPE_NAME_RE.test(name)) {
         throw new TaskError("bad_request", `a task type's name is lowercase letters, digits, ".", "_" and "-", segments joined by "/", at most ${TYPE_NAME_MAX} characters (got ${JSON.stringify(name)})`);
       }
@@ -1784,6 +1843,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const open = input.open ?? true;
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
+      const limits = limitsOk(input.limits);
       const title = titleOk(input.title);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
       const copies = ruled(() => copiesRuleOf(input.copies, graderProblem));
@@ -1792,6 +1852,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const round = await roundRuleOf(name, input.round);
       if (standing && round) throw new TaskError("bad_request", "a task type is standing (a worker's ask makes its task) or sent in rounds (a workflow makes one for each item), never both");
       const s = await stores();
+      const existed = await s.tasks.type(name);
       // Ruling 12: whether a paid open type qualifies newcomers is the
       // admin's; nothing here refuses one for want of tests.
       const saved = await s.tasks.putType({
@@ -1805,6 +1866,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         open,
         ...(paySats ? { paySats } : {}),
         holdHours,
+        ...(limits ? { limits } : {}),
         ...(tests ? { tests } : {}),
         ...(copies ? { copies } : {}),
         ...(attachments ? { attachments } : {}),
@@ -1813,6 +1875,15 @@ export function createTasks(deps: TasksDeps): TasksService {
         changedAt: now(),
         ...(by === undefined ? {} : { changedBy: by }),
       });
+      // A new invite-only type is its makers' from the start, so "try it"
+      // works the moment it is saved (an open one needs no grant).
+      if (!existed && !open) {
+        const at = now();
+        for (const actor of new Set(o.holders ?? [])) {
+          if (typeof actor !== "string" || !actor || actor.length > 200) continue;
+          await s.workers.grant(actor, name, by ?? actor, at, 0);
+        }
+      }
       // Turned on, or now drawn by another app: what a waiter may take changed.
       wakeAll();
       return saved;
@@ -1909,6 +1980,42 @@ export function createTasks(deps: TasksDeps): TasksService {
       const s = await storesIfAny();
       const t = s && (await s.tasks.task(id));
       return t ? (await views(s, [t]))[0] : undefined;
+    },
+
+    async numbers(q = {}) {
+      if (q.type !== undefined && typeof q.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+      const days = q.days ?? 7;
+      if (!Number.isSafeInteger(days) || days < 1 || days > 90) throw new TaskError("bad_request", "days is a whole number from 1 to 90");
+      const at = now();
+      const s = await storesIfAny();
+      const kinds = s ? (await s.tasks.types()).filter((k) => q.type === undefined || k.name === q.type) : [];
+      if (q.type !== undefined && !kinds.length) throw new TaskError("unknown_type", `no task type ${q.type} here`);
+      if (!s || !kinds.length) return [];
+      const names = kinds.map((k) => k.name);
+      const [all, recent] = await Promise.all([s.tasks.totals({ types: names, since: 0, now: at }), s.tasks.totals({ types: names, since: at - days * DAY_MS, now: at })]);
+      const sats = (msat: number) => Math.round(msat) / 1000;
+      return kinds.map((k): TypeNumbers => {
+        const mine = recent.filter((r) => r.type === k.name && r.answered > 0);
+        const ofAll = all.filter((r) => r.type === k.name);
+        return {
+          type: k.name,
+          ...(k.title ? { title: k.title } : {}),
+          enabled: k.enabled,
+          open: k.open,
+          ...(k.paySats ? { paySats: k.paySats } : {}),
+          ...(k.limits ? { limits: k.limits } : {}),
+          spentSats: sats(ofAll.reduce((n, r) => n + r.payMsat, 0)),
+          workingSats: sats(ofAll.reduce((n, r) => n + r.openPayMsat, 0)),
+          days,
+          answered: mine.reduce((n, r) => n + r.answered, 0),
+          workers: mine
+            .map((r) => {
+              const workMinutes = Math.round(r.workMs / 60_000);
+              return { worker: r.worker, answered: r.answered, workMinutes, ...(r.workMs >= 60_000 ? { perHour: Math.round((r.answered * HOUR_MS) / r.workMs) } : {}), earnedSats: sats(r.payMsat) };
+            })
+            .sort((a, b) => b.answered - a.answered),
+        };
+      });
     },
 
     async stats(q = {}) {
@@ -2569,6 +2676,7 @@ function hours(v: unknown): number {
 }
 
 const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
 
 /** A type's pay: sats to the msat, 0 to `PAY_SATS_MAX`; 0 (or none) is unpaid. */
 function payOk(v: unknown): number | undefined {
@@ -2595,6 +2703,33 @@ function holdOk(v: unknown): number {
     throw new TaskError("bad_request", `holdHours is a number of hours from ${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}: how long earnings wait before they can be withdrawn`);
   }
   return v;
+}
+
+/** A type's limits: `budgetSats` 0 to `BUDGET_SATS_MAX` (sats to the
+ *  msat), `perWorkerDay` a whole number from 1; neither: none. */
+export const BUDGET_SATS_MAX = 1_000_000_000;
+export const PER_WORKER_DAY_MAX = 100_000;
+function limitsOk(v: unknown): LimitRule | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object" || Array.isArray(v)) throw new TaskError("bad_request", "limits is { budgetSats?, perWorkerDay? }, or null for none");
+  const o = v as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (k !== "budgetSats" && k !== "perWorkerDay") throw new TaskError("bad_request", `limits has budgetSats and perWorkerDay, not ${k}`);
+  const out: LimitRule = {};
+  if (o["budgetSats"] !== undefined && o["budgetSats"] !== null) {
+    const b = o["budgetSats"];
+    if (typeof b !== "number" || !Number.isFinite(b) || b < 0 || b > BUDGET_SATS_MAX || Math.abs(b * 1000 - Math.round(b * 1000)) > 1e-6) {
+      throw new TaskError("bad_request", `limits.budgetSats is sats to the msat, from 0 to ${BUDGET_SATS_MAX}: the most the type pays in all`);
+    }
+    out.budgetSats = b;
+  }
+  if (o["perWorkerDay"] !== undefined && o["perWorkerDay"] !== null) {
+    const d = o["perWorkerDay"];
+    if (!Number.isSafeInteger(d) || (d as number) < 1 || (d as number) > PER_WORKER_DAY_MAX) {
+      throw new TaskError("bad_request", `limits.perWorkerDay is a whole number from 1 to ${PER_WORKER_DAY_MAX}: the most tasks of the type one worker takes in a UTC day`);
+    }
+    out.perWorkerDay = d as number;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** What a task asks, in words, as a worker's page draws it (strut/views'

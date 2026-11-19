@@ -61,7 +61,7 @@ import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
-import { createInvites } from "./payments/invites.js";
+import { createInvites, GRANT_LINK_PREFIX } from "./payments/invites.js";
 import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -1762,6 +1762,8 @@ export async function createStrut<TServices = unknown>(
     invite: {
       read: (token) => inviteOf(token),
       live: async (code) => {
+        // A grant link's code is strut's own: its signed token is the proof.
+        if (code.startsWith(GRANT_LINK_PREFIX)) return true;
         const payer = await payments.payer();
         if (!payer?.invites) return false;
         const inv = (await payer.invites()).find((i) => i.code === code);

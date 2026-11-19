@@ -28,6 +28,7 @@
  *
  * Never on a services bag: only the staff's `/tasks/invites` routes hold it.
  */
+import { randomBytes } from "node:crypto";
 import { LightningError } from "./lightning.js";
 import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvite } from "./payer.js";
 import { INVITE_SATS_MAX } from "./ledger.js";
@@ -121,7 +122,16 @@ export interface Invites {
    *  (or the one worker app); with several and none asked, no links. */
   list(o: { app?: string; base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
+  /** A GRANT LINK for someone who already has Peel: the worker app's share
+   *  link carrying a signed invite token whose code is strut's own
+   *  (`GRANT_LINK_PREFIX`), no Sphinx invite and no sats behind it. Its
+   *  first worker gets the app's invite-only types, as an invite's does,
+   *  and nobody after them (one worker per code). */
+  grantLink(o: { app?: string; base: string }): Promise<{ app: string; code: string; link: string; peelLink: string }>;
 }
+
+/** A grant link's code begins so: strut's own, live without the daemon. */
+export const GRANT_LINK_PREFIX = "link_";
 
 /** The join link for a daemon's invite: its query after `#` (the
  *  `sphinx.chat://?` taken off), then `a=` the worker app's URL, encoded so
@@ -170,6 +180,16 @@ export function createInvites(deps: InvitesDeps): Invites {
   };
 
   return {
+    async grantLink(o) {
+      const apps = await deps.workerApps();
+      if (!apps.length) throw new InviteError("no_worker_app", "no task type's app is in the public view: make the worker app public first, so the link has somewhere to open");
+      const app = await appOf(o.app, apps);
+      if (!app) throw new InviteError("pick_app", `the task types name several worker apps: pick one of ${apps.join(", ")}`);
+      const code = `${GRANT_LINK_PREFIX}${randomBytes(9).toString("hex")}`;
+      const link = invitedAppUrl(o.base, app, code);
+      return { app, code, link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
+    },
+
     async create(o) {
       const sats = o.sats ?? (await deps.inviteSats());
       if (!Number.isSafeInteger(sats) || sats < 1 || sats > INVITE_SATS_MAX) throw new InviteError("bad_request", `sats is a whole number from 1 to ${INVITE_SATS_MAX}`);

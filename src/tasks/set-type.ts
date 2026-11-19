@@ -29,7 +29,7 @@ import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
-import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
+import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
   DEFAULT_WITHIN_HOURS,
@@ -43,6 +43,7 @@ import {
   WITHIN_HOURS_MAX,
   type TasksCapability,
   type TaskTypeInput,
+  type TypeNumbers,
 } from "./tasks.js";
 
 export const SET_TYPE_STEP = "task/set-type";
@@ -127,6 +128,19 @@ export const typeChangeInput = z.object({
     .refine((v) => v === undefined || Math.abs(v * 1000 - Math.round(v * 1000)) <= 1e-6, "paySats is sats to the msat (at most three decimals)")
     .describe("What one accepted answer earns its worker, in sats (0: unpaid, a new type's default). A rise is shown to the admin as a danger."),
   holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 0, no hold, for a new type).`),
+  limits: z
+    .preprocess(
+      fromJsonText,
+      z
+        .object({
+          budgetSats: z.number().min(0).optional().describe("The most the type pays in all, in sats: once its answers' pay (and the pay of the tasks being worked) would pass it, no more of it is handed out. The person's budget in dollars: say it in sats and that the card shows dollars."),
+          perWorkerDay: z.number().int().min(1).optional().describe("The most tasks of the type one worker takes in a UTC day. A cap in hours is this many at the pace the person expects (3 hours at ~20 s a task: 540)."),
+        })
+        .strict()
+        .nullable()
+        .optional(),
+    )
+    .describe("The type's LIMITS, enforced by the server whenever it hands out a task: { budgetSats?, perWorkerDay? }. Use these for a budget or a daily cap: never build them into an app or a workflow. null: none."),
   tests: z
     .preprocess(
       fromJsonText,
@@ -203,11 +217,22 @@ export interface TaskTypesCapability {
    *  `task/set-type` proposal for that very name and input, its admin as
    *  `changedBy`. */
   save(name: string, change: TypeFields, o: { proposal: string; actor?: string }): Promise<TaskType>;
+  /** Each type's spend against its limits and what each worker did of it
+   *  lately (`TasksCapability.numbers`), for the assistant to answer "how is
+   *  it going"; [] where the store counts none. */
+  report(q?: { type?: string; days?: number }): Promise<TypeNumbers[]>;
+  /** Grants `worker` the type — only as the apply of an ACCEPTED
+   *  `task/grant` proposal for that very input, an admin's. No worker named:
+   *  the person who asked for it. */
+  grant(input: { type: string; worker?: string }, o: { proposal: string }): Promise<{ worker: string; type: string; status: string; notice?: string }>;
 }
+
+/** `task/grant`'s step type: the record `grant` checks. */
+export const GRANT_STEP = "task/grant";
 
 export interface TaskTypesDeps {
   /** The store the staff routes hold: strut's own, or a host's. */
-  tasks: Pick<TasksCapability, "types" | "setType"> & Partial<Pick<TasksCapability, "stats">>;
+  tasks: Pick<TasksCapability, "types" | "setType"> & Partial<Pick<TasksCapability, "stats" | "numbers" | "grant">>;
   /** A proposal's record on disk, or null. */
   proposal(id: string): Promise<Proposal | null>;
   appProblem?(app: string): Promise<string | undefined>;
@@ -222,7 +247,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -240,6 +265,8 @@ export function mergeType(
   const open = change.open ?? existing?.open;
   const paySats = change.paySats ?? existing?.paySats;
   const holdHours = change.holdHours ?? existing?.holdHours;
+  // Limits merge key by key over the type's own; null turns them off.
+  const limits = change.limits === undefined ? existing?.limits : change.limits === null ? null : { ...(existing?.limits ?? {}), ...change.limits };
   const tests = rules<TestRules>(existing?.tests, change.tests);
   const copies = rules<CopiesRule>(existing?.copies, change.copies);
   const attachments = rules<AttachmentRule>(existing?.attachments, change.attachments);
@@ -249,6 +276,7 @@ export function mergeType(
   if (open !== undefined) out.open = open;
   if (paySats !== undefined) out.paySats = paySats;
   if (holdHours !== undefined) out.holdHours = holdHours;
+  if (limits !== undefined) out.limits = limits;
   if (tests !== undefined) out.tests = tests;
   if (copies !== undefined) out.copies = copies;
   if (attachments !== undefined) out.attachments = attachments;
@@ -303,7 +331,26 @@ export function createTaskTypes(deps: TaskTypesDeps): TaskTypesCapability {
       }
       const existing = (await tasks.types()).find((t) => t.name === name);
       const by = rec.decision?.by ?? o.actor;
-      return tasks.setType(name, mergeType(name, existing, change), by);
+      // Whoever asked for it and the admin who said yes hold a new
+      // invite-only type from the start, to try it in the worker page.
+      return tasks.setType(name, mergeType(name, existing, change), by, { holders: [rec.by.actor, by] });
+    },
+
+    async report(q = {}) {
+      return typeof tasks.numbers === "function" ? tasks.numbers(q) : [];
+    },
+
+    async grant(input, o) {
+      const rec = typeof o?.proposal === "string" ? await deps.proposal(o.proposal) : null;
+      const asked = rec ? { ...(isRecord(rec.input) ? rec.input : {}), ...(isRecord(rec.decision?.input) ? rec.decision.input : {}) } : {};
+      if (!rec || rec.step !== GRANT_STEP || rec.status !== "accepted" || rec.approver !== "admin" || !sameJson(asked, input)) {
+        throw new Error(`grant_needs_admin: granting task type ${input.type} runs only as the apply of a task/grant proposal an admin accepted for it`);
+      }
+      if (typeof tasks.grant !== "function") throw new Error("task/grant: this server's task store grants no worker here");
+      const worker = input.worker ?? rec.by.actor;
+      if (!worker) throw new Error("task/grant: no worker named, and the proposal has no person who asked");
+      const w = await tasks.grant(worker, input.type, rec.decision?.by);
+      return { worker, type: input.type, status: w.status, ...(w.notice ? { notice: w.notice } : {}) };
     },
   };
 }
@@ -322,6 +369,7 @@ interface Planned {
   open: boolean;
   paySats: number;
   holdHours: number;
+  limits?: LimitRule;
   tests?: TestRules;
   copies?: CopiesRule;
   attachments?: AttachmentRule;
@@ -339,6 +387,7 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   open: t.open ?? true,
   paySats: t.paySats ?? 0,
   holdHours: t.holdHours,
+  ...(t.limits ? { limits: t.limits } : {}),
   ...(t.tests ? { tests: t.tests } : {}),
   ...(t.copies ? { copies: t.copies } : {}),
   ...(t.attachments ? { attachments: t.attachments } : {}),
@@ -385,6 +434,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       open: merged.open ?? true,
       paySats: pay,
       holdHours: merged.holdHours ?? DEFAULT_HOLD_HOURS,
+      ...(merged.limits && (merged.limits.budgetSats !== undefined || merged.limits.perWorkerDay !== undefined) ? { limits: merged.limits } : {}),
       ...(tests ? { tests } : {}),
       ...(copies ? { copies } : {}),
       ...(attachments ? { attachments } : {}),
@@ -502,6 +552,15 @@ function rulesDiff(label: string, before: object | undefined, after: object | un
 /** What the save would refuse, first by field: the card's "Approving it fails". */
 const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments;
 
+/** A type's limits in words: "stops at $60.00 (60,000 sats) paid in all;
+ *  at most 540 a worker a day"; "none". */
+function limitsText(l: LimitRule | undefined, money: (sats: number) => string): string {
+  const parts: string[] = [];
+  if (l?.budgetSats !== undefined) parts.push(`stops at ${money(l.budgetSats)} paid in all`);
+  if (l?.perWorkerDay !== undefined) parts.push(`at most ${l.perWorkerDay.toLocaleString("en-US")} a worker a day`);
+  return parts.join("; ") || "none";
+}
+
 /** A hold in days when it is a whole number of them; "none" for 0. */
 const holdText = (hours: number) => (hours === 0 ? "none" : hours % 24 === 0 ? plural(hours / 24, "day") : plural(hours, "hour"));
 
@@ -594,6 +653,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     if (before.open !== after.open) line("who takes it", whoWords(before.open), whoWords(after.open));
     if (before.paySats !== after.paySats) line("pay", money(before.paySats), money(after.paySats));
     if (before.holdHours !== after.holdHours) line("hold", holdText(before.holdHours), holdText(after.holdHours));
+    if (!sameJson(before.limits ?? null, after.limits ?? null)) line("limits", limitsText(before.limits, money), limitsText(after.limits, money));
     if (!problems.tests) {
       const d = rulesDiff("tests", before.tests, after.tests);
       if (d) changes.push(d);
@@ -649,6 +709,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
       : ` The last week's ${plural(week, "answer")} would have cost ${money(week * after.paySats)}` + (payBefore !== after.paySats ? `, against ${money(week * payBefore)} at the pay now.` : ".");
   }
   fields.push({ label: "Pay", value: pay, ...(rises ? { danger: true } : {}) });
+  if (after.limits) fields.push({ label: "Limits", value: limitsText(after.limits, money) });
 
   // Under Details: the type's own settings, for whoever wants them.
   const named = after.title ? `${name} (“${after.title}”)` : name;

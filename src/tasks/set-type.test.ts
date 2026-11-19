@@ -85,7 +85,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "tests", "copies", "attachments", "standing", "round", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "limits", "tests", "copies", "attachments", "standing", "round", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
     for (const k of ["answer", "tests", "copies", "attachments", "standing", "round"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
@@ -420,6 +420,39 @@ describe("task/set-type on a strut: the builder asks, an admin says yes", () => 
     assert.equal(r3.card!.title, "Change task: visit");
   });
 
+  it("task/grant is a card an admin approves: no worker named grants the person who asked; task/report reads spend and each worker's numbers; staff grant @me and make a grant link", async () => {
+    const cap = strut.tasks.capability;
+    await cap.setType("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 21, limits: { budgetSats: 100 } }, "ada");
+    const tool = buildRegistryTools(["task/grant"], strut.getRegistry(), ctx({ actor: "tom", principal: "tom" }), (d: unknown) => d, { approve: new Set(["task/grant"]), session: "s1" })["task_grant"] as Tool;
+    const asked = (await tool.execute({ type: "pet-match" }, { strutToolPath: "orchestrator/turn/001-task_grant" })) as { proposal: string; status: string; title: string };
+    assert.equal(asked.status, "pending");
+    assert.equal(asked.title, 'Give you the "pet-match" work');
+    const rec = await record(asked.proposal);
+    assert.equal(rec.approver, "admin");
+    // Never on its own: a direct call, or the door with a pending record.
+    await assert.rejects(step("task/grant").run({ type: "pet-match" }, ctx()), /runs only as a proposal an admin accepted/);
+    await assert.rejects(taskTypes().grant({ type: "pet-match" }, { proposal: asked.proposal }), /grant_needs_admin/);
+    assert.equal((await decide(asked.proposal, { cookie: await signIn("bo", "member") })).status, 403);
+    const yes = await decide(asked.proposal, { cookie: await signIn("ada", "admin") });
+    assert.equal(yes.body.status, "applied", JSON.stringify(yes.body.result));
+    const tom = (await cap.worker("tom"))!;
+    assert.deepEqual(tom.grants.map((g) => [g.type, g.by]), [["pet-match", "ada"]], "the person who asked holds it now");
+
+    await cap.ensure({ type: "pet-match", workflow: "pets", runId: "r1", path: "pets/review" });
+    const lease = (await strut.tasks.worker.next("tom", { type: "pet-match" })) as { lease: string };
+    await strut.tasks.worker.submit("tom", { lease: lease.lease, answer: { same: true } });
+    const report = (await step("task/report").run({ type: "pet-match" }, ctx())) as { types: Array<{ spentSats: number; limits?: unknown; workers: Array<{ worker: string; answered: number; earnedSats: number }> }> };
+    assert.deepEqual([report.types[0]!.spentSats, report.types[0]!.limits], [21, { budgetSats: 100 }]);
+    assert.deepEqual(report.types[0]!.workers.map((w) => [w.worker, w.answered, w.earnedSats]), [["tom", 1, 21]]);
+
+    // The staff's own: @me is the admin granting it to themself; the numbers route.
+    const me = await strut.app.request("/tasks/workers/%40me/grants/pet-match", { method: "PUT", headers: { "x-strut-ui": "1", cookie: await signIn("ada", "admin") } });
+    assert.equal(me.status, 200, await me.clone().text());
+    assert.deepEqual(((await me.json()) as { worker: { actor: string } }).worker.actor, "ada");
+    const numbers = (await (await strut.app.request("/tasks/numbers?type=pet-match", { headers: auth })).json()) as { types: Array<{ spentSats: number }> };
+    assert.equal(numbers.types[0]!.spentSats, 21);
+  });
+
   it("task/types lists what is there: each type with its app, shape, on or off, open or invite-only, pay, its open tasks, how many hold it, its week and its ready tests — never who", async () => {
     assert.deepEqual(await step("task/types").run({}, ctx()), { types: [] });
     const cap = strut.tasks.capability;
@@ -525,6 +558,12 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
     assert.deepEqual([saved!.name, saved!.app, saved!.paySats, saved!.enabled, saved!.leaseSeconds, saved!.changedBy], ["pet-match", "workers", 10, true, 600, "ada"]);
     assert.deepEqual(saved!.answer, MATCH);
     assert.equal(saved!.open, false);
+    // A new invite-only type is its makers' from the start: who asked (ann) and the admin who said yes.
+    for (const who of ["ann", "ada"]) {
+      const w = await strut.tasks.capability.worker(who);
+      assert.deepEqual(w?.grants.filter((g) => g.revokedAt === undefined).map((g) => [g.type, g.qualify]), [["pet-match", 0]], `${who} made it: theirs to try`);
+    }
+    assert.equal(await strut.tasks.capability.worker("bo"), undefined, "nobody else");
     await assert.rejects(taskTypes().save("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 10 }, { proposal: out.proposal }), /set_type_needs_admin: .*is applied/);
   });
 
@@ -586,14 +625,16 @@ describe("task/set-type in the seeds: the builder's alone", () => {
   const params = (text: string) => (yaml.load(text) as { params: Params }).params;
   const reaches = (grants: string[], type: string) => grants.some((g) => globToRegExp(g).test(type));
 
-  it("the builder grants task/types and task/set-type and gates task/set-type; job and orchestrator reach neither", async () => {
+  it("the builder grants task/types, task/set-type and task/report and gates task/set-type; the assistant reads and asks for grants, never a type; job reaches none", async () => {
     const builder = params(await builderWorkflowYaml());
-    assert.ok(builder.tools.includes("task/types") && builder.tools.includes("task/set-type"));
+    assert.ok(builder.tools.includes("task/types") && builder.tools.includes("task/set-type") && builder.tools.includes("task/report"));
     assert.ok(builder.approve?.includes("task/set-type"), "a proposal: an admin's yes");
     assert.ok(!reaches(builder.tools, "task/next") && !reaches(builder.tools, "task/submit"), "never a worker's steps");
-    for (const [name, text] of [["job", await jobWorkflowYaml()], ["orchestrator", await orchestratorWorkflowYaml()]] as const) {
-      const p = params(text);
-      for (const type of ["task/types", "task/set-type"]) assert.ok(!reaches(p.tools, type), `${name} does not grant ${type}`);
-    }
+    const orchestrator = params(await orchestratorWorkflowYaml());
+    for (const type of ["task/types", "task/report", "task/grant"]) assert.ok(orchestrator.tools.includes(type), `the assistant grants ${type}`);
+    assert.ok(orchestrator.approve?.includes("task/grant"), "a grant is an admin's yes");
+    assert.ok(!reaches(orchestrator.tools, "task/set-type"), "a type is the builder's");
+    const job = params(await jobWorkflowYaml());
+    for (const type of ["task/types", "task/set-type", "task/report", "task/grant"]) assert.ok(!reaches(job.tools, type), `job does not grant ${type}`);
   });
 });

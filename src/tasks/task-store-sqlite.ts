@@ -64,6 +64,8 @@ import {
   type SettleResult,
   type RoundRule,
   type StandingRule,
+  type LimitRule,
+  type LeaseTotals,
   type TaskListQuery,
   type TaskRecord,
   type TaskReply,
@@ -136,7 +138,8 @@ create table if not exists task_types (
   attachments text,
   standing text,
   round_rule text,
-  title text
+  title text,
+  limits text
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -206,6 +209,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["task_types", "round_rule", "text"],
   ["tasks", "reply", "text"],
   ["task_types", "title", "text"],
+  ["task_types", "limits", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -221,6 +225,7 @@ create index if not exists tasks_ungraded on tasks(settled_at) where test is not
 create index if not exists tasks_open_copies on tasks(seq) where status = 'open' and copies > 1;
 create index if not exists leases_open_task on leases(task) where status = 'open';
 create index if not exists leases_open_worker on leases(worker) where status = 'open';
+create index if not exists leases_type_taken on leases(type, taken);
 create index if not exists leases_open_expires on leases(expires) where status = 'open';
 create index if not exists leases_unbooked on leases(closed) where status = 'submitted' and pay_msat is not null and booked_at is null;
 create index if not exists leases_answered on leases(worker, type, closed) where status = 'submitted';
@@ -276,12 +281,12 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title, limits)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
-           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule, title = excluded.title`,
+           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule, title = excluded.title, limits = excluded.limits`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -341,6 +346,14 @@ export class SqliteTaskStore implements TaskStore {
       recentLeases: p("select * from leases where worker = ? order by taken desc, rowid desc limit ?"),
       answeredSince: p("select worker, count(*) n from leases where status = 'submitted' and closed >= ? group by worker"),
       holdingNow: p("select worker, type from leases where status = 'open' and expires > ?"),
+      totals: p(
+        `select type, worker, sum(status = 'submitted') answered, sum(status = 'open' and expires > ?3) open,
+                coalesce(sum(case when status = 'submitted' then max(0, coalesce(closed, taken) - taken) end), 0) work_ms,
+                coalesce(sum(case when status = 'submitted' then pay_msat end), 0) pay_msat,
+                coalesce(sum(case when status = 'open' and expires > ?3 then pay_msat end), 0) open_pay_msat
+           from leases where type in (select value from json_each(?1)) and taken >= ?2 and (?4 is null or worker = ?4)
+          group by type, worker`,
+      ),
       workerWeek: p(
         `select type, sum(status = 'submitted') answered, sum(status = 'skipped') skipped,
                 sum((status = 'expired' and reason is null) or (status = 'open' and expires <= ?3)) lost
@@ -520,6 +533,7 @@ export class SqliteTaskStore implements TaskStore {
         t.standing ? JSON.stringify(t.standing) : null,
         t.round ? JSON.stringify(t.round) : null,
         t.title ?? null,
+        t.limits ? JSON.stringify(t.limits) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -624,6 +638,18 @@ export class SqliteTaskStore implements TaskStore {
     const holding: Record<string, string> = {};
     for (const r of this.s.holdingNow.all(now) as Row[]) holding[r.worker as string] = r.type as string;
     return { answered, holding };
+  }
+
+  async totals(q: { types: string[]; worker?: string; since: number; now: number }): Promise<LeaseTotals[]> {
+    return (this.s.totals.all(JSON.stringify(q.types), q.since, q.now, q.worker ?? null) as Row[]).map((r) => ({
+      type: r.type as string,
+      worker: r.worker as string,
+      answered: Number(r.answered ?? 0),
+      open: Number(r.open ?? 0),
+      workMs: Number(r.work_ms ?? 0),
+      payMsat: Number(r.pay_msat ?? 0),
+      openPayMsat: Number(r.open_pay_msat ?? 0),
+    }));
   }
 
   async workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>> {
@@ -1048,6 +1074,8 @@ function typeOf(r: Row): TaskType {
   if (round !== undefined) t.round = JSON.parse(round) as RoundRule;
   const title = opt<string>(r.title);
   if (title !== undefined) t.title = title;
+  const limits = opt<string>(r.limits);
+  if (limits !== undefined) t.limits = JSON.parse(limits) as LimitRule;
   const by = opt<string>(r.changed_by);
   if (by !== undefined) t.changedBy = by;
   return t;

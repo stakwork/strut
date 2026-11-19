@@ -2826,8 +2826,9 @@ and the app monitor keeps a call's config with those fields redacted.
 | Step | The route | Answers |
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
+| `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
 | `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
-| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
 | `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
@@ -2835,7 +2836,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/workers { status? }` | `GET /tasks/workers` | `{ workers }` |
 | `staff/worker { actor }` | `GET /tasks/workers/:actor` | `{ worker, holding?, week, recent }` |
 | `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
-| `staff/grant { actor, type, qualify? }` | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
+| `staff/grant { actor, type, qualify? }` (`actor` `@me`: the admin themself, "Try it yourself") | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
 | `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
 | `staff/tasks { type?, status?, workflow?, runId?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
 | `staff/task { id }` | `GET /tasks/:id` | `{ task, run }`; `task.reply` is the run's reply to its workers, when it made one (§22, "A run's reply") |
@@ -2849,6 +2850,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
 | `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
 | `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
+| `staff/grant-link { app? }` | `POST /tasks/invites/link` | `{ app, code, link, peelLink }` |
 | `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
 | `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
 
@@ -5699,16 +5701,17 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types") |
+| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
 | `GET /tasks/workflows?type=` | The type editor's "When there is work" picker: `{ type, workflows: [{ name, standing }] }`, the workflows (not sealed) with a `human` step of that type at any depth — each can be its round workflow — and `standing` true for those whose FIRST step is that step (its standing workflow), by name. `400` without `type` |
 | `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
 | `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
 | `DELETE /tasks/types/:name` | `{ name, revoked }`: `409 in_use` while a task of the type is open; its live grants are revoked and its tests retired; its tasks on file keep its name |
 | `GET /tasks/workers?status=` | `{ workers: WorkerRecord[] }`, newest first, each with its `balance` (as `task/me` answers it) and its `standing` in each type with tests it holds |
+| `GET /tasks/numbers?type=&days=` | `{ types: TypeNumbers[] }`: each type's (one with `type`) `spentSats` (what its answers earned, in all), `workingSats` (the pay on its leases being worked) and `limits`, and over the last `days` (7 by default, 1–90) `answered` and per worker `{ worker, answered, workMinutes, perHour?, earnedSats }`, most answered first. Computed on read |
 | `GET /tasks/stats?type=` | `TaskStats`, the QUEUE (`plans/human-steps.md` §9.4): computed on read, never stored; every type, or one (`404 unknown_type`) |
 | `GET /tasks/workers/:actor` | `{ worker: WorkerRecord, holding?, week, recent }`: the same for one worker, with their live lease (`{ lease, task, type, expires }`), what they did of the leases taken in the last 7 days by type (`{ [type]: { answered, skipped, lost } }`, `lost` a lease that ran out) and their newest 50 leases (`[{ lease: Lease, task: { id, type, workflow, runId, status, test? } }]`, an answer's lease with its `review`); `404 unknown_worker` |
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
-| `PUT /tasks/workers/:actor/grants/:type` | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. The only way back into a type whose grant was revoked, open or not. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
+| `PUT /tasks/workers/:actor/grants/:type` (`:actor` `@me`: the signed-in admin themself) | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. The only way back into a type whose grant was revoked, open or not. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
 | `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
@@ -5726,6 +5729,7 @@ server whose task store is its host's (which answers none of them).
   "open": true,                     // any signed-in worker takes it, no grant; false: invite-only. True for a type saved before it existed
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
   "holdHours": 0,                   // how long an earning waits before it can be withdrawn; 0 (the default): at once
+  "limits": { "budgetSats": 60000, "perWorkerDay": 540 }, // checked whenever a task is handed out: the most it pays in all, the most tasks one worker takes a UTC day; absent: none (limit_reached when one is hit)
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
     "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
     "window": 20, "minGraded": 10, "threshold": 0.8, "grade": "equal", "gradeCapUsd": 0.05
@@ -6049,6 +6053,7 @@ Full scope, beside the rest; `strut/staff` reaches them through
 | Route | Answers |
 | --- | --- |
 | `POST /tasks/invites { sats?, app? }` | `{ code, link, sats, status, app }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `app` one of the worker apps — needed when there are several (`409 pick_app` names them), `400` for another; none at all is `409 no_worker_app`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
+| `POST /tasks/invites/link { app? }` | `{ app, code, link, peelLink }`: a GRANT LINK for someone who already has Peel — the worker app's share link with a signed invite token whose code (`link_…`) is strut's own: no Sphinx invite, nothing paid. Its first worker is given the app's invite-only types as an invite's is (one worker per code); `peelLink` opens it in Peel. Same `pick_app` / `no_worker_app` refusals |
 | `GET /tasks/invites?app=` | `{ invites: [{ code, link?, sats, status, createdAt? }], apps, app?, sats, why? }`: the daemon's invites, newest first, each `link` opening `app` (or the one worker app; with several and none asked, no `link`); `apps` the worker apps; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
 
@@ -6325,7 +6330,9 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
 | Step | Config | Answers |
 | --- | --- | --- |
 | `task/types` | `{}` | `{ types: [TaskType less changedBy, plus openTasks?, workers?, answeredWeek?, readyTests?] }`: each type (`open`: open or invite-only), its open tasks (`openTasks`), how many workers hold it (`workers`, a count: who is the staff's to read), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`). The four counts are absent on a server whose task store is its host's and answers no queue |
-| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/report` | `{ type?, days? }` | `{ types: TypeNumbers[] }` (`GET /tasks/numbers`'s): how the work is going, read inside the assistant's turn |
+| `task/grant` | `{ type, worker? }` | `{ worker, type, status, notice? }`, as a PROPOSAL an admin accepted: `worker` left out is the person who asked |
 
 - **Only as a proposal an admin accepted** (`approver: "admin"`, as
   `package/install`): a direct call, a workflow's step, `meta/run-step`

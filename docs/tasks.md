@@ -306,6 +306,33 @@ index. A change in this area updates this file, not AGENTS.md.
   type lets anyone in on their first `task/next` (ruling 9). `a=` lives only
   in the link; the mixer keeps code → starting sats and the core ignores a
   section it does not know.
+- **Limits, numbers, grant links, and the assistant's task tools**
+  (2026-11-19, after a pilot spec made the builder build its own admin app
+  and ledger). A type's `limits` (`LimitRule`: `budgetSats`, the most it
+  pays in all; `perWorkerDay`, the most tasks one worker takes a UTC day;
+  one `limits` JSON column) are checked in `next` (`limitsReached`, over the
+  store's `totals`): a type at one is left out, and when every type the ask
+  reaches is, `limit_reached` with why (the kit waits on it like
+  `not_granted`). The budget counts answered pay plus the pay on live leases
+  plus the next take's. `numbers` (`GET /tasks/numbers`, `staff/numbers`,
+  `task/report`) is each type's spend against its limits and, over the last
+  `days`, each worker's answered, minutes (taken → answered), per hour and
+  earned; the staff's type page shows it ("How it's going"). A NEW
+  invite-only type is granted to its makers when it is saved (`setType`'s
+  `holders`, qualify 0): the admin saving it in the staff editor (the
+  route's actor), or for a `task/set-type` proposal the person who asked
+  and the admin who accepted; an open type needs none, a change grants
+  nobody. "Try it yourself" on the staff's type page is
+  `staff/grant { actor: "@me" }`, for any other admin. A GRANT LINK
+  (`POST /tasks/invites/link`, `staff/grant-link`, the share block's "Someone
+  who already has Peel") is an invite token whose code is `link_…`: live
+  without the daemon (createStrut's `invite.live`), one worker per code by
+  `invite:<code>` like an invite. The assistant (orchestrator) has
+  `task/types`, `task/report` and `task/grant` (a proposal an admin
+  accepts, `ctx.services.taskTypes.grant` checking the record; no `worker`:
+  the person who asked); the builder has `task/report`. The Concept pages
+  (`Worker Tasks`, "What is built in"; `App`, "Worker apps") say never to
+  build an admin app for any of it.
 - **Support: the staff's chat with workers** (`plans/support-chat.md`;
   rebuilt as an app by `plans/people-and-hosts.md` §4, §5, item 5; specs/API.md
   §22 "Support"). Workers DM the treasury daemon's account, "Support", from

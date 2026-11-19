@@ -224,6 +224,9 @@ params:
     # a task type comes with a workflow. It grants no worker: a person does.
     - task/types
     - task/set-type
+    # How the work is going (spend, limits, each worker's numbers): read it,
+    # never rebuild it in an app or a workflow.
+    - task/report
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
