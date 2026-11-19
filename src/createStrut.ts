@@ -215,7 +215,7 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
@@ -1460,7 +1460,11 @@ export async function createStrut<TServices = unknown>(
     ((opts.chatStore ? opts.chatStore instanceof FileChatStore : fileBacked)
       ? new FileSessionStore(dataDir)
       : new MemorySessionStore());
-  const sessions = sessionsCapability(sessionStore);
+  // What commits turns (an agent's, a conversation's fork): each turn made
+  // under a job notes its thread on the job's record, which is how the job
+  // index lists a job's threads without reading every session.
+  const committingSessions = recordingJobSessions(sessionStore, dataDir);
+  const sessions = sessionsCapability(committingSessions);
   // A consumer's own `sessions` capability is theirs: the `/sessions`
   // endpoints (which manage OUR store) then report 501, like `/secrets`.
   const sessionsInjected =
@@ -8117,7 +8121,7 @@ export async function createStrut<TServices = unknown>(
   const conversations = createConversations({
     dataDir,
     store,
-    sessions: sessionStore,
+    sessions: committingSessions,
     getWorkflow: (name) => workspace.getWorkflow(name),
     running: (id) => liveSessions.has(id) || !!sessions.holder(id),
     liveState: (workflow, runId) => controllers.get(`${workflow}/${runId}`)?.state,

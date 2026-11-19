@@ -48,7 +48,7 @@ import { roomsFor } from "./rooms.js";
 import type { McpServer, StartedBy, StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
-import { encodeId, idProblem } from "./session-store.js";
+import { encodeId, idProblem, type SessionStore } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
 import { writeNewFile, type Attachment } from "./ai/attachments.js";
@@ -77,6 +77,12 @@ export interface JobRecord {
   /** Every run launched under the job, oldest first (plans/job-index.md §1).
    *  Absent until the first. */
   runs?: JobRun[];
+  /** The agent threads with a turn under the job (a session turn's `job`),
+   *  by session id, first seen first: written when such a turn commits
+   *  (`recordingJobSessions`), so reading the job never lists every
+   *  session on the server. A record from before it was kept is filled in
+   *  once, by the job index's one pass over the session store. */
+  sessions?: string[];
 }
 
 /** One run of a job, as the runner records it at `run.start`. A child run
@@ -164,6 +170,41 @@ async function writeJobRecord(root: string, rec: JobRecord): Promise<void> {
   await mkdir(join(root, ".."), { recursive: true });
   await writeFile(`${root}.json.tmp`, JSON.stringify(rec, null, 2), "utf-8");
   await rename(`${root}.json.tmp`, `${root}.json`);
+}
+
+/** Add agent threads to a job's record (`JobRecord.sessions`), under its
+ *  lock. Not a use: `usedAt` stays. A job with no record gets none — a
+ *  thread does not make a job — and an id already there is not written. */
+export async function noteJobSessions(root: string, ids: readonly string[]): Promise<void> {
+  await withLock(`${root}.json`, async () => {
+    const rec = await readJobRecord(root);
+    if (!rec) return;
+    const have = new Set(rec.sessions ?? []);
+    const add = ids.filter((id) => !have.has(id) && have.add(id));
+    if (add.length === 0) return;
+    rec.sessions = [...(rec.sessions ?? []), ...add];
+    await writeJobRecord(root, rec);
+  });
+}
+
+/** The session store with each committed turn's thread noted on its job's
+ *  record (`noteJobSessions`): what the job index lists a job's threads
+ *  from. A note that fails is logged; the turn stands. */
+export function recordingJobSessions(store: SessionStore, dataDir: string): SessionStore {
+  return {
+    load: (id) => store.load(id),
+    turns: (id) => store.turns(id),
+    list: () => store.list(),
+    delete: (id) => store.delete(id),
+    async appendTurn(id, turn) {
+      const line = await store.appendTurn(id, turn);
+      const job = turn.record.job;
+      if (job && !idProblem(job)) {
+        await noteJobSessions(jobRoot(dataDir, job), [id]).catch((err) => console.warn(`[jobs] thread ${id} not noted on job ${job}:`, err));
+      }
+      return line;
+    },
+  };
 }
 
 /** Every write to a record: under its lock, the record (created now when
@@ -980,23 +1021,28 @@ export async function deleteJobUpload(root: string, job: string, relPath: string
 
 /** Relative paths of every file in a job's directory, recursive and sorted,
  *  skipping its repositories (a checkout is not a deliverable, and can be
- *  enormous). `[]` for a job with no directory. */
+ *  enormous): the walk never enters one, so a checkout's `node_modules` is
+ *  not read on every `GET /jobs/:id`. `[]` for a job with no directory. */
 export async function listJobFiles(root: string, rec: JobRecord | null): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(root, { recursive: true, withFileTypes: true });
-  } catch (err: any) {
-    if (err?.code === "ENOENT") return [];
-    throw err;
-  }
-  const repoDirs = Object.keys(rec?.repos ?? {}).map((d) => resolve(d));
-  const inRepo = (abs: string) => repoDirs.some((d) => abs === d || abs.startsWith(d + sep));
-  return entries
-    .filter((e) => e.isFile())
-    .map((e) => join(e.parentPath, e.name))
-    .filter((abs) => !inRepo(abs))
-    .map((abs) => relative(root, abs))
-    .sort();
+  const repoDirs = new Set(Object.keys(rec?.repos ?? {}).map((d) => resolve(d)));
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err: any) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return; // no directory, or gone mid-walk
+      throw err;
+    }
+    for (const e of entries) {
+      const abs = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!repoDirs.has(resolve(abs))) await walk(abs);
+      } else if (e.isFile()) out.push(relative(root, abs));
+    }
+  };
+  await walk(root);
+  return out.sort();
 }
 
 // ── one writer per key ────────────────────────────────────────────────────

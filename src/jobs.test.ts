@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -17,7 +17,7 @@ import { artifactKind, jobFileUrl, liftedArtifacts, resolveArtifactRefs } from "
 import { productKind } from "@strut/kit/folds";
 import { captchaFiles } from "./browser/captcha.js";
 import { mediaOf } from "./core.js";
-import { MemorySessionStore } from "./session-store.js";
+import { MemorySessionStore, type SessionsCapability } from "./session-store.js";
 import { holdUrls } from "./job-index.js";
 import jobDir from "./steps/lib/job/dir.js";
 import jobRead from "./steps/lib/job/read.js";
@@ -403,6 +403,14 @@ describe("jobs — the directory", () => {
     await touchJob(r, "ls", { dir: join(r, "hive"), cache: "/nowhere", ref: "main" });
     assert.deepEqual(await listJobFiles(r, await readJobRecord(r)), [join("notes", "a.md"), "plan.md"]);
     assert.deepEqual(await listJobFiles(jobRoot(dataDir, "never"), null), []);
+    // The walk never enters a checkout (its node_modules can be enormous):
+    // one it cannot even read is no error.
+    await chmod(join(r, "hive"), 0o000);
+    try {
+      assert.deepEqual(await listJobFiles(r, await readJobRecord(r)), [join("notes", "a.md"), "plan.md"]);
+    } finally {
+      await chmod(join(r, "hive"), 0o755);
+    }
   });
 
   it("a record is never read half-written: the readers take no lock, so every write is whole", async () => {
@@ -1147,12 +1155,43 @@ describe("jobs — the index (plans/job-index.md)", () => {
     );
     assert.equal(v.threads[0].totals.turns, 1);
     assert.equal("omittedRuns" in v, false);
+    // Filled in once from the session store, onto the record.
+    assert.deepEqual((await readJobRecord(jobRoot(tempDir, "j-b")))?.sessions?.sort(), ["j-b/review", "thread-1"]);
     const slim = (await api("/jobs/j-b?threads=0")).json;
     assert.equal("threads" in slim, false, "?threads=0 leaves the fold out");
     const capped = (await api("/jobs/j-b?limit=1")).json;
     assert.deepEqual([capped.threads.length, capped.omittedRuns], [1, 1]);
     assert.equal((await api("/jobs/nope")).status, 404);
     assert.equal((await api("/jobs/bad%20id")).status, 400);
+  });
+
+  it("a job's threads are its record's: a commit notes its thread, and the server's sessions are listed once, never per read", async () => {
+    let listed = 0;
+    const list = sessionStore.list.bind(sessionStore);
+    sessionStore.list = async () => (listed++, list());
+    const { strut, api, turn } = await boot();
+    const r1 = await turn("j-c", { name: "a.md", text: "a", reply: "ok", artifacts: [] });
+    const line = (job?: string) => ({ workflow: "turn", runId: r1, path: "turn/work", provider: "anthropic", model: "anthropic/x", routed: false, ...(job ? { job } : {}) });
+    // From before the record kept its threads: found by the one pass.
+    await sessionStore.appendTurn("j-c", { system: "s", messages: [{ role: "user", content: "a" }], record: line() });
+    assert.deepEqual((await api("/jobs/j-c")).json.sessions.map((s: any) => s.id), ["j-c"]);
+    assert.equal(listed, 1);
+    // From now on, a turn an agent commits under the job notes its thread itself.
+    const commit = async (id: string, content: string, job: string) => {
+      const s = await (strut.services as { sessions: SessionsCapability }).sessions.open(id, { runId: r1, path: "turn/work" });
+      await s.commit({ system: "s", messages: [{ role: "user", content }], record: line(job) });
+      s.release();
+    };
+    await commit("helper", "b", "j-c");
+    await commit("helper", "c", "j-c");
+    await commit("elsewhere", "d", "no-such-job");
+    assert.deepEqual((await api("/jobs/j-c")).json.sessions.map((s: any) => [s.id, s.turns]), [["helper", 2], ["j-c", 1]], "newest first");
+    assert.deepEqual((await readJobRecord(jobRoot(tempDir, "j-c")))?.sessions, ["j-c", "helper"], "noted once each");
+    assert.equal(await readJobRecord(jobRoot(tempDir, "no-such-job")), null, "a thread does not make a job");
+    // The claims' read: the record's run lines alone.
+    assert.deepEqual((await strut.services.jobs!.runs!("j-c"))?.map((r) => r.runId), [r1]);
+    assert.equal(await strut.services.jobs!.runs!("nope"), null);
+    assert.equal(listed, 1, "the server's sessions were read once");
   });
 
   it("GET /jobs/:id resolves a published app by name through the server's apps, as run.end does — never `no apps here`", async () => {

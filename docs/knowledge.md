@@ -50,7 +50,9 @@ index. A change in this area updates this file, not AGENTS.md.
   written, since the projector only writes it at run end) and its version
   is the TURN: evidence is `ABOUT` the turn's `StrutRun` (the projector
   stamps `job` on it), the active version is the job's newest top-level run
-  on the record (`activeTurnOf`; `ClaimsReader` takes a `jobs` dep for it),
+  on the record (`activeTurnOf`; `ClaimsReader` takes a `jobs` dep for it and reads
+  `jobs.runs` — the record's run lines alone, as do `verifyJob`, `jobLedger`,
+  `addEvidence` and the authoring's job check: never the whole `get` view),
   so a later turn makes the ledger `stale` and `claimStatus()` reads as it
   does — except that a job's stream has one measurement per pass, never a
   foreach's several. Fixed point 1 has one exception here, ruled: on a job

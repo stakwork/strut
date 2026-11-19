@@ -401,7 +401,10 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
 
   it("a JOB subject (plans/job-claims.md §1, §5): on file → its node is upserted and claimed; not on file → refused; manual by default, sample refused; the meta surface claims about its job", async () => {
     const view = (runs: JobView["runs"]): JobView => ({ job: "j-1", title: "Settings page", usedAt: "2026-10-14T10:00:00.000Z", holds: [], urls: {}, repos: [], files: [], runs, sessions: [], artifacts: [] });
-    const jobs = { get: async (id: string) => (id === "j-1" ? view([{ workflow: "job", runId: "1700", at: "2026-10-14T10:00:00.000Z", status: "running" }]) : null) };
+    const jobs = {
+      get: async (id: string) => (id === "j-1" ? view([{ workflow: "job", runId: "1700", at: "2026-10-14T10:00:00.000Z", status: "running" }]) : null),
+      runs: async (id: string) => (id === "j-1" ? [{ workflow: "job", runId: "1700", at: "2026-10-14T10:00:00.000Z" }] : null),
+    };
     const withJobs = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry, env: {}, jobs });
     const JOB = { kind: "job" as const, name: "j-1" };
     const LLM = { type: "llm", config: { prompt: "does it render? {{ input.text }}" } };
