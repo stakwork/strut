@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { formats } from "@strut/kit/folds";
 import { ACCOUNT_CORNERS } from "@strut/kit/visitor";
+import { HOST_WORDS } from "./words";
 import {
   appIdentityOf, createPlacementController, creditOf, initialState, parsePlacement, PLACEMENT_INTERVAL_MS, workerOf,
 } from "./account-widget";
@@ -151,5 +153,13 @@ describe("what the panel shows", () => {
     assert.equal(blocked(5_000_000, { ...open, maxMsat: 4_000_000 }), undefined);
     // An answer without a payout (an older server): nothing to say.
     assert.equal(workerOf({ balance: { heldMsat: 0, withdrawableMsat: 5000 } })!.blocked, undefined);
+  });
+
+  it("says it in the page's words and numbers", () => {
+    const blocked = (withdrawableMsat: number, payout: object) => workerOf({ balance: { heldMsat: 0, withdrawableMsat }, payout }, HOST_WORDS.es, formats("es-MX"))!.blocked;
+    const open = { on: true, minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
+    assert.equal(blocked(150_000, open), "El retiro mínimo es de 1,000 sats, más hasta 5 sats de comisión de enrutamiento.");
+    assert.equal(blocked(0, { ...open, out: { msat: 2_000_000 } }), "Tu retiro de 2,000 sats va en camino. Podrás retirar de nuevo cuando llegue.");
+    assert.equal(blocked(5_000_000, { on: false, why: "off" }), "Los retiros están desactivados en este servidor por ahora.");
   });
 });
