@@ -9,7 +9,7 @@ import { nativeWalletApp, signInNote, type SignInAsk, type WalletAsk } from "../
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { AccountWidget } from "./AccountWidget";
-import { appIdentityOf, createPlacementController, initialState, type PlacementController } from "../account-widget";
+import { appIdentityOf, createPlacementController, initialState, serverNameOf, type PlacementController } from "../account-widget";
 import { PaymentSheet } from "./PaymentSheet";
 import { CameraSheet } from "./CameraSheet";
 import type { CameraPhoto } from "@strut/kit/camera";
@@ -206,8 +206,12 @@ export function AppHost(props: {
         // a stranger's included (plans/app-payments.md §11 R8): the identity
         // names the seller, whose app it is, which the native host keys the
         // connection by and its sheet names.
+        // The title a native host keeps the connection under, and the one a
+        // visitor signs in to: the server's name (the employer) when it has
+        // one — the host keys the connection by the server, not the app.
+        const title = serverNameOf(html) ?? info?.title ?? app.title ?? app.name;
         const wallet = nativeWalletOf(window)
-          ? nativeWalletApp({ app, title: info?.title ?? app.title ?? app.name, request: info?.wallet, seller: sellerOf(from) })
+          ? nativeWalletApp({ app, title, request: info?.wallet, seller: sellerOf(from) })
           : undefined;
         const placement = visitor ? createPlacementController(initialState(info?.account)) : undefined;
         if (placement) disposePlacement = () => placement.dispose();
@@ -216,7 +220,7 @@ export function AppHost(props: {
           ...(placement ? { account: placement, identity: appIdentityOf(html) } : {}),
           theme,
           brand: await brand,
-          ...(visitor ? { visitor: true, visitorApp: { name: app.name, version: app.version, title: info?.title ?? app.title ?? app.name } } : {}),
+          ...(visitor ? { visitor: true, visitorApp: { name: app.name, version: app.version, title } } : {}),
           ...(from ? { from } : {}),
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),

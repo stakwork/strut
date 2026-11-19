@@ -2828,7 +2828,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
-| `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
+| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
 | `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
@@ -2850,27 +2850,32 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/test-file { id, path, base64 }` | `PUT /tasks/tests/:id/files/<path>` (the bytes) | `{ test }` |
 | `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
 | `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
-| `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
-| `staff/grant-link { app? }` | `POST /tasks/invites/link` | `{ app, code, link, peelLink }` |
-| `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
+| `staff/invite { sats?, type? }` | `POST /tasks/invites` | `{ code, link, sats, status, type?, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
+| `staff/invites {}` | `GET /tasks/invites` | `{ invites, sats, why? }` |
 | `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
+| `staff/tasks-online {}` | `POST /tasks/online` | `{ app, public: true }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`), `earnings/read` (the Queue's
 line on what workers are owed) and `people/names` (the workers' names,
 §13.3). It launches nothing.
 
-**Sharing the worker app.** The Queue opens with a "Bring workers in"
-list, one closed row for each public app a type is answered in
-(`sharedApps`): the app's name and its types, opening to the QR of its
-`peelLink` (an iPhone camera opens it in Peel) and Copy buttons for
-`peelLink` (Peel) and `link` (a browser). A type's page shows its app's
-block, or says the app is not in the public view; the page makes nothing
-public (that stays the Public view dialog or `app/make-public`). Each block
-ends with **Invite**, for someone new to Peel (`plans/human-steps.md` §5.8):
-the starting sats (blank: the payout settings' `inviteSats`) make a
-one-use link to that app, shown with its QR code, Copy and Share in
-WhatsApp; a wallet that cannot invite says why.
+**Bringing workers in.** One panel, "Invite a worker" (`BringWorkersIn`,
+components/Share.tsx): a closed row atop the Queue and the Workers tab, and
+open on each type's page with that type picked ("Invite someone to this").
+First an INVITE (`plans/human-steps.md` §5.8): Work they'll do — "Anything
+open" or one type that is on, invite-only ones marked (`inviteChoices`) —
+and, under More, the starting sats (blank: the payout settings'
+`inviteSats`), making a one-use link shown with its QR code, Copy and Share
+in WhatsApp; a wallet that cannot invite says why; work answered in an app
+that is not in the public view says so, and makes none. Then, folded and
+only while some work is open, "Anyone with the link": Tasks' `peelLink`
+(`staff/types`' `tasks`, the share of `strut/worker`) as a QR and a Copy
+button, open work only, for people who have Peel. While Tasks is not in the
+public view the panel offers "Put Tasks online" (`staff/tasks-online`)
+instead; it puts no other app online (the Public view dialog or
+`app/make-public`). The Workers tab lists the invites below, each with its
+work.
 
 ### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
 
@@ -2990,7 +2995,7 @@ change shows the next time a page loads.
 
 ```
 GET /brand          any credential
-PUT /brand          full scope: { color?, colorDark?, radius?, font? }
+PUT /brand          full scope: { name?, color?, colorDark?, radius?, font? }
 ```
 
 Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
@@ -3000,6 +3005,7 @@ left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
 
 | Field | What | Sent as (light and dark) |
 |---|---|---|
+| `name` | who this server is to the people who use it — the employer a worker works for, the org: plain text, 1 to 60 characters. Not a style, so `styles` ignores it | each app document as it is served (`<meta name="strut-name">`, the kit's `useHost().name`): Tasks heads its page with it, "Tasks" under it; strut's host signs a visitor in, and a native host (Peel) keeps the connection, under it; the invite page (`/public/join`) says "‹name› invites you" |
 | `color` | `#rrggbb` (or `#rgb`): primary buttons, the selected item, focus rings | `--color-background-inverse`, `--color-ring-primary`, and `--color-text-inverse`: near-black or white, whichever reads better on it |
 | `colorDark` | the color in the dark theme; `color` when unset (and the reverse) | the same, in the dark theme |
 | `radius` | a length in `px`, `rem` or `em` (`0.5rem`) | `--border-radius-md` |
@@ -4182,7 +4188,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12). Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
@@ -6012,51 +6018,58 @@ max_fee_msat }`, `GET /keysend/:id`, specs/LIGHTNING.md), the pending send's
 key, and the `withdrawal` entry's `ref`.
 
 ### Inviting a worker (`plans/human-steps.md` §5.8)
-
-Staff send a new worker ONE https link. Strut asks the treasury daemon for a
-Sphinx invite through the payer (the daemon pays the mixer for it: the
-starting sats, and the mixer's price on top; specs/LIGHTNING.md "Invites"),
-and answers the link on the base the share links use (§17.2
+Staff send a worker ONE https link, for one person. Strut asks the treasury
+daemon for a Sphinx invite through the payer (the daemon pays the mixer for
+it: the starting sats, and the mixer's price on top; specs/LIGHTNING.md
+"Invites"), and answers the link on the base the share links use (§17.2
 `publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
 proxy's headers and mount path honored; a staff page's in-process request
 takes where the page's own request came):
 
 ```
-https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker app URL>
+https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded Tasks URL>
 ```
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
-`a=`, strut's own section, the worker app's share `link`
-(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user) with
-`&input=invite%3D<token>` after it, encoded whole: the invite's own token
-(`strut-invite.<claims>.<hmac>`, auth.ts `inviteToken`, the daemon's code
-and the app, 90 days from the invite's creation), which the app is opened
-with as its tool input and the kit's `useTask` / `useWorker` send as
-`invite` on `task/next` / `task/me`. The worker who comes with it is given
-the app's INVITE-ONLY, enabled task types they hold no row of, by
-`invite:<code>` — one worker per invite (once a grant it made is held by
-another, revoked or not, it gives nothing), only while the daemon lists the
-invite `sending`, `ready` or `used`, never a type staff revoked from them,
-never to a suspended or banned worker; a token that does not hold, or opens
-another app, is ignored. So one invite lets someone in and gives them the
-work. `/public/join` (§17.2)
-turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
-new user up with the invite and then opens `a=` (an existing user goes there
-at once). The mixer keeps only code → starting sats, and the core's parser
-ignores a section it does not know. The WORKER APP is an app the task types
-name that is in the public view. Strut keeps no invite: the daemon keeps
-the invites, the task store the grants an invite made, and an open type
-(the default) lets the worker in on their first `task/next`.
+`a=`, strut's own section: the share `link` of TASKS (`strut/worker`, §14.16:
+`<base>/?app=strut%2Fworker&solo=1&public=1`) with `&input=<encoded>` after
+it, encoded whole. Every invite opens Tasks, the server's one work page, so
+a worker keeps one page per employer. The input carries `invite=<token>`,
+the invite's own token (`strut-invite.<claims>.<hmac>`, auth.ts
+`inviteToken`: the daemon's code, the app it opens, the task types it gives
+(`t`, `[]` for none) and 90 days from the invite's creation), which the kit's
+`useTask` / `useWorker` send as `invite` on `task/next` / `task/me`, and,
+for an invite made for one kind of work, `type=<type>`, which Tasks opens
+once `task/me` has answered — in the app that draws it, with Back to Tasks.
+The worker who comes with it is given the INVITE-ONLY, enabled types the
+token names that they hold no row of, by `invite:<code>` — one worker per
+invite (once a grant it made is held by another, revoked or not, it gives
+nothing), only while the daemon lists the invite `sending`, `ready` or
+`used`, never a type staff revoked from them, never to a suspended or banned
+worker; a token that does not hold, or opens another app, is ignored. A
+token from before invites named their work (no `t`) gives every
+invite-only type of the app it opens, as it did; a GRANT LINK sent before
+(a code `link_…`, strut's own) keeps working, though staff make none now:
+an invite works for someone who has Peel too. `/public/join` (§17.2) turns
+the link back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
+new user up with the invite and then opens `a=` (someone who has Peel goes
+there at once, the invite unused). The mixer keeps only code → starting
+sats, and the core's parser ignores a section it does not know. The daemon
+keeps the invites; strut notes only the kind of work each is for
+(`<dataDir>/tasks/invites.json`), so a listing hands out the link that was
+sent, and the task store keeps the grants an invite made. Open work (the
+default) lets anyone in on their first `task/next`.
 
 Full scope, beside the rest; `strut/staff` reaches them through
-`staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):
+`staff/invite`, `staff/invites`, `staff/cancel-invite` and
+`staff/tasks-online` (§14.15):
 
 | Route | Answers |
 | --- | --- |
-| `POST /tasks/invites { sats?, app? }` | `{ code, link, sats, status, app }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `app` one of the worker apps — needed when there are several (`409 pick_app` names them), `400` for another; none at all is `409 no_worker_app`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
-| `POST /tasks/invites/link { app? }` | `{ app, code, link, peelLink }`: a GRANT LINK for someone who already has Peel — the worker app's share link with a signed invite token whose code (`link_…`) is strut's own: no Sphinx invite, nothing paid. Its first worker is given the app's invite-only types as an invite's is (one worker per code); `peelLink` opens it in Peel. Same `pick_app` / `no_worker_app` refusals |
-| `GET /tasks/invites?app=` | `{ invites: [{ code, link?, sats, status, createdAt? }], apps, app?, sats, why? }`: the daemon's invites, newest first, each `link` opening `app` (or the one worker app; with several and none asked, no `link`); `apps` the worker apps; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
+| `POST /tasks/invites { sats?, type? }` | `{ code, link, sats, status, type? }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `type` the kind of work it is for (left out: open work alone). Tasks not in the public view is `409 no_worker_app`; the app that draws `type` not in it, `409 not_online`; no such type, `400`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
+| `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
+| `POST /tasks/online` | `{ app: "strut/worker", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a staff page puts online itself; any other goes through the Public view or an `app/make-public` card |
 
 `status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
 new account took it) or `cancelled`. Refusals: `409 no_pay_credential`

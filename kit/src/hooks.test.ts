@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
-import { PUBLIC_RUNNABLE_META, PUBLIC_VIEW_META, StrutError, isPublicView, paymentRequiredOf, publicRunnable, type StrutClient } from "./client.js";
+import { PUBLIC_RUNNABLE_META, PUBLIC_VIEW_META, SERVER_NAME_META, StrutError, isPublicView, paymentRequiredOf, publicRunnable, serverName, type StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
@@ -521,6 +521,28 @@ describe("the host hooks", () => {
       await h.unmount();
       meta.setAttribute("content", "not json");
       assert.deepEqual(publicRunnable(), []);
+    } finally {
+      meta.remove();
+    }
+  });
+
+  it("useHost().name: the server's name, off the document's meta; none without one", async () => {
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const none = await renderHook(() => useHost(), { client, host });
+    assert.equal(none.result().name, undefined);
+    await none.unmount();
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", SERVER_NAME_META);
+    meta.setAttribute("content", " Acme Labels ");
+    document.head.appendChild(meta);
+    try {
+      assert.equal(serverName(), "Acme Labels");
+      const h = await renderHook(() => useHost(), { client, host });
+      assert.equal(h.result().name, "Acme Labels");
+      await h.unmount();
+      meta.setAttribute("content", "  ");
+      assert.equal(serverName(), undefined, "blank is none");
     } finally {
       meta.remove();
     }

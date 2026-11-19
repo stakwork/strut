@@ -1,12 +1,12 @@
-// Invites (plans/human-steps.md §5.8). A new worker's one link is made in a
-// worker app's Share block (./Share): the wallet's Sphinx daemon makes a
-// Sphinx invite (it pays the mixer for it: the starting sats and the mixer's
+// Invites (plans/human-steps.md §5.8). A worker's one link is made in the
+// Invite a worker panel (./Share): the wallet's Sphinx daemon makes a Sphinx
+// invite (it pays the mixer for it: the starting sats and the mixer's
 // price), and strut hands back `https://<public view>/public/join#…`, which
-// on Android installs Peel, signs them up and opens the app at its share
-// link. Here: the invites' one read, and on the Workers tab every invite
-// with its status, Copy and Share while it may be used, and Cancel. Nothing
-// is kept by strut — the daemon keeps the invites, and an open type lets the
-// worker in on their first ask.
+// on Android installs Peel when there is none, signs them up and opens Tasks
+// on the work the invite is for. Here: the invites' one read, and on the
+// Workers tab every invite with its work, status, Copy and Share while it
+// may be used, and Cancel. The daemon keeps the invites; strut notes only
+// the work each is for.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useHost, useStrutClient } from "@strut/kit";
@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { INVITE_WORDS, inviteOpen, whatsappUrl } from "../lib/view";
-import type { Invite as InviteRow, InvitesAnswer, InviteStatus } from "../lib/types";
+import type { Invite as InviteRow, InvitesAnswer, InviteStatus, TaskType } from "../lib/types";
 import { ErrorLine, Note, Section, useAct } from "./bits";
 
 /** How often the invites are read while one is still being paid for. */
@@ -31,7 +31,7 @@ export function useInvites() {
 }
 
 /** The Workers tab's list, once there is an invite. */
-export function Invites() {
+export function Invites(props: { types?: TaskType[] | undefined }) {
   const q = useInvites();
   if (q.error) {
     return (
@@ -42,8 +42,8 @@ export function Invites() {
   }
   if (!q.data?.invites.length) return null;
   return (
-    <Section title="Invites" aside={<Note>Made in a worker app's Share block, on the Queue.</Note>}>
-      <InviteTable invites={q.data.invites} />
+    <Section title="Invites" aside={<Note>Made with Invite a worker, above.</Note>}>
+      <InviteTable invites={q.data.invites} types={props.types} />
     </Section>
   );
 }
@@ -89,7 +89,13 @@ function LinkActions(props: { link: string }) {
 }
 
 /** Every invite the wallet keeps, newest first, with Copy and Cancel while it may be used. */
-function InviteTable(props: { invites: InviteRow[] }) {
+function InviteTable(props: { invites: InviteRow[]; types?: TaskType[] | undefined }) {
+  /** The work an invite is for, as staff call it. */
+  const workOf = (i: InviteRow) => {
+    if (!i.type) return "Anything open";
+    const title = props.types?.find((t) => t.name === i.type)?.title?.trim();
+    return title || i.type;
+  };
   const client = useStrutClient();
   const { act, busy, error } = useAct();
   return (
@@ -100,6 +106,7 @@ function InviteTable(props: { invites: InviteRow[] }) {
           <TableHeader>
             <TableRow>
               <TableHead>Made</TableHead>
+              <TableHead>Work</TableHead>
               <TableHead>Code</TableHead>
               <TableHead className="text-right">Sats</TableHead>
               <TableHead>Status</TableHead>
@@ -110,6 +117,7 @@ function InviteTable(props: { invites: InviteRow[] }) {
             {props.invites.map((i) => (
               <TableRow key={i.code}>
                 <TableCell className="whitespace-nowrap">{i.createdAt ? new Date(i.createdAt).toLocaleString() : "—"}</TableCell>
+                <TableCell className={i.type ? "" : "text-muted-foreground"}>{workOf(i)}</TableCell>
                 <TableCell className="font-mono text-xs" title={i.code}>
                   {i.code.length > 14 ? `${i.code.slice(0, 6)}…${i.code.slice(-6)}` : i.code}
                 </TableCell>

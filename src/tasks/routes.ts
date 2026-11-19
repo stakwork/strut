@@ -86,21 +86,25 @@
  *   → `{ payout, action }`: a person settles one by hand — `paid` with the
  *   fee they give (else 0), `drop` fails it and gives its reserve back
  *
- * The INVITE routes (plans/human-steps.md §5.8): a new worker's one link,
- * made through the payer (the daemon pays the mixer for an invite) and
- * kept by the daemon alone.
+ * The INVITE routes (plans/human-steps.md §5.8): a worker's one link, made
+ * through the payer (the daemon pays the mixer for an invite), opening
+ * TASKS (`strut/worker`), the server's one work page.
  *
- * - `POST /tasks/invites { sats?, app? }` → `{ code, link, sats, status,
- *   app }`: `link` is `https://<public view>/public/join#<the invite>&a=<the
- *   worker app's URL>`; `sats` the worker's starting balance (the payout
- *   settings' `inviteSats` when left out); `app` one of the apps the task
- *   types name that are in the public view (needed when there are several:
- *   `409 pick_app`; none, `409 no_worker_app`)
- * - `GET /tasks/invites[?app=]` → `{ invites, apps, app?, sats, why? }`: the
- *   daemon's invites newest first, each link opening `app` (or the one
- *   worker app); `why` says the server cannot invite (`no_pay_credential`,
- *   `no_invites`)
+ * - `POST /tasks/invites { sats?, type? }` → `{ code, link, sats, status,
+ *   type? }`: `link` is `https://<public view>/public/join#<the invite>&a=<
+ *   Tasks' URL>`, which opens `type` when given (and gives it, when it is
+ *   invite-only); `sats` the worker's starting balance (the payout
+ *   settings' `inviteSats` when left out). Tasks not in the public view:
+ *   `409 no_worker_app`; the app that draws `type` not in it: `409
+ *   not_online`; no such type: `400`
+ * - `GET /tasks/invites` → `{ invites, sats, why? }`: the daemon's invites
+ *   newest first, each with the link it was sent with and its `type`;
+ *   `why` says the server cannot invite (`no_pay_credential`, `no_invites`)
  * - `POST /tasks/invites/:code/cancel` → `{ code, status }`
+ * - `POST /tasks/online` → `{ app, public: true }`: puts Tasks in the public
+ *   view, as the Public view tab does with nothing unticked — the one app a
+ *   staff page puts online itself, since strut ships it and it calls only
+ *   the worker's `task/*` steps
  */
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
@@ -141,6 +145,9 @@ export interface TaskRoutesDeps {
    *  links are on: the share links' (createStrut: `lastBase` for a staff
    *  page's in-process request). Absent: the invite routes answer 501. */
   invites?: Invites;
+  /** `POST /tasks/online`: Tasks put in the public view in `actor`'s name.
+   *  Absent: the route refuses. */
+  tasksOnline?: (actor: string | undefined) => Promise<{ app: string; public: true }>;
   publicUrl?: (c: Context) => string;
   /** A ROUND type's workflow (Tasks and workers' Send a round): the items a
    *  round sends by default, read off it, and a round sent — the workflow
@@ -298,26 +305,25 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
   app.post("/tasks/invites", (c) =>
     inviteAnswer(c, async (i, base) => {
       const b = await body(c);
-      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "app");
-      if (extra.length) throw new TaskError("bad_request", `an invite takes sats and app; not ${extra.join(", ")}`);
+      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "type");
+      if (extra.length) throw new TaskError("bad_request", `an invite takes sats and type; not ${extra.join(", ")}`);
       if (b["sats"] !== undefined && typeof b["sats"] !== "number") throw new TaskError("bad_request", "sats is a whole number of sats");
-      if (b["app"] !== undefined && typeof b["app"] !== "string") throw new TaskError("bad_request", "app is an app's name");
-      return { ...(await i.create({ base, ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["app"] ? { app: b["app"] as string } : {}) })) };
+      if (b["type"] !== undefined && (typeof b["type"] !== "string" || !b["type"])) throw new TaskError("bad_request", "type is a task type's name");
+      return { ...(await i.create({ base, ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
     }),
   );
 
-  // A grant link for someone who already has Peel: no Sphinx invite, no sats.
-  app.post("/tasks/invites/link", (c) =>
-    inviteAnswer(c, async (i, base) => {
-      const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-      if (b["app"] !== undefined && typeof b["app"] !== "string") throw new TaskError("bad_request", "app is an app's name");
-      return { ...(await i.grantLink({ base, ...(b["app"] ? { app: b["app"] as string } : {}) })) };
-    }),
-  );
-
-  app.get("/tasks/invites", (c) => inviteAnswer(c, async (i, base) => ({ ...(await i.list({ base, ...(c.req.query("app") ? { app: c.req.query("app")! } : {}) })) })));
+  app.get("/tasks/invites", (c) => inviteAnswer(c, async (i, base) => ({ ...(await i.list({ base })) })));
 
   app.post("/tasks/invites/:code/cancel", (c) => inviteAnswer(c, async (i) => ({ ...(await i.cancel(c.req.param("code") ?? "")) })));
+
+  // Tasks online (§5.8): before `/tasks/:id`.
+  app.post("/tasks/online", (c) =>
+    answer(c, async () => {
+      if (!deps.tasksOnline) throw new TaskError("refused", "this server puts no page online from here: use the Public view");
+      return { ...(await deps.tasksOnline((await by(c)).by)) };
+    }),
+  );
 
   app.get("/tasks/types", (c) => answer(c, async () => ({ types: await tasks.types() })));
 

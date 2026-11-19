@@ -22,6 +22,17 @@ export function isPublicView(doc: Document | undefined = typeof document !== "un
   return !!doc?.querySelector(`meta[name="${PUBLIC_VIEW_META}"]`);
 }
 
+/** The `<meta name>` carrying the strut server's NAME into a document as it
+ *  is served (its brand's `name`): who the server is to the people who use
+ *  it — the employer a worker works for. */
+export const SERVER_NAME_META = "strut-name";
+
+/** The server's name, when it has one. */
+export function serverName(doc: Document | undefined = typeof document !== "undefined" ? document : undefined): string | undefined {
+  const name = doc?.querySelector(`meta[name="${SERVER_NAME_META}"]`)?.getAttribute("content")?.trim();
+  return name || undefined;
+}
+
 /** The `<meta name>` a public view document carries beside its mark when
  *  a visitor may START some of the workflows the app grants
  *  (plans/paid-runs.md §10): a JSON array of `{ name, results }`. */

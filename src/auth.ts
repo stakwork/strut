@@ -644,22 +644,28 @@ const redeemedTickets = new Map<string, number>();
 const INVITE_PREFIX = "strut-invite.";
 
 /** The token a worker invite's link carries to the worker app it opens
- *  (`input=invite=…`): the daemon's invite `code` and the `app`, signed, so
- *  the worker who opens it with it is given that app's invite-only task
+ *  (`input=invite=…`): the daemon's invite `code` and the `app` it opens,
+ *  signed, so the worker who opens it with it is given invite-only task
  *  types (the task service's `enterInvite`) — one worker per invite, while
- *  the daemon still has it. `exp` fixed by the caller, so a listing's link
- *  is the one the worker was sent. Undefined with no secret to sign it. */
-export function inviteToken(code: string, app: string, exp: number): string | undefined {
-  const signed = signClaims("invite", { c: code, a: app, exp });
+ *  the daemon still has it. `types` names exactly the types it gives (none,
+ *  `[]`: an invite to open work alone); left out — a token made before
+ *  invites named their work — it gives every invite-only type `app` draws.
+ *  `exp` fixed by the caller, so a listing's link is the one the worker was
+ *  sent. Undefined with no secret to sign it. */
+export function inviteToken(code: string, app: string, exp: number, types?: string[]): string | undefined {
+  const signed = signClaims("invite", { c: code, a: app, exp, ...(types ? { t: types } : {}) });
   return signed ? `${INVITE_PREFIX}${signed}` : undefined;
 }
 
 /** The invite a token names, if it is strut's, signed here and not past its
- *  `exp`; undefined otherwise. */
-export function inviteOf(token: string, now = Date.now()): { code: string; app: string } | undefined {
+ *  `exp`; undefined otherwise. `types` only when the token names them. */
+export function inviteOf(token: string, now = Date.now()): { code: string; app: string; types?: string[] } | undefined {
   if (typeof token !== "string" || !token.startsWith(INVITE_PREFIX)) return undefined;
   const claims = readClaims("invite", token.slice(INVITE_PREFIX.length), now);
-  return claims && typeof claims["c"] === "string" && typeof claims["a"] === "string" ? { code: claims["c"], app: claims["a"] } : undefined;
+  if (!claims || typeof claims["c"] !== "string" || typeof claims["a"] !== "string") return undefined;
+  const t = claims["t"];
+  if (t !== undefined && !(Array.isArray(t) && t.every((x) => typeof x === "string"))) return undefined;
+  return { code: claims["c"], app: claims["a"], ...(t ? { types: t as string[] } : {}) };
 }
 
 /** A sign-in ticket for `actor` as `role` (a member unless said),

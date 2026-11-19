@@ -19,10 +19,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { answerOfDraft, draftOf, saveOf, shapeChanged, type Draft, type GradeDraft } from "../lib/draft";
 import { liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
-import type { TaskStats, TaskType, TypeNumbers, Worker } from "../lib/types";
+import type { TaskStats, TaskType, TypeNumbers, TypeShare, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
 import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
-import { TypeShareLine } from "./Share";
+import { TypeInvite } from "./Share";
 import { RoundNote, SendRound } from "./SendRound";
 
 interface Props {
@@ -30,6 +30,8 @@ interface Props {
   place: Place;
   shown: Shown;
   types?: TaskType[];
+  /** Tasks' share (`staff/types`' `tasks`): every invite opens it. */
+  tasks?: TypeShare;
   workers?: Worker[];
   error: unknown;
 }
@@ -251,7 +253,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
           </div>
         )}
       </div>
-      {was && <TypeShareLine type={was} />}
+      {was && <TypeInvite type={was} types={props.types} tasks={props.tasks} />}
       {was?.standing && <Note>Standing: a worker starts one whenever they ask, and each answer starts the workflow {was.standing.workflow}.</Note>}
       {was?.round && <RoundNote type={was} />}
 

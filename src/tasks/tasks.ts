@@ -939,11 +939,12 @@ export interface TasksDeps {
   /** A new run id (createStrut's `generateRunId`): a pick-up's. */
   runId?(): string;
   /** §5.8: an invite link's token — `read` checks it (auth.ts `inviteOf`:
-   *  strut's, signed here, not expired) and names the daemon's invite and
-   *  the worker app it opens; `live` asks the daemon whether that invite
-   *  may still let someone in (not cancelled, not failed). Left out: an
-   *  invite gives no task type. */
-  invite?: { read(token: string): { code: string; app: string } | undefined; live(code: string): Promise<boolean> };
+   *  strut's, signed here, not expired) and names the daemon's invite, the
+   *  worker app it opens and the task types it gives (left out: every
+   *  invite-only type of that app); `live` asks the daemon whether that
+   *  invite may still let someone in (not cancelled, not failed). Left out:
+   *  an invite gives no task type. */
+  invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean> };
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -1238,18 +1239,21 @@ export function createTasks(deps: TasksDeps): TasksService {
    *  taken one after the other, so only one worker gets it. */
   const redeeming = new Map<string, Promise<unknown>>();
   /** A worker opened `app` from an invite's link (`token`): they are given
-   *  the app's INVITE-ONLY, enabled types they have no row of, by
-   *  `invite:<code>` — never one revoked, which only staff grant again, and
-   *  never to a suspended or banned worker. One worker per invite: once
-   *  another holds a grant it made, it gives nothing; nor once the daemon
-   *  no longer has it (cancelled, failed). A token that is not strut's, or
-   *  for another app, is ignored: the ask goes on as without one. */
+   *  the INVITE-ONLY, enabled types the token names that they have no row
+   *  of (a token from before invites named their work: every such type
+   *  `app` draws), by `invite:<code>` — never one revoked, which only staff
+   *  grant again, and never to a suspended or banned worker. One worker per
+   *  invite: once another holds a grant it made, it gives nothing; nor once
+   *  the daemon no longer has it (cancelled, failed). A token that is not
+   *  strut's, or opened another app, is ignored: the ask goes on as without
+   *  one. */
   const enterInvite = async (s: TaskStores, w: WorkerRecord, app: string | undefined, token: string | undefined): Promise<WorkerRecord> => {
     if (!token || !app || !deps.invite || w.status === "suspended" || w.status === "banned") return w;
     const inv = deps.invite.read(token);
     if (!inv || inv.app !== app) return w;
     const known = new Set(w.grants.map((g) => g.type));
-    const todo = (await s.tasks.types()).filter((k) => k.app === app && !k.open && k.enabled && !known.has(k.name));
+    const named = (k: TaskType) => (inv.types ? inv.types.includes(k.name) : k.app === app);
+    const todo = (await s.tasks.types()).filter((k) => named(k) && !k.open && k.enabled && !known.has(k.name));
     if (!todo.length) return w;
     const by = `invite:${inv.code}`;
     const before = redeeming.get(inv.code) ?? Promise.resolve();
