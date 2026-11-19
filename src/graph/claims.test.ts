@@ -568,7 +568,7 @@ for (const tb of testBackends()) {
       ]);
       const JOB: SubjectRef = { kind: "job", id: "j-1" };
       let runs: JobView["runs"] = [{ workflow: "job", runId: "1700", at: "", status: "success" }];
-      const jobs = { get: async (id: string) => (id === "j-1" ? ({ runs } as JobView) : null) };
+      const jobs = { runs: async (id: string) => (id === "j-1" ? runs : null) };
       const withIndex = new ClaimsReader(backend, { jobs });
 
       assert.deepEqual((await reader.subjectsOf("cj")).map((s) => [s.subject, s.ref_id]), [[JOB, job!.ref_id]]);

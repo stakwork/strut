@@ -175,12 +175,13 @@ export function activeTurnOf(runs: ReadonlyArray<{ runId: string; parentRunId?: 
   return runs.find((r) => !r.parentRunId)?.runId ?? null;
 }
 
-/** What the reader needs of the job index (plans/job-claims.md §2): a job
- *  read back, for its active turn. `createStrut` hands its `services.jobs`;
+/** What the reader needs of the job index (plans/job-claims.md §2): a job's
+ *  run lines, for its active turn (`runs` reads the record alone — `get`
+ *  is the whole view, for what writes the job's node). `createStrut` hands its `services.jobs`;
  *  a bare reader has none, and every job subject then has no active
  *  version — its claims read `stale` or `unknown`, never `supported`. */
 export interface ClaimsReaderDeps {
-  jobs?: { get?: JobIndex["get"] };
+  jobs?: { get?: JobIndex["get"]; runs?: JobIndex["runs"] };
   /** The Concept branches (src/branches.ts): when one was made, so its
    *  status counts only the works run on it since — a name made again after
    *  a drop starts clean. Without it, a branch's status counts all its
@@ -627,8 +628,8 @@ export class ClaimsReader {
    *  on `branch`, the branch's page of that name (none there: null). */
   async activeVersion(subject: SubjectRef, branch?: string): Promise<string | null> {
     if (subject.kind === "job") {
-      const view = await this.deps.jobs?.get?.(subject.id, { threads: false });
-      return view ? activeTurnOf(view.runs) : null;
+      const runs = await this.deps.jobs?.runs?.(subject.id);
+      return runs ? activeTurnOf(runs) : null;
     }
     if (subject.kind === "concept") {
       const ref = branch ? await this.pageOn(subject.name, branch) : await this.subjectRefId(subject);

@@ -216,10 +216,10 @@ import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.j
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
 import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
@@ -1470,7 +1470,11 @@ export async function createStrut<TServices = unknown>(
     ((opts.chatStore ? opts.chatStore instanceof FileChatStore : fileBacked)
       ? new FileSessionStore(dataDir)
       : new MemorySessionStore());
-  const sessions = sessionsCapability(sessionStore);
+  // What commits turns (an agent's, a conversation's fork): each turn made
+  // under a job notes its thread on the job's record, which is how the job
+  // index lists a job's threads without reading every session.
+  const committingSessions = recordingJobSessions(sessionStore, dataDir);
+  const sessions = sessionsCapability(committingSessions);
   // A consumer's own `sessions` capability is theirs: the `/sessions`
   // endpoints (which manage OUR store) then report 501, like `/secrets`.
   const sessionsInjected =
@@ -3950,6 +3954,8 @@ export async function createStrut<TServices = unknown>(
   // tab. A run is attributed by the content hash it recorded (summary, else
   // `run.start` for runs that predate the summary stamp); identical content
   // published twice goes to the newest twin that existed when the run started.
+  // Counted over the newest `RUN_LIST_SCAN_MAX` runs, no further (`scanned`;
+  // `more`: older runs were not read): a busy workflow holds 100k runs.
   app.get("/workflows/:name/versions", async (c) => {
     const name = c.req.param("name");
     const meta = await workspace.getWorkflowMetadata(name);
@@ -3984,12 +3990,15 @@ export async function createStrut<TServices = unknown>(
       if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
       stats.set(v.version, s);
     };
-    const runIds = await store.listRuns(name);
+    const all = await store.listRuns(name);
+    const runIds = all.slice(0, RUN_LIST_SCAN_MAX);
     for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
     return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
       unattributed,
+      scanned: runIds.length,
+      ...(all.length > runIds.length ? { more: true } : {}),
     });
   });
 
@@ -6613,7 +6622,7 @@ export async function createStrut<TServices = unknown>(
     // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
       viewer: { scope, ...(actor ? { actor } : {}) },
-      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
+      limit: limitQ !== undefined ? Number(limitQ) : PROPOSAL_LIST_DEFAULT,
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
@@ -8131,7 +8140,7 @@ export async function createStrut<TServices = unknown>(
   const conversations = createConversations({
     dataDir,
     store,
-    sessions: sessionStore,
+    sessions: committingSessions,
     getWorkflow: (name) => workspace.getWorkflow(name),
     running: (id) => liveSessions.has(id) || !!sessions.holder(id),
     liveState: (workflow, runId) => controllers.get(`${workflow}/${runId}`)?.state,

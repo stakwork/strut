@@ -115,6 +115,7 @@ export function StepInfoFlyout(props: {
               {stats.runs.lastAt && (
                 <div class="schema-field-default">last run {relativeTime(stats.runs.lastAt)}</div>
               )}
+              {stats.more && <div class="schema-field-default">counted over the newest {stats.scanned.toLocaleString()} runs</div>}
               {stats.workflows.length > 0 && (
                 <div class="step-stat-workflows">
                   {stats.workflows.map((w) => (

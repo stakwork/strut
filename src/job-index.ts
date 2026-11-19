@@ -20,14 +20,14 @@
  * a link here, never `not found` (artifact-refs.ts).
  */
 
-import { access, readdir, readFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { RunArchiveError } from "./run-archive.js";
 import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
-import { idProblem } from "./session-store.js";
+import { idProblem, sessionInfo } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
-import { jobFilePath, jobHolder, jobRoot, listJobFiles, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
+import { jobFilePath, jobHolder, jobRoot, listJobFiles, noteJobSessions, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
 import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
 
@@ -35,9 +35,11 @@ export interface JobIndexDeps {
   dataDir: string;
   /** Summaries for the run list and the artifact fold; logs for the threads. */
   store: Pick<RunStore, "getRunSummary" | "getRunEvents">;
-  /** `list` finds the job's threads; `load` reads their turn lines (the
-   *  context after each turn) for the thread fold. */
-  sessions?: Pick<SessionStore, "list" | "load">;
+  /** `turns` reads a job's threads (`JobRecord.sessions`) — their turn
+   *  lines, the context after each turn — for the view and the thread fold.
+   *  `list` is read once per server, to fill in the records from before
+   *  `sessions` was kept (`sessionsIndexed`). */
+  sessions?: Pick<SessionStore, "list" | "turns">;
   /** Whether a run is executing in this process (a run controller). A run
    *  with no summary that is not is `stale` — cut off by a restart and not
    *  resumed. Absent, such a run reads `running`. */
@@ -107,7 +109,7 @@ export interface JobView extends Omit<JobListing, "runs" | "holds"> {
   runs: JobRunView[];
   /** The threads made under the job (a turn line's `job`), or named after
    *  it — the job id, or `<job>/…` — for threads committed before the line
-   *  carried the field. */
+   *  carried the field. Read from the record's `sessions`, newest first. */
   sessions: Array<SessionInfo & { busy?: true }>;
   /** The current deliverables (the fold). */
   artifacts: JobArtifact[];
@@ -161,9 +163,16 @@ export interface JobIndex {
   list(opts?: { q?: string; workflow?: string; actor?: string; prefix?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
+  /** The job's runs as its record lists them, newest first — no status,
+   *  nothing read past the record: what a claims read needs (the active
+   *  turn, whether a run is one of the job's). `null` when `get` is. */
+  runs(job: string): Promise<JobRun[] | null>;
   /** One file of a job's directory; `null` when it is not there. */
   read(job: string, path: string, opts?: { maxChars?: number }): Promise<JobFile | null>;
 }
+
+/** Marks the one pass that filled `JobRecord.sessions` in (`sessionsIndexed`). */
+export const SESSIONS_INDEXED = ".sessions-indexed";
 
 /** The cap on what `read` hands back of a text file. */
 export const JOB_READ_MAX_CHARS = 50_000;
@@ -211,8 +220,16 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     };
   };
 
-  /** The job's runs that may be read past their status. */
-  const readable = async (workflow: string) => !(await deps.sealed?.(workflow));
+  /** The job's runs that may be read past their status — asked once per
+   *  workflow per read, since a job's hundred turns are one workflow. */
+  const readableOnce = (): ((workflow: string) => Promise<boolean>) => {
+    const seen = new Map<string, Promise<boolean>>();
+    return (workflow) => {
+      let readable = seen.get(workflow);
+      if (!readable) seen.set(workflow, (readable = (async () => !(await deps.sealed?.(workflow)))()));
+      return readable;
+    };
+  };
 
   const appsAt = deps.appVersion ? { appVersion: deps.appVersion } : {};
 
@@ -232,7 +249,12 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
 
   /** §1 of plans/jobs-sidebar.md: the newest `limit` readable runs, their
    *  logs and resolved deliverables, folded with the sessions' turn lines. */
-  const threadsOf = async (rec: JobRecord, sessions: SessionInfo[], opts: GetJobOptions): Promise<{ threads: JobThread[]; omittedRuns?: number }> => {
+  const threadsOf = async (
+    rec: JobRecord,
+    sessions: SessionInfo[],
+    opts: GetJobOptions,
+    readable: (workflow: string) => Promise<boolean>,
+  ): Promise<{ threads: JobThread[]; omittedRuns?: number }> => {
     const lines = [...(rec.runs ?? [])].reverse();
     const limit = opts.limit && opts.limit > 0 ? opts.limit : THREADS_RUN_LIMIT;
     const exists = existsIn(rootOf(rec.name));
@@ -250,13 +272,14 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       const stale = !summary && deps.isLive && !deps.isLive(line.workflow, line.runId);
       runs.push({ ...line, summary, ...(stale ? { stale: true as const } : {}), events, ...(artifacts?.length ? { artifacts } : {}) });
     }
-    const turnLines = (await Promise.all(sessions.map((s) => deps.sessions?.load?.(s.id).catch(() => null)))).flatMap((t) => t?.turns ?? []);
+    // The turn lines alone: a thread's messages are not what the fold reads.
+    const turnLines = (await Promise.all(sessions.map((s) => deps.sessions?.turns(s.id).catch(() => [])))).flatMap((t) => t ?? []);
     const omitted = lines.length - Math.min(lines.length, limit);
     return { threads: foldJobThreads(runs, turnLines, { nodes: !!opts.nodes }), ...(omitted > 0 ? { omittedRuns: omitted } : {}) };
   };
 
   /** §3: the current deliverables, and the latest reply. */
-  const fold = async (rec: JobRecord): Promise<{ artifacts: JobArtifact[]; text?: string }> => {
+  const fold = async (rec: JobRecord, readable: (workflow: string) => Promise<boolean>): Promise<{ artifacts: JobArtifact[]; text?: string }> => {
     const seen = new Set<string>();
     const kept: Array<{ raw: Record<string, unknown>; runId: string }> = [];
     let text: string | undefined;
@@ -297,6 +320,75 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       .sort((a, b) => (Date.parse(b.usedAt) || 0) - (Date.parse(a.usedAt) || 0));
   };
 
+  /** The job's record; a directory with no record beside it (the record
+   *  was removed by hand) is still a job, with files and nothing else.
+   *  `null` for neither. */
+  const recordOf = async (job: string): Promise<JobRecord | null> => {
+    if (idProblem(job)) return null;
+    const root = rootOf(job);
+    const rec = await readJobRecord(root);
+    if (rec) return rec;
+    try {
+      await access(root);
+      return { name: job, usedAt: "", repos: {} };
+    } catch {
+      return null;
+    }
+  };
+
+  /** The job's threads, newest first: the sessions its record lists, each
+   *  read on its own — never every session on the server. */
+  const sessionsOf = async (rec: JobRecord): Promise<SessionInfo[]> => {
+    const store = deps.sessions;
+    if (!store || !rec.sessions?.length) return [];
+    const infos = await Promise.all(rec.sessions.map(async (id) => sessionInfo(id, await store.turns(id).catch(() => []))));
+    return infos.filter((s): s is SessionInfo => s !== null).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  };
+
+  /**
+   * `JobRecord.sessions` filled in on the records from before it was kept:
+   * ONE pass over the session store per server, the first time a job is
+   * read, marked done in `jobs/.sessions-indexed` (no job id starts with a
+   * dot). A thread counts as before — a turn line's `job`, or named after
+   * the job (`<job>` or `<job>/…`). From then on a commit notes its thread
+   * itself (`recordingJobSessions`). A pass that fails is logged and not
+   * tried again until a restart: the records keep what they have.
+   */
+  let indexing: Promise<void> | undefined;
+  const sessionsIndexed = (): Promise<void> =>
+    (indexing ??= (async () => {
+      const store = deps.sessions;
+      if (!store) return;
+      const base = join(deps.dataDir, "jobs");
+      const marker = join(base, SESSIONS_INDEXED);
+      try {
+        await access(marker);
+        return;
+      } catch {
+        // not yet
+      }
+      const jobs = new Set<string>();
+      for (const f of await readdir(base).catch(() => [] as string[])) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          jobs.add(decodeURIComponent(f.slice(0, -".json".length)));
+        } catch {
+          // not a name strut wrote
+        }
+      }
+      const byJob = new Map<string, string[]>();
+      for (const s of await store.list()) {
+        const of = new Set(s.jobs ?? []);
+        const segments = s.id.split("/");
+        for (let i = 1; i <= segments.length; i++) of.add(segments.slice(0, i).join("/"));
+        for (const job of of) if (jobs.has(job)) byJob.set(job, [...(byJob.get(job) ?? []), s.id]);
+      }
+      // Oldest first, as a commit would have noted them.
+      for (const [job, ids] of byJob) await noteJobSessions(rootOf(job), ids.reverse());
+      await mkdir(base, { recursive: true });
+      await writeFile(marker, `${new Date().toISOString()}\n`, "utf-8");
+    })().catch((err) => console.warn("[job-index] threads not indexed — records keep what they have:", err)));
+
   return {
     async list(opts = {}) {
       let recs = await records();
@@ -305,9 +397,10 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       if (opts.prefix) recs = recs.filter((rec) => rec.name.startsWith(opts.prefix!));
       let rows = recs.map(listing);
       if (opts.q?.trim()) {
+        const readable = readableOnce();
         const searchable = await Promise.all(
           recs.map(async (rec, i) => {
-            const { artifacts } = await fold(rec);
+            const { artifacts } = await fold(rec, readable);
             const description = [rec.name, ...artifacts.map((a) => [a.title, a.summary].filter(Boolean).join(" — "))].join(" ");
             return { name: rec.title ?? rec.name, description, row: rows[i]! };
           }),
@@ -318,19 +411,11 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     },
 
     async get(job, opts = {}) {
-      if (idProblem(job)) return null;
+      await sessionsIndexed();
+      const rec = await recordOf(job);
+      if (!rec) return null;
       const root = rootOf(job);
-      let rec = await readJobRecord(root);
-      if (!rec) {
-        // A directory with no record beside it (the record was removed by
-        // hand): still a job, with files and nothing else.
-        try {
-          await access(root);
-          rec = { name: job, usedAt: "", repos: {} };
-        } catch {
-          return null;
-        }
-      }
+      const readable = readableOnce();
       const runs: JobRunView[] = [];
       for (const line of [...(rec.runs ?? [])].reverse()) {
         const summary = await deps.store.getRunSummary(line.workflow, line.runId);
@@ -345,9 +430,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
         }
         runs.push(view);
       }
-      const sessions = ((await deps.sessions?.list()) ?? [])
-        .filter((s) => s.jobs?.includes(job) || s.id === job || s.id.startsWith(`${job}/`))
-        .map((s) => ({ ...s, ...(deps.sessionHolder?.(s.id) ? { busy: true as const } : {}) }));
+      const sessions = (await sessionsOf(rec)).map((s) => ({ ...s, ...(deps.sessionHolder?.(s.id) ? { busy: true as const } : {}) }));
       const { runs: _n, holds: _h, ...head } = listing(rec);
       return {
         ...head,
@@ -357,9 +440,14 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
         files: await listJobFiles(root, rec),
         runs,
         sessions,
-        ...(await fold(rec)),
-        ...(opts.threads === false ? {} : await threadsOf(rec, sessions, opts)),
+        ...(await fold(rec, readable)),
+        ...(opts.threads === false ? {} : await threadsOf(rec, sessions, opts, readable)),
       };
+    },
+
+    async runs(job) {
+      const rec = await recordOf(job);
+      return rec ? [...(rec.runs ?? [])].reverse() : null;
     },
 
     async read(job, path, opts = {}) {
