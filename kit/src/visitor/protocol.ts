@@ -9,8 +9,19 @@
  *  signed in now, if any. */
 export const VISITOR_CAPABILITY = "strut/visitor";
 /** Page → host: draw the sign-in sheet; answers `{ actor }`, or `{}` when
- *  the visitor closed it. */
+ *  the visitor closed it. Params `{ silent: true }` (`SignInOptions`): sign
+ *  in only if it takes nothing of the person — the wallet the host runs in
+ *  already lets this page sign them in (Peel: a grant it holds) — and else
+ *  answer `{}` with no sheet. A host that does not know `silent` draws the
+ *  sheet as before. */
 export const VISITOR_SIGN_IN_METHOD = "strut/visitor/sign-in";
+
+/** How a page asks to sign the visitor in. */
+export interface SignInOptions {
+  /** Nothing drawn, nothing asked: signed in only when nobody has to say
+   *  yes now. What a page does as it loads; its own button asks plainly. */
+  silent?: boolean;
+}
 /** Page → host: sign the visitor out; answers `{}`. */
 export const VISITOR_SIGN_OUT_METHOD = "strut/visitor/sign-out";
 

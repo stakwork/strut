@@ -8,7 +8,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStrutAccount, useStrutClient, useStrutVisitor } from "./provider.js";
 import { reloadAppState } from "./hooks.js";
-import type { AccountPlacement, VisitorMethod } from "./visitor/protocol.js";
+import type { AccountPlacement, SignInOptions, VisitorMethod } from "./visitor/protocol.js";
 
 export interface UseVisitor {
   /** The host can sign a visitor in here (the public view names a method). */
@@ -21,8 +21,11 @@ export interface UseVisitor {
   /** The host's sign-in sheet: the actor once signed in, undefined when the
    *  visitor closed it. The page's reads are read again as the new viewer's
    *  (`useAppState` included: what was set before and not kept is dropped —
-   *  set it again once signed in to keep it). */
-  signIn(): Promise<string | undefined>;
+   *  set it again once signed in to keep it). `{ silent: true }`: no
+   *  sheet — signed in only when the host's wallet does it without asking
+   *  (Peel holding a grant for this page), else undefined; what a page
+   *  tries as it loads, keeping its own button for the rest. */
+  signIn(opts?: SignInOptions): Promise<string | undefined>;
   signOut(): Promise<void>;
 }
 
@@ -35,8 +38,8 @@ export function useVisitor(): UseVisitor {
     reloadAppState(client);
     void queries.invalidateQueries();
   }, [client, queries]);
-  const signIn = useCallback(async () => {
-    const signed = await visitor.signIn();
+  const signIn = useCallback(async (opts?: SignInOptions) => {
+    const signed = await visitor.signIn(opts);
     if (signed) refresh();
     return signed;
   }, [visitor, refresh]);

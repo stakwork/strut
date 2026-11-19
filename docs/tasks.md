@@ -326,8 +326,11 @@ index. A change in this area updates this file, not AGENTS.md.
   draws the invite's work (`409 not_online`), both refused before the
   wallet pays. `/public/join` opens Peel on Android with Chrome's
   `intent://` form of `sphinx.chat://?action=i&…&a=…`, the newest APK as its
-  fallback; Peel signs a new user up and opens `a=`, and the first sign-in
-  is one tap. Nothing carries an intent across an install, so the tap also
+  fallback; Peel signs a new user up and opens `a=`, granting that page
+  sign-in as you as it opens (Peel Android), and Tasks signs in silently
+  as it loads (`signIn({ silent: true })`), so the first sign-in is a toast,
+  no tap (specs/WALLET.md "Signing a visitor in", steps 4-5); a Peel
+  without the grant leaves Sign in to start, one tap. Nothing carries an intent across an install, so the tap also
   copies `sphinx.chat://?…` to the clipboard: a Peel opened with no account
   and no invite reads it there (peel-android's onboarding), and a worker new
   to Peel goes from the download to Tasks without coming back to the link.

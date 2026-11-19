@@ -39,6 +39,23 @@ describe("the visitor contract (plans/app-repos.md §5)", () => {
     assert.equal(createBridgeVisitor(app({ v: 1, methods: [], actor: "secp:aa" })).actor(), "secp:aa", "signed in before the page started");
   });
 
+  it("a silent sign-in asks with `{ silent: true }`; a plain one with no params; a silent `{}` is not signed in", async () => {
+    const params: unknown[] = [];
+    const recording = (answer: unknown) => ({
+      getHostCapabilities: () => ({ experimental: { [VISITOR_CAPABILITY]: { v: 1, methods: ["sphinx"] } } }),
+      request: async (r: { method: string; params?: unknown }) => {
+        params.push(r.params);
+        return answer;
+      },
+    });
+    assert.equal(await createBridgeVisitor(recording({ actor: "secp:aa" })).signIn({ silent: true }), "secp:aa");
+    assert.equal(await createBridgeVisitor(recording({ actor: "secp:aa" })).signIn(), "secp:aa");
+    const quiet = createBridgeVisitor(recording({}));
+    assert.equal(await quiet.signIn({ silent: true }), undefined);
+    assert.equal(quiet.actor(), undefined);
+    assert.deepEqual(params, [{ silent: true }, {}, { silent: true }]);
+  });
+
   it("a host with no sign-in: unavailable, and asking says so", async () => {
     const v = createBridgeVisitor(app(undefined));
     assert.equal(v.available(), false);
