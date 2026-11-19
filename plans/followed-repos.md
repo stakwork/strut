@@ -202,8 +202,9 @@ again only when the release moves.
 This makes `requires.secrets` mean what it says. Today a package lists
 every secret its steps may read, needed or not, because the fence
 (`src/packages/fence.ts`) lets a step read only what's listed. A package
-that can do without one of them gets an `optional` list in `requires` when
-it needs to be followed without it.
+that can do without one of them lists it under `requires.optional`: its
+steps may read it, and neither the gate nor an install's `missing` asks
+for it (built 2026-11-19, for pods' `GITHUB_TOKEN`, a person's own).
 
 **For self-hosted boxes (later):** setting a secret that a waiting
 subscription lacks starts its sync, and the host's Packages page shows a

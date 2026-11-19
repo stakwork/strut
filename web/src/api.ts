@@ -2376,6 +2376,7 @@ export function getBrandStyles(): Promise<BrandStyles | null> {
 /** What a package needs of the strut that installs it, as its strut.yaml says. */
 export interface PackageRequires {
   secrets?: string[];
+  optional?: string[];
   binaries?: string[];
   runtimes?: Array<{ name: string; image?: string; binaries?: string[] }>;
   packages?: Array<{ package: string; digest: string; source: string }>;
@@ -2906,6 +2907,8 @@ export interface PackageDetail {
   steps: StepDetail[];
   concepts: ConceptDetail[];
   secrets: string[];
+  /** Secrets its steps may read but can do without (`requires.optional`). */
+  optional?: string[];
   /** The steps the manifest's `job:` gives the job agent, by their names
    *  inside the package, and the ones among them that ask first. */
   job?: { tools: string[]; approve: string[] };

@@ -525,7 +525,7 @@ for (const tb of testBackends()) {
       await mkdir(join(repo, "pkg", "workflows"), { recursive: true });
       await mkdir(join(repo, "pkg", "steps"), { recursive: true });
       await mkdir(join(repo, "pkg", "concepts"), { recursive: true });
-      await writeFile(join(repo, "pkg", "strut.yaml"), "package: acme/pods\nversion: 0.1.0\nrequires:\n  secrets: [PODS_KEY]\n");
+      await writeFile(join(repo, "pkg", "strut.yaml"), "package: acme/pods\nversion: 0.1.0\nrequires:\n  secrets: [PODS_KEY]\n  optional: [GITHUB_TOKEN]\n");
       await writeFile(join(repo, "pkg", "steps", "claim.ts"), KEYED_STEP("acme/pods/claim", "PODS_KEY"));
       await writeFile(join(repo, "pkg", "workflows", "sync.yaml"), LOG("acme/pods/sync", "one"));
       await writeFile(join(repo, "pkg", "concepts", "Code Change.md"), "---\ndescription: Change a repository's code in a pod\n---\nYou can change code.\n");
