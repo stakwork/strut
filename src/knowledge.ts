@@ -521,7 +521,7 @@ export function createKnowledge(deps: KnowledgeDeps, on: DoorOn = { home: deps.g
       const cap = Math.max(1, Math.min(Math.trunc(input.works ?? COMPARE_WORKS), 50));
       const out: CompareClaim[] = [];
       for (let i = 0; i < names.length; i += CLAIMS_AT_ONCE) {
-        const read = await Promise.all(names.slice(i, i + CLAIMS_AT_ONCE).map((concept) => claims.reader.compareFor({ kind: "concept", name: concept }, branch).then((rows) => ({ concept, rows }))));
+        const read = await Promise.all(names.slice(i, i + CLAIMS_AT_ONCE).map((concept) => claims.reader.compareFor({ kind: "concept", name: concept }, branch, cap).then((rows) => ({ concept, rows }))));
         for (const { concept, rows } of read) {
           for (const r of rows) {
             out.push({

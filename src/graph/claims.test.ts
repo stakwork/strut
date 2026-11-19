@@ -15,7 +15,6 @@ import {
   ClaimsReader,
   SUBJECT_KINDS,
   activeTurnOf,
-  claimSide,
   claimStatus,
   claimsReaderFor,
   evidenceBranch,
@@ -245,23 +244,13 @@ describe("a CONCEPT subject (pure)", () => {
     assert.equal(claimStatus({ claim: { id: "c1" }, checks: [{ id: "k1" }], subject: STEP, evidence: [step], activeVersion: V2 }).status, "refuted");
   });
 
-  it("claimSide: the side's status, its verdicts on its current page (every work, not the newest), every work it judged newest first", () => {
-    const work = (run: string, version: string, strength: number, branch?: string) =>
-      read(version, { run, at: Number(run), strength, source: { ref_id: `r${run}`, node_type: "StrutRun", run_id: run, context: { version, ...(branch ? { branch } : {}) } } });
-    const evidence = [work("100", "p0", -1), work("200", "p1", 1), work("300", "p1", -1), work("400", "p1", 1), work("500", "p2", 1, "try"), work("600", "p2", 1, "try")];
-    const base = { claim: { id: "c1" }, checks: [{ id: "k1" }], subject: PAGE, evidence };
-    const main = claimSide({ ...base, activeVersion: "p1" });
-    assert.deepEqual([main.version, main.status.status, main.supports, main.refutes], ["p1", "supported", 2, 1]);
-    assert.deepEqual(main.works.map((e) => e.source?.run_id), ["400", "300", "200", "100"]);
-    const branch = claimSide({ ...base, activeVersion: "p2", branch: "try" });
-    assert.deepEqual([branch.status.status, branch.supports, branch.refutes, branch.works.length], ["supported", 2, 0, 2]);
-    const gone = claimSide({ ...base, activeVersion: null, branch: "try" });
-    assert.deepEqual([gone.version, gone.supports, gone.refutes, gone.status.status], [null, 0, 0, "stale"]);
-    // The compare's outcome: the share of supporting verdicts on each side's current page.
+  it("the compare's outcome: the share of supporting verdicts on each side's current page", () => {
+    const main = { supports: 2, refutes: 1 };
+    const branch = { supports: 2, refutes: 0 };
     assert.equal(outcomeOf(main, branch), "better");
     assert.equal(outcomeOf(branch, main), "worse");
     assert.equal(outcomeOf({ supports: 1, refutes: 1 }, { supports: 2, refutes: 2 }), "same");
-    assert.equal(outcomeOf(main, gone), "unmeasured");
+    assert.equal(outcomeOf(main, { supports: 0, refutes: 0 }), "unmeasured");
   });
 
   it("conceptVersionOf: the page and its children's names and descriptions, whatever order they were read in", () => {
@@ -704,6 +693,126 @@ for (const tb of testBackends()) {
       const v4 = await reader.activeVersion(PAGE);
       assert.equal(new Set([v1, v2, v3, v4]).size, 4);
       assert.equal(v4, conceptVersionOf({ name: "Personal", description: "How the person likes things done", docs: "Be brief. Never apologise.", children: [{ name: "Communication Style", description: "open this before writing to anyone" }] }));
+    });
+
+    /** Verify passes as the pass writes them: per pass a run, and per
+     *  strength one Evidence (a foreach's iterations), observed in the run's
+     *  second, ABOUT `about`, sourced to the run with `context`. */
+    let second = now - 50_000;
+    async function passes(claim: string, check: string, list: Array<{ about: string; strengths: number[]; context?: Record<string, unknown>; run?: string }>): Promise<string[]> {
+      const at = list.map(() => ++second);
+      const runIds = list.map((p, i) => p.run ?? String(1_789_000_000_000 + at[i]!));
+      const runs = await nodes.writeMany(runIds.map((run_id, i) => ({ type: "StrutRun", data: { run_id, workflow_name: "many", run_status: "success", started_at: at[i] } })));
+      const made = list.flatMap((p, i) => p.strengths.map((strength, j) => ({ i, strength, id: evidenceId(check, runIds[i]!, `many/each#${j}`) })));
+      const ev = await nodes.writeMany(
+        made.map((m) => ({ type: "Evidence", data: { id: m.id, name: "a pass", content: `iteration ${m.id}`, evidence_mode: "observed", evidence_status: "collected", observed_at: at[m.i] } })),
+        "create",
+      );
+      await edges.writeMany(
+        made.flatMap((m, k) => [
+          { edge: "EVIDENCED_BY", source_ref_id: ref[claim]!, target_ref_id: ev[k]!.ref_id, properties: { strength: m.strength } },
+          { edge: "PRODUCED_BY", source_ref_id: ev[k]!.ref_id, target_ref_id: ref[check]! },
+          { edge: "ABOUT", source_ref_id: ev[k]!.ref_id, target_ref_id: ref[list[m.i]!.about]! },
+          { edge: "HAS_SOURCE", source_ref_id: ev[k]!.ref_id, target_ref_id: runs[m.i]!.ref_id, properties: { context: JSON.stringify(list[m.i]!.context ?? { path: "many/each" }) } },
+        ]),
+      );
+      return runIds;
+    }
+
+    /** A reader that counts the rows its statements return. */
+    function counting(deps: ConstructorParameters<typeof ClaimsReader>[1] = {}) {
+      const seen = { rows: 0 };
+      const query: GraphBackend["query"] = async (cypher, params) => {
+        const rows = await backend.query(cypher, params);
+        seen.rows += rows.length;
+        return rows;
+      };
+      return { seen, reader: new ClaimsReader({ namespace: backend.namespace, dialect: backend.dialect, query }, deps) };
+    }
+
+    it("a status reads each stream's newest measurement, not the history: the rows read stay the same however many passes", async () => {
+      const MANY: SubjectRef = { kind: "step", type: "clip/many" };
+      const [step, m1, m2] = await nodes.writeMany([
+        { type: "StrutStep", data: { step_type: "clip/many", active_version: V2 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/many", content_hash: V1, published_at: now - 100 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/many", content_hash: V2, published_at: now - 50 } },
+      ]);
+      [ref["many"], ref["m1"], ref["m2"]] = [step!.ref_id, m1!.ref_id, m2!.ref_id];
+      const [cm] = await nodes.writeMany([{ type: "Claim", data: { id: "cm", name: "every clip is in bounds", claim_text: "every clip is in bounds", belief_valid_from: now } }], "create");
+      const [km, kr] = await nodes.writeMany([
+        { type: "Check", data: { id: "km", name: "bounds", step_type: "exec", policy: "always" } },
+        { type: "Check", data: { id: "kr", name: "rare", step_type: "exec", policy: "manual" } },
+      ]);
+      [ref["cm"], ref["km"], ref["kr"]] = [cm!.ref_id, km!.ref_id, kr!.ref_id];
+      await edges.writeMany([
+        { edge: "ABOUT", source_ref_id: ref["cm"]!, target_ref_id: ref["many"]! },
+        { edge: "TESTS", source_ref_id: ref["km"]!, target_ref_id: ref["cm"]! },
+        { edge: "TESTS", source_ref_id: ref["kr"]!, target_ref_id: ref["cm"]! },
+      ]);
+      // The rare check measured the active version long ago, then an older
+      // one (a rollback since): its newest is about V1, and V2 was measured.
+      await passes("cm", "kr", [{ about: "m2", strengths: [1] }, { about: "m1", strengths: [-1] }]);
+      await passes("cm", "km", Array.from({ length: 10 }, () => ({ about: "m2", strengths: [1, 1] })));
+
+      const { seen, reader: counted } = counting();
+      const before = (await counted.statusFor(MANY))[0]!;
+      const rowsBefore = seen.rows;
+      assert.deepEqual([before.status.status, before.status.unverified], ["supported", 0]);
+
+      // Thirty more passes, the newest with a failing iteration.
+      await passes("cm", "km", [...Array.from({ length: 29 }, () => ({ about: "m2", strengths: [1, 1] })), { about: "m2", strengths: [1, -1] }]);
+      seen.rows = 0;
+      const [row] = await counted.statusFor(MANY);
+      assert.equal(seen.rows, rowsBefore, "the rows read do not grow with the history");
+      assert.equal(before.evidence.length, 4, "km's newest pass, kr's newest and its newest on V2");
+      assert.deepEqual([row!.status.status, row!.status.unverified, row!.status.latest?.strength, row!.evidence.length], ["refuted", 0, -1, 4]);
+      // The same status as over every row the claim has.
+      const checks = await reader.checksFor("cm");
+      const all = await reader.evidenceFor("cm", MANY);
+      assert.equal(all.length, 2 + 40 * 2);
+      assert.deepEqual(row!.status, claimStatus({ claim: { id: "cm" }, checks, subject: MANY, evidence: all, activeVersion: V2 }));
+      // Once the rare check is retired, its verdicts are not read.
+      await nodes.update(ref["kr"]!, { set: { retired_at: now } });
+      const [left] = await counted.statusFor(MANY);
+      assert.deepEqual([left!.status.status, left!.evidence.every((e) => e.check_id === "km")], ["refuted", true]);
+    });
+
+    it("compareFor: each side's status, the verdicts on its current page counted, its newest works — a re-made branch's older run, another branch's and main's own stay apart", async () => {
+      const [guide] = await nodes.writeMany([{ type: "Concept", data: { name: "Guide", docs: "Answers are short." } }]);
+      const [cg] = await nodes.writeMany([{ type: "Claim", data: { id: "cg", name: "answers are short", claim_text: "answers are short", belief_valid_from: now } }], "create");
+      const [kg] = await nodes.writeMany([{ type: "Check", data: { id: "kg", name: "judge", step_type: "subflow", policy: "always" } }]);
+      [ref["guide"], ref["cg"], ref["kg"]] = [guide!.ref_id, cg!.ref_id, kg!.ref_id];
+      await edges.writeMany([
+        { edge: "ABOUT", source_ref_id: ref["cg"]!, target_ref_id: ref["guide"]! },
+        { edge: "TESTS", source_ref_id: ref["kg"]!, target_ref_id: ref["cg"]! },
+      ]);
+      const work = (version: string, strength: number, branch?: string) => ({ about: "guide", strengths: [strength], context: { path: "concept:Guide", version, ...(branch ? { branch } : {}) } });
+      const main = await passes("cg", "kg", [work("p0", -1), work("p1", 1), work("p1", -1), work("p1", 1)]);
+      const [stale] = await passes("cg", "kg", [work("p2", -1, "try")]);
+      const made = Number(stale) + 1;
+      const tried = await passes("cg", "kg", [work("p2", 1, "try"), work("p2", 1, "try"), work("p2", -1, "other")]);
+
+      // Main's page reads p1 and the branch's p2; the branch was made after the first trial.
+      class Pages extends ClaimsReader {
+        override async activeVersion(_subject: SubjectRef, branch?: string): Promise<string | null> {
+          return branch ? "p2" : "p1";
+        }
+      }
+      const pages = new Pages(backend, { branches: { get: async (name) => (name === "try" ? { createdAt: new Date(made).toISOString() } : null) } });
+      const GUIDE = { kind: "concept" as const, name: "Guide" };
+      const [row] = await pages.compareFor(GUIDE, "try", 10);
+      assert.deepEqual([row!.main.version, row!.main.status.status, row!.main.supports, row!.main.refutes], ["p1", "supported", 2, 1]);
+      assert.deepEqual(row!.main.works.map((e) => e.source?.run_id), [...main].reverse());
+      assert.deepEqual([row!.branch.version, row!.branch.status.status, row!.branch.supports, row!.branch.refutes], ["p2", "supported", 2, 0]);
+      assert.deepEqual(row!.branch.works.map((e) => e.source?.run_id), [tried[1], tried[0]]);
+      assert.equal(outcomeOf(row!.main, row!.branch), "better");
+      // `works` is the newest only.
+      const [few] = await pages.compareFor(GUIDE, "try", 2);
+      assert.deepEqual(few!.main.works.map((e) => e.source?.run_id), [main[3], main[2]]);
+      assert.deepEqual([few!.main.supports, few!.main.refutes], [2, 1], "the counts are every verdict on the page");
+      // The status read on the branch agrees.
+      assert.equal((await pages.statusFor(GUIDE, { branch: "try" }))[0]!.status.status, "supported");
+      assert.equal((await pages.statusFor(GUIDE, { branch: "other" }))[0]!.status.status, "refuted");
     });
   });
 }
