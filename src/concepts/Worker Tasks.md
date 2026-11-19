@@ -33,9 +33,9 @@ their request already said.
   person checks the answers in Tasks and workers. Nothing more is needed
   first: a qualifying test (tasks with known answers) is something an admin
   may add later, never a step before the first try.
-- **The pay**, per task, in dollars. Say too that earnings wait three days
-  before a worker can withdraw them, and that the money comes from this
-  server's wallet, so it has to be added first.
+- **The pay**, per task, in dollars. Say too that the money comes from
+  this server's wallet, so it has to be added first, and that workers can
+  withdraw what they earn at once.
 
 Never ask about the rest — how long a worker has once they start one, when
 an untaken task expires, the hold, tests, copies, the field names, which
