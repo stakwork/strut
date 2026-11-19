@@ -7,9 +7,9 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round?, check? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
- *   open, `tests`, `copies`, `attachments` and `standing` off). Whether a
+ *   open, `tests`, `copies`, `attachments`, `standing`, `round` and `check` off). Whether a
  *   paid open type qualifies newcomers is the admin's (ruling 12)
  * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
  *   a task of the type is open; its live grants are revoked
@@ -346,6 +346,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
         ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
         ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
+        ...(b["check"] !== undefined ? { check: b["check"] as { step: string; config?: Record<string, unknown> } | null } : {}),
       };
       // The admin saving a new invite-only type holds it, to try it.
       const who = (await by(c)).by;

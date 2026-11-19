@@ -55,6 +55,9 @@ export interface TaskType {
   /** A ROUND type: this workflow's runs make its tasks, one for each item,
    *  and Send a round launches it (`staff/send-round`). */
   round?: { workflow: string };
+  /** Its check before an answer is accepted (plans/human-steps.md §5.6.7
+   *  c): a sealed step; one that fails is refused, and earns nothing. */
+  check?: { step: string; config?: Record<string, unknown> };
   changedAt: number;
   changedBy?: string;
   /** Where its workers answer it (§9.5): whether its app is in the public

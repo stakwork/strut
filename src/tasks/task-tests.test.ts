@@ -458,7 +458,7 @@ for (const impl of IMPLS) {
 
     // ── graders (§7.4) ──────────────────────────────────────────────────
 
-    it("a grader that throws, is no longer sealed or has nobody to bill records error; equal compares as JSON", async () => {
+    it("a grader that throws or is no longer sealed records error, and one with nobody to bill still runs; equal compares as JSON", async () => {
       await typeWith({ qualify: 0, rate: 1, newRate: 1, grade: { step: GRADER } }, { by: undefined as never });
       await tasks().grant("bob", TYPE);
       await ready(3);
@@ -478,7 +478,8 @@ for (const impl of IMPLS) {
       assert.deepEqual([(await notes(t1.lease)).grade, (await notes(t1.lease)).note], ["error", "boom"]);
       assert.deepEqual([(await notes(t2.lease)).grade, (await notes(t2.lease)).note], ["error", `${GRADER} is not sealed`]);
 
-      // No principal, and a type saved with no admin: nobody to bill.
+      // No principal, and a type saved by nobody: the grader still runs,
+      // nobody named — the server's own model key pays (§7.12).
       await rig.svc.close();
       rig = rigFor(impl, await mkdtemp(join(tmpdir(), "strut-task-tests-")), {});
       await tasks().setType(TYPE, { app: "workers", answer: MATCH, tests: { qualify: 0, rate: 1, newRate: 1, grade: { step: GRADER } } });
@@ -487,9 +488,10 @@ for (const impl of IMPLS) {
       await real(1);
       const t3 = await take("bob");
       await tasks().submit("bob", { lease: t3.lease, answer: YES });
-      await rig.svc.grading();
-      assert.equal(rig.grades.length, 0);
-      assert.match((await notes(t3.lease)).note!, /^nobody to bill/);
+      await asked();
+      assert.equal("principal" in rig.grades[0]!.call, false, "nobody named");
+      await verdicts(pass);
+      assert.deepEqual([(await notes(t3.lease)).grade, (await notes(t3.lease)).note], ["pass", "matches"]);
 
       assert.ok(sameJson({ a: [1, { b: 2 }], c: "x" }, { c: "x", a: [1, { b: 2.0 }] }), "keys in any order, numbers by value");
       assert.ok(!sameJson([1, 2], [2, 1]), "arrays in order");

@@ -106,6 +106,7 @@ import {
   type ReviewRecord,
   type StandingRow,
   type RoundRule,
+  type CheckRule,
   type StandingRule,
   type Verdict,
   type TaskListQuery,
@@ -122,7 +123,7 @@ import {
   type TestRules,
   type LimitRule,
 } from "./task-store.js";
-import { gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
+import { checkRuleOf, gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { answerAttachments, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
@@ -172,6 +173,10 @@ export const TASK_CALLS_PER_MINUTE = 120;
  *  at once in the process; how many ungraded answers one sweep queues; how
  *  many errors in a row of one type are logged (once). */
 export const GRADE_TIMEOUT_MS = 60_000;
+/** §5.6.7 c: a type's check's time while the worker's page waits on
+ *  `submit`, then force-cancelled — inside a host's 60 s tool-call timeout
+ *  with the rest of the answer's writes. */
+export const CHECK_TIMEOUT_MS = 30_000;
 export const GRADE_CONCURRENCY = 4;
 export const UNGRADED_BATCH = 100;
 export const GRADE_ERRORS_LOGGED = 3;
@@ -377,6 +382,10 @@ export interface TaskTypeInput {
    *  have a `human` step of this type (in a `foreach` too; `deps.round`
    *  checks it); never with `standing`. Absent or null: none named. */
   round?: { workflow: string } | null;
+  /** Its CHECK (§5.6.7 c): a sealed step `submit` runs on each answer and
+   *  its files before accepting it — a fail refuses it and the worker keeps
+   *  the task. Absent or null: none. */
+  check?: { step: string; config?: Record<string, unknown> } | null;
 }
 
 /** §5.7: what a standing type's pick-up is made of — its workflow's first
@@ -560,12 +569,23 @@ export interface GradedTest {
   at: number;
 }
 
-/** What a step grader is handed (§7.4). */
+/** A file of an answer as a check sees it (§5.6.7 c): `data` base64. */
+export interface CheckFile {
+  name: string;
+  mediaType: string;
+  data: string;
+}
+
+/** What a step grader is handed (§7.4): a test's or a comparison's
+ *  `expected`, or for a type's check (§5.6.7 c) none and the answer's
+ *  `files`. */
 export interface GradeCall {
   step: string;
   config?: Record<string, unknown>;
-  input: { answer: unknown; expected: unknown; show: unknown; type: string };
-  principal: string;
+  input: { answer: unknown; expected?: unknown; show: unknown; type: string; files?: CheckFile[] };
+  /** Who its model calls bill (`payerOf`); absent: nobody named, and the
+   *  server's own model key pays. */
+  principal?: string;
   maxCostUsd: number;
   timeoutMs: number;
 }
@@ -1416,6 +1436,15 @@ export function createTasks(deps: TasksDeps): TasksService {
   // ── tests and standing (§7) ───────────────────────────────────────────
   const graderProblem = (step: string): string | undefined =>
     deps.graderProblem ? deps.graderProblem(step) : `this server grades by "equal" alone: no step grader (${step})`;
+  /** Who a type's step graders, comparators and check bill, picked for the
+   *  admin (§7.12): the deployment's grading principal, else whoever last
+   *  saved the type; with neither, nobody is named and the call runs on the
+   *  server's own model key, as any unattributed call does. Never a reason
+   *  not to run. */
+  const payerOf = (kind: TaskType | undefined): { principal?: string } => {
+    const principal = deps.principal ?? kind?.changedBy;
+    return principal ? { principal } : {};
+  };
   /** A rule's problem as a refusal. */
   const ruled = <T>(fn: () => T): T => {
     try {
@@ -1672,12 +1701,17 @@ export function createTasks(deps: TasksDeps): TasksService {
       } catch (err) {
         throw new TaskError("bad_answer", err instanceof Error ? err.message : String(err));
       }
+      // §5.6.7 c: the type's check, on the answer and its files, before
+      // anything is written — a test instance's too, which a page cannot
+      // tell from a task. A fail refuses the answer: the task is still the
+      // worker's, and nothing is saved or earned.
+      const t = kind.check || files.length ? (await s.tasks.task(l.task))! : undefined;
+      if (kind.check) await checked(kind, kind.check, t!, o.answer, files);
       let attachments: RunAttachment[] | undefined;
       if (files.length) {
-        const t = (await s.tasks.task(l.task))!;
-        if (t.root !== "test") {
+        if (t!.root !== "test") {
           if (!deps.saveAttachments) throw new TaskError("bad_request", "this server keeps no files from workers");
-          attachments = await deps.saveAttachments(t, files);
+          attachments = await deps.saveAttachments(t!, files);
         }
       }
       const r = await s.tasks.settle({ lease: l.id, worker: actor, answer: o.answer, ...(attachments ? { attachments } : {}), now: now(), decide: inlineDecider(kind) });
@@ -1854,9 +1888,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       const attachments = ruled(() => attachmentRuleOf(input.attachments));
       const standing = await standingRuleOf(name, input.standing);
       const round = await roundRuleOf(name, input.round);
+      const check = ruled(() => checkRuleOf(input.check, graderProblem));
       if (standing && round) throw new TaskError("bad_request", "a task type is standing (a worker's ask makes its task) or sent in rounds (a workflow makes one for each item), never both");
       const s = await stores();
       const existed = await s.tasks.type(name);
+      const changedBy = by ?? existed?.changedBy;
       // Ruling 12: whether a paid open type qualifies newcomers is the
       // admin's; nothing here refuses one for want of tests.
       const saved = await s.tasks.putType({
@@ -1876,8 +1912,11 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(attachments ? { attachments } : {}),
         ...(standing ? { standing } : {}),
         ...(round ? { round } : {}),
+        ...(check ? { check } : {}),
         changedAt: now(),
-        ...(by === undefined ? {} : { changedBy: by }),
+        // A save that names nobody (a script's, on the API key alone) keeps
+        // the last person who saved it: they still pay for its graders.
+        ...(changedBy === undefined ? {} : { changedBy }),
       });
       // A new invite-only type is its makers' from the start, so "try it"
       // works the moment it is saved (an open one needs no grant).
@@ -2223,6 +2262,47 @@ export function createTasks(deps: TasksDeps): TasksService {
     }
   };
 
+  // ── the check before an answer is accepted (§5.6.7 c) ─────────────────
+  /** Types whose check could not run, logged once each until one runs. */
+  const checkFailing = new Set<string>();
+  /** A type's check on one answer and its files: its sealed step, in the
+   *  grader's contract with no expected answer, billed as grading is, while
+   *  the worker's page waits. Throws `bad_answer` with the step's reason on
+   *  a fail. One that cannot run (gone, no longer sealed, past its time, no
+   *  verdict, its model refused) refuses the answer too, logged: nothing is
+   *  accepted, and so earned, unchecked. */
+  const checked = async (kind: TaskType, rule: CheckRule, t: TaskRecord, answer: unknown, files: Attachment[]): Promise<void> => {
+    let v: GradeVerdict;
+    try {
+      // Asked again at each answer: the registry changes (§7.4).
+      const problem = graderProblem(rule.step);
+      if (problem) throw new Error(problem);
+      if (!deps.grade) throw new Error(`this server runs no step check (${rule.step})`);
+      v = await deps.grade({
+        step: rule.step,
+        ...(rule.config ? { config: rule.config } : {}),
+        input: {
+          answer,
+          show: t.show,
+          type: kind.name,
+          ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, data: f.bytes.toString("base64") })) } : {}),
+        },
+        ...payerOf(kind),
+        maxCostUsd: kind.tests?.gradeCapUsd ?? DEFAULT_TEST_RULES.gradeCapUsd,
+        timeoutMs: CHECK_TIMEOUT_MS,
+      });
+      if (!v || typeof v.supports !== "boolean") throw new Error(`${rule.step} returned no verdict`);
+    } catch (err) {
+      if (!checkFailing.has(kind.name)) {
+        checkFailing.add(kind.name);
+        console.warn(`[tasks] task type ${kind.name}'s check ${rule.step} could not run, so its answers are refused until it does:`, err instanceof Error ? err.message : err);
+      }
+      throw new TaskError("bad_answer", "this answer could not be checked just now: send it again in a moment");
+    }
+    checkFailing.delete(kind.name);
+    if (!v.supports) throw new TaskError("bad_answer", String(v.content ?? "").trim() || `${rule.step} refused this answer`);
+  };
+
   // ── deciding copies (§7.6) ────────────────────────────────────────────
   /** `submit`'s decider for a type that compares by `equal`: the decision
    *  in the answer's own transaction. A step comparator decides outside it
@@ -2240,13 +2320,11 @@ export function createTasks(deps: TasksDeps): TasksService {
     const problem = graderProblem(rule.step);
     if (problem) throw new Error(problem);
     if (!deps.grade) throw new Error(`this server runs no step comparator (${rule.step})`);
-    const principal = deps.principal ?? kind?.changedBy;
-    if (!principal) throw new Error(`nobody to bill ${rule.step} to: set the deployment's grading principal (tasks.principal), or save the type as an admin`);
     const v = await deps.grade({
       step: rule.step,
       ...(rule.config ? { config: rule.config } : {}),
       input: { answer: later, expected: earlier, show: t.show, type: t.type },
-      principal,
+      ...payerOf(kind),
       maxCostUsd: kind?.tests?.gradeCapUsd ?? DEFAULT_TEST_RULES.gradeCapUsd,
       timeoutMs: deps.gradeTimeoutMs ?? GRADE_TIMEOUT_MS,
     });
@@ -2310,16 +2388,12 @@ export function createTasks(deps: TasksDeps): TasksService {
     const problem = graderProblem(rule.step);
     if (problem) return { result: "error", note: problem };
     if (!deps.grade) return { result: "error", note: `this server runs no step grader (${rule.step})` };
-    const principal = deps.principal ?? kind?.changedBy;
-    if (!principal) {
-      return { result: "error", note: `nobody to bill ${rule.step} to: set the deployment's grading principal (tasks.principal), or save the type as an admin (plans/human-steps.md §7.12)` };
-    }
     try {
       const v = await deps.grade({
         step: rule.step,
         ...(rule.config ? { config: rule.config } : {}),
         input: { answer: t.answer, expected: test.expected, show: t.show, type: t.type },
-        principal,
+        ...payerOf(kind),
         maxCostUsd: kind?.tests?.gradeCapUsd ?? DEFAULT_TEST_RULES.gradeCapUsd,
         timeoutMs: deps.gradeTimeoutMs ?? GRADE_TIMEOUT_MS,
       });

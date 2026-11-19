@@ -5,7 +5,7 @@
  * standing is, read from the store's rows (`StandingRow`). The service
  * (`tasks.ts`) holds the rest: serving, the grading queue, the revoke.
  */
-import { DEFAULT_TEST_RULES, type GradeRule, type StandingRow, type TestRules } from "./task-store.js";
+import { DEFAULT_TEST_RULES, type CheckRule, type GradeRule, type StandingRow, type TestRules } from "./task-store.js";
 import type { Grant } from "./worker-store.js";
 
 /** The bounds a type's rules are held to. */
@@ -92,6 +92,23 @@ export function gradeRuleOf(raw: unknown, graderProblem: (step: string) => strin
   const problem = graderProblem(step);
   if (problem) throw new RuleProblem("bad_grader", problem);
   return { step, ...(config === undefined ? {} : { config: config as Record<string, unknown> }) };
+}
+
+/** A type's `check` as saved (plans/human-steps.md §5.6.7 c): undefined
+ *  (null or absent) is none; else `{ step, config? }`, a registry step that
+ *  may grade — sealed — run on each answer and its files before it is
+ *  accepted. Never `equal`: a check has no expected answer to equal. */
+export function checkRuleOf(raw: unknown, graderProblem: (step: string) => string | undefined): CheckRule | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new RuleProblem("bad_request", `check is { step, config? }: a sealed step that reads the answer and its files, or null for none${raw === "equal" ? '; "equal" needs an expected answer, which a check has none of' : ""}`);
+  }
+  try {
+    return gradeRuleOf(raw, graderProblem) as CheckRule;
+  } catch (err) {
+    if (err instanceof RuleProblem) throw new RuleProblem(err.code, /^grade\b/.test(err.message) ? err.message.replace(/^grade/, "check") : `check: ${err.message}`);
+    throw err;
+  }
 }
 
 /** §7.4's `equal`: the same JSON — object keys in any order, arrays in

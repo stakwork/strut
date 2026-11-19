@@ -182,6 +182,18 @@ describe("strut/staff: the type editor's draft", () => {
     assert.deepEqual([draftOf().filesOn, draftOf().files.types], [false, "image/*, application/pdf"]);
   });
 
+  it("the check before an answer is accepted (§5.6.7 c): kept through a draft, a step and its config; left out when off; never equal", () => {
+    const checked: TaskType = { ...type, check: { step: "grade/judge", config: { rubric: "One whole book page." } } };
+    const d = draftOf(checked);
+    assert.deepEqual([d.checkOn, d.check.step], [true, "grade/judge"]);
+    assert.deepEqual((saveOf(d, all, checked) as { input: Record<string, unknown> }).input["check"], checked.check, "a type to a draft and back keeps its check");
+    assert.deepEqual((saveOf(d, { pay: false, tests: false, copies: false }, checked) as { input: Record<string, unknown> }).input["check"], checked.check, "shown always: kept whatever else is shown");
+    assert.equal("check" in (saveOf({ ...d, checkOn: false }, all, checked) as { input: Record<string, unknown> }).input, false, "off: the PUT saves none");
+    assert.deepEqual([draftOf().checkOn, draftOf().check.step], [false, "grade/judge"], "a new one starts on grade/judge");
+    assert.match((saveOf({ ...d, check: { kind: "equal", step: "", config: "" } }, all, checked) as { problem: string }).problem, /^the check: pick a step/);
+    assert.match((saveOf({ ...d, check: { ...d.check, config: "{ rubric" } }, all, checked) as { problem: string }).problem, /^the check: its config is not JSON/);
+  });
+
   it("a new type's name is held to the store's rule", () => {
     assert.equal(typeNameProblem("acme/pet-match", []), undefined);
     assert.match(typeNameProblem("Pets", [])!, /lowercase/);

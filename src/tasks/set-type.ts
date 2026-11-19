@@ -29,7 +29,7 @@ import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
-import { DEFAULT_HOLD_HOURS, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
+import { DEFAULT_HOLD_HOURS, type CheckRule, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
   DEFAULT_WITHIN_HOURS,
@@ -177,6 +177,14 @@ export const typeChangeInput = z.object({
   round: z
     .preprocess(fromJsonText, z.object({ workflow: z.string().min(1) }).strict().nullable().optional())
     .describe("A ROUND type, for work one for each item of a list — each shop, each page: { workflow }, the workflow whose run makes one task of this type for each item (its `human` step of this type, in a `foreach`). Name it so the person can send a round from Tasks and workers (Send a round, the items ticked) as well as by asking in the conversation. Never with standing. null: none named."),
+  check: z
+    .preprocess(fromJsonText, z.object({ step: z.string().min(1), config: z.record(z.string(), z.any()).optional() }).strict().nullable().optional())
+    .describe(
+      "A CHECK before an answer is accepted: { step, config? }, a sealed step run on each answer and its files the moment the worker sends it. " +
+        '{ step: "grade/judge", config: { rubric } } has a model look at the answer and its photos against the task under `rubric` ("A sharp photo of one whole book page or its cover: no text cut off, nothing covering it"); `model` in config picks the model. ' +
+        "One that fails is REFUSED with the check's reason, in the task's language: the worker keeps the task and sends it again, and nothing is saved, started or paid for it. " +
+        "This is how pay waits on a check: a check a workflow runs after the answer comes too late, since an accepted answer is paid at once. Each answer costs one model call, billed to this server. null: none.",
+    ),
 });
 
 /** What `task/set-type` asks, as its schema parsed it. */
@@ -243,11 +251,12 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 /** `change` merged over `existing` (ruled, §9.12): what is left out keeps
  *  its value; `tests`, `copies` and `attachments` merge over the type's own
- *  rules, `standing` replaces it, and `null` turns any of them off. A new
+ *  rules, `standing`, `round` and `check` replace theirs, and `null` turns
+ *  any of them off. A new
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round" | "check"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -286,6 +295,9 @@ export function mergeType(
   // So is a round's workflow.
   const round = change.round === undefined ? existing?.round : change.round;
   if (round !== undefined) out.round = round;
+  // And the check (§5.6.7 c): its step and config together.
+  const check = change.check === undefined ? existing?.check : change.check;
+  if (check !== undefined) out.check = check;
   return out;
 }
 
@@ -375,6 +387,7 @@ interface Planned {
   attachments?: AttachmentRule;
   standing?: StandingRule;
   round?: RoundRule;
+  check?: CheckRule;
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
@@ -393,6 +406,7 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   ...(t.attachments ? { attachments: t.attachments } : {}),
   ...(t.standing ? { standing: t.standing } : {}),
   ...(t.round ? { round: t.round } : {}),
+  ...(t.check ? { check: t.check } : {}),
 });
 
 interface Problems {
@@ -440,6 +454,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       ...(attachments ? { attachments } : {}),
       ...(merged.standing ? { standing: merged.standing } : {}),
       ...(merged.round ? { round: merged.round } : {}),
+      ...(merged.check ? { check: merged.check } : {}),
     },
     problems,
   };
@@ -601,6 +616,14 @@ function handInText(answer: unknown, a: AttachmentRule | undefined): string {
   return `${files ? `${files}, and answers` : "Answers"}:\n${questions.join("\n")}`;
 }
 
+/** A type's check (§5.6.7 c) in the person's words; "" for none. */
+function checkWords(c: CheckRule | undefined): string {
+  if (!c) return "";
+  const rubric = c.config?.["rubric"];
+  if (c.step === "grade/judge") return typeof rubric === "string" && rubric.trim() ? `a model checks it: “${rubric.trim()}”` : "a model checks it does what the task asks";
+  return `checked by ${c.step}`;
+}
+
 /** A change's line, in the card's plain labels. */
 const changeLabel: Record<string, string> = {
   title: "what workers call it",
@@ -617,6 +640,7 @@ const changeLabel: Record<string, string> = {
   copies: "copies",
   files: "photos",
   when: "when",
+  check: "checked when handed in",
 };
 
 /**
@@ -664,6 +688,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     }
     if (!problems.attachments && !sameJson(before.attachments, after.attachments)) line("files", filesWords(before.attachments) || "none", filesWords(after.attachments) || "none");
     if (before.standing?.workflow !== after.standing?.workflow || before.round?.workflow !== after.round?.workflow) line("when", whenWords(before), whenWords(after));
+    if (!sameJson(before.check ?? null, after.check ?? null)) line("check", checkWords(before.check) || "not checked", checkWords(after.check) || "not checked");
   }
   const shapeChanged = !!before && after.answer !== undefined && !sameJson(before.answer, after.answer);
   const payBefore = before?.paySats ?? 0;
@@ -685,6 +710,16 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
         ? `One for each item, when you send a round: from Tasks and workers (Send a round), or by asking here. The workflow ${after.round.workflow} makes them.`
         : "When a workflow sends one out: one for each thing it asks about.",
   });
+  // §5.6.7 c: what an answer must pass before it is accepted, and so paid,
+  // in the person's words: shown when there is a check or pay, else under
+  // Details.
+  const checked: CardField = {
+    label: "Checked when handed in",
+    value: after.check
+      ? `Yes: ${checkWords(after.check)}. One that fails is refused with the reason: the worker keeps the task and sends it again, and nothing is paid for it.${after.check.step === "grade/judge" ? " Each answer costs one model call." : ""}`
+      : `No: every answer that fits is accepted${after.paySats ? ", and paid," : ""} the moment it is handed in.`,
+  };
+  if (after.check || after.paySats) fields.push(checked);
   // A paid type anyone may take (ruling 12), in the person's words: no
   // qualifying test, or too few of its test tasks ready.
   const qualify = after.tests?.qualify ?? 0;
@@ -749,6 +784,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   }
   fields.push(problems.tests ? { label: "Tests", value: `refused: ${problems.tests}`, danger: true } : { label: "Tests", value: testsText(after.tests), detail: true });
   fields.push(problems.copies ? { label: "Copies", value: `refused: ${problems.copies}`, danger: true } : { label: "Copies", value: copiesText(after.copies), detail: true });
+  if (!after.check && !after.paySats) fields.push({ ...checked, detail: true });
 
   const lines: string[] = [];
   if (!existing) {

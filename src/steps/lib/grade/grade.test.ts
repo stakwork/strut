@@ -14,7 +14,7 @@ import { usageOf, type StepRegistry } from "../../../core.js";
 import type { LlmAuthContext } from "../../../llm.js";
 import type { WorkerTask } from "../../../tasks/tasks.js";
 import { gradeOverlap } from "./overlap.js";
-import { parseVerdict } from "./judge.js";
+import { DEFAULT_CHECK_RUBRIC, parseVerdict } from "./judge.js";
 
 /**
  * The graders strut ships (plans/human-steps.md §7.4, PR 4c): each run as
@@ -27,7 +27,7 @@ import { parseVerdict } from "./judge.js";
 
 /** What the next model call replies; `undefined` leaves the real model. */
 let reply: string | undefined;
-const sent: Array<{ modelId: string; system: string; prompt: string }> = [];
+const sent: Array<{ modelId: string; system: string; prompt: string; files: Array<{ mediaType: string; filename?: string }> }> = [];
 registerModelWrapper((model, info) =>
   reply === undefined
     ? model
@@ -39,7 +39,9 @@ registerModelWrapper((model, info) =>
         doGenerate: async (o: { prompt: Array<{ role: string; content: unknown }> }) => {
           const text = (m?: { content: unknown }) =>
             typeof m?.content === "string" ? m.content : ((m?.content as Array<{ text?: string }>) ?? []).map((p) => p.text ?? "").join("");
-          sent.push({ modelId: info.modelId, system: text(o.prompt.find((m) => m.role === "system")), prompt: text(o.prompt.find((m) => m.role === "user")) });
+          const user = o.prompt.find((m) => m.role === "user");
+          const files = Array.isArray(user?.content) ? (user.content as Array<{ type: string; mediaType?: string; filename?: string }>).filter((p) => p.type === "file").map((p) => ({ mediaType: p.mediaType!, ...(p.filename ? { filename: p.filename } : {}) })) : [];
+          sent.push({ modelId: info.modelId, system: text(o.prompt.find((m) => m.role === "system")), prompt: text(user), files });
           return {
             content: [{ type: "text", text: reply }],
             finishReason: { unified: "stop", raw: "stop" },
@@ -220,6 +222,42 @@ describe("grade/judge (§7.4)", () => {
     assert.equal(sent.at(-1)!.modelId, "acme/default-2");
     await assert.rejects(g({}), /grade\/judge: no model: name one in the grade's config \(model\), or set STRUT_DEFAULT_MODEL/);
   });
+
+  it("handed no expected answer it is a type's check (§5.6.7 c): the task, the answer and its files on the prompt, the images and PDFs as files the model sees", async () => {
+    const png = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+    const check = (config: Record<string, unknown>, files?: Array<{ name: string; mediaType: string; data: string }>) =>
+      stepGrader({ registry: () => registry, services: () => services() })({
+        step: "grade/judge",
+        input: { answer: { book: "Rayuela" }, show: { ask: "Foto de la siguiente página." }, type: "page-photo", ...(files ? { files } : {}) },
+        config: { model: JUDGE, ...config },
+        principal: "client-billing",
+        maxCostUsd: 0.05,
+        timeoutMs: 10_000,
+      });
+    reply = "FAIL: La foto muestra una taza, no una página.";
+    const files = [
+      { name: "page.png", mediaType: "image/png", data: png },
+      { name: "scan.pdf", mediaType: "application/pdf", data: Buffer.from("%PDF-1.4").toString("base64") },
+      { name: "notes.txt", mediaType: "text/plain", data: Buffer.from("hi").toString("base64") },
+    ];
+    assert.deepEqual(await check({ rubric: "One whole book page." }, files), { supports: false, content: "La foto muestra una taza, no una página." });
+    const last = sent.at(-1)!;
+    assert.match(last.system, /You check a worker's answer to a task, and the files sent with it/);
+    assert.match(last.system, /in the language the task is written in/);
+    assert.equal(
+      last.prompt,
+      '<rubric>\nOne whole book page.\n</rubric>\n<task>\n{"ask":"Foto de la siguiente página."}\n</task>\n<answer>\n{"book":"Rayuela"}\n</answer>\n<files>\n1. "page.png" (image/png)\n2. "scan.pdf" (application/pdf)\n3. "notes.txt" (text/plain): not shown to you\n</files>',
+    );
+    assert.deepEqual(last.files, [
+      { mediaType: "image/png", filename: "page.png" },
+      { mediaType: "application/pdf", filename: "scan.pdf" },
+    ]);
+    reply = "PASS: one whole page.";
+    assert.deepEqual(await check({}), { supports: true, content: "one whole page." });
+    assert.match(sent.at(-1)!.prompt, new RegExp(`^<rubric>\\n${DEFAULT_CHECK_RUBRIC.replace(/[.,]/g, "\\$&")}\\n</rubric>`), "the check's default rubric");
+    assert.match(sent.at(-1)!.prompt, /<files>\nnone\n<\/files>$/);
+    assert.deepEqual(sent.at(-1)!.files, []);
+  });
 });
 
 // ── both ─────────────────────────────────────────────────────────────────────
@@ -308,6 +346,30 @@ describe("a test whose type grades with each, through a strut's task store", () 
 
       const { worker } = await json(`/tasks/workers/dave`);
       assert.deepEqual([worker.standing.words.graded, worker.standing.words.errors], [0, 1], "an error counts for nothing");
+
+      // A type's CHECK (§5.6.7 c): grade/judge looks at the photo before the
+      // answer is accepted. A FAIL refuses it with the model's reason, the
+      // task still the worker's; a PASS is accepted.
+      await json(`/tasks/types/pages`, {
+        method: "PUT",
+        body: JSON.stringify({ app: "workers", answer: { type: "object", properties: {} }, attachments: { max: 1, min: 1, types: ["image/*"] }, check: { step: "grade/judge", config: { model: JUDGE, rubric: "One whole book page." } } }),
+      });
+      const type = (await json(`/tasks/types`))["types"].find((t: { name: string }) => t.name === "pages");
+      assert.deepEqual(type.check, { step: "grade/judge", config: { model: JUDGE, rubric: "One whole book page." } });
+      await strut.tasks.capability.ensure({ type: "pages", workflow: "w", runId: "r-pages", path: "w/page", show: { ask: "Photo of the next page." } });
+      await json(`/tasks/workers/erin/grants/pages`, { method: "PUT", body: "" });
+      const got = (await strut.tasks.capability.next("erin", { app: "workers", type: "pages" })) as WorkerTask;
+      const photo = [{ name: "p.png", mediaType: "image/png", data: Buffer.from("89504e470d0a1a0a", "hex").toString("base64") }];
+      reply = "FAIL: That is a cup, not a book page.";
+      await assert.rejects(strut.tasks.capability.submit("erin", { lease: got.lease, answer: {}, attachments: photo, app: "workers" }), /: bad_answer: That is a cup, not a book page\.$/);
+      assert.deepEqual(sent.at(-1)!.files, [{ mediaType: "image/png", filename: "p.png" }], "the model saw the photo");
+      assert.match(sent.at(-1)!.prompt, /<task>\n\{"ask":"Photo of the next page\."\}\n<\/task>/);
+      const open = (await json(`/tasks?type=pages`))["tasks"][0];
+      assert.deepEqual([open.status, open.leases[0].status], ["open", "open"], "refused: the task is still erin's");
+      reply = "PASS: one whole page.";
+      assert.deepEqual(await strut.tasks.capability.submit("erin", { lease: got.lease, answer: {}, attachments: photo, app: "workers" }), { ok: true });
+      assert.equal((await json(`/tasks?type=pages`))["tasks"][0].status, "settled");
+      assert.ok(auths.at(-1)!.principal === "client-billing" && auths.at(-1)!.maxCostUsd === 0.05, "billed as grading is");
     } finally {
       await strut.close();
     }

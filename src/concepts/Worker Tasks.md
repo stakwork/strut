@@ -50,7 +50,11 @@ answer you would pick, so that "yes" settles all of them. Leave out what
 their request already said.
 
 - **What a worker does and hands in.** The photos (how many, of what) and
-  the few questions they answer. Propose them from the request.
+  the few questions they answer. Propose them from the request. For paid
+  work, say too what makes one good enough to pay ("a sharp photo of one
+  whole page"): each is checked the moment it is sent, and one that is not
+  is refused with the reason, so the worker sends it again and it is never
+  paid.
 - **When there is work.**
   - *Any time, as many as they like* — a worker starts one whenever they
     want, and many can work at once. Nothing has to be sent out, so it can
@@ -143,6 +147,12 @@ What the person decided maps onto them:
   is an automation, and only when the person asked for one.
 - *Only people you invite* is `open: false`; *anyone* is open.
 - Photos are the type's `attachments`.
+- What makes an answer good enough to pay is the type's `check`, written
+  from what the person said: `{ step: "grade/judge", config: { rubric } }`.
+  It runs when the worker sends the answer, before it is accepted or paid,
+  and a fail is refused with its reason. Checks in the workflow run after
+  the answer is accepted, when the pay is already the worker's: they can
+  tell the worker (`task/reply`) and flag the answer, never stop the pay.
 - The workers' language is the person's to say, never to ask. `strut/worker`
   speaks it already: its screens are in English or Spanish, whichever the
   worker's phone is set to. What the type says is yours: write its ask, its

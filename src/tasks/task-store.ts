@@ -139,6 +139,15 @@ export interface RoundRule {
   workflow: string;
 }
 
+/** A type's CHECK (plans/human-steps.md §5.6.7, option c): a SEALED registry
+ *  step in the grader's contract that `submit` runs on each answer and its
+ *  files before it is accepted. A fail refuses the answer: the worker keeps
+ *  the task, and nothing is saved or earned. */
+export interface CheckRule {
+  step: string;
+  config?: Record<string, unknown>;
+}
+
 /** A type's LIMITS, checked by the server whenever it hands out a task of
  *  it (`next`): `budgetSats`, the most the type pays in all (what its
  *  answers earned, plus the pay of the leases being worked, plus the one
@@ -206,6 +215,9 @@ export interface TaskType {
    *  item, and staff send a round of it (`POST /tasks/types/:name/round`).
    *  Absent: no workflow named (a `human` step anywhere makes its tasks). */
   round?: RoundRule;
+  /** Its check before an answer is accepted (§5.6.7 c); absent: none, every
+   *  answer that fits the schema and the files rule is accepted. */
+  check?: CheckRule;
   /** Epoch ms, and who, of the last save. */
   changedAt: number;
   changedBy?: string;
