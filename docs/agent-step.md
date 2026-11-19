@@ -83,7 +83,8 @@ index. A change in this area updates this file, not AGENTS.md.
   did this thread touch" is one query over `session_id` → `IN_SESSION` →
   `ACCESSED`, and keeps the turn's `message` and `reply` whole, so what
   was said in a thread is searchable. Endpoints (`/sessions`, all behind the key,
-  reads included; the id is a query parameter): list, one session's turn
+  reads included; the id is a query parameter): list (the newest 100,
+  `?limit=` up to 500, `more` when there are others), one session's turn
   log, its messages, delete (409 while held). Tests:
   `storage-conformance.test.ts` (the store), `steps/core/agent-session.test.ts`
   (what a turn puts on the wire, against a stand-in provider),
@@ -259,7 +260,7 @@ What each file and folder in this area is, in the order of the tree.
 
 ### `src/session-store.ts`
 
-agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit; `turns(id)` reads the lines alone) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
+agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit; `turns(id)` reads the lines alone; `list({ limit })` reads the newest sessions' turn lines alone, by turns.jsonl's mtime — `newestWritten`, store.ts — and without `limit` all, for the conversation index's one-time build) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 
 ### `src/steps/lib/acp/`
 

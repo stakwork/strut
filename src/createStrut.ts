@@ -18,6 +18,8 @@ import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, sum
 import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
+  CHAT_LIST_DEFAULT_LIMIT,
+  CHAT_LIST_MAX_LIMIT,
   FileChatStore,
   MemoryChatStore,
   generateChatId,
@@ -86,6 +88,8 @@ import {
   appSessionId,
   idProblem,
   peerSessionId,
+  SESSION_LIST_DEFAULT_LIMIT,
+  SESSION_LIST_MAX_LIMIT,
   sessionInfo,
   sessionsCapability,
   type SessionStore,
@@ -1052,6 +1056,12 @@ export interface StrutRunOptions<TServices = unknown> {
 
 /** Resolve a dotted/bracketed path (`a.b`, `a[0].b`) into a nested value.
  *  Used to pull a promote spec's `from` value out of a run's output. */
+/** A listing's `?limit=`: a positive integer up to `max`, else `fallback`. */
+function pageLimit(asked: string | undefined, fallback: number, max: number): number {
+  const n = Number(asked);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 function getByPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
   const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean);
@@ -6696,7 +6706,11 @@ export async function createStrut<TServices = unknown>(
     if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
     const busy = (id: string) => (sessions.holder(id) ? { busy: true } : {});
     if (c.req.query("id") === undefined) {
-      return c.json({ sessions: (await sessionStore.list()).map((s) => ({ ...s, ...busy(s.id) })) });
+      // The newest `limit`, reading no other session: a swarm holds one per
+      // job and conversation, months of them.
+      const limit = pageLimit(c.req.query("limit"), SESSION_LIST_DEFAULT_LIMIT, SESSION_LIST_MAX_LIMIT);
+      const listed = await sessionStore.list({ limit: limit + 1 });
+      return c.json({ sessions: listed.slice(0, limit).map((s) => ({ ...s, ...busy(s.id) })), ...(listed.length > limit ? { more: true } : {}) });
     }
     const at = sessionRoute(c);
     if (at instanceof Response) return at;
@@ -10227,9 +10241,12 @@ export async function createStrut<TServices = unknown>(
       return c.json({ chatId: sent.chatId, turn: sent.turn, ...(hasCallback ? { callback: true } : {}) }, 202);
     });
 
-    // List chat sessions (newest first).
+    // List chat sessions (newest first): the newest `limit`, reading no other
+    // chat's meta.
     app.get("/chats", async (c) => {
-      const list = await chatStore.listChats();
+      const limit = pageLimit(c.req.query("limit"), CHAT_LIST_DEFAULT_LIMIT, CHAT_LIST_MAX_LIMIT);
+      // Sliced too: a host's own store may list them all.
+      const list = (await chatStore.listChats({ limit })).slice(0, limit);
       return c.json((await Promise.all(list.map((m) => reconcileStaleChat(m)))).map(publicMeta));
     });
 

@@ -75,7 +75,9 @@ index. A change in this area updates this file, not AGENTS.md.
   `{ chatId, turn }` (202). The turn consumes the agent's `fullStream`
   and persists each part; close the browser and it keeps running.
   Watch/reattach via `GET /chat/:id/stream` (SSE tail), load the
-  transcript via `GET /chat/:id`, list sessions via `GET /chats`.
+  transcript via `GET /chat/:id`, list sessions via `GET /chats` — the newest
+  100 (`?limit=`, at most 500; the history's Show older asks for 100 more),
+  reading only those chats' metas.
   `POST /chat/:id/cancel` stops the live turn (the flyout's stop square,
   shown only while the chat is working): the agent stream is aborted, what
   streamed so far is persisted — a tool call cut off before its result gets
@@ -345,7 +347,7 @@ the chat VIEW an external agent reads (the assistant MCP door), the chat twin of
 
 ### `src/chat-store.ts`
 
-ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + system.md + messages.jsonl + events.jsonl) + capToolOutput (the builder's tool-result cap) + truncateToolMessages (the same cap on replay)
+ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + system.md + messages.jsonl + events.jsonl; `listChats({ limit })` reads the newest metas alone, by the file's mtime — `newestWritten`, store.ts — and without `limit` all, for the boot auto-resume and the projector's backfill) + capToolOutput (the builder's tool-result cap) + truncateToolMessages (the same cap on replay)
 
 ### `src/compaction.ts`
 
@@ -397,7 +399,7 @@ strut over MCP (stateless Streamable HTTP, one SDK `Server` per request, the SDK
 
 ### `src/ai/assistant-tools.ts`
 
-the ASSISTANT tool set, `POST /mcp`'s default: NINE tools for an external agent (Claude Code, Hermes) that has forty other tools and should not learn strut's YAML — `ask_workflow_builder` (a message to the builder, new chat or continuation; holds up to `wait` and returns the turn's `text` + `did` from chat-view.ts, `status` done | working | asked (the open question, a secret's link for the caller's USER) | parked | error, `settled`), `read_workflow_builder_chat` (turns since a cursor), `list_workflow_builder_chats` (find a chat again; `mine` by the connection's `x-strut-actor`), `list_workflows` (+ schedules, last run), `list_runs` (+ each run's artifacts as links; the newest `RUN_LIST_SCAN_MAX` runs looked through, as run/list), `get_run` (the basics; an output field over 2k chars HELD BACK as `{ $omitted }` until named in `fields`; `files: true` lists the run's files with links; no step tree — the builder debugs), `run_workflow` (the builder's own, output trimmed the same way), `search_packages` (the package STORE over `ctx.services.packages`: the followed indexes' hits with their `detail`, the peers' installs) and `get_package` (one package's page as a model reads it, `briefPackagePage`, with `ui` = `<base>/?install=<name>`, the person's Publish dialog on its Packages tab, on the name) — the two say a PERSON installs, and where. No model behind any but the first. `AssistantChatDoor` is createStrut's way in: `sendChatMessage` (POST /chat's core, shared), the notifier's liveness, the turn callbacks' `isSettled`; a chat started here is stamped `ChatMeta.publicUrl`, so the builder's tool results in it carry absolute links and its reply text copies them
+the ASSISTANT tool set, `POST /mcp`'s default: NINE tools for an external agent (Claude Code, Hermes) that has forty other tools and should not learn strut's YAML — `ask_workflow_builder` (a message to the builder, new chat or continuation; holds up to `wait` and returns the turn's `text` + `did` from chat-view.ts, `status` done | working | asked (the open question, a secret's link for the caller's USER) | parked | error, `settled`), `read_workflow_builder_chat` (turns since a cursor), `list_workflow_builder_chats` (find a chat again, among the newest 500; `mine` by the connection's `x-strut-actor`), `list_workflows` (+ schedules, last run), `list_runs` (+ each run's artifacts as links; the newest `RUN_LIST_SCAN_MAX` runs looked through, as run/list), `get_run` (the basics; an output field over 2k chars HELD BACK as `{ $omitted }` until named in `fields`; `files: true` lists the run's files with links; no step tree — the builder debugs), `run_workflow` (the builder's own, output trimmed the same way), `search_packages` (the package STORE over `ctx.services.packages`: the followed indexes' hits with their `detail`, the peers' installs) and `get_package` (one package's page as a model reads it, `briefPackagePage`, with `ui` = `<base>/?install=<name>`, the person's Publish dialog on its Packages tab, on the name) — the two say a PERSON installs, and where. No model behind any but the first. `AssistantChatDoor` is createStrut's way in: `sendChatMessage` (POST /chat's core, shared), the notifier's liveness, the turn callbacks' `isSettled`; a chat started here is stamped `ChatMeta.publicUrl`, so the builder's tool results in it carry absolute links and its reply text copies them
 
 ### `src/ai/elicitation.ts`
 

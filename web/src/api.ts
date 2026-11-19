@@ -1579,8 +1579,9 @@ export const getChatMeta = (chatId: string) =>
 export const getToolProgress = (chatId: string, toolCallId: string) =>
   fetchJSON<{ outputs: any[] }>(`/chat/${chatId}/progress/${encodeURIComponent(toolCallId)}`);
 
-/** List chat sessions (newest first). */
-export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
+/** List chat sessions (newest first): the newest `limit` (the server's
+ *  default 100, at most 500). */
+export const listChats = (limit?: number) => fetchJSON<ChatMeta[]>(`/chats${limit ? `?limit=${limit}` : ""}`);
 
 /** Stop a chat's live turn (409 when nothing is running). The turn ends
  *  with `chat.end`, so an attached stream finishes as usual. */
