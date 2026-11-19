@@ -85,13 +85,22 @@ index. A change in this area updates this file, not AGENTS.md.
   (`ctx.services.publicView.share`, src/public-view.ts, `publicAppLinks` on
   `lastBase`, the last OUTSIDE request's base: an in-process request no
   longer moves it) and a QR of `peelLink` drawn server-side (`qrSvg`,
-  src/move/link.ts, `qrcode-generator`). The Queue opens with a "Bring
-  workers in" list, one closed row per public worker app (`sharedApps`,
-  `ShareRows` in `components/Share.tsx`): the app's name and the types its
-  workers answer, opening to its invite maker, QR and links (kept mounted
-  while closed, so an invite just made stays). A type's page shows its
-  app's block open, or says it is not public. The page makes nothing
-  public.
+  src/move/link.ts, `qrcode-generator`) — and `tasks`, the same for Tasks
+  (`strut/worker`), which every invite opens. ONE panel, "Invite a worker"
+  (`BringWorkersIn` in `components/Share.tsx`), a closed row atop the Queue
+  and the Workers tab (kept mounted while closed, so an invite just made
+  stays) and open on each type's page with that type picked: the invite
+  first (Work they'll do — "Anything open" or a type that is on,
+  `inviteChoices` — and the starting sats under More), then, folded and only
+  while some work is open (`anyOpenWork`), "Anyone with the link": Tasks'
+  Peel link and QR, open work only, for people who have Peel. While Tasks
+  is not in the public view the panel offers "Put Tasks online"
+  (`staff/tasks-online`, `POST /tasks/online`: createStrut's `tasksOnline`,
+  `publicViewNeeds` + `withNeeds` through `savePublicView`, as the Public
+  view tab saves it with nothing unticked, in the admin's name). That is
+  the one app the page puts online: strut ships it and it calls only the
+  worker's `task/*` steps; work answered in another app that is not online
+  says so (approve its card, or the Public view).
 - **Task types the builder asks for** (`plans/human-steps.md` §9.8, item 6
   PR 2; `src/tasks/set-type.ts`, `task/set-type`, `task/types`). The
   builder writes the workflow with the `human` step, so it knows when a
@@ -297,40 +306,53 @@ index. A change in this area updates this file, not AGENTS.md.
   sign-in has none, and `task/withdraw` answers `no_address`. To try it
   locally without a mixer: docs/running.md, "Payments locally".
 - **Inviting a worker** (`plans/human-steps.md` §5.8; src/payments/invites.ts,
-  src/public-join.ts, `staff/invite`, the `/tasks/invites` routes). Staff
-  send a new worker ONE https link, `https://<public view>/public/join#<the
-  daemon's invite>&a=<the worker app's share link, encoded>`: Invite, in a
-  worker app's Share block (§9.5), asks the treasury daemon for a Sphinx
-  invite through the PAYER (the daemon pays the mixer for it: the starting
-  sats, the payout settings' `inviteSats` by default, and the mixer's price
-  on top), and builds the link on the share links' base, opening the WORKER
-  APP at its share link (`publicAppLinks`) — an app the task types name that
-  is in the public view (the route takes `app` when there are several).
-  Share is for a worker who has Peel; Invite for someone who does not.
-  `/public/join` opens Peel on Android with Chrome's `intent://` form of
-  `sphinx.chat://?action=i&…&a=…`, the newest APK as its fallback; Peel signs
-  a new user up and opens `a=`, an existing user goes straight there, and
-  the first sign-in is one tap. Nothing carries an intent across an install,
-  so the tap also copies `sphinx.chat://?…` to the clipboard: a Peel opened
-  with no account and no invite reads it there (peel-android's onboarding),
-  and a worker new to Peel goes from the download to the worker app without
-  coming back to the link. ONE STEP for invite-only work: `a=` is the
-  share link with `input=invite=<token>` (payments/invites.ts
-  `invitedAppUrl`, auth.ts `inviteToken` / `inviteOf`: the daemon's code and
-  the app, signed, 90 days from the invite's creation, so a listing shows the
-  link sent), the app's tool input; the kit's `useTask` / `useWorker` send it
-  as `invite` on `task/next` / `task/me`, and the service's `enterInvite`
-  (deps `invite: { read, live }`, createStrut's: `inviteOf`, and the daemon
-  listing the invite `sending` / `ready` / `used`) gives that worker the
-  app's invite-only, enabled types they hold no row of, by `invite:<code>`
+  src/public-join.ts, `staff/invite`, the `/tasks/invites` routes; reworked
+  2026-11-19 for a first-time worker's sake). Staff send a worker ONE https
+  link, for one person: `https://<public view>/public/join#<the daemon's
+  invite>&a=<Tasks' share link, encoded>`. "Invite a worker" (`strut/staff`,
+  below) asks the treasury daemon for a Sphinx invite through the PAYER (the
+  daemon pays the mixer for it: the starting sats, the payout settings'
+  `inviteSats` by default, and the mixer's price on top), and builds the
+  link on the share links' base. EVERY invite opens TASKS (`strut/worker`,
+  `WORKER_APP`), the server's one work page, so Peel keeps one page per
+  employer (it records each app a link opens, docs on peel-android's phase
+  41); an invite made for one kind of work (`type`) carries `type=<type>`,
+  and Tasks opens it once `task/me` has answered — in the app that draws it,
+  with Back to Tasks (`WorkerPage`, docs/apps.md). The same link works for
+  someone who has Peel already (Peel ignores the invite part and opens
+  `a=`), so staff never ask; the grant link that was for them is gone
+  (`link_…` codes already sent still hold, `GRANT_LINK_PREFIX`). Tasks must
+  be in the public view (`409 no_worker_app`), and so must the app that
+  draws the invite's work (`409 not_online`), both refused before the
+  wallet pays. `/public/join` opens Peel on Android with Chrome's
+  `intent://` form of `sphinx.chat://?action=i&…&a=…`, the newest APK as its
+  fallback; Peel signs a new user up and opens `a=`, and the first sign-in
+  is one tap. Nothing carries an intent across an install, so the tap also
+  copies `sphinx.chat://?…` to the clipboard: a Peel opened with no account
+  and no invite reads it there (peel-android's onboarding), and a worker new
+  to Peel goes from the download to Tasks without coming back to the link.
+  ONE STEP for invite-only work: `a=` carries `input=invite=<token>&type=…`
+  (payments/invites.ts `invitedAppUrl`, auth.ts `inviteToken` / `inviteOf`:
+  the daemon's code, the app it opens, the types it gives — `t`, `[]` for
+  open work alone — signed, 90 days from the invite's creation, so a listing
+  shows the link sent), the page's tool input; the kit's `useTask` /
+  `useWorker` send it as `invite` on `task/next` / `task/me`, and the
+  service's `enterInvite` (deps `invite: { read, live }`, createStrut's:
+  `inviteOf`, and the daemon listing the invite `sending` / `ready` /
+  `used`) gives that worker the invite-only, enabled types the token names
+  that they hold no row of — whichever app draws them — by `invite:<code>`
   — one worker per invite (`WorkerStore.grantedBy`, revoked grants
   included; two first asks with one link taken one after the other), never
   a revoked type, never a suspended or banned worker; a token that does not
   hold or opens another app is ignored (invite-grants.test.ts, both stores).
-  The task store keeps those grants and nothing else of an invite; an open
-  type lets anyone in on their first `task/next` (ruling 9). `a=` lives only
-  in the link; the mixer keeps code → starting sats and the core ignores a
-  section it does not know.
+  A token with no `t` (made before) gives every invite-only type of the app
+  it opens, as it did. The daemon keeps the invites (code, sats, status);
+  strut notes only each one's work (`InviteNotes`,
+  `<dataDir>/tasks/invites.json`, memory beside a memory run store), so a
+  listing rebuilds the link that was sent; the task store keeps the grants.
+  Open work lets anyone in on their first `task/next` (ruling 9). `a=` lives
+  only in the link; the mixer keeps code → starting sats and the core
+  ignores a section it does not know.
 - **Limits, numbers, grant links, and the assistant's task tools**
   (2026-11-19, after a pilot spec made the builder build its own admin app
   and ledger). A type's `limits` (`LimitRule`: `budgetSats`, the most it
@@ -348,11 +370,10 @@ index. A change in this area updates this file, not AGENTS.md.
   route's actor), or for a `task/set-type` proposal the person who asked
   and the admin who accepted; an open type needs none, a change grants
   nobody. "Try it yourself" on the staff's type page is
-  `staff/grant { actor: "@me" }`, for any other admin. A GRANT LINK
-  (`POST /tasks/invites/link`, `staff/grant-link`, the share block's "Someone
-  who already has Peel") is an invite token whose code is `link_…`: live
-  without the daemon (createStrut's `invite.live`), one worker per code by
-  `invite:<code>` like an invite. The assistant (orchestrator) has
+  `staff/grant { actor: "@me" }`, for any other admin. A GRANT LINK (an
+  invite token whose code is `link_…`, live without the daemon, one worker
+  per code) was made here for someone who had Peel; staff make none since
+  the invite works for them too, and the ones sent still hold. The assistant (orchestrator) has
   `task/types`, `task/report` and `task/grant` (a proposal an admin
   accepts, `ctx.services.taskTypes.grant` checking the record; no `worker`:
   the person who asked); the builder has `task/report`. The Concept pages
@@ -467,7 +488,7 @@ the WORKER's door to the task store (plans/human-steps.md §5.1), thin over `ctx
 
 ### `src/steps/lib/staff/`
 
-the STAFF's door to the task store (plans/human-steps.md §9.3; specs/API.md §14.15), for `strut/staff` alone: each step is one `/tasks…` route made in process in the viewer's name through `ctx.services.staffAdmin` (createStrut's `staffAdminDoor`, `inProcessDoor` over `STAFF_ROUTES`: no other path), which the app door hands to the bag of ONE call — a first-party page's shown to an admin (src/apps/tools.ts `adminBag`, which also leaves the deployment's `onRunEvent` out) — and to nothing else; `_door.ts` `staffCall` refuses without it (`../_admin-door.ts` `adminDoorOf`, the check `earnings/*` shares) and throws a route's refusal with its `code` first. staff/stats, types, save-type, delete-type, round-items and send-round (Send a round: `GET`/`POST /tasks/types/:name/round`), type-workflows (the editor's When there is work: `GET /tasks/workflows?type=`, the rounds deps' `workflowsFor`), workers, worker, set-worker, grant, revoke, tasks (with `review`, the review queue), task, file, take-back (5a), review (§9.6: `PUT /tasks/:id/review`), tests, test, save-test (a new test, or with `id` a change before it is served), test-file (base64 bytes, sent raw), test-from-task, retire-test (item 4), and item 5b's payouts (§8.2): staff/payouts (`GET /tasks/payouts`), staff/save-payouts (`PUT /tasks/payouts/settings`), staff/payout-read and staff/payout-resolve (`POST /tasks/payouts/:key/read` and `…/resolve`) — `strut/staff` grants them with its Payouts tab (item 5b's PR 3); staff/save-payouts takes `inviteSats` too. §5.8's invites: staff/invite { sats?, app? } (`POST /tasks/invites`; `effect: "write"` — the wallet pays the mixer; adds `qrSvg`, the link as a QR code, as staff/types' share), staff/invites { app? } (`GET /tasks/invites`) and staff/cancel-invite { code } (`POST /tasks/invites/:code/cancel`), for the Share block's Invite and the Workers tab's list. A route's in-process request is `http://strut.invalid`, so the invite routes take the base the share links use (`lastBase`, where the page's own request came, with any mount path). The ones that write an expected answer list `expected` in `redact`; none is kept as a run (`keptFromApp`). `effect` read or write, as their routes
+the STAFF's door to the task store (plans/human-steps.md §9.3; specs/API.md §14.15), for `strut/staff` alone: each step is one `/tasks…` route made in process in the viewer's name through `ctx.services.staffAdmin` (createStrut's `staffAdminDoor`, `inProcessDoor` over `STAFF_ROUTES`: no other path), which the app door hands to the bag of ONE call — a first-party page's shown to an admin (src/apps/tools.ts `adminBag`, which also leaves the deployment's `onRunEvent` out) — and to nothing else; `_door.ts` `staffCall` refuses without it (`../_admin-door.ts` `adminDoorOf`, the check `earnings/*` shares) and throws a route's refusal with its `code` first. staff/stats, types, save-type, delete-type, round-items and send-round (Send a round: `GET`/`POST /tasks/types/:name/round`), type-workflows (the editor's When there is work: `GET /tasks/workflows?type=`, the rounds deps' `workflowsFor`), workers, worker, set-worker, grant, revoke, tasks (with `review`, the review queue), task, file, take-back (5a), review (§9.6: `PUT /tasks/:id/review`), tests, test, save-test (a new test, or with `id` a change before it is served), test-file (base64 bytes, sent raw), test-from-task, retire-test (item 4), and item 5b's payouts (§8.2): staff/payouts (`GET /tasks/payouts`), staff/save-payouts (`PUT /tasks/payouts/settings`), staff/payout-read and staff/payout-resolve (`POST /tasks/payouts/:key/read` and `…/resolve`) — `strut/staff` grants them with its Payouts tab (item 5b's PR 3); staff/save-payouts takes `inviteSats` too. §5.8's invites: staff/invite { sats?, type? } (`POST /tasks/invites`; `effect: "write"` — the wallet pays the mixer; adds `qrSvg`, the link as a QR code, as staff/types' share), staff/invites {} (`GET /tasks/invites`), staff/tasks-online {} (`POST /tasks/online`, Tasks into the public view) and staff/cancel-invite { code } (`POST /tasks/invites/:code/cancel`), for the Invite a worker panel and the Workers tab's list. A route's in-process request is `http://strut.invalid`, so the invite routes take the base the share links use (`lastBase`, where the page's own request came, with any mount path). The ones that write an expected answer list `expected` in `redact`; none is kept as a run (`keptFromApp`). `effect` read or write, as their routes
 
 ### `src/steps/lib/grade/`
 

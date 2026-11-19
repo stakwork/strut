@@ -16,10 +16,20 @@ import { dirname, join } from "node:path";
 // variables against the spec's list, and another host's page reads the
 // same names. One record, `<dataDir>/brand.json`, written by a person
 // (`PUT /brand`, full scope); every credential reads it (`GET /brand`).
+//
+// And a NAME: who this server is to the people who use it — the employer a
+// worker works for. Not a style: it rides in each app document as it is
+// served (`<meta name="strut-name">`, apps/build.ts), the kit's
+// `useHost().name`, so Tasks heads its page with it and strut's host signs a
+// visitor in under it (Peel names the server's pages by that title); and
+// the invite page says it (src/public-join.ts).
 
 export const BRAND_FILE = "brand.json";
 
 export interface Brand {
+  /** The name people know this server by: the employer, the org. Plain
+   *  text, 1 to 60 characters. */
+  name?: string;
   /** The brand's color, `#rrggbb`: primary buttons, the selected item,
    *  focus rings. Its text color is picked for contrast. */
   color?: string;
@@ -38,7 +48,11 @@ export interface BrandStyles {
   variables: Record<string, string>;
 }
 
-const FIELDS = ["color", "colorDark", "radius", "font"] as const;
+const FIELDS = ["name", "color", "colorDark", "radius", "font"] as const;
+/** The fields that are a look: what `brandStyles` maps. */
+const STYLE_FIELDS = ["color", "colorDark", "radius", "font"] as const;
+/** Plain text, no control characters. */
+const NAME = /^[^\p{Cc}]{1,60}$/u;
 const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 const LENGTH = /^(?:0|\d{1,3}(?:\.\d{1,3})?(?:px|rem|em))$/;
 /** Names, quotes, commas and spaces: nothing that could end the value. */
@@ -47,14 +61,15 @@ const FONT = /^[\p{L}\p{N} "',._-]{1,200}$/u;
 /** Why `body` is not a brand, or undefined. An empty string or null clears
  *  a field. */
 export function brandProblem(body: unknown): string | undefined {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return "the brand is { color?, colorDark?, radius?, font? }";
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "the brand is { name?, color?, colorDark?, radius?, font? }";
   for (const [k, v] of Object.entries(body)) {
-    if (!(FIELDS as readonly string[]).includes(k)) return `unknown field "${k}" (the brand is { color?, colorDark?, radius?, font? })`;
+    if (!(FIELDS as readonly string[]).includes(k)) return `unknown field "${k}" (the brand is { name?, color?, colorDark?, radius?, font? })`;
     if (v === null || v === "") continue;
     if (typeof v !== "string") return `${k} is a string`;
     if ((k === "color" || k === "colorDark") && !HEX.test(v)) return `${k} is a hex color, #rrggbb`;
     if (k === "radius" && !LENGTH.test(v)) return "radius is a length in px, rem or em (0.5rem, 6px)";
     if (k === "font" && !FONT.test(v)) return "font is a font-family list (\"Avenir Next\", system-ui, sans-serif)";
+    if (k === "name" && !NAME.test(v.trim())) return "name is plain text, 1 to 60 characters";
   }
   return undefined;
 }
@@ -72,7 +87,7 @@ export function normalizeBrand(body: Record<string, unknown>): Brand {
 
 /** The variables for each theme, or null when the brand sets nothing. */
 export function brandStyles(brand: Brand): { light: BrandStyles; dark: BrandStyles } | null {
-  if (!FIELDS.some((k) => brand[k])) return null;
+  if (!STYLE_FIELDS.some((k) => brand[k])) return null;
   const forTheme = (color: string | undefined): BrandStyles => {
     const v: Record<string, string> = {};
     if (color) {

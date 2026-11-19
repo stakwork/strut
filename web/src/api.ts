@@ -649,9 +649,10 @@ export interface WorkflowVersionStats {
 }
 
 /** Every version, newest first, with its run counts (the Versions tab).
- *  `unattributed` = finished runs that recorded no version hash. */
+ *  `unattributed` = finished runs that recorded no version hash. Counted
+ *  over the newest `scanned` runs; `more` = older runs were not read. */
 export const getWorkflowVersions = (name: string) =>
-  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number }>(`${workflowPath(name)}/versions`);
+  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number; scanned: number; more?: true }>(`${workflowPath(name)}/versions`);
 
 /** Make a stored version the active one — what Run, schedules and the
  *  canvas use. A rollback publishes nothing. */
@@ -931,6 +932,10 @@ export interface StepStatsResponse {
    *  own YAML, otherwise reached through a subflow. */
   workflows: Array<{ name: string; direct: boolean }>;
   runs: { total: number; success: number; error: number; lastAt: string | null };
+  /** The runs `runs` counts: the newest, at most 1,000. */
+  scanned: number;
+  /** Older runs were not read. */
+  more?: true;
 }
 
 export const getStepStats = (type: string) =>
@@ -1574,8 +1579,9 @@ export const getChatMeta = (chatId: string) =>
 export const getToolProgress = (chatId: string, toolCallId: string) =>
   fetchJSON<{ outputs: any[] }>(`/chat/${chatId}/progress/${encodeURIComponent(toolCallId)}`);
 
-/** List chat sessions (newest first). */
-export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
+/** List chat sessions (newest first): the newest `limit` (the server's
+ *  default 100, at most 500). */
+export const listChats = (limit?: number) => fetchJSON<ChatMeta[]>(`/chats${limit ? `?limit=${limit}` : ""}`);
 
 /** Stop a chat's live turn (409 when nothing is running). The turn ends
  *  with `chat.end`, so an attached stream finishes as usual. */

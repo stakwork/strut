@@ -13,19 +13,28 @@
  *   as a tool. Replays (`step.replayed`) are not executions.
  *
  * Read from each run's `RunSummary.stepCounts` (written at finalize), so the
- * cost is one small summary per run, never its event log. A workflow that
- * USED the step in an older version but no longer does is not scanned.
+ * cost is one small summary per run, never its event log — and of the
+ * newest `RUN_LIST_SCAN_MAX` runs across those workflows and the step's own,
+ * no further: a busy workflow holds 100k runs after months, and the flyout
+ * asks on every open. `scanned` says how many were read, `more` that older
+ * ones were not. A workflow that USED the step in an older version but no
+ * longer does is not scanned.
  */
 import { logEvicted, type Flow, type StepCounts } from "./core.js";
 import { closureIncludes, flowClosure } from "./closure.js";
 import type { RunStore } from "./store.js";
 import { countSteps, stepRunKey } from "./store.js";
+import { RUN_LIST_SCAN_MAX } from "./runs.js";
 import type { WorkspaceStore } from "./workspace.js";
 
 export interface StepStats {
   type: string;
   workflows: Array<{ name: string; direct: boolean }>;
   runs: { total: number; success: number; error: number; lastAt: string | null };
+  /** The runs `runs` counts: the newest, at most `RUN_LIST_SCAN_MAX`. */
+  scanned: number;
+  /** Older runs were not read. */
+  more?: true;
 }
 
 export async function stepStats(
@@ -75,11 +84,13 @@ export async function stepStats(
     return counts;
   };
 
-  for (const key of [...workflows.map((w) => w.name), stepRunKey(type)]) {
-    const ids = await store.listRuns(key);
-    for (let i = 0; i < ids.length; i += 32) {
-      (await Promise.all(ids.slice(i, i + 32).map((id) => countsOf(key, id)))).forEach(add);
-    }
+  // Newest first across every key (run ids are millisecond timestamps), and
+  // only so many: the names cost nothing, each summary one read.
+  const all: Array<{ key: string; id: string }> = [];
+  for (const key of [...workflows.map((w) => w.name), stepRunKey(type)]) for (const id of await store.listRuns(key)) all.push({ key, id });
+  const read = all.sort((a, b) => b.id.localeCompare(a.id)).slice(0, RUN_LIST_SCAN_MAX);
+  for (let i = 0; i < read.length; i += 32) {
+    (await Promise.all(read.slice(i, i + 32).map(({ key, id }) => countsOf(key, id)))).forEach(add);
   }
-  return { type, workflows, runs };
+  return { type, workflows, runs, scanned: read.length, ...(all.length > read.length ? { more: true as const } : {}) };
 }

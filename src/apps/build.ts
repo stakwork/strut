@@ -222,10 +222,17 @@ export function cspFor(resourceDomains: readonly string[] = []): string {
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/** The `<meta name>` carrying this server's NAME (the brand's `name`,
+ *  src/brand.ts) into a document as it is served: the kit's
+ *  `useHost().name`, and the title strut's host signs a visitor in under. */
+export const SERVER_NAME_META = "strut-name";
+
+const nameMeta = (name: string | undefined): string => (name ? `<meta name="${SERVER_NAME_META}" content="${escapeHtml(name)}">` : "");
+
 /** The served document: the placeholder meta filled with the app's file
- *  token, HTML-escaped. */
-export function withToken(html: string, token: string): string {
-  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${TOKEN_META}" content="${escapeHtml(token)}">`);
+ *  token, HTML-escaped, and the server's name when it has one. */
+export function withToken(html: string, token: string, name?: string): string {
+  return html.replace(TOKEN_PLACEHOLDER, `${nameMeta(name)}<meta name="${TOKEN_META}" content="${escapeHtml(token)}">`);
 }
 
 /** The `<meta name>` a PUBLIC VIEW document carries (plans/public-surface.md
@@ -242,14 +249,15 @@ export const PUBLIC_RUNNABLE_META = "strut-public-runnable";
 /** The document as the public view serves it: the visitor's identity in the
  *  token meta, the public view's mark beside it, and the granted workflows
  *  a visitor may run, when there are any. */
-export function withPublicIdentity(html: string, identity: string, runnable: ReadonlyArray<{ name: string; results: "output" | "run" }> = []): string {
+export function withPublicIdentity(html: string, identity: string, runnable: ReadonlyArray<{ name: string; results: "output" | "run" }> = [], name?: string): string {
   const run = runnable.length ? `<meta name="${PUBLIC_RUNNABLE_META}" content="${escapeHtml(JSON.stringify(runnable))}">` : "";
-  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1">${run}<meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
+  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1">${run}${nameMeta(name)}<meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
 }
 
-/** The document read with the key instead of a token: no meta at all. */
-export function withoutTokenMeta(html: string): string {
-  return html.replace(TOKEN_PLACEHOLDER, "");
+/** The document read with the key instead of a token: no token meta, the
+ *  server's name when it has one. */
+export function withoutTokenMeta(html: string, name?: string): string {
+  return html.replace(TOKEN_PLACEHOLDER, nameMeta(name));
 }
 
 function document(title: string, csp: string, css: string, js: string): string {

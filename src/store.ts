@@ -161,6 +161,17 @@ function wakeTails(key: string): void {
   for (const wake of set) wake();
 }
 
+/** `names` newest first by when `fileOf(name)` was last written (a name
+ *  whose file is gone sorts last): how a listing of the newest N reads only
+ *  N records — it stats every name, and reads none. */
+export async function newestWritten(names: readonly string[], fileOf: (name: string) => string): Promise<string[]> {
+  const at = await Promise.all(names.map((n) => stat(fileOf(n)).then((s) => s.mtimeMs, () => -1)));
+  return names
+    .map((name, i) => ({ name, at: at[i]! }))
+    .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name))
+    .map((x) => x.name);
+}
+
 // ── One write at a time per file ───────────────────────────────────────────
 // `appendFile` writes a large string in 512 KiB chunks, one `write` each, so
 // two appends to one log at once — parallel branches, a foreach, an agent's

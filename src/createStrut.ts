@@ -18,6 +18,8 @@ import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, sum
 import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
+  CHAT_LIST_DEFAULT_LIMIT,
+  CHAT_LIST_MAX_LIMIT,
   FileChatStore,
   MemoryChatStore,
   generateChatId,
@@ -61,7 +63,7 @@ import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
 import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
-import { createInvites, GRANT_LINK_PREFIX } from "./payments/invites.js";
+import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX } from "./payments/invites.js";
 import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
@@ -86,6 +88,8 @@ import {
   appSessionId,
   idProblem,
   peerSessionId,
+  SESSION_LIST_DEFAULT_LIMIT,
+  SESSION_LIST_MAX_LIMIT,
   sessionInfo,
   sessionsCapability,
   type SessionStore,
@@ -137,7 +141,7 @@ import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
 import { seedStaffApp } from "./apps/staff-seed.js";
-import { seedWorkerApp } from "./apps/worker-seed.js";
+import { seedWorkerApp, WORKER_APP } from "./apps/worker-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -252,7 +256,7 @@ export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
 const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
-import { createPublicViewDoor, publicViewNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
+import { createPublicViewDoor, publicViewNeeds, withNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -1052,6 +1056,12 @@ export interface StrutRunOptions<TServices = unknown> {
 
 /** Resolve a dotted/bracketed path (`a.b`, `a[0].b`) into a nested value.
  *  Used to pull a promote spec's `from` value out of a run's output. */
+/** A listing's `?limit=`: a positive integer up to `max`, else `fallback`. */
+function pageLimit(asked: string | undefined, fallback: number, max: number): number {
+  const n = Number(asked);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 function getByPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
   const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean);
@@ -3944,6 +3954,8 @@ export async function createStrut<TServices = unknown>(
   // tab. A run is attributed by the content hash it recorded (summary, else
   // `run.start` for runs that predate the summary stamp); identical content
   // published twice goes to the newest twin that existed when the run started.
+  // Counted over the newest `RUN_LIST_SCAN_MAX` runs, no further (`scanned`;
+  // `more`: older runs were not read): a busy workflow holds 100k runs.
   app.get("/workflows/:name/versions", async (c) => {
     const name = c.req.param("name");
     const meta = await workspace.getWorkflowMetadata(name);
@@ -3978,12 +3990,15 @@ export async function createStrut<TServices = unknown>(
       if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
       stats.set(v.version, s);
     };
-    const runIds = await store.listRuns(name);
+    const all = await store.listRuns(name);
+    const runIds = all.slice(0, RUN_LIST_SCAN_MAX);
     for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
     return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
       unattributed,
+      scanned: runIds.length,
+      ...(all.length > runIds.length ? { more: true } : {}),
     });
   });
 
@@ -4218,6 +4233,10 @@ export async function createStrut<TServices = unknown>(
   // writes it. Never a "publish": nothing is copied or versioned.
   // The public view reads this disk only: an anonymous caller walking a
   // public workflow's run ids must not be able to restore its whole archive.
+  /** This server's name (the brand's `name`, src/brand.ts), read per use: an
+   *  app document carries it (`<meta name="strut-name">`) and the invite page
+   *  says it. A brand file that does not read is no name. */
+  const serverName = async (): Promise<string | undefined> => (await readBrand(dataDir).catch(() => undefined))?.name;
   const publicSurface = createPublicSurface({
     dataDir,
     store: localStore,
@@ -4321,6 +4340,7 @@ export async function createStrut<TServices = unknown>(
     ...(artifacts ? { artifacts } : {}),
     fileHeaders: (path) => artifactHeaders(path),
     documentHeaders: (path) => artifactHeaders(path, true),
+    serverName,
     liveStatus,
     apps: {
       info: publicAppInfo,
@@ -4340,7 +4360,7 @@ export async function createStrut<TServices = unknown>(
           const item = surface.runnable.find((r) => r.kind === "workflow" && r.name === full);
           if (item) runnable.push({ name: g, results: item.results === "run" ? "run" : "output" });
         }
-        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable, await serverName()) };
       },
     },
     // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
@@ -4666,7 +4686,8 @@ export async function createStrut<TServices = unknown>(
       const html = Buffer.from(bytes).toString("utf8");
       const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
       const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
-      const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
+      const name = await serverName();
+      const served = identity ? withToken(html, identity, name) : withoutTokenMeta(html, name);
       // The same bytes every time a version is served (the identity is a
       // signature of it, not a nonce), so a host keeps them and asks again
       // with If-None-Match: a rebuild, a rotated key or another version
@@ -6691,7 +6712,11 @@ export async function createStrut<TServices = unknown>(
     if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
     const busy = (id: string) => (sessions.holder(id) ? { busy: true } : {});
     if (c.req.query("id") === undefined) {
-      return c.json({ sessions: (await sessionStore.list()).map((s) => ({ ...s, ...busy(s.id) })) });
+      // The newest `limit`, reading no other session: a swarm holds one per
+      // job and conversation, months of them.
+      const limit = pageLimit(c.req.query("limit"), SESSION_LIST_DEFAULT_LIMIT, SESSION_LIST_MAX_LIMIT);
+      const listed = await sessionStore.list({ limit: limit + 1 });
+      return c.json({ sessions: listed.slice(0, limit).map((s) => ({ ...s, ...busy(s.id) })), ...(listed.length > limit ? { more: true } : {}) });
     }
     const at = sessionRoute(c);
     if (at instanceof Response) return at;
@@ -6986,18 +7011,27 @@ export async function createStrut<TServices = unknown>(
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
-    // A new worker's invite (§5.8): the daemon's, through the payer; its
-    // link on the base the share links use, opening the worker app — an app
-    // the task types name that is in the public view.
+    // A worker's invite (§5.8): the daemon's, through the payer; its link
+    // on the base the share links use, opening Tasks on the kind of work it
+    // is for — which strut notes beside tasks.db, as the daemon keeps no
+    // more than code, sats and status.
     invites: createInvites({
       payer: () => payments.payer(),
       inviteSats: async () => (await payouts.settings()).inviteSats,
-      workerApps: async () => {
-        const [types, surface] = await Promise.all([(hostTasks ?? tasks.capability).types(), publicSurface.get()]);
-        const shown = new Set(surface.apps.map((a) => a.name));
-        return [...new Set(types.map((t) => t.app))].filter((a) => shown.has(a)).sort();
-      },
+      publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
+      typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
+      ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
     }),
+    // Tasks online (§5.8): the one app a staff page puts in the public view
+    // itself, as the Public view tab saves it with nothing unticked —
+    // strut's own seed, calling only the worker's task/* steps.
+    tasksOnline: async (actor) => {
+      const needs = await publicViewNeeds(publicViewDeps, { app: WORKER_APP });
+      if ("error" in needs) throw new TaskError("refused", needs.error);
+      const out = await savePublicView(withNeeds(await publicSurface.get(), needs), actor ? { actor } : {});
+      if (out.status !== 200) throw new TaskError("refused", out.body.error ?? `the public view was not saved (${out.status})`);
+      return { app: WORKER_APP, public: true as const };
+    },
     // The share links' base (`baseOfRequest`, with a mount path): a staff
     // page's in-process request is `http://strut.invalid`, so it takes where
     // the page's own request came (`lastBase`), as staff/types' share does.
@@ -10222,9 +10256,12 @@ export async function createStrut<TServices = unknown>(
       return c.json({ chatId: sent.chatId, turn: sent.turn, ...(hasCallback ? { callback: true } : {}) }, 202);
     });
 
-    // List chat sessions (newest first).
+    // List chat sessions (newest first): the newest `limit`, reading no other
+    // chat's meta.
     app.get("/chats", async (c) => {
-      const list = await chatStore.listChats();
+      const limit = pageLimit(c.req.query("limit"), CHAT_LIST_DEFAULT_LIMIT, CHAT_LIST_MAX_LIMIT);
+      // Sliced too: a host's own store may list them all.
+      const list = (await chatStore.listChats({ limit })).slice(0, limit);
       return c.json((await Promise.all(list.map((m) => reconcileStaleChat(m)))).map(publicMeta));
     });
 

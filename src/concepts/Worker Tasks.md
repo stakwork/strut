@@ -20,9 +20,9 @@ time and pay") rather than building a stand-in.
   page, what it has paid against its budget and, for the last 7 days, each
   worker's tasks, time spent, tasks per hour and pay; the workers, who
   holds which work, grant and revoke; the answers and a verdict on each;
-  tests; payouts; Support (workers' messages). Its share block makes an
-  invite (someone new to Peel) and a link for someone who already has
-  Peel. A new invite-only task is its makers' from the start (whoever
+  tests; payouts; Support (workers' messages). Its Invite a worker makes
+  a link for one person, with or without Peel, that opens their work in
+  Tasks. A new invite-only task is its makers' from the start (whoever
   asked for it and the admin who approved it), so they try it at once;
   "Try it yourself" on a task gives any other admin its work.
 - **Earnings** (`strut/earnings`): the wallet, adding money, what was paid.
@@ -104,22 +104,21 @@ Those two are the cards; Earnings is named in words alone, never shown.
    one. A budget or a daily cap is on the pay's card.
 2. **Add money.** In Earnings (`strut/earnings`), Add sats: an invoice
    they pay from their own wallet. Name it; do not show it as a card.
-3. **Bring workers in.** Tasks and workers (`strut/staff`) opens with the
-   worker page's links once it is online: Invite makes a one-use link that
-   sets up a new worker's phone (it costs a few sats) and gives them the
-   work only invited people do, so nothing more is needed; the Peel link
-   and its QR code are for someone already set up, and give that work
-   only once the person is given it on the Workers tab; a "link for
-   someone with Peel" gives one such person invite-only work in one step.
-   So for invite-only work: an invite for someone new, that link for
-   someone with Peel. Point there; never paste a link in the conversation.
+3. **Bring workers in.** Tasks and workers (`strut/staff`) opens with
+   Invite a worker: it makes a one-use link for one person, for one kind
+   of work or anything open. On a phone without Peel it sets Peel up (it
+   costs a few sats); someone with Peel goes straight in. Either way it
+   opens Tasks on that work and gives them invite-only work, so nothing
+   more is needed. Folded under it, one link for a group: open work only,
+   for people who have Peel. If Tasks is not online yet, the panel says so
+   and puts it online in one click. Point there; never paste a link in the
+   conversation.
 4. **Try it.** In the worker page, right here: they are signed in as
    themselves, see the work as a worker does, do one and see what comes
    back (and earn its pay). They hold invite-only work they asked for
    already; on their phone in Peel they are another account until Peel is
-   linked to this server, so there the link for someone with Peel is the
-   way in. On their phone, Tasks and workers' link shows
-   it as a worker opens it. For work one for each item, that is after
+   linked to this server, so there an invite to themself is the way in,
+   and shows the work as a worker opens it. For work one for each item, that is after
    asking for a round of one (below).
 
 For work *one for each item*, a round goes out when the person says so:

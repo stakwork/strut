@@ -222,6 +222,8 @@ describe("agent sessions over HTTP", () => {
     // The record.
     const list = (await json("/sessions")).body.sessions as any[];
     assert.deepEqual(list.map((s) => [s.id, s.turns]).sort(), [["abc", 2], ["abc/review", 2]]);
+    const page = (await json("/sessions?limit=1")).body;
+    assert.deepEqual([page.sessions.length, page.more], [1, true], "a page, and that there is more");
     const one = (await json("/sessions?id=abc/review")).body;
     assert.equal(one.turns, 2);
     assert.deepEqual(

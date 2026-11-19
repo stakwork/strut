@@ -172,6 +172,7 @@ export function VersionsPanel(props: {
           {data.unattributed} older run{data.unattributed === 1 ? "" : "s"} recorded no version and {data.unattributed === 1 ? "is" : "are"} not counted.
         </div>
       )}
+      {data?.more && <div class="auto-hint">Run counts are over the newest {data.scanned.toLocaleString()} runs.</div>}
     </div>
   );
 }

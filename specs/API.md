@@ -135,7 +135,7 @@ reads.
 | GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
 | GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes?, sealed?, peer?, retain?, fleetRetention?, fleetRetentionEnv? }` — the parsed active (or named) version; `retain` is the workflow's own (`1h`, `runs:20`), `fleetRetention` the fleet default (`fleetRetentionEnv` names where it comes from: `STRUT_RETENTION`, its first name `STRUT_RUN_RETENTION`, or `archived first` for the run archive's 7 days) |
-| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
+| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed, scanned, more? }` newest first; counts by the run's recorded `workflowHash`, over the newest `scanned` runs (at most 1,000, `RUN_LIST_SCAN_MAX`); `more: true` = older runs were not read |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | PUT    | `/workflows/:name/disabled`     | `{ disabled: boolean }` → `{ ok, workflow, disabled }` — disable the workflow, or enable it again (below); publishes nothing |
@@ -321,7 +321,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …], token? }` — what the run's steps wrote, and the run's **file token** (present when there is a secret to sign it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY`): a `GET` of this listing or of any file under it with `?t=<token>` needs no key — the link form, worth this run's files and nothing else (an HMAC of the run id under the secret: no store, rotates with it). A `?t=` strut cannot vouch for is a 401 even on an open strut, so a host's gate may hand token-bearing reads through; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff` and `Access-Control-Allow-Origin: *`; 404 for a path that is not a file (a directory: the listing is what names what is in it). A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it has no origin, and only `text/html` read by its file token runs script (`sandbox allow-scripts`) — a page an agent built runs, and the one thing in its URL is that token; read with the key, or through a host's gate, it runs none. A host that frames or proxies artifacts must keep these headers |
-| GET    | `/jobs?q=&workflow=&limit=`                            | `{ jobs: [{ job, title?, createdBy?, actors?, createdAt?, usedAt, busy?, workflow?, runs, holds }], actor? }` — `workflow` is the one the job's newest TURN ran, `job` or `builder` (`JOB_WORKFLOWS`, `plans/builder-job.md` §2): what the job is, what `job/continue` launches next; — every job, newest-used first (`plans/job-index.md` §2): `runs` and `holds` are counts, `busy` the run working in its directory now, `actors` everyone who launched a run under it (first seen first; `createdBy` is the head). `q` is the workflows' matcher (§2): every word must hit the title (the id, without one) or the title or summary of a current deliverable. `workflow` keeps the jobs with a recorded run of that workflow (a job from before its runs were recorded on it never matches). `mine=1` keeps the jobs whose `actors` include the request's actor — `actor` in the response is who the server took the request to be from (`resolveActor`); absent, `mine` lists nothing |
+| GET    | `/jobs?q=&workflow=&limit=`                            | `{ jobs: [{ job, title?, createdBy?, actors?, createdAt?, usedAt, busy?, workflow?, runs, holds }], actor? }` — `workflow` is the one the job's newest TURN ran, `job` or `builder` (`JOB_WORKFLOWS`, `plans/builder-job.md` §2): what the job is, what `job/continue` launches next; — every job, newest-used first (`plans/job-index.md` §2), at most `limit`: the server reads records newest first and stops once it has `limit` (a filter reads further back to fill it, every record when nothing matches): `runs` and `holds` are counts, `busy` the run working in its directory now, `actors` everyone who launched a run under it (first seen first; `createdBy` is the head). `q` is the workflows' matcher (§2): every word must hit the title (the id, without one) or the title or summary of a current deliverable; with `limit`, the newest `limit` matches, title hits first. `workflow` keeps the jobs with a recorded run of that workflow (a job from before its runs were recorded on it never matches). `mine=1` keeps the jobs whose `actors` include the request's actor — `actor` in the response is who the server took the request to be from (`resolveActor`); absent, `mine` lists nothing |
 | GET    | `/jobs/:id`                                            | the job read back: `{ job, title?, createdBy?, createdAt?, usedAt, busy?, workflow?, holds: [{ id, kind, since, note?, url? }], urls, repos, files, runs: [{ workflow, runId, at, parentRunId?, status, durationMs?, error?, sealed? }], sessions: [{ id, turns, …, busy? }], artifacts: [{ id, kind, title, summary?, url?, content?, runId, path? }], text?, claims? }` — `workflow` is what the job IS: the one its newest turn ran, `job` or `builder` (a run under the job of any other workflow is not a turn), the one `job/continue` launches next; `claims` is the job's ledger (§5.5), present only where the claims layer is on; `runs` newest first, `status` from the run's summary (without one, `running` while it executes and `stale` when a restart cut it off and it was not resumed — a thread turn the same); a run with a `parentRunId` is one a turn launched, not a turn; a sealed workflow's run shows `sealed: true` and nothing past its status. `holds` are what the job keeps alive beyond a run (`plans/jobs.md` §6), each with a `url` when what it holds has an address; `urls` is the first hold of each kind that has one (`{ pod: "https://…" }`). `sessions` are the threads made under the job (a turn line's `job`, §9) or named after it. `artifacts` are the job's CURRENT deliverables — its successful top-level runs' `artifacts[]`, newest first, the first of each `id` winning, resolved as `…/runs/:runId/artifacts` resolves them, each with the run that last reported it and, for a file, its `path` in the directory (what `job/read` takes); `text` is the newest such run's `output.text`. `threads` (`plans/jobs-sidebar.md`, `src/job-threads.ts`) is the job's execution as a tree: every agent execution in its runs' logs — a `step.end` carrying `messages`, or an attempt of the core `agent` step — grouped by session into `[{ id, session, label, startedAt, updatedAt, turns, totals: { turns, usage, cost, toolCalls, context? } }]`, each turn `{ runId, workflow, path, stepType, label, at, durationMs?, status, turn?, session?, usage?, cost?, context?, toolCalls, transcript?, artifacts?, nodeCount, nodes?, spawned, peer? }` — `transcript` the §5 link (`?full=1` for a session turn), `artifacts` the run's declared deliverables on its last top-level turn, `spawned` the threads the turn caused (a sub-agent under its path, a child run it launched, a `strut/run-workflow` peer run with `peer: { id, workflow, runId, status }`), a run with no agent one turn of `stepType: "run"`. Chronological at every level. `?threads=0` leaves it out, `?nodes=1` adds each turn's touched graph nodes, `?limit=N` bounds the runs the fold reads (newest first; `omittedRuns` counts the rest). 404 for an unknown job |
 | GET    | `/jobs/:id/claims`                                     | `{ enabled, job, claims: LedgerClaim[] }` — the job's ledger alone (§5.5): what the work must deliver and whether it does, as of its newest turn. `{ enabled: false, claims: [] }` without the claims layer; 404 for a job not on file |
 | POST   | `/jobs/:id/verify`                                     | `{ claims?: [<claim id>], detach?: boolean }` (gated) → `{ job, key, runId, subjects, checks: [{ subject, path, claimId, checkId, lastVerify }], evidence, slots, costUsd, claims: LedgerClaim[] }` — verify the job NOW against its newest turn (`runId`): every check on every claim about the job fires, `manual` ones included, and evidence on an already verified turn is appended, not skipped; the ledger comes back with each check's `lastVerify`. `claims` narrows to ids; no body is every claim. `detach: true` answers 202 `{ job, started: true }` at once instead — each check's evidence and the pass's end reach the job's `jobCallback` (`CALLBACKS.md` §5), the ledger is `GET /jobs/:id/claims` after; a detached verify while one runs joins it. 404 for a job not on file, 409 without the claims layer |
@@ -965,7 +965,7 @@ error message:
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
-| GET    | `/sessions` | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, jobs?, provider, model, context?: { used, limit }, busy? }] }`, newest first. `jobs` = the distinct jobs its turns were made under (`plans/job-index.md` §4), present when any turn carried one |
+| GET    | `/sessions` | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, jobs?, provider, model, context?: { used, limit }, busy? }], more? }`, newest first: the newest `limit` (default 100, at most 500), `more: true` when there are older ones. `jobs` = the distinct jobs its turns were made under (`plans/job-index.md` §4), present when any turn carried one |
 | GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, job?, attachments?, wake?, provider, model, routed, offset, count, usage, cost, context?, replayFrom }]`; 404. `attachments` = the files the turn's prompt carried, `[{ name, mediaType, size, path }]` under `runId`'s artifacts. `wake: true` = a turn strut ran because a job ended (`CALLBACKS.md` §9), not a person's. `replayFrom` is the thread index the NEXT turn replays from — 0 until a turn compacts the thread, then the index of its `[compaction]` message (plans/compaction.md); offsets stay absolute and the whole thread is still served |
 | GET    | `/sessions/messages?id=<id>` | the thread, a bare array: the system message, then every message; 404 |
 | DELETE | `/sessions?id=<id>` | `{ ok: true }`; 409 while a turn holds it |
@@ -1256,9 +1256,9 @@ carry absolute links too.
 | ---- | --------- | ------ |
 | `ask_workflow_builder` | `message`, `chat?` (continue), `title?` (a new chat's), `wait?` (ms, default 45000, max 55000) | `{ chat, turn, status, at?, text?, did?, toolCalls?, asked?, turns?, cursor, question?, settled, hint?, ui }` — the builder's reply for the turn it waited on: `text` (its final text), `did` (below). `status`: `done`; `working` (the turn outlived `wait` — `read_workflow_builder_chat` with `wait`); `asked` (a question for the caller in `question`: a form's `requestedSchema`, or for a secret the absolute `url` the caller's USER opens — the value never passes through the caller; the next message on the chat answers); `parked` (the auto-turn cap); `error` (+ `error`). `settled: false` = a detached run will wake the chat again. A chat with a turn in progress is refused: `{ error, status: "working", hint }` |
 | `read_workflow_builder_chat` | `chat`, `since?` (a message index: the previous read's `cursor`, or a turn's `at`), `limit?` (turns, newest kept, default 20), `detail?` (`effects` \| `tools` \| `full`), `wait?` (ms, default 0) | `{ chat, turn, status, turns: [...], cursor, omitted?, hint?, question?, settled, ui }`. A **turn** is `{ at, you? \| notices?, text?, did?, toolCalls?, tools?, asked?, compacted? }`: what the caller said (or the server notice that woke the builder — a run finishing, a verdict), the builder's final text, and `did`; `tools` only with `detail`. Cut to ~20k chars (text first, then the oldest turns), `hint` saying so |
-| `list_workflow_builder_chats` | `q?` (title words), `limit?`, `mine?` (default true) | `{ chats: [{ chat, title?, status, updatedAt, turns, createdBy?, asked?, ui }], total, hint? }` — newest first; `mine` keeps the connection's actor's chats (nothing is filtered without an actor) |
+| `list_workflow_builder_chats` | `q?` (title words), `limit?`, `mine?` (default true) | `{ chats: [{ chat, title?, status, updatedAt, turns, createdBy?, asked?, ui }], total, hint? }` — newest first, among the newest 500 chats; `mine` keeps the connection's actor's chats (nothing is filtered without an actor) |
 | `list_workflows` | `query?`, `limit?` | §2's slim list + per workflow `schedules?: [{ id, summary, enabled, next }]`, `lastRun?: { runId, at, status }`, `ui` |
-| `list_runs` | `workflow`, `limit?`, `status?`, `since?` (ISO) | `{ workflow, runs: [{ runId, status, startedAt, durationMs?, cost?, modelCalls?, origin? \| actor?, error?, job?, artifacts?, ui }], total }` — `artifacts` on a successful run, as absolute links |
+| `list_runs` | `workflow`, `limit?` (at most 500), `status?`, `since?` (ISO) | `{ workflow, runs: [{ runId, status, startedAt, durationMs?, cost?, modelCalls?, origin? \| actor?, error?, job?, artifacts?, ui }], total, note? }` — `artifacts` on a successful run, as absolute links; the newest 1,000 runs are looked through (`RUN_LIST_SCAN_MAX`), and `note` says so when that cut the list short |
 | `get_run` | `workflow`, `runId`, `fields?`, `files?`, `wait?` | `{ workflow, runId, status, startedAt, finishedAt, durationMs, cost?, error?, artifacts?, input, output, omitted?, files?, hint?, ui }`. Every top-level `output` field over 2 000 chars is HELD BACK in place as `{ $omitted: { chars, kind, preview } }` and named in `omitted`; `fields` includes the named ones whole (cut at 50 000 with a note; a non-object output is the one field `output`). `files: true` lists every file under the run's artifact directory (or its job's) with a tokened link. A run still going is `{ status: "running", hint }` — `wait` holds for it. No step tree: a failing run is debugged by asking the builder |
 | `run_workflow` | `name`, `input?`, `params?`, `version?` | the builder's own `run_workflow` — its launch, detach and links — with `output` trimmed like `get_run`'s (+ `omitted`, `hint`). A run still going after the wait window (`STRUT_CHAT_RUN_WAIT_MS`) is `{ status: "running", detached: true, runId }`: poll `get_run` with `wait` |
 | `search_packages` | `query?` (empty lists everything), `limit?` (30, ≤ 200) | §16's `PackageSearch` — `{ packages: [IndexHit & { index }], peers, errors }`, each hit with its `detail` (the apps, counts, secrets, `can`) — plus `install`: where a PERSON installs (the UI's Publish dialog, its Packages tab, or `<base>/?install=<name>`). The indexes this strut follows; none followed → empty lists, no error |
@@ -2828,7 +2828,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
-| `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
+| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
 | `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
@@ -2850,27 +2850,32 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/test-file { id, path, base64 }` | `PUT /tasks/tests/:id/files/<path>` (the bytes) | `{ test }` |
 | `staff/test-from-task { task, expected?, grade? }` | `POST /tasks/:id/test` | `{ test }` |
 | `staff/retire-test { id }` | `DELETE /tasks/tests/:id` | `{ test }` |
-| `staff/invite { sats?, app? }` | `POST /tasks/invites` | `{ code, link, sats, status, app, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
-| `staff/grant-link { app? }` | `POST /tasks/invites/link` | `{ app, code, link, peelLink }` |
-| `staff/invites { app? }` | `GET /tasks/invites` | `{ invites, apps, app?, sats, why? }` |
+| `staff/invite { sats?, type? }` | `POST /tasks/invites` | `{ code, link, sats, status, type?, qrSvg }` — `qrSvg` the link as a QR code (an SVG), the step's own, as staff/types' share |
+| `staff/invites {}` | `GET /tasks/invites` | `{ invites, sats, why? }` |
 | `staff/cancel-invite { code }` | `POST /tasks/invites/:code/cancel` | `{ code, status }` |
+| `staff/tasks-online {}` | `POST /tasks/online` | `{ app, public: true }` |
 
 Beside them it grants `app/list` (the type editor's app picker, whose
 grants it checks with `taskAppProblem`), `earnings/read` (the Queue's
 line on what workers are owed) and `people/names` (the workers' names,
 §13.3). It launches nothing.
 
-**Sharing the worker app.** The Queue opens with a "Bring workers in"
-list, one closed row for each public app a type is answered in
-(`sharedApps`): the app's name and its types, opening to the QR of its
-`peelLink` (an iPhone camera opens it in Peel) and Copy buttons for
-`peelLink` (Peel) and `link` (a browser). A type's page shows its app's
-block, or says the app is not in the public view; the page makes nothing
-public (that stays the Public view dialog or `app/make-public`). Each block
-ends with **Invite**, for someone new to Peel (`plans/human-steps.md` §5.8):
-the starting sats (blank: the payout settings' `inviteSats`) make a
-one-use link to that app, shown with its QR code, Copy and Share in
-WhatsApp; a wallet that cannot invite says why.
+**Bringing workers in.** One panel, "Invite a worker" (`BringWorkersIn`,
+components/Share.tsx): a closed row atop the Queue and the Workers tab, and
+open on each type's page with that type picked ("Invite someone to this").
+First an INVITE (`plans/human-steps.md` §5.8): Work they'll do — "Anything
+open" or one type that is on, invite-only ones marked (`inviteChoices`) —
+and, under More, the starting sats (blank: the payout settings'
+`inviteSats`), making a one-use link shown with its QR code, Copy and Share
+in WhatsApp; a wallet that cannot invite says why; work answered in an app
+that is not in the public view says so, and makes none. Then, folded and
+only while some work is open, "Anyone with the link": Tasks' `peelLink`
+(`staff/types`' `tasks`, the share of `strut/worker`) as a QR and a Copy
+button, open work only, for people who have Peel. While Tasks is not in the
+public view the panel offers "Put Tasks online" (`staff/tasks-online`)
+instead; it puts no other app online (the Public view dialog or
+`app/make-public`). The Workers tab lists the invites below, each with its
+work.
 
 ### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
 
@@ -2990,7 +2995,7 @@ change shows the next time a page loads.
 
 ```
 GET /brand          any credential
-PUT /brand          full scope: { color?, colorDark?, radius?, font? }
+PUT /brand          full scope: { name?, color?, colorDark?, radius?, font? }
 ```
 
 Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
@@ -3000,6 +3005,7 @@ left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
 
 | Field | What | Sent as (light and dark) |
 |---|---|---|
+| `name` | who this server is to the people who use it — the employer a worker works for, the org: plain text, 1 to 60 characters. Not a style, so `styles` ignores it | each app document as it is served (`<meta name="strut-name">`, the kit's `useHost().name`): Tasks heads its page with it, "Tasks" under it; strut's host signs a visitor in, and a native host (Peel) keeps the connection, under it; the invite page (`/public/join`) says "‹name› invites you" |
 | `color` | `#rrggbb` (or `#rgb`): primary buttons, the selected item, focus rings | `--color-background-inverse`, `--color-ring-primary`, and `--color-text-inverse`: near-black or white, whichever reads better on it |
 | `colorDark` | the color in the dark theme; `color` when unset (and the reverse) | the same, in the dark theme |
 | `radius` | a length in `px`, `rem` or `em` (`0.5rem`) | `--border-radius-md` |
@@ -4182,7 +4188,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds. Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12). Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
@@ -6012,51 +6018,58 @@ max_fee_msat }`, `GET /keysend/:id`, specs/LIGHTNING.md), the pending send's
 key, and the `withdrawal` entry's `ref`.
 
 ### Inviting a worker (`plans/human-steps.md` §5.8)
-
-Staff send a new worker ONE https link. Strut asks the treasury daemon for a
-Sphinx invite through the payer (the daemon pays the mixer for it: the
-starting sats, and the mixer's price on top; specs/LIGHTNING.md "Invites"),
-and answers the link on the base the share links use (§17.2
+Staff send a worker ONE https link, for one person. Strut asks the treasury
+daemon for a Sphinx invite through the payer (the daemon pays the mixer for
+it: the starting sats, and the mixer's price on top; specs/LIGHTNING.md
+"Invites"), and answers the link on the base the share links use (§17.2
 `publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
 proxy's headers and mount path honored; a staff page's in-process request
 takes where the page's own request came):
 
 ```
-https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded worker app URL>
+https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded Tasks URL>
 ```
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
-`a=`, strut's own section, the worker app's share `link`
-(`<base>/?app=<name>&solo=1&public=1`, what Share hands a Peel user) with
-`&input=invite%3D<token>` after it, encoded whole: the invite's own token
-(`strut-invite.<claims>.<hmac>`, auth.ts `inviteToken`, the daemon's code
-and the app, 90 days from the invite's creation), which the app is opened
-with as its tool input and the kit's `useTask` / `useWorker` send as
-`invite` on `task/next` / `task/me`. The worker who comes with it is given
-the app's INVITE-ONLY, enabled task types they hold no row of, by
-`invite:<code>` — one worker per invite (once a grant it made is held by
-another, revoked or not, it gives nothing), only while the daemon lists the
-invite `sending`, `ready` or `used`, never a type staff revoked from them,
-never to a suspended or banned worker; a token that does not hold, or opens
-another app, is ignored. So one invite lets someone in and gives them the
-work. `/public/join` (§17.2)
-turns it back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
-new user up with the invite and then opens `a=` (an existing user goes there
-at once). The mixer keeps only code → starting sats, and the core's parser
-ignores a section it does not know. The WORKER APP is an app the task types
-name that is in the public view. Strut keeps no invite: the daemon keeps
-the invites, the task store the grants an invite made, and an open type
-(the default) lets the worker in on their first `task/next`.
+`a=`, strut's own section: the share `link` of TASKS (`strut/worker`, §14.16:
+`<base>/?app=strut%2Fworker&solo=1&public=1`) with `&input=<encoded>` after
+it, encoded whole. Every invite opens Tasks, the server's one work page, so
+a worker keeps one page per employer. The input carries `invite=<token>`,
+the invite's own token (`strut-invite.<claims>.<hmac>`, auth.ts
+`inviteToken`: the daemon's code, the app it opens, the task types it gives
+(`t`, `[]` for none) and 90 days from the invite's creation), which the kit's
+`useTask` / `useWorker` send as `invite` on `task/next` / `task/me`, and,
+for an invite made for one kind of work, `type=<type>`, which Tasks opens
+once `task/me` has answered — in the app that draws it, with Back to Tasks.
+The worker who comes with it is given the INVITE-ONLY, enabled types the
+token names that they hold no row of, by `invite:<code>` — one worker per
+invite (once a grant it made is held by another, revoked or not, it gives
+nothing), only while the daemon lists the invite `sending`, `ready` or
+`used`, never a type staff revoked from them, never to a suspended or banned
+worker; a token that does not hold, or opens another app, is ignored. A
+token from before invites named their work (no `t`) gives every
+invite-only type of the app it opens, as it did; a GRANT LINK sent before
+(a code `link_…`, strut's own) keeps working, though staff make none now:
+an invite works for someone who has Peel too. `/public/join` (§17.2) turns
+the link back into `sphinx.chat://?action=i&…&a=…` for Peel, which signs a
+new user up with the invite and then opens `a=` (someone who has Peel goes
+there at once, the invite unused). The mixer keeps only code → starting
+sats, and the core's parser ignores a section it does not know. The daemon
+keeps the invites; strut notes only the kind of work each is for
+(`<dataDir>/tasks/invites.json`), so a listing hands out the link that was
+sent, and the task store keeps the grants an invite made. Open work (the
+default) lets anyone in on their first `task/next`.
 
 Full scope, beside the rest; `strut/staff` reaches them through
-`staff/invite`, `staff/invites` and `staff/cancel-invite` (§14.15):
+`staff/invite`, `staff/invites`, `staff/cancel-invite` and
+`staff/tasks-online` (§14.15):
 
 | Route | Answers |
 | --- | --- |
-| `POST /tasks/invites { sats?, app? }` | `{ code, link, sats, status, app }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `app` one of the worker apps — needed when there are several (`409 pick_app` names them), `400` for another; none at all is `409 no_worker_app`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
-| `POST /tasks/invites/link { app? }` | `{ app, code, link, peelLink }`: a GRANT LINK for someone who already has Peel — the worker app's share link with a signed invite token whose code (`link_…`) is strut's own: no Sphinx invite, nothing paid. Its first worker is given the app's invite-only types as an invite's is (one worker per code); `peelLink` opens it in Peel. Same `pick_app` / `no_worker_app` refusals |
-| `GET /tasks/invites?app=` | `{ invites: [{ code, link?, sats, status, createdAt? }], apps, app?, sats, why? }`: the daemon's invites, newest first, each `link` opening `app` (or the one worker app; with several and none asked, no `link`); `apps` the worker apps; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
+| `POST /tasks/invites { sats?, type? }` | `{ code, link, sats, status, type? }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `type` the kind of work it is for (left out: open work alone). Tasks not in the public view is `409 no_worker_app`; the app that draws `type` not in it, `409 not_online`; no such type, `400`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
+| `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
+| `POST /tasks/online` | `{ app: "strut/worker", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a staff page puts online itself; any other goes through the Public view or an `app/make-public` card |
 
 `status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
 new account took it) or `cancelled`. Refusals: `409 no_pay_credential`

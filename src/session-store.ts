@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StoredMessage } from "./chat-store.js";
+import { newestWritten } from "./store.js";
 import type { RunAttachment } from "./core.js";
 
 // ── ids ────────────────────────────────────────────────────────────────────
@@ -250,6 +251,11 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
 
 // ── interface ──────────────────────────────────────────────────────────────
 
+/** `GET /sessions`: the newest this many sessions when no `limit` is asked,
+ *  and at most `SESSION_LIST_MAX_LIMIT` — each is a read of its turn lines. */
+export const SESSION_LIST_DEFAULT_LIMIT = 100;
+export const SESSION_LIST_MAX_LIMIT = 500;
+
 export interface SessionStore {
   /** The thread, or `null` when no turn was ever committed under `id`. */
   load(id: string): Promise<Session | null>;
@@ -258,8 +264,9 @@ export interface SessionStore {
   turns(id: string): Promise<SessionTurn[]>;
   /** Commit one turn. `system` is stored by turn 0 and ignored after. */
   appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn>;
-  /** Newest first. */
-  list(): Promise<SessionInfo[]>;
+  /** Newest first; with `limit`, the newest that many, reading no other
+   *  session's turn lines. */
+  list(opts?: { limit?: number }): Promise<SessionInfo[]>;
   delete(id: string): Promise<void>;
 }
 
@@ -342,7 +349,7 @@ export class FileSessionStore implements SessionStore {
     return line;
   }
 
-  async list(): Promise<SessionInfo[]> {
+  async list(opts: { limit?: number } = {}): Promise<SessionInfo[]> {
     let names: string[];
     try {
       names = await readdir(join(this.root, "sessions"));
@@ -350,7 +357,10 @@ export class FileSessionStore implements SessionStore {
       return [];
     }
     const out: SessionInfo[] = [];
-    for (const name of names) {
+    // A page reads its own turn lines alone: the newest written first.
+    const limit = opts.limit;
+    for (const name of limit === undefined ? names : await newestWritten(names, (n) => join(this.root, "sessions", n, "turns.jsonl"))) {
+      if (limit !== undefined && out.length >= limit) break;
       let id: string;
       try {
         id = decodeURIComponent(name);
@@ -395,13 +405,13 @@ export class MemorySessionStore implements SessionStore {
     return line;
   }
 
-  async list(): Promise<SessionInfo[]> {
+  async list(opts: { limit?: number } = {}): Promise<SessionInfo[]> {
     const out: SessionInfo[] = [];
     for (const s of this.sessions.values()) {
       const info = sessionInfo(s.id, s.turns);
       if (info) out.push(info);
     }
-    return out.sort(newestFirst);
+    return out.sort(newestFirst).slice(0, opts.limit);
   }
 
   async delete(id: string): Promise<void> {

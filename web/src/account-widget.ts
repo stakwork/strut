@@ -142,8 +142,19 @@ export function createPlacementController(initial: AccountState, o: ControllerOp
  *  which `step_run`'s `app` argument is: how the host calls a step as the
  *  app's viewer. */
 export function appIdentityOf(html: string): string | undefined {
-  const m = /<meta name="strut-app-token" content="([^"]*)">/.exec(html);
-  return m ? m[1]!.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&") : undefined;
+  return metaOf(html, "strut-app-token");
+}
+
+/** The strut server's name the document was served with (its brand's
+ *  `name`, `<meta name="strut-name">`, src/apps/build.ts): who a visitor
+ *  signs in to and pays — the employer — whichever app of it they opened. */
+export function serverNameOf(html: string): string | undefined {
+  return metaOf(html, "strut-name")?.trim() || undefined;
+}
+
+function metaOf(html: string, name: string): string | undefined {
+  const m = new RegExp(`<meta name="${name}" content="([^"]*)">`).exec(html);
+  return m ? m[1]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&") : undefined;
 }
 
 /** What `GET /public/credit` answers, when it is credit. */

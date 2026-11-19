@@ -29,7 +29,6 @@ grants:
     - staff/worker
     - staff/set-worker
     - staff/grant
-    - staff/grant-link
     - staff/revoke
     - staff/tasks
     - staff/task
@@ -49,6 +48,7 @@ grants:
     - staff/invite
     - staff/invites
     - staff/cancel-invite
+    - staff/tasks-online
     - support/send
     - support/delete
     - support/file

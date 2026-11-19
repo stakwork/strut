@@ -30,6 +30,17 @@ describe("the brand record", () => {
     assert.match(brandProblem(null)!, /the brand is/);
   });
 
+  it("takes a name: plain text, 1 to 60 characters; it is not a style", () => {
+    assert.equal(brandProblem({ name: "Acme Labels & Co" }), undefined);
+    assert.equal(brandProblem({ name: "Tareas de Ñandú" }), undefined);
+    assert.equal(brandProblem({ name: null }), undefined, "null clears it");
+    assert.match(brandProblem({ name: "x".repeat(61) })!, /name is plain text, 1 to 60 characters/);
+    assert.match(brandProblem({ name: "two\nlines" })!, /name is plain text/);
+    assert.match(brandProblem({ name: 7 })!, /name is a string/);
+    assert.deepEqual(normalizeBrand({ name: "  Acme  ", color: "#ABC" }), { name: "Acme", color: "#aabbcc" });
+    assert.equal(brandStyles({ name: "Acme" }), null, "a name alone sets no look");
+  });
+
   it("keeps a color as lowercase #rrggbb and drops empty fields", () => {
     assert.deepEqual(normalizeBrand({ color: "#ABC", colorDark: "", radius: " 4px ", font: null }), { color: "#aabbcc", radius: "4px" });
   });
@@ -98,6 +109,11 @@ describe("the brand file", () => {
     await assert.rejects(stat(join(dir, BRAND_FILE)), /ENOENT/);
     assert.deepEqual(await readBrand(dir), {});
   });
+
+  it("keeps a brand that is only a name", async () => {
+    await writeBrand(dir, { name: "Acme" });
+    assert.deepEqual(await readBrand(dir), { name: "Acme" });
+  });
 });
 
 describe("the /brand routes", () => {
@@ -150,6 +166,20 @@ describe("the /brand routes", () => {
     assert.deepEqual(((await (await get()).json()) as { brand: unknown }).brand, { font: "Georgia, serif" });
     await strut.app.request("/brand", { method: "PUT", headers: auth, body: "{}" });
     assert.deepEqual(await (await get()).json(), { brand: {}, styles: null });
+    await strut.close();
+  });
+
+  it("the name: on the invite page, which answers without a key, escaped; none, \"You're invited\"", async () => {
+    const strut = await boot();
+    const join = async () => (await strut.app.request("/public/join")).text();
+    assert.match(await join(), /<h1>You're invited<\/h1>/);
+    const put = await strut.app.request("/brand", { method: "PUT", headers: auth, body: JSON.stringify({ name: "Acme & <Co>" }) });
+    assert.equal(put.status, 200);
+    assert.deepEqual(((await put.json()) as { brand: unknown; styles: unknown }), { brand: { name: "Acme & <Co>" }, styles: null });
+    const page = await join();
+    assert.match(page, /<title>Acme &amp; &lt;Co&gt; invites you<\/title>/);
+    assert.match(page, /<h1>Acme &amp; &lt;Co&gt; invites you<\/h1>/);
+    assert.ok(!page.includes("<Co>"), "never raw");
     await strut.close();
   });
 });

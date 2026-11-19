@@ -325,7 +325,7 @@ the Params tab: edit the workflow's `params` (edits → Publish, a new version)
 
 ### `web/src/components/VersionsPanel.tsx`
 
-the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing) + a YAML toggle per version: the file as published (GET /workflows/:name/:version, fetched on first open), read-only in SourceCode; a version that came from a package says so — "installed from" (or, an edit carrying it forward, "forked from") `<package> <version>`, off `upstream` in GET /workflows/:name
+the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash, over the newest 1,000 runs — a hint says so when there are more) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing) + a YAML toggle per version: the file as published (GET /workflows/:name/:version, fetched on first open), read-only in SourceCode; a version that came from a package says so — "installed from" (or, an edit carrying it forward, "forked from") `<package> <version>`, off `upstream` in GET /workflows/:name
 
 ### `web/src/components/PackagesPanel.tsx`
 

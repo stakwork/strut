@@ -420,20 +420,38 @@ export function errorText(err: unknown): string {
   return raw.replace(/^step_run(?: refused)?: /, "");
 }
 
-// ── sharing a worker app (§9.5) ─────────────────────────────────────────────
+// ── bringing workers in (§5.8, §9.5) ────────────────────────────────────────
 
-/** Each public worker app once, with the types its workers answer. */
-export function sharedApps(types: TaskType[] | undefined): Array<{ app: string; share: TypeShare; types: string[]; invited: string[] }> {
-  const out = new Map<string, { app: string; share: TypeShare; types: string[]; invited: string[] }>();
-  for (const t of types ?? []) {
-    if (!t.share?.public || !t.share.peelLink) continue;
-    const row = out.get(t.app) ?? { app: t.app, share: t.share, types: [], invited: [] };
-    row.types.push(t.name);
-    // The invite-only ones: what an invite gives its worker (§5.8).
-    if (t.open === false) row.invited.push(t.name);
-    out.set(t.app, row);
-  }
-  return [...out.values()];
+/** A kind of work an invite can be for, as the invite panel offers it. */
+export interface InviteChoice {
+  name: string;
+  /** What staff call it: its title and name, or its name. */
+  label: string;
+  /** Anyone signed in may take it; else invite-only, and the invite gives it. */
+  open: boolean;
+  /** The app that draws it. */
+  app: string;
+  /** That app is in the public view (or this server cannot say). */
+  online: boolean;
+}
+
+/** The kinds of work an invite can be for: every type that is on, A–Z. */
+export function inviteChoices(types: TaskType[] | undefined): InviteChoice[] {
+  return (types ?? [])
+    .filter((t) => t.enabled)
+    .map((t) => ({ name: t.name, label: t.title?.trim() ? `${t.title.trim()} (${t.name})` : t.name, open: t.open !== false, app: t.app, online: t.share ? t.share.public : true }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** What the invite does with the work chosen, in a line. */
+export function inviteWorkText(choice: InviteChoice | undefined): string {
+  if (!choice) return "Tasks shows them every kind of open work.";
+  return choice.open ? "Open to anyone signed in: the link takes them straight to it." : "Invite-only: this link makes it theirs.";
+}
+
+/** Whether any work that is on is open: then the one link for a group is worth showing. */
+export function anyOpenWork(types: TaskType[] | undefined): boolean {
+  return (types ?? []).some((t) => t.enabled && t.open !== false);
 }
 
 // ── Invites (plans/human-steps.md §5.8) ─────────────────────────────────────
@@ -458,15 +476,6 @@ export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
   return why === "no_pay_credential"
     ? "To invite people, this server's wallet has to be set up first, in Earnings. (No Sphinx daemon pay token.)"
     : "This server's wallet cannot make invites yet: it needs an update. (Its Sphinx daemon has no invite routes.)";
-}
-
-/** The tasks a worker app's workers do, as the Share area says them:
- *  `the "coffee shop visit" task`, `the "a" and "b" tasks`; "" for none. */
-export function tasksWords(types: readonly string[] | undefined): string {
-  const names = (types ?? []).map((t) => `"${t.replace(/[-_]+/g, " ")}"`);
-  if (!names.length) return "";
-  if (names.length === 1) return `the ${names[0]} task`;
-  return `the ${names.slice(0, -1).join(", ")} and ${names.at(-1)} tasks`;
 }
 
 /** The words a worker is sent with the link. */

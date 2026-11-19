@@ -15,7 +15,7 @@ import { runInNewContext } from "node:vm";
 import { createStrut } from "../createStrut.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
-import { inProcessRequest, inviteOf, signInTicket } from "../auth.js";
+import { inProcessRequest, inviteOf, inviteToken, signInTicket } from "../auth.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { STAFF_APP } from "../apps/staff-seed.js";
 import { setEnv } from "../test-util/public-door.js";
@@ -26,11 +26,23 @@ import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
 import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, PEEL_ANDROID_RELEASES } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
-import { createInvites, InviteError, joinLink } from "./invites.js";
+import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
 import { publicAppLinks } from "../public-routes.js";
+import { WORKER_APP } from "../apps/worker-seed.js";
 
-/** The worker app's share link: what `a=` opens. */
+/** A worker app's share link: what `a=` opens. */
 const workerAppUrl = (base: string, app: string) => publicAppLinks(base, app).link;
+
+/** What an invite's link opens (`a=`): Tasks' share link, and the page's
+ *  input — the invite's token and the kind of work it is for. */
+function opened(link: string, base: string): { invite?: { code: string; app: string; types?: string[] } | undefined; type: string | null } {
+  const a = decodeURIComponent(link.slice(link.indexOf("&a=") + 3));
+  const share = workerAppUrl(base, WORKER_APP);
+  assert.ok(a.startsWith(`${share}&input=`), a);
+  const input = new URLSearchParams(decodeURIComponent(a.slice(`${share}&input=`.length)));
+  const token = input.get("invite");
+  return { invite: token ? inviteOf(token) : undefined, type: input.get("type") };
+}
 
 const D = "AAAA_-zz"; // a `d=` section's URL-safe base64, as the core writes it
 const INVITE = `sphinx.chat://?action=i&d=${D}&c=BBBB`;
@@ -92,54 +104,92 @@ const refused = (code: string, status?: number) => (err: unknown) => err instanc
 
 describe("createInvites (§5.8)", () => {
   const BASE = "https://s.example";
+  let restoreEnv: () => void;
+  before(() => {
+    restoreEnv = setEnv({ STRUT_API_KEY: "invites-unit" });
+  });
+  after(() => restoreEnv?.());
+  /** Tasks and the court app online; pets drawn by Tasks, court-work by court, drafts by an app nobody put online. */
+  const deps = (o: { online?: string[]; payer?: Payer | null } = {}) => {
+    const online = o.online ?? [WORKER_APP, "court"];
+    const apps: Record<string, string> = { pets: WORKER_APP, "court-work": "court", drafts: "drafts" };
+    return { inviteSats: async () => 100, publicApps: async () => online, typeApp: async (name: string) => apps[name], ...(o.payer !== undefined ? { payer: async () => o.payer! } : {}) };
+  };
 
-  it("an invite: the settings' sats when it names none, the one worker app, its link on the base", async () => {
+  it("an invite: the settings' sats when it names none; its link opens Tasks, its token naming no work (open work alone)", async () => {
     const { payer, asked } = invitePayer();
-    const invites = createInvites({ payer: async () => payer, inviteSats: async () => 100, workerApps: async () => ["workers"] });
+    const invites = createInvites({ ...deps(), payer: async () => payer });
     const a = await invites.create({ base: BASE });
     assert.deepEqual(asked, [100]);
-    assert.equal(a.app, "workers");
-    assert.equal(a.link, `${BASE}/public/join#action=i&d=${D}&c=BBBB0&a=${encodeURIComponent(workerAppUrl(BASE, "workers"))}`);
+    assert.ok(a.link?.startsWith(`${BASE}/public/join#action=i&d=${D}&c=BBBB0&a=`), a.link);
+    assert.deepEqual(opened(a.link!, BASE), { invite: { code: a.code, app: WORKER_APP, types: [] }, type: null });
+    assert.equal(a.type, undefined);
     assert.equal((await invites.create({ base: BASE, sats: 2_500 })).sats, 2_500);
     for (const sats of [0, -1, 1.5, 100_001]) await assert.rejects(invites.create({ base: BASE, sats }), refused("bad_request", 400), String(sats));
     assert.deepEqual(asked, [100, 2_500], "nothing refused reached the wallet");
   });
 
-  it("the worker app: none in the public view, several and none picked, one that is not a worker app — each refused before the wallet is asked", async () => {
+  it("an invite for a kind of work: Tasks opens it, and the token gives it — whichever app draws it", async () => {
+    const { payer } = invitePayer();
+    const invites = createInvites({ ...deps(), payer: async () => payer });
+    for (const type of ["pets", "court-work"]) {
+      const made = await invites.create({ base: BASE, type });
+      assert.equal(made.type, type);
+      assert.deepEqual(opened(made.link!, BASE), { invite: { code: made.code, app: WORKER_APP, types: [type] }, type });
+    }
+  });
+
+  it("Tasks offline, no such type, the type's app offline — each refused before the wallet is asked", async () => {
     const { payer, asked } = invitePayer();
-    let apps: string[] = [];
-    const invites = createInvites({ payer: async () => payer, inviteSats: async () => 100, workerApps: async () => apps });
-    await assert.rejects(invites.create({ base: BASE }), refused("no_worker_app", 409));
-    apps = ["court", "pets"];
-    await assert.rejects(invites.create({ base: BASE }), (err) => refused("pick_app", 409)(err) && /court, pets/.test(String(err)));
-    await assert.rejects(invites.create({ base: BASE, app: "plain" }), refused("bad_request", 400));
+    await assert.rejects(createInvites({ ...deps({ online: ["court"] }), payer: async () => payer }).create({ base: BASE }), refused("no_worker_app", 409));
+    const invites = createInvites({ ...deps(), payer: async () => payer });
+    await assert.rejects(invites.create({ base: BASE, type: "nope" }), (err) => refused("bad_request", 400)(err) && /no task type nope/.test(String(err)));
+    await assert.rejects(invites.create({ base: BASE, type: "drafts" }), (err) => refused("not_online", 409)(err) && /drafts is answered in drafts/.test(String(err)));
     assert.deepEqual(asked, []);
-    assert.equal((await invites.create({ base: BASE, app: "pets" })).app, "pets");
   });
 
   it("a wallet that cannot invite: no pay credential, NWC, a daemon without the routes — the list says why and invites nothing", async () => {
     const nwc: Payer = { provider: "nwc", id: "nwc:x", capsFee: false, minFeeMsat: () => 0, pay: async () => assert.fail(), status: async () => assert.fail() };
     const old = invitePayer({ noRoute: true }).payer;
     for (const [payer, why, status] of [[null, "no_pay_credential", 409], [nwc, "no_invites", 501], [old, "no_invites", 501]] as const) {
-      const invites = createInvites({ payer: async () => payer, inviteSats: async () => 100, workerApps: async () => ["workers"] });
-      assert.deepEqual(await invites.list({ base: BASE }), { invites: [], apps: ["workers"], app: "workers", sats: 100, why });
+      const invites = createInvites({ ...deps(), payer: async () => payer });
+      assert.deepEqual(await invites.list({ base: BASE }), { invites: [], sats: 100, why });
       await assert.rejects(invites.create({ base: BASE }), refused(why, status));
     }
   });
 
-  it("the list: newest first, each link opening the app asked for; a cancel; an unknown code", async () => {
-    const { payer } = invitePayer();
-    const invites = createInvites({ payer: async () => payer, inviteSats: async () => 100, workerApps: async () => ["court", "pets"] });
-    const first = await invites.create({ base: BASE, app: "court" });
-    const second = await invites.create({ base: BASE, app: "court" });
-    const all = await invites.list({ base: BASE, app: "pets" });
-    assert.deepEqual(all.invites.map((i) => i.code), [second.code, first.code]);
-    assert.ok(all.invites.every((i) => i.link?.endsWith(`&a=${encodeURIComponent(workerAppUrl(BASE, "pets"))}`)));
-    // Several apps and none asked: no links (one that opened nothing would mislead).
-    assert.ok((await invites.list({ base: BASE })).invites.every((i) => i.link === undefined));
+  it("the list: newest first, each with the link it was sent with and its work; one made before invites named their work gives what it gave; Tasks offline, no links; a cancel; an unknown code", async () => {
+    const { payer, made } = invitePayer();
+    let online = [WORKER_APP, "court"];
+    const notes = memoryInviteNotes();
+    const invites = createInvites({ ...deps(), publicApps: async () => online, payer: async () => payer, notes });
+    const first = await invites.create({ base: BASE });
+    const second = await invites.create({ base: BASE, type: "court-work" });
+    // An invite the daemon keeps that strut noted nothing of: made before.
+    made.push({ code: "f".repeat(64), link: `${INVITE}9`, sats: 100, status: "ready", createdAt: "2026-11-01T00:00:00.000Z" });
+    const all = await invites.list({ base: BASE });
+    assert.deepEqual(all.invites.map((i) => [i.code, i.type]), [[second.code, "court-work"], [first.code, undefined], ["f".repeat(64), undefined]]);
+    assert.equal(all.invites[0]!.link, second.link, "the link it was sent with");
+    assert.equal(all.invites[1]!.link, first.link);
+    assert.deepEqual(opened(all.invites[2]!.link!, BASE).invite, { code: "f".repeat(64), app: WORKER_APP }, "no types: every invite-only type Tasks draws, as before");
+    online = ["court"];
+    assert.ok((await invites.list({ base: BASE })).invites.every((i) => i.link === undefined), "a link that opened nothing would mislead");
     assert.deepEqual(await invites.cancel(first.code), { code: first.code, status: "cancelled" });
-    await assert.rejects(invites.cancel("f".repeat(64)), refused("unknown_invite", 404));
+    await assert.rejects(invites.cancel("e".repeat(64)), refused("unknown_invite", 404));
     await assert.rejects(invites.cancel("../balance"), refused("bad_request", 400));
+  });
+
+  it("the notes on disk: written one after another, read back by the next process", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-invite-notes-"));
+    try {
+      const path = join(dir, "tasks", "invites.json");
+      const notes = fileInviteNotes(path);
+      assert.deepEqual(await notes.all(), {});
+      await Promise.all([notes.set("a", { type: "pets" }), notes.set("b", {}), notes.set("c", { type: "court-work" })]);
+      assert.deepEqual(await fileInviteNotes(path).all(), { a: { type: "pets" }, b: {}, c: { type: "court-work" } });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -188,20 +238,9 @@ describe("worker invites on a server (§5.8)", () => {
     actor: "admin-1",
     services: { staffAdmin: inProcessDoor((r, a) => Promise.resolve(strut.app.fetch(inProcessRequest(r, a))), STAFF_ROUTES, "staff") },
   });
-  /** The worker app an invite's link opens (`a=`): the app's share link,
-   *  then the invite's own token as the app's input (§5.8), naming this
-   *  invite and this app — what gives its worker the app's invite-only types. */
-  const opens = (link: string, base: string, code: string, app = "workers") => {
-    const a = decodeURIComponent(link.slice(link.indexOf("&a=") + 3));
-    const share = workerAppUrl(base, app);
-    assert.ok(a.startsWith(`${share}&input=`), a);
-    const input = new URLSearchParams(decodeURIComponent(a.slice(`${share}&input=`.length)));
-    assert.deepEqual(inviteOf(input.get("invite") ?? ""), { code, app });
-  };
-
-  it("the routes are full scope only; with no worker app public an invite is refused before the wallet pays", async () => {
+  it("the routes are full scope only; with Tasks not public an invite is refused before the wallet pays", async () => {
     const member = await session("member");
-    for (const [method, path, body] of [["POST", "/tasks/invites", {}], ["GET", "/tasks/invites"], ["POST", `/tasks/invites/${"a".repeat(64)}/cancel`]] as const) {
+    for (const [method, path, body] of [["POST", "/tasks/invites", {}], ["GET", "/tasks/invites"], ["POST", `/tasks/invites/${"a".repeat(64)}/cancel`], ["POST", "/tasks/online", {}]] as const) {
       for (const headers of [json, member]) {
         const res = await req(path, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
         assert.ok(res.status === 401 || res.status === 403, `${method} ${path}: ${res.status}`);
@@ -212,32 +251,40 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal(none.status, 409);
     assert.equal(((await none.json()) as { code: string }).code, "no_worker_app");
     assert.equal(await daemonBalance(), before);
-    const extra = await req("/tasks/invites", { method: "POST", headers: keyed, body: JSON.stringify({ sats: 10, to: "someone" }) });
-    assert.equal(extra.status, 400);
+    const extra = await req("/tasks/invites", { method: "POST", headers: keyed, body: JSON.stringify({ sats: 10, app: "workers" }) });
+    assert.equal(extra.status, 400, "an invite names its work, never an app");
+    // The grant link's maker is gone: an invite works for someone who has Peel too.
+    assert.equal((await req("/tasks/invites/link", { method: "POST", headers: keyed, body: "{}" })).status, 404);
   });
 
-  it("an invite through the routes: its link on the request's base (a proxy's headers honored), the settings' sats, the stand-in daemon's invite; listed; cancelled", async () => {
-    assert.equal((await req("/tasks/types/pets", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "workers", answer: { type: "boolean" } }) })).status, 200);
-    // A type's app that is not in the public view is no worker app yet.
+  it("an invite through the routes: its link on the request's base (a proxy's headers honored), opening Tasks on its work; the settings' sats; listed with its work; cancelled", async () => {
+    assert.equal((await req("/tasks/types/pets", { method: "PUT", headers: keyed, body: JSON.stringify({ app: WORKER_APP, answer: { type: "boolean" } }) })).status, 200);
+    // A type whose app is not in the public view.
     assert.equal((await req("/tasks/types/drafts", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "drafts", answer: { type: "boolean" } }) })).status, 200);
-    const view = await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }] }) });
+    const view = await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: WORKER_APP }] }) });
     assert.equal(view.status, 200, await view.clone().text());
 
     const before = await daemonBalance();
     const res = await req("/tasks/invites", { method: "POST", headers: keyed, body: "{}" });
     assert.equal(res.status, 200, await res.clone().text());
-    const made = (await res.json()) as { code: string; link: string; sats: number; status: string; app: string };
-    assert.deepEqual([made.sats, made.status, made.app], [100, "ready", "workers"]);
+    const made = (await res.json()) as { code: string; link: string; sats: number; status: string; type?: string };
+    assert.deepEqual([made.sats, made.status, made.type], [100, "ready", undefined]);
     assert.match(made.link, /^http:\/\/strut\.test\/public\/join#action=i&d=[A-Za-z0-9_-]+=*&a=/);
-    opens(made.link, "http://strut.test", made.code);
+    assert.deepEqual(opened(made.link, "http://strut.test"), { invite: { code: made.code, app: WORKER_APP, types: [] }, type: null });
     assert.equal(await daemonBalance(), before - (100 + INVITE_PRICE_SATS) * 1000);
 
-    // Behind a proxy: the public host it names.
-    const proxied = await req("/tasks/invites", { method: "POST", headers: { ...keyed, "x-forwarded-proto": "https", "x-forwarded-host": "stadeum.example" }, body: JSON.stringify({ sats: 42 }) });
-    const p = (await proxied.json()) as { code: string; link: string; sats: number };
-    assert.equal(p.sats, 42);
+    // Behind a proxy, for one kind of work: the public host it names, and type=.
+    const proxied = await req("/tasks/invites", { method: "POST", headers: { ...keyed, "x-forwarded-proto": "https", "x-forwarded-host": "stadeum.example" }, body: JSON.stringify({ sats: 42, type: "pets" }) });
+    const p = (await proxied.json()) as { code: string; link: string; sats: number; type: string };
+    assert.deepEqual([p.sats, p.type], [42, "pets"]);
     assert.ok(p.link.startsWith("https://stadeum.example/public/join#action=i&"), p.link);
-    opens(p.link, "https://stadeum.example", p.code);
+    assert.deepEqual(opened(p.link, "https://stadeum.example"), { invite: { code: p.code, app: WORKER_APP, types: ["pets"] }, type: "pets" });
+    // Refused before anything is paid: work answered in an app nobody put online; no such work.
+    const paid = await daemonBalance();
+    const drafts = await req("/tasks/invites", { method: "POST", headers: keyed, body: JSON.stringify({ type: "drafts" }) });
+    assert.deepEqual([drafts.status, ((await drafts.json()) as { code: string }).code], [409, "not_online"]);
+    assert.equal((await req("/tasks/invites", { method: "POST", headers: keyed, body: JSON.stringify({ type: "nope" }) })).status, 400);
+    assert.equal(await daemonBalance(), paid);
 
     // The money settings' default.
     const settings = await req("/tasks/payouts/settings", { method: "PUT", headers: keyed, body: JSON.stringify({ on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 250 }) });
@@ -246,10 +293,11 @@ describe("worker invites on a server (§5.8)", () => {
     const third = (await (await req("/tasks/invites", { method: "POST", headers: keyed, body: "{}" })).json()) as { code: string; sats: number };
     assert.equal(third.sats, 250);
 
-    const list = (await (await req("/tasks/invites", { headers: keyed })).json()) as { invites: Array<{ code: string; status: string; link?: string }>; apps: string[]; app: string; sats: number };
-    assert.deepEqual([list.apps, list.app, list.sats], [["workers"], "workers", 250]);
+    const list = (await (await req("/tasks/invites", { headers: keyed })).json()) as { invites: Array<{ code: string; status: string; link?: string; type?: string }>; sats: number };
+    assert.equal(list.sats, 250);
     assert.equal(list.invites.length, 3);
-    assert.ok([made.code, third.code].every((code) => list.invites.some((i) => i.code === code)));
+    assert.deepEqual(list.invites.find((i) => i.code === p.code)?.type, "pets");
+    assert.ok([made.code, third.code].every((code) => list.invites.some((i) => i.code === code && i.type === undefined)));
     assert.ok(list.invites.every((i) => i.link?.startsWith("http://strut.test/public/join#action=i&")));
 
     const beforeCancel = await daemonBalance();
@@ -260,7 +308,7 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal(unknown.status, 404);
   });
 
-  it("the staff/* steps through the staff door: the link on the base the share links use (where the page came, a mount path kept), with its QR code; several worker apps need one picked", async () => {
+  it("the staff/* steps through the staff door: the link on the base the share links use (where the page came, a mount path kept), with its QR code; an invite for work", async () => {
     const ctx = staffCtx();
     // The page's own request, from outside behind mcp's /lab: the base the
     // door's in-process requests (http://strut.invalid) take.
@@ -269,40 +317,50 @@ describe("worker invites on a server (§5.8)", () => {
     const made = (await inviteStep.run({ sats: 21 }, ctx as never)) as { code: string; link: string; qrSvg: string; sats: number };
     assert.equal(made.sats, 21);
     assert.ok(made.link.startsWith("https://stadeum.example/lab/public/join#action=i&d="), made.link);
-    opens(made.link, "https://stadeum.example/lab", made.code);
+    assert.equal(opened(made.link, "https://stadeum.example/lab").invite?.code, made.code);
     assert.match(made.qrSvg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" /);
     const listed = (await invitesStep.run({}, ctx as never)) as { invites: Array<{ code: string; link: string }> };
     assert.equal(listed.invites.find((i) => i.code === made.code)?.link, made.link);
     assert.deepEqual(await cancelInviteStep.run({ code: made.code }, ctx as never), { code: made.code, status: "cancelled" });
-
-    assert.equal((await req("/tasks/types/court", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "court", answer: { type: "boolean" } }) })).status, 200);
-    assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "court" }] }) })).status, 200);
-    await assert.rejects(inviteStep.run({}, ctx as never), /^Error: pick_app: .*court, workers/);
-    // The last request from outside (the PUT above) moved the base.
-    const court = (await inviteStep.run({ app: "court" }, ctx as never)) as { code: string; link: string; app: string };
-    assert.equal(court.app, "court");
-    opens(court.link, "http://strut.test", court.code, "court");
+    const pets = (await inviteStep.run({ type: "pets" }, ctx as never)) as { code: string; link: string; type: string };
+    assert.equal(pets.type, "pets");
+    assert.equal(opened(pets.link, "https://stadeum.example/lab").type, "pets");
     // The step refuses a page that is not strut's staff app shown to an admin.
     await assert.rejects(inviteStep.run({}, { ...ctx, app: { name: "mine", version: "v1" } } as never), /is an admin's/);
   });
 
-  it("a grant link for someone who already has Peel: no Sphinx invite, no sats; its first worker gets the app's invite-only work, nobody after", async () => {
-    assert.equal((await req("/tasks/types/linked-work", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "workers", answer: { type: "boolean" }, open: false }) })).status, 200);
-    assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }] }) })).status, 200);
-    const before = await daemonBalance();
-    const res = await req("/tasks/invites/link", { method: "POST", headers: keyed, body: JSON.stringify({ app: "workers" }) });
-    assert.equal(res.status, 200, await res.clone().text());
-    const made = (await res.json()) as { app: string; code: string; link: string; peelLink: string };
-    assert.match(made.code, /^link_[0-9a-f]{18}$/);
-    assert.equal(made.peelLink, `peel://open?url=${encodeURIComponent(made.link)}`);
-    assert.equal(await daemonBalance(), before, "nothing paid");
-    const token = new URLSearchParams(new URL(made.link).searchParams.get("input")!).get("invite")!;
-    assert.deepEqual(inviteOf(token), { code: made.code, app: "workers" });
+  it("what an invite gives: its invite-only work to its first worker and nobody after, whichever app draws it; open work, no grant; a link sent before invites named their work, what it gave then", async () => {
+    assert.equal((await req("/tasks/types/court-work", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "court", answer: { type: "boolean" }, open: false }) })).status, 200);
+    assert.equal((await req("/tasks/types/court-other", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "court", answer: { type: "boolean" }, open: false }) })).status, 200);
+    assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: WORKER_APP }, { name: "court" }] }) })).status, 200);
     const worker = strut.tasks.worker;
-    const first = await worker.me("pip", { app: "workers", invite: token });
-    assert.ok(first.types.some((t) => t.name === "linked-work"), JSON.stringify(first.types));
-    const second = await worker.me("quin", { app: "workers", invite: token });
-    assert.ok(!second.types.some((t) => t.name === "linked-work"), "one person per link");
+    // Tasks' dashboard: every app of the public view, the invite read for Tasks.
+    const tasksMe = (actor: string, invite: string) => worker.me(actor, { apps: [WORKER_APP, "court"], inviteApp: WORKER_APP, invite });
+    const tokenOf = (link: string) => new URLSearchParams(decodeURIComponent(decodeURIComponent(link.slice(link.indexOf("&a=") + 3)).split("&input=")[1]!)).get("invite")!;
+
+    const made = (await (await req("/tasks/invites", { method: "POST", headers: keyed, body: JSON.stringify({ type: "court-work" }) })).json()) as { link: string };
+    const first = await tasksMe("pip", tokenOf(made.link));
+    assert.deepEqual(first.types.filter((t) => t.app === "court").map((t) => t.name), ["court-work"], "the work it names, and no other invite-only work");
+    const second = await tasksMe("quin", tokenOf(made.link));
+    assert.ok(!second.types.some((t) => t.name === "court-work"), "one person per invite");
+
+    const open = (await (await req("/tasks/invites", { method: "POST", headers: keyed, body: "{}" })).json()) as { link: string };
+    const rae = await tasksMe("rae", tokenOf(open.link));
+    assert.ok(!rae.types.some((t) => t.app === "court"), "an invite for open work grants nothing");
+
+    // A grant link sent before (its code strut's own, its token naming an app and no work).
+    const old = inviteToken(`${GRANT_LINK_PREFIX}0123456789abcdef01`, "court", Date.now() + 86_400_000)!;
+    const sam = await worker.me("sam", { app: "court", invite: old });
+    assert.deepEqual(sam.types.map((t) => t.name).sort(), ["court-other", "court-work"], "every invite-only type of its app, as then");
+  });
+
+  it("POST /tasks/online refuses where there is no Tasks to put online", async () => {
+    // This server seeds no strut/worker (no kit to build it): the route says so, and nothing is saved.
+    const before = ((await (await req("/public-view", { headers: keyed })).json()) as { surface: { apps: unknown[] } }).surface;
+    const res = await req("/tasks/online", { method: "POST", headers: keyed, body: "{}" });
+    if (res.status === 200) return; // a machine that built it: worker.test.ts covers the rest
+    assert.equal(res.status, 400, await res.clone().text());
+    assert.deepEqual(((await (await req("/public-view", { headers: keyed })).json()) as { surface: { apps: unknown[] } }).surface.apps, before.apps);
   });
 
   it("GET /public/join answers without the key: the static page, its script pinned by hash; the QR library beside it", async () => {

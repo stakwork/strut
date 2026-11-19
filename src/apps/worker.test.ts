@@ -113,8 +113,16 @@ describe("strut/worker: the worker app every server has", () => {
     const stats = await staff("GET", "/tasks/stats?type=label-photo");
     assert.equal(stats["types"][0].appProblem, undefined, JSON.stringify(stats["types"][0]));
 
-    // ── An admin puts strut/worker in the public view; a worker signs in with Sphinx.
-    await staff("PUT", "/public-view", { apps: [{ name: WORKER_APP }], visitors: { signIn: ["sphinx"] } });
+    // ── An admin puts Tasks online from strut/staff (POST /tasks/online), as the
+    // Public view tab saves it with nothing unticked; a worker signs in with Sphinx.
+    assert.deepEqual(await staff("POST", "/tasks/online", {}), { app: WORKER_APP, public: true });
+    const surface = (await staff("GET", "/public-view"))["surface"] as { apps: Array<{ name: string }>; steps: string[] };
+    assert.deepEqual(surface.apps.map((a) => a.name), [WORKER_APP]);
+    // The employer's name (the brand's): in the page as it is served, which Tasks heads itself with.
+    await staff("PUT", "/brand", { name: "Labels & Co" });
+    const doc = await (await req(`/public/apps/${WORKER_APP}/document`)).text();
+    assert.ok(doc.includes('<meta name="strut-name" content="Labels &amp; Co">'), "the name rides in the document");
+    await staff("PUT", "/brand", {});
     const page = await publicAppToken(req, WORKER_APP);
     const worker = await sphinxSignIn(req);
     const call = (t: string, config: Record<string, unknown> = {}) => stepCall(req, "/public/mcp", t, config, { authorization: `Bearer ${worker.token}` }, page);

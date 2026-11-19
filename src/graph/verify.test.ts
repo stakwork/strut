@@ -383,6 +383,43 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     assert.equal(await verifier.costOf({ kind: "workflow", name: "clipper" }), 0);
   });
 
+  it("spend: costOf and the daily cap read each check's tally, never its runs; a check from before the tally is recounted once, off the request", async () => {
+    const c = await addClaim(STEP, "the answer is concise", [{ type: "llm", name: "judge", config: { prompt: "concise? {{ input.output.end }}" }, policy: "always" }]);
+    const subject = { kind: "step" as const, type: "clip/compute-times" };
+    const bucket = `check:${c.checks[0]}`;
+    for (const start of [5, 6]) await verifier.verifyRun("clipper", (await strut.run("clipper", { start, len: 19 })).runId);
+    assert.equal((await store.listRuns(bucket)).length, 2);
+    /** Every read of a check's runs from here on. */
+    const reads: string[] = [];
+    const real = { listRuns: store.listRuns.bind(store), getRunEvents: store.getRunEvents.bind(store), getRunSummary: store.getRunSummary.bind(store) };
+    store.listRuns = (key) => (key.startsWith("check:") && reads.push(`list ${key}`), real.listRuns(key));
+    store.getRunEvents = (key, id) => (key.startsWith("check:") && reads.push(`events ${id}`), real.getRunEvents(key, id));
+    store.getRunSummary = (key, id) => (key.startsWith("check:") && reads.push(`summary ${id}`), real.getRunSummary(key, id));
+
+    assert.ok(Math.abs((await verifier.costOf(subject)) - 0.8) < 1e-9);
+    assert.deepEqual(reads, [], "costOf reads the tally, not the check's runs");
+
+    // Today's 0.8 is at the cap: the next pass skips, reading no check run to know it.
+    process.env["STRUT_VERIFY_BUDGET_USD_PER_DAY"] = "0.8";
+    const capped = await verifier.verifyRun("clipper", (await strut.run("clipper", { start: 7, len: 19 })).runId);
+    assert.deepEqual(capped.checks.map((k) => k.lastVerify), [{ skipped: "budget", reason: "today's verify budget for this subject ($0.8) is spent" }]);
+    assert.deepEqual(reads, []);
+
+    // A check from before the tally: no file. THIS read does not wait for the
+    // recount; it runs once, off the request, and the next read has it.
+    await rm(join(dir, "checks", c.checks[0]!, "spend.json"));
+    assert.equal(await verifier.costOf(subject), 0);
+    let cost = 0;
+    for (let i = 0; i < 200 && !cost; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      cost = await verifier.costOf(subject);
+    }
+    assert.ok(Math.abs(cost - 0.8) < 1e-9);
+    const kept = await real.listRuns(bucket);
+    assert.deepEqual(reads.sort(), [`list ${bucket}`, ...kept.map((id) => `events ${id}`)].sort(), "every kept run read once, by the recount alone");
+    Object.assign(store, real);
+  });
+
   it("external checks: a planned slot (no strength, no content), filled in place by add_evidence; a newer version replaces the question", async () => {
     const c = await addClaim(STEP, "the cut sounds natural", [{ description: "listen to the clip at the cut — code cannot hear a click" }]);
     const run = await strut.run("clipper", { start: 5, len: 19 });
