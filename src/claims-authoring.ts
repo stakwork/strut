@@ -292,7 +292,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
    *  check is on a job subject (plans/job-claims.md §5): `manual` by
    *  default whatever the step, `sample` refused. `on.concept` = on a
    *  Concept: never at publish. Throws ClaimsError. */
-  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx, on: CheckOn = {}): Promise<CheckData> {
+  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx | undefined, on: CheckOn = {}): Promise<CheckData> {
     const job = !!on.job;
     if (!spec || typeof spec !== "object") throw new ClaimsError("INVALID", `${where}: a check is an object — { type, config } for a step check, { description } for an external one`);
     const when = spec.when ?? "run";
@@ -328,6 +328,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       return { ...common, name: spec.name?.trim() || boundedName(description).slice(0, 60), description, policy: spec.policy ?? (job ? "manual" : "on_change") };
     }
 
+    if (!ctx) throw new ClaimsError("INVALID", `${where}: internal — a step check needs the registry`);
     const { registry } = ctx;
     if (!registry[spec.type]) throw new ClaimsError("INVALID", `${where}: step type "${spec.type}" not found — a check names a registry step (exec, llm, agent, subflow, or a custom step)`);
     const config = spec.config ?? {};
@@ -376,7 +377,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
   async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx, on: CheckOn = {}): Promise<Array<{ text: string; checks: CheckData[] }>> {
     const out: Array<{ text: string; checks: CheckData[] }> = [];
     const seen = new Set<string>();
-    const resolved = ctx ?? (claims.length > 0 ? await normalizeCtx() : undefined);
+    // The registry rebuild is the slow part: only a step check needs it, an external one (`description`) does not.
+    const resolved = ctx ?? (claims.some((c) => c?.checks?.some((k) => k?.type)) ? await normalizeCtx() : undefined);
     for (const [i, c] of claims.entries()) {
       const text = typeof c?.text === "string" ? c.text.trim() : "";
       if (!text) throw new ClaimsError("INVALID", `claims[${i}]: text is empty`);
@@ -386,7 +388,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("INVALID", `claims[${i}] ("${boundedName(text).slice(0, 60)}"): every claim needs at least one check — if code cannot check it, give it an external check ({ description })`);
       }
       const checks: CheckData[] = [];
-      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!, on));
+      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved, on));
       out.push({ text, checks });
     }
     return out;
@@ -632,7 +634,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
         // job the agent may hang its instrument on the person's claim.
         if (!on.job) await requireOwnClaim(claimId, actor, "adds checks to");
-        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx(), on))) };
+        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", spec?.type ? await normalizeCtx() : undefined, on))) };
       } catch (e) {
         return fail(e);
       }

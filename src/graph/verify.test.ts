@@ -31,7 +31,7 @@ import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type Check
 import { jobRoot, setJobCallback, type JobsCapability } from "../jobs.js";
 import type { LedgerClaim } from "../ledger.js";
 import type { VerifyResult, Verifier } from "../verify.js";
-import { projectionsSettled } from "./projector.js";
+import { projectionsSettled, runRef } from "./projector.js";
 import type { GraphBackend } from "./backend.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { nodeCount, testBackends } from "./test-util.js";
@@ -747,6 +747,84 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     } finally {
       await booted.close();
     }
+  });
+
+  it("a person's evidence answers without reading the log or waiting for a projection: a job turn from its summary, any other subject from one read; the run is linked once projected", async () => {
+    await ws.publishWorkflowByContent("jobwf2", WF("jobwf2", `  - id: result\n    type: pack\n    config: { text: "{{ input.text }}", artifacts: [] }\n`));
+    const jobsCap = (strut.services as { jobs: JobsCapability }).jobs;
+    const jobClaims = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry: async () => registry, jobs: jobsCap });
+    const turn = await strut.run("jobwf2", { text: "x" }, { job: "j-fast" });
+    const made = await jobClaims.addClaim({ subjects: [{ kind: "job", name: "j-fast" }], text: "it works", checks: [{ description: "look", name: "eyes" }] }, human);
+    assert.ok("ok" in made, (made as { error?: string }).error);
+    const claimId = (made as { id: string }).id;
+    const stepClaim = await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}")]);
+
+    const plain = await strut.run("clipper", { start: 1, len: 2 });
+    await projectionsSettled(backend);
+    // Forget the projections: the runs are not in the graph.
+    await backend.tx((t) => t.run(`MATCH ${n("r", "StrutRun")} DETACH DELETE r`));
+    assert.equal(await nodeCount(backend, "StrutRun"), 0);
+
+    let logReads = 0;
+    const getRunEvents = store.getRunEvents.bind(store);
+    // The background projection reads the log too, off the request: not counted.
+    let startReads = 0;
+    const getRunStart = store.getRunStart.bind(store);
+    store.getRunStart = async (...a) => (startReads++, getRunStart(...a));
+    store.getRunEvents = async (...a) => (/projectRun/.test(new Error().stack ?? "") || logReads++, getRunEvents(...a));
+    try {
+      // A check run is still not a turn, a stranger still does not carry the job.
+      const said = await verifier.addEvidence({ claim: claimId, job: "j-fast", runId: turn.runId, supports: true, content: "fine", by: "person" });
+      assert.deepEqual([("ok" in said) && said.ok, "ok" in said && said.filled, logReads, startReads], [true, false, 0, 0], "a job turn with a summary: neither the log nor its first line (an evicted log would be restored by either)");
+      assert.match(String((await verifier.addEvidence({ claim: claimId, job: "j-fast", runId: plain.runId, supports: true, content: "x", by: "person" }) as { error: string }).error), /does not carry job "j-fast"/);
+      assert.equal(logReads, 0, "the stranger turn is rejected from the job record");
+      await store.append("clipper", "chk-1", { type: "run.start", runId: "chk-1", path: "clipper", ts: new Date().toISOString(), origin: "verify", job: "j-fast" } as RunEvent);
+      logReads = 0;
+      const chk = await verifier.addEvidence({ claim: stepClaim.id, runId: "chk-1", name: "clipper", supports: true, content: "x", by: "person" });
+      assert.match(String((chk as { error: string }).error), /that is a check run/);
+      logReads = 0;
+      const ev = await verifier.addEvidence({ claim: stepClaim.id, name: "clipper", runId: plain.runId, supports: true, content: "end > start", by: "person" });
+      assert.deepEqual([("ok" in ev) && ev.ok, logReads], [true, 1], "a step subject reads the log once");
+    } finally {
+      store.getRunEvents = getRunEvents;
+      store.getRunStart = getRunStart;
+    }
+    await projectionsSettled(backend);
+    const linked = await rows(
+      `MATCH ${n("c", "Claim")}-[:EVIDENCED_BY]->${n("e", "Evidence")}-[:HAS_SOURCE]->${n("r", "StrutRun")} WHERE e.evidence_mode = 'asserted' RETURN c.id AS claim, r.run_id AS run, r.run_status AS status`,
+    );
+    assert.deepEqual(
+      linked.map((r) => [r["claim"], r["run"], r["status"]]).sort(),
+      [[claimId, turn.runId, "success"], [stepClaim.id, plain.runId, "success"]].sort(),
+    );
+    assert.equal(await nodeCount(backend, "StrutRun"), 2, "the projection upserted the same nodes, no duplicates");
+    const ledger = ((await jobClaims.listClaims({ kind: "job", name: "j-fast" })) as { claims: Array<{ status: string; latest?: { about?: string } }> }).claims;
+    assert.deepEqual(ledger.map((c) => [c.status, c.latest?.about]), [["supported", turn.runId]]);
+
+    // A background projection that fails leaves a stub that is NOT settled: the
+    // evidence is linked to it, and the next runRef projects it for real.
+    await backend.tx((t) => t.run(`MATCH ${n("r", "StrutRun")} DETACH DELETE r`));
+    const real = store.getRunEvents;
+    store.getRunEvents = async (...a) => {
+      if (/projectRun/.test(new Error().stack ?? "")) throw new Error("projection down");
+      return real.apply(store, a);
+    };
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      const again = await verifier.addEvidence({ claim: claimId, job: "j-fast", runId: turn.runId, supports: true, content: "still fine", by: "person" });
+      assert.ok("ok" in again && again.ok);
+      await projectionsSettled(backend);
+    } finally {
+      store.getRunEvents = real;
+      console.error = quiet;
+    }
+    const stub = await rows(`MATCH ${n("e", "Evidence")}-[:HAS_SOURCE]->${n("r", "StrutRun")} WHERE e.content = 'still fine' RETURN r.run_id AS run, r.run_status AS status`);
+    assert.deepEqual(stub.map((r) => [r["run"], r["status"]]), [[turn.runId, "stale"]], "linked to a stub that does not claim to be settled");
+    assert.equal(await runRef(backend, store, "jobwf2", turn.runId) !== null, true);
+    const healed = await rows(`MATCH ${n("e", "Evidence")}-[:HAS_SOURCE]->${n("r", "StrutRun")} WHERE e.content = 'still fine' RETURN r.run_id AS run, r.run_status AS status`);
+    assert.deepEqual(healed.map((r) => [r["run"], r["status"]]), [[turn.runId, "success"]], "re-projected to its real status, same node");
+    assert.equal(await nodeCount(backend, "StrutRun"), 1);
   });
 
   it("a `claims:` block in the YAML is recorded at boot (the seeder's path) and applied by the HTTP publish door, stamped `person`", async () => {

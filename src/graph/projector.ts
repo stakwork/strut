@@ -1114,6 +1114,50 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
   return projectRunOnce(backend, store, workflow, runId);
 }
 
+/**
+ * `runRef` for a request that must answer fast (a person's evidence): never
+ * waits for a full projection unless one is already in flight, and never
+ * reads the log. A run the graph holds in a settled state gives its node;
+ * else a MINIMAL `StrutRun` (what the summary and `run.start`, when the
+ * caller has read it, say — no sessions or edges) is upserted under the key
+ * `projectRun` uses (`strutrun:<runId>`). The caller writes what it came
+ * for, then calls `finish()`, which starts the full projection in the
+ * background; it upserts the SAME node. (It starts only then: a projection
+ * running beside the caller's own writes makes them queue behind its own.)
+ * `null`: the run has no record to make a node from.
+ */
+export async function runRefQuick(
+  backend: GraphBackend,
+  store: RunStore,
+  workflow: string,
+  runId: string,
+  start: RunEvent | null,
+  summary: RunSummary | null,
+): Promise<{ ref: string; finish: () => void } | null> {
+  const running = projecting.get(backend)?.get(`${workflow}/${runId}`);
+  if (running) {
+    const ref = await running;
+    return ref ? { ref, finish: () => {} } : null;
+  }
+  const held = await heldRun(backend, workflow, runId);
+  if (held && isTerminalStatus(held.status)) return { ref: held.ref, finish: () => {} };
+  const p = projectRunEvents(workflow, runId, start ? [start] : [], summary);
+  if (!p) return null;
+  // The stub is NOT settled: "stale" (what the projector writes for a run it
+  // has no end for) is not terminal, so until the full projection upserts the
+  // real status, any later `runRef` / `runRefQuick` projects it again — a
+  // background projection that failed heals on the next read.
+  p.run.data = { ...p.run.data, run_status: "stale", summary: "projecting" };
+  const [node] = await backend.nodes.writeMany(await fit(backend, [p.run]), "upsert");
+  return {
+    ref: node!.ref_id,
+    finish: () =>
+      void projectRunOnce(backend, store, workflow, runId).catch((err) =>
+        console.error(`[projector] run ${workflow}/${runId}: background projection failed: ${err instanceof Error ? err.message : String(err)}`),
+      ),
+  };
+}
+
 /** Resolves once nothing started through `projectRunOnce`,
  *  `projectChatOnce` or `projectProposalOnce` is in flight — for a caller
  *  about to pull the graph from under it (a test's wipe). */

@@ -58,7 +58,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closureIncludes, flowClosure } from "./closure.js";
-import type { RunEvent, StepRegistry } from "./core.js";
+import type { RunEvent, RunSummary, StepRegistry } from "./core.js";
 import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import type { GraphBackend } from "./graph/backend.js";
 import {
@@ -90,7 +90,7 @@ import type { EdgeInput } from "./graph/edge-writer.js";
 import { buildJobSubject, type JobCheckSubject } from "./job-subject.js";
 import { jobRoot, type JobsCapability } from "./jobs.js";
 import { buildLedger, type Ledger, type LedgerClaim } from "./ledger.js";
-import { runRef } from "./graph/projector.js";
+import { runRef, runRefQuick } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
 import { checkRunKey, localRuns, stepTypeOfRunKey, type RunStore } from "./store.js";
@@ -1317,16 +1317,42 @@ export function createVerifier(deps: VerifierDeps) {
     // turns, found on its record; `job` also narrows the subject.
     let name = input.name;
     let subject = input.subject;
+    let turnLine: { parentRunId?: string } | undefined;
     if (input.job) {
       const line = (await deps.jobs?.runs?.(input.job))?.find((r) => r.runId === input.runId);
+      turnLine = line;
       if (!line) return { error: `run ${input.runId} does not carry job "${input.job}" — cite one of the job's turns` };
       name ??= line.workflow;
       subject ??= { kind: "job", id: input.job };
     }
     if (!name) return { error: "name (the run's workflow, or `step:<type>`) or job is required" };
-    const events = await store.getRunEvents(name, input.runId);
-    if (events.length === 0) return { error: `run ${input.runId} of "${name}" not found` };
-    const launch = events.find((e) => e.type === "run.start");
+    // A job subject is the run itself at its own id (subjectsOfRun): the run's
+    // first line and its summary say all it needs — no log read. Any other
+    // subject reads the log, once.
+    const jobOnly = !!input.job && subject?.kind === "job";
+    let events: RunEvent[] = [];
+    // What the run was launched with: origin / job / branch / parentRunId.
+    let launch: Pick<RunEvent, "origin" | "job" | "branch" | "parentRunId"> | null;
+    // The first line itself, when it was read (for the minimal run node).
+    let start: RunEvent | null = null;
+    let summary: RunSummary | null = null;
+    if (jobOnly) {
+      summary = await store.getRunSummary(name, input.runId);
+      if (summary && !summary.crashed) {
+        // A finished turn's summary carries what run.start does (the runner
+        // stamps both from the same options); `parentRunId` is on the job's
+        // record of the turn. Nothing else is read — an evicted log stays evicted.
+        launch = { origin: summary.origin, job: summary.job, branch: summary.branch, parentRunId: turnLine?.parentRunId };
+      } else {
+        // Running, or died with its process: only the first line says.
+        start = launch = await store.getRunStart(name, input.runId);
+        if (!launch) return { error: `run ${input.runId} of "${name}" not found` };
+      }
+    } else {
+      events = await store.getRunEvents(name, input.runId);
+      if (events.length === 0) return { error: `run ${input.runId} of "${name}" not found` };
+      start = launch = events.find((e) => e.type === "run.start") ?? null;
+    }
     if (launch?.origin === "verify") return { error: "that is a check run — cite the run it verified" };
     if (input.job && launch?.job !== input.job) return { error: `run ${input.runId} does not carry job "${input.job}"` };
 
@@ -1335,10 +1361,17 @@ export function createVerifier(deps: VerifierDeps) {
     // branch's evidence, like every other (item d).
     const pass = newPass(name, input.runId, true);
     setBranch(pass, launch?.branch);
-    const observed: ObservedSubject[] = [];
-    for (const o of subjectsOfRun(name, events)) {
-      if (o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)) && (await ours(pass, o, pass.result.branch))) observed.push(o);
-    }
+    let candidates: ObservedSubject[];
+    if (jobOnly) {
+      // A top-level turn that ENDED (`run.end` ⇔ summary `success`).
+      const path = jobSubjectPath(input.job!);
+      candidates = !launch?.parentRunId && summary?.status === "success"
+        ? [{ subject: { kind: "job", id: input.job! }, version: input.runId, path, at: summary.finishedAt, check: { runId: input.runId, input: undefined, path, output: summary.output } }]
+        : [];
+    } else candidates = subjectsOfRun(name, events);
+    const matching = candidates.filter((o) => o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)));
+    const kept = await Promise.all(matching.map((o) => ours(pass, o, pass.result.branch)));
+    const observed = matching.filter((_, i) => kept[i]);
     const distinct = [...new Map(observed.map((o) => [subjectKey(o.subject), o])).values()];
     if (distinct.length === 0) {
       return { error: `run ${input.runId} did not execute a subject of this claim with a recorded version (${about.map(subjectKey).join(", ") || "no subjects"}) — evidence must be about a version that actually ran` };
@@ -1366,18 +1399,27 @@ export function createVerifier(deps: VerifierDeps) {
       return { ok: true, evidence: slot.id, filled: true, subject: o.subject };
     }
 
-    const sourceRef = await runRef(graph, store, name, input.runId);
-    if (!sourceRef) return { error: `run ${input.runId} could not be projected into the graph` };
+    // Don't wait for a full projection: a minimal run node now, the whole
+    // projection (same node) in the background.
+    summary ??= await store.getRunSummary(name, input.runId);
+    const quick = await runRefQuick(graph, store, name, input.runId, start, summary);
+    if (!quick) return { error: `run ${input.runId} could not be projected into the graph` };
+    const sourceRef = quick.ref;
     const id = newEpistemicId();
-    const written = await writeEvidence({
-      id,
-      claim,
-      version: { kind: o.subject.kind, name: subjectName(o.subject), content_hash: o.version! },
-      sourceRef,
-      node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
-      strength,
-      context: { ...contextOf(o, pass.result.branch), by: input.by },
-    });
+    let written: Awaited<ReturnType<typeof writeEvidence>>;
+    try {
+      written = await writeEvidence({
+        id,
+        claim,
+        version: { kind: o.subject.kind, name: subjectName(o.subject), content_hash: o.version! },
+        sourceRef,
+        node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
+        strength,
+        context: { ...contextOf(o, pass.result.branch), by: input.by },
+      });
+    } finally {
+      quick.finish();
+    }
     if (written !== "written") return { error: `the version that run executed (${o.version}) is not in the graph` };
     return { ok: true, evidence: id, filled: false, subject: o.subject };
   }
