@@ -791,7 +791,7 @@ export class ClaimsReader {
    * slots included — with its check, the version it is about, and its
    * source. Pass `subject` to keep only evidence about that subject's
    * versions (asked of the database). Newest first. All of its history:
-   * a status reads `statusEvidence` instead.
+   * a status and a verify pass read `statusEvidence` instead.
    */
   async evidenceFor(claimId: string, subject?: SubjectRef): Promise<EvidenceRow[]> {
     const d = this.d;
@@ -893,6 +893,41 @@ export class ClaimsReader {
       { ...params, ...(seconds.length ? { seconds } : {}), ...(runs.length ? { runs } : {}) },
     );
     return rows.map(withoutText).sort(newestFirst);
+  }
+
+  /** The `evidence_status` of the claim's Evidence about the subject with
+   *  this id, or null when there is none: a verify pass's idempotence
+   *  (`evidenceId` names what one check observed at one path of one run).
+   *  One statement. */
+  async evidenceStatus(claimId: string, subject: SubjectRef, id: string): Promise<string | null> {
+    const { match, params } = this.scoped(claimId, subject);
+    const rows = await this.graph.query(`${match} AND e.id = $evidence RETURN e.evidence_status AS s LIMIT 1`, { ...params, evidence: id });
+    return rows.length ? String(rows[0]!["s"] ?? "") : null;
+  }
+
+  /** How many Evidence one check has written about one version of the
+   *  subject, slots included: the number of an explicit re-verify of a
+   *  job's turn (`job:<id>#<n>`). One statement. */
+  async evidenceCount(claimId: string, subject: SubjectRef, opts: { check: string; version: string; side?: ClaimScope }): Promise<number> {
+    const d = this.d;
+    const { match, params } = this.scoped(claimId, subject, { side: opts.side ?? {} });
+    const on = this.onVersion(subject, opts.version);
+    const rows = await this.graph.query(
+      `${match} AND ${on.cond} MATCH ${this.produced} WHERE ${d.edgeLive("pb")} AND k.id = $check RETURN count(DISTINCT e.ref_id) AS n`,
+      { ...params, active: on.active, check: opts.check },
+    );
+    return Number(rows[0]?.["n"] ?? 0);
+  }
+
+  /** An open slot of the claim's about the subject (a `planned` Evidence):
+   *  the one with this id, or the newest opened on run `runId` — what a
+   *  person's word fills (`verifier.addEvidence`). Null: none is open. */
+  async openSlotOf(claimId: string, subject: SubjectRef, at: { id: string } | { runId: string }): Promise<EvidenceRow | null> {
+    const d = this.d;
+    const { match, params } = this.scoped(claimId, subject);
+    const which = "id" in at ? "e.id = $slot" : `EXISTS { MATCH (e)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r) WHERE ${d.edgeLive("hr")} AND r.run_id = $slot }`;
+    const rows = await this.evidenceRows(`${match} AND e.evidence_status = 'planned' AND ${which}`, { ...params, slot: "id" in at ? at.id : at.runId });
+    return rows.map(withoutText).sort(newestFirst)[0] ?? null;
   }
 
   /**

@@ -30,7 +30,7 @@ import { buildAuthoringCapability, type AuthoringCapability } from "../authoring
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import { jobRoot, setJobCallback, type JobsCapability } from "../jobs.js";
 import type { LedgerClaim } from "../ledger.js";
-import type { VerifyResult, Verifier } from "../verify.js";
+import { createVerifier, type VerifyResult, type Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
 import type { GraphBackend } from "./backend.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
@@ -468,6 +468,70 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["stale", true, 1, true], "at most one open slot per external check");
     const refused = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: r4.runId, supports: true, content: "x", slot: slotId });
     assert.match(String(refused["error"]), /not an open slot/);
+  });
+
+  it("a pass and add_evidence read what they decide from, never the claim's history: the rows read do not grow with the passes before", async () => {
+    // What a pass reads: whether `always` already ran here, the newest
+    // `on_change` measured, the external check's open slot (each pass
+    // retires the last one's).
+    const c = await addClaim(STEP, "end is after start", [
+      compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "always" }),
+      compare("{{ input.output.end }}", "-lt", "1000", { name: "on change", policy: "on_change" }),
+      { description: "a person looks at the clip", policy: "always" },
+    ]);
+    const hash = (await ws.getActiveStepHashes())["clip/compute-times"]!;
+    // A verifier of its own over the same graph, counting the rows its
+    // statements return (and nothing else running on the graph meanwhile).
+    let read = 0;
+    const query: GraphBackend["query"] = async (cypher, params) => {
+      const got = await backend.query(cypher, params);
+      read += got.length;
+      return got;
+    };
+    const graph = new Proxy(backend, { get: (target, key) => (key === "query" ? query : Reflect.get(target, key)) });
+    const own = createVerifier({ graph, store, workspace: ws, services: () => strut.services, getRegistry: async () => registry });
+    /** What `fn` returns, and the rows the verifier's statements returned while it ran. */
+    const reading = async <T,>(fn: () => Promise<T>): Promise<[T, number]> => {
+      read = 0;
+      return [await fn(), read];
+    };
+    // Runs recorded by hand, each in a second of its own an hour ago: every
+    // newest measurement is one run's, however fast the passes go.
+    let second = Math.floor(Date.now() / 1000) - 3600;
+    const pass = async () => {
+      const runId = String(++second * 1000);
+      const ts = new Date(second * 1000).toISOString();
+      const events: RunEvent[] = [
+        { ts, runId, path: "clipper", type: "run.start", input: { start: 1 }, stepHashes: { "clip/compute-times": hash } },
+        { ts, runId, path: "clipper/times", type: "step.start", stepType: "clip/compute-times", input: { start: 1, len: 19 } },
+        { ts, runId, path: "clipper/times", type: "step.end", stepType: "clip/compute-times", output: { start: 1, end: 20 } },
+        { ts, runId, path: "clipper", type: "run.end", output: { start: 1, end: 20 } },
+      ];
+      for (const e of events) await store.append("clipper", runId, e);
+      return { runId, result: await own.verifyRun("clipper", runId) };
+    };
+    const passes = async (count: number) => {
+      for (let i = 0; i < count; i++) await pass();
+    };
+
+    await passes(2);
+    const [early, before] = await reading(pass);
+    assert.deepEqual(early.result.checks.map((k) => Object.keys(k.lastVerify)[0]), ["ran", "skipped", "planned"], "on_change measured this version already");
+    await passes(12);
+    const [late, after] = await reading(pass);
+    assert.deepEqual(late.result.checks.map((k) => Object.keys(k.lastVerify)[0]), ["ran", "skipped", "planned"]);
+    assert.equal(after, before, "the 16th pass reads the rows the 3rd did");
+    assert.equal((await own.reader.evidenceFor(c.id, { kind: "step", type: STEP.name })).length, 16 + 1 + 1, "while the history grew: every `always`, the first `on_change`, the open slot");
+
+    // A person's word fills the slot of the run they cite, reading that slot alone.
+    const say = (runId: string) => own.addEvidence({ claim: c.id, name: "clipper", runId, supports: true, content: "looked: it reads well", by: "person" });
+    const [first, readFirst] = await reading(() => say(late.runId));
+    assert.ok("ok" in first && first.filled);
+    await passes(5);
+    const newest = await pass();
+    const [again, readSecond] = await reading(() => say(newest.runId));
+    assert.ok("ok" in again && again.filled);
+    assert.equal(readSecond, readFirst, "add_evidence reads the same rows however many passes came before");
   });
 
   it("add_evidence without a slot is asserted, check-less evidence; only a seeded harness STEP records observed (fixed point 3)", async () => {
