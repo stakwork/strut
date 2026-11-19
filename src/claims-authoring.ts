@@ -258,7 +258,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
   /** Is the job on file? (A record with a run: `recordRun` writes it at
    *  `run.start`.) Without an index no job is. */
-  const jobOnFile = async (id: string) => !!(await deps.jobs?.get?.(id, { threads: false }));
+  const jobOnFile = async (id: string) => !!(await deps.jobs?.runs?.(id));
 
   /** A job subject's node must exist before the writer attaches anything to
    *  it: upsert it from the record (plans/job-claims.md §1). A job not on
