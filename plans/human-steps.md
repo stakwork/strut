@@ -829,6 +829,22 @@ the wrong page cannot.
 until c is. b is dropped: an earning that appears and is then taken back by
 a model is worse for the worker than an answer refused before it earns.
 
+**c built (2026-11-19)**, on Evan's word after a client's first worker app
+paid for any photo its workflow's check had already failed (the check ran
+after the pay, as every workflow step does). The type's `check: { step,
+config? }` is a sealed step in the graders' contract, handed the answer,
+the task's `show` and the files (base64), no `expected`; `submit` runs it
+before anything is written, and a fail is `bad_answer: <its reason>` with
+the lease kept. `grade/judge` is the shipped check: no `expected`, a model
+reads the rubric, the task, the answer and its images and PDFs. A check
+that cannot run refuses too (nothing earned unchecked). Who pays is never
+a reason not to run, for a check, a grader or a comparator (Evan, the same
+day: "make it automatic"): the grading principal, else whoever last saved
+the type (a save naming nobody keeps them), else nobody is named and the
+server's own model key pays. docs/tasks.md has the detail. A workflow's checks that need its own state (a ledger of pages
+already sent) still run after the pay: a sealed step reads no files of the
+server.
+
 **2. The door's size (§5.6.6).**
 
 | | Option | Cost |
@@ -1366,7 +1382,7 @@ A model grader sends the expected answer to its provider. That is the one
 model that sees it.
 
 **A grader that fails or cannot run** (it throws, runs out of time, is no
-longer sealed, has nobody to bill, or returns no verdict) records `error`
+longer sealed, or returns no verdict) records `error`
 with the reason. An `error` counts neither way and never moves standing,
 so a provider outage cannot revoke a room of workers. Staff see each
 type's errors; three in a row are logged once. A test answered and not yet
@@ -3585,8 +3601,9 @@ directory, so past one process the answer is another strut.
 - Invitation codes behind the qualifying tests.
 - ~~A default worker app for task types that need only `TaskForm`.~~
   Built in #710: `strut/worker` (§5.7), strut/views' `WorkerPage`.
-- A check at submit (§5.6.7, question 1): a sealed step that sees the answer
-  and its files and refuses a bad photo before it earns.
+- ~~A check at submit (§5.6.7, question 1): a sealed step that sees the answer
+  and its files and refuses a bad photo before it earns.~~ Built 2026-11-19
+  (§5.6.7 c).
 - Other things that park: a timer, a proposal awaited in a run, a wait on
   another strut's run.
 - `human` in a public run.
@@ -3634,7 +3651,7 @@ and the spec it touches (`specs/RUN_CONTROL_SPEC.md` for item 1,
 | 6 | **The staff app** (§9), with `task/set-type` | 3; shows more after 4 and 5a | **Built**: stakwork/strut#678 (PR 1, the app, with §9.7's places for items 4 and 5a) and stakwork/strut#679 (PR 2, `task/set-type` with `task/types`, the door and the builder's seed). Differs in §9.1, §9.3–§9.5, §9.7, §9.8, §9.10, §9.11. **The review verdict built** (§9.6, after item 6 as §9.10 said): stakwork/strut#680 — per answer, standing, a rejection's take-back undone by `ok` inside the hold (the ledger's `restore`), the staff app's Review. Differs in §9.6 |
 | 6, open types | **Open task types** (ruling 9): `open` on a type, true by default; a paid open type needs K ready tests to be saved and to take a newcomer; a worker's first ask records an `open` grant through 4a's machinery; Open / Invite-only in `strut/staff` | 4a, 6 | **Built**: stakwork/strut#685. Differs in §5.2, §6, §7.5 |
 | 7 | **`human` with `to:`**: a named person, answered in Jamie. Needs a design pass | 2b | Not started |
-| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit is later |
+| 8 | **Files from a worker** (§5.6): a type's `attachments` rule, `task/submit { attachments }` and `useTask().submit(answer, files)`, the files in the run's artifacts, the `human` step's `attachments`, an agent's `attachments` list, staff reading them, the door's size (§5.6.7: 20 MB with a session). A check at submit is later (§5.6.7, question 1) | 3 | **Built**: stakwork/strut#700. Differs in §5.6. A check at submit built 2026-11-19 (§5.6.7 c) |
 | 9 | **Standing task types** (§5.7, ruling 13): `standing: { workflow }` on a type, the pick-up made at the ask, the workflow launched at the answer, the sweep's launch, the save's checks; with ruling 12, the paid-open save guard dropped; `strut/worker` and strut/views' worker pieces, and the Concepts that teach them | 8 | **Built**: stakwork/strut#710. The staff editor marks and keeps a standing type but does not set one |
 | Dashboard | **The worker's dashboard**: `task/me` gains `standing`, `waiting` (what `take` could hand them, by type: the store's `waitingFor`) and `holding`; `task/history`, their own newest tasks with each `ask`, how it ended and what it earned; the kit's `useTaskHistory`; strut/views' `WorkHome`, where `WorkerPage` lands a signed-in worker: the task in hand as Continue, each kind with its pay and "Any time" / "N waiting", what they earned, what they did; choosing a kind works it. After an answer no next task is leased until Next task. ACROSS APPS: `{ all }` on both steps reads every app the caller can open (the public view's for a visitor, `WORKER_APPS` on the door's bag); strut/worker's dashboard (`everyApp`) lists them, and a kind another app draws opens that app on it in place, with a Back bar (`publicAppHop`, web/src/components/SoloApp.tsx). No Peel change: its web view (iOS and Android) loads a same-origin navigation in place and keeps the origin's cookies | 9 | **Built** (branch `feature/worker-dashboard`). A kind is chosen, never one task (a test is served in place of a task, §7.2) |
 | Rounds | **Send a round** from Tasks and workers: `round: { workflow }` on a type (the twin of `standing`, never with it; the save checks the workflow has a `human` step of the type, in a `foreach` too), `GET`/`POST /tasks/types/:name/round` (the workflow's items — its first `json` input whose default is a list — and a round launched as the admin with the items ticked or all), `staff/round-items` and `staff/send-round`, the type page's `rounds` badge, note and button, the Queue row's button, and the dialog. `task/set-type` sets it, and the Concept pages tell the builder to. The type editor sets either now: WHEN THERE IS WORK (when a workflow sends one, any time, in rounds) with the workflow picked from those that fit (`GET /tasks/workflows?type=`) | 9 | **Built** (branch `fix/worker-page-in-chat`). A type saved before has no `round` until set once |

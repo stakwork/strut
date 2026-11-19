@@ -57,6 +57,10 @@ export interface Draft {
    *  `workflow`. */
   when: "sent" | "standing" | "round";
   workflow: string;
+  /** §5.6.7 c: a sealed step checks each answer and its files before it is
+   *  accepted; never `equal`. */
+  checkOn: boolean;
+  check: GradeDraft;
 }
 
 const s = (n: number | undefined) => (n === undefined ? "" : String(n));
@@ -104,6 +108,8 @@ export function draftOf(t?: TaskType): Draft {
     files: { max: s(files.max), min: s(files.min), types: files.types.join(", ") },
     when: t?.standing ? "standing" : t?.round ? "round" : "sent",
     workflow: t?.standing?.workflow ?? t?.round?.workflow ?? "",
+    checkOn: !!t?.check,
+    check: t?.check ? gradeDraftOf(t.check) : { kind: "step", step: "grade/judge", config: "" },
   };
 }
 
@@ -218,6 +224,13 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
   if (d.when !== "sent") {
     if (!d.workflow) return { problem: d.when === "standing" ? "pick the workflow each answer starts" : "pick the workflow a round runs" };
     input[d.when] = { workflow: d.workflow };
+  }
+  // The check: a sealed step, never `equal` (it has no expected answer).
+  if (d.checkOn) {
+    const check = gradeOf(d.check, "the check");
+    if (check === "equal") return { problem: "the check: pick a step (grade/judge, or a sealed step of your own); equal needs an expected answer" };
+    if ("problem" in check) return check;
+    input["check"] = check;
   }
   return { input };
 }

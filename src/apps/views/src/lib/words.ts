@@ -1,4 +1,4 @@
-import { useWords, type AnswerIssue, type Lang } from "@strut/kit";
+import { taskErrorCode, useWords, type AnswerIssue, type Lang } from "@strut/kit";
 
 // The words of a WORKER app's pieces (components/WorkerTask.tsx,
 // components/TaskForm.tsx; plans/i18n.md), in every language strut speaks.
@@ -222,6 +222,16 @@ const es: WorkerWords = {
 
 /** Every language strut speaks, each whole: one left out fails tsc. */
 export const WORKER_WORDS = { en, es } satisfies Record<Lang, WorkerWords>;
+
+/** A task refusal in words: the page's language's sentence for its code,
+ *  else the server's own, its code dropped ("an admin decides who takes
+ *  tasks here"; a type's check's reason, plans/human-steps.md §5.6.7 c). */
+export function refusalText(err: Error, w: WorkerWords): string {
+  const said = w.refusal(taskErrorCode(err) ?? "");
+  if (said) return said;
+  const text = err.message.replace(/^[a-z_]+:\s*/, "");
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".") : "";
+}
 
 /** A worker app's words, in the page's language. */
 export const useWorkerWords = (): WorkerWords => useWords(WORKER_WORDS);

@@ -85,10 +85,10 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "limits", "tests", "copies", "attachments", "standing", "round", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "limits", "tests", "copies", "attachments", "standing", "round", "check", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
-    for (const k of ["answer", "tests", "copies", "attachments", "standing", "round"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
+    for (const k of ["answer", "tests", "copies", "attachments", "standing", "round", "check"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
   });
 
   it("an object field sent as JSON text is parsed, then checked as an object; text that does not parse keeps the shape's refusal", () => {
@@ -185,6 +185,7 @@ describe("task/set-type: its input, the merge and the card", () => {
         ["Workers", "none yet: anyone signed in holds it from their first ask", "detail"],
         ["Tests", "off", "detail"],
         ["Copies", "off: a step asks one worker", "detail"],
+        ["Checked when handed in", "No: every answer that fits is accepted the moment it is handed in.", "detail"],
       ],
     );
     assert.equal(card.summary, 'Anyone signed in to the worker page can do the "pet match" task when a workflow sends one out, unpaid.');
@@ -241,8 +242,34 @@ describe("task/set-type: its input, the merge and the card", () => {
     // What the person decides on is never folded, nor is any danger.
     for (const c of [card, invite, paid, paidOpen, noTests, standing, round]) {
       for (const f of c.fields!) assert.ok(!(f.detail && f.danger), `${f.label}: a danger is never folded`);
-      assert.deepEqual(c.fields!.filter((f) => !f.detail && !f.danger).map((f) => f.label).filter((l) => l !== "Pay" && l !== "Who can do it"), ["A worker hands in", "When"]);
+      assert.deepEqual(c.fields!.filter((f) => !f.detail && !f.danger).map((f) => f.label).filter((l) => l !== "Pay" && l !== "Who can do it" && l !== "Checked when handed in"), ["A worker hands in", "When"]);
     }
+  });
+
+  it("a check before an answer is accepted (§5.6.7 c): taken whole, kept when left out, gone with null; the card says what pay waits on", () => {
+    const CHECK = { step: "grade/judge", config: { rubric: "One whole book page, no text cut off." } };
+    assert.ok(typeChangeInput.safeParse({ name: "pages", app: "workers", check: CHECK }).success);
+    assert.ok(typeChangeInput.safeParse({ name: "pages", app: "workers", check: JSON.stringify(CHECK) }).success, "as JSON text too");
+    assert.equal(typeChangeInput.safeParse({ name: "pages", app: "workers", check: { step: "" } }).success, false, "a check names a step");
+    assert.equal(typeChangeInput.safeParse({ name: "pages", app: "workers", check: { step: "grade/judge", rubric: "x" } }).success, false, "{ step, config? } alone");
+    const was = row({ paySats: 4, check: CHECK });
+    assert.deepEqual(mergeType("pages", was, { app: "workers" }).check, CHECK, "kept when left out");
+    assert.deepEqual(mergeType("pages", was, { check: { step: "grade/judge" } }).check, { step: "grade/judge" }, "replaced whole, never merged");
+    assert.equal(mergeType("pages", was, { check: null }).check, null);
+
+    // Paid and checked: shown, in the person's words.
+    const checked = typeCard({ name: "pages", app: "workers", answer: MATCH, paySats: 4, check: CHECK });
+    assert.deepEqual(field(checked, "Checked when handed in"), {
+      label: "Checked when handed in",
+      value: "Yes: a model checks it: “One whole book page, no text cut off.”. One that fails is refused with the reason: the worker keeps the task and sends it again, and nothing is paid for it. Each answer costs one model call.",
+    });
+    assert.equal(field(typeCard({ name: "pages", app: "workers", check: { step: "grade/judge" } }), "Checked when handed in")!.value.split(".")[0], "Yes: a model checks it does what the task asks");
+    assert.match(field(typeCard({ name: "pages", app: "workers", check: { step: "acme/check" } }), "Checked when handed in")!.value, /^Yes: checked by acme\/check\. .* nothing is paid for it\.$/);
+    // Paid with no check: shown, so the person sees every answer is paid.
+    assert.deepEqual(field(typeCard({ name: "pages", app: "workers", paySats: 4 }), "Checked when handed in"), { label: "Checked when handed in", value: "No: every answer that fits is accepted, and paid, the moment it is handed in." });
+    // A change says it.
+    assert.equal(field(typeCard({ name: "pages", app: "workers", check: CHECK }, { existing: row({ paySats: 4 }) }), "What changes")!.value, "checked when handed in: not checked → a model checks it: “One whole book page, no text cut off.”");
+    assert.equal(field(typeCard({ name: "pages", app: "workers", check: null }, { existing: was }), "What changes")!.value, "checked when handed in: a model checks it: “One whole book page, no text cut off.” → not checked");
   });
 
   it("askOver: a new ask built on the waiting one — what it leaves out is the waiting one's, rules merged key by key, null off, standing replaced", () => {

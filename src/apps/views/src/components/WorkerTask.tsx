@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ACCENT_BUTTON, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
-import { useWorkerWords, type WorkerWords } from "../lib/words";
+import { refusalText, useWorkerWords, type WorkerWords } from "../lib/words";
 
 // The pieces of a WORKER app (plans/human-steps.md §5): what a task asks,
 // the photos an answer carries, the answer's form, and a whole page that
@@ -470,7 +470,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         text={
           <>
             {w.noWorkYet}
-            {work.error ? ` ${reason(work.error, w)}` : ""}
+            {work.error ? ` ${refusalText(work.error, w)}` : ""}
             <span className="mt-3 block text-[13px]">{w.checksAgain}</span>
           </>
         }
@@ -485,7 +485,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         heading={w.cantReach}
         text={
           <>
-            {work.error ? reason(work.error, w) || errorText(work.error) : w.somethingWrong}
+            {work.error ? refusalText(work.error, w) || errorText(work.error) : w.somethingWrong}
             <span className="mt-3 flex items-center justify-center gap-1.5 text-[13px]">
               <Loader2 className="size-3.5 animate-spin" /> {w.tryingAgain}
             </span>
@@ -565,7 +565,7 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
 
   if (!me.data) {
     return me.error ? (
-      <Screen tone="error" icon={<AlertTriangle className="size-10" />} heading={w.cantReach} text={reason(me.error, w) || errorText(me.error)} />
+      <Screen tone="error" icon={<AlertTriangle className="size-10" />} heading={w.cantReach} text={refusalText(me.error, w) || errorText(me.error)} />
     ) : (
       <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />
     );
@@ -670,7 +670,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       if (!ALREADY_GONE.has(taskErrorCode(e) ?? "")) {
-        setError(reason(e, w) || errorText(e));
+        setError(refusalText(e, w) || errorText(e));
         return;
       }
     }
@@ -1034,12 +1034,3 @@ function answerRows(answer: Record<string, unknown>, schema: unknown, w: WorkerW
   return out;
 }
 
-/** A task refusal in words: the page's language's sentence for its code,
- *  else the server's own, its code dropped ("an admin decides who takes
- *  tasks here"). */
-function reason(err: Error, w: WorkerWords): string {
-  const said = w.refusal(taskErrorCode(err) ?? "");
-  if (said) return said;
-  const text = err.message.replace(/^[a-z_]+:\s*/, "");
-  return text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".") : "";
-}

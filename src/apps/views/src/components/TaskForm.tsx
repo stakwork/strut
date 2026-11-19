@@ -8,7 +8,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
-import { useWorkerWords } from "../lib/words";
+import { refusalText, useWorkerWords } from "../lib/words";
 
 export interface TaskFormProps {
   /** The task in hand (`useTask().task`): its `answer` schema is the form. */
@@ -101,7 +101,8 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
     try {
       await onSubmit(read.answer);
     } catch (err) {
-      setError(errorText(err));
+      // A refusal in the worker's words: a check's reason, its code dropped.
+      setError(err instanceof Error ? refusalText(err, w) || errorText(err) : errorText(err));
     } finally {
       setBusy(null);
     }

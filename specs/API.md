@@ -2829,7 +2829,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
 | `staff/types` | `GET /tasks/types` | `{ types }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); no `share` when the public view door has no share read (a host's own) |
-| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
 | `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
@@ -5702,7 +5702,7 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, a 72-hour hold, no tests, no copies, no files, not standing, no round). `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
+| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, no hold, no tests, no copies, no files, not standing, no round, no check). `check` is `{ step, config? }` or `null`: a sealed step run on each answer before it is accepted ("A check before an answer is accepted" below) — `400 bad_request` for `"equal"` or another shape, `400 bad_grader` naming why when the step is not here or not sealed. `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
 | `GET /tasks/workflows?type=` | The type editor's "When there is work" picker: `{ type, workflows: [{ name, standing }] }`, the workflows (not sealed) with a `human` step of that type at any depth — each can be its round workflow — and `standing` true for those whose FIRST step is that step (its standing workflow), by name. `400` without `type` |
 | `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
 | `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
@@ -6235,11 +6235,48 @@ opts in with `attachments` (an admin's, as its answer and pay are):
   and `false`, specs/SPEC.md §4.1.9). Staff read them on the
   lease (`attachments`) and through `GET /tasks/:id/files/<path>`.
 - **A test instance** takes them as a task does, checked alike, and drops
-  them: it has no run, and a grader sees the answer alone.
+  them: it has no run, and a grader sees the answer alone (a type's check
+  sees them, below).
 - **The door.** A page's request on `POST /public/mcp` with a signed-in
   visitor's session, and any on `POST /mcp`, may be as large as a public
   launch with files (`PUBLIC_RUN_FILES_BODY_MAX_BYTES`, about 20.3 MB); an
   anonymous visitor's stays at 4 MB (`413`).
+
+### A check before an answer is accepted (`plans/human-steps.md` §5.6.7 c)
+
+A paid answer earns the moment it is accepted, and a workflow's own steps
+run after that. To refuse a bad one first (a photo of the wrong thing), a
+TYPE names a CHECK, an admin's as its pay is:
+
+```json
+{ "check": { "step": "grade/judge", "config": { "rubric": "A sharp photo of one whole book page or its cover: no text cut off." } } }
+```
+
+- **The step** is a SEALED registry step in the graders' contract, as a
+  test's `grade` is — `grade/judge`, or one published `sealed: true` —
+  never `"equal"`, which needs an expected answer. It is handed `{ answer,
+  show, type, files? }`, no `expected`: the task's `show`, and the answer's
+  files as `[{ name, mediaType, data }]`, `data` base64. Its `config` is
+  the rule's. It runs once, under the type's `tests.gradeCapUsd` (default
+  $0.05), for at most 30 s, and answers `{ supports, content }`. Who pays
+  is picked as for graders: the deployment's grading principal, else
+  whoever last saved the type (a save on the API key alone keeps them),
+  else nobody is named and the server's own model key pays.
+- **When.** In `task/submit`, after the answer's shape and files pass and
+  before anything is written, while the page waits: a test instance's
+  answer too (a page cannot tell it from a task), each copy's on its own.
+- **A fail** (`supports: false`) refuses the answer `bad_answer: <content>`:
+  the lease stays the worker's, so they send it again; no file is saved,
+  no run woken or started, nothing earned. A check that cannot run (gone,
+  not sealed now, past its time, no verdict, its model refused) refuses too,
+  `bad_answer: this answer could not be checked just now: send it again in
+  a moment`, and the server logs why once per type until one runs.
+- **`grade/judge` as a check**: handed no `expected`, a model reads the
+  `rubric` (default "The answer, and the files sent with it, do what the
+  task asks."), the task's `show`, the answer and its images and PDFs, and
+  replies `PASS: …` or `FAIL: …`; a FAIL's reason, which the worker reads,
+  is in the task's language. Each answer is one model call.
+- Nothing is kept of a refused answer.
 
 ### A run's reply — `task/reply`
 

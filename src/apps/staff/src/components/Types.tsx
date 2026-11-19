@@ -393,6 +393,20 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         )}
       </Section>
 
+      <Section title="Check when handed in" aside={<Switch checked={d.checkOn} onCheckedChange={(c) => set({ checkOn: c })} aria-label="Check each answer when handed in" />}>
+        {!d.checkOn ? (
+          <Note>Off: every answer that fits is accepted, and earns, the moment it is sent. On, a sealed step checks each answer and its files first: one that fails is refused with its reason, the worker keeps the task and sends it again, and nothing is paid for it.</Note>
+        ) : (
+          <GradeEditor
+            label="Checked by"
+            steps
+            g={d.check}
+            set={(check) => set({ check })}
+            hint="grade/judge: a model looks at the answer and its photos against the task. Its rubric says what passes (“A sharp photo of one whole book page: no text cut off”); each answer is one model call."
+          />
+        )}
+      </Section>
+
       <div className="flex flex-wrap items-center gap-2 border-t pt-4">
         <Button onClick={() => void save()} disabled={busy !== null || "problem" in out || !!nameProblem} title={"problem" in out ? out.problem : undefined}>
           <Save /> {confirm === "shape" ? `Save: check ${props.openTasks} open task${props.openTasks === 1 ? "'s" : "s'"} answers against the new shape` : "Save"}
@@ -524,15 +538,15 @@ function Num(props: { label: string; v: string; set: (v: string) => void; hint?:
 
 /** `equal`, or a sealed step and its config (§7.4): strut ships
  *  `grade/overlap` (boxes, `{ min, key }`) and `grade/judge` (a model,
- *  `{ rubric, model }`). */
-export function GradeEditor(props: { label: string; g: GradeDraft; set: (g: GradeDraft) => void }) {
+ *  `{ rubric, model }`). `steps`: a step only, as a check takes (§5.6.7 c). */
+export function GradeEditor(props: { label: string; g: GradeDraft; set: (g: GradeDraft) => void; steps?: boolean; hint?: string }) {
   const { g } = props;
   return (
     <div className="grid gap-2 md:grid-cols-[auto_1fr]">
-      <Field label={props.label}>
+      <Field label={props.label} hint={props.hint}>
         <NativeSelect value={g.kind === "equal" ? "equal" : g.step} onChange={(e) => props.set(e.target.value === "equal" ? { kind: "equal", step: "", config: "" } : { kind: "step", step: e.target.value === "other" ? "" : e.target.value, config: g.config })}>
-          <NativeSelectOption value="equal">equal: the same JSON</NativeSelectOption>
-          <NativeSelectOption value="grade/overlap">grade/overlap: boxes on an image</NativeSelectOption>
+          {!props.steps && <NativeSelectOption value="equal">equal: the same JSON</NativeSelectOption>}
+          {!props.steps && <NativeSelectOption value="grade/overlap">grade/overlap: boxes on an image</NativeSelectOption>}
           <NativeSelectOption value="grade/judge">grade/judge: a model under a rubric</NativeSelectOption>
           {g.kind === "step" && g.step !== "grade/overlap" && g.step !== "grade/judge" && <NativeSelectOption value={g.step}>{g.step || "another sealed step…"}</NativeSelectOption>}
           <NativeSelectOption value="other">another sealed step…</NativeSelectOption>
