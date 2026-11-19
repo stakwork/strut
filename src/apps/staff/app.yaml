@@ -18,6 +18,7 @@ grants:
   sqlite: true
   steps:
     - staff/stats
+    - staff/numbers
     - staff/types
     - staff/save-type
     - staff/delete-type
@@ -28,6 +29,7 @@ grants:
     - staff/worker
     - staff/set-worker
     - staff/grant
+    - staff/grant-link
     - staff/revoke
     - staff/tasks
     - staff/task

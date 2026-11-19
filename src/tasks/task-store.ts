@@ -139,6 +139,30 @@ export interface RoundRule {
   workflow: string;
 }
 
+/** A type's LIMITS, checked by the server whenever it hands out a task of
+ *  it (`next`): `budgetSats`, the most the type pays in all (what its
+ *  answers earned, plus the pay of the leases being worked, plus the one
+ *  the next take would stamp); `perWorkerDay`, the most tasks of it one
+ *  worker takes in a UTC day (answered, plus the one being worked). Either
+ *  absent: no such limit. */
+export interface LimitRule {
+  budgetSats?: number;
+  perWorkerDay?: number;
+}
+
+/** What leases of one type and one worker came to since a time: tasks
+ *  answered, live ones, time spent on the answered ones (taken → answered,
+ *  ms), what the answered earned and what the live ones would (msat). */
+export interface LeaseTotals {
+  type: string;
+  worker: string;
+  answered: number;
+  open: number;
+  workMs: number;
+  payMsat: number;
+  openPayMsat: number;
+}
+
 /** The admin's record for a kind of task (§4.2), its pay (§8.1) and its
  *  tests (§7). */
 export interface TaskType {
@@ -166,6 +190,8 @@ export interface TaskType {
   paySats?: number;
   /** How long an earning waits before it can be withdrawn, in hours. */
   holdHours: number;
+  /** Its budget and per-worker daily cap (`LimitRule`); absent: none. */
+  limits?: LimitRule;
   /** Its test rules (§7); absent: off, and the type works as without. */
   tests?: TestRules;
   /** Its copies rule (§7.6); absent: off, a step asks one worker. */
@@ -509,6 +535,10 @@ export interface TaskStore {
   /** §9.4: what one worker did, by type, of the leases taken since `since`:
    *  a lease past its expiry is lost before the sweep marks it. */
   workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>>;
+  /** What the leases of `types` (one worker's when given) taken since
+   *  `since` came to, one row per type and worker (`LeaseTotals`); a lease
+   *  is live while open and unexpired at `now`. */
+  totals(q: { types: string[]; worker?: string; since: number; now: number }): Promise<LeaseTotals[]>;
   /** §9.4: each type's queue now and over `STATS_WINDOWS` back from `now`,
    *  computed on read (one type when asked). A lease past its expiry is
    *  waiting and lost, and a task past due expired at its due, before the
@@ -778,6 +808,26 @@ export class MemoryTaskStore implements TaskStore {
       if (live(l, now)) holding[l.worker] = l.type;
     }
     return { answered, holding };
+  }
+
+  async totals(q: { types: string[]; worker?: string; since: number; now: number }): Promise<LeaseTotals[]> {
+    const types = new Set(q.types);
+    const rows = new Map<string, LeaseTotals>();
+    for (const l of this.leases.values()) {
+      if (!types.has(l.type) || l.taken < q.since || (q.worker !== undefined && l.worker !== q.worker)) continue;
+      const key = `${l.type}\u0000${l.worker}`;
+      let r = rows.get(key);
+      if (!r) rows.set(key, (r = { type: l.type, worker: l.worker, answered: 0, open: 0, workMs: 0, payMsat: 0, openPayMsat: 0 }));
+      if (l.status === "submitted") {
+        r.answered++;
+        r.workMs += Math.max(0, (l.closed ?? l.taken) - l.taken);
+        r.payMsat += l.payMsat ?? 0;
+      } else if (l.status === "open" && l.expires > q.now) {
+        r.open++;
+        r.openPayMsat += l.payMsat ?? 0;
+      }
+    }
+    return [...rows.values()];
   }
 
   async workerWeek(worker: string, since: number, now: number): Promise<Record<string, WorkerWeek>> {

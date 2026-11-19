@@ -40,6 +40,10 @@ export interface Draft {
   json: string;
   paySats: string;
   holdHours: string;
+  /** The type's limits: the most it pays in all, the most tasks one worker
+   *  takes a day; empty: none. */
+  budgetSats: string;
+  perWorkerDay: string;
   testsOn: boolean;
   tests: Record<"rate" | "newRate" | "newTasks" | "qualify" | "window" | "minGraded" | "threshold" | "gradeCapUsd", string> & { grade: GradeDraft };
   copiesOn: boolean;
@@ -80,6 +84,8 @@ export function draftOf(t?: TaskType): Draft {
     json: JSON.stringify(answer, null, 2),
     paySats: s(t?.paySats),
     holdHours: s(t?.holdHours ?? DEFAULTS.holdHours),
+    budgetSats: s(t?.limits?.budgetSats),
+    perWorkerDay: s(t?.limits?.perWorkerDay),
     testsOn: !!t?.tests,
     tests: {
       rate: s(tests.rate),
@@ -153,10 +159,23 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
     const hold = num(d.holdHours, "the hold");
     if (typeof hold !== "number") return hold;
     input["holdHours"] = hold;
+    const limits: Record<string, number> = {};
+    if (d.budgetSats.trim() !== "") {
+      const budget = num(d.budgetSats, "the budget");
+      if (typeof budget !== "number") return budget;
+      limits["budgetSats"] = budget;
+    }
+    if (d.perWorkerDay.trim() !== "") {
+      const day = num(d.perWorkerDay, "a worker's day");
+      if (typeof day !== "number") return day;
+      limits["perWorkerDay"] = day;
+    }
+    input["limits"] = Object.keys(limits).length ? limits : null;
   } else {
     // A part the page does not show is sent back as it was.
     if (was?.paySats !== undefined) input["paySats"] = was.paySats;
     if (was?.holdHours !== undefined) input["holdHours"] = was.holdHours;
+    if (was?.limits !== undefined) input["limits"] = was.limits;
   }
   if (shown.tests) {
     if (d.testsOn) {

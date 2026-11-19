@@ -883,6 +883,44 @@ for (const impl of earningsImpls) {
       assert.deepEqual((await tasks().me("ann")).balance, NOTHING);
     });
 
+    it("limits: a worker's day is capped and a budget stops the type, both checked whenever a task is handed out; numbers count them", async () => {
+      const bad = async (limits: unknown) => assert.rejects(tasks().setType("t", { app: "a", answer: MATCH, limits } as never), refused("bad_request"));
+      await bad({ budgetSats: -1 });
+      await bad({ perWorkerDay: 0 });
+      await bad({ perWorkerDay: 1.5 });
+      await bad({ hours: 3 });
+      // 21 sats a task, at most 2 a worker a day, 63 sats in all: three answers.
+      await paid({ paySats: 21, paths: ["pets/a", "pets/b", "pets/c", "pets/d"] });
+      const kind = await tasks().setType("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 21, limits: { budgetSats: 63, perWorkerDay: 2 } }, "staff");
+      assert.deepEqual(kind.limits, { budgetSats: 63, perWorkerDay: 2 });
+      assert.deepEqual((await tasks().types())[0]!.limits, { budgetSats: 63, perWorkerDay: 2 }, "as saved");
+      for (let i = 0; i < 2; i++) {
+        const l = await take("ann");
+        clock += 30_000;
+        await tasks().submit("ann", { lease: l.lease, answer: { same: true } });
+      }
+      await assert.rejects(tasks().next("ann"), refused("limit_reached", /today's 2/));
+      // Bob's day is his own; his one answer spends the budget (63 = 3 × 21).
+      const b = await take("bob");
+      // A lease being worked counts against the budget: nobody else gets one.
+      await assert.rejects(tasks().next("ann"), refused("limit_reached"));
+      clock += 60_000;
+      await tasks().submit("bob", { lease: b.lease, answer: { same: true } });
+      await assert.rejects(tasks().next("bob"), refused("limit_reached", /budget/));
+      // The next UTC day: Ann's cap is fresh, the budget still spent.
+      clock = T0 + 24 * HOUR;
+      await assert.rejects(tasks().next("ann"), refused("limit_reached", /budget/));
+      const [n] = await tasks().numbers({ type: "pet-match" });
+      assert.deepEqual([n!.spentSats, n!.workingSats, n!.answered, n!.limits], [63, 0, 3, { budgetSats: 63, perWorkerDay: 2 }]);
+      assert.deepEqual(n!.workers.map((w) => [w.worker, w.answered, w.earnedSats]), [["ann", 2, 42], ["bob", 1, 21]]);
+      assert.equal(n!.workers[0]!.workMinutes, 1, "30 s each, taken to answered");
+      // null takes the limits off.
+      await tasks().setType("pet-match", { app: "workers", answer: MATCH, open: false, paySats: 21, limits: null }, "staff");
+      assert.equal((await tasks().types())[0]!.limits, undefined);
+      assert.ok(!("none" in (await tasks().next("ann"))), "no limit: the last task is handed out");
+      await assert.rejects(tasks().numbers({ days: 91 }), refused("bad_request"));
+    });
+
     it("an unpaid answer has nothing to take back", async () => {
       await tasks().setType("free", { app: "workers", answer: MATCH }, "staff");
       await tasks().grant("ann", "free");

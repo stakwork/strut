@@ -42,6 +42,8 @@ export interface TaskType {
   /** 5a: absent when unpaid. `holdHours` is there on a server that pays. */
   paySats?: number;
   holdHours?: number;
+  /** The most it pays in all, and the most tasks one worker takes a day. */
+  limits?: { budgetSats?: number; perWorkerDay?: number };
   tests?: TestRules;
   copies?: CopiesRule;
   /** The files an answer carries (plans/human-steps.md §5.6); absent: none. */
@@ -459,4 +461,20 @@ export interface SupportFile {
   offset: number;
   base64: string;
   next?: number;
+}
+
+/** `staff/numbers`: a type's spend against its limits, and what each worker
+ *  did of it in the last `days`. */
+export interface TypeNumbers {
+  type: string;
+  title?: string;
+  enabled: boolean;
+  open: boolean;
+  paySats?: number;
+  limits?: { budgetSats?: number; perWorkerDay?: number };
+  spentSats: number;
+  workingSats: number;
+  days: number;
+  answered: number;
+  workers: Array<{ worker: string; answered: number; workMinutes: number; perHour?: number; earnedSats: number }>;
 }

@@ -286,6 +286,25 @@ describe("worker invites on a server (§5.8)", () => {
     await assert.rejects(inviteStep.run({}, { ...ctx, app: { name: "mine", version: "v1" } } as never), /is an admin's/);
   });
 
+  it("a grant link for someone who already has Peel: no Sphinx invite, no sats; its first worker gets the app's invite-only work, nobody after", async () => {
+    assert.equal((await req("/tasks/types/linked-work", { method: "PUT", headers: keyed, body: JSON.stringify({ app: "workers", answer: { type: "boolean" }, open: false }) })).status, 200);
+    assert.equal((await req("/public-view", { method: "PUT", headers: keyed, body: JSON.stringify({ apps: [{ name: "workers" }] }) })).status, 200);
+    const before = await daemonBalance();
+    const res = await req("/tasks/invites/link", { method: "POST", headers: keyed, body: JSON.stringify({ app: "workers" }) });
+    assert.equal(res.status, 200, await res.clone().text());
+    const made = (await res.json()) as { app: string; code: string; link: string; peelLink: string };
+    assert.match(made.code, /^link_[0-9a-f]{18}$/);
+    assert.equal(made.peelLink, `peel://open?url=${encodeURIComponent(made.link)}`);
+    assert.equal(await daemonBalance(), before, "nothing paid");
+    const token = new URLSearchParams(new URL(made.link).searchParams.get("input")!).get("invite")!;
+    assert.deepEqual(inviteOf(token), { code: made.code, app: "workers" });
+    const worker = strut.tasks.worker;
+    const first = await worker.me("pip", { app: "workers", invite: token });
+    assert.ok(first.types.some((t) => t.name === "linked-work"), JSON.stringify(first.types));
+    const second = await worker.me("quin", { app: "workers", invite: token });
+    assert.ok(!second.types.some((t) => t.name === "linked-work"), "one person per link");
+  });
+
   it("GET /public/join answers without the key: the static page, its script pinned by hash; the QR library beside it", async () => {
     const page = await req("/public/join");
     assert.equal(page.status, 200);

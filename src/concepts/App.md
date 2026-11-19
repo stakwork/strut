@@ -697,6 +697,11 @@ there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
 say "Tasks and workers"), and never paste a link from the result (or `GET
 /public/apps`) in your reply, nor build one by hand.
 
+A worker app is the WORKERS' page and nothing else. Never build an admin
+app for work by people — costs, budgets, time per worker, settings,
+grants: Tasks and workers has them, and a type's `limits` are its budget
+and daily cap (`Worker Tasks`, "What is built in").
+
 ## The assistant
 
 An app whose chat should be the person's ASSISTANT — the one that starts
