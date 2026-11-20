@@ -688,24 +688,29 @@ describe("the run archive through createStrut", () => {
       }
       throw new Error("the run never finished");
     };
-    return { dir, strut, store, objects, workspace, get, logHere, waitForSummary, close: async () => { await strut.close(); await rm(dir, { recursive: true, force: true }); } };
+    return { dir, strut, store, objects, workspace, get, logHere, waitForSummary, booted: started, close: async () => { await strut.close(); await rm(dir, { recursive: true, force: true }); } };
   }
   const ONE_STEP = (name: string, type = "value") => `name: ${name}\nsteps:\n  - id: a\n    type: ${type}\n    config: { result: 42 }\n`;
 
   it("says at boot that the archive is on and works, or that it does not", async () => {
     const log = mock.method(console, "log", () => {});
     const warn = mock.method(console, "warn", () => {});
+    // The line comes once the bucket answers: while createStrut is still
+    // booting (`booted`'s lines) or just after.
+    const booted: Array<{ logs: string[]; warnings: string[] }> = [];
     try {
       const up = await boot();
       const down = await boot({ head: async () => { throw new Error("no route to host"); }, put: async () => { throw new Error("no route to host"); } });
+      booted.push(up.booted, down.booted);
       await up.close();
       await down.close();
     } finally {
       log.mock.restore();
       warn.mock.restore();
     }
-    assert.deepEqual(log.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.startsWith("[archive]")), ["[archive] on: finished runs' logs go to s3://test/box-1 before they are evicted"]);
-    assert.deepEqual(warn.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.startsWith("[archive]")), ["[archive] on, and s3://test/box-1 does not work: no route to host. Nothing is evicted until it does"]);
+    const said = (during: string[], after: string[]) => [...during, ...after].filter((l) => l.startsWith("[archive]"));
+    assert.deepEqual(said(booted.flatMap((b) => b.logs), log.mock.calls.map((c) => String(c.arguments[0]))), ["[archive] on: finished runs' logs go to s3://test/box-1 before they are evicted"]);
+    assert.deepEqual(said(booted.flatMap((b) => b.warnings), warn.mock.calls.map((c) => String(c.arguments[0]))), ["[archive] on, and s3://test/box-1 does not work: no route to host. Nothing is evicted until it does"]);
   });
 
   it("the sweep createStrut wires uploads and evicts; the run lists as archived and opens: its events and its tail restore it", async () => {

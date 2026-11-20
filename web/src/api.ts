@@ -1947,6 +1947,10 @@ export interface Automation {
   enabled: boolean;
   trigger: Trigger;
   input: Record<string, unknown>;
+  /** The package that ships it (`schedules:` in its strut.yaml): when it
+   *  runs, its name and its input are the package's, so an admin pauses or
+   *  resumes it and nothing else. */
+  package?: string;
 }
 
 /** An automation plus what the server derives for display. */
@@ -2884,6 +2888,8 @@ export interface WorkflowDetail {
   peer?: true | "person";
   sealed?: true;
   claims?: number;
+  /** When strut runs it on its own: the package's `schedules:` on it, as sentences. */
+  schedules?: string[];
   error?: string;
 }
 export interface StepDetail {

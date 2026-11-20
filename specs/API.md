@@ -845,14 +845,26 @@ fire's `run.end`, as `POST …/run { callback }` does; the URL is the host's
 credential, kept in a file of its own (never the deployment's secrets, which
 steps read), so every read shows `callback: { origin }` only.
 
+A PACKAGE's schedule (`schedules:` in its `strut.yaml`, `docs/packages.md`)
+is an automation like any other, on the package's workflow, with
+`package: "<publisher>/<name>"` on it and the id
+`packageAutomationId(package, name)` (`a-` and the first 8 hex of the
+sha256 of `<package>\n<name>`), the same on every box. Strut makes it at
+install, follows each release, and drops it at uninstall: no route makes it.
+When it runs, its `name` and its `input` are the package's; `enabled` is the
+admin's, and a release keeps it. It runs as its workflow's owner (whoever
+installed the package through a person's door): `run.start` carries that
+`principal` and no `actor`. With no owner, a fire launches nothing — a 400
+from `…/fire`, `lastFireError` on the list — beginning `nobody to run as:`.
+
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |
-| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
+| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError? }]` — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package? }` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
-| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH |
-| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
-| DELETE | `/workflows/:name/automations/:id` | remove |
-| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1) |
+| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH. No body sets `package` |
+| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback. On a package's: `enabled` alone — a `name`, `trigger`, `input` or `callback` that would change it is 400 `"<name>" is the package <package>'s schedule: …` |
+| DELETE | `/workflows/:name/automations/:id` | remove. A package's is 400 (`… made again at each release: pause it, or uninstall the package.`) |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1); 400 with the reason when it launches nothing (a package's with no owner: `nobody to run as: …`) |
 
 `GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? }, drain? }` —
 `backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
@@ -3355,7 +3367,9 @@ the `job` workflow's agent may call, by their names inside it or globs over
 them, and the ones among them that ask first; a name that matches none of
 its steps refuses the package, `plans/followed-repos.md` §3, `provides?: {
 secrets? }` — the secrets its steps manage, "Secrets a package provides"
-below) and the folders `workflows/`,
+below, `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
+the package strut runs on its own, "Schedules a package ships" below) and
+the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
@@ -3414,7 +3428,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
 | GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, job?: { tools, approve }, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/packages/:publisher/:name/screenshot?path=&digest=` | One of the package's app screenshots (app.yaml `screenshots`, `src/apps/manifest.ts`): `path` one an app of the current release lists in `detail` (`apps/<app>/public/shot.png`), read from the index's cache of the archive, `content-type` by extension (png, jpeg, webp, gif), `x-content-type-options: nosniff`, `content-security-policy: sandbox`, an `ETag`. With `digest` (the store's links carry it) only that release's, `cache-control: public, max-age=31536000, immutable`; without, the current one, `no-cache`. 404 for any path the page does not list, or a `digest` that is no longer the current release. **Open to anyone** |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
@@ -3705,7 +3719,8 @@ the release requires first:
 | --- | --- | --- |
 | Its active version is one the package wrote (any release) | the release's version is published and made active | `updated` |
 | A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
-| Already the release's content | nothing | `present` |
+| Already the release's content, stamped that release's | nothing | `present` |
+| Already the release's content, from another release, its active version the package's | stamped this release's in place, no new version — so a release that changes only its `strut.yaml` (`job:`, `provides`, `schedules:`) is what `GET /packages` reads as installed | `stamped` |
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
 | A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
@@ -3832,6 +3847,53 @@ goes; deleting them is `DELETE /secrets/:name` and
 `package_not_installed`; 409 `package_busy` while one of its workflows has
 a run in flight; 409 `package_distro_owned` for a package the distro
 installed.
+
+**Schedules a package ships.** A package names workflows of its own that
+strut runs on a schedule, each an automation's draft (§8: `name?`,
+`trigger`, `input?`) with the `workflow` it runs, by its name inside the
+package:
+
+```yaml
+schedules:
+  - workflow: check                           # workflows/check.yaml
+    trigger: { every: interval, minutes: 15 } # the automations' grammar
+  - workflow: digest
+    name: weekly                              # the workflow's name unless given; unique in the package
+    trigger: { every: week, on: [mon], at: ["09:00"], tz: UTC }
+    input: { since: "{{ last.output.until }}" } # fixed here: now, today and last only
+```
+
+`readPackage` refuses (`bad_package: strut.yaml: schedules[i]…`) a workflow
+the package does not carry (strut's, another package's, its own by its full
+name), a trigger the grammar does not have or a key no shape of it has (it
+is held strict, as the manifest is), a `once` (a release outlives it), two
+schedules of one name, and an input template that reads anything but `now`,
+`today` and `last`. `schedules` takes no other key, so a strut from before
+it refuses the package instead of installing it without its schedules.
+
+Each is an ordinary automation (§8) on the workflow, `package` on it, its
+id `packageAutomationId(package, name)`: strut makes the automations what
+the installed packages ship at boot and after every package write — an
+install, a release, an uninstall, a subscription's sync, a repo's Open,
+Pull or Commit — so there is exactly one each, whatever restarts,
+reinstalls or restores. A package ships its schedules while something of it
+is still its own here (a workflow, step or app whose active version it
+wrote; the rule `job:` grants follow): an uninstall drops them, the one
+that keeps a fork included. A release follows its trigger, input and name
+(an interval keeps its anchor while it stays one); one that drops a
+schedule drops the automation. On or off is the admin's (`PATCH … {
+enabled }`), and a release keeps it; an edit of anything else, and a
+delete, is refused (§8). The store's detail lists each as a sentence on its
+workflow (`PackageDetail.workflows[].schedules`, as `GET /index/packages/:publisher/:name` serves it).
+
+A scheduled run of a package's workflow acts as the workflow's OWNER —
+whoever installed the package through a person's door — and reads secrets
+as any run of theirs does: `get(NAME)` their own value, else the
+deployment's, else the environment; `secrets.own` theirs, and no
+`secrets.deployment`. With no owner (the distro's install, a boot install,
+an install with no actor), a fire launches nothing and says why (§8,
+`nobody to run as:`); claiming the workflow (`POST /actor/claim`) or giving
+it an owner (`PUT /workflows/:name/owner`) lets it run as them.
 
 The archive is transport: a fetcher checks the unpacked TREE against the
 digest, never the archive's bytes, so any URL that serves the right tree

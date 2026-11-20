@@ -133,7 +133,7 @@ export function AutomationsPanel(props: {
           {list?.map((a) => (
             <div class={`auto-card${a.enabled ? "" : " is-paused"}`} key={a.id}>
               <div class="auto-card-head">
-                <button class="auto-name" onClick={() => setEditing(a)} title="Edit">{a.name}</button>
+                {a.package ? <span class="auto-name">{a.name}</span> : <button class="auto-name" onClick={() => setEditing(a)} title="Edit">{a.name}</button>}
                 <label class="auto-toggle" title={a.enabled ? "Pause" : "Resume"}>
                   <input
                     type="checkbox"
@@ -144,6 +144,7 @@ export function AutomationsPanel(props: {
                 </label>
               </div>
               <div class="auto-summary"><ClockIcon size={12} /> {a.summary}</div>
+              {a.package && <div class="auto-hint">From the package {a.package}: it sets when this runs and with what, at each release. Pause it here.</div>}
               <div class="auto-meta">
                 {a.enabled && props.workflowDisabled && <span>Held: the workflow is disabled</span>}
                 {a.enabled && !props.workflowDisabled && a.nextRunAt && <span title={when(a.nextRunAt)}>Next run {relativeTime(a.nextRunAt)}</span>}
@@ -159,9 +160,11 @@ export function AutomationsPanel(props: {
                 <button class="btn" disabled={a.running || props.workflowDisabled}
                   title={props.workflowDisabled ? "The workflow is disabled" : a.running ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
-                <button class="btn" onClick={() => setEditing(a)}>Edit</button>
-                <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
-                  onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
+                {!a.package && <button class="btn" onClick={() => setEditing(a)}>Edit</button>}
+                {!a.package && (
+                  <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
+                    onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
+                )}
               </div>
             </div>
           ))}
