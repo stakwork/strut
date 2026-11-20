@@ -178,7 +178,7 @@ export const PROVIDERS: Provider[] = [
 ];
 
 // shortcuts to latest models
-export type ModelName = "sonnet" | "opus" | "haiku" | "gemini" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes" | "tokenfactory";
+export type ModelName = "sonnet" | "opus" | "haiku" | "argon" | "carbon" | "neon" | "hydrogen" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes" | "tokenfactory";
 
 type ModelId = string;
 
@@ -189,7 +189,10 @@ export const MODELS: Record<Provider, Partial<Record<ModelName, ModelId>>> = {
     haiku: "claude-haiku-4-5",
   },
   google: {
-    gemini: "gemini-3.8-flash",
+    argon: "gemini-4-argon",
+    carbon: "gemini-4-carbon",
+    neon: "gemini-4-neon",
+    hydrogen: "gemini-4-hydrogen",
   },
   openai: {
     gpt: "gpt-5.6-luna",
@@ -222,7 +225,8 @@ export const MODELS: Record<Provider, Partial<Record<ModelName, ModelId>>> = {
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
   anthropic: MODELS.anthropic.sonnet!,
-  google: MODELS.google.gemini!,
+  // Argon: Google's pick for most software engineering and knowledge work; tighter token use and faster than Carbon at the same price.
+  google: MODELS.google.argon!,
   openai: MODELS.openai.gpt!,
   openrouter: MODELS.openrouter.kimi!,
   xai: MODELS.xai.grok!,
@@ -643,7 +647,10 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
       return "anthropic";
     case "haiku":
       return "anthropic";
-    case "gemini":
+    case "argon":
+    case "carbon":
+    case "neon":
+    case "hydrogen":
       return "google";
     case "gpt":
       return "openai";
@@ -664,8 +671,10 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
     case "claude-opus-4-6":
     case "claude-haiku-4-5":
       return "anthropic";
-    case "gemini-3.8-flash":
-    case "gemini-3-pro-preview":
+    case "gemini-4-argon":
+    case "gemini-4-carbon":
+    case "gemini-4-neon":
+    case "gemini-4-hydrogen":
     case "gemini-2.0-flash":
       return "google";
     case "gpt-5":
@@ -690,7 +699,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
         return env.LLM_PROVIDER as Provider;
       }
       // Last resort before the anthropic default: the vendor's own id prefix.
-      // A bare "gpt-5.6-sol" or "gemini-3.1-pro-preview" used to be sent to
+      // A bare "gpt-5.6-sol" or "gemini-2.5-pro" used to be sent to
       // anthropic and 404. Kept BELOW LLM_PROVIDER so a deployment that routes
       // bare ids through a gateway provider keeps doing so.
       if (typeof modelName === "string") {
@@ -1077,7 +1086,10 @@ function connect(provider: Provider | string, opts?: string | GetModelOptions): 
       "sonnet",
       "opus",
       "haiku",
-      "gemini",
+      "argon",
+      "carbon",
+      "neon",
+      "hydrogen",
       "gpt",
       "kimi",
       "glm",
@@ -1501,8 +1513,10 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "claude-opus-4-6": 1_000_000,
   "claude-haiku-4-5": 200_000,
   // Google — Gemini's "1M" is 2^20.
-  "gemini-3.8-flash": 1_048_576,
-  "gemini-3-pro-preview": 1_048_576,
+  "gemini-4-argon": 1_048_576,
+  "gemini-4-carbon": 1_048_576,
+  "gemini-4-neon": 1_048_576,
+  "gemini-4-hydrogen": 1_048_576,
   "gemini-2.0-flash": 1_048_576,
   // OpenAI — 5.4+ is 1,050,000; the 4.1 family is 1,047,576; 5 through 5.3 are 400k.
   "gpt-5": 400_000,
@@ -1647,7 +1661,7 @@ export function getTokenPricing(provider: Provider): TokenPricing {
 // bifrost's datasheet — the file the LLM gateway prices every call from
 // (stakgraph gateway/internal/pricing) and bifrost prices its logs from —
 // keyed by model as bifrost names it ("claude-sonnet-5-5",
-// "gemini/gemini-3.8-flash", "openrouter/moonshotai/kimi-k3"), each with its
+// "gemini/gemini-4-argon", "openrouter/moonshotai/kimi-k3"), each with its
 // per-token prices and input and output limits. `loadModelCatalog` loads it;
 // until then, and for a model it does not hold, the tables in this file
 // answer. Maple's and Numes' own tables answer before it (the gateway's
@@ -1930,6 +1944,14 @@ function anthropicModelId(modelName?: string): string {
   return MODELS.anthropic[modelName as ModelName] ?? modelName;
 }
 
+// The model id the google provider calls: no name is the default, an alias
+// maps through MODELS, a "google/" prefix is dropped.
+function googleModelId(modelName?: string): string {
+  if (!modelName) return DEFAULT_MODELS.google;
+  const m = modelName.replace(/^google\//, "");
+  return MODELS.google[m as ModelName] ?? m;
+}
+
 export function getProviderOptions(
   provider: Provider,
   thinkingSpeed?: ThinkingSpeed,
@@ -1992,6 +2014,18 @@ export function getProviderOptions(
         } satisfies AnthropicProviderOptions,
       };
     case "google":
+      // Gemini 4 takes thinkingLevel; thinkingBudget or "minimal" is a 400.
+      if (/^gemini-4(-|$)/.test(googleModelId(modelName))) {
+        return {
+          google: {
+            thinkingConfig: {
+              thinkingLevel: fast ? "low" : explicitThinking ? "high" : "medium",
+            },
+          } satisfies GoogleGenerativeAIProviderOptions,
+        };
+      }
+      // Older ids still reach here: the light model (gemini-2.0-flash) and an
+      // explicit "google/gemini-2.5-*". They take a numeric budget.
       return {
         google: {
           thinkingConfig: { thinkingBudget: googleBudget },
