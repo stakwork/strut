@@ -21,7 +21,8 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { ORCHESTRATOR_PAGE, ORCHESTRATOR_WORKFLOW, orchestratorRules } from "../orchestrator-seed.js";
 import { createRegistry } from "../steps/registry.js";
 import { MemoryRunStore, type RunStore } from "../store.js";
-import { SEED_SPEAKER, type ChecksView, type TrialsCapability } from "../trials.js";
+import { SEED_SPEAKER, createTrials, type ChecksView, type TrialsCapability } from "../trials.js";
+import type { ConceptSources, PageSource } from "../concept-sources.js";
 
 const sse = (o: unknown) => `event: ${(o as { type: string }).type}\ndata: ${JSON.stringify(o)}\n\n`;
 const start = sse({
@@ -255,6 +256,39 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.deepEqual([t.page.docs, t.change.docs], ["Be polite.", "Be terse."]);
     assert.deepEqual(t.page.samples[added.id]!.map((s) => s.supports), [true, true]);
     assert.deepEqual(t.change.samples[added.id]!.map((s) => s.supports), [false, false]);
+
+    // Were the page's text from git with a checkout here (dev mode, a repo opened here), using the change would
+    // be a proposal to write its file: the page as a file holds it, with the other wording, and the page as it is.
+    const asked: Array<{ source: PageSource; text?: string }> = [];
+    const source: PageSource = { name: "Tone", set: "strut/concepts/", file: "Tone.md", checkout: "strut" };
+    const fromGit = (propose: ConceptSources["propose"]) =>
+      createTrials({
+        dataDir: dir,
+        graph: backend,
+        claims: { reader: strut.claims } as never,
+        verifier: { verifyRun: async () => ({}) },
+        store,
+        sources: {
+          fromGit: async () => new Map([["Tone", source]]),
+          pageOf: async () => ({ ref_id: view.ref_id, page: { name: "Tone", description: "how replies sound", attributes: { description: "how replies sound" }, parents: [], docs: "Be polite.", stamp: "" }, text: "" }),
+          propose,
+        } as unknown as ConceptSources,
+        hasWorkflow: async () => true,
+        run: async () => {
+          throw new Error("nothing runs here");
+        },
+      });
+    const proposer = { workflow: "__run_step__", runId: "r1", path: "" };
+    const dev = fromGit(async (changes) => {
+      asked.push(...changes);
+      return { proposed: [{ checkout: "strut", proposal: "p1", url: "/proposals/p1", pages: [{ name: "Tone", change: "edited" as const }] }], skipped: [] };
+    });
+    assert.deepEqual(await dev.use({ test: t.id, proposer }), { ok: true, proposed: { checkout: "strut", proposal: "p1", url: "/proposals/p1", pages: [{ name: "Tone", change: "edited" }] } });
+    assert.deepEqual([asked[0]!.source, asked[0]!.text], [source, "---\nname: Tone\ndescription: how replies sound\n---\nBe terse.\n"]);
+    assert.match((await dev.use({ test: t.id }) as { error: string }).error, /a change to it is a proposal into its checkout/);
+    const nowhere = fromGit(async () => ({ proposed: [], skipped: [{ name: "Tone", change: "edited" as const, source: "strut/concepts/Tone.md", why: "this strut server runs from a build" }] }));
+    assert.match((await nowhere.use({ test: t.id, proposer }) as { error: string }).error, /ships, and it is not changed here: this strut server runs from a build/);
+    assert.equal((await trials.checks("Tone"))!.docs, "Be polite.", "nothing was written");
 
     assert.deepEqual(ok(await trials.use({ test: t.id, by: "ada" })), { ok: true, landed: true });
     const now = (await trials.checks("Tone"))!;
