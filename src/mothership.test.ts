@@ -479,7 +479,7 @@ describe("mothership: grants for a machine outside strut", () => {
     assert.equal(call.headers["x-strut-actor"], ACTOR);
     assert.deepEqual(Object.keys(call.body).sort(), ["expires_at", "macaroon", "max_cost_usd", "name"]);
     assert.equal(call.body.name, "pod_hive", "the name the gateway bills, as the host takes it: [A-Za-z0-9._-]{1,64}");
-    assert.equal(call.body.max_cost_usd, 10, "the default cap, sent so the host holds the key to it too");
+    assert.equal(call.body.max_cost_usd, 1000, "the default cap, sent so the host holds the key to it too");
     assert.equal(call.body.expires_at, g.expiresAt);
     const exp = Date.parse(g.expiresAt);
     assert.ok(exp >= before + 2 * 3600_000 && exp <= Date.now() + 2 * 3600_000, g.expiresAt);
@@ -489,7 +489,7 @@ describe("mothership: grants for a machine outside strut", () => {
     assert.equal(claims.agent_name, "pod_hive", "billed as the grant's name");
     assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "pod_hive"]);
     assert.match(claims.run_id, /^grant-[0-9a-f]+$/);
-    assert.equal(claims.effective_caveats.max_cost_usd, 10);
+    assert.equal(claims.effective_caveats.max_cost_usd, 1000);
     assert.equal(claims.effective_caveats.max_steps, 0);
     assert.equal(decodeMacaroon(call.body.macaroon).attenuations.length, 1, "one link, off the invocation: no run's cap above it");
     assert.throws(() => verify(call.body.macaroon, policy, new Date(exp + 1000)), /expired/);
@@ -499,18 +499,28 @@ describe("mothership: grants for a machine outside strut", () => {
     assert.notEqual(verify(host.calls[1]!.body.macaroon, policy, new Date()).run_id, claims.run_id, "each grant is capped apart");
   });
 
-  it("the cap: STRUT_GRANT_MAX_COST_USD, never above the delegation's ceiling, never zero", async () => {
+  it("the cap: STRUT_GRANT_MAX_COST_USD, else $1000, lowered to the delegation's ceiling, never zero", async () => {
     const { grants, host } = await build({ delegation: mint({ ceiling: 50 }) });
     const mine = grants.forPrincipal!(ACTOR);
+    const capOf = (i: number) => {
+      const c = host.calls[i]!;
+      assert.equal(verify(c.body.macaroon, policy, new Date()).effective_caveats.max_cost_usd, c.body.max_cost_usd, "the link and the key carry the same cap");
+      return c.body.max_cost_usd;
+    };
     process.env["STRUT_GRANT_MAX_COST_USD"] = "2.5";
     await mine.grant({ name: "pod", hours: 1 });
-    assert.equal(host.calls[0]!.body.max_cost_usd, 2.5);
-    assert.equal(verify(host.calls[0]!.body.macaroon, policy, new Date()).effective_caveats.max_cost_usd, 2.5);
+    assert.equal(capOf(0), 2.5);
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "";
+    await mine.grant({ name: "pod", hours: 1 });
+    assert.equal(capOf(1), 50, "the $1000 default, lowered to a $50 ceiling: a grant all the same");
     process.env["STRUT_GRANT_MAX_COST_USD"] = "500";
-    await assert.rejects(() => mine.grant({ name: "pod", hours: 1 }), /grant cap \$500 exceeds the delegation ceiling \$50/);
+    await mine.grant({ name: "pod", hours: 1 });
+    assert.equal(capOf(2), 50, "a setting above the ceiling is lowered too");
     process.env["STRUT_GRANT_MAX_COST_USD"] = "0";
     await assert.rejects(() => mine.grant({ name: "pod", hours: 1 }), /positive number/);
-    assert.equal(host.calls.length, 1, "nothing asked of the host for a grant that fails here");
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "lots";
+    await assert.rejects(() => mine.grant({ name: "pod", hours: 1 }), /positive number/);
+    assert.equal(host.calls.length, 3, "nothing asked of the host for a grant that fails here");
   });
 
   it("hours past the person's authorization: the grant ends with it", async () => {
