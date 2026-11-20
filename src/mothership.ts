@@ -191,15 +191,16 @@ export function stepAgentName(stepPath: string): string {
 /** A run's cost cap (src/run-cap.ts): re-exported, the Mothership's to apply. */
 export { resolveRunCap };
 
-/** A grant's cap when `STRUT_GRANT_MAX_COST_USD` sets none. Still open in
- *  stakwork/pods PLAN.md §15 item 6. */
-export const DEFAULT_GRANT_CAP_USD = 10;
+/** A grant's cap when `STRUT_GRANT_MAX_COST_USD` sets none (the owner's call,
+ *  2026-11-20: $10 was too low for many tasks; settable from the box's admin
+ *  later). A person's delegation ceiling lowers it (`grant`). */
+export const DEFAULT_GRANT_CAP_USD = 1000;
 
 /** The longest a grant lives: a key for a machine outside strut is short-lived
  *  (a pod lives 8 hours on Lambda), and the host refuses a longer one. */
 export const MAX_GRANT_HOURS = 24;
 
-/** A grant's cost cap: `STRUT_GRANT_MAX_COST_USD`, else $10. Anything that is
+/** A grant's cost cap: `STRUT_GRANT_MAX_COST_USD`, else $1000. Anything that is
  *  not a positive number is an error, as for a run's (`resolveRunCap`). */
 export function resolveGrantCap(env: Record<string, string | undefined> = bootEnv()): number {
   const raw = env["STRUT_GRANT_MAX_COST_USD"];
@@ -432,10 +433,9 @@ export function createMothership(opts: MothershipOptions): Mothership {
     if (!d || !principal) return null;
     const gk = await import("gatekey");
     const m = gk.decodeMacaroon(d.macaroon);
-    const capUsd = resolveGrantCap();
-    if (capUsd > m.invocation.max_cost_usd) {
-      throw new Error(`grant cap $${capUsd} exceeds the delegation ceiling $${m.invocation.max_cost_usd} for ${principal} — lower STRUT_GRANT_MAX_COST_USD or re-authorize with a higher ceiling`);
-    }
+    // Never above the person's ceiling (the gateway would refuse the link): a
+    // person whose spending limit is under the cap still gets a grant.
+    const capUsd = Math.min(resolveGrantCap(), m.invocation.max_cost_usd);
     const exp = expFor(now, m.invocation.exp, hours * 3600_000);
     const link = gk.attenuate(gk.invocationSigBytes(m.invocation), caveats([STRUT_AGENT, name], `grant-${nonce()}`, capUsd, exp));
     const macaroon = gk.encodeMacaroon({ ...m, attenuations: [link] });

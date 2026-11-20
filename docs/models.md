@@ -100,8 +100,9 @@ and `revoke(id)`: a pod's apps call the box's gateway themselves, billed to
 the run's principal. Strut adds a link of the grant's own to that person's
 macaroon, off the invocation: its own run id (`grant-<nonce>`, so the
 gateway caps it apart from any run), the cap (`STRUT_GRANT_MAX_COST_USD`,
-$10 by default; still open in the pods plan, §15 item 6, and never above
-the delegation's ceiling), an expiry no later than `hours` from now (at most
+$1000 by default, the owner's call on 2026-11-20; lowered to the
+delegation's ceiling when that is less, so a person with a lower spending
+limit still gets a grant), an expiry no later than `hours` from now (at most
 24; or the person's authorization, when sooner), billed as the grant's
 `name` (written as a step's agent name is, `[A-Za-z0-9_.-]`, at most 64). Then it
 asks the host for a virtual key under the person's gateway customer:
@@ -123,8 +124,8 @@ delegation, and only the key's own budget and deletion hold it. No grant: a
 strut without the Mothership, or without `STRUT_MOTHERSHIP_GRANTS_URL`, has
 no `llm` on the bag; `grant` answers null when nobody can be billed here (no
 principal, or no delegation for them), an error under
-`STRUT_MOTHERSHIP_REQUIRED=1`; a host that refuses, a cap above the
-ceiling or an expired delegation is an error. Either way the machine gets no
+`STRUT_MOTHERSHIP_REQUIRED=1`; a host that refuses, a malformed
+`STRUT_GRANT_MAX_COST_USD` or an expired delegation is an error. Either way the machine gets no
 variables. The runner binds `llm` to the run's principal as it binds
 `secrets` (`forPrincipal`, `bindPrincipal`), and a public run gets none: a
 grant's spend is outside the run's own cap. Tests: `src/mothership.test.ts`
