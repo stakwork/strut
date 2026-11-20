@@ -211,7 +211,7 @@ describe("job/start and job/continue", () => {
         { id: "dir", type: "job/dir", config: {} },
         { id: "note", type: "test/write", config: { path: "{{ dir.path }}/note.md", text: "noted" } },
         // A conversation when the launch names one, as strut's own orchestrator.
-        agent("ORCH", { agentTools: ["job/start", "job/continue"], session: "{{ input.session }}" }),
+        agent("ORCH", { agentTools: ["job/start", "job/continue", "job/stop"], session: "{{ input.session }}" }),
         pack,
       ],
     });
@@ -339,6 +339,41 @@ describe("job/start and job/continue", () => {
     await settle("orch", third);
     const built = await until(() => posts.find((p) => p.workflow === "builder"));
     assert.equal(built.output.workspace, "acme", "a builder job: the same");
+  });
+
+  it("stop: a job that is working is stopped from the turn, and takes its next message at once", async () => {
+    const { launch, settle, until, toolOutput, store } = await boot();
+    let release!: () => void;
+    gate = new Promise((r) => (release = r));
+    orchTool = { name: "job_start", input: { prompt: "Research flights", title: "Flights" } };
+    const first = await launch({ prompt: "research flights" });
+    await settle("orch", first);
+    const { job, runId } = await toolOutput(first);
+    await until(() => (seen.job.length === 1 ? true : undefined));
+
+    // "Cancel that": the job's agent is on a model call, which a stop lets
+    // finish — the turn ends at its next step, cancelled.
+    orchTool = { name: "job_stop", input: { job } };
+    const second = await launch({ prompt: "cancel that" });
+    await until(async () => ((await store.getRunEvents("job", runId)).some((e) => e.type === "run.cancelling") ? true : undefined));
+    release();
+    await settle("orch", second);
+    const stopped = await toolOutput(second);
+    assert.deepEqual(stopped.stopped, [{ workflow: "job", runId, turn: true }], JSON.stringify(stopped));
+    assert.equal(stopped.stopping, undefined, "the tool waited for the stop to land");
+    assert.equal((await settle("job", runId)).status, "cancelled");
+    const end = await until(() => posts.find((p) => p.workflow === "job"));
+    assert.equal(end.status, "cancelled", "the host hears the turn was stopped");
+
+    // The job is free: its next message is taken, not refused job_busy.
+    gate = undefined;
+    orchTool = { name: "job_continue", input: { job, prompt: "Trains instead" } };
+    const third = await launch({ prompt: "trains instead" });
+    await settle("orch", third);
+    assert.equal((await toolOutput(third)).job, job, seen.orch.at(-1));
+    const next = await until(() => posts.find((p) => p.workflow === "job" && p.status === "success"));
+    assert.equal(next.job, job);
+    assert.ok(seen.job.at(-1)!.includes("Trains instead"));
   });
 
   it("continue: the next turn of the same job and thread; refused while it runs and for a job not on file", async () => {

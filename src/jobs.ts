@@ -607,6 +607,28 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job-shaped workflow the turn runs: the launch's, or the record's for a
    *  continue. */
   launch?(opts: JobLaunch): Promise<{ runId: string; callback: boolean; workflow: string }>;
+  /** Stop what the job has in flight (`job/stop`): its turn — with every
+   *  run under it, and the run it still looks at — and any run a turn left
+   *  going, then wait (`JOB_STOP_WAIT_MS`) for them to end. `stopped` is
+   *  what was told to stop, empty when nothing was in flight; `stopping`
+   *  when something had not ended by the wait's end. Cooperative, as every
+   *  cancel is: a step in flight finishes first. A turn that ended inside
+   *  the wait wakes no conversation — whoever stopped it knows; one that
+   *  ended later wakes as a stopped turn does. Never `from`'s own run. Set
+   *  by the server; absent on a bare bag. */
+  stop?(job: string, o?: { from?: string; waitMs?: number }): Promise<JobStop>;
+}
+
+/** How long `JobsCapability.stop` waits for what it stopped to end. */
+export const JOB_STOP_WAIT_MS = 30_000;
+
+/** What `JobsCapability.stop` answers. */
+export interface JobStop {
+  /** `turn`: a run of the job itself (it carries the job) — a turn, whose
+   *  agent commits nothing to the job's thread when stopped before its
+   *  answer. Without it, a run a turn left going. */
+  stopped: Array<{ workflow: string; runId: string; turn?: true }>;
+  stopping: boolean;
 }
 
 /** What `JobsCapability.launch` takes. */

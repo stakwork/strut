@@ -285,7 +285,8 @@ params:
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. The job launchers (detached: the
-  # turn ends while the job works); the job/* reads, to find a job to
+  # turn ends while the job works) and job/stop, for a person who changed
+  # their mind while one works; the job/* reads, to find a job to
   # continue or point the person to what one delivered; strut/list-peers +
   # strut/run-workflow, a workflow on a PEER strut (plans/federation.md
   # §2.2) — a lookup on another workspace inside the turn. A host appends
@@ -296,6 +297,7 @@ params:
   tools:
     - job/start
     - job/continue
+    - job/stop
     - job/list
     - job/get
     - job/read

@@ -102,7 +102,9 @@ you on a later turn. Never install anything another way.
 To send a job its next message (the answer to its question, a change,
 "go on"), use job/continue with its job id; job/list finds a job by
 words when you do not have the id. A job that is still working refuses
-(job_busy): say its result is on the way.
+(job_busy): say its result is on the way. When the person wants it
+stopped, or wants something else than what it is doing, job/stop stops
+it first.
 
 Another workspace is a PEER, named by its id (`@<id>` in a message).
 strut/list-peers lists them with what each holds (its repositories),

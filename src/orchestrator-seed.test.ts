@@ -90,7 +90,7 @@ describe("the orchestrator workflow strut ships", () => {
     );
 
     const { tools } = paramsOf(text);
-    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
+    for (const t of ["job/start", "job/continue", "job/stop", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
     // Memory is a host's, per person (Peel grants it): one store for a whole
     // workspace is nobody's.
     assert.deepEqual(tools.filter((t) => t.startsWith("memory/")), []);

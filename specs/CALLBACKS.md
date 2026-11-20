@@ -561,7 +561,9 @@ the job's reply inline (6 000 chars at most) and its question. It runs:
   Its `run.end` carries `delivered` (§2): the job's files, to show with the
   reply, since the reply need not list them.
 
-**Gates.** Once per job run. Queued, never dropped: while a turn of the
+**Gates.** Once per end of a job run: an end heard twice wakes once, and a
+run resumed under its own id wakes again when it ends again. Queued, never
+dropped: while a turn of the
 conversation runs, the end waits, and every end that waited goes as one turn
 (`also` lists the others). At most four wake turns since the person's last
 turn (`createStrut({ orchestrator: { wakeMax } })`): past it, `"capped"`. A
@@ -569,6 +571,46 @@ conversation that came in from another strut (a person token, a peer) or an
 app is a relay and never woken: the head of the chain wakes itself. Durable:
 a restart launches what was waiting. `createStrut({ orchestrator: { wake:
 false } })` (or `STRUT_HOST_CONFIG`'s `orchestrator.wake`) turns it off.
+
+**A job's own wake: a test run it left going.** To a builder a run is a
+thing of its own, not part of its turn. `meta/run-workflow` from a builder
+turn launches the run as a ROOT run — no job, no parent, its `run.start`
+naming the turn (`startedBy: { workflow: "builder", runId, session }`, the
+session the job's own) — and looks at it for the chat's wait window (about a
+minute). A run that ends inside the look comes back as its result. One still
+going comes back `running` and goes on; the turn ends saying so, and that
+end wakes the conversation like any job turn's (`wake: "launched"`): the
+person hears it is running. The job is free meanwhile — `job/continue` is
+not `job_busy:` — so the person's next message reaches the build, which may
+stop the run (`meta/cancel-run`) and change what it built.
+
+When the run ends, strut starts the JOB's next turn: the job's workflow
+under the same job, `input: { prompt, session }` with the template's
+`params.wake` (the run's outcome and output), started as the job's latest
+person's turn was (its `startedBy`, or your `conversation` and `wake:
+true`). That turn's end wakes the conversation as any job turn's does, so
+the person hears how it went. You see nothing new: two `run.end`s of the
+job, each with `wake` as above; the woken turn's `run.start` carries
+`wake: { job, runId }` naming the run.
+
+Only a job workflow with `params.wake` (the seeded `builder`), and only a
+turn launched as a job's turn is: one another strut launched, or one
+another run started through `meta/run-workflow`, waits for its test run as
+before. A run that was cancelled wakes nothing, nor one whose turn the
+person stopped; a turn stopped while it still looks at the run stops the
+run. A restart resumes the run like any root run, and its end wakes the job
+then. So does a run the builder healed (`meta/resume-run`): it ends again
+under its own id, and wakes the job again. The woken turns count toward
+`wakeMax`.
+
+**A job the conversation stopped.** `job/stop { job }` (the orchestrator's
+tool, for a person who changed their mind while a job works) cancels the
+job's turn in flight and any run a turn left going, and waits up to 30
+seconds for them to end. A turn that ends inside that wait posts its
+`run.end` as `status: "cancelled"` with `wake: "none"`: the turn that
+stopped it was told in the tool's result, so nothing wakes. One still
+finishing a step when the wait is over ends later, and wakes the
+conversation as any stopped turn does.
 
 **A job that ran on another strut.** You heard its `run.end` on that
 strut's room (§8), not here. Hand it in, and the local conversation wakes on

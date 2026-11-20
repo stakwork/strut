@@ -2060,7 +2060,7 @@ the call against that app's manifest, in every host:
 | `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
 | `sqlite/query`, `sqlite/exec`, `sqlite/batch` | only when the manifest says `grants: { sqlite: true }` (`sqlite/*` in `grants.steps` grants nothing), on the app's own database alone (§14.17) |
 | `automation/*` | "not available in this strut yet" (work item 7) |
-| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
+| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue`, `job/stop` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
 A refused call, a missing or foreign token (a run's or a job's file token,
