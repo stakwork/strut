@@ -178,7 +178,7 @@ export const PROVIDERS: Provider[] = [
 ];
 
 // shortcuts to latest models
-export type ModelName = "sonnet" | "opus" | "haiku" | "gemini" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes" | "tokenfactory";
+export type ModelName = "sonnet" | "opus" | "haiku" | "gemini" | "carbon" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes" | "tokenfactory";
 
 type ModelId = string;
 
@@ -190,6 +190,7 @@ export const MODELS: Record<Provider, Partial<Record<ModelName, ModelId>>> = {
   },
   google: {
     gemini: "gemini-3.8-flash",
+    carbon: "gemini-4-carbon",
   },
   openai: {
     gpt: "gpt-5.6-luna",
@@ -644,6 +645,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
     case "haiku":
       return "anthropic";
     case "gemini":
+    case "carbon":
       return "google";
     case "gpt":
       return "openai";
@@ -664,6 +666,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
     case "claude-opus-4-6":
     case "claude-haiku-4-5":
       return "anthropic";
+    case "gemini-4-carbon":
     case "gemini-3.8-flash":
     case "gemini-3-pro-preview":
     case "gemini-2.0-flash":
@@ -1078,6 +1081,7 @@ function connect(provider: Provider | string, opts?: string | GetModelOptions): 
       "opus",
       "haiku",
       "gemini",
+      "carbon",
       "gpt",
       "kimi",
       "glm",
@@ -1501,6 +1505,7 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "claude-opus-4-6": 1_000_000,
   "claude-haiku-4-5": 200_000,
   // Google — Gemini's "1M" is 2^20.
+  "gemini-4-carbon": 1_048_576,
   "gemini-3.8-flash": 1_048_576,
   "gemini-3-pro-preview": 1_048_576,
   "gemini-2.0-flash": 1_048_576,
@@ -1930,6 +1935,14 @@ function anthropicModelId(modelName?: string): string {
   return MODELS.anthropic[modelName as ModelName] ?? modelName;
 }
 
+// The model id the google provider calls: no name is the default, an alias
+// maps through MODELS, a "google/" prefix is dropped.
+function googleModelId(modelName?: string): string {
+  if (!modelName) return DEFAULT_MODELS.google;
+  const m = modelName.replace(/^google\//, "");
+  return MODELS.google[m as ModelName] ?? m;
+}
+
 export function getProviderOptions(
   provider: Provider,
   thinkingSpeed?: ThinkingSpeed,
@@ -1992,6 +2005,16 @@ export function getProviderOptions(
         } satisfies AnthropicProviderOptions,
       };
     case "google":
+      // Gemini 4 takes thinkingLevel; thinkingBudget or "minimal" is a 400.
+      if (/^gemini-4(-|$)/.test(googleModelId(modelName))) {
+        return {
+          google: {
+            thinkingConfig: {
+              thinkingLevel: fast ? "low" : explicitThinking ? "high" : "medium",
+            },
+          } satisfies GoogleGenerativeAIProviderOptions,
+        };
+      }
       return {
         google: {
           thinkingConfig: { thinkingBudget: googleBudget },

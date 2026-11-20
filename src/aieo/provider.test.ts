@@ -202,6 +202,76 @@ const tests: TestCase[] = [
         throw new Error(`Expected type:"adaptive", got "${opts.thinking?.type}"`);
     },
   },
+  {
+    label: 'google carbon alias + fast → thinkingLevel low, no budget',
+    provider: "google",
+    thinkingSpeed: "fast",
+    modelName: "carbon",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "low" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google gemini-4-carbon + thinking → high',
+    provider: "google",
+    thinkingSpeed: "thinking",
+    modelName: "gemini-4-carbon",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "high" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google google/gemini-4-argon, no speed → medium',
+    provider: "google",
+    thinkingSpeed: undefined,
+    modelName: "google/gemini-4-argon",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "medium" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google default model + fast → thinkingBudget 0',
+    provider: "google",
+    thinkingSpeed: "fast",
+    modelName: undefined,
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingBudget !== 0 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google default model → thinkingBudget 24000',
+    provider: "google",
+    thinkingSpeed: undefined,
+    modelName: undefined,
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingBudget !== 24000 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google gemini-3.8-flash + fast → thinkingBudget 0',
+    provider: "google",
+    thinkingSpeed: "fast",
+    modelName: "gemini-3.8-flash",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingBudget !== 0 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google gemini-3.8-flash + thinking → thinkingBudget 24000',
+    provider: "google",
+    thinkingSpeed: "thinking",
+    modelName: "gemini-3.8-flash",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingBudget !== 24000 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
 ];
 
 let passed = 0;
