@@ -454,7 +454,7 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
       </ul>
       {admin && (
         <div className="flex items-center gap-1.5">
-          <Input value={sentence} onChange={(e) => setSentence(e.target.value)} placeholder="It never explains how it is built" aria-label="A new check: one sentence" className="h-7 min-w-0 flex-1 text-xs" data-testid="checks-new" />
+          <Input value={sentence} onChange={(e) => setSentence(e.target.value)} placeholder="It never says it works in the background" aria-label="A new check: one sentence" className="h-7 min-w-0 flex-1 text-xs" data-testid="checks-new" />
           <Button
             size="sm"
             variant="ghost"

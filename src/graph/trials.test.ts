@@ -128,6 +128,12 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.ok(!("error" in r), "error" in r ? r.error : "");
     return r as T;
   };
+  /** A check on the page, by its claim id. */
+  const of = (v: ChecksView | null, id: string) => {
+    const c = v?.checks.find((x) => x.id === id);
+    assert.ok(c, `no check ${id}`);
+    return c;
+  };
   /** The page's checks once nothing is running. */
   const settled = async (strut: Strut, concept: string, ms = 60_000): Promise<ChecksView> => {
     const end = Date.now() + ms;
@@ -143,22 +149,27 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     }
   };
 
-  it("the page strut ships carries its check and cases; running it judges every sample as a trial, and a job a trial would start is held", async () => {
+  it("the page strut ships carries its checks and cases; running it judges every sample as a trial, and a job a trial would start is held", async () => {
     const strut = await boot();
     const trials = trialsOf(strut);
     const view = (await trials.checks(ORCHESTRATOR_PAGE))!;
     assert.equal(view.docs, await orchestratorRules(), "the page's whole text");
-    assert.equal(view.checks.length, 1);
-    const check = view.checks[0]!;
-    assert.equal(check.speaker, SEED_SPEAKER);
-    assert.match(check.text, /^Asked whether it can do something its work can do/);
-    assert.equal(check.cases.length, 1);
-    assert.deepEqual(check.cases[0], { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "Can you use bash?" } });
-    assert.deepEqual(check.samples, [], "nothing ran yet");
+    // Two checks: it says yes and offers, and it never says how it works.
+    assert.equal(view.checks.length, 2);
+    const check = view.checks.find((c) => /^Asked whether it can do something its work can do/.test(c.text))!;
+    const quiet = view.checks.find((c) => /^It never tells the person how it works/.test(c.text))!;
+    for (const c of [check, quiet]) {
+      assert.ok(c, JSON.stringify(view.checks.map((x) => x.text)));
+      assert.equal(c.speaker, SEED_SPEAKER);
+      assert.deepEqual(c.cases, [{ workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "Can you use bash?" } }]);
+      assert.deepEqual(c.samples, [], "nothing ran yet");
+    }
     assert.ok(view.fromGit, "its text comes from git");
     // A second boot adds nothing: the same sentence, the same cases.
-    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: check.text, cases: check.cases }] }], SEED_SPEAKER);
-    assert.equal((await trials.checks(ORCHESTRATOR_PAGE))!.checks[0]!.cases.length, 1);
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [check, quiet].map((c) => ({ text: c.text, cases: c.cases })) }], SEED_SPEAKER);
+    const again = (await trials.checks(ORCHESTRATOR_PAGE))!;
+    assert.deepEqual(again.checks.map((c) => c.id).sort(), [check.id, quiet.id].sort());
+    assert.equal(of(again, check.id).cases.length, 1);
 
     // One more case, a person's: the turn it gets would start a job.
     const cases = [...check.cases, { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "START A JOB for the thing" } }];
@@ -168,12 +179,13 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     const started = ok(await trials.trial({ claim: check.id, n: 2, by: "ada" }));
     assert.equal(started.batch.total, 4, "two cases, two samples each");
     const after = await settled(strut, ORCHESTRATOR_PAGE);
-    const samples = after.checks[0]!.samples;
+    const samples = of(after, check.id).samples;
     assert.equal(samples.length, 4, "an on_change check judged every sample of its trial");
     assert.ok(samples.every((s) => s.supports && s.trial && s.workflow === ORCHESTRATOR_WORKFLOW), JSON.stringify(samples));
     assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [0, 1]);
     assert.equal(turns, 4);
-    assert.equal(judged, 4);
+    // The other check judges a trial's run as its own policy says (once per version).
+    assert.equal(judged, 4 + of(after, quiet.id).samples.length);
 
     // Each sample is a run marked a trial, and nothing it started left it.
     const held = samples.find((s) => s.case === 1)!;
@@ -195,11 +207,33 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(await trials.sample({ workflow: ORCHESTRATOR_WORKFLOW, run: plain.runId }), null);
   });
 
+  it("a sentence the page's file no longer carries is retired at boot; a person's check stays", async () => {
+    const strut = await boot();
+    const trials = trialsOf(strut);
+    const view = (await trials.checks(ORCHESTRATOR_PAGE))!;
+    const [kept, dropped] = [view.checks.find((c) => /^Asked whether/.test(c.text))!, view.checks.find((c) => /^It never tells/.test(c.text))!];
+    const mine = ok(await trials.addCheck({ concept: ORCHESTRATOR_PAGE, text: "It is brief.", by: "ada" }));
+    // The file now carries one sentence: the seeder's other claim is retired, the person's is not touched.
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: kept.text, cases: kept.cases }] }], SEED_SPEAKER);
+    assert.deepEqual((await trials.checks(ORCHESTRATOR_PAGE))!.checks.map((c) => c.id).sort(), [kept.id, mine.id].sort());
+    // A file with no block left retires every claim the seeder wrote on the page.
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [] }], SEED_SPEAKER);
+    assert.deepEqual((await trials.checks(ORCHESTRATOR_PAGE))!.checks.map((c) => c.id), [mine.id]);
+    // The sentence back in the file is a claim again (a new one).
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: dropped.text, cases: dropped.cases }] }], SEED_SPEAKER);
+    const back = (await trials.checks(ORCHESTRATOR_PAGE))!.checks.find((c) => c.text === dropped.text);
+    assert.ok(back && back.id !== dropped.id);
+    assert.deepEqual(back.cases, dropped.cases);
+  });
+
   it("a change is tested against the page as it is and kept; a page from git is not changed here", async () => {
     const strut = await boot();
     const trials = trialsOf(strut);
+    const first = (await trials.checks(ORCHESTRATOR_PAGE))!;
+    const check = first.checks.find((c) => /^Asked whether/.test(c.text))!;
+    // One check's cases: the other's set aside, so the counts are that one's.
+    for (const c of first.checks) if (c.id !== check.id) ok(await trials.setCases({ claim: c.id, cases: [] }));
     const before = (await trials.checks(ORCHESTRATOR_PAGE))!;
-    const check = before.checks[0]!;
     assert.ok(before.docs.includes(REACH));
     const worse = before.docs.replace(REACH, "");
 
@@ -216,7 +250,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(t.change.docs, worse.trim());
     assert.deepEqual(t.page.samples[check.id]!.map((s) => s.supports), [true], "the page says yes");
     assert.deepEqual(t.change.samples[check.id]!.map((s) => s.supports), [false], "without the line it says it has no shell");
-    assert.deepEqual(view.checks[0]!.samples.length, 1, "the page's own verdicts are the page side's");
+    assert.deepEqual(of(view, check.id).samples.length, 1, "the page's own verdicts are the page side's");
     assert.deepEqual(await (strut.services as unknown as { branches: { list(): Promise<unknown[]> } }).branches.list(), [], "the branch its runs read is gone");
     assert.equal(view.docs, before.docs, "the page did not change");
 

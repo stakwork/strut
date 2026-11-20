@@ -161,7 +161,9 @@ export interface TrialsCapability {
   use(input: { test: string; by?: string; proposer?: Proposal["by"] }): Promise<{ ok: true; landed?: true; proposed?: ProposedCheckout } | Fail>;
   /** A trial run's message and reply; null when the run was no trial. */
   sample(input: { workflow: string; run: string }): Promise<{ status: string; input: unknown; output?: unknown; error?: string } | null>;
-  /** The claims and cases a seeded page's file carries, recorded: additive, as a workflow's block is. */
+  /** The claims and cases a seeded page's file carries, recorded, so the page's checks match its file: a sentence
+   *  the file no longer carries is retired, when `speaker` wrote it (never a person's or the dream's); cases are
+   *  only added. */
   seed(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<void>;
   /** Boot: the test branches a restart left, dropped. */
   sweep(): Promise<void>;
@@ -588,6 +590,13 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       for (const page of pages) {
         try {
           const have = await claimsOn(page.name);
+          // Seeds match git: the seeder's own claim on a sentence its file no longer carries is retired.
+          const texts = new Set(page.claims.map((c) => c.text));
+          for (const old of have) {
+            if (old.speaker !== speaker || texts.has(old.text.trim())) continue;
+            const gone = await claims.retireClaim(old.id, { publisher: speaker, scoped: false, concepts: true });
+            if (!("ok" in gone)) console.warn(`[trials] ${page.name}: a claim its file no longer carries was not retired: ${gone.error}`);
+          }
           for (const c of page.claims) {
             if (!c.text || c.text.includes("{{")) continue;
             let id = have.find((x) => x.text.trim() === c.text)?.id;

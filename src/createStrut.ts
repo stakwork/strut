@@ -2388,7 +2388,8 @@ export async function createStrut<TServices = unknown>(
   if (graph && opts.concepts !== false) {
     try {
       const seeded = await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
-      if (opts.concepts?.claims !== false) for (const p of seeded) if (p.claims?.length) seededClaims.push({ name: p.name, claims: p.claims });
+      // Every page that is the seed's, a block or none: a sentence its file no longer carries is retired.
+      if (opts.concepts?.claims !== false) for (const p of seeded) if (p.action !== "error" && p.action !== "skip") seededClaims.push({ name: p.name, claims: p.claims ?? [] });
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }
