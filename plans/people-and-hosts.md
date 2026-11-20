@@ -253,6 +253,9 @@ this way: the path off Hive.
 `accounts`, `actorOf`, `account/links`, `account/unlink` and
 `GET /hosts/links/:key` stay. The daemon still checks a tribe's owner with
 that last route (`jamie-in-tribes.md` §4).
+(Since removed: a tribe is linked in Peel as a linked place, which carries
+its linker, and nothing calls `GET /hosts/links/:key`; `jamie-in-tribes.md`
+§5.4, item 6.)
 
 **Built differently (#737):**
 - **A challenge names strut's address as the page reached it.** The step

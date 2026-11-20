@@ -67,7 +67,8 @@ plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
 JWT with a `sub`). The token Peel holds for a box (§13.6) is a person
 token that also names a linked account: it holds only while that account
-is still linked to its actor, checked on every request.
+is still linked to its actor, checked on every request. It also links and
+removes that person's places (§13.6, "Places").
 
 ## 1. Publish
 
@@ -1742,7 +1743,9 @@ reads included.
 | POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
 | GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
 | POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
-| GET    | `/hosts/links/:key` | — | The link (`key` bare or as `<kind>:<key>`), or `404 not_linked:`. How the Sphinx daemon checks a tribe's owner is a person here (`plans/jamie-in-tribes.md` §4). A host links nothing: a person links through Peel (§13.6) |
+| PUT    | `/hosts/me` | — | `{ account, hook }` → `200 { name, account, at }`: who the host is on its medium (`account`, its own key, bare or as `<kind>:<key>` of its own kind; handed to Peel with each place, `POST /people/places`) and where strut nudges it when its places change (`hook`, an http(s) URL of at most 2,000 characters). Kept in `people.db`; the latest wins. `400` for an account or hook that is not one. The Sphinx daemon sends it at every start |
+| GET    | `/hosts/places` | — | `{ places: Place[] }`: the host's places, every linker's, the oldest first, each with `linkerName` (below) |
+| DELETE | `/hosts/places/:key` | — | `{ removed }`: a place the host no longer answers in (it was removed from the tribe, or couldn't join its link) |
 | POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
 
 A launch or a decision with no `x-strut-account` is `400`; with an account
@@ -1770,9 +1773,33 @@ interface AccountLink {
 }
 ```
 
+**Places** (`plans/jamie-in-tribes.md` §4, §5.4). A PLACE is where a person
+asks a host to answer, as them: a tribe, to the Sphinx daemon. A person
+links one with the token Peel holds for the box (§13.6); the host keeps
+what it is in to the list. Each change to a host's places (a link, or a
+link that moved; a removal; the linker's account unlinked, which takes its
+places with it) POSTs `{ event: "places" }` to the host's `hook`, as a
+callback is posted (retried briefly, then dropped). It names no place: the
+host reads `GET /hosts/places` and joins and leaves to match, and reads it
+at start and now and then besides, so a lost nudge costs a delay.
+
+```ts
+interface Place {
+  host: string;        // the host's name: "sphinx"
+  key: string;         // the place on its medium: a tribe's pubkey
+  link: string;        // how the host joins it: the tribe's link
+  name?: string;       // what the person saw it called
+  account: string;     // the linker: "<kind>:<key>", what the host launches a turn as when the speaker is nobody here
+  linkerName?: string; // the linker's name as strut shows it (§13.3); GET /hosts/places alone
+  at: number;          // when it was linked (ms)
+}
+```
+
 ```bash
-# Is a tribe's owner a person here?
-curl -s https://strut.box.example/hosts/links/02ab… -H "authorization: Bearer $HOST_TOKEN"
+# The daemon, at its start:
+curl -s -X PUT https://strut.box.example/hosts/me -H "authorization: Bearer $HOST_TOKEN" \
+  -H "content-type: application/json" -d '{"account":"03b0…","hook":"http://treasury:8095/strut/places?token=…"}'
+curl -s https://strut.box.example/hosts/places -H "authorization: Bearer $HOST_TOKEN"
 # A mention in a tribe, as Ada:
 curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
   -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
@@ -1888,6 +1915,26 @@ curl -s https://strut.box.example/people/link -H "content-type: application/json
 curl -s https://strut.box.example/people/challenge
 curl -s https://strut.box.example/people/token -H "content-type: application/json" \
   -d '{"challenge":"strut-link.…","key":"02ab…","sig":"20aa…"}'
+```
+
+**Places.** With that token, a person links a place for a host to answer
+in (§13.4, "Places"): a tribe, from Peel's Jamie row. Peel's token alone:
+a token naming no account, and every other credential, is `403`. The linker
+is the token's account, which must be of the host's kind (`400`). Strut
+checks nothing about the place itself (whether the person owns the tribe):
+a turn as the linker has the linker's access alone, never an admin's.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/people/places` | → `{ hosts: [{ host, account }], places: Place[] }`: the host ready to take a place from this token's account (a key here, and it said who it is with `PUT /hosts/me`), and the places this person linked, the newest first |
+| POST   | `/people/places` | `{ host, key, link, name? }` → `200 { place, account }`, `account` being the host's own (Peel approves its member request with it). `key`: 1 to 200 characters, no space; `link`: 1 to 2,000, one line; `name`: one line, 80 characters. The same person again refreshes `link`, `name` and the account. `409 place_linked:` when another person linked it (they remove it first); `404 no_host:` when no host is ready; `400` for a field that is not one |
+| DELETE | `/people/places/:host/:key` | → `{ removed }`: one of the person's own places |
+
+```bash
+# Peel, as Ada turns Jamie on for a tribe she owns:
+curl -s https://strut.box.example/people/places -H "authorization: Bearer $PEEL_TOKEN" \
+  -H "content-type: application/json" -d '{"host":"sphinx","key":"02f1…","link":"sphinx.chat://?action=tribeV2&pubkey=02f1…&host=…","name":"Builders"}'
+# → { "place": { "host": "sphinx", "key": "02f1…", …, "account": "sphinx:02ab…" }, "account": "sphinx:03b0…" }
 ```
 
 The steps, from strut's own app alone:

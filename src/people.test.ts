@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLinkChallenge } from "./auth.js";
-import { accountAddress, accountsCapability, accountText, cleanName, createPeople, ownName, parseAccount, PEEL_LINK, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader } from "./people.js";
+import { accountAddress, accountsCapability, accountText, cleanName, createPeople, ownName, parseAccount, PEEL_LINK, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, placeInput } from "./people.js";
 import { RUN_STEP_FLOW } from "./run-step.js";
 import { setEnv } from "./test-util/public-door.js";
 import linkStep from "./steps/lib/account/link.js";
@@ -144,6 +144,63 @@ describe("accounts (plans/people-and-hosts.md §2)", () => {
     assert.equal(await people.setAccountName({ kind: "email", key: "bob@example.com" }, "Bob"), false);
     assert.equal(await people.setAccountName(sphinx, " \n "), false);
     await people.close();
+  });
+
+  it("places (plans/jamie-in-tribes.md §5.4): one linker each, refreshed by its own person, gone with its account; each change tells its host", async () => {
+    const told: string[] = [];
+    const people = createPeople(PEOPLE_IN_MEMORY, { onPlaces: (host) => told.push(host) });
+    const ada = { kind: "sphinx", key: `02${"aa".repeat(32)}` };
+    const ada2 = { kind: "sphinx", key: `03${"a2".repeat(32)}` };
+    const bob = { kind: "sphinx", key: `02${"bb".repeat(32)}` };
+    await people.link(ada, "ada-1", { name: "Ada on Sphinx" });
+    await people.link(ada2, "ada-1");
+    await people.link(bob, "bob-1");
+    await people.setName("ada-1", "Ada", "host");
+    const tribe = { host: "sphinx", key: `02${"77".repeat(32)}`, link: "sphinx.chat://?action=tribeV2&pubkey=77&host=t", name: "Builders" };
+
+    const linked = await people.linkPlace(tribe, ada, "ada-1");
+    assert.ok("place" in linked && linked.place.account === accountText(ada));
+    assert.deepEqual(told, ["sphinx"]);
+    // Another person's: taken, unchanged, nobody told.
+    const taken = await people.linkPlace({ ...tribe, link: "x" }, bob, "bob-1");
+    assert.ok("taken" in taken && taken.taken.account === accountText(ada) && taken.taken.link === tribe.link);
+    assert.deepEqual(told, ["sphinx"]);
+    // Her own again, by her other account: refreshed, the same place.
+    const again = await people.linkPlace({ ...tribe, name: "Builders 2" }, ada2, "ada-1");
+    assert.ok("place" in again && again.place.account === accountText(ada2) && again.place.at === linked.place.at);
+    assert.deepEqual(told, ["sphinx", "sphinx"], "the linker's account changed");
+    // The host reads every linker's, with the linker's name; a person their own.
+    assert.deepEqual((await people.hostPlaces("sphinx")).map((p) => [p.key, p.name, p.account, p.linkerName]), [[tribe.key, "Builders 2", accountText(ada2), "Ada"]]);
+    assert.deepEqual(await people.hostPlaces("slack"), []);
+    assert.equal((await people.placesOf("ada-1")).length, 1);
+    assert.deepEqual(await people.placesOf("bob-1"), []);
+    // Bob can't remove hers; she can; the host can remove any.
+    assert.equal(await people.unlinkPlace("sphinx", tribe.key, "bob-1"), false);
+    assert.equal(await people.unlinkPlace("sphinx", tribe.key, "ada-1"), true);
+    assert.equal(await people.unlinkPlace("sphinx", tribe.key, "ada-1"), false);
+    await people.linkPlace(tribe, bob, "bob-1");
+    assert.equal(await people.unlinkPlace("sphinx", tribe.key), true, "the host's removal");
+    // A place goes with its account.
+    await people.linkPlace(tribe, ada, "ada-1");
+    told.length = 0;
+    assert.equal(await people.unlink(ada, "ada-1"), true);
+    assert.deepEqual(await people.hostPlaces("sphinx"), []);
+    assert.deepEqual(told, ["sphinx"]);
+    // What a host says of itself.
+    assert.equal(await people.hostOf("sphinx"), undefined);
+    await people.setHost("sphinx", bob, "http://treasury:8095/strut/places?token=t");
+    assert.deepEqual({ ...(await people.hostOf("sphinx")), at: 0 }, { name: "sphinx", account: accountText(bob), hook: "http://treasury:8095/strut/places?token=t", at: 0 });
+    await people.close();
+  });
+
+  it("a place's input: a host's name, a key, a link on one line, a name", () => {
+    assert.deepEqual(placeInput({ host: "sphinx", key: " k1 ", link: " sphinx.chat://x ", name: " Builders\n " }), { host: "sphinx", key: "k1", link: "sphinx.chat://x", name: "Builders" });
+    assert.match(placeInput({ host: "Sphinx", key: "k", link: "l" }) as string, /^host/);
+    assert.match(placeInput({ host: "sphinx", key: "a b", link: "l" }) as string, /^key/);
+    assert.match(placeInput({ host: "sphinx", key: "k", link: "a\nb" }) as string, /^link/);
+    assert.match(placeInput({ host: "sphinx", key: "k", link: "x".repeat(2_001) }) as string, /^link/);
+    assert.match(placeInput({ host: "sphinx", key: "k", link: "l", name: 4 }) as string, /^name/);
+    assert.match(placeInput(null) as string, /^host/);
   });
 
   it("the account/* steps run only as strut's own app's call, for its viewer; account/link names them for Peel", async () => {
