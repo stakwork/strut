@@ -2805,58 +2805,87 @@ a parked step's flyout) opens it on that task; a host (Stadeum) frames
 `createStrut({ staff: false })` or `STRUT_HOST_CONFIG`'s `"staff": false`
 seeds nothing. The page is only a face: the routes decide.
 
-Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
-workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
-`test=<id>`, `run=<workflow>/<runId>`, `group=<name>` (with `type=`, the Groups tab's page of one group), `by=<actor>`, `review=none|ok|rejected`
-(the review queue; with `by`, that worker's), `tab=support&worker=<actor>`
-(a worker's conversation with Support). Each move goes back to
-the host as `ui/open-link`, so its address bar follows.
+Six tabs, one a job: **Overview**, **Answers**, **Workers**, **Task
+types**, **Payouts**, **Support**. Every place is a deep link
+(`?app=strut/staff&input=…`), the same as before the tabs were regrouped:
+`tab=queue|types|workers|tasks|groups|tests|payouts|support`, `type=<name>`,
+`worker=<actor>`, `task=<id>`, `test=<id>`, `run=<workflow>/<runId>`,
+`group=<name>` (with `type=`: one group's page), `by=<actor>`,
+`review=none|ok|rejected` (the review queue; with `by`, that worker's),
+`tab=support&worker=<actor>` (a worker's conversation with Support).
+`tab=queue` is the Overview; `tasks` and `groups` are the two lists of
+Answers; `tests` opens under Task types. Each move goes back to the host as
+`ui/open-link`, so its address bar follows. The Answers tab carries the
+count of answers not reviewed (`toReview`, below), the Workers tab the
+people waiting to be let in, the Support tab the unread. **Invite a
+worker** is in the header, on every tab (the panel below).
 
-- **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
-  what needs a person above it (a type with tasks waiting and nobody
-  granted, tasks due within the hour, a type turned off with open tasks, a
+- **Overview** (`tab=queue`): `GET /tasks/stats`, read every 10 s while the
+  page is shown. First **Needs you**, each line with its one button: a
   type whose app is missing or does not grant `task/next` and
-  `task/submit`, new workers); with pay, what workers are owed beside what
-  the wallet holds (`earnings/read`, §19).
-- **Types**: the editor writes the whole type. Its answer shape is fields
-  (text, number, whole number, yes or no, pick one, pick several, numbers,
-  group), JSON, and a preview in `TaskForm`; it writes only what the store
-  checks. Pay, Tests and Copies sections; the workers who hold it, with
-  Revoke and Grant.
-- **Workers**: the workers, `new` first, several granted at once; each
+  `task/submit`, a type with tasks waiting and no worker who may take it,
+  a type turned off with open tasks, tasks due within the hour, people who
+  signed in and wait to be let in, and the answers not reviewed (the sum of
+  each type's `toReview`; said only where a verdict can be given). Then the
+  queue now (waiting, being worked on, workers online) and over the last 24
+  hours (answered, started and not finished, expired unanswered); with pay,
+  what workers are owed beside what the wallet holds (`earnings/read`,
+  §19); then one row a task type, one number a column.
+- **Answers** (`tab=tasks`, `tab=groups`): every task and what was
+  answered, with the verdict on each. **One by one**: newest first, 50 a
+  page, filtered by review (To review with its count, Rejected, OK,
+  Everything), type and who answered, and under More filters status,
+  tests, workflow and run. A row shows the answer's picture when it carried
+  one (the reply's first, else the answer's, read as it comes into view;
+  an answer of fields alone shows them in a line), what it is called (the
+  reply's `title` and `ask`, else the task's own), its group, who answered,
+  how long that took, the pay, and the verdict — **OK** and **Reject**
+  (the reason on a line in the page: an app frame has no `prompt`) given in
+  the row. **By group** (shown once a workflow named a group with
+  `task/reply`'s `group`): `GET /tasks/groups` by type — each group's
+  newest pictures (`GET /tasks?group=&type=&limit=3`, read as the row comes
+  into view), who answered, its answers and how far its review is, filtered
+  by what is left to review. A group's page reads its tasks (`GET
+  /tasks?group=&type=`) and draws them oldest first as tiles, each with its
+  verdict, a filter (to review, rejected, OK) and **Mark the others OK**
+  (`POST /tasks/groups/review`).
+- **One answer** (`task=<id>`), in the order a person asks: what was asked
+  (the task's `show`: its words, its plain fields, its files), what the
+  worker sent (its pictures large, the fields with a value as a short list,
+  the ones left empty in a line; a copies task's agreed answer, then each
+  copy's), and what the run told them back (`task.reply`: its words and
+  files, its other fields folded). Beside it: the **verdict** — by whom,
+  when and until when it can change, Mark OK and Reject while it can —
+  then the worker, how long it took, the pay, the type, the group and the
+  run (its status now, Open the run); **what happened**, in order (made,
+  taken, answered or how the lease ended, replied, each verdict), with an
+  answer's earning and Take back inside its hold; "make a test from this
+  answer"; and, folded, the ids and the raw `show` and answer. In a group,
+  previous and next; **O** marks it OK and moves on, **R** opens the
+  reason, the arrow keys move through the group.
+- **Workers**: first the people waiting to be let in (`new`), each with
+  **Let in** (a grant of the kind of work picked) and Let all in; then the
+  workers, found by name: what each can do, when they joined, their
+  answers this week, standing, and what they are owed. Each
   shown by the first line of the staff's note, else their name
   (`people/names`, §13.3), else the key shortened, with the short key
-  beside a name; each with their status,
+  beside a name. A worker's page: their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
-  `standing` too), the week, their newest leases with each answer's
+  `standing` too), the week, the newest tasks they took with each answer's
   verdict and links to their answers to review and their rejected ones,
   standing (with how many of its window are rejected answers), and what
-  they earned, hold and may withdraw. Below them, once there is one, every
-  invite the wallet keeps (`plans/human-steps.md` §5.8) with its status,
-  Copy and Cancel while it may be used (read every 3 s while one is
+  they earned, hold and may withdraw. Below the list, once there is one,
+  every invite the wallet keeps (`plans/human-steps.md` §5.8) with its
+  status, Copy and Cancel while it may be used (read every 3 s while one is
   `sending`).
-- **Tasks**: filtered by type, status, run, who answered and review (the
-  review queue: not reviewed, marked ok, rejected), with a Review column;
-  a task with what it showed and its files, its leases (a copy's answer,
-  each earning with Take back), the answer in its type's form read only,
-  the run's **reply** (`task.reply`) beside the answer on a wide screen,
-  every picture among their files drawn as it comes into view (other
-  files read when opened); the list marks a task `replied` and counts the
-  answer's files, with no thumbnails;
-  a **Review** section — each answer's verdict, by whom, when and until
-  when it can change, with Mark ok and Reject (the reason on a line in the
-  page: an app frame has no `prompt`) while it can — its run now, and
-  "make a test of it"; a task in a group names it, a button to the group.
-- **Groups** (shown once a workflow named a group with `task/reply`'s
-  `group`): `GET /tasks/groups` by type — each group's type, who answered,
-  its tasks, its verdicts and its last answer; a group's page reads its
-  tasks (`GET /tasks?group=&type=`) and draws them oldest first as tiles —
-  the reply's first picture, else the answer's, read as it scrolls into
-  view, the reply's `title` and `ask` as a caption opening the task, and
-  each answer's verdict with Mark ok and Reject — with a filter (not
-  reviewed, rejected, ok) and **Mark the rest ok** (`POST
-  /tasks/groups/review`).
-- **Tests**: a type's tests with their expected answers and counts; a test
+- **Task types**: a card a type — on or off, who may take it, its pay, how
+  its answers are checked, today's answers — with See answers, Tests,
+  Invite someone and Edit. The editor writes the whole type. Its answer
+  shape is fields (text, number, whole number, yes or no, pick one, pick
+  several, numbers, group), JSON, and a preview in `TaskForm`; it writes
+  only what the store checks. Pay, Tests and Copies sections; the workers
+  who hold it, with Revoke and Grant. **Tests** (`tab=tests`, opened from a
+  type): a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
 - **Support** (`plans/support-chat.md`; `plans/people-and-hosts.md` §5;
@@ -2887,8 +2916,8 @@ the host as `ui/open-link`, so its address bar follows.
   (shrunk to 512 px), payout lines on or off, and the welcome's text. A
   worker's page has **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
 verdict shows only when the server answers for it: a host's own task store
-answers no test route and no review, so the page shows no Tests tab and no
-Review section or filter.
+answers no test route and no review, so the page shows no Tests and no
+verdict, review filter or count.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
 (`src/steps/lib/staff/_door.ts`): one request to a `/tasks…`
@@ -2943,7 +2972,7 @@ line on what workers are owed) and `people/names` (the workers' names,
 §13.3). It launches nothing.
 
 **Bringing workers in.** One panel, "Invite a worker" (`BringWorkersIn`,
-components/Share.tsx): a closed row atop the Queue and the Workers tab, and
+components/Share.tsx): opened by Invite a worker in the page's header, and
 open on each type's page with that type picked ("Invite someone to this").
 First an INVITE (`plans/human-steps.md` §5.8): Work they'll do — "Anything
 open" or one type that is on, invite-only ones marked (`inviteChoices`) —
@@ -5894,6 +5923,7 @@ server whose task store is its host's (which answers none of them).
     "holding": 1,          // live leases of the type
     "asking": 2,           // workers whose page holds a task/next waiting
     "readyTests": 10,      // its ready tests, not retired: what a paid open type's K is held to
+    "toReview": 12,        // its real tasks' answers no verdict was given on, of any age (what GET /tasks?review=none lists, by answer)
     "appProblem": "app workers does not grant task/submit: its page cannot answer this type's tasks",  // absent when the app is fine
     "windows": {           // the last hour, day and week
       "hour": { "answered": 4, "expired": 0, "cancelled": 0, "disputed": 0, "skipped": 1, "leasesLost": 0,
@@ -6400,7 +6430,7 @@ an `image` step drew from their photo):
   leaves what was told as it was; a later reply without one keeps it. Staff
   read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
   `POST /tasks/groups/review`, §14.15's `staff/groups` and
-  `staff/review-group`, the staff app's Groups tab); the worker reads their
+  `staff/review-group`, the staff app's Answers by group); the worker reads their
   groups and each answer's verdict and why (`task/history { groups, group
   }`), so their app can show what they handed in and what was sent back.
 

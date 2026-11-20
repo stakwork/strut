@@ -1,5 +1,6 @@
-// Bringing workers in (plans/human-steps.md §5.8, §9.5): ONE panel, on the
-// Queue, on the Workers tab and on each type's page (that type picked).
+// Bringing workers in (plans/human-steps.md §5.8, §9.5): ONE panel, opened
+// by Invite a worker in the page's header (on every tab) and shown on each
+// type's page (that type picked).
 // First an INVITE: a link for one person, used once, that sets up Peel when
 // they have none and opens Tasks (`strut/worker`, the server's one work
 // page) on the kind of work it is for — giving it them when it is
@@ -10,7 +11,7 @@
 // click (`staff/tasks-online`); any other app goes online through the
 // Public view or an `app/make-public` card, as before.
 import { type ReactNode, useRef, useState } from "react";
-import { Check, ChevronRight, Copy, Globe, UserPlus, Users } from "lucide-react";
+import { Check, ChevronRight, Copy, Globe, UserPlus, Users, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStrutClient } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -63,38 +64,37 @@ export interface BringProps {
   types?: TaskType[] | undefined;
   /** Tasks' share (`staff/types`' `tasks`): every link opens it. */
   tasks?: TypeShare | undefined;
-  /** The kind of work picked to start with: a type's own page. */
+  /** The kind of work the invite is for, fixed: a type's own page. */
   type?: string;
-  /** Shown open, not as a closed row: a type's page. */
-  open?: boolean;
+  /** The kind of work picked to start with, and still a choice: a type's card asked. */
+  pick?: string;
 }
 
-/** The panel: a closed row ("Invite a worker") that opens, or, on a type's
- *  page, open with that type picked. */
+/** The panel on a type's page, that type picked. */
 export function BringWorkersIn(props: BringProps) {
-  const [open, setOpen] = useState(!!props.open);
-  if (props.open) {
-    return (
-      <section className="flex flex-col gap-4 rounded-lg border p-4" aria-label="Bring workers in" data-testid="bring-workers-in">
-        <h3 className="flex items-center gap-2 text-base font-semibold">
-          <UserPlus className="size-4 text-muted-foreground" /> Invite someone to this
-        </h3>
-        <Body {...props} />
-      </section>
-    );
-  }
   return (
-    <section className="rounded-lg border" aria-label="Bring workers in" data-testid="bring-workers-in">
-      <button type="button" className="flex w-full min-w-0 items-center gap-2 px-4 py-3 text-left text-sm hover:bg-muted/50" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-        <UserPlus className="size-4 shrink-0 text-muted-foreground" />
-        <span className="font-medium">Invite a worker</span>
-        <span className="ml-auto hidden shrink-0 text-xs text-muted-foreground sm:inline">a link for one person, or one for a group</span>
-      </button>
-      {/* Kept mounted while closed, so an invite just made stays on its card. */}
-      <div hidden={!open} className="flex flex-col gap-4 border-t p-4">
-        <Body {...props} />
+    <section className="flex flex-col gap-4 rounded-lg border p-4" aria-label="Bring workers in" data-testid="bring-workers-in">
+      <h3 className="flex items-center gap-2 text-base font-semibold">
+        <UserPlus className="size-4 text-muted-foreground" /> Invite someone to this
+      </h3>
+      <Body {...props} />
+    </section>
+  );
+}
+
+/** The panel the header's Invite a worker opens, on any tab. */
+export function InvitePanel(props: BringProps & { onClose: () => void }) {
+  return (
+    <section className="flex flex-col gap-4 rounded-lg border p-4" aria-label="Bring workers in" data-testid="bring-workers-in">
+      <div className="flex items-center gap-2">
+        <h2 className="flex items-center gap-2 text-base font-semibold">
+          <UserPlus className="size-4 text-muted-foreground" /> Invite a worker
+        </h2>
+        <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close" onClick={props.onClose}>
+          <X />
+        </Button>
       </div>
+      <Body {...props} />
     </section>
   );
 }
@@ -106,7 +106,7 @@ function Body(props: BringProps) {
   return (
     <>
       {tasks && !tasks.peelLink && <Note>Tasks is online; its links show here once this server has been opened at its web address.</Note>}
-      <InviteMaker types={props.types} {...(props.type ? { type: props.type } : {})} />
+      <InviteMaker types={props.types} {...(props.type ? { type: props.type } : {})} {...(props.pick ? { pick: props.pick } : {})} />
       {tasks?.peelLink && anyOpenWork(props.types) && <GroupLink share={tasks} />}
     </>
   );
@@ -135,12 +135,12 @@ function TasksOffline() {
 }
 
 /** A link for one person, used once (§5.8). */
-function InviteMaker(props: { types?: TaskType[] | undefined; type?: string }) {
+function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pick?: string }) {
   const client = useStrutClient();
   const q = useInvites();
   const { act, busy, error } = useAct();
   const choices = inviteChoices(props.types);
-  const [work, setWork] = useState(props.type ?? "");
+  const [work, setWork] = useState(props.type ?? props.pick ?? "");
   const [satsText, setSatsText] = useState("");
   const [made, setMade] = useState<MadeInvite | null>(null);
   const sats = inviteSatsOf(satsText);
@@ -264,5 +264,5 @@ function GroupLink(props: { share: TypeShare }) {
 /** What a type's page shows: the panel with that type picked. */
 export function TypeInvite(props: { type: TaskType; types?: TaskType[] | undefined; tasks?: TypeShare | undefined }): ReactNode {
   if (!props.type.enabled) return <Note>It is off: turn it on to invite anyone to it.</Note>;
-  return <BringWorkersIn types={props.types} tasks={props.tasks} type={props.type.name} open />;
+  return <BringWorkersIn types={props.types} tasks={props.tasks} type={props.type.name} />;
 }

@@ -91,7 +91,10 @@ for (const impl of IMPLS) {
       const other = await ask();
       await answer("ann");
       assert.deepEqual(await ids({ review: "none" }), [t.id], "answered and not reviewed; the open one is not in the queue");
+      const toReview = async () => (await tasks().stats({ type: TYPE })).types[0]!.toReview;
+      assert.equal(await toReview(), 1, "the queue's stats count it");
       const out = await review({ task: t.id, verdict: "ok", by: "ada" });
+      assert.equal(await toReview(), 0, "a verdict takes it out, whichever it is");
       assert.deepEqual([out.task, out.worker, out.review.verdict, out.review.by, out.review.at, out.review.final], [t.id, "ann", "ok", "ada", rig.clock, false]);
       assert.equal(out.review.until, (await leaseOf(t.id, "ann")).closed! + 72 * HOUR, "unpaid: the type's hold from when it was answered");
       assert.deepEqual(await ids({ review: "none" }), []);

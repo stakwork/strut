@@ -122,6 +122,9 @@ export interface TypeStats {
   asking: number;
   /** Its ready tests (ruling 9: a paid open type needs its K of them). */
   readyTests?: number;
+  /** §9.6: its answers with no verdict yet. Absent on a server that does
+   *  not count them (a host's own task store, an older strut). */
+  toReview?: number;
   windows: Record<StatsWindow, StatsWindowView>;
   appProblem?: string;
 }

@@ -1,13 +1,16 @@
-// Types (plans/human-steps.md §9.5): the task types, New type, and the
-// editor — name (a new type only), the app that draws it and what is wrong
-// with it, the lease and expiry, on or off, open or invite-only (ruling 9:
-// a paid open type needs its K ready tests), the answer's shape, and, when
-// the server answers for them (§9.7), its pay (5a), its tests and copies
-// (4). Save is `staff/save-type`, the whole type; Delete only with no task
-// open. Below, the workers who hold it, with Revoke and Grant.
+// Task types (plans/human-steps.md §9.5): each kind of work as a card —
+// whether it is on, who may take it, what it pays, how its answers are
+// checked, and how today went — with New type, and the editor: name (a new
+// type only), the app that draws it and what is wrong with it, the lease
+// and expiry, on or off, open or invite-only (ruling 9: a paid open type
+// needs its K ready tests), the answer's shape, and, when the server
+// answers for them (§9.7), its pay (5a), its tests and copies (4). Save is
+// `staff/save-type`, the whole type; Delete only with no task open. Below,
+// the workers who hold it, with Revoke and Grant. A type's tests open from
+// its card and its page.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Save, Trash2 } from "lucide-react";
+import { Plus, Save, Trash2, UserPlus } from "lucide-react";
 import { taskAppProblem } from "@strut/kit/folds";
 import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
@@ -18,10 +21,10 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { answerOfDraft, draftOf, saveOf, shapeChanged, type Draft, type GradeDraft } from "../lib/draft";
-import { liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
-import type { TaskStats, TaskType, TypeNumbers, TypeShare, Worker } from "../lib/types";
+import { fmtDuration, liveTypes, OPEN_GRANT_BY, openPayHint, standingText, typeNameProblem, whoOf, type Place, type Shown } from "../lib/view";
+import type { TaskStats, TaskType, TypeNumbers, TypeShare, TypeStats, Worker } from "../lib/types";
 import { AnswerEditor } from "./AnswerEditor";
-import { Back, Empty, ErrorLine, Field, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { Back, Empty, ErrorLine, Field, Label, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { TypeInvite } from "./Share";
 import { RoundNote, SendRound } from "./SendRound";
 
@@ -34,6 +37,8 @@ interface Props {
   tasks?: TypeShare;
   workers?: Worker[];
   error: unknown;
+  /** Opens Invite a worker with this type picked. */
+  invite?: (type: string) => void;
 }
 
 export function Types(props: Props) {
@@ -65,49 +70,114 @@ export function Types(props: Props) {
   }
   const row = (name: string) => stats.data?.types.find((t) => t.type === name);
   return (
-    <Section
-      title="Task types"
-      aside={
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-96 flex-col gap-1">
+          <h2 className="text-base font-semibold">Task types</h2>
+          <Note>A task type is one kind of work: the app that shows it, what an answer looks like, who may take it and what it pays. A workflow's human step names the type.</Note>
+        </div>
         <Button size="sm" onClick={() => setCreating(true)}>
           <Plus /> New type
         </Button>
-      }
-    >
+      </div>
       {props.types.length === 0 ? (
-        <Empty>No task types yet. A type names the app that draws its tasks and the shape of an answer; a workflow's human step names the type.</Empty>
+        <Empty>No task types yet. Make one here, or ask the assistant to build the workflow and its task type together.</Empty>
       ) : (
-        <div className="overflow-x-auto rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>App</TableHead>
-                <TableHead>On</TableHead>
-                {props.shown.open && <TableHead>Who takes it</TableHead>}
-                <TableHead className="text-right">Waiting</TableHead>
-                <TableHead className="text-right">Workers</TableHead>
-                {props.shown.pay && <TableHead className="text-right">Pay</TableHead>}
-                {props.shown.tests && <TableHead>Tests</TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {props.types.map((t) => (
-                <TableRow key={t.name} className="cursor-pointer" onClick={() => props.go({ tab: "types", type: t.name })}>
-                  <TableCell className="font-medium">{t.name}</TableCell>
-                  <TableCell>{t.app}</TableCell>
-                  <TableCell>{t.enabled ? "on" : <Badge variant="outline">off</Badge>}</TableCell>
-                  {props.shown.open && <TableCell>{t.open ? "open" : <Badge variant="outline">invite-only</Badge>}</TableCell>}
-                  <TableCell className="text-right tabular-nums">{row(t.name)?.waiting ?? "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums">{row(t.name)?.granted ?? "—"}</TableCell>
-                  {props.shown.pay && <TableCell className="text-right tabular-nums">{t.paySats ? `${t.paySats} sats` : "unpaid"}</TableCell>}
-                  {props.shown.tests && <TableCell>{t.tests ? `${Math.round(t.tests.rate * 100)}%, qualify ${t.tests.qualify}` : "off"}</TableCell>}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <ul className="flex flex-col gap-3">
+          {props.types.map((t) => (
+            <TypeCard key={t.name} type={t} row={row(t.name)} shown={props.shown} go={props.go} {...(props.invite ? { invite: props.invite } : {})} />
+          ))}
+        </ul>
       )}
-    </Section>
+    </section>
+  );
+}
+
+/** One kind of work at a glance: on or off, who may take it, its pay, how
+ *  its answers are checked, and today. */
+function TypeCard(props: { type: TaskType; row?: TypeStats | undefined; shown: Shown; go: (p: Place) => void; invite?: (type: string) => void }) {
+  const { type: t, row, shown } = props;
+  const day = row?.windows.day;
+  const checks = [t.check && "Checked when handed in", t.tests && `Tested: ${Math.round(t.tests.rate * 100)}% of tasks`, t.copies && `${t.copies.agree} of up to ${t.copies.max} copies must agree`].filter(Boolean) as string[];
+  const review = shown.review && row?.toReview ? `${row.toReview.toLocaleString("en-US")} answer${row.toReview === 1 ? "" : "s"} to review` : "";
+  return (
+    <li className="flex flex-col gap-4 rounded-lg border p-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-72 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="text-left text-[17px] font-semibold break-words underline-offset-2 hover:underline" onClick={() => props.go({ tab: "types", type: t.name })}>
+              {t.name}
+            </button>
+            {t.enabled ? (
+              <Badge variant="outline">
+                <span aria-hidden className="size-1.5 rounded-full bg-emerald-500" /> On
+              </Badge>
+            ) : (
+              <Badge variant="secondary">Off</Badge>
+            )}
+            {t.standing && <Badge variant="outline">any time</Badge>}
+            {t.round && <Badge variant="outline">rounds</Badge>}
+            {row?.appProblem && (
+              <Badge variant="destructive" title={row.appProblem}>
+                app problem
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {t.title?.trim() ? `Workers call it “${t.title.trim()}”, and see it in ` : "Workers see it in "}
+            {t.app}.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "tasks", type: t.name })}>
+            See answers
+          </Button>
+          {shown.tests && (
+            <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "tests", type: t.name })}>
+              Tests
+            </Button>
+          )}
+          {props.invite && t.enabled && (
+            <Button size="sm" variant="outline" onClick={() => props.invite!(t.name)}>
+              <UserPlus /> Invite someone
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={() => props.go({ tab: "types", type: t.name })}>
+            Edit
+          </Button>
+        </div>
+      </div>
+      <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-x-6 gap-y-4 border-t pt-4">
+        {shown.open && (
+          <Fact label="Who can take it" value={t.open ? "Anyone signed in" : "Invite-only"} note={row ? `${row.granted.toLocaleString("en-US")} worker${row.granted === 1 ? "" : "s"} ${t.open ? "took it up" : "let in"}` : undefined} />
+        )}
+        {shown.pay && (
+          <Fact
+            label="Pay"
+            value={t.paySats ? `${t.paySats.toLocaleString("en-US")} sats an answer` : "Unpaid"}
+            note={t.paySats ? [t.holdHours ? `held ${t.holdHours} h before it can be withdrawn` : "no hold", t.limits?.budgetSats !== undefined ? `budget ${t.limits.budgetSats.toLocaleString("en-US")} sats` : ""].filter(Boolean).join(" · ") : undefined}
+          />
+        )}
+        <Fact label="Checking" value={checks[0] ?? (shown.review ? "Reviewed by hand" : "No check")} note={[...checks.slice(1), review].filter(Boolean).join(" · ") || undefined} />
+        <Fact
+          label="Today"
+          value={day ? `${day.answered.toLocaleString("en-US")} answered` : "—"}
+          note={row ? [`${row.waiting} waiting`, day?.toAnswer ? `typical time ${fmtDuration(day.toAnswer.p50)}` : ""].filter(Boolean).join(" · ") : undefined}
+        />
+      </dl>
+    </li>
+  );
+}
+
+function Fact(props: { label: string; value: string; note?: string | undefined }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <dt>
+        <Label>{props.label}</Label>
+      </dt>
+      <dd className="m-0 text-[15px] font-semibold break-words">{props.value}</dd>
+      {props.note && <dd className="m-0 text-xs text-muted-foreground">{props.note}</dd>}
+    </div>
   );
 }
 
@@ -247,6 +317,11 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
         {was?.standing && <Badge variant="outline">standing</Badge>}
         {was?.round && <Badge variant="outline">rounds</Badge>}
         {was?.changedBy && <Note>last saved by {was.changedBy}</Note>}
+        {was && props.shown.tests && (
+          <Button size="sm" variant="ghost" onClick={() => props.go({ tab: "tests", type: was.name })}>
+            Its tests
+          </Button>
+        )}
         {was?.round && (
           <div className="ml-auto">
             <SendRound type={was} />

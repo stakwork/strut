@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
-  anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
+  anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
   INVITE_WORDS, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
@@ -209,21 +209,70 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
   const zero = () => ({ answered: 0, expired: 0, cancelled: 0, disputed: 0, skipped: 0, leasesLost: 0 });
   const stats = (types: TaskStats["types"], fresh = 0): TaskStats => ({ at: 0, types, workers: { new: fresh, active: 1, suspended: 0, banned: 0 }, holding: 0, asking: 0 });
 
-  it("the Queue's warnings: waiting with nobody granted, due within the hour, off with open tasks, the app, new workers", () => {
-    assert.deepEqual(queueWarnings(stats([row({})])), []);
-    const w = queueWarnings(stats([row({ waiting: 3, granted: 0, dueHour: 1 }), row({ type: "boxes", enabled: false, working: 2, appProblem: "no app boxer on this server" })], 2));
+  it("what needs a person: waiting with nobody let in, due within the hour, off with open tasks, the app, people waiting, answers to review", () => {
+    assert.deepEqual(needsYou(stats([row({})])), []);
+    const w = needsYou(stats([row({ waiting: 3, granted: 0, dueHour: 1, toReview: 4 }), row({ type: "boxes", enabled: false, working: 2, appProblem: "no app boxer on this server", toReview: 1 })], 2));
     assert.deepEqual(
-      w.map((x) => x.text),
+      w.map((x) => [x.text, x.action, x.tone]),
       [
-        "pets has 3 tasks waiting and no worker granted it.",
-        "1 task of pets expires unanswered within the hour.",
-        "boxes: no app boxer on this server.",
-        "boxes is turned off with 2 open tasks: none is handed out, and each expires when due.",
-        "2 new workers signed in and wait for a grant.",
+        ["pets has 3 tasks waiting and no worker who may take it.", "Let someone in", "warn"],
+        ["1 task of pets expires unanswered within the hour.", "See them", "warn"],
+        ["boxes: no app boxer on this server.", "Open the type", "warn"],
+        ["boxes is turned off with 2 open tasks: none is handed out, and each expires when due.", "Open the type", "warn"],
+        ["2 people signed in and are waiting to be let in.", "Let them in", "warn"],
+        ["5 answers have not been reviewed.", "Start reviewing", "plain"],
       ],
     );
     assert.deepEqual(w[4]!.to, { tab: "workers" });
     assert.deepEqual(w[1]!.to, { tab: "tasks", type: "pets" });
+    // The review queue: by group once a workflow named one, else one by one.
+    assert.deepEqual(w[5]!.to, { tab: "tasks", review: "none" });
+    assert.deepEqual(needsYou(stats([row({ toReview: 1 })]), { groups: true }).map((x) => [x.text, x.to]), [["1 answer has not been reviewed.", { tab: "groups" }]]);
+    assert.equal(needsYou(stats([row({})], 1))[0]!.text, "1 person signed in and is waiting to be let in.");
+    // What is left to review: every type's, one type's, and nothing said where the server does not count.
+    const counted = stats([row({ toReview: 4 }), row({ type: "boxes", toReview: 1 })]);
+    assert.deepEqual([toReviewOf(counted), toReviewOf(counted, "boxes"), toReviewOf(stats([row({})])), toReviewOf(undefined)], [5, 1, undefined, undefined]);
+  });
+
+  it("six tabs, one a job: a group is under Answers and a test under Task types, and each place keeps its own link", () => {
+    assert.deepEqual([navOf("queue"), navOf("tasks"), navOf("groups"), navOf("types"), navOf("tests"), navOf("workers"), navOf("payouts"), navOf("support")], ["queue", "tasks", "tasks", "types", "types", "workers", "payouts", "support"]);
+    assert.deepEqual(placeOf({ group: "Order 12", type: "pets" }), { tab: "groups", group: "Order 12", type: "pets" });
+    assert.deepEqual(placeOf(inputOf({ tab: "groups", type: "pets" })), { tab: "groups", type: "pets" });
+  });
+
+  it("an answer in a list: what it is called, its fields in a line, its picture, how long it took, what happened", () => {
+    const photo = { name: "a.jpg", mediaType: "image/jpeg", size: 9, path: "tasks/t/a.jpg" };
+    const thumb = { name: "thumb.jpg", mediaType: "image/jpeg", size: 2, path: "out/thumb.jpg" };
+    const lease = { id: "l1", task: "t", worker: "ann", type: "shelf", taken: 1_000, expires: 9_000, closed: 22_000, status: "submitted" as const, attachments: [photo] };
+    const task = { id: "t", seq: 1, type: "shelf", workflow: "shelves", runId: "r1", path: "ask", show: { ask: "Photo of the shelf" }, files: [], root: "run" as const, status: "settled" as const, created: 500, due: 99_000, settledAt: 22_000, by: "ann", answer: { aisle: "7", price: 3.5, note: "", sku: null }, leases: [lease] };
+    // The run's words after the answer, else the words it asked with.
+    assert.equal(captionOf(task), "Photo of the shelf");
+    assert.equal(captionOf({ ...task, reply: { at: 23_000, show: { title: "Aisle 7", ask: "Thanks", ok: true } } }), "Aisle 7 · Thanks");
+    assert.equal(captionOf({ show: { boxes: [] } }), "");
+    assert.deepEqual(answerFields(task.answer), [["aisle", "7"], ["price", "3.5"]]);
+    assert.deepEqual(emptyFields(task.answer), ["note", "sku"]);
+    assert.equal(answerLine(task.answer), "Aisle: 7 · Price: 3.5");
+    assert.equal(answerLine(true), "true");
+    assert.equal(answerLine(undefined), "");
+    // The reply's picture (what the run made of it) before the answer's own.
+    assert.deepEqual(pictureOf(task), photo);
+    assert.deepEqual(pictureOf({ ...task, reply: { at: 23_000, files: [thumb] } }), thumb);
+    assert.equal(pictureOf({ ...task, leases: [{ ...lease, attachments: [] }] }), undefined);
+    assert.equal(tookText(lease), "21 s");
+    assert.equal(tookText({ ...lease, status: "skipped" }), "");
+    const who = (a: string) => a.toUpperCase();
+    assert.deepEqual(
+      happenings({ ...task, reply: { at: 23_000 }, leases: [{ id: "l0", task: "t", worker: "bob", type: "shelf", taken: 600, expires: 900, closed: 700, status: "skipped" as const }, { ...lease, review: { verdict: "rejected" as const, why: "blurry", by: "ada", at: 30_000, until: 40_000, final: false } }] }, who, 50_000).map((h) => [h.at, h.text]),
+      [[500, "The run made the task"], [600, "BOB took it"], [700, "BOB: skipped"], [1_000, "ANN took it"], [22_000, "ANN answered"], [23_000, "The run replied"], [30_000, "ada marked it rejected"]],
+    );
+  });
+
+  it("what workers are owed beside the wallet, in parts", () => {
+    assert.equal(moneyOf(undefined), null);
+    const workers = { owedMsat: 304_000, heldMsat: 0, withdrawableMsat: 304_000, payees: 5, accepted: { answers: 76, msat: 304_000, days: [] }, takenBack: { answers: 0, msat: 0 } };
+    assert.deepEqual(moneyOf({ workers, wallet: { balance: { msat: 8_321_000 } } }), { owedMsat: 304_000, heldMsat: 0, withdrawableMsat: 304_000, walletMsat: 8_321_000, coverMsat: 8_017_000 });
+    assert.deepEqual(moneyOf({ workers, wallet: { error: "down" } }), { owedMsat: 304_000, heldMsat: 0, withdrawableMsat: 304_000, walletError: "down" });
+    assert.equal(moneyOf({ workers, wallet: { balance: { msat: 100_000 } } })!.coverMsat, -204_000, "short of what is owed");
   });
 
   it("the deep-link input: each place opens its tab and goes back out as the same input", () => {

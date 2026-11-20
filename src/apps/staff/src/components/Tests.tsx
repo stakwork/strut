@@ -22,7 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { gradeDraftOf, gradeOf, type GradeDraft } from "../lib/draft";
 import { fmtWhen, jsonLine, jsonText, parseJson, shortActor, STATUS_WORDS, type Place } from "../lib/view";
 import type { GradeRule, TaskType, Test, TestInstance } from "../lib/types";
-import { Back, Empty, ErrorLine, Field, JsonTree, Loading, Note, Section, useAct } from "./bits";
+import { Back, Crumbs, Empty, ErrorLine, Field, JsonTree, Loading, Note, Section, useAct } from "./bits";
 import { GradeEditor } from "./Types";
 
 interface Props {
@@ -55,7 +55,8 @@ function TestList(props: Props & { onNew: () => void }) {
   const tested = (props.types ?? []).filter((t) => t.tests);
   return (
     <Section
-      title="Tests"
+      // Tests sit under Task types: the way back, and to the type they are of.
+      title={<Crumbs go={props.go} to={[["Task types", { tab: "types" }], ...(type ? ([[type, { tab: "types", type }]] as Array<[string, Place]>) : [])]} here="Tests" />}
       aside={
         <Button size="sm" onClick={props.onNew} disabled={!props.types?.length}>
           <Plus /> New test

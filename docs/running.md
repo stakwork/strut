@@ -292,7 +292,7 @@ What else a paid flow needs, each learned the hard way:
   1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
   `inviteSats` beside them is an invite's default, 100 when left out).
 - **Inviting a worker** (plans/human-steps.md §5.8): Invite a worker in
-  `strut/staff` (the Queue, the Workers tab or a type's page), or `POST
+  `strut/staff` (its header, on every tab, or a type's page), or `POST
   /tasks/invites {}` (`{ "type": "<type>" }` for one kind of work), asks the
   stand-in's `POST /invite` (with the pay token; it debits the sats and its
   price, `INVITE_PRICE_SATS`, 10) and answers the join link, which opens
