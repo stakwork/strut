@@ -117,8 +117,27 @@ function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: F
   };
 }
 
-/** `cap` with `methods` in place of its own; the rest as it is. */
-const over = <T extends object>(cap: T, methods: Record<string, unknown>): T => Object.freeze(Object.assign(Object.create(cap) as T, methods));
+/**
+ * `cap` as a package's step holds it: a FRESH object with `methods` in
+ * place of its own (`undefined`: left out), and every other method of
+ * `cap`'s — its own and its prototypes' — forwarding to it, with every
+ * other value copied. `cap` itself is nowhere a step reaches: not its
+ * prototype (a plain object's), not a property, not behind a forwarder (a
+ * closure). A value that is `cap` again is left out.
+ */
+function held<T extends object>(cap: T, methods: Record<string, unknown>): T {
+  const out: Record<string, unknown> = {};
+  for (let o: object | null = cap; o && o !== Object.prototype && o !== Function.prototype; o = Object.getPrototypeOf(o)) {
+    for (const k of Object.getOwnPropertyNames(o)) {
+      if (k === "constructor" || k in out || k in methods) continue;
+      const v: unknown = Reflect.get(cap, k);
+      if (typeof v === "function") out[k] = (...args: unknown[]) => Reflect.apply(v as (...a: unknown[]) => unknown, cap, args);
+      else if (v !== cap) out[k] = v;
+    }
+  }
+  for (const [k, v] of Object.entries(methods)) if (v !== undefined) out[k] = v;
+  return Object.freeze(out) as T;
+}
 
 /**
  * The capabilities that start a run, or say whom one is for, as a package's
@@ -142,7 +161,7 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
   const out: Record<string, unknown> = {};
   const runs = services["runs"] as RunsCapability | undefined;
   if (runs?.launch) {
-    out["runs"] = over(runs, {
+    out["runs"] = held(runs, {
       launch: (q: Parameters<RunsCapability["launch"]>[0]) => {
         someone();
         return runs.launch(q, {
@@ -157,7 +176,7 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
   }
   const authoring = services["authoring"] as AuthoringCapability | undefined;
   if (authoring?.runWorkflow) {
-    out["authoring"] = over(authoring, {
+    out["authoring"] = held(authoring, {
       runWorkflow: (...[name, input, params, version, opts]: Parameters<AuthoringCapability["runWorkflow"]>) => {
         const { actor: _a, principal: _p, ...rest } = opts ?? {};
         return authoring.runWorkflow(name, input, params, version, { ...rest, ...person });
@@ -170,7 +189,7 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
   const jobs = services["jobs"] as JobsCapability | undefined;
   if (jobs?.launch) {
     const launch = jobs.launch.bind(jobs);
-    out["jobs"] = over(jobs, {
+    out["jobs"] = held(jobs, {
       launch: (opts: Parameters<typeof launch>[0]) => {
         someone();
         const { actor: _a, principal: _p, ...rest } = opts;
@@ -180,7 +199,7 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
   }
   const proposals = services["proposals"] as ProposalsCapability | undefined;
   if (proposals?.propose) {
-    out["proposals"] = over(proposals, {
+    out["proposals"] = held(proposals, {
       propose: (p: Parameters<ProposalsCapability["propose"]>[0]) => {
         const { actor: _a, principal: _p, ...by } = p.by;
         return proposals.propose({ ...p, by: { ...by, ...person } });
@@ -190,7 +209,7 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
   }
   const peers = services["peers"] as PeersCapability | undefined;
   if (peers?.fetch) {
-    out["peers"] = over(peers, {
+    out["peers"] = held(peers, {
       fetch: (...[id, path, init]: Parameters<PeersCapability["fetch"]>) => {
         const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).filter(([k]) => k.toLowerCase() !== "x-strut-actor"));
         return peers.fetch(id, path, { ...init, headers: { ...headers, ...(principal ? { "x-strut-actor": principal } : {}) } });

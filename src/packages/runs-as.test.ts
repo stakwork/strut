@@ -89,6 +89,29 @@ const git = (cwd: string, ...args: string[]): string => {
   return r.stdout.trim();
 };
 
+/** Everything a step reaches from `root` by its properties: prototypes, own
+ *  data properties (getters are not run), a Map's or a Set's entries — each
+ *  with the path it was found at. `globalThis` is left out: a step reaches
+ *  it anyway, and strut keeps nothing there. */
+function reachable(root: unknown): Map<unknown, string> {
+  const seen = new Map<unknown, string>();
+  const queue: Array<[unknown, string]> = [[root, "services"]];
+  while (queue.length) {
+    const [o, path] = queue.shift()!;
+    if (o === null || (typeof o !== "object" && typeof o !== "function") || seen.has(o)) continue;
+    if (o === Object.prototype || o === Function.prototype || o === globalThis) continue;
+    seen.set(o, path);
+    queue.push([Object.getPrototypeOf(o), `${path}.__proto__`]);
+    if (o instanceof Map) for (const [k, v] of o) queue.push([k, `${path}<key>`], [v, `${path}.get(${String(k)})`]);
+    if (o instanceof Set) for (const v of o) queue.push([v, `${path}<item>`]);
+    for (const k of Reflect.ownKeys(o)) {
+      const d = Object.getOwnPropertyDescriptor(o, k);
+      if (d && "value" in d) queue.push([d.value, `${path}.${String(k)}`]);
+    }
+  }
+  return seen;
+}
+
 const saved: Record<string, string | undefined> = {};
 before(() => {
   for (const k of ["STRUT_API_KEY", "STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
@@ -317,6 +340,32 @@ describe("work nobody launched runs as a person", () => {
     assert.match(n.error!.message, /run_as_fenced: acme\/code\/launch came from the package acme\/code, whose steps start a run only as their own run's person — and this run acts for nobody/);
     assert.equal((await store.listRuns(VICTIM)).length, before, "nothing ran as bob");
   });
+
+  it("from a package's step, nothing on strut's own bag reaches what the fence holds or takes off", async () => {
+    const bag = strut.services as Record<string, unknown>;
+    const originals = new Map<unknown, string>([[bag, "the shared bag"]]);
+    for (const k of ["runs", "authoring", "jobs", "proposals", "peers", "automations", "trials", "secretBlanks"]) {
+      const cap = bag[k] as Record<string, unknown> | undefined;
+      if (!cap) continue;
+      originals.set(cap, k);
+      for (const m of ["launch", "runWorkflow", "resumeRun", "controlRun", "propose", "decide", "fetch", "api", "fill", "trial", "test"]) {
+        if (cap[m] && typeof cap[m] === "object") originals.set(cap[m], `${k}.${m}`);
+        else if (typeof cap[m] === "function") originals.set(cap[m], `${k}.${m}`);
+      }
+    }
+    assert.deepEqual(
+      ["runs", "authoring", "jobs", "proposals", "peers", "automations", "secretBlanks"].filter((k) => !originals.has(bag[k])),
+      [],
+      "the box's bag has each of them, so the walk below means something",
+    );
+    let held: unknown;
+    const look = { type: `${PKG}/look`, run: async (_cfg: unknown, ctx?: StepContext<any>) => ((held = ctx!.services), null) } as unknown as AnyStepDef;
+    await fenceStep(look, { package: PKG, secrets: [] }).run({}, { runId: "r0", path: "s", actor: "alice", principal: "alice", services: bag } as unknown as StepContext<any>);
+    const seen = reachable(held);
+    assert.ok(seen.size > 100, `walked ${seen.size} objects`);
+    const found = [...seen].filter(([o]) => originals.has(o)).map(([o, path]) => `${originals.get(o)} at ${path}`);
+    assert.deepEqual(found, []);
+  });
 });
 
 describe("the fence holds a package's step to its run's person", () => {
@@ -365,5 +414,75 @@ describe("the fence holds a package's step to its run's person", () => {
     const onlyPeers: AnyStepDef = { type: `${PKG}/peer`, run: async (_c: unknown, ctx?: StepContext<any>) => (ctx!.services as any).peers.fetch("hq", "/x", { headers: { "x-strut-actor": "mallory" } }) } as unknown as AnyStepDef;
     await fenceStep(onlyPeers, { package: PKG, secrets: [] }).run({}, { runId: "r0", path: "s", services: bag(peers) } as unknown as StepContext<any>);
     assert.deepEqual(peers, [["peers.fetch", {}]]);
+  });
+
+  it("holds nothing a step can reach past — a prototype, a property — and leaves what it does not hold working", async () => {
+    const calls: unknown[][] = [];
+    const as = (who: unknown) => (who as { principal?: string } | undefined)?.principal ?? "nobody";
+    const originals = {
+      runs: { launch: async (_q: unknown, by: unknown) => (calls.push(["runs.launch", as(by)]), { runId: "l1" }), list: async () => (calls.push(["runs.list"]), []) },
+      authoring: {
+        runWorkflow: async (...a: unknown[]) => (calls.push(["authoring.runWorkflow", as(a[4])]), { runId: "n1", status: "success" }),
+        resumeRun: async (...a: unknown[]) => (calls.push(["authoring.resumeRun", as(a[3])]), {}),
+        controlRun: async (...a: unknown[]) => (calls.push(["authoring.controlRun", as(a[3])]), {}),
+        listRuns: async () => (calls.push(["authoring.listRuns"]), []),
+      },
+      jobs: { launch: async (o: unknown) => (calls.push(["jobs.launch", as(o)]), { runId: "j1" }), release: async (job: string) => (calls.push(["jobs.release", job]), undefined) },
+      proposals: { propose: async (p: { by: unknown }) => (calls.push(["proposals.propose", as(p.by)]), p), decide: async () => (calls.push(["proposals.decide"]), {}), get: async () => (calls.push(["proposals.get"]), null) },
+      peers: { fetch: async (...a: unknown[]) => (calls.push(["peers.fetch", (a[2] as { headers?: Record<string, string> } | undefined)?.headers?.["x-strut-actor"] ?? "nobody"]), new Response("{}")), list: async () => (calls.push(["peers.list"]), []) },
+      automations: { api: { fire: async () => (calls.push(["automations.fire"]), {}) } },
+      trials: { trial: async () => (calls.push(["trials.trial"]), {}) },
+      secretBlanks: { fill: async () => (calls.push(["secretBlanks.fill"]), true) },
+    };
+    const forged = { actor: "mallory", principal: "mallory" };
+    const step: AnyStepDef = {
+      type: `${PKG}/past`,
+      async run(_cfg: unknown, ctx?: StepContext<any>) {
+        const s = ctx!.services as any;
+        // The reviewer's way in: each held capability's prototype.
+        const through: string[] = [];
+        for (const [cap, method] of [["runs", "launch"], ["authoring", "runWorkflow"], ["authoring", "resumeRun"], ["authoring", "controlRun"], ["jobs", "launch"], ["proposals", "propose"], ["proposals", "decide"], ["peers", "fetch"]] as const) {
+          if (typeof Object.getPrototypeOf(s[cap])?.[method] === "function") through.push(`${cap}.${method}`);
+        }
+        // And every function reachable at all, called with a person of its own choosing.
+        for (const [fn, path] of reachable(s)) {
+          if (typeof fn !== "function") continue;
+          const name = path.slice(path.lastIndexOf(".") + 1);
+          const args: Record<string, unknown[]> = {
+            launch: [{ job: "j", workflow: "w", input: {}, ...forged }, forged],
+            runWorkflow: ["w", {}, undefined, undefined, forged],
+            resumeRun: ["w", "r", {}, forged],
+            controlRun: ["w", "r", "cancel", forged],
+            propose: [{ step: "x", input: {}, title: "t", by: { workflow: "w", runId: "r", path: "p", ...forged } }],
+            decide: ["p1", { action: "accept", by: "mallory", scope: "full", admin: true }],
+            fetch: ["hq", "/workflows/w/run", { headers: { "x-strut-actor": "mallory" } }],
+            fire: ["w", "a1"],
+            trial: [{ claim: "c", n: 1, by: "mallory" }],
+            fill: ["X", "v"],
+          };
+          if (!Object.hasOwn(args, name)) continue;
+          try {
+            await (fn as (...a: unknown[]) => unknown)(...args[name]!);
+          } catch {
+            // refused: what the test wants
+          }
+        }
+        // What the fence does not hold works as before.
+        await s.jobs.release("j");
+        await s.runs.list({ workflow: "w" });
+        await s.authoring.listRuns("w");
+        await s.proposals.get("p1");
+        await s.peers.list();
+        return { through, gone: ["automations", "trials", "secretBlanks"].filter((k) => k in s) };
+      },
+    } as unknown as AnyStepDef;
+    const out = (await fenceStep(step, { package: PKG, secrets: [] }).run({}, { runId: "r0", path: "s", actor: "alice", principal: "alice", services: originals } as unknown as StepContext<any>)) as { through: string[]; gone: string[] };
+    assert.deepEqual(out.through, [], "no held capability's prototype holds the original");
+    assert.deepEqual(out.gone, [], "what the fence takes off the bag is not on it");
+    const persons = calls.filter((c) => c.length === 2 && !["jobs.release"].includes(c[0] as string));
+    assert.ok(persons.length >= 6, JSON.stringify(calls));
+    assert.deepEqual(persons.filter((c) => c[1] !== "alice"), [], "every launch, resume, proposal and peer request is the run's person's");
+    assert.deepEqual(calls.filter((c) => ["proposals.decide", "automations.fire", "trials.trial", "secretBlanks.fill"].includes(c[0] as string)), [], "never decided, fired, trialled or filled");
+    for (const kept of ["jobs.release", "runs.list", "authoring.listRuns", "proposals.get", "peers.list"]) assert.ok(calls.some((c) => c[0] === kept), `${kept} still works`);
   });
 });

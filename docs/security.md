@@ -542,7 +542,10 @@ instead of baked into env at deploy time.
   refused (`run_as_fenced:`), since it would run as the launched
   workflow's owner. Its bag has no `proposals.decide` (a person decides,
   and the apply runs as the proposer), no `automations` (the scheduler's
-  API: `fire` would run any workflow as its owner) and no `trials`. Strut's
+  API: `fire` would run any workflow as its owner) and no `trials`. Each
+  capability it holds is a FRESH object (`held`): the methods it does not hold
+  forward to the original by closure, and the original is on no prototype and
+  in no property a step reaches (a test walks the bag). Strut's
   own steps pass the run's person anyway; what is still open: a run that
   acts for nobody which launches another workflow (a `run/launch` in YAML,
   an app page's call with no viewer) runs it as that workflow's owner, the
