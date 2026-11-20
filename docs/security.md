@@ -139,6 +139,17 @@ container in the compose (strut and any service that registers steps).
   reaches the builder through Jamie. But installing a package is an
   ADMIN's act whatever the door: `package/install` is `approver: "admin"`
   (see "Proposals"), so a member's Jamie neither proposes nor accepts one.
+  Reading CONVERSATIONS: a person reads their own and the shared ones; an
+  ADMIN reads every one (ruled 2026-11-19, plans/jamie-app.md §2.3):
+  `everyone` on `GET /conversations`, `/conversations/item` and `POST
+  /conversations/fork` for full scope alone (403 to a person token, a host,
+  a peer), and on `conversation/list|get|fork` only from strut's own page
+  shown to an admin, in its own call (`adminPageCall`; refused to a
+  member's page, a model-written one, a workflow, an agent's tool and a run
+  the page launched). Reading is not a turn: no viewer added, nobody's
+  seen moved, and a turn in another person's conversation stays
+  `conversation_not_yours:`. Jamie tells every viewer that admins can read
+  conversations.
   "Is this session the key's equal" is an ALLOWLIST (`fullSession`: the
   key login's, no role, or an admin's) — never "not a member" — so a role
   strut adds later opens nothing by default.

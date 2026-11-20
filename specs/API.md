@@ -991,6 +991,21 @@ turn makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
 
+**An admin reads every one** (ruled 2026-11-19, `plans/jamie-app.md` §2.3).
+`everyone` (`?everyone=1` on the two reads, `everyone: true` in a fork's
+body) lists every conversation on this strut, whoever's, and opens any, for
+full scope alone: an admin's session or the key, with or without
+`x-strut-actor`. A person token, a host and a peer asking for it get `403
+forbidden: every person's conversations are an admin's read …` (a member's
+session never reaches these routes). Reading is not a turn and leaves no
+trace: the reader is not made a viewer, the conversation is not added to
+their list, and nobody's `seenAt`, unread or archived moves. Its rows and
+its read are the record's facts (`unread: false`, no `archived` or
+`seenAt`), and its turns show every proposal made in them. `/conversations/update`
+takes no `everyone`: a title, a share, archived and seen stay the
+conversation's people's. Who may continue it is unchanged (below); a fork
+with `everyone` is the admin's own copy.
+
 **Who may continue one.** The key launches a turn on any id. A person's
 token (§3) and strut's own app (§14.10) open the person's own ids
 (`<actor>`, `<actor>/…`) as they are, and also a conversation the person
@@ -1013,10 +1028,10 @@ deployment key still launches on any id. The host reads it with
 
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
-| GET    | `/conversations?q=&archived=1&limit=&before=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page |
-| GET    | `/conversations/item?id=&limit=&before=&wait=&since=` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it |
+| GET    | `/conversations?q=&archived=1&limit=&before=&everyone=1` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page. `everyone=1` (an admin's, above): every conversation on file, archived or not (`archived` is ignored), `q` matching its title, who started it or its host; 403 to anyone else |
+| GET    | `/conversations/item?id=&limit=&before=&wait=&since=&everyone=1` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it. `everyone=1`: any conversation, read as it is (above); 403 to anyone but an admin |
 | POST   | `/conversations/update` | `{ session, title?, archived?, seen?, shared? }` | the viewer's `ConversationListItem`. `title` renames it for everyone (`""` gives back the first message's); `shared` for everyone; `archived` and `seen` the viewer's own. 404 |
-| POST   | `/conversations/fork` | `{ session, id? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. 404, 409 when `id` exists |
+| POST   | `/conversations/fork` | `{ session, id?, everyone? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. `everyone: true`: an admin forks anyone's (403 to anyone else). 404, 409 when `id` exists |
 
 ```ts
 // One row of the list.
@@ -1036,7 +1051,7 @@ interface ConversationListItem {
   jobs?: ConversationJob[]; // the jobs its turns started or continued, most recent first, at most 10
   moreJobs?: number;     // jobs past those listed
   team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
-  startedBy?: string;    // who took its first turn
+  startedBy?: string;    // who took its first turn (with `everyone`, for a row from before it was kept: the actor its id is under)
   host?: string;         // a host's conversation (`host/<name>/…`, §13.4): the host's name; continued by it alone
 }
 
@@ -1088,7 +1103,16 @@ launch and end, not only when the agent's session commits. The
 writes, as the step's actor; they are refused to an app's page, except
 strut's own (first-party, §14.10), which reads them as its viewer's
 person token does. `conversation/list` also answers `viewer`, the actor the
-list is for — where a page mints a new conversation, `<viewer>/<id>`.
+list is for — where a page mints a new conversation, `<viewer>/<id>` — and
+`admin: true` when the page's viewer is an admin here. `conversation/list`,
+`conversation/get` and `conversation/fork` take `everyone: true`, the routes'
+`everyone`, only as strut's own page shown to an admin (`AppRef.admin`), in
+the page's own call; anything else that asks — a member's page or a person
+token's, a model-written page, a workflow, an agent's tool, a run the page
+launched — gets `conversation/<name> { everyone } is an admin's: …`. Such a
+page also reads the files and reply of any turn it reads that way
+(`run/files`, `run/get` on the turn's run); a turn in another person's
+conversation is still `conversation_not_yours:`.
 
 ### Graph nodes
 
@@ -2520,7 +2544,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` — one only an admin accepts (§12) only by a viewer who is one, and a turn of a viewer who is not proposes none |
 | Job ids | under `app/<name>/` | the person's own, as they are |
 | The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |
-| `conversation/*` (§9.1) | refused | as the viewer's person token |
+| `conversation/*` (§9.1) | refused | as the viewer's person token; shown to an admin, also `everyone` (§9.1, "An admin reads every one") |
 
 What stays the same: the manifest's grants, `llm` / `agent` / `exec` /
 `acp/prompt` refused from the page, no authoring, nothing past the viewer.
@@ -2583,7 +2607,21 @@ image as a thumbnail that opens large, a text file to read, the rest by
 name, each read with `run/files` on the turn's run. The page reads any turn
 of a conversation its viewer may read (one they are in, or a shared one),
 whoever took it. Share puts a conversation in everyone's list
-(`conversation/update { shared }`); a reply has Copy. A deliverable `strut/views`
+(`conversation/update { shared }`); a reply has Copy. An ADMIN
+(`conversation/list` says `admin: true`) also has **Everyone**, folded at the
+end of the list (§9.1, "An admin reads every one"): every conversation on
+this server (`conversation/list { everyone }`, searched with the rest — a
+title, who started it, a host — and Show more), each row with who started it,
+a tribe's with its `#`, and no menu. One that is not the admin's opens
+read-only (`conversation/get { everyone }`): never marked read, its proposal
+cards with their status and no Accept or Reject, and in place of the
+composer "<person>'s conversation: you are reading it as an admin" with
+**Continue here**, which forks it (`conversation/fork { everyone }`) and
+opens the admin's own copy; a host's keeps its own bar; no Share. A link an
+admin may not read as themselves (their address to one they were reading,
+reloaded) opens the same way, read again with `everyone`. Under the composer
+every viewer reads "Admins on this server can read conversations with
+Jamie." A deliverable `strut/views`
 draws shows in the thread; the rest is handed to the host as
 `?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 

@@ -112,6 +112,33 @@ export function isOwn(id: string, viewer: string | undefined): boolean {
   return !!viewer && (id === viewer || id.startsWith(`${viewer}/`));
 }
 
+/** May the viewer add to this conversation (plans/jamie-app.md §2.2)? Their
+ *  own id, one they took a turn in, or a shared one. An admin reads anyone's
+ *  (§2.3) and continues only these: the rest is read-only, with Continue here. */
+export function mayContinue(view: { conversation: Pick<ConversationListItem, "shared">; participants: readonly string[] }, session: string, viewer: string | undefined): boolean {
+  return isOwn(session, viewer) || (!!viewer && view.participants.includes(viewer)) || !!view.conversation.shared;
+}
+
+/** Whose a conversation of an admin's Everyone is, as it says it: the
+ *  person whose id it is under (`<actor>/…`: a fork's first turns are its
+ *  source's), else who started it (Hive's bare ids, a host's), else where a
+ *  host's is continued. */
+export function ownerLabel(item: Pick<ConversationListItem, "id" | "startedBy" | "host">): string {
+  const under = !item.host && item.id.includes("/") ? item.id.slice(0, item.id.indexOf("/")) : undefined;
+  return under ?? item.startedBy ?? (item.host ? hostPlace(item.host) : "");
+}
+
+/** Opened from an admin's Everyone as a reader (`everyone`), unless it is
+ *  plainly the viewer's own: their id, or a conversation they started. */
+export function readsAsAdmin(item: Pick<ConversationListItem, "id" | "startedBy">, viewer: string | undefined): boolean {
+  return !isOwn(item.id, viewer) && !(viewer && item.startedBy === viewer);
+}
+
+/** The line every viewer reads under the composer (plans/jamie-app.md §2.3).
+ *  Recommended, not yet ruled: to drop it, delete this and the one line in
+ *  Thread.tsx that shows it (`data-testid="admins-read"`). */
+export const ADMINS_READ = "Admins on this server can read conversations with Jamie.";
+
 /** What a refused send means to the person. */
 export type SendRefusal = { kind: "busy"; text: string } | { kind: "not-yours"; text: string } | { kind: "error"; text: string };
 

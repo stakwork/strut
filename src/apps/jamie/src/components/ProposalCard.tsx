@@ -4,7 +4,8 @@
 // (`proposal/decide`): accept runs it, reject records why. Read live
 // (`proposal/get`), since a decision made elsewhere moves it too. One only
 // an admin accepts (installing a package) says so to anyone else, in place
-// of an Accept the decision would refuse (lib/proposals.ts).
+// of an Accept the decision would refuse (lib/proposals.ts). In a thread
+// its viewer only reads (an admin reading someone else's), it decides nothing.
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Lightbulb, Loader2, RotateCcw, ShieldCheck, X } from "lucide-react";
@@ -15,6 +16,7 @@ import { cn } from "@/lib/utils";
 import type { Tone } from "../lib/jobs";
 import type { CardField, Proposal, ProposalBrief, ProposalStatus } from "../lib/types";
 import { ADMIN_MUST_APPROVE, acceptLook } from "../lib/proposals";
+import { useReadOnly } from "../viewer";
 import { Notice, Pill, errorText } from "./bits";
 
 const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
@@ -26,6 +28,8 @@ const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
 };
 
 const WAITING_ON_ADMIN: { label: string; tone: Tone } = { label: "Waiting on an admin", tone: "attention" };
+/** Pending, in a thread its viewer only reads: not theirs to decide. */
+const WAITING: { label: string; tone: Tone } = { label: "Waiting", tone: "attention" };
 
 /** `graph/create-node` → "Graph · create node". */
 export const stepLabel = (step: string) => {
@@ -53,6 +57,7 @@ function Fields({ fields }: { fields: CardField[] }) {
 export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   const client = useStrutClient();
   const qc = useQueryClient();
+  const readOnly = useReadOnly();
   const key = ["assistant", "proposal", brief.id];
   const live = useQuery({ queryKey: key, queryFn: () => client.run<Proposal>("proposal/get", { id: brief.id }), staleTime: 10_000, refetchInterval: (q) => (q.state.data?.status === "accepted" ? 2_000 : false) });
   const [deciding, setDeciding] = useState<"accept" | "reject" | null>(null);
@@ -65,9 +70,9 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   // A setting most people need not read is folded under Details; a danger never is.
   const shown = card?.fields.filter((f) => !f.detail || f.danger) ?? [];
   const folded = card?.fields.filter((f) => f.detail && !f.danger) ?? [];
-  const canDecide = status === "pending" || status === "failed";
+  const canDecide = !readOnly && (status === "pending" || status === "failed");
   const accept = acceptLook(p?.approver ?? brief.approver, p?.viewer);
-  const look = status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
+  const look = status === "pending" && readOnly ? WAITING : status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
 
   const decide = async (action: "accept" | "reject") => {
     setDeciding(action);

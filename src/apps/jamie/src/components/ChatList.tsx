@@ -8,14 +8,18 @@
 // list ("Shared"): anyone can read it and reply, as themselves; opening it
 // makes it theirs. It copies the chat's link too, and a shared row's menu
 // copies it again (./Share). A tribe's conversation is marked with a #. Connect, in the
-// header, links the viewer's Sphinx account.
+// header, links the viewer's Sphinx account. An ADMIN also gets Everyone,
+// folded at the end (plans/jamie-app.md §2.3): every conversation on this
+// server, whoever's, each with whose it is, searched with the rest; one
+// that is not theirs opens as a reader.
 import { useEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, Hash, Link2, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, UserX, Users, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { groupByDay, hostPlace } from "../lib/chat";
+import { groupByDay, hostPlace, ownerLabel, readsAsAdmin } from "../lib/chat";
 import type { ConversationJob, ConversationListItem, ConversationPr } from "../lib/types";
 import { PAGE, useConversationList, useUpdateConversation } from "../hooks";
+import { useViewer } from "../viewer";
 import { IconButton, Notice, errorText } from "./bits";
 import { useShareChat } from "./Share";
 
@@ -23,8 +27,9 @@ const TITLE_MAX = 200;
 
 export interface ChatListProps {
   active: string | null;
-  /** Open a conversation; `job`: at that job's card. */
-  onOpen: (id: string, job?: string) => void;
+  /** Open a conversation; `job`: at that job's card; `asReader`: an admin
+   *  reading someone else's, from Everyone. */
+  onOpen: (id: string, job?: string, asReader?: boolean) => void;
   onNewChat: () => void;
   onHide?: () => void;
   /** Open Connect: the viewer's linked accounts. */
@@ -39,6 +44,12 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
   const open = useConversationList({ q: query, limit });
   const archived = useConversationList({ archived: true, q: query, limit: 50, enabled: archivedOpen });
   const archivedCount = useConversationList({ archived: true, limit: 1, enabled: !archivedOpen });
+  const viewer = useViewer();
+  // Everyone: an admin's alone (the list says who is one).
+  const admin = !!open.data?.admin;
+  const [everyoneOpen, setEveryoneOpen] = useState(false);
+  const [everyoneLimit, setEveryoneLimit] = useState(PAGE);
+  const everyone = useConversationList({ everyone: true, q: query, limit: everyoneLimit, enabled: admin && everyoneOpen });
   const update = useUpdateConversation();
   const share = useShareChat();
   const rows = open.data?.conversations ?? [];
@@ -147,6 +158,22 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
                 action={{ label: "Restore", Icon: ArchiveRestore, run: () => update.mutate({ session: item.id, archived: false }) }}
               />
             ))}
+          </Group>
+        )}
+        {admin && (
+          <Group label="Everyone" expanded={everyoneOpen} onToggle={() => setEveryoneOpen((o) => !o)}>
+            <div data-testid="everyone">
+              {everyone.isError && <Notice tone="error">{errorText(everyone.error)}</Notice>}
+              {(everyone.data?.conversations ?? []).map((item) => (
+                <EveryoneRow key={item.id} item={item} active={item.id === active} onOpen={() => onOpen(item.id, undefined, readsAsAdmin(item, viewer))} />
+              ))}
+              {everyone.data?.conversations.length === 0 && <div className="px-2 py-2 text-sm text-muted-foreground">{query ? "No chats match." : "No chats yet."}</div>}
+              {everyone.data?.next && (
+                <button type="button" onClick={() => setEveryoneLimit((l) => l + PAGE)} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:text-foreground">
+                  Show more
+                </button>
+              )}
+            </div>
           </Group>
         )}
         {update.isError && <Notice tone="error">{errorText(update.error)}</Notice>}
@@ -299,6 +326,34 @@ function Row({
     </div>
     {item.jobs && item.jobs.length > 0 && <Jobs jobs={item.jobs} more={item.moreJobs ?? 0} onOpen={onOpen} />}
     </>
+  );
+}
+
+/** A row of an admin's Everyone: its title and whose it is, a tribe's with
+ *  a #. No menu: a rename, a share and archive are its people's. */
+function EveryoneRow({ item, active, onOpen }: { item: ConversationListItem; active: boolean; onOpen: () => void }) {
+  const owner = ownerLabel(item);
+  return (
+    <div
+      data-testid="everyone-row"
+      data-chat-id={item.id}
+      className={cn(
+        "relative flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors",
+        active ? "bg-muted text-foreground" : "text-foreground/80 hover:bg-muted/60 hover:text-foreground",
+      )}
+    >
+      <button
+        type="button"
+        title={owner ? `${item.title || "Untitled"} — ${owner}` : item.title}
+        onClick={onOpen}
+        aria-current={active ? "page" : undefined}
+        className="min-w-0 flex-1 truncate text-left outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-1 focus-visible:after:ring-ring"
+      >
+        {item.title || "Untitled"}
+      </button>
+      {item.host && <Hash className="relative z-10 size-3 shrink-0 text-muted-foreground" aria-label={`In ${hostPlace(item.host)}`} />}
+      {owner && <span className="max-w-[40%] shrink-0 truncate text-xs text-muted-foreground" data-testid="chat-owner">{owner}</span>}
+    </div>
   );
 }
 

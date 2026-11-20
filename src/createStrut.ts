@@ -8702,12 +8702,13 @@ export async function createStrut<TServices = unknown>(
       null;
     if (!launched && stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "")) return true;
     // A first-party page also reads a turn of a conversation its viewer
-    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2),
-    // whoever took the turn — its files, its reply.
+    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2;
+    // shown to an admin, any one: §2.3), whoever took the turn — its files,
+    // its reply.
     const session = (stamp?.input as { session?: unknown } | undefined)?.session;
     if (!anyApp || !by?.actor || typeof session !== "string") return false;
     const rec = await conversations.record(session).catch(() => null);
-    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor)) && rec.turns.some((t) => t.runId === runId);
+    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor) || by.app?.admin === true) && rec.turns.some((t) => t.runId === runId);
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */
@@ -9069,6 +9070,17 @@ export async function createStrut<TServices = unknown>(
     if (scope !== "full") return null;
     return actor ? { actor } : { all: true };
   };
+  /** The viewer, with `everyone` when the request asks for it (`?everyone=1`,
+   *  a fork's `everyone: true`; plans/jamie-app.md §2.3): an ADMIN's read of
+   *  every conversation on file, as a reader. Full scope alone — an admin's
+   *  session, the key; a person token, a host and a peer are `"refused"` (a
+   *  member's session never reaches these routes). */
+  const viewerAsking = async (c: Context, asked: unknown): Promise<ConversationViewer | null | "refused"> => {
+    const by = await conversationViewer(c);
+    if (asked !== true && asked !== "1" && asked !== "true") return by;
+    return by && (await scopeOf(c)) === "full" ? { ...by, everyone: true } : "refused";
+  };
+  const everyoneRefused = (c: Context) => c.json({ error: "forbidden: every person's conversations are an admin's read (an admin's session, or the deployment key)" }, 403);
   const conversationError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, message.startsWith("No conversation") ? 404 : message.includes("already exists") ? 409 : 400);
@@ -9076,9 +9088,10 @@ export async function createStrut<TServices = unknown>(
   const intParam = (v: string | undefined) => (v !== undefined && /^\d+$/.test(v) ? Number(v) : undefined);
 
   app.get("/conversations", async (c) => {
-    const by = await conversationViewer(c);
-    if (!by) return c.json({ conversations: [] });
     const q = c.req.query();
+    const by = await viewerAsking(c, q["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
+    if (!by) return c.json({ conversations: [] });
     const limit = intParam(q["limit"]);
     return c.json(
       await conversations.list(
@@ -9094,8 +9107,9 @@ export async function createStrut<TServices = unknown>(
   });
 
   app.get("/conversations/item", async (c) => {
-    const by = await conversationViewer(c);
     const q = c.req.query();
+    const by = await viewerAsking(c, q["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
     const session = q["id"] ?? "";
     const problem = idProblem(session);
     if (problem) return c.json({ error: `conversation id "${session}" ${problem}` }, 400);
@@ -9137,11 +9151,12 @@ export async function createStrut<TServices = unknown>(
   });
 
   app.post("/conversations/fork", async (c) => {
-    const by = await conversationViewer(c);
-    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const by = await viewerAsking(c, body?.["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
+    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
     if (!body || typeof body["session"] !== "string" || (body["id"] !== undefined && typeof body["id"] !== "string")) {
-      return c.json({ error: "body must be { session, id? }" }, 400);
+      return c.json({ error: "body must be { session, id?, everyone? }" }, 400);
     }
     try {
       return c.json(await conversations.fork({ session: body["session"], ...(typeof body["id"] === "string" ? { id: body["id"] } : {}) }, by), 201);
