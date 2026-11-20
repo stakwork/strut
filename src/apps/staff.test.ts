@@ -22,7 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
   anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
-  INVITE_WORDS, inviteOpen, inviteSatsOf, inviteWhyText, whatsappUrl,
+  INVITE_WORDS, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -361,6 +361,11 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
     assert.deepEqual((["sending", "ready", "failed", "used", "cancelled"] as const).filter((status) => inviteOpen({ status })), ["sending", "ready"]);
+    // The read backstop: fast while paying, slow while waiting for use, never otherwise.
+    assert.equal(invitesReadMs([{ status: "ready" }, { status: "sending" }]), 3_000);
+    assert.equal(invitesReadMs([{ status: "used" }, { status: "ready" }]), 30_000);
+    assert.equal(invitesReadMs([{ status: "used" }, { status: "cancelled" }]), false);
+    assert.equal(invitesReadMs(undefined), false);
     assert.equal(Object.keys(INVITE_WORDS).length, 5);
     // Plain first, for an admin who is not technical; the cause in brackets for whoever runs the server.
     assert.match(inviteWhyText("no_pay_credential"), /^To invite people, this server's wallet has to be set up first, in Earnings\. \(.*pay token\.\)$/);

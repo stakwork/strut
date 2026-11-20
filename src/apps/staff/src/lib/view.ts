@@ -470,6 +470,14 @@ export function inviteOpen(i: Pick<Invite, "status">): boolean {
   return i.status === "sending" || i.status === "ready";
 }
 
+/** How often the invites are read (ms), or false for never: fast while one
+ *  is being paid for, slowly while one waits to be used, as a backstop to the
+ *  app's channel saying one was. */
+export function invitesReadMs(invites: Array<Pick<Invite, "status">> | undefined): number | false {
+  if (invites?.some((i) => i.status === "sending")) return 3_000;
+  return invites?.some((i) => i.status === "ready") ? 30_000 : false;
+}
+
 /** Why this server cannot invite, in words a person who is not technical
  *  follows; the cause for whoever runs the server in brackets. */
 export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {

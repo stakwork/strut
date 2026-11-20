@@ -159,6 +159,8 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     // The page reads again on the app's channel.
     const said = await strut.services.channels!.read({ name: STAFF_APP, version: "v1" }, "support");
     assert.ok(said.messages.some((m) => m.from.code === "support/receive"), JSON.stringify(said.messages));
+    // Her key exchange also says `invites`: the daemon marked the invite used before pushing it.
+    assert.ok(said.messages.some((m) => m.key === "invites"), "a new contact says invites");
 
     // A file comes with its bytes, kept in the app's database, read in 3 MB pieces.
     const big = Buffer.alloc(3 * 1024 * 1024 + 10, 7);
@@ -173,6 +175,17 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     // Over 25 MiB: a line saying so, no bytes.
     await worker("/worker-dm", { pubkey: ADA, file: { name: "film.mov", type: "video/quicktime", base64: "AAAA", size: 26 * 1024 * 1024 } });
     assert.equal((await thread(ADA)).at(-1).file_state, "too_large");
+  });
+
+  it("an ordinary text DM from a known contact says changed, not invites", async () => {
+    const bob = "02" + "b0".repeat(32);
+    const at = (key: string) => strut.services.channels!.read({ name: STAFF_APP, version: "v1" }, "support").then((r) => r.messages.filter((m) => m.key === key).length);
+    await host([{ seq: 1, id: "bob-contact", time: "2030-01-01T00:00:00Z", fromMe: false, peer: { pubkey: bob }, kind: "contact" }], bob);
+    const before = await at("invites");
+    assert.ok(before > 0);
+    const chat = await host([{ seq: 2, id: "bob-hi", time: "2030-01-01T00:01:00Z", fromMe: false, peer: { pubkey: bob }, kind: "message", text: "hi" }], bob);
+    assert.equal(chat.value.kept, 1);
+    assert.equal(await at("invites"), before, "no new invites message for a text DM");
   });
 
   it("a record kept before changes nothing; another contact's record in the call is skipped, not the call", async () => {

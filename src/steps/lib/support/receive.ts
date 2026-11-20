@@ -14,7 +14,9 @@ import { dmOf, keepRecord, OUTBOX_WORKFLOW, RECEIVE_MAX_RECORDS, SUPPORT_CHANNEL
  * never holds the daemon's feed. The sender's name comes on the call's
  * `x-strut-account-name` (§1), never from here.
  *
- * Then it tells the app's channel, and when a welcome is due starts
+ * Then it tells the app's channel — a contact's key exchange also says
+ * `invites`, since the daemon marked the invite used before pushing it, so
+ * the staff page shows it used at once — and when a welcome is due starts
  * `support-outbox` (one run at a time) — this call cannot send: a host's bag
  * has no `sphinx`.
  */
@@ -46,6 +48,7 @@ export default defineStep({
     }
     let kept = 0;
     let due = false;
+    let joined = false;
     // One transaction; each record its own savepoint, so one that cannot be
     // kept is skipped, never the others.
     tx(db, () => {
@@ -56,6 +59,7 @@ export default defineStep({
           if (keepRecord(db, d, welcome)) due = true;
           db.exec("RELEASE record");
           kept++;
+          if (d.kind === "contact") joined = true;
         } catch (err) {
           db.exec("ROLLBACK TO record");
           db.exec("RELEASE record");
@@ -64,9 +68,11 @@ export default defineStep({
       }
     });
     if (kept) {
-      // The page reads again: a state, so a burst replaces one message.
+      // The page reads again: a state, so a burst replaces one message. A
+      // new contact is a worker who signed up with an invite: read those too.
       try {
-        ctx.services?.channels?.send(app, { ...(ctx.actor ? { actor: ctx.actor } : {}), code: "support/receive" }, SUPPORT_CHANNEL, [{ key: "changed", data: { at } }]);
+        const said = [{ key: "changed", data: { at } }, ...(joined ? [{ key: "invites", data: { at } }] : [])];
+        ctx.services?.channels?.send(app, { ...(ctx.actor ? { actor: ctx.actor } : {}), code: "support/receive" }, SUPPORT_CHANNEL, said);
       } catch {
         // Over the channel's rate: the page reads every 30 s besides.
       }

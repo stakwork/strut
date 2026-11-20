@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { cn } from "@/lib/utils";
-import { INVITE_WORDS, anyOpenWork, inviteChoices, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
+import { INVITE_WORDS, anyOpenWork, inviteChoices, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
 import type { MadeInvite, TaskType, TypeShare } from "../lib/types";
 import { ErrorLine, Field, Note, useAct } from "./bits";
 import { InviteBadge, useInvites, WhatsappButton } from "./Invite";
@@ -204,12 +204,14 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string }) {
   );
 }
 
-/** The invite just made: its QR code, its link to copy, Share in WhatsApp. */
+/** The invite just made: its QR code, its link to copy, Share in WhatsApp —
+ *  only while it may still be used; once used or cancelled, the status. */
 function MadeCard(props: { invite: MadeInvite; work?: string | undefined }) {
   const { invite } = props;
+  const open = inviteOpen(invite);
   return (
     <div className="flex flex-col gap-3 rounded-md border border-dashed p-3 sm:flex-row sm:items-start" data-testid="invite-made">
-      {invite.qrSvg && <Qr svg={invite.qrSvg} label="QR code: the invite link" />}
+      {open && invite.qrSvg && <Qr svg={invite.qrSvg} label="QR code: the invite link" />}
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           {invite.sats.toLocaleString("en-US")} sats <InviteBadge status={invite.status} />
@@ -219,7 +221,7 @@ function MadeCard(props: { invite: MadeInvite; work?: string | undefined }) {
           {INVITE_WORDS[invite.status]}
           {invite.status === "sending" ? ". It works once it is ready." : "."}
         </Note>
-        {invite.link ? (
+        {!open ? null : invite.link ? (
           <>
             <CopyLine label="Invite link" value={invite.link} hint="Send it by text message or WhatsApp, or let them scan the code. It works once." />
             <div>
