@@ -179,7 +179,7 @@ describe("strut/knowledge: claims and the changes waiting on a person", () => {
   it("why the claims are not shown, in one line, from the step's refusal", () => {
     assert.equal(
       claimsUnavailable('knowledge/page: this caller may not read "private", where the Concept tree is kept (an app\'s page reads only what an app may)'),
-      "Claims aren't shown here: this page may not read where the tree is kept.",
+      "Claims aren't shown here: this app may not read where the tree is kept.",
     );
     assert.equal(claimsUnavailable("knowledge/page needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on"), "This server keeps no claims.");
     assert.equal(claimsUnavailable("boom"), "Couldn't read the claims: boom");
@@ -317,7 +317,7 @@ describe("strut/knowledge: what the dream learned, cycle by cycle", () => {
     assert.equal(cyclesUnavailable("knowledge/cycles is an admin's: only strut's own page, shown to an admin of this server, reads what the dream learned"), null);
     assert.equal(
       cyclesUnavailable('knowledge/cycles: this caller may not read "private", where the Concept tree is kept'),
-      "What the dream learned isn't shown here: this page may not read where the tree is kept.",
+      "What the dream learned isn't shown here: this app may not read where the tree is kept.",
     );
     assert.equal(cyclesUnavailable("knowledge/cycles needs the claims layer (ctx.services.knowledge)"), "This server keeps no claims, so there is no dream.");
     assert.equal(cyclesUnavailable("boom"), "Couldn't read what the dream learned: boom");

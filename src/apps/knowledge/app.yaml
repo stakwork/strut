@@ -6,9 +6,9 @@ description: >-
   the tree between two moments, from the history (plans/concept-history.md);
   a Concept's checks (plans/claim-trials.md): what its readers are held to,
   each with the messages that test it and a dot per verdict, and the changes
-  tested against its page, each a diff with the page's verdicts and the
+  tested against it, each a diff with the Concept's verdicts and the
   change's — an admin runs a check, adds one, tests a change and puts the
-  wording that did better on the page; the changes to a Concept the dream
+  wording that did better on the Concept; the changes to a Concept the dream
   proposed where its tree is reviewed, which a person accepts or rejects
   here; and, for an admin, what the dream learned, cycle by cycle: what
   people said, the claims, and what each cycle's run changed. Strut ships

@@ -104,7 +104,7 @@ export function Changes({ tree, onClose, narrow, lead }: { tree?: ConceptTree; o
                     <span className="truncate">{c.subject}</span>
                   </span>
                   <span className="pl-5 text-[11px] text-muted-foreground">
-                    {new Date(c.time).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {c.changes.length} page{c.changes.length === 1 ? "" : "s"}
+                    {new Date(c.time).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {c.changes.length} concept{c.changes.length === 1 ? "" : "s"}
                   </span>
                 </button>
               </li>

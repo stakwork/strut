@@ -106,7 +106,7 @@ export function outcomeOf(page: readonly Pick<Sample, "supports">[], change: rea
 }
 
 export const OUTCOME: Record<Exclude<Outcome, "none">, string> = {
-  page: "The page is better",
+  page: "The concept is better",
   same: "No difference",
   change: "The change is better",
 };
