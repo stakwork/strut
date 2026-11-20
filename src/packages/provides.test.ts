@@ -53,6 +53,25 @@ export default defineStep({
 const BLANKS = (type: string) => `import { z, defineStep } from "strut";
 export default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run(_cfg, ctx) { return { blanks: !!ctx.services.secretBlanks }; } });
 `;
+/** Re-binds its secrets to another person (`as`) and tries their own value
+ *  — or, with `read`, the merged lookup as them. */
+const REBIND = (type: string) => `import { z, defineStep } from "strut";
+export default defineStep({
+  type: ${JSON.stringify(type)},
+  input: z.object({ as: z.string(), op: z.enum(["get", "set", "delete", "read"]), name: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx) {
+    const secrets = ctx.services.secrets;
+    if (typeof secrets.forPrincipal !== "function") return { rebound: false };
+    const other = secrets.forPrincipal(cfg.as);
+    if (cfg.op === "read") return { rebound: true, value: (await other.get(cfg.name)) ?? null };
+    if (!other.own) return { rebound: true, own: false };
+    if (cfg.op === "set") { await other.own.set(cfg.name, "planted"); return { rebound: true, own: true }; }
+    if (cfg.op === "delete") return { rebound: true, own: true, deleted: await other.own.delete(cfg.name) };
+    return { rebound: true, own: true, value: (await other.own.get(cfg.name)) ?? null };
+  },
+});
+`;
 const APP = (title: string, admin: boolean, steps: string) => ({
   [`apps/${title.toLowerCase()}/app.yaml`]: [`title: ${title}`, ...(admin ? ["admin: true"] : []), "grants:", "  workflows: [acme/hooks/manage]", `  steps: [${steps}, run/launch, run/get]`, ""].join("\n"),
   [`apps/${title.toLowerCase()}/src/App.tsx`]: "export default function App() { return <p>hi</p>; }\n",
@@ -63,10 +82,16 @@ const HOOKS: Record<string, string> = {
   "strut.yaml": MANIFEST,
   "steps/manage.ts": MANAGE("acme/hooks/manage"),
   "steps/blanks.ts": BLANKS("acme/hooks/blanks"),
+  "steps/rebind.ts": REBIND("acme/hooks/rebind"),
+  "workflows/rebind.yaml":
+    'name: acme/hooks/rebind\ninput:\n  as: { type: string }\n  op: { type: string }\n  name: { type: string }\nsteps:\n  - id: r\n    type: acme/hooks/rebind\n    config: { as: "{{ input.as }}", op: "{{ input.op }}", name: "{{ input.name }}" }\n',
+  // A workflow that runs the other as a subflow: a nested run of the same person.
+  "workflows/nested.yaml":
+    'name: acme/hooks/nested\ninput:\n  name: { type: string }\nsteps:\n  - id: inner\n    type: subflow\n    config: { workflow: acme/hooks/manage, input: { scope: own, name: "{{ input.name }}" } }\n',
   "workflows/manage.yaml":
     'name: acme/hooks/manage\ninput:\n  scope: { type: string }\n  name: { type: string }\nsteps:\n  - id: m\n    type: acme/hooks/manage\n    config: { scope: "{{ input.scope }}", name: "{{ input.name }}" }\n',
   ...APP("Admin", true, "acme/hooks/manage, acme/hooks/blanks"),
-  ...APP("People", false, "acme/hooks/manage"),
+  ...APP("People", false, "acme/hooks/manage, acme/hooks/rebind"),
 };
 /** Another package, whose admin app is granted acme/hooks' step. */
 const OTHER: Record<string, string> = {
@@ -283,10 +308,46 @@ describe("a package's steps manage the secrets it provides", () => {
     const run = await call("run/get", { workflow: "acme/hooks/manage", runId: launched.result.runId, wait: 10_000 });
     assert.equal(run.result.status, "error");
     assert.match(JSON.stringify(run.result), /no deployment scope on this call/);
+    // It is the viewer's run: it has their own.
+    await actors.set("root", "HOOK_TOKEN", "root's");
+    const own = await call("run/launch", { workflow: "acme/hooks/manage", input: { scope: "own", name: "HOOK_TOKEN" } });
+    const ownRun = await call("run/get", { workflow: "acme/hooks/manage", runId: own.result.runId, wait: 10_000 });
+    assert.equal(ownRun.result.status, "success", JSON.stringify(ownRun.result));
+    assert.match(JSON.stringify(ownRun.result), /root's/);
     // A run as a person has their own scope, and only that.
     await actors.set("ada", "HOOK_TOKEN", "ada's");
     assert.deepEqual((await strut.run("acme/hooks/manage", { scope: "own", name: "HOOK_TOKEN" }, { actor: "ada", principal: "ada" })).output, { value: "ada's" });
     assert.match((await strut.run("acme/hooks/manage", { scope: "deployment", name: "HOOK_SECRET" }, { actor: "ada", principal: "ada" })).error?.message ?? "", /no deployment scope/);
+  });
+
+  it("reaches no other person's own value by re-binding: in an app's call and in a workflow run", async () => {
+    await actors.set("bob", "HOOK_TOKEN", "bob's");
+    await actors.set("ada", "HOOK_TOKEN", "ada's");
+    const asAda = {
+      app: async (cfg: Record<string, unknown>) => {
+        const out = await page("acme/hooks/people", "ada", false)("acme/hooks/rebind", cfg);
+        assert.equal(out.error, undefined, out.error);
+        return out.result;
+      },
+      run: async (cfg: Record<string, unknown>) => {
+        const r = await strut.run("acme/hooks/rebind", cfg, { actor: "ada", principal: "ada" });
+        assert.equal(r.status, "success", r.error?.message);
+        return r.output;
+      },
+    };
+    for (const [where, call] of Object.entries(asAda)) {
+      for (const op of ["get", "set", "delete", "read"]) {
+        const out = await call({ as: "bob", op, name: "HOOK_TOKEN" });
+        // A package's step works for the run's person alone: it cannot re-bind.
+        assert.deepEqual(out, { rebound: false }, `${where} ${op}`);
+        assert.equal(await actors.get("bob", "HOOK_TOKEN"), "bob's", `${where} ${op}: bob's own is untouched`);
+      }
+    }
+    assert.equal(await actors.get("ada", "HOOK_TOKEN"), "ada's");
+    // A nested run of the same person still has her own.
+    const nested = await strut.run("acme/hooks/nested", { name: "HOOK_TOKEN" }, { actor: "ada", principal: "ada" });
+    assert.equal(nested.status, "success", nested.error?.message);
+    assert.match(JSON.stringify(nested.output), /ada's/);
   });
 
   it("refuses a name the package does not provide, whatever the scope", async () => {
