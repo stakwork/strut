@@ -383,7 +383,8 @@ describe("installing a package on a filesystem workspace", () => {
       "workflows/old.yaml": WORKFLOW("acme/linear/old"),
     };
     // 1.1 changes a step, its helper and a workflow, leaves a workflow as it
-    // was, drops a step and a workflow, and adds a workflow.
+    // was (stamped the release's), drops a step and a workflow, and adds a
+    // workflow.
     const RELEASE_2: Record<string, string> = {
       "strut.yaml": RELEASE_1["strut.yaml"]!.replace("1.0.0", "1.1.0"),
       "steps/create-issue.ts": `${STEP("acme/linear/create-issue")}// 1.1\n`,
@@ -413,9 +414,11 @@ describe("installing a package on a filesystem workspace", () => {
         ["step", "acme/linear/create-issue", "updated", undefined],
         ["workflow", "acme/linear/old", "kept", "modified here (a fork)"],
         ["workflow", "acme/linear/report", "diverged", undefined],
-        ["workflow", "acme/linear/sync", "present", undefined],
+        ["workflow", "acme/linear/sync", "stamped", undefined],
         ["workflow", "acme/linear/triage", "installed", undefined],
       ]);
+      const sync = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
+      assert.deepEqual([sync.active, Object.keys(sync.versions), sync.versions["v1"]?.upstream?.digest], ["v1", ["v1"], digest2], "as the release has it: stamped the release's in place, no new version");
 
       const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
       assert.equal(step.active, "v2");

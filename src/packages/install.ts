@@ -22,7 +22,9 @@
  * The operator's distro (`distro`, §12, §12.1) applies a release with no
  * ask — its publish was the accept — and is the door that updates, item by
  * item (§4's table): an item whose active version the package wrote is
- * FAST-FORWARDED to the release's; a fork gets the release's version BESIDE
+ * FAST-FORWARDED to the release's (STAMPED the release's in place when its
+ * content is the release's already, so a release that changes only its
+ * strut.yaml is what reads as installed); a fork gets the release's version BESIDE
  * it, the fork staying active; an item the release no longer ships is
  * RETIRED when untouched and kept when forked; an edited Concept is left as
  * it is. A package the distro wrote is the distro's: a person's door
@@ -119,7 +121,8 @@ export interface PackageDeps extends InstalledDeps {
  *  release's version recorded beside a fork, which stays active; `retired`
  *  dropped by the release and removed; `kept` dropped by the release and
  *  kept, with the reason; `stamped` its active version recorded as the
- *  repo's commit (the repo's door: a fork committed is no longer one). */
+ *  repo's commit (the repo's door: a fork committed is no longer one), or
+ *  as the distro's release whose content it has already. */
 export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept" | "stamped";
 
 export interface PackageInstallReport {
@@ -458,6 +461,9 @@ async function installSet(
     }
     done(m, item.kind as Wrote["kind"], item.name, { action: "stamp" });
   }
+  // A step's fence is read off its version's stamp (src/packages/fence.ts):
+  // the registry takes the release's.
+  if (stamps.some((s) => s.item.kind === "step")) await deps.getRegistry();
 
   // What the release no longer ships, once the release is in: retired when
   // untouched, kept when forked. A removal that fails is said, never a
@@ -917,7 +923,11 @@ async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: Ins
     const stamped = active.source === "repo" && active.upstream?.digest === m.info.digest && active.upstream?.commit === m.commit;
     return stamped ? { action: "present" } : { action: "stamp" };
   }
-  if (active.hash === hash) return { action: "present" };
+  // The release's content already, from another release: stamped with this
+  // one in place, so what is installed reads this release — and a release
+  // that changes only its strut.yaml (its `job:`, `provides`, `schedules`)
+  // is followed. A fork stays a fork.
+  if (active.hash === hash) return !at.modified && active.upstream?.digest !== m.info.digest ? { action: "stamp" } : { action: "present" };
   return at.modified ? { action: "diverge" } : { action: "update", previous: active.label };
 }
 

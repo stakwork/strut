@@ -25,6 +25,13 @@
  * from the package's own `admin: true` app, `.deployment` reach those names
  * and no other (src/packages/fence.ts).
  *
+ * Its `schedules:` names workflows of the package strut runs on a schedule,
+ * each an automation's draft (`name?`, `trigger`, `input?`) with the
+ * `workflow` it runs, by its name inside the package. `readPackage`
+ * resolves them over the package's OWN workflows and refuses one that is
+ * not there, a trigger the automations' grammar does not have, and a
+ * `once`; the packages' sync makes the automations (./schedules.ts).
+ *
  * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
  * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
  * named by its file, with a `description` and one `parent`; and the new
@@ -50,6 +57,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
+import { checkInputTemplates, triggerSchema, type TriggerDraft } from "../automations.js";
 import { globToRegExp } from "../closure.js";
 import { parseConceptFile } from "../concept-seed.js";
 import { hashTree } from "../version.js";
@@ -70,6 +78,22 @@ export const PACKAGE_NAME = /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
 
 const packageName = z.string().regex(PACKAGE_NAME, "a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*");
 const names = z.array(z.string().min(1));
+
+/** A schedule's `trigger`: the automations' grammar (`triggerSchema`,
+ *  src/automations.ts), the one "how often" strut has. Held strict like the
+ *  rest of the manifest — a key no shape has is refused, not dropped — and
+ *  recurring: a release outlives a `once`. */
+const scheduleTrigger = z.unknown().transform((raw, ctx): TriggerDraft => {
+  const parsed = triggerSchema.safeParse(raw);
+  if (!parsed.success) {
+    for (const i of parsed.error.issues) ctx.addIssue({ code: "custom", path: i.path, message: i.message });
+    return z.NEVER;
+  }
+  const extra = Object.keys(raw as object).filter((k) => !(k in parsed.data));
+  if (extra.length) ctx.addIssue({ code: "custom", message: `Unrecognized key${extra.length > 1 ? "s" : ""}: ${extra.map((k) => JSON.stringify(k)).join(", ")}` });
+  if (parsed.data.every === "once") ctx.addIssue({ code: "custom", path: ["every"], message: "a package's schedule recurs: interval, day, week or month" });
+  return parsed.data;
+});
 
 const manifestSchema = z
   .object({
@@ -109,6 +133,25 @@ const manifestSchema = z
     // steps may read (`requires`). Strict like the rest: a strut from before
     // a key refuses the package instead of installing it without it.
     provides: z.object({ secrets: names.optional() }).strict().optional(),
+    // The package's own workflows strut runs on a schedule: an automation
+    // each, made at install, followed at each release, dropped at uninstall
+    // (src/packages/schedules.ts). An entry is an automation's draft — the
+    // `name`, `trigger` and `input` of `POST /workflows/:name/automations`,
+    // and of strut's own `automation.json` — with the `workflow` it runs.
+    // Strict like the rest: an older strut refuses the package instead of
+    // installing it without its schedules.
+    schedules: z
+      .array(
+        z
+          .object({
+            workflow: z.string().min(1),
+            name: z.string().trim().min(1).optional(),
+            trigger: scheduleTrigger,
+            input: z.record(z.string(), z.unknown()).optional(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -144,6 +187,18 @@ export interface PackageInfo {
   /** The manifest's `job:`, resolved over the package's own steps: full
    *  types, deduplicated and sorted. */
   job?: JobGrant;
+  /** The manifest's `schedules:`, each on a workflow of the package. */
+  schedules?: PackageSchedule[];
+}
+
+/** A workflow of the package strut runs on a schedule: an automation's
+ *  draft, named for the package (its `name` unique in it, the workflow's
+ *  name inside the package unless given), on the workflow's full name. */
+export interface PackageSchedule {
+  name: string;
+  workflow: string;
+  trigger: TriggerDraft;
+  input: Record<string, unknown>;
 }
 
 /** What a package gives the `job` workflow's agent: step types of the
@@ -280,8 +335,29 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   for (const name of manifest.provides?.secrets ?? []) {
     if (!readable.includes(name)) problems.push(`${MANIFEST_FILE}: provides.secrets: ${name} is not in requires.secrets or requires.optional — a package's steps manage only secrets they may read`);
   }
+  const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
-  return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}) };
+  return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}), ...(schedules ? { schedules } : {}) };
+}
+
+/** The manifest's `schedules:` over the package's own workflows: each names
+ *  one by its name inside the package, so a package never schedules
+ *  strut's workflows or another package's. Two with one name, and an input
+ *  template that reads anything but `now`, `today` and `last`, are problems. */
+function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["schedules"]>, items: PackageItem[], problems: string[]): PackageSchedule[] {
+  const own = new Set(items.filter((i) => i.kind === "workflow").map((i) => i.name));
+  const named = new Set<string>();
+  return entries.map((e, i) => {
+    const at = `${MANIFEST_FILE}: schedules[${i}]`;
+    if (!own.has(`${pkg}/${e.workflow}`)) {
+      problems.push(`${at}.workflow: ${JSON.stringify(e.workflow)} is not a workflow of the package — a schedule names one of the package's own workflows (workflows/<name>.yaml) by <name>`);
+    }
+    const name = e.name ?? e.workflow;
+    if (named.has(name)) problems.push(`${at}.name: two schedules are named ${JSON.stringify(name)} — a schedule's name, its workflow's unless given, is its identity in the package`);
+    named.add(name);
+    for (const p of checkInputTemplates(e.input ?? {})) problems.push(`${at}.input: ${p}`);
+    return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {} };
+  });
 }
 
 /** The manifest's `job:` over the package's own steps (helpers are not

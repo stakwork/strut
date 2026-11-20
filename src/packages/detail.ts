@@ -25,6 +25,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseManifest as parseAppManifest, SCREENSHOT_MAX_BYTES } from "../apps/manifest.js";
+import { describeTrigger, normalizeTrigger } from "../automations.js";
 import { walkSteps } from "../closure.js";
 import { parseConceptFile } from "../concept-seed.js";
 import type { Step, StepEffect } from "../core.js";
@@ -89,6 +90,10 @@ export interface WorkflowDetail {
   sealed?: true;
   /** How many claims the `claims:` block declares. */
   claims?: number;
+  /** When strut runs it on its own: each schedule strut.yaml ships on it
+   *  (`schedules:`), as a sentence — in the server's own zone unless it
+   *  names one. */
+  schedules?: string[];
   /** The YAML could not be read as a workflow. */
   error?: string;
 }
@@ -352,6 +357,12 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   };
   const workflows = [...readings.keys()].sort().map((n) => fold(n, []));
   const workflowByName = new Map(workflows.map((w) => [w.name, w]));
+  for (const sc of info.schedules ?? []) {
+    const w = workflowByName.get(inside(sc.workflow));
+    // The zone a schedule names; with none, the installing server's, which no catalog knows.
+    const said = describeTrigger(normalizeTrigger(sc.trigger, new Date(0), sc.trigger.tz ?? "UTC"));
+    if (w) (w.schedules ??= []).push(sc.trigger.tz ? said : said.replace(/ \([^)]*\)$/, ""));
+  }
 
   // The apps: the manifest's face, the flags of what they may launch.
   const apps: AppDetail[] = [];

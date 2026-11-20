@@ -122,6 +122,7 @@ import type { RunEndInfo } from "./runner.js";
 import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { packageJobGrants, seedJobWorkflow, withJobGrants, type JobSeedOptions } from "./job-seed.js";
+import { installedSchedules } from "./packages/schedules.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -5436,13 +5437,16 @@ export async function createStrut<TServices = unknown>(
   // Every install as it goes, whichever door (src/packages/progress.ts).
   const installs = createInstallTracker();
   let packageWrites: Promise<unknown> = Promise.resolve();
-  // Each write seeds `job` again after it, in its turn (`seedJob`, above).
+  // Each write seeds `job` again after it, in its turn (`seedJob`, above),
+  // and makes the packages' schedules what they now ship (`syncSchedules`,
+  // below, where the automations are made).
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = packageWrites.then(async () => {
       try {
         return await fn();
       } finally {
         await seedJob();
+        await syncSchedules();
       }
     });
     packageWrites = next.catch(() => undefined);
@@ -9083,11 +9087,31 @@ export async function createStrut<TServices = unknown>(
     workspace,
     store,
     secrets: automationCallbacks,
-    launch: (flow, input, automation, callback) =>
-      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
+    // `principal`: whom the fire runs as (`runsAs`, scheduler.ts) — a
+    // package's schedule names its workflow's owner; any other leaves it to
+    // `principalFor`, the same owner.
+    launch: (flow, input, automation, callback, principal) =>
+      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}), ...(principal ? { principal } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     draining: () => drain.refusal(),
   });
+  // The schedules installed packages ship (src/packages/schedules.ts): made
+  // exactly, one each, at boot and after every package write (`oneAtATime`),
+  // so an install makes them, a release follows them and an uninstall drops
+  // them. A failure is said, never a failed boot or write.
+  const syncSchedules = async (): Promise<void> => {
+    try {
+      const { schedules, unread } = await installedSchedules({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      const r = await automations.syncPackageSchedules(schedules, unread);
+      for (const [what, list] of [["made", r.made], ["changed", r.changed], ["dropped", r.dropped]] as const) {
+        if (list.length) console.log(`[automations] package schedules ${what}: ${list.join(", ")}`);
+      }
+      for (const w of r.warnings) console.warn(`[automations] ${w}`);
+    } catch (err) {
+      console.warn("[automations] could not sync the packages' schedules:", err instanceof Error ? err.message : err);
+    }
+  };
+  await syncSchedules();
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
   // where that turn does.

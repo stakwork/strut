@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import type { JobGrant } from "./packages/format.js";
-import { listInstalledPackages, type InstalledDeps } from "./packages/installed.js";
+import { holdsItsOwn, listInstalledPackages, type InstalledDeps } from "./packages/installed.js";
 import type { WorkspaceStore } from "./workspace.js";
 
 /**
@@ -119,10 +119,10 @@ export async function packageJobGrants(deps: InstalledDeps): Promise<JobGrant> {
   const tools = new Set<string>();
   const approve = new Set<string>();
   for (const p of await listInstalledPackages(deps)) {
-    if (!p.digest || !p.items.some((i) => i.kind !== "concept" && !i.helper && !i.modified)) continue;
+    if (!holdsItsOwn(p)) continue;
     let job: JobGrant | undefined;
     try {
-      const info = await deps.cache.get(p.digest);
+      const info = await deps.cache.get(p.digest!);
       if (!info) throw new Error(`the package cache holds no ${p.digest}`);
       job = info.job;
     } catch (err) {
