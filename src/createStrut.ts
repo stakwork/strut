@@ -40,7 +40,7 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -73,7 +73,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
+import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, placeInput, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -1556,8 +1556,17 @@ export async function createStrut<TServices = unknown>(
   // People (plans/people-and-hosts.md §1, src/people.ts): a name per
   // person, written by a host's ticket and a visitor's own sign-in, read by
   // `GET /people` and the `people/names` step. Opened on the first name;
-  // memory where the run store is.
-  const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir));
+  // memory where the run store is. A change to a host's places nudges the
+  // host (plans/jamie-in-tribes.md §5.4): `{ event: "places" }` to the hook
+  // it named, naming nothing; the host reads its places and joins or
+  // leaves to match. Posted as a callback is: retried briefly, then dropped.
+  const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir), {
+    onPlaces: (host) =>
+      void (async () => {
+        const self = await people.hostOf(host);
+        if (self) await postCallback(self.hook, { event: "places" }, { tag: `[places] ${host} nudge` });
+      })().catch((err) => console.error(`[places] ${host} was not nudged:`, err)),
+  });
   // Each app's own SQLite (plans/apps.md §4.4, src/apps/data.ts):
   // `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on and an
   // app's migrations are applied to. Memory where the run store is.
@@ -2782,17 +2791,21 @@ export async function createStrut<TServices = unknown>(
     VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
   /** What a HOST key may call (plans/jamie-in-tribes.md §5.1): a turn of
    *  one of its own conversations, as the person it names, read back; a
-   *  proposal made there, decided as that person; who an account is linked
-   *  to; and the tools an app's `hosts:` lets it call, on `POST /mcp`
-   *  (plans/people-and-hosts.md §3). No other read, no publishing, no
-   *  secret, no other session. */
+   *  proposal made there, decided as that person; who and where it is, and
+   *  its places (§5.4); and the tools an app's `hosts:` lets it call, on
+   *  `POST /mcp` (plans/people-and-hosts.md §3). No other read, no
+   *  publishing, no secret, no other session. */
   const HOST_ROUTES: Array<[method: string, path: RegExp]> = [
     ["POST", /^\/workflows\/[^/]+\/run$/],
     ["GET", /^\/conversations\/item$/],
     ["POST", PROPOSAL_DECIDE],
-    ["GET", /^\/hosts\/links\/[^/]+$/],
+    ["PUT", /^\/hosts\/me$/],
+    ["GET", /^\/hosts\/places$/],
+    ["DELETE", /^\/hosts\/places\/[^/]+$/],
     ["POST", /^\/mcp$/],
   ];
+  /** A person's own place, which their token removes (§5.4). */
+  const PERSON_PLACE = /^\/people\/places\/[^/]+\/[^/]+$/;
   const hostMay = (method: string, path: string) => HOST_ROUTES.some(([m, re]) => m === method && re.test(path));
   /** The sign-in routes: open to anyone, since signing in is how a visitor
    *  gets a credential (src/visitors.ts). */
@@ -2828,7 +2841,7 @@ export async function createStrut<TServices = unknown>(
     const host = hostOf(c);
     if (host) {
       if (!hostMay(c.req.method, path)) {
-        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, asks who an account is linked to and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
+        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, says who it is and reads its places, and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
       }
       const raw = c.req.header(ACCOUNT_HEADER);
       const account = raw === undefined ? undefined : parseAccount(raw);
@@ -2865,9 +2878,10 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path));
-      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made and change or fork its conversations" }, 403);
+      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path) || path === "/people/places");
+      const personDelete = scope === "peer:person" && c.req.method === "DELETE" && PERSON_PLACE.test(path);
+      if (isPeerScope(scope) && !personDelete && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made, change or fork its conversations, and link or remove its places" }, 403);
       }
     }
     return next();
@@ -2963,26 +2977,50 @@ export async function createStrut<TServices = unknown>(
     return c.json({ people: await people.names(actors) });
   });
 
-  // ── Hosts: linked accounts (plans/jamie-in-tribes.md §4, §5.2;
-  // plans/people-and-hosts.md §2; src/people.ts) ──────────────────────────
+  // ── Hosts: places (plans/jamie-in-tribes.md §5.4; src/people.ts) ───────
   // A person links an account through Peel (`POST /people/link`, below with
-  // the visitors' sign-in). A host asks whether one is linked: the Sphinx
-  // daemon checks a tribe's owner with it. A host key's route alone, for an
-  // account of its own kind.
+  // the visitors' sign-in), and a place with the token Peel then holds
+  // (`/people/places`, below). A host says who and where it is, reads its
+  // places, and drops one it no longer answers in. A host key's routes alone.
   const hostRoute = (c: Context): string | Response =>
     hostCalls.get(c.req.raw)?.host ?? c.json({ error: "forbidden: a host's route — it takes a host key (STRUT_HOST_KEYS)" }, 403);
   /** The key a host names, bare or as `<kind>:<key>` of its own kind. */
   const hostKeyOf = (host: string, raw: unknown) =>
     accountKey(host, typeof raw === "string" && raw.startsWith(`${host}:`) ? raw.slice(host.length + 1) : raw);
 
-  // Whether an account is a person's here: the link, or 404 `not_linked`.
-  app.get("/hosts/links/:key", async (c) => {
+  // Who the host is on its medium (handed to Peel, which approves its join
+  // of a private tribe), and the hook a change to its places is nudged on.
+  // The daemon sends it at every start.
+  app.put("/hosts/me", async (c) => {
     const host = hostRoute(c);
     if (host instanceof Response) return host;
-    const key = hostKeyOf(host, c.req.param("key"));
-    if (!key) return c.json({ error: `not a ${host} account's key` }, 400);
-    const link = await people.linkOf({ kind: host, key });
-    return link ? c.json(link) : c.json({ error: `not_linked: ${host}:${key} is not linked to a person here` }, 404);
+    const body = (await c.req.json().catch(() => null)) as { account?: unknown; hook?: unknown } | null;
+    const key = hostKeyOf(host, body?.account);
+    if (!key) return c.json({ error: `account is this host's own ${host} account: <key> or ${host}:<key>` }, 400);
+    let hook: string;
+    try {
+      hook = parseCallback({ url: body?.hook }).url;
+    } catch {
+      hook = "";
+    }
+    if (!hook || hook.length > 2_000) return c.json({ error: "hook is an http(s) URL, at most 2,000 characters: where strut tells this host its places changed" }, 400);
+    const self = await people.setHost(host, { kind: host, key }, hook);
+    return c.json({ name: self.name, account: self.account, at: self.at });
+  });
+
+  // Its places, every linker's: the host joins each and leaves the rest.
+  app.get("/hosts/places", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    return c.json({ places: await people.hostPlaces(host) });
+  });
+
+  // A place it no longer answers in: removed from the tribe, or a link it
+  // couldn't join.
+  app.delete("/hosts/places/:key", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    return c.json({ removed: await people.unlinkPlace(host, c.req.param("key")) });
   });
   // ── Workflows ────────────────────────────────────────────────────────────
 
@@ -5244,6 +5282,46 @@ export async function createStrut<TServices = unknown>(
     const link = await people.linkOf(signed.account);
     if (!link) return c.json({ error: `not_linked: ${accountText(signed.account)} is not linked to a person here — link it from the Jamie app's Connect` }, 403);
     return peelToken(c, link.actor, signed.account);
+  });
+
+  // ── A person's places (plans/jamie-in-tribes.md §4, §5.4) ──────────────
+  // With the token Peel holds for this box, which names the person's
+  // account: the hosts ready to take a place and the person's own places;
+  // link one (the linker is that account, and another person's place is a
+  // 409); remove one's own. Each change nudges the host (`onPlaces`).
+  const placeLinker = (c: Context): { actor: string; account: Account } | Response => {
+    const person = personOf(c);
+    const account = person?.account ? parseAccount(person.account) : undefined;
+    if (!person || !account) return c.json({ error: "forbidden: a place is linked with the token Peel holds for this box, which names your account — link Peel in the Jamie app's Connect" }, 403);
+    return { actor: person.actor, account };
+  };
+  /** A host that may take a place: a key here, and it said who it is. */
+  const readyHost = async (name: string) => (hostKeys().has(name) ? await people.hostOf(name) : undefined);
+
+  app.get("/people/places", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    const self = await readyHost(linker.account.kind);
+    return c.json({ hosts: self ? [{ host: self.name, account: self.account }] : [], places: await people.placesOf(linker.actor) });
+  });
+
+  app.post("/people/places", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    const input = placeInput(await c.req.json().catch(() => null));
+    if (typeof input === "string") return c.json({ error: input }, 400);
+    if (input.host !== linker.account.kind) return c.json({ error: `a ${input.host} place is linked by a ${input.host} account, and this token's is ${linker.account.kind}` }, 400);
+    const self = await readyHost(input.host);
+    if (!self) return c.json({ error: `no_host: no ${input.host} host is ready here — it needs a key (STRUT_HOST_KEYS) and to have said who it is (PUT /hosts/me)` }, 404);
+    const linked = await people.linkPlace(input, linker.account, linker.actor);
+    if ("taken" in linked) return c.json({ error: `place_linked: ${input.host}:${input.key} is linked by another person here — they remove it first` }, 409);
+    return c.json({ place: linked.place, account: self.account });
+  });
+
+  app.delete("/people/places/:host/:key", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    return c.json({ removed: await people.unlinkPlace(c.req.param("host"), c.req.param("key"), linker.actor) });
   });
 
   app.delete("/apps/:name", async (c) => {

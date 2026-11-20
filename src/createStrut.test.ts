@@ -1494,8 +1494,9 @@ describe("the API key gate", () => {
     // (Send a round, the type editor's When there is work): staff reads.
     // And people's names (plans/people-and-hosts.md §1): an admin's read.
     // And an app's database, every row of it (plans/apps.md §4.4).
-    // And whether an account is linked (plans/jamie-in-tribes.md §5.2): a host key's alone.
-    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
+    // And a host's places (plans/jamie-in-tribes.md §5.4): its key's alone; and a
+    // person's, which need the token Peel holds for a box.
+    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/places", "GET /people/places", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
@@ -1769,7 +1770,7 @@ describe("the API key gate", () => {
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
 
-  it("a host key (STRUT_HOST_KEYS) passes its five routes, and every other route is 403 — reads included", async () => {
+  it("a host key (STRUT_HOST_KEYS) passes its seven routes, and every other route is 403 — reads included", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
     const saved = process.env["STRUT_HOST_KEYS"];
@@ -1777,9 +1778,9 @@ describe("the API key gate", () => {
     try {
       const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
       // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
-      // back, a proposal there decided, and who an account is linked to; and an
+      // back, a proposal there decided, and who it is and its places (§5.4); and an
       // app's tools its hosts: lets it call (plans/people-and-hosts.md §3).
-      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "GET /hosts/links/x", "POST /mcp"];
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "PUT /hosts/me", "GET /hosts/places", "DELETE /hosts/places/x", "POST /mcp"];
       for (const r of allowed) assert.ok(routes.includes(r), r);
       const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
       for (const route of routes) {
@@ -1791,7 +1792,7 @@ describe("the API key gate", () => {
         else assert.equal(res.status, 403, route);
       }
       // Not the deployment key's equal, and not a host's without its entry.
-      assert.equal((await strut.app.request("/hosts/links/x", { headers: auth.headers })).status, 403, "a host's route: the key is no host");
+      assert.equal((await strut.app.request("/hosts/places", { headers: auth.headers })).status, 403, "a host's route: the key is no host");
       assert.equal((await strut.app.request("/workflows", { headers: { authorization: "Bearer entry" } })).status, 401);
       process.env["STRUT_HOST_KEYS"] = "";
       assert.equal((await strut.app.request("/conversations/item?id=host/sphinx/x", { headers: host })).status, 401, "unset, it opens nothing");

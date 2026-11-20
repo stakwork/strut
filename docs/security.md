@@ -221,8 +221,9 @@ container in the compose (strut and any service that registers steps).
   (`scopeFromKey`, and createStrut's `resolveScope` before a host hook, as a
   member's session is). The gate passes it `HOST_ROUTES` alone — `POST
   /workflows/:name/run`, `GET /conversations/item`, `POST
-  /proposals/:id/decide`, `GET /hosts/links/:key` (whether an account is
-  linked, and to whom), and `POST /mcp` (below) — and 403s every other route, reads included
+  /proposals/:id/decide`, `PUT /hosts/me`, `GET /hosts/places` and `DELETE
+  /hosts/places/:key` ("Linked places" below), and `POST /mcp` (below) —
+  and 403s every other route, reads included
   (`createStrut.test.ts` "a host key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
   (the host's own kind, else 400) and asks `people.actorOf` once
   (`hostCalls`); `resolveActor` answers that person only when the account
@@ -286,6 +287,31 @@ container in the compose (strut and any service that registers steps).
   door; the app door hands each request one bound to strut's address as
   that request reached it (createStrut `requestServices`), and the shared
   bag's has `STRUT_PUBLIC_URL` alone (none: `account/link` fails).
+- **Linked places** (plans/jamie-in-tribes.md §4, §5.4; specs/API.md
+  §13.4, §13.6; `src/people.ts`). A PLACE is where a person asks a host to
+  answer, as them: a tribe, to the Sphinx daemon. `people.db`'s `places
+  (host, key, link, name, account, at)`, one linker per `(host, key)`, the
+  linker being the account their Peel token names (`<kind>:<key>`, the host's
+  own kind). Strut keeps the list and knows nothing of tribes; the host
+  joins and leaves to match it. A person's routes take the token Peel holds
+  for a box (`placeLinker`: a person token NAMING an account, which the
+  gate already holds to its link; any other credential is 403): `GET
+  /people/places` (the host ready for that kind, and their places), `POST
+  /people/places` (another person's place is `409 place_linked:`, a host
+  with no key or that hasn't said who it is `404 no_host:`), `DELETE
+  /people/places/:host/:key` (their own). The gate lets a person token POST
+  and DELETE these, past a peer's routes. A host's routes: `PUT /hosts/me {
+  account, hook }` (`hosts (name, account, hook, at)`: its own account,
+  handed to Peel to approve its join of a private tribe, and an http(s)
+  hook), `GET /hosts/places` (every linker's, with `linkerName`, the
+  linker's name as strut shows it), `DELETE /hosts/places/:key`. Each change
+  to a host's places (a link that moves, a removal, an account's unlink,
+  which takes its places with it) calls `createPeople`'s `onPlaces`, which
+  POSTs `{ event: "places" }` to the hook as a callback is posted
+  (`postCallback`: retried briefly, then dropped). The nudge names nothing:
+  the host reads its whole list, so a lost or repeated one changes nothing.
+  Strut checks no tribe's owner: a turn as the linker has the linker's
+  access alone, never an admin's.
 - **A host calls an app's tools** (plans/people-and-hosts.md §3, §9;
   docs/apps.md has the door). On `POST /mcp` a host key gets `step_run`
   alone, and only the steps an app's `hosts:` lists for that key's name —

@@ -696,13 +696,12 @@ describe("conversations through a whole strut", () => {
     assert.equal(unlinked.status, 403);
     assert.match(unlinked.body.error, /^not_linked: sphinx:02abab/);
 
-    // Ada links her key (through Peel, plans/people-and-hosts.md §2.1); the
-    // host asks who it is. A host links nothing itself.
-    assert.equal((await req(`/hosts/links/${ADA}`, { headers: host() })).status, 404);
+    // Ada links her key (through Peel, plans/people-and-hosts.md §2.1). A
+    // host links nothing itself, and no longer asks who a key is: a place
+    // carries its linker (plans/jamie-in-tribes.md §5.4).
     assert.equal((await req("/hosts/link", { method: "POST", body: { code: "link-abcdefgh", key: ADA }, headers: host() })).status, 403);
+    assert.equal((await req(`/hosts/links/${ADA}`, { headers: host() })).status, 403);
     await strut.people.link({ kind: "sphinx", key: ADA }, "ada", { name: "ada on sphinx" });
-    assert.deepEqual([(await req(`/hosts/links/sphinx:${ADA}`, { headers: host() })).body.actor, (await req(`/hosts/links/${ADA}`, { headers: host() })).body.name], ["ada", "ada on sphinx"]);
-    assert.equal((await req("/hosts/links/nope", { headers: host() })).status, 400);
     await strut.people.link({ kind: "sphinx", key: BOB }, "bob");
 
     // The workflow as published, on the host's own namespace, a conversation workflow.

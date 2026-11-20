@@ -15,6 +15,15 @@
  * (`secp:<x-only>`, what a signed sign-in with that key gives), unlinked;
  * else nobody.
  *
+ * A PLACE (plans/jamie-in-tribes.md §5.4) is where a person asks a host to
+ * answer, as them: a spot on the host's medium (a tribe), a link the host
+ * joins it by, and the LINKER's account. Strut keeps the list, and the host
+ * joins and leaves to match it. To strut a place is opaque. A place goes with
+ * its account: unlinking the account deletes the places it linked. Each
+ * change to a host's places calls `onPlaces(host)`, which nudges the host.
+ * A host says who and where it is (`hostOf`): its own account on its medium,
+ * and the hook the nudge goes to.
+ *
  * A name is for showing. Nothing checks it, and two people may share one.
  * It is one line, at most 80 characters, trimmed (`cleanName`). A host's
  * name is never replaced by one a person gave themself; within each kind
@@ -72,10 +81,92 @@ export interface People extends PeopleReader {
   /** Links `account` to `actor`, replacing any link it had: whoever holds
    *  the key says whose it is. */
   link(account: Account, actor: string, extra?: { host?: string; name?: unknown; address?: unknown }): Promise<AccountLink>;
-  /** Removes `actor`'s link of `account`. False when they had none. */
+  /** Removes `actor`'s link of `account`, and the places it linked. False
+   *  when they had none. */
   unlink(account: Account, actor: string): Promise<boolean>;
+  /** Host `host`'s places, every linker's, each with the linker's name. */
+  hostPlaces(host: string): Promise<Place[]>;
+  /** The places linked by `actor`'s accounts, the newest first. */
+  placesOf(actor: string): Promise<Place[]>;
+  /** Links a place as `account`, whose person is `actor`. The same person
+   *  again refreshes `link` and `name` (and the account); another person's
+   *  place is `{ taken }`, unchanged. */
+  linkPlace(place: PlaceInput, account: Account, actor: string): Promise<{ place: Place } | { taken: Place }>;
+  /** Removes a place: any, for its host; `actor`'s own, for a person. False
+   *  when there was none to remove. */
+  unlinkPlace(host: string, key: string, actor?: string): Promise<boolean>;
+  /** What host `name` said of itself, or undefined. */
+  hostOf(name: string): Promise<HostSelf | undefined>;
+  /** Keeps what host `name` says of itself. */
+  setHost(name: string, account: Account, hook: string): Promise<HostSelf>;
   /** Folds the WAL into the file. */
   close(): Promise<void>;
+}
+
+// ── Places (plans/jamie-in-tribes.md §5.4) ───────────────────────────────
+
+/** Where a person asks a host to answer, as them. */
+export interface Place {
+  /** The host's name: "sphinx". */
+  host: string;
+  /** The place on the host's medium: a tribe's pubkey. */
+  key: string;
+  /** How the host joins it: the tribe's link. */
+  link: string;
+  /** What the person saw it called. */
+  name?: string;
+  /** The linker: `<kind>:<key>`, the account their person token names. */
+  account: string;
+  /** The linker's name, as strut shows it (`hostPlaces` alone). */
+  linkerName?: string;
+  at: number;
+}
+
+/** What a person sends to link a place. */
+export interface PlaceInput {
+  host: string;
+  key: string;
+  link: string;
+  name?: string;
+}
+
+/** What a host said of itself (`PUT /hosts/me`). */
+export interface HostSelf {
+  name: string;
+  /** Its own account on its medium: `<kind>:<key>`. */
+  account: string;
+  /** Where strut nudges it when its places change. */
+  hook: string;
+  at: number;
+}
+
+/** A place's key and link, as kept: up to 200 and 2,000 printable
+ *  characters, no space in the key. Strut checks no more: the host refuses
+ *  a place it can't join. */
+export function placeInput(raw: unknown): PlaceInput | string {
+  const o = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const host = typeof o["host"] === "string" ? o["host"].trim() : "";
+  if (!KIND_PATTERN.test(host)) return 'host is the host\'s name: "sphinx"';
+  const key = typeof o["key"] === "string" ? o["key"].trim() : "";
+  if (!/^[\x21-\x7e]{1,200}$/.test(key)) return "key is the place on the host's medium (a tribe's pubkey): 1 to 200 characters, no space";
+  const link = typeof o["link"] === "string" ? o["link"].trim() : "";
+  if (!link || link.length > 2_000 || /[\u0000-\u001f\u007f]/.test(link)) return "link is how the host joins the place (a tribe's link): 1 to 2,000 characters on one line";
+  if (o["name"] != null && typeof o["name"] !== "string") return "name must be a string: what the place is called";
+  const name = cleanName(o["name"]);
+  return { host, key, link, ...(name ? { name } : {}) };
+}
+
+interface PlaceRow {
+  host: string;
+  key: string;
+  link: string;
+  name: string | null;
+  account: string;
+  at: number;
+}
+
+function placeOfRow(r: PlaceRow): Place {
+  return { host: r.host, key: r.key, link: r.link, ...(r.name ? { name: r.name } : {}), account: r.account, at: r.at };
 }
 
 // ── Accounts (§2) ────────────────────────────────────────────────────────
@@ -235,12 +326,47 @@ async function openDb(file: string): Promise<DatabaseSync> {
      )`,
   );
   db.exec("CREATE INDEX IF NOT EXISTS accounts_actor ON accounts (actor)");
+  // One linker per place; `account` is theirs, `<kind>:<key>`.
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS places (
+       host TEXT NOT NULL,
+       key TEXT NOT NULL,
+       link TEXT NOT NULL,
+       name TEXT,
+       account TEXT NOT NULL,
+       at INTEGER NOT NULL,
+       PRIMARY KEY (host, key)
+     )`,
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS places_account ON places (account)");
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS hosts (
+       name TEXT PRIMARY KEY,
+       account TEXT NOT NULL,
+       hook TEXT NOT NULL,
+       at INTEGER NOT NULL
+     )`,
+  );
   return db;
+}
+
+export interface PeopleOptions {
+  /** Called after each change to host `host`'s places. */
+  onPlaces?: (host: string) => void;
 }
 
 /** The store on `file` (`peoplePath`, or `PEOPLE_IN_MEMORY`), opened on the
  *  first write, or on a read once the file is there. */
-export function createPeople(file: string): People {
+export function createPeople(file: string, opts: PeopleOptions = {}): People {
+  const changed = (hosts: Iterable<string>) => {
+    for (const host of new Set(hosts)) {
+      try {
+        opts.onPlaces?.(host);
+      } catch (err) {
+        console.error(`[people] ${host}'s places changed, but nothing was told:`, err);
+      }
+    }
+  };
   let db: Promise<DatabaseSync> | undefined;
   const open = (): Promise<DatabaseSync> => {
     db ??= openDb(file);
@@ -326,7 +452,78 @@ export function createPeople(file: string): People {
     },
     async unlink(account, actor) {
       if (!kept()) return false;
-      return Number((await open()).prepare("DELETE FROM accounts WHERE kind = ? AND key = ? AND actor = ?").run(account.kind, account.key, actor).changes) > 0;
+      const conn = await open();
+      if (Number(conn.prepare("DELETE FROM accounts WHERE kind = ? AND key = ? AND actor = ?").run(account.kind, account.key, actor).changes) === 0) return false;
+      // A place goes with its account (§5.4).
+      const gone = conn.prepare("DELETE FROM places WHERE account = ? RETURNING host").all(accountText(account)) as Array<{ host: string }>;
+      changed(gone.map((r) => r.host));
+      return true;
+    },
+    async hostPlaces(host) {
+      if (!kept()) return [];
+      const places = ((await open()).prepare("SELECT * FROM places WHERE host = ? ORDER BY at").all(host) as unknown as PlaceRow[]).map(placeOfRow);
+      // The linker's name: their own, else their account's (`names`).
+      const actors = new Map<string, string>();
+      for (const p of places) {
+        const link = await people.linkOf(parseAccount(p.account)!);
+        if (link) actors.set(p.account, link.actor);
+      }
+      const names: Names = {};
+      const unique = [...new Set(actors.values())];
+      for (let i = 0; i < unique.length; i += PEOPLE_READ_MAX) Object.assign(names, await people.names(unique.slice(i, i + PEOPLE_READ_MAX)));
+      return places.map((p) => {
+        const linkerName = names[actors.get(p.account) ?? ""]?.name;
+        return linkerName ? { ...p, linkerName } : p;
+      });
+    },
+    async placesOf(actor) {
+      if (!kept()) return [];
+      const rows = (await open())
+        .prepare("SELECT p.* FROM places p JOIN accounts a ON p.account = a.kind || ':' || a.key WHERE a.actor = ? ORDER BY p.at DESC")
+        .all(actor) as unknown as PlaceRow[];
+      return rows.map(placeOfRow);
+    },
+    async linkPlace(input, account, actor) {
+      const conn = await open();
+      const text = accountText(account);
+      // Read and write with no await between: one person per place.
+      const was = conn.prepare("SELECT * FROM places WHERE host = ? AND key = ?").get(input.host, input.key) as PlaceRow | undefined;
+      if (was && was.account !== text) {
+        const holder = conn.prepare("SELECT actor FROM accounts WHERE kind || ':' || key = ?").get(was.account) as { actor: string } | undefined;
+        if (holder?.actor !== actor) return { taken: placeOfRow(was) };
+      }
+      const at = was?.at ?? Date.now();
+      conn
+        .prepare(
+          `INSERT INTO places (host, key, link, name, account, at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (host, key) DO UPDATE SET link = excluded.link, name = excluded.name, account = excluded.account`,
+        )
+        .run(input.host, input.key, input.link, input.name ?? null, text, at);
+      const place = placeOfRow({ host: input.host, key: input.key, link: input.link, name: input.name ?? null, account: text, at });
+      if (!was || was.link !== place.link || was.account !== text) changed([input.host]);
+      return { place };
+    },
+    async unlinkPlace(host, key, actor) {
+      if (!kept()) return false;
+      const conn = await open();
+      const r =
+        actor === undefined
+          ? conn.prepare("DELETE FROM places WHERE host = ? AND key = ?").run(host, key)
+          : conn.prepare("DELETE FROM places WHERE host = ? AND key = ? AND account IN (SELECT kind || ':' || key FROM accounts WHERE actor = ?)").run(host, key, actor);
+      if (Number(r.changes) === 0) return false;
+      changed([host]);
+      return true;
+    },
+    async hostOf(name) {
+      if (!kept()) return undefined;
+      return ((await open()).prepare("SELECT * FROM hosts WHERE name = ?").get(name) as HostSelf | undefined) ?? undefined;
+    },
+    async setHost(name, account, hook) {
+      const self: HostSelf = { name, account: accountText(account), hook, at: Date.now() };
+      (await open())
+        .prepare("INSERT INTO hosts (name, account, hook, at) VALUES (?, ?, ?, ?) ON CONFLICT (name) DO UPDATE SET account = excluded.account, hook = excluded.hook, at = excluded.at")
+        .run(self.name, self.account, self.hook, self.at);
+      return self;
     },
     async close() {
       const conn = await db?.catch(() => undefined);

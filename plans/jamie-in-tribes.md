@@ -430,6 +430,20 @@ but it would write them itself: adding a bot to a channel is Slack's own
 `/invite`, and Slack's join event names who invited it. That needs a
 host's route to add a place, which nothing here needs yet.
 
+**Built differently (#PR):**
+- `GET /hosts/places` gives each place `linkerName`, the linker's name as
+  strut shows it (`API.md` §13.3). The daemon needs it for its lines and a
+  turn's `context.line`, since a linker who linked through Peel is seldom
+  among the account's contacts (stakwork/sphinx#440).
+- The linker's account must be of the host's kind (a `sphinx` place, a
+  `sphinx` account): it is what the host launches a turn as.
+- `GET /people/places` names the one host ready for the token's kind of
+  account. A token naming no account (`POST /peers/tokens`'s) is `403`.
+- A refresh nudges the host only when the link or the linker's account
+  changed; a new name alone does not.
+- `PUT /hosts/me` answers `{ name, account, at }`, never the hook, which
+  carries the host's own token.
+
 ## 6. The reply
 
 The callback's `run.end` (`CALLBACKS.md` §2):
@@ -671,7 +685,7 @@ Each is its own PR against its repo's default branch, never stacked.
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | **Built (stakwork/sphinx#439)**: `DAEMON_TRIBE_ALIAS` and `DAEMON_TRIBE_PHOTO` (a link); the mention follows the tribe name (§7) |
 | 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`, which stands in for item 6's `PUT /hosts/me`, `GET` and `DELETE /hosts/places` and the nudge too). It follows its places (§7). Its DM linking is gone. Differences in §2, §6, §6.1, §7 |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4, 6 released; 7 for the tap | — |
-| 6 | strut | **Linked places** (§5.4): the `places` and `hosts` tables in `people.db`; `GET`, `POST` and `DELETE /people/places` for a person token; `PUT /hosts/me`, `GET /hosts/places` and `DELETE /hosts/places/:key` for a host key; the nudge; a place going with its linker's account; `GET /hosts/links/:key` removed (nothing calls it). `specs/API.md` §13.4 and §13.6, `docs/security.md`, a host-door test | 1 | — |
+| 6 | strut | **Linked places** (§5.4): the `places` and `hosts` tables in `people.db`; `GET`, `POST` and `DELETE /people/places` for a person token; `PUT /hosts/me`, `GET /hosts/places` and `DELETE /hosts/places/:key` for a host key; the nudge; a place going with its linker's account; `GET /hosts/links/:key` removed (nothing calls it). `specs/API.md` §13.4 and §13.6, `docs/security.md`, a host-door test | 1 | **Built (#PR)**: `src/people.ts` (`linkPlace`, `hostPlaces`, `onPlaces`), the routes in `createStrut.ts`, `src/places.test.ts`. Each place the host reads carries `linkerName` (§5.4) |
 | 7 | peel, peel-android | **The Jamie row for a box** (§4): beside Hive's orgs, each linked box whose strut has a Sphinx host ready; on: `POST /people/places`, then approve the member request by the answered `account`; off: `DELETE` | 6 | — |
 
 A stand-in for strut's host routes goes into the daemon's tests, so item 4
