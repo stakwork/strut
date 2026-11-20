@@ -16,7 +16,7 @@ import type {
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
 import { assertWorkflowEnabled } from "./workspace.js";
-import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy, type WakeMark } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -147,6 +147,10 @@ export interface RunOptions<TServices = unknown> {
    *  is on that one, and may name no other. It must exist
    *  (`services.branches`), or the run fails at its start. */
   branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/core.ts): a launch-level field
+   *  beside `branch`, recorded on `run.start` and the summary, handed to
+   *  every step as `ctx.trial`, read back by a resume. */
+  trial?: RunTrial;
   /** A job run: the TURN that started it (`RunEvent.startedBy`) — recorded
    *  on `run.start` and on the job's record; the job launcher is the one
    *  site that sets it. */
@@ -363,6 +367,8 @@ interface Exec {
   job?: string;
   /** The run's Concept branch (`StepContext.branch`). */
   branch?: string;
+  /** The run is a trial (`StepContext.trial`). */
+  trial?: RunTrial;
   app?: AppRef;
   hostCall?: HostRef;
   automation?: { id: string };
@@ -404,6 +410,20 @@ function parkRefusalFor(services: unknown, opts: Pick<RunOptions, "noPark" | "or
   };
 }
 
+
+/** A trial schedules nothing (`RunTrial`, src/trials.ts): an automation's
+ *  fires are runs of their own, outside it. The consumer's bag is never
+ *  mutated. What else a trial holds (a job, a proposal, a run on another
+ *  strut) its steps hold themselves, from `ctx.trial`. */
+function bindTrial<TServices>(services: TServices, trial: RunTrial | undefined): TServices {
+  if (!trial || services == null || typeof services !== "object") return services;
+  const automations = (services as { automations?: { api?: Record<string, unknown> } }).automations;
+  if (!automations?.api) return services;
+  const refuse = async () => {
+    throw new Error(`${TRIAL_HELD} — nothing was scheduled`);
+  };
+  return { ...services, automations: { ...automations, api: { ...automations.api, create: refuse, update: refuse, fire: refuse } } };
+}
 /** `ctx.park` for one run: a `ParkedError` when something here can wake
  *  the run, else an ordinary error that fails the step. */
 function parkFor(refusal: (on: string) => string | undefined): (on: string) => never {
@@ -468,6 +488,7 @@ export function summaryFromLog(
     ...(start?.principal ? { principal: start.principal } : {}),
     ...(start?.job ? { job: start.job } : {}),
     ...(start?.branch ? { branch: start.branch } : {}),
+    ...(start?.trial ? { trial: start.trial } : {}),
     ...(start?.origin ? { origin: start.origin } : {}),
     ...(start?.app ? { app: start.app } : {}),
     ...(start?.visitor ? { visitor: start.visitor } : {}),
@@ -529,6 +550,7 @@ async function executeRun<TServices = unknown>(
     ...(opts?.principal ? { principal: opts.principal } : {}),
     ...(opts?.job ? { job: opts.job } : {}),
     ...(branch ? { branch } : {}),
+    ...(opts?.trial ? { trial: opts.trial } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(opts?.app ? { app: opts.app } : {}),
     ...(opts?.origin === "public" && opts.visitor ? { visitor: opts.visitor } : {}),
@@ -545,7 +567,7 @@ async function executeRun<TServices = unknown>(
   // On a Concept branch its Concepts are the branch's (bindBranch); on any
   // run, a conversation stays on its first turn's branch.
   const { services, reporter: graphReports } = bindGraph(
-    bindBranch(
+    bindTrial(bindBranch(
       bindApp(
         bindPeer(
           bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
@@ -559,7 +581,7 @@ async function executeRun<TServices = unknown>(
         opts?.continues,
       ),
       branch,
-    ),
+    ), opts?.trial),
     { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
   );
 
@@ -666,6 +688,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
       ...(branch ? { branch } : {}),
+      ...(opts?.trial ? { trial: opts.trial } : {}),
       ...(opts?.app ? { app: opts.app } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
@@ -724,6 +747,7 @@ async function executeRun<TServices = unknown>(
     principal: opts?.principal,
     job: opts?.job,
     ...(branch ? { branch } : {}),
+    ...(opts?.trial ? { trial: opts.trial } : {}),
     app: opts?.app,
     ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
@@ -1300,6 +1324,7 @@ function stepContext(step: Step, validConfig: unknown, scope: Record<string, unk
     ...(exec.principal ? { principal: exec.principal } : {}),
     ...(exec.job ? { job: exec.job } : {}),
     ...(exec.branch ? { branch: exec.branch } : {}),
+    ...(exec.trial ? { trial: exec.trial } : {}),
     ...(exec.app ? { app: exec.app } : {}),
     ...(exec.hostCall ? { host: exec.hostCall } : {}),
     ...(exec.automation ? { automation: exec.automation } : {}),

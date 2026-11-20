@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, summarizeFromEvents } from "./store.js";
 import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
@@ -181,6 +181,8 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
+import { createTrials, SEED_SPEAKER } from "./trials.js";
+import type { PageClaim } from "./claims-schemas.js";
 import { MergeConflict, MergeRefused } from "./branch-merge.js";
 import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSources } from "./concept-sources.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
@@ -1050,6 +1052,8 @@ export interface StrutRunOptions<TServices = unknown> {
   /** The Concept branch to run on — the twin of `POST …/run { branch }`
    *  (src/branches.ts). With `parentRunId`, the parent's branch, and no other. */
   branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/trials.ts): what it starts is held. */
+  trial?: RunTrial;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -1358,7 +1362,7 @@ export async function createStrut<TServices = unknown>(
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
    *  untrack fn belongs in the launcher's finally. `job` is the launch's
    *  job and title, shown on the run's row until its summary is written. */
-  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }, branch?: string) => {
+  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }, branch?: string, trial?: RunTrial) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
     // A run on a Concept branch starts every run on it (src/branches.ts):
@@ -1374,6 +1378,8 @@ export async function createStrut<TServices = unknown>(
     const controller = new RunController(runId, workflow, parent);
     if (job) controller.job = job;
     if (parent?.branch ?? branch) controller.branch = (parent?.branch ?? branch)!;
+    // A trial's runs are trials (src/trials.ts): what one starts holds what it would start, too.
+    if (parent?.trial ?? trial) controller.trial = (parent?.trial ?? trial)!;
     controllers.set(key, controller);
     controllersByRunId.set(runId, controller);
     const untrack = () => {
@@ -2370,13 +2376,17 @@ export async function createStrut<TServices = unknown>(
     console.warn(`[apps] could not compact app versions:`, err instanceof Error ? err.message : err);
   }
 
+  // The claims and cases those pages' files carry (plans/claim-trials.md
+  // §3): recorded once the claims layer is up (`trials.seed`, below).
+  const seededClaims: Array<{ name: string; claims: PageClaim[] }> = [];
   // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
   // page the builder's prompt reads, the `Job` page the job agent opens
   // first, and the `Dream` pages the dream's rules are. On a graph only; a
   // page that will not seed is a warning.
   if (graph && opts.concepts !== false) {
     try {
-      await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
+      const seeded = await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
+      for (const p of seeded) if (p.claims?.length) seededClaims.push({ name: p.name, claims: p.claims });
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }
@@ -2520,6 +2530,27 @@ export async function createStrut<TServices = unknown>(
   // Concept tree works through. A host's own wins.
   if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["knowledge"]) {
     (services as Record<string, unknown>)["knowledge"] = createKnowledge({ graph: claimsGraph, claims: claimsAuthoring, verifier, store, ...(branchesCap ? { branches: branchesCap } : {}) });
+  }
+  // Trials and tests (src/trials.ts, plans/claim-trials.md): a claim's
+  // cases run as trials, and two wordings of a page run against the same
+  // checks. What the Knowledge app's checks are read and run through.
+  if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["trials"]) {
+    const trials = createTrials({
+      dataDir,
+      graph: claimsGraph,
+      claims: claimsAuthoring,
+      verifier,
+      store,
+      ...(branchesCap ? { branches: branchesCap } : {}),
+      ...(conceptSources ? { sources: conceptSources } : {}),
+      ...(history ? { history } : {}),
+      hasWorkflow: async (name) => !!(await workspace.getWorkflow(name).catch(() => null)),
+      run: (workflow, input, o) => run(workflow, input, o),
+    });
+    (services as Record<string, unknown>)["trials"] = trials;
+    // The pages strut ships carry their claims and cases; a test branch a restart left goes.
+    await trials.seed(seededClaims, SEED_SPEAKER).catch((err) => console.warn(`[trials] the seeded pages' claims were not recorded:`, err instanceof Error ? err.message : err));
+    void trials.sweep().catch(() => {});
   }
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
@@ -3451,6 +3482,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "public" && p.runStart.visitor ? { visitor: p.runStart.visitor } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
+        // A trial stays one (src/trials.ts): resumed, it still holds what it starts.
+        ...(p.runStart.trial ? { trial: p.runStart.trial } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -7947,6 +7980,10 @@ export async function createStrut<TServices = unknown>(
       savedAttachments?: RunAttachment[];
       /** A wake turn (src/wake.ts): the job run(s) it woke on. */
       wake?: WakeMark;
+      /** The run is a TRIAL (`RunTrial`, src/trials.ts): the Knowledge door's
+       *  to launch, never a request's — so here, not on the body. Recorded on
+       *  `run.start`; no wake and no callback follow its end. */
+      trial?: RunTrial;
       /** The conversation a person's turn continues (`continuesFor`,
        *  plans/jamie-app.md §2.2): opened as it is. */
       continues?: string;
@@ -7965,6 +8002,7 @@ export async function createStrut<TServices = unknown>(
       undefined,
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
       body.branch,
+      extra?.trial,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
     detachedEnds.set(`${flow.name}/${runId}`, false);
@@ -8068,6 +8106,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(body.branch ? { branch: body.branch } : {}),
+        ...(controller.trial ? { trial: controller.trial } : {}),
         ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(body.conversation ? { conversation: body.conversation } : {}),
         ...(body.wake === true ? { wakeAsked: true } : {}),
@@ -8108,6 +8147,8 @@ export async function createStrut<TServices = unknown>(
       })
       .then(async (res) => {
         if (res.status === "waiting") return;
+        // A trial's end reaches nobody (src/trials.ts): no wake, no callback.
+        if (controller.trial) return;
         // What strut does about the end — a job turn's wake, decided before
         // its run.end goes out, which says so; a wake turn's end — then the
         // host hears it.
@@ -8379,6 +8420,9 @@ export async function createStrut<TServices = unknown>(
   }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
+      // A trial starts no job (src/trials.ts): job/start and job/continue
+      // answer that it was held before they get here; this is the backstop.
+      if (controllersByRunId.get(from)?.trial) throw new Error(`trial_held: run ${from} is a trial, and a trial starts no job`);
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
       // Which job-shaped workflow runs the turn (plans/builder-job.md §2):
@@ -8859,6 +8903,8 @@ export async function createStrut<TServices = unknown>(
           ...(by.mcp?.length ? { mcp: by.mcp } : {}),
           ...(attachments.length ? { attachments } : {}),
           ...(cont.continues ? { continues: cont.continues } : {}),
+          // Launched from a trial: one too (src/trials.ts).
+          ...(by.trial ? { trial: by.trial } : {}),
         },
       );
       if (key) launchKeys.set(key, runId);
@@ -10979,6 +11025,7 @@ export async function createStrut<TServices = unknown>(
       runOpts?.parentRunId,
       runOpts?.job ? { id: runOpts.job, ...(runOpts.title ? { title: runOpts.title } : {}) } : undefined,
       runOpts?.branch,
+      runOpts?.trial,
     );
     try {
       const workflowHash =
@@ -11004,6 +11051,7 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
         ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
         ...(controller.branch ? { branch: controller.branch } : {}),
+        ...(controller.trial ? { trial: controller.trial } : {}),
       });
     } finally {
       untrack();

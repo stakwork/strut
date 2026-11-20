@@ -58,7 +58,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closureIncludes, flowClosure } from "./closure.js";
-import type { RunEvent, StepRegistry } from "./core.js";
+import type { RunEvent, RunTrial, StepRegistry } from "./core.js";
 import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import type { GraphBackend } from "./graph/backend.js";
 import {
@@ -125,6 +125,8 @@ export interface ObservedSubject {
 }
 
 const CONTAINER_STEPS = new Set(["subflow", "loop", "foreach"]);
+/** The step that renders a Concept page into an agent's prompt (src/steps/lib/context/concept.ts). */
+const CONTEXT_CONCEPT = "context/concept";
 const isToolEvent = (e: RunEvent) => typeof e.stepType === "string" && e.stepType.startsWith("tool:");
 
 /** A job subject's event path — `job:<id>`; its evidence is written at
@@ -170,7 +172,12 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   // The hashes in force when each step STARTED (a resume reloads steps).
   const starts = new Map<string, { event: RunEvent; stepHashes: Record<string, string> }>();
   // The Concepts whose page the run opened, by name, first opened first.
-  const opened = new Map<string, { ref: string; version: string }>();
+  const opened = new Map<string, { ref: string; version: string; rendered: boolean }>();
+  // An agent's thread kept its first turn's system prompt, and this turn's
+  // was another (agent.ts `keptSystem`): the pages `context/concept` rendered
+  // into it were never read by the model. A page the agent opened itself
+  // (a tool call) it did read.
+  let keptSystem = false;
 
   const stepSubject = (start: { event: RunEvent; stepHashes: Record<string, string> }, end: RunEvent): ObservedSubject | null => {
     const type = end.stepType;
@@ -202,8 +209,15 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   for (const e of events) {
     if (e.type === "run.resumed" && e.stepHashes) stepHashes = e.stepHashes;
     if (e.type === "step.end" && Array.isArray(e.nodes)) {
-      for (const n of e.nodes) if (n.node_type === "Concept" && n.name && n.version && !n.peer) opened.set(n.name, { ref: n.ref_id, version: n.version });
+      for (const n of e.nodes) {
+        if (n.node_type !== "Concept" || !n.name || !n.version || n.peer) continue;
+        const rendered = e.stepType === CONTEXT_CONCEPT;
+        // A read the model made itself stands, whatever a later rendering of the same page says.
+        if (rendered && opened.get(n.name)?.rendered === false) continue;
+        opened.set(n.name, { ref: n.ref_id, version: n.version, rendered });
+      }
     }
+    if (e.type === "step.end" && e.stepType === "agent" && (e.output as { session?: { keptSystem?: unknown } } | undefined)?.session?.keptSystem === true) keptSystem = true;
     if (isToolEvent(e)) continue;
     if (e.type === "step.start") starts.set(e.path, { event: e, stepHashes });
     else if (e.type === "step.end" || e.type === "step.error") {
@@ -241,6 +255,7 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
         check,
       });
       // The Concepts it opened: each reads the same run.
+      if (keptSystem) for (const [name, read] of opened) if (read.rendered) opened.delete(name);
       const concepts = [...opened.keys()];
       for (const [name, read] of opened) {
         out.push({
@@ -611,6 +626,10 @@ export function createVerifier(deps: VerifierDeps) {
        *  when the branch was made (`reader.scopeOf`), by name. */
       pages: new Map<string, string | null>(),
       scope: undefined as { branch?: string; since?: number } | undefined,
+      /** The work's root is a TRIAL (`RunTrial`, src/trials.ts): the claim
+       *  it replays a case of judges it whatever its checks' policy, and
+       *  every evidence the work is the source of says so. */
+      trial: undefined as RunTrial | undefined,
     };
   }
   /** The run's branch (a work: its root's), stamped on every evidence it is the source of. */
@@ -906,7 +925,9 @@ export function createVerifier(deps: VerifierDeps) {
       }
     })();
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
-    const fires = policyFires({
+    // A trial is judged by the claim it replays a case of, every sample (src/trials.ts).
+    const forced = o.subject.kind === "concept" && pass.trial?.claim === claim.id;
+    const fires = forced || policyFires({
       check,
       evidence: seen.filter((e) => e.evidence_status === "collected"),
       version: o.version,
@@ -938,6 +959,7 @@ export function createVerifier(deps: VerifierDeps) {
       strength: ran.mapped.supports ? 1 : -1,
       context: {
         ...contextOf(o, pass.result.branch),
+        ...(pass.trial ? { trial: true as const, ...(pass.trial.claim === claim.id && pass.trial.case !== undefined ? { case: pass.trial.case } : {}) } : {}),
         checkVersion: ran.checkVersion,
         ...(ran.model ? { model: ran.model } : {}),
         ...(ran.checkRun ? { checkRun: ran.checkRun } : {}),
@@ -1109,6 +1131,7 @@ export function createVerifier(deps: VerifierDeps) {
         pass.principal = start.principal;
         // The work is on its root's branch: every run it starts is (ruling 10).
         setBranch(pass, start.branch);
+        if (start.trial) pass.trial = start.trial;
         rootCheck = observed.find((o) => o.subject.kind === "workflow" && o.path === start.path)?.check ?? {
           runId: root.runId,
           input: start.input,

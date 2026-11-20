@@ -188,6 +188,25 @@ export interface RunAttachment {
   runId?: string;
 }
 
+/**
+ * A TRIAL (src/trials.ts, plans/claim-trials.md §3): the run replays one
+ * case of a claim on a Concept, so that claim can judge it. A launch-level
+ * field shaped like `branch`: on `run.start` and the summary, `ctx.trial`,
+ * kept by a resume, inherited by every run the run starts. Nothing a trial
+ * does leaves it: the job launcher answers that the job was held, a gated
+ * call is not proposed, no wake and no callback follow its end, and a run on
+ * another strut is held (`TRIAL_HELD`).
+ */
+export interface RunTrial {
+  /** The claim whose case this is: its checks judge the run whatever their policy. */
+  claim: string;
+  /** Which of the claim's cases, by position, when it was one of them. */
+  case?: number;
+}
+
+/** What a step answers in a trial instead of doing what would leave it. */
+export const TRIAL_HELD = "held: this run is a trial, so nothing it starts leaves it";
+
 /** Context passed to every step's `run` function.
  *
  * `services` is the consumer-defined capabilities bag — typically a
@@ -270,6 +289,12 @@ export interface StepContext<TServices = unknown> {
    *  run it starts, never in `input`. Its Concepts are the branch's (the
    *  bag's view, `bindBranch`). Absent: main, the live tree. */
   branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/trials.ts), a launch-level field
+   *  like `branch`: set by whoever launched the root, inherited by every run
+   *  it starts, never in `input`. A trial starts nothing outside itself: a
+   *  step that would start a job, record a proposal or reach another strut
+   *  answers that it was held. */
+  trial?: RunTrial;
   /** The APP this call or run works for (plans/apps.md §5), the twin of
    *  `job`: set by the app door (`step_run`) for a page's call, and carried
    *  by a run the app launched (`run/launch`) — never by a launch body. A
@@ -642,6 +667,9 @@ export interface RunEvent {
   /** On `run.start`: the Concept branch the run is on (src/branches.ts),
    *  read back by a resume like `job`. */
   branch?: string;
+  /** On `run.start`: the run is a trial (`RunTrial`), read back by a resume
+   *  like `branch`. */
+  trial?: RunTrial;
   /** On `run.start`: the APP the run was launched for (`origin: "app"`,
    *  plans/apps.md §5) — read back by a resume like `job`. */
   app?: AppRef;
@@ -1077,6 +1105,8 @@ export interface RunSummary {
   job?: string;
   /** The Concept branch the run was on (src/branches.ts), as on `run.start`. */
   branch?: string;
+  /** The run was a trial (`RunTrial`), as on `run.start`. */
+  trial?: RunTrial;
   /** Who launched the run, when it was not a person or an API call (as on
    *  `run.start`) — on the summary so a run list can badge a scheduled, a
    *  peer's or an app's run without reading its log. */

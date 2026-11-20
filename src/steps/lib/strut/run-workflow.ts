@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep, foldAccessedNodes, withAccessedNodes, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
+import { defineStep, foldAccessedNodes, withAccessedNodes, TRIAL_HELD, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { cancelOnPeer, launchOnPeer, tailPeerRun, type PeerRunHandle, type PeersCapability } from "../../../peers.js";
 import { requireApproval } from "../../../proposals.js";
@@ -115,6 +115,8 @@ export default defineStep({
     }
     // Another org's strut: when the host gates this step, only a person's yes reaches it.
     requireApproval("strut/run-workflow", ctx);
+    // A trial reaches no other strut (src/trials.ts): the run there is held.
+    if (ctx.trial) throw new Error(`${TRIAL_HELD} — the workflow on "${cfg.peer}" was not run`);
 
     // Resume (plans/federation.md §2.2): a journaled launch for THIS peer and
     // workflow means the run is already going (or done) on the peer —

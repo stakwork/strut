@@ -542,7 +542,10 @@ export async function proposeCall(
   rationale: string | undefined,
   ctx: StepContext,
   opts: ProposeCallOptions = {},
-): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string }> {
+): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string; held?: true }> {
+  // A trial proposes nothing (src/trials.ts): no card reaches a person, and
+  // the model reads the answer a recorded proposal would have given it.
+  if (ctx.trial) return { proposal: "", status: "pending", step: stepType, title: titleOf(stepType, def.description), url: "", held: true };
   const cap = proposalsOf(ctx.services);
   if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut server has no proposals capability (ctx.services.proposals).`);
   const key = journalKeyOf(ctx);

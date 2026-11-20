@@ -16,7 +16,7 @@
  * `useWorkflow` name these steps (kit/src/hooks.ts). A sealed workflow (a
  * grading harness) is still refused by name: the steps are a model's door.
  */
-import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary } from "./core.js";
+import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary, RunTrial } from "./core.js";
 import type { ArtifactRef } from "./artifact-refs.js";
 import type { AttachmentInput } from "./ai/attachments.js";
 import { slimEvent } from "./run-step.js";
@@ -98,6 +98,8 @@ export interface RunLaunchBy extends RunCaller {
   /** The launching run's Concept branch (`ctx.branch`): the run it
    *  launches is on it too (src/branches.ts). */
   branch?: string;
+  /** The launching run is a trial (`ctx.trial`): so is the run it launches. */
+  trial?: RunTrial;
 }
 
 export interface RunLaunchResult {

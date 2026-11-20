@@ -262,6 +262,11 @@ export interface SourceContext {
    *  is what a Concept's status per branch reads (`claimStatus`). Every
    *  evidence a run on a branch is the source of carries it. */
   branch?: string;
+  /** The source run was a TRIAL (`RunTrial`, src/trials.ts): a replay of a
+   *  claim's case, not a person's work. `case`: which of that claim's cases,
+   *  on the evidence of the claim it replayed. */
+  trial?: true;
+  case?: number;
   /** A job subject's evidence (plans/job-claims.md §2): the turn observed —
    *  the run id the `ABOUT` edge points at, for readers that do not follow
    *  the edge. */

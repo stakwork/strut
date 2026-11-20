@@ -44,6 +44,7 @@ export const launchOutput = z.object({
   runId: z.string(),
   callback: z.boolean(),
   workflow: z.string().optional().describe("The workflow the job's run is (job, builder): for a continue, the one the job's newest turn ran."),
+  held: z.literal(true).optional().describe("In a TRIAL only: the job was NOT started (a trial starts nothing outside itself). `runId` is empty; say what you would say had it started."),
 });
 
 /** job/start's and job/continue's `attachments`: the files of this
@@ -90,6 +91,8 @@ interface LaunchRecord {
   runId: string;
   callback: boolean;
   workflow?: string;
+  /** A trial (src/trials.ts): nothing was launched. */
+  held?: true;
 }
 
 /**
@@ -107,6 +110,9 @@ export async function launchOnce(
   opts: Omit<JobLaunch, "from" | "actor" | "principal" | "mcp">,
   match?: string,
 ): Promise<LaunchRecord> {
+  // A trial starts nothing outside itself (src/trials.ts): the job is held,
+  // and the caller goes on as if it had started — its brief is what is judged.
+  if (ctx.trial) return { job: opts.job, runId: "", callback: false, ...(opts.workflow ? { workflow: opts.workflow } : {}), held: true };
   const key = journalKey(ctx, "launch");
   const prior = key ? (ctx.journal?.[key] as Partial<LaunchRecord> | undefined) : undefined;
   if (prior && typeof prior.job === "string" && typeof prior.runId === "string" && (!match || prior.job === match)) {
