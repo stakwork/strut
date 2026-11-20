@@ -70,7 +70,8 @@ export interface SecretsCapability {
    *  (src/actor-secrets.ts) — apart from the deployment's: what "connected
    *  as" reads, what Disconnect deletes, what a person pastes. Only on a
    *  PACKAGE's step, for the names its package provides (`provides.secrets`,
-   *  src/packages/fence.ts), in a run or call that has a principal. */
+   *  src/packages/fence.ts), in a run or call that has a principal — that
+   *  principal's alone: a package's step cannot re-bind its view. */
   own?: SecretScope;
   /** The DEPLOYMENT's values, apart from any person's: a read is what a run
    *  with no value of its own reads (the store, then strut's environment);

@@ -3713,6 +3713,10 @@ two scopes, each `{ get(name), set(name, value), delete(name) → boolean }`:
 | `secrets.deployment` | the DEPLOYMENT's value (`/secrets/:name`); a read falls back to the environment as `get` does, a delete removes the store's alone | only a call from the package's OWN `admin: true` app (§14.14) whose connection holds full scope — an admin's session, the deployment key. Never a member's session, another package's app or a non-admin one, a host's or a visitor's call, a preview, a run the page launches, a workflow run or the job agent |
 
 A scope the call does not have is absent (`if (secrets.deployment) …`).
+A package's step works for the run's person alone: its `secrets` has no
+`forPrincipal`, so it never reads another person's value (`get` as them)
+nor reaches their `own`. A run it starts is bound to that run's person by
+the runner, as any run is.
 Each takes the names the package provides and no other: `secret_fenced:
 <step> came from the package <package>, which provides only … — it may not
 set the deployment's NAME`. A name follows `PUT /secrets/:name`'s rules

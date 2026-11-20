@@ -17,7 +17,10 @@
  * from strut's own capability, out of a step's sight (`secretScopesOf`), so
  * no other step has them. And it takes `secretBlanks` off the step's bag: a
  * package's step writes a secret through its own scopes, or not at all, so
- * a member's call never sets the deployment's.
+ * a member's call never sets the deployment's. The view has no
+ * `forPrincipal`: the runner binds the bag to the run's person before the
+ * step runs, and a package's step works for that person alone — it never
+ * reads or manages another person's value by re-binding.
  *
  * Steps only: a bought WORKFLOW is YAML whose `secretsEnv` names a person
  * reads in the install ask; a bought step is code that could ask for any
@@ -57,10 +60,9 @@ export function fencedSecrets(secrets: SecretsCapability, type: string, fence: F
   const scopes = provided.length ? secretScopesOf(secrets) : undefined;
   if (scopes?.own) view.own = fencedScope(scopes.own, type, fence, "the person's own");
   if (scopes?.deployment && scopes.admin === fence.package) view.deployment = fencedScope(scopes.deployment, type, fence, "the deployment's");
-  if (secrets.forPrincipal) {
-    const bind = secrets.forPrincipal.bind(secrets);
-    view.forPrincipal = (principal) => fencedSecrets(bind(principal), type, fence);
-  }
+  // No `forPrincipal`: the runner binds a run's bag before the step runs,
+  // and a package's step works for that person alone. Re-bound, it could
+  // read another person's value or manage their own.
   return view;
 }
 
