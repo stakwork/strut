@@ -8,7 +8,7 @@ import type { AppDatabases } from "./apps/data.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
-import type { BrowserService } from "./browser/service.js";
+import type { StrutBrowser } from "./browser/service.js";
 import type { ModelCatalog } from "./llm.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
@@ -469,12 +469,12 @@ export interface StrutCapabilities {
    *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
    *  file (plans/ladybug-backend.md). */
   graph?: GraphBackend;
-  /** The browser the `browser/*` steps drive (src/browser/service.ts): one
-   *  Playwright connection, a context per run, closed when the run ends.
-   *  Built by the standard server from `BROWSER_*`; a host's own wins.
-   *  Optional because a bare in-code bag may not carry one (the steps then
-   *  fail naming it). */
-  browser?: BrowserService;
+  /** The browser the `browser/*` steps drive (src/browser/service.ts): the
+   *  verbs in `StrutBrowser`. The standard server builds strut's own
+   *  `BrowserService` from `BROWSER_*` (one Playwright connection, a context
+   *  per run, closed when the run ends); a host's own wins. Optional because
+   *  a bare in-code bag may not carry one (the steps then fail naming it). */
+  browser?: StrutBrowser;
   /** The model catalog `GET /llm/models` serves (src/llm.ts
    *  `listModelOptions`): every model aieo knows, each with whether people
    *  may pick it (the host's `STRUT_MODELS`, else a key for its provider
