@@ -13,20 +13,18 @@ import { useHost, useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { INVITE_WORDS, inviteOpen, whatsappUrl } from "../lib/view";
+import { INVITE_WORDS, inviteOpen, invitesReadMs, whatsappUrl } from "../lib/view";
 import type { Invite as InviteRow, InvitesAnswer, InviteStatus, TaskType } from "../lib/types";
 import { ErrorLine, Note, Section, useAct } from "./bits";
 
-/** How often the invites are read while one is still being paid for. */
-const SENDING_READ_MS = 3_000;
-
-/** The invites, one read for the Share blocks and the Workers tab. */
+/** The invites, one read for the Share blocks and the Workers tab: read again
+ *  when the app's channel says one was used (App), and on `invitesReadMs`. */
 export function useInvites() {
   const client = useStrutClient();
   return useQuery({
     queryKey: ["staff", "invites"],
     queryFn: () => client.run<InvitesAnswer>("staff/invites", {}),
-    refetchInterval: (query) => ((query.state.data as InvitesAnswer | undefined)?.invites.some((i) => i.status === "sending") ? SENDING_READ_MS : false),
+    refetchInterval: (query) => invitesReadMs((query.state.data as InvitesAnswer | undefined)?.invites),
   });
 }
 

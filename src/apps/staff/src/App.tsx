@@ -61,7 +61,8 @@ export default function App() {
   // Support (plans/people-and-hosts.md §5): its tables are this app's own
   // SQLite. Shown where the wallet is a Sphinx daemon with its message token,
   // or Support already has a conversation; its unread count on the tab, read
-  // again when the app's channel says a DM came, and every 30 s besides.
+  // again when the app's channel says a DM came, and every 30 s besides. The
+  // channel also says when an invite was used.
   const wallet = useQuery({
     queryKey: ["staff", "wallet"],
     queryFn: () => client.run<{ wallet?: { provider?: string | null; messages?: boolean } }>("earnings/read", { wallet: true, days: 1 }),
@@ -74,7 +75,14 @@ export default function App() {
     () => shownOf({ types: types.data?.types, workers: listed, testsAnswer: testsAnswerOf(tests), payoutsAnswer: testsAnswerOf(payouts), supportAnswer }),
     [types.data, listed, tests.data, tests.error, payouts.data, payouts.error, supportAnswer],
   );
-  useChannel(SUPPORT_CHANNEL, { enabled: shown.support, onMessage: () => void qc.invalidateQueries({ queryKey: ["strut", "sqlite"] }) });
+  // Joined whatever tab is open: a worker signing up with an invite says
+  // `invites` here, and the Share block and Workers tab read them again.
+  useChannel(SUPPORT_CHANNEL, {
+    onMessage: (m) => {
+      void qc.invalidateQueries({ queryKey: ["strut", "sqlite"] });
+      if (m.key === "invites") void qc.invalidateQueries({ queryKey: ["staff", "invites"] });
+    },
+  });
   const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
   const unread = counts.data?.rows[0]?.unread ?? 0;
   const tab: Tab = tabs.includes(place.tab) ? place.tab : "queue";
