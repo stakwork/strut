@@ -416,6 +416,10 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   const input = useToolInput<Record<string, unknown>>();
   const opened = typeof input?.["type"] === "string" ? input["type"] : undefined;
   const openedOnce = useRef(false);
+  /** Opened on a kind and not yet past it: the page waits (One moment)
+   *  rather than drawing the dashboard for the instant before it opens the
+   *  app that draws that kind — the dashboard flashed before the app. */
+  const [handingOff, setHandingOff] = useState(!!opened);
   /** From the moment an answer goes until Next task: no next task is
    *  leased meanwhile, so a worker who stops here holds nothing. */
   const [paused, setPaused] = useState(false);
@@ -440,10 +444,14 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   useEffect(() => {
     if (!signedIn || !opened || openedOnce.current || !me.data) return;
     openedOnce.current = true;
-    if (!me.data.types.some((t) => t.name === opened)) return;
+    if (!me.data.types.some((t) => t.name === opened)) {
+      setHandingOff(false);
+      return;
+    }
     const app = drawnElsewhere(opened);
     if (!app || !here) {
       setWorking(opened);
+      setHandingOff(false);
       return;
     }
     const { type: _opened, ...rest } = input ?? {};
@@ -451,7 +459,16 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
     void host
       .openLink(appLink(here, own))
       .catch(() => undefined)
-      .then(() => host.openLink(appLink(app, { type: opened })));
+      .then(() => host.openLink(appLink(app, { type: opened })))
+      // A visitor's host (Peel) loads that app in this same web view, so the
+      // wait stays until it does; strut's own UI opens it beside this page,
+      // which is the dashboard again.
+      .then(
+        () => {
+          if (known) setHandingOff(false);
+        },
+        () => setHandingOff(false),
+      );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `drawnElsewhere` reads me.data, which is a dependency
   }, [signedIn, opened, me.data]);
   const [sent, setSent] = useState<Sent | null>(null);
@@ -501,6 +518,8 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         }
       />
     );
+  } else if (handingOff && working === undefined && !me.isError) {
+    body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
   } else if (working === undefined) {
     body = <WorkHome only={type} all={everyApp} onStart={start} />;
   } else if (sent) {
