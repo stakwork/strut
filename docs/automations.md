@@ -75,20 +75,29 @@ index. A change in this area updates this file, not AGENTS.md.
   another rhythm or input, pause it and add an automation of one's own. Both
   doors and the `automation/*` steps share that one layer. The Automate tab
   shows the package, the toggle and Run now, and no Edit or Delete.
-- **Whom a fire runs as** (`runsAs`, scheduler.ts) — the place a person is
-  named for work nobody launched (stadeum plans/software.md §5 item 15). An
-  automation a person made gives the launch no principal, so createStrut's
-  `principalFor` takes the workflow's owner, else none. A package's schedule
-  was made by nobody: it runs as its workflow's OWNER — whoever installed the
-  package through a person's door (`InstallOptions.actor` owns the new
-  workflows) — passed to `launch` as `principal`; `run.start` carries that
-  `principal` and no `actor`, and its steps read secrets as any run of that
-  person's (`get`: theirs, else the deployment's, else env; a package step's
-  `secrets.own` theirs; never `secrets.deployment`). With no owner (the
-  distro's or a boot install, an install with no actor) it launches nothing:
-  `nobody to run as: …` is the fire's error and the list's `lastFireError`,
-  rather than a run as nobody on the deployment's secrets. Claiming or
-  giving the workflow an owner lets it run.
+- **Whom a fire runs as** (`runsAs`, src/workspace.ts; the scheduler's
+  `personFor`) — the one rule for a run nobody launched (stadeum
+  plans/software.md §5 item 15: every token is a person's): it acts as its
+  workflow's OWNER, with their secrets and on their bill, and as nobody
+  else. The owner is whoever brought the workflow in as a person — their
+  install (`InstallOptions.actor` owns the new workflows), their
+  subscription (docs/packages.md: the `PUT`'s actor installs every release
+  as them), their publish — or whom an admin gave it to (`PUT
+  /workflows/:name/owner`, `POST /actor/claim`); a release keeps it, an
+  admin's choice included. Every fire passes that owner to `launch` as
+  `principal`: `run.start` carries it and no `actor`, and its steps read
+  secrets as any run of theirs (`get`: theirs, else the deployment's, else
+  env; a package step's `secrets.own` theirs; never `secrets.deployment`).
+  With no owner a PACKAGE's schedule launches nothing (set up by nobody: the
+  distro's or a boot install, a subscription nobody made, an install with
+  no actor), and so does any automation where the deployment requires
+  someone to bill (`principalRequired`, which `ownerGate` still checks at
+  create and update): `nobody to run as: …`, saying what to do, is the
+  fire's error and `lastFireError`. The list says it before anything fires
+  (`AutomationView.nobodyToRunAs`), beside whom it runs as (`runsAs`); the
+  Automate tab shows both ("Runs as alice", "It cannot run yet: …"). An
+  automation a person made, on a box that bills nobody, still runs as
+  nobody when its workflow has no owner, as it always has.
 
 ## Files
 
@@ -100,7 +109,7 @@ automations, the PURE half (plans/automations.md): the record, the closed trigge
 
 ### `src/scheduler.ts`
 
-automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire, and `syncPackageSchedules`, the packages' schedules made exactly) + the in-process tick loop; `runsAs` names whom a fire runs as. `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
+automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire, and `syncPackageSchedules`, the packages' schedules made exactly) + the in-process tick loop; whom a fire runs as is `runsAs` (src/workspace.ts), through `personFor`, and the list shows it (`runsAs`, `nobodyToRunAs`). `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
 
 ### `src/automations-routes.ts`
 

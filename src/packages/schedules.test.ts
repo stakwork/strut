@@ -193,6 +193,7 @@ describe("a package's schedules are automations, made and kept by the packages' 
     );
     assert.match(a!.summary, /^Every 15 minutes/);
     assert.ok(a!.nextRunAt, "on, and due");
+    assert.deepEqual([a!.runsAs, a!.nobodyToRunAs], ["alice", undefined], "whom it runs as, shown with it");
 
     // The owner's own value wins over the deployment's, as for any run of theirs.
     assert.equal((await call("PUT", "/secrets/ACME_TOKEN", { value: "deployment" })).status, 200);
@@ -212,13 +213,21 @@ describe("a package's schedules are automations, made and kept by the packages' 
     assert.equal((await ws.getWorkflowMetadata(CHECK))!.owner, undefined);
     assert.equal((await call("PUT", "/secrets/ACME_TOKEN", { value: "deployment" })).status, 200);
 
+    // Said where an admin sees the automation, before anything fires, with what to do.
+    const [unowned] = await automations();
+    assert.equal(unowned!.runsAs, undefined);
+    assert.match(
+      unowned!.nobodyToRunAs!,
+      /^nobody to run as: the package acme\/code's schedule "check" runs as the owner of the workflow "acme\/code\/check" .* it has no owner, so nothing ran\. An admin gives it one \(PUT \/workflows\/acme%2Fcode%2Fcheck\/owner .*\) or a person claims it \(POST \/actor\/claim\)/,
+    );
     const refused = await call("POST", `/workflows/${encodeURIComponent(CHECK)}/automations/${CHECK_ID}/fire`);
     assert.equal(refused.status, 400);
-    assert.match(refused.json.error, /^nobody to run as: "check" is the package acme\/code's schedule, which runs as a person .* "acme\/code\/check" has no owner/);
+    assert.equal(refused.json.error, unowned!.nobodyToRunAs, "a fire says the same");
     assert.deepEqual(await store.listRuns(CHECK), [], "nothing launched, so nothing read the deployment's value");
-    assert.match((await automations())[0]!.lastFireError!, /^nobody to run as/);
+    assert.equal((await automations())[0]!.lastFireError, unowned!.nobodyToRunAs);
 
     await ws.setWorkflowOwner(CHECK, "bob");
+    assert.deepEqual((await automations()).map((a) => [a.runsAs, a.nobodyToRunAs]), [["bob", undefined]]);
     const fired = await call("POST", `/workflows/${encodeURIComponent(CHECK)}/automations/${CHECK_ID}/fire`);
     assert.equal(fired.status, 202);
     assert.deepEqual((await finished(CHECK, fired.json.runId)).output, { repo: "hive", principal: "bob", token: "deployment", own: true, deployment: false });

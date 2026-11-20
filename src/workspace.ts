@@ -2113,3 +2113,28 @@ export async function assertWorkflowEnabled(ws: MetadataReader, name: string): P
   const refused = await workflowDisabled(ws, name);
   if (refused) throw new Error(refused);
 }
+
+/**
+ * WHOM A RUN NOBODY LAUNCHED ACTS AS (stadeum plans/software.md §5, item 15:
+ * every token is a person's, so unattended work runs as a person): the OWNER
+ * of the workflow it runs, with their secrets and on their bill, and nobody
+ * else. The owner is whoever brought the workflow in as a person — their
+ * install, their subscription, their publish — or whom an admin gave it to
+ * (`PUT /workflows/:name/owner`, `POST /actor/claim`). Nothing a package, a
+ * manifest, a step or a request says names anyone else. With no owner the
+ * work has nobody to run as, and the refusal says what to do. `work` names
+ * it for that refusal: `the package acme/code's schedule "check"`.
+ *
+ * The one place such a run is named: a package's schedule (scheduler.ts),
+ * and any other work a package sets up that no person launches.
+ */
+export async function runsAs(ws: MetadataReader, workflow: string, work: string): Promise<{ principal: string } | { error: string }> {
+  const owner = ws?.getWorkflowMetadata ? (await ws.getWorkflowMetadata(workflow).catch(() => null))?.owner : undefined;
+  if (owner) return { principal: owner };
+  return {
+    error:
+      `nobody to run as: ${work} runs as the owner of the workflow "${workflow}" — whoever brought it in as a person (their install, subscription or publish), ` +
+      `or whom an admin gave it to — and it has no owner, so nothing ran. An admin gives it one (PUT /workflows/${encodeURIComponent(workflow)}/owner { "owner": "<actor>" }) ` +
+      `or a person claims it (POST /actor/claim), and it runs as them, with their own secrets.`,
+  };
+}

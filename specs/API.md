@@ -852,14 +852,34 @@ is an automation like any other, on the package's workflow, with
 sha256 of `<package>\n<name>`), the same on every box. Strut makes it at
 install, follows each release, and drops it at uninstall: no route makes it.
 When it runs, its `name` and its `input` are the package's; `enabled` is the
-admin's, and a release keeps it. It runs as its workflow's owner (whoever
-installed the package through a person's door): `run.start` carries that
-`principal` and no `actor`. With no owner, a fire launches nothing — a 400
-from `…/fire`, `lastFireError` on the list — beginning `nobody to run as:`.
+admin's, and a release keeps it.
+
+WHOM A FIRE RUNS AS (`runsAs`, `src/workspace.ts`; stadeum
+`plans/software.md` §5, item 15): a run nobody launched acts as the OWNER of
+the workflow it runs, with their secrets and on their bill, and as nobody
+else. The owner is whoever brought the workflow in as a person — their
+install, their subscription (below), their publish — or whom an admin gave
+it to (`PUT /workflows/:name/owner`, `POST /actor/claim`); a release keeps
+it. `run.start` carries that `principal` and no `actor`. With no owner, a
+package's schedule launches nothing — and so does any automation where the
+deployment requires someone to bill (`STRUT_MOTHERSHIP_REQUIRED`) — a 400
+from `…/fire` and `lastFireError` on the list, beginning `nobody to run as:`
+and saying what to do. The list says both before anything fires:
+`runsAs`, the person its fires run as, and `nobodyToRunAs`, that refusal.
+An automation a person made, on a box that bills nobody, still runs as
+nobody when its workflow has no owner.
+
+```jsonc
+// GET /automations → automations[], a package's schedule on a workflow nobody owns
+{ "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "workflow": "acme/code/check", "enabled": true, "…": "…",
+  "nobodyToRunAs": "nobody to run as: the package acme/code's schedule \"check\" runs as the owner of the workflow \"acme/code/check\" — whoever brought it in as a person (their install, subscription or publish), or whom an admin gave it to — and it has no owner, so nothing ran. An admin gives it one (PUT /workflows/acme%2Fcode%2Fcheck/owner { \"owner\": \"<actor>\" }) or a person claims it (POST /actor/claim), and it runs as them, with their own secrets." }
+// … and once it has one
+{ "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "…": "…", "runsAs": "alice" }
+```
 
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |
-| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError? }]` — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package? }` |
+| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError?, runsAs?, nobodyToRunAs? }]` (`AutomationView`, `src/scheduler.ts`) — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package? }` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
 | POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH. No body sets `package` |
 | PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback. On a package's: `enabled` alone — a `name`, `trigger`, `input` or `callback` that would change it is 400 `"<name>" is the package <package>'s schedule: …` |
@@ -3404,7 +3424,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
 | GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
-| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The request's actor, when it has one, is the subscription's PERSON (`actor` on the record; "Whose a subscription is", below); a later `PUT` records its own. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name, an `actor` in the body |
 | POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
@@ -4254,7 +4274,38 @@ runs even when nothing moved, so the next sync after a secret is set installs
 the package with no new release, and the next after one is removed takes it
 out. `applied.packages` lists what went in, not what waits. A person's
 install (`POST /packages/install`) is not gated: it installs and lists what
-is missing.
+is missing. A person's subscription is gated on what its runs will read:
+their own value, then the deployment's, then the environment.
+
+**Whose a subscription is** (stadeum `plans/software.md` §5, item 15). The
+`PUT`'s actor — the person a session or a person token names, or the
+`x-strut-actor` beside the deployment key — is recorded as its `actor`; the
+body never names one (400). Every release such a subscription applies goes
+in as that person's own install would: they own each workflow it adds, so
+its package's schedules run as them (`runsAs`, "Automations" above), and a
+workflow already here keeps its owner, an admin's choice included. Its git
+branch is read with that person's OWN secret (`PUT
+/actors/:actor/secrets/:name`, the name `tokenSecret` gives) and nothing
+else: a deployment value of the same name is never sent, and a private
+repository with none fails with `package_repo_denied: … — this subscription
+is <actor>'s, and is read with their own <NAME> alone (never the
+deployment's), which they have not set: …`. To hand a subscription to
+another person, they `PUT` it again (the same body): the next read is
+theirs, and so is what later releases add; the workflows already here move
+only when an admin gives them an owner. A subscription nobody made (the
+deployment key with no actor, a first boot, the operator's distro) has no
+`actor`: what it installs has no owner, so its schedules launch nothing
+until an admin gives their workflows one, and its branch is read with the
+deployment's value, as before.
+
+```jsonc
+// PUT /packages/subscriptions/code — by stadeum-ui, for the admin who set up GitHub
+// Authorization: Bearer <STRUT_API_KEY>
+// x-strut-actor: <the admin's actor>
+{ "ref": "git+https://github.com/stakwork/stadeum-github@stable#package" }
+// GET /packages/subscriptions → subscriptions[]
+{ "id": "code", "ref": "git+…", "tokenSecret": "GITHUB_TOKEN", "actor": "evan", "applied": { "…": "…" }, "packages": [ "…" ] }
+```
 
 ```jsonc
 // POST /packages/subscriptions/pods/sync, with PODS_URL and PODS_TOKEN unset
