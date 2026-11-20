@@ -390,7 +390,7 @@ describe("worker invites on a server (§5.8)", () => {
     assert.match(page, /<html lang="es">/);
     assert.match(page, /<h1>Tienes una invitación<\/h1>/);
     assert.match(page, />Abrir en Peel</);
-    assert.equal(es.headers.get("vary"), "accept-language");
+    assert.match(es.headers.get("vary")!, /cookie/);
     assert.equal(es.headers.get("content-security-policy"), JOIN_HEADERS["content-security-policy"], "the same script, the same hash");
     assert.equal(/<script>([\s\S]*)<\/script>/.exec(page)![1], JOIN_SCRIPT);
     // lang= on the link wins over the browser, both ways.
@@ -404,23 +404,78 @@ describe("worker invites on a server (§5.8)", () => {
     // A name, escaped, in Spanish's word order.
     assert.match(joinPage("Acme & <Co>", "es"), /<h1>Acme &amp; &lt;Co&gt; te invita<\/h1>/);
   });
+
+  it("joinLang's order: ?lang=, then the join_lang cookie, then Accept-Language, then English", () => {
+    assert.equal(joinLang("en", "es", "join_lang=es"), "en", "query beats cookie");
+    assert.equal(joinLang(undefined, "en-US", "a=b; join_lang=es"), "es", "cookie beats Accept-Language");
+    assert.equal(joinLang(undefined, "es-MX", "join_lang=xx"), "es", "a bad cookie is ignored");
+    assert.equal(joinLang(undefined, undefined, "join_lang=constructor"), "en");
+    assert.equal(joinLang(undefined, "es-MX,en;q=0.5", null), "es");
+  });
+
+  it("GET /public/join honours the join_lang cookie and varies on it", async () => {
+    const r = await req("/public/join", { headers: { cookie: "join_lang=es", "accept-language": "en" } });
+    assert.equal(await r.text(), joinPage(undefined, "es"));
+    assert.match(r.headers.get("vary")!, /cookie/);
+  });
+
+  it("the CSP hash pins the script in both languages; the script holds none of the words", () => {
+    const hash = createHash("sha256").update(JOIN_SCRIPT).digest("base64");
+    assert.ok(JOIN_HEADERS["content-security-policy"]!.includes(`'sha256-${hash}'`));
+    for (const lang of ["en", "es"] as const) {
+      const page = joinPage("Acme", lang);
+      assert.equal(/<script>([\s\S]*)<\/script>/.exec(page)![1], JOIN_SCRIPT);
+      const [, , ...words] = [0, 0, ...JOIN_WORD_VALUES(lang)];
+      for (const w of words) assert.ok(!JOIN_SCRIPT.includes(w), w);
+    }
+  });
+
+  it("each language's page has the open, again and qr ids and the switcher marking the current one", () => {
+    for (const lang of ["en", "es"] as const) {
+      const page = joinPage("Acme", lang);
+      for (const id of ["open", "again", "qr", "card", "bad"]) assert.match(page, new RegExp(`id="${id}"`));
+      assert.match(page, new RegExp(`data-lang="${lang}" aria-pressed="true"`));
+      assert.match(page, new RegExp(`data-lang="${lang === "en" ? "es" : "en"}" aria-pressed="false"`));
+    }
+    assert.match(joinPage("Acme", "es"), />Español</);
+  });
+
+  it("the name is escaped in the heading, the avatar and the meta row; no name: a neutral avatar", () => {
+    const page = joinPage("<b>x & Co", "en");
+    assert.match(page, /<h1>&lt;b&gt;x &amp; Co invites you<\/h1>/);
+    assert.match(page, /class="avatar"[^>]*>&lt;<\/div>/);
+    assert.ok(!page.includes("<b>x"));
+    assert.match(joinPage("acme", "en"), /class="avatar"[^>]*>A<\/div>/);
+    assert.match(joinPage(undefined, "en"), /class="avatar"[^>]*>✉<\/div>/);
+  });
 });
 
+/** Every string value of a language's words, as the page puts them in (the
+ *  name-taking one by calling it). */
+const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
+  const page = joinPage("Zq", lang);
+  const heading = /<h1>(.*)<\/h1>/.exec(page)![1]!;
+  return [heading.replace("Zq", "").trim(), ...[...page.matchAll(/>([^<>]{4,})</g)].map((m) => m[1]!).filter((t) => !t.includes("{") && !t.includes("var "))];
+};
+
 /** The join page's script in a stand-in browser: what it shows and links. */
-async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean }) {
+async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; search?: string }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "again", "qr"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "again", "qr", "card"].map((id) => [id, el(id)]));
   const appended: Array<Record<string, unknown>> = [];
   const fetched: string[] = [];
   const drawn: string[] = [];
   const copied: string[] = [];
   const href = `https://s.example/public/join${o.hash}`;
+  const doc: { cookie: string } = { cookie: "" };
+  const replaced: string[] = [];
+  const switchers = ["en", "es"].map((l) => ({ getAttribute: () => l, onclick: undefined as undefined | (() => void) }));
   runInNewContext(JOIN_SCRIPT, {
     // What /public/join/qrcode.js defines, once the page has loaded it.
     qrcode: () => ({ addData: (t: string) => drawn.push(t), make: () => {}, createSvgTag: () => "<svg>qr</svg>" }),
-    location: { hash: o.hash, href },
+    location: { hash: o.hash, href, pathname: "/public/join", search: o.search ?? "", replace: (u: string) => replaced.push(u) },
     navigator: o.noClipboard ? { userAgent: o.userAgent } : { userAgent: o.userAgent, clipboard: { writeText: async (t: string) => void copied.push(t) } },
-    document: { getElementById: (id: string) => els[id], createElement: () => ({}), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
+    document: { get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({}), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
       fetched.push(url);
       return { ok: o.release !== undefined, json: async () => o.release };
@@ -429,7 +484,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  return { els, appended, fetched, drawn, copied, href };
+  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers };
 }
 
 describe("the join page's script (§5.8)", () => {
@@ -469,6 +524,23 @@ describe("the join page's script (§5.8)", () => {
     const none = await runJoin({ hash, userAgent: ANDROID, noClipboard: true });
     assert.doesNotThrow(() => (none.els["open"] as unknown as { onclick: () => void }).onclick());
     assert.equal(none.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
+  });
+
+  it("the switcher: sets the cookie, then replaces the page with ?lang= (others kept, an old lang replaced) and the same hash; only en or es", async () => {
+    const r = await runJoin({ hash, userAgent: IPHONE, search: "?x=1&lang=en&y=2" });
+    r.switchers[1]!.onclick!();
+    assert.equal(r.doc.cookie, "join_lang=es; Path=/public/join; Max-Age=31536000; SameSite=Lax");
+    assert.deepEqual(r.replaced, [`/public/join?x=1&y=2&lang=es${hash}`]);
+    const bad = await runJoin({ hash, userAgent: IPHONE });
+    bad.switchers[0]!.getAttribute = () => "fr";
+    bad.switchers[0]!.onclick!();
+    assert.equal(bad.doc.cookie, "");
+    assert.deepEqual(bad.replaced, []);
+    // Wired even when the invite is bad.
+    const b = await runJoin({ hash: "", userAgent: IPHONE });
+    assert.equal(b.els["card"]!.hidden, true);
+    b.switchers[0]!.onclick!();
+    assert.deepEqual(b.replaced, ["/public/join?lang=en"]);
   });
 
   it("anywhere else: open it on an Android phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
