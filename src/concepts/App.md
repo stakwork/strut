@@ -553,6 +553,11 @@ stream. `facing: "user"` asks for the front camera. Cancel answers null.
 with a run, see `useLaunch`'s `files`; on a public page the workflow's
 runnable entry must take files (`attachments: true`).
 
+The page has no viewfinder of its own, so never draw one: a round shutter
+button on a dark screen only opens strut's camera, and the person taps it,
+sees no photo taken, and taps again. Name the button for what it does
+("Scan pages", "Take a photo").
+
 For many photos in a row (the pages of a book), ask with `review: false`:
 the shutter hands each photo over at once, one tap a photo, with no Retake
 or Use photo. Ask again as soon as one comes back, with the next title
