@@ -454,6 +454,20 @@ instead of baked into env at deploy time.
   `list_secrets`. A run's `input` is persisted on `run.start`, so this is
   how a per-user credential reaches a workflow without ever being in it.
 
+- **A person's SSH key is used, never held** (src/ssh-agent.ts,
+  `ssh/keygen`). A job someone lets into a server logs in with ONE key per
+  person: `ssh/keygen` makes it in code and stores the private half as the
+  run principal's actor secret `SSH_KEY` (`secretBlanks.fill` with an
+  actor: that person's blank, never overwritten; the server's blank when
+  the run has no principal), answering with the public half alone. The
+  agent step's `sshKeys` serves it to `bash` through an SSH agent in
+  strut's own process (`SSH_AUTH_SOCK`), so the key is in no file, no
+  child's environment, no prompt and no event. What is left: while a run
+  lasts, its shell (and, with no sandbox between jobs, another job's shell
+  on the same box) can SIGN with it, so a prompt-injected job can reach
+  the person's servers; it can never copy the key out. Revoking is taking
+  the public half out of `authorized_keys`, or deleting the actor secret.
+
 - **The wallet's credentials are not secrets a step reads**
   (plans/paid-runs.md decision 20; `src/payments/settings.ts`). The server's
   wallet (`LIGHTNING_*`, `PUT /earnings/wallet`) lives in `payments.json`,
@@ -545,4 +559,4 @@ the static check on a custom step's SOURCE — imports of child_process / fs / n
 
 ### `src/steps/lib/secret/`
 
-secret/add { name, value } (plans/member-rights.md "Adding a secret"): a secret a PERSON types into strut's own app — the builder's reply names it in `ask.secret`, Jamie's SecretBox stores it — FILLING A BLANK through `ctx.services.secretBlanks` (src/secret-store.ts `secretBlanks`, set by createStrut when strut owns the store): refused (`secret_set:`) when the name has a value in the store or the environment, so a member never replaces the team's model or GitHub key; never lists, reads, changes or deletes one. Answers `{ name }` alone. Runs only as a first-party page's own call (a one-step run, for its viewer), never an agent's tool or a model-written page's; its `value` is `redact`ed from the run's events (`StepDef.redact`, runner.ts), so no log, sink or kept run holds it
+secret/add { name, value } (plans/member-rights.md "Adding a secret"): a secret a PERSON types into strut's own app — the builder's reply names it in `ask.secret`, Jamie's SecretBox stores it — FILLING A BLANK through `ctx.services.secretBlanks` (src/secret-store.ts `secretBlanks`, set by createStrut when strut owns the store): refused (`secret_set:`) when the name has a value in the store or the environment, so a member never replaces the team's model or GitHub key; never lists, reads, changes or deletes one. `fill(name, value, actor)` fills that ACTOR's blank instead (refused only when the actor has a value of their own; `secret_actor:` on a server with no actor store) — `ssh/keygen`'s door, never `secret/add`'s. Answers `{ name }` alone. Runs only as a first-party page's own call (a one-step run, for its viewer), never an agent's tool or a model-written page's; its `value` is `redact`ed from the run's events (`StepDef.redact`, runner.ts), so no log, sink or kept run holds it

@@ -70,15 +70,18 @@ export function reachPolicyOf(services: unknown): ReachPolicy | undefined {
   return (services as { reach?: ReachPolicy } | null | undefined)?.reach;
 }
 
-/** The secret NAMES a step's config hands it: `secretsEnv` entries and a
- *  `tokenSecret`. With `def`, a `tokenSecret` the config leaves out is
- *  the schema's default (`git/*`: GITHUB_TOKEN); a parsed config has it already. */
+/** The secret NAMES a step's config hands it: `secretsEnv` and `sshKeys`
+ *  entries and a `tokenSecret`. With `def`, a `tokenSecret` the config
+ *  leaves out is the schema's default (`git/*`: GITHUB_TOKEN); a parsed
+ *  config has it already. */
 export function secretNamesIn(cfg: unknown, def?: AnyStepDef): unknown[] {
   const c = (cfg ?? {}) as Record<string, unknown>;
   const out: unknown[] = [];
-  const env = c["secretsEnv"];
-  if (Array.isArray(env)) out.push(...env);
-  else if (env !== undefined) out.push(env);
+  for (const field of SECRET_LIST_FIELDS) {
+    const list = c[field];
+    if (Array.isArray(list)) out.push(...list);
+    else if (list !== undefined) out.push(list);
+  }
   for (const field of SECRET_NAME_FIELDS) {
     let name = c[field];
     if (name === undefined && def?.input instanceof z.ZodObject) {
@@ -101,14 +104,18 @@ export function secretNamesIn(cfg: unknown, def?: AnyStepDef): unknown[] {
   return out;
 }
 
+/** Config fields that hold a LIST of secret names: the `agent` / `exec`
+ *  step's `secretsEnv`, the `agent` step's `sshKeys`. */
+const SECRET_LIST_FIELDS = ["secretsEnv", "sshKeys"] as const;
+
 /** Config fields that hold ONE secret's name (`git/*`, `browser/open`). With
- *  `secretsEnv` and `http/verify`'s `secrets`, every way a step's config
+ *  the lists above and `http/verify`'s `secrets`, every way a step's config
  *  names a secret today; a new one is added here. */
 const SECRET_NAME_FIELDS = ["tokenSecret", "storageStateSecret"] as const;
 
 /** Every config field through which a step's caller names a secret:
  *  what `secretNamesIn` reads. */
-export const SECRET_CONFIG_FIELDS: readonly string[] = ["secretsEnv", ...SECRET_NAME_FIELDS, "secrets"];
+export const SECRET_CONFIG_FIELDS: readonly string[] = [...SECRET_LIST_FIELDS, ...SECRET_NAME_FIELDS, "secrets"];
 
 /** The first field of `def`'s config through which its caller names a
  *  secret, else undefined: a step a stranger must never call, since the

@@ -85,6 +85,9 @@ steps:
       message: "{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
+      # The person's SSH key, signed with by an agent in strut's process:
+      # bash gets SSH_AUTH_SOCK, never the key (ssh/keygen makes it).
+      sshKeys: [SSH_KEY]
       schema:
         type: object
         additionalProperties: false
@@ -227,6 +230,10 @@ params:
     - remote/run-workflow
     - remote/call
     - remote/buy-credit
+    # A server someone lets the job into over SSH: the public half of the
+    # person's key, made the first time — the private half stays in strut
+    # and signs through the agent's `sshKeys`, so bash's ssh just works.
+    - ssh/keygen
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install

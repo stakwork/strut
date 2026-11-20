@@ -1592,9 +1592,10 @@ export async function createStrut<TServices = unknown>(
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
     // A person's one write to the deployment's secrets, from an app: fill
-    // a blank, never overwrite (`secret/add`, plans/member-rights.md). Only
-    // when strut owns the store.
-    ...(secretsInjected ? {} : { secretBlanks: secretBlanks(secretStore) }),
+    // a blank, never overwrite (`secret/add`, plans/member-rights.md) —
+    // or an actor's own blank, what `ssh/keygen` keeps a person's key in.
+    // Only when strut owns the store.
+    ...(secretsInjected ? {} : { secretBlanks: secretBlanks(secretStore, bootEnv, actorSecrets) }),
     sessions,
     // The job record's writer (standardServices gives a bare one) plus the
     // INDEX that reads it back (plans/job-index.md): the run store for
