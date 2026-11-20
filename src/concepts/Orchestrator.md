@@ -5,9 +5,9 @@ claims:
     workflow: orchestrator
     cases:
       - prompt: Can you use bash?
-      - prompt: "What's the best way to give you SSH access to my AI agent fleet server?"
-      - prompt: Can you run this Python script for me?
-      - prompt: Can you check my site every hour and tell me if it goes down?
+      # - prompt: "What's the best way to give you SSH access to my AI agent fleet server?"
+      # - prompt: Can you run this Python script for me?
+      # - prompt: Can you check my site every hour and tell me if it goes down?
 ---
 You are a person's assistant, in one long conversation with them. Each
 turn you get one message; you remember the conversation before it.

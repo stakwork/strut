@@ -152,13 +152,13 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     const check = view.checks[0]!;
     assert.equal(check.speaker, SEED_SPEAKER);
     assert.match(check.text, /^Asked whether it can do something its work can do/);
-    assert.equal(check.cases.length, 4);
+    assert.equal(check.cases.length, 1);
     assert.deepEqual(check.cases[0], { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "Can you use bash?" } });
     assert.deepEqual(check.samples, [], "nothing ran yet");
     assert.ok(view.fromGit, "its text comes from git");
     // A second boot adds nothing: the same sentence, the same cases.
     await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: check.text, cases: check.cases }] }], SEED_SPEAKER);
-    assert.equal((await trials.checks(ORCHESTRATOR_PAGE))!.checks[0]!.cases.length, 4);
+    assert.equal((await trials.checks(ORCHESTRATOR_PAGE))!.checks[0]!.cases.length, 1);
 
     // One more case, a person's: the turn it gets would start a job.
     const cases = [...check.cases, { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "START A JOB for the thing" } }];
@@ -166,17 +166,17 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.match((await trials.setCases({ claim: check.id, cases: [{ workflow: "nope", input: {} }] }) as { error: string }).error, /no workflow "nope"/);
 
     const started = ok(await trials.trial({ claim: check.id, n: 2, by: "ada" }));
-    assert.equal(started.batch.total, 10, "five cases, two samples each");
+    assert.equal(started.batch.total, 4, "two cases, two samples each");
     const after = await settled(strut, ORCHESTRATOR_PAGE);
     const samples = after.checks[0]!.samples;
-    assert.equal(samples.length, 10, "an on_change check judged every sample of its trial");
+    assert.equal(samples.length, 4, "an on_change check judged every sample of its trial");
     assert.ok(samples.every((s) => s.supports && s.trial && s.workflow === ORCHESTRATOR_WORKFLOW), JSON.stringify(samples));
-    assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [0, 1, 2, 3, 4]);
-    assert.equal(turns, 10);
-    assert.equal(judged, 10);
+    assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [0, 1]);
+    assert.equal(turns, 4);
+    assert.equal(judged, 4);
 
     // Each sample is a run marked a trial, and nothing it started left it.
-    const held = samples.find((s) => s.case === 4)!;
+    const held = samples.find((s) => s.case === 1)!;
     const opened = (await trials.sample({ workflow: ORCHESTRATOR_WORKFLOW, run: held.run }))!;
     assert.equal(opened.status, "success");
     assert.deepEqual(opened.input, { prompt: "START A JOB for the thing" });
@@ -186,7 +186,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(out.runId, "", "no run was started");
     assert.equal(out.held?.brief, "Do the thing, start to end.", "the brief it would have started is what is judged");
     const summary = await store.getRunSummary(ORCHESTRATOR_WORKFLOW, held.run);
-    assert.deepEqual(summary?.trial, { claim: check.id, case: 4 });
+    assert.deepEqual(summary?.trial, { claim: check.id, case: 1 });
     assert.equal(summary?.actor, "ada");
     assert.ok(!("trial" in ((summary?.input ?? {}) as object)), "never in the input");
     assert.deepEqual(await store.listRuns("job"), [], "no job ran");
@@ -205,7 +205,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
 
     assert.match((await trials.test({ concept: ORCHESTRATOR_PAGE, docs: before.docs, n: 1 }) as { error: string }).error, /change something first/);
     const made = ok(await trials.test({ concept: ORCHESTRATOR_PAGE, docs: worse, n: 1, by: "ada" }));
-    assert.equal(made.batch.total, 8, "four cases: the page topped up to one each, the change one each");
+    assert.equal(made.batch.total, 2, "one case: the page topped up to one, the change one");
     const view = await settled(strut, ORCHESTRATOR_PAGE);
     assert.equal(view.tests.length, 1);
     const t = view.tests[0]!;
@@ -214,19 +214,19 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(t.page.version, view.version);
     assert.equal(t.page.docs, before.docs);
     assert.equal(t.change.docs, worse.trim());
-    assert.deepEqual(t.page.samples[check.id]!.map((s) => s.supports), [true, true, true, true], "the page says yes");
-    assert.deepEqual(t.change.samples[check.id]!.map((s) => s.supports), [false, false, false, false], "without the line it says it has no shell");
-    assert.deepEqual(view.checks[0]!.samples.length, 4, "the page's own verdicts are the page side's");
+    assert.deepEqual(t.page.samples[check.id]!.map((s) => s.supports), [true], "the page says yes");
+    assert.deepEqual(t.change.samples[check.id]!.map((s) => s.supports), [false], "without the line it says it has no shell");
+    assert.deepEqual(view.checks[0]!.samples.length, 1, "the page's own verdicts are the page side's");
     assert.deepEqual(await (strut.services as unknown as { branches: { list(): Promise<unknown[]> } }).branches.list(), [], "the branch its runs read is gone");
     assert.equal(view.docs, before.docs, "the page did not change");
 
     // Again: more samples on both, the same test. The same two wordings are never a second test.
     const again = ok(await trials.test({ test: t.id, n: 1 }));
-    assert.equal(again.batch.total, 8);
+    assert.equal(again.batch.total, 2);
     const more = await settled(strut, ORCHESTRATOR_PAGE);
     assert.equal(more.tests.length, 1);
-    assert.equal(more.tests[0]!.page.samples[check.id]!.length, 8);
-    assert.equal(more.tests[0]!.change.samples[check.id]!.length, 8);
+    assert.equal(more.tests[0]!.page.samples[check.id]!.length, 2);
+    assert.equal(more.tests[0]!.change.samples[check.id]!.length, 2);
     assert.equal(ok(await trials.test({ concept: ORCHESTRATOR_PAGE, docs: worse, n: 1 })).test, t.id);
     await settled(strut, ORCHESTRATOR_PAGE);
 
