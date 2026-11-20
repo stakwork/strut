@@ -69,6 +69,7 @@ describe("the app build", () => {
     assert.ok(html.includes("Hello, "), "a relative import (src/lib/greet.ts)");
     assert.ok(html.includes("hello-fixture-badge-override"), "the app's own @/components/ui/badge shadows the kit's");
     assert.ok(/\.inline-flex\s*\{/.test(html), "the kit's button is styled (its precomputed candidates)");
+    assert.match(html, /svg:not\(\[class\*=['"]?size-['"]?\]\)\{width:/, "the button's unsized icons are sized: a variant with a `'` in it is a candidate");
     assert.ok(/\.text-emerald-600\s*\{/.test(html), "a class the app's source uses is compiled");
     assert.ok(html.includes("data:image/svg+xml"), "public/logo.svg inlined as a data URL");
     assert.ok(html.includes(`content="${cspFor(["https://tile.openstreetmap.org"])}"`), "the §9 CSP with the manifest's resourceDomains");

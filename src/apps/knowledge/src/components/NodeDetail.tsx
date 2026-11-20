@@ -91,7 +91,7 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
           </>
         )}
       </div>
-      <div className={cn("flex flex-col gap-4 p-4", wide && "gap-6 px-5")}>
+      <div className={cn("flex flex-col gap-4 p-4", wide && "mx-auto w-full max-w-4xl gap-6 px-5")}>
         <header className="space-y-1">
           {above && <p className="truncate text-xs text-muted-foreground">{above}</p>}
           <h1 className={cn("break-words font-semibold tracking-tight", wide ? "text-xl" : "text-base")}>{n.name}</h1>

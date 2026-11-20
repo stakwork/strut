@@ -120,7 +120,7 @@ describe("the vendor build — a frozen module tree", () => {
 
   it("precomputes the components' Tailwind candidates, which the base stylesheet compiles", async () => {
     const candidates = readCandidates(outdir);
-    for (const c of ["inline-flex", "bg-primary", "text-primary-foreground", "rounded-md", "bg-destructive/5", "data-[state=open]:bg-accent"]) {
+    for (const c of ["inline-flex", "bg-primary", "text-primary-foreground", "rounded-md", "bg-destructive/5", "data-[state=open]:bg-accent", "[&_svg:not([class*='size-'])]:size-4"]) {
       assert.ok(candidates.includes(c), `candidates lack ${c}`);
     }
     assert.ok(!candidates.includes("React") && !candidates.includes("className"), "code tokens are not candidates");
