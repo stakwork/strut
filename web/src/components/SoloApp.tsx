@@ -1,8 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import { nativeWalletOf } from "@strut/kit/wallet";
 import * as api from "../api";
-import { appToolInput, namesApp, publicAppHop } from "../app-links";
-import { replaceUrl, reportReady } from "../embed";
+import { appPageAddress, appToolInput, namesApp, publicAppHop } from "../app-links";
+import { embedPage, replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
 import { words } from "../words";
@@ -44,6 +44,13 @@ import { words } from "../words";
 // has Back. A worker's dashboard (strut/worker) lists every app's task
 // types and opens a type of another app this way.
 //
+// `&embed_page=<the host's page>` (../embed `embedPage`, with
+// `embed_origin`): where a person opens this app on the host that frames
+// it. The app is handed it (`strut/page`), so it can give a link to paste —
+// the same address the host's bar shows as the page moves. A member's page
+// at strut's own address hands that address; alone in a native host's web
+// view (`solo=1`, Peel's), there is no address to give.
+//
 // `&theme=light` (or `dark`): the theme the app is handed, for a host whose
 // own page is light; strut's UI is dark, the default. The page around it
 // matches while the app loads; what strut draws in the side panel's bar and
@@ -61,6 +68,16 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     ? visitorApp ? { name: visitorApp.name, version: visitorApp.version, title: visitorApp.title, ...(from ? { from } : {}) } : null
     : listed.app;
   const [input, setInput] = useState(props.input ?? null);
+  /** Where a person opens this app, which it builds its links to paste on:
+   *  framed, the host's own page (`embed_page`); a member's page at strut's
+   *  own address (picked by the session, no `solo=1`), that address; alone
+   *  in a native host's web view (`solo=1`) or a visitor's, none. */
+  const [page] = useState(() => {
+    if (from) return undefined;
+    if (window.parent !== window) return embedPage();
+    if (visitor || new URLSearchParams(location.search).has("solo")) return undefined;
+    return appPageAddress(location.href, props.app);
+  });
   /** The app this page was opened from (`&back=`), on a visitor's page: Back returns there.
    *  None in a native host's web view (Peel's, which has the native wallet
    *  from the document's start) with somewhere to go back to: Peel draws
@@ -132,6 +149,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
             {...(toolInput ? { toolInput } : {})}
             {...(visitor ? { visitor: true } : {})}
             {...(props.theme ? { theme: props.theme } : {})}
+            {...(page ? { page } : {})}
             onReady={reportReady}
           />
         : <div class="empty">

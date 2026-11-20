@@ -709,8 +709,12 @@ pull requests are Hive's, not later items.
   `conversations/shared.json`. Stop sharing takes it out of the lists of
   those who never opened it. A first-party page reads every turn of a
   conversation its viewer may read, whoever took it, so a teammate sees
-  the files and deliverables too. No link to copy: the app does not know
-  its host's address.
+  the files and deliverables too. The link (2026-11-19): the host's address
+  follows the open conversation (Jamie opens its own link,
+  `?input=session%3D<id>`), and Share copies it — the host hands the app its
+  page's address (`strut/page`; Stadeum passes `embed_page`, specs/API.md
+  §14.3). The link opens a chat for others only once it is shared; on an
+  unshared one, Share is "Share and copy link".
 - **Attachments and Copy.** A person's files show under their message —
   an image as a thumbnail that opens large, a text file to read, the rest
   by name — read with `run/files` on the turn's run (a turn's attachments

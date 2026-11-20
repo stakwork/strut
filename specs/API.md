@@ -2102,7 +2102,18 @@ host keeps its frame hidden until then and fades it in, so strut's page
 behind the app never flashes. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
-other link opens in a new window.
+other link opens in a new window. A host that frames the page may name its
+OWN page for the app with `&embed_page=<url>` beside `&embed_origin=`
+(Stadeum: `https://<box>/apps/<name>`): where a person opens the app on
+that host, without its `input`. It counts only while the page is framed
+and only on the `embed_origin`; it stays on the address bar and is never
+reported back. The app is handed it as `"strut/page"` in its host context,
+so it can give a link to paste: that page with `?input=<the app's own
+query>` (@strut/kit `useShareLink`), the same address the host's bar shows
+as the page moves. Strut's own UI — the shell, or a member's page of the
+app — hands it its own address (`<strut>/?app=<key>`) unless it is framed;
+alone with `solo=1` and no host page (Peel's web view) the app is handed
+none.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
 workflows, step types or other peers (one that does not answer cannot hold

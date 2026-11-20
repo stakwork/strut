@@ -57,15 +57,44 @@ function captureEmbedOrigin(): void {
 }
 if (typeof window !== "undefined") captureEmbedOrigin();
 
+/** The host origin that asked for location reports (`embed_origin`), if any. */
+function embedOrigin(): string | null {
+  try {
+    return sessionStorage.getItem(ORIGIN_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
 /** Post to the embedding host, if there is one that asked (`embed_origin`). */
 function postToHost(msg: LocationMessage | ReadyMessage): void {
   if (window.parent === window) return;
-  let origin: string | null = null;
-  try {
-    origin = sessionStorage.getItem(ORIGIN_STORAGE);
-  } catch {}
+  const origin = embedOrigin();
   if (!origin) return;
   window.parent.postMessage(msg, origin);
+}
+
+/** The query param a host names its own page with, beside `embed_origin`:
+ *  where a person opens this app on the host (`https://box/` for Stadeum's
+ *  home), without the app's `input`. Left on the address bar (it names no
+ *  secret, and a reload keeps it); never a deep-link param. */
+export const EMBED_PAGE_PARAM = "embed_page";
+
+/** The host's page this page is shown on (`?embed_page=`): the address a
+ *  person pastes to open the app there, which the app is handed as
+ *  `strut/page` in its host context (@strut/kit `useShareLink`). Only while
+ *  framed by the host that asked for location reports, and on that host's
+ *  origin: a host names its own page, never another site's. */
+export function embedPage(search = location.search, framed = window.parent !== window, origin = embedOrigin()): string | undefined {
+  if (!framed) return undefined;
+  const page = new URLSearchParams(search).get(EMBED_PAGE_PARAM);
+  if (!page) return undefined;
+  try {
+    const url = new URL(page);
+    return origin && url.origin === origin ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function reportLocation(): void {

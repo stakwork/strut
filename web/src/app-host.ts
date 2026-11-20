@@ -34,6 +34,7 @@ import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, ty
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
+import { PAGE_CONTEXT } from "../../kit/src/links";
 import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCaptureParams, type CameraPhoto } from "@strut/kit/camera";
 import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
@@ -139,6 +140,11 @@ export interface AppHostOptions {
   /** The app's identity (its document's `strut-app-token`, ./account-widget
    *  `appIdentityOf`): what `run` calls `step_run` as. */
   identity?: string;
+  /** The address of the page a person opens this app on — strut's own
+   *  (`?app=<key>`), or the framing host's (./embed `embedPage`) — handed to
+   *  the app as `strut/page` in its host context, so it can give a link to
+   *  paste (@strut/kit `useShareLink`). None: no link to give. */
+  page?: string;
 }
 
 /** What the account widget asks of the connection, for a visitor's page. */
@@ -262,8 +268,9 @@ export function createRelayClient(base = "", visitor = false, from?: string): { 
 }
 
 /** The host context the page is handed at `ui/initialize`, and again on a
- *  theme change: the brand's variables for that theme with it. */
-export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): McpUiHostContext {
+ *  theme change: the brand's variables for that theme with it, and the
+ *  page's address when it has one (`strut/page`, @strut/kit `PAGE_CONTEXT`). */
+export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null, page?: string): McpUiHostContext {
   // The spec types the variables as every standard name; the brand sets a
   // few, and the page reads a missing one as unset.
   const variables = brand?.[theme]?.variables as NonNullable<McpUiHostContext["styles"]>["variables"] | undefined;
@@ -278,6 +285,7 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): M
     timeZone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined,
     userAgent: "strut-ui",
     platform: "web",
+    ...(page ? { [PAGE_CONTEXT]: page } : {}),
   };
 }
 
@@ -327,7 +335,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
           }
         : {}),
     },
-    { hostContext: hostContextFor(opts.theme, opts.brand) },
+    { hostContext: hostContextFor(opts.theme, opts.brand, opts.page) },
   );
   let stopWallet = () => {};
   if (native && capability && opts.wallet) {
@@ -502,7 +510,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   return {
     bridge,
     ...(accountApi ? { accountApi } : {}),
-    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand), theme }),
+    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand, opts.page), theme }),
     setToolInput(args) {
       toolInput = args;
       if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });

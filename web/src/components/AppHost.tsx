@@ -112,6 +112,10 @@ export function AppHost(props: {
    *  (a page without the apps SDK), or it could not be loaded. Once per
    *  load. A host that frames strut fades in on it (../embed `reportReady`). */
   onReady?: () => void;
+  /** The address of the page a person opens this app on (strut's own, or
+   *  the framing host's): handed to the app so it can give a link to paste
+   *  (../app-host `page`). None: it gives none. */
+  page?: string;
 }) {
   const app = props.app;
   const from = app.from;
@@ -225,6 +229,7 @@ export function AppHost(props: {
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
           ...(permissions ? { permissions } : {}),
+          ...(props.page ? { page: props.page } : {}),
           // Channels as the signed-in viewer: a peer's app's are relayed to
           // the peer; a visitor's once they signed in.
           channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) },

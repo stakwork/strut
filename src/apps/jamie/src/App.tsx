@@ -9,8 +9,15 @@
 // host's side panel open beside the page — it is a drawer over the thread.
 // Connect (the list's header) takes the thread's place until it is closed or
 // a conversation is opened.
+//
+// The host's address follows the open conversation: opening one (or a new
+// one) opens this page's own link to it, which a host takes in place — strut's
+// UI and the page alone replace their address and tell a framing host
+// (Stadeum), whose address bar follows — so a reload, a bookmark or a pasted
+// address lands on the same chat. Whether it opens for someone else is the
+// conversation's Share (./components/Share).
 import { useEffect, useState } from "react";
-import { useAppState, useToolInput } from "@strut/kit";
+import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { newConversationId } from "./lib/chat";
 import { useConversationList } from "./hooks";
@@ -37,6 +44,10 @@ export default function App() {
   const list = useConversationList({});
   const viewer = list.data?.viewer;
   const input = useToolInput<{ session?: string }>();
+  const host = useHost();
+  const link = useAppLink();
+  /** The host's address to this conversation (none: a new one). */
+  const follow = (id: string | null) => void host.openLink(link(id ? { session: id } : undefined)).catch(() => undefined);
   const [active, setActive] = useState("");
   /** A new conversation's id, before its first turn makes it one. */
   const [draft, setDraft] = useState<string | null>(null);
@@ -75,6 +86,7 @@ export default function App() {
   const open = (id: string, job?: string) => {
     setDraft(null);
     setActive(id);
+    follow(id);
     setFocusJob(job ? { job, at: Date.now() } : null);
     setDrawer(false);
     setConnect(false);
@@ -82,6 +94,7 @@ export default function App() {
   const newChat = () => {
     if (!viewer) return;
     setDraft(newConversationId(viewer));
+    follow(null);
     setDrawer(false);
     setConnect(false);
   };
@@ -125,6 +138,7 @@ export default function App() {
               onStarted={(id) => {
                 setDraft(null);
                 setActive(id);
+                follow(id);
               }}
               onOpen={(id) => open(id)}
               {...(showList ? {} : { onShowList: showListAgain })}

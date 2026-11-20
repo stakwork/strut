@@ -368,6 +368,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useAppState(key, initial)` → `[value, set, { loaded }]` | what THIS viewer's page remembers across visits, like `useState`: a tab, a filter, a draft (`app/state`, always granted) |
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
+| `useShareLink()` → `link(input?)` or undefined | the address a person can PASTE to open this app at `input` (the host's own page, e.g. `https://box/?input=…`) — for a Copy link button; undefined where the host has no address to give, so offer no Copy link there |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
