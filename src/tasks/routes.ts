@@ -29,7 +29,7 @@
  *   expired, cancelled, disputed, skipped and lost, with time to answer
  *   and work time (p50, p90); across types the workers by status, holding
  *   and asking. Computed on read
- * - `GET /tasks[?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=]` → `{ tasks }`,
+ * - `GET /tasks[?type=&status=&workflow=&runId=&group=&by=&review=&test=&before=&limit=]` → `{ tasks }`,
  *   newest first, each with its leases (an answer's `earning` and its
  *   verdict, `review`, with it; a copies task's answers and whether each
  *   agreed on its leases);
@@ -37,7 +37,14 @@
  *   `review=none|ok|rejected` the real tasks with an answer not reviewed,
  *   or marked so (that actor's, with `by`): the review queue;
  *   `test=true` the test instances alone, `false` the real tasks;
- *   `status=disputed` the copies tasks whose answers did not agree
+ *   `status=disputed` the copies tasks whose answers did not agree;
+ *   `group` the tasks of one group (`task/reply`'s `group`)
+ * - `GET /tasks/groups[?type=&limit=]` → `{ groups }`: the groups the runs
+ *   named, the one with the newest task first, each with its tasks,
+ *   answers, verdicts (`ok`, `rejected`, `unreviewed`) and `workers`
+ * - `POST /tasks/groups/review { group, type?, verdict, why? }` →
+ *   `{ reviewed, more }`: the same verdict on every answer in the group
+ *   with none yet (§9.6), one review each; a verdict given stays
  * - `GET /tasks/:id` → `{ task, run }`: `run` the run's status now and what
  *   it waits on (`{ status, waitingOn? }`), null for a test instance or a
  *   run not on file
@@ -129,6 +136,8 @@ export interface TaskRoutesDeps {
   /** A person's verdict on an answer (§9.6): the service's, never on a
    *  capability. Absent (a host's own store): the route answers 501. */
   review?: TasksService["review"];
+  /** §9.6 over a group of tasks: the service's, as `review`. */
+  reviewGroup?: TasksService["reviewGroup"];
   /** The staff's tests (§7.1): the service's, never on a capability.
    *  Absent (a host's own store): the test routes answer 501. */
   tests?: TasksService["tests"];
@@ -519,6 +528,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
           ...(q["status"] ? { status: q["status"] as TaskStatus } : {}),
           ...(q["workflow"] ? { workflow: q["workflow"] } : {}),
           ...(q["runId"] ? { runId: q["runId"] } : {}),
+          ...(q["group"] ? { group: q["group"] } : {}),
           ...(q["by"] ? { by: q["by"] } : {}),
           ...(review !== undefined ? { review: review as "none" | Verdict } : {}),
           ...(before !== undefined ? { before } : {}),
@@ -527,6 +537,39 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       };
     }),
   );
+
+  // ── groups (`task/reply`'s `group`): before `/tasks/:id` ─────────────
+  app.get("/tasks/groups", async (c) => {
+    if (!tasks.groups) return (await refuse(c)) ?? c.json({ error: "this server's task store is its host's: groups are not available here", code: "not_available" }, 501);
+    return answer(c, async () => {
+      const limit = c.req.query("limit");
+      const n = limit ? Number(limit) : undefined;
+      if (n !== undefined && (!Number.isSafeInteger(n) || n <= 0)) throw new TaskError("bad_request", "limit is a whole number above 0");
+      return { groups: await tasks.groups!({ ...(c.req.query("type") ? { type: c.req.query("type")! } : {}), ...(n !== undefined ? { limit: n } : {}) }) };
+    });
+  });
+
+  app.post("/tasks/groups/review", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.reviewGroup) return c.json({ error: "this server's task store is its host's: review is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (!["group", "type", "verdict", "why"].includes(k)) throw new TaskError("bad_request", `a group's review is group, type, verdict and why, not ${k}`);
+      if (b["why"] !== undefined && typeof b["why"] !== "string") throw new TaskError("bad_request", "why is a sentence");
+      const out = await deps.reviewGroup({
+        group: b["group"] as string,
+        ...(b["type"] !== undefined ? { type: b["type"] as string } : {}),
+        verdict: b["verdict"] as Verdict,
+        ...(b["why"] !== undefined ? { why: b["why"] as string } : {}),
+        ...(await by(c)),
+      });
+      return c.json(out);
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
 
   // ── tests (§7.1): the service's, before `/tasks/:id` ────────────────
   /** A test route's answer: 501 where the store is a host's. */

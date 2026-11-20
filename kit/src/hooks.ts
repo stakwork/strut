@@ -997,6 +997,26 @@ export interface WorkerHistoryItem {
    *  step), on an answer of theirs alone: open its files with
    *  `useTaskFile(item, file.path)`. Absent: it told them nothing (yet). */
   reply?: TaskReply;
+  /** The group the workflow put the task in (its `task/reply`'s `group`:
+   *  a book, a batch). */
+  group?: string;
+  /** Staff's verdict on the answer: `rejected` with why is what to fix. */
+  review?: { verdict: "ok" | "rejected"; why?: string; at: number };
+}
+
+/** One of the viewer's groups (`useTaskHistory({ groups: true })`): their
+ *  own answers in it and how staff reviewed them. */
+export interface WorkerTaskGroup {
+  group: string;
+  type: string;
+  tasks: number;
+  answers: number;
+  ok: number;
+  rejected: number;
+  unreviewed: number;
+  /** When its first task was made, and its newest answered; epoch ms. */
+  first: number;
+  last: number;
 }
 
 /** What a workflow tells the workers who answered a task, after the answer
@@ -1206,15 +1226,22 @@ export function useWorker(opts: { enabled?: boolean; all?: boolean } = {}): UseQ
 
 /** The viewer's own tasks here, newest first, at most 50 (`task/history`;
  *  with `all`, of every app they can open here, each naming its type):
- *  what they did, how each ended, what each answer earned, and what the
- *  workflow replied (`reply`). Grant `task/history`. An answer or a skip in
+ *  what they did, how each ended, what each answer earned, what the
+ *  workflow replied (`reply`), the group it put the task in (`group`) and
+ *  staff's verdict (`review`, a rejection's `why` is what to fix). With
+ *  `group`, every answer of theirs in that group instead; with `groups`,
+ *  also their groups and each one's verdicts. Grant `task/history`. An answer or a skip in
  *  `useTask` reads it again; `refetchInterval` (ms) reads it again while the
  *  page is shown, to wait for a reply after an answer. */
-export function useTaskHistory(opts: { enabled?: boolean; all?: boolean; refetchInterval?: number | false } = {}): UseQueryResult<{ items: WorkerHistoryItem[] }> {
+export function useTaskHistory(
+  opts: { enabled?: boolean; all?: boolean; group?: string; groups?: boolean; refetchInterval?: number | false } = {},
+): UseQueryResult<{ items: WorkerHistoryItem[]; groups?: WorkerTaskGroup[] }> {
   const client = useStrutClient();
+  const input = { ...(opts.all ? { all: true } : {}), ...(opts.group ? { group: opts.group } : {}), ...(opts.groups ? { groups: true } : {}) };
   return useQuery({
-    queryKey: opts.all ? [...HISTORY_QUERY_KEY, "all"] : HISTORY_QUERY_KEY,
-    queryFn: () => client.run<{ items: WorkerHistoryItem[] }>(TASK_STEPS.history, opts.all ? { all: true } : {}),
+    // Under the history's key, so an answer's refresh reaches every read of it.
+    queryKey: Object.keys(input).length ? [...HISTORY_QUERY_KEY, input] : HISTORY_QUERY_KEY,
+    queryFn: () => client.run<{ items: WorkerHistoryItem[]; groups?: WorkerTaskGroup[] }>(TASK_STEPS.history, input),
     enabled: opts.enabled ?? true,
     retry: false,
     ...(opts.refetchInterval ? { refetchInterval: opts.refetchInterval } : {}),

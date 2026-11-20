@@ -800,7 +800,8 @@ function Stat({ label, msat, note }: { label: string; msat: number; note?: strin
   );
 }
 
-/** One of their tasks: the kind, when, how it ended and what it earned. */
+/** One of their tasks: the kind, when, how it ended and what it earned; an
+ *  answer staff sent back says so, and why — what to fix. */
 function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string | undefined }) {
   const w = useWorkerWords();
   const fmt = useFormats();
@@ -809,12 +810,13 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
   else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
   else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
+  else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
-    <li className={cn("flex items-center gap-3 px-4 py-3", item.reply && "flex-wrap")}>
+    <li className={cn("flex items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -826,6 +828,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
         {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
         {badge}
       </div>
+      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
   );

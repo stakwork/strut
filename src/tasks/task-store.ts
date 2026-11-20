@@ -269,6 +269,39 @@ export interface TaskRecord {
    *  answer (`task/reply`): only on a settled real task, replaced whole by
    *  a later reply. */
   reply?: TaskReply;
+  /** The deliverable it is part of, as the run that asked named it with
+   *  `task/reply`'s `group` (a book's pages, a batch's ballots): staff read
+   *  and review a group together, a worker reads theirs. */
+  group?: string;
+}
+
+/** The most characters a task's `group` holds. */
+export const GROUP_MAX = 200;
+
+/** One group of tasks (`TaskRecord.group`) of one type, as it stands: its
+ *  real tasks, their answers and how those were reviewed (§9.6). A worker's
+ *  read counts only their own answers, on the tasks they answered. */
+export interface TaskGroup {
+  group: string;
+  type: string;
+  tasks: number;
+  answers: number;
+  ok: number;
+  rejected: number;
+  /** Answers with no verdict yet. */
+  unreviewed: number;
+  /** Who answered: staff's read alone. */
+  workers?: string[];
+  /** When its oldest task was made, and when its newest was answered. */
+  first: number;
+  last: number;
+}
+
+/** Which groups: of these types, and only those `worker` answered in. */
+export interface TaskGroupQuery {
+  types?: string[];
+  worker?: string;
+  limit?: number;
 }
 
 /** A run's reply to the workers who answered its task (`task/reply`): a
@@ -349,6 +382,8 @@ export interface TaskListQuery {
    *  with an answer marked `ok` or `rejected`. With `by`, that actor's
    *  answer. */
   review?: "none" | Verdict;
+  /** The tasks of one group (`TaskRecord.group`). */
+  group?: string;
   /** A `seq`: tasks made before it. */
   before?: number;
   limit?: number;
@@ -639,10 +674,13 @@ export interface TaskStore {
    *  first, at most `limit`: what the sweep launches. */
   unlaunched(limit: number): Promise<TaskRecord[]>;
 
-  /** A run's reply on its task (`task/reply`), replacing any before: only
-   *  while it is settled and a real task, never a test instance. False when
-   *  the guard failed. */
-  reply(task: string, reply: TaskReply): Promise<boolean>;
+  /** A run's reply on its task (`task/reply`), replacing any before, and
+   *  the group it names (kept when none is given): only while it is settled
+   *  and a real task, never a test instance. False when the guard failed. */
+  reply(task: string, o: { reply?: TaskReply; group?: string }): Promise<boolean>;
+  /** The groups of tasks (`TaskRecord.group`), the one with the newest task
+   *  first, `TASK_LIST_PAGE` at a time. Never a test instance. */
+  groups(q?: TaskGroupQuery): Promise<TaskGroup[]>;
 
   putTest(t: NewTest): Promise<TestRecord>;
   test(id: string): Promise<TestRecord | undefined>;
@@ -781,6 +819,7 @@ export class MemoryTaskStore implements TaskStore {
       if (q.status && t.status !== q.status) continue;
       if (q.workflow && t.workflow !== q.workflow) continue;
       if (q.runId && t.runId !== q.runId) continue;
+      if (q.group && t.group !== q.group) continue;
       if (q.test !== undefined && (t.test !== undefined) !== q.test) continue;
       if (q.by && ![...this.leases.values()].some((l) => l.task === t.id && l.worker === q.by && l.status === "submitted")) continue;
       if (q.review !== undefined) {
@@ -1159,11 +1198,41 @@ export class MemoryTaskStore implements TaskStore {
       .map(clone);
   }
 
-  async reply(task: string, reply: TaskReply): Promise<boolean> {
+  async reply(task: string, o: { reply?: TaskReply; group?: string }): Promise<boolean> {
     const t = this.tasks.get(task);
     if (!t || t.status !== "settled" || t.test !== undefined) return false;
-    t.reply = clone(reply);
+    if (o.reply) t.reply = clone(o.reply);
+    if (o.group !== undefined) t.group = o.group;
     return true;
+  }
+
+  async groups(q: TaskGroupQuery = {}): Promise<TaskGroup[]> {
+    const types = q.types ? new Set(q.types) : undefined;
+    const rows = new Map<string, TaskGroup & { seq: number; who: Set<string> }>();
+    for (const t of this.tasks.values()) {
+      if (t.group === undefined || t.test !== undefined || (types && !types.has(t.type))) continue;
+      const answers = [...this.leases.values()].filter((l) => l.task === t.id && l.status === "submitted" && (!q.worker || l.worker === q.worker));
+      if (q.worker && !answers.length) continue;
+      const key = `${t.type}\0${t.group}`;
+      let g = rows.get(key);
+      if (!g) rows.set(key, (g = { group: t.group, type: t.type, tasks: 0, answers: 0, ok: 0, rejected: 0, unreviewed: 0, first: t.created, last: 0, seq: t.seq, who: new Set() }));
+      g.tasks++;
+      g.first = Math.min(g.first, t.created);
+      g.last = Math.max(g.last, t.settledAt ?? t.created);
+      g.seq = Math.max(g.seq, t.seq);
+      for (const l of answers) {
+        g.answers++;
+        g.who.add(l.worker);
+        const v = this.reviewRows.get(reviewKey(l.task, l.worker))?.verdict;
+        if (v === "ok") g.ok++;
+        else if (v === "rejected") g.rejected++;
+        else g.unreviewed++;
+      }
+    }
+    return [...rows.values()]
+      .sort((a, b) => b.seq - a.seq)
+      .slice(0, pageLimit(q.limit))
+      .map(({ seq: _seq, who, ...g }) => ({ ...g, workers: [...who] }));
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {

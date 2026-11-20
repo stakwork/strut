@@ -89,7 +89,9 @@ import { answerProblem, answerSchemaProblem, type AnswerSchema } from "./answer-
 import {
   DEFAULT_HOLD_HOURS,
   DEFAULT_TEST_RULES,
+  GROUP_MAX,
   MemoryTaskStore,
+  TASK_LIST_MAX,
   STATS_WINDOWS,
   VERDICTS,
   answersOf,
@@ -109,6 +111,7 @@ import {
   type CheckRule,
   type StandingRule,
   type Verdict,
+  type TaskGroup,
   type TaskListQuery,
   type TaskRecord,
   type TaskReply,
@@ -132,11 +135,11 @@ import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant,
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { LimitRule, LeaseTotals } from "./task-store.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
 export type { Standing } from "./task-tests.js";
-export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, TASK_STATUSES, VERDICTS } from "./task-store.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, GROUP_MAX, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 export { OPEN_GRANT_BY } from "./worker-store.js";
@@ -499,6 +502,11 @@ export interface WorkerHistoryItem {
    *  answer of theirs alone, never a skipped or run-out lease. Its files
    *  are read through `task/file` with this lease. */
   reply?: TaskReply;
+  /** The group the run put the task in (`task/reply`'s `group`). */
+  group?: string;
+  /** Staff's verdict on their answer (§9.6) and why: what to fix. Never who
+   *  gave it. */
+  review?: { verdict: Verdict; why?: string; at: number };
 }
 
 /** An answer's earning as staff read it (§8.1): booked in the ledger. */
@@ -721,8 +729,9 @@ export interface TasksCapability {
    *  id and workflow, never an input: `unknown_task` otherwise), and the
    *  task settled by an answer (`not_answered`). `show` a JSON object of at
    *  most 256 KB, `files` of the run's artifacts (at most 10, each at most
-   *  what `task/file` can hand a page); one of them at least. Replaces the
-   *  reply before. */
+   *  what `task/file` can hand a page), `group` the deliverable the task is
+   *  part of (at most `GROUP_MAX` characters); one of them at least. Replaces
+   *  the reply before; a group stays until another is named. */
   reply(input: ReplyInput, o: { control?: RunControl }): Promise<{ task: string; at: number }>;
 
   // The worker's. `actor` is the caller's own (rule 5); `app`, the calling
@@ -760,8 +769,10 @@ export interface TasksCapability {
   me(actor: string, o?: { app?: string; apps?: string[]; address?: string; invite?: string; inviteApp?: string }): Promise<WorkerView>;
   /** The worker's own newest tasks here (of the app's types, or of the
    *  `apps`' types, when given), newest first, at most `RECENT_LEASES`:
-   *  their dashboard's history. */
-  history(actor: string, o?: { app?: string; apps?: string[] }): Promise<{ items: WorkerHistoryItem[] }>;
+   *  their dashboard's history. With `group`, every answer of theirs in
+   *  that group instead (at most `TASK_LIST_MAX`); with `groups`, also
+   *  their groups (`TaskGroup`, their own answers counted, no `workers`). */
+  history(actor: string, o?: { app?: string; apps?: string[]; group?: string; groups?: boolean }): Promise<{ items: WorkerHistoryItem[]; groups?: TaskGroup[] }>;
 
   // Staff's.
   types(): Promise<TaskType[]>;
@@ -789,6 +800,11 @@ export interface TasksCapability {
   /** Tasks newest first, with their leases — each answer's earning with it
    *  (§8.1). */
   list(q?: TaskListQuery): Promise<TaskView[]>;
+  /** The groups of tasks the runs named (`task/reply`'s `group`), of one
+   *  type when asked, the one with the newest task first: each with its
+   *  tasks, answers, verdicts and who answered. Strut's own store's; a
+   *  host's may have none. */
+  groups?(q?: { type?: string; limit?: number }): Promise<TaskGroup[]>;
   task(id: string): Promise<TaskView | undefined>;
   /** One worker as staff read them, with their standing (§7.5). */
   worker(actor: string): Promise<StaffWorker | undefined>;
@@ -850,6 +866,12 @@ export interface TasksService {
    *  money moves. A person's act
    *  (`PUT /tasks/:id/review`, full scope); never on a capability. */
   review(o: { task: string; worker?: string; verdict: Verdict; why?: string; by?: string }): Promise<ReviewOutcome>;
+  /** §9.6 over a group: the same verdict on every answer in it (of one type
+   *  when asked) that has none yet, one `review` each; a verdict given
+   *  stays. At most `TASK_LIST_MAX` tasks a call: `more` when there may be
+   *  others. A person's act (`POST /tasks/groups/review`); never on a
+   *  capability. */
+  reviewGroup(o: { group: string; type?: string; verdict: Verdict; why?: string; by?: string }): Promise<{ reviewed: number; more: boolean }>;
   /** §7.1: the staff's tests, for the test routes alone. */
   tests: TestAuthoring;
   /** §7.9: every test instance graded. Returns the unsubscribe. */
@@ -894,6 +916,8 @@ export interface ReplyInput {
   task: string;
   show?: Record<string, unknown>;
   files?: RunAttachment[];
+  /** The group the task is part of (`TaskRecord.group`): kept when absent. */
+  group?: string;
 }
 
 export interface TasksDeps {
@@ -1625,7 +1649,8 @@ export function createTasks(deps: TasksDeps): TasksService {
         // What `task/file` can hand a page (§5.5): a worker can read every file of a reply.
         if (f.size > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `files: ${f.path} is ${f.size} bytes; a worker's page reads at most ${TEST_FILE_MAX_BYTES} a file`);
       }
-      if (show === undefined && !files.length) throw new TaskError("bad_request", "a reply has show, files or both");
+      const group = input.group === undefined ? undefined : groupOf(input.group);
+      if (show === undefined && !files.length && group === undefined) throw new TaskError("bad_request", "a reply has show, files or a group");
       // The task's run is the CALLING run, read off its control — never an
       // input — so no other run, page or step names another run's task.
       const run = runLineage(o?.control)[0];
@@ -1633,9 +1658,12 @@ export function createTasks(deps: TasksDeps): TasksService {
       const t = s && run ? await s.tasks.task(id) : undefined;
       if (!t || t.test !== undefined || t.runId !== run!.runId || t.workflow !== run!.workflow) throw new TaskError("unknown_task", `no task ${id} asked by this run`);
       if (t.status !== "settled") throw new TaskError("not_answered", `task ${id} is ${t.status}: a reply goes only to a task its worker answered`);
-      const reply: TaskReply = { ...(show !== undefined ? { show } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, size: f.size, path: f.path })) } : {}), at: now() };
-      if (!(await s!.tasks.reply(id, reply))) throw new TaskError("not_answered", `task ${id} is no longer answered`);
-      return { task: id, at: reply.at };
+      const at = now();
+      // A group alone names the group and leaves the reply as it was.
+      const reply: TaskReply | undefined =
+        show !== undefined || files.length ? { ...(show !== undefined ? { show } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, size: f.size, path: f.path })) } : {}), at } : undefined;
+      if (!(await s!.tasks.reply(id, { ...(reply ? { reply } : {}), ...(group !== undefined ? { group } : {}) }))) throw new TaskError("not_answered", `task ${id} is no longer answered`);
+      return { task: id, at };
     },
 
     async next(actor, o = {}) {
@@ -1833,17 +1861,29 @@ export function createTasks(deps: TasksDeps): TasksService {
 
     async history(actor, o = {}) {
       count(actor);
+      if (o.group !== undefined && typeof o.group !== "string") throw new TaskError("bad_request", "group is a group's name");
       const { s, w } = await worker(actor);
       const kinds = new Map((await s.tasks.types()).map((t) => [t.name, t]));
       // A type gone, or drawn by another app, is not this app's to show.
-      const leases = (await s.tasks.recentLeases(w.actor, RECENT_LEASES)).filter((l) => {
-        const k = kinds.get(l.type);
-        return k && drawnBy(k, o);
-      });
-      const byId = new Map((await s.tasks.byIds([...new Set(leases.map((l) => l.task))])).map((t) => [t.id, t]));
+      const mine = (type: string) => {
+        const k = kinds.get(type);
+        return !!k && drawnBy(k, o);
+      };
+      // One group's answers, all of them; else the newest leases.
+      const grouped = o.group ? await s.tasks.list({ group: o.group, by: w.actor, test: false, limit: TASK_LIST_MAX }) : undefined;
+      const leases = (
+        grouped
+          ? (await s.tasks.leasesOf(grouped.map((t) => t.id))).filter((l) => l.worker === w.actor).sort((a, b) => b.taken - a.taken)
+          : await s.tasks.recentLeases(w.actor, RECENT_LEASES)
+      ).filter((l) => mine(l.type));
+      const byId = new Map((grouped ?? (await s.tasks.byIds([...new Set(leases.map((l) => l.task))]))).map((t) => [t.id, t]));
       const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);
       const ledger = paid.length ? await deps.ledgerIfAny?.() : undefined;
       const earned = ledger ? new Map((await ledger.payFor([...new Set(paid.map((l) => l.task))])).map((e) => [e.lease, e])) : new Map<string, Earning>();
+      // Staff's verdict on each answer of theirs (§9.6): what to fix, and why.
+      const answered = leases.filter((l) => l.status === "submitted");
+      const verdicts = answered.length ? new Map((await s.tasks.reviewsOf([...new Set(answered.map((l) => l.task))])).filter((r) => r.worker === w.actor).map((r) => [r.task, r])) : new Map<string, ReviewRecord>();
+      const groups = o.groups ? (await s.tasks.groups({ worker: w.actor, types: [...kinds.keys()].filter(mine) })).map(({ workers: _w, ...g }) => g) : undefined;
       return {
         items: leases.map((l): WorkerHistoryItem => {
           const e = earned.get(l.id);
@@ -1854,8 +1894,22 @@ export function createTasks(deps: TasksDeps): TasksService {
           const ask = askOf(t?.show);
           // The run's reply reaches those who answered, never a skip or a lease run out.
           const reply = l.status === "submitted" ? t?.reply : undefined;
-          return { lease: l.id, type: l.type, ...(ask ? { ask } : {}), taken: l.taken, ...(l.closed !== undefined ? { closed: l.closed } : {}), status: l.status, ...(pay ? { earned: pay } : {}), ...(reply ? { reply } : {}) };
+          const r = l.status === "submitted" ? verdicts.get(l.task) : undefined;
+          const review = r ? { verdict: r.verdict, ...(r.why ? { why: r.why } : {}), at: r.at } : undefined;
+          return {
+            lease: l.id,
+            type: l.type,
+            ...(ask ? { ask } : {}),
+            taken: l.taken,
+            ...(l.closed !== undefined ? { closed: l.closed } : {}),
+            status: l.status,
+            ...(pay ? { earned: pay } : {}),
+            ...(reply ? { reply } : {}),
+            ...(t?.group !== undefined && l.status === "submitted" ? { group: t.group } : {}),
+            ...(review ? { review } : {}),
+          };
         }),
+        ...(groups ? { groups } : {}),
       };
     },
 
@@ -2017,6 +2071,12 @@ export function createTasks(deps: TasksDeps): TasksService {
     async list(q = {}) {
       const s = await storesIfAny();
       return s ? views(s, await s.tasks.list(q)) : [];
+    },
+
+    async groups(q = {}) {
+      if (q.type !== undefined && typeof q.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+      const s = await storesIfAny();
+      return s ? s.tasks.groups({ ...(q.type ? { types: [q.type] } : {}), ...(q.limit !== undefined ? { limit: q.limit } : {}) }) : [];
     },
 
     async task(id) {
@@ -2210,6 +2270,31 @@ export function createTasks(deps: TasksDeps): TasksService {
     // the check runs as after a grade; `ok` takes it out of the window.
     if (o.verdict === "rejected" && kind?.tests) await standingCheck(s, l.worker, kind);
     return { task: t.id, worker: l.worker, lease: l.id, review: leaseReview(row, until, at), ...(earning ? { earning: leaseEarning(earning) } : {}) };
+  };
+
+  const reviewGroup: TasksService["reviewGroup"] = async (o) => {
+    if (!o || typeof o !== "object") throw new TaskError("bad_request", "a group's review is { group, type?, verdict, why? }");
+    const group = groupOf(o.group);
+    if (o.type !== undefined && typeof o.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+    if (!VERDICTS.includes(o.verdict)) throw new TaskError("bad_request", `verdict is ${VERDICTS.join(" or ")}`);
+    if (o.verdict === "rejected" && !(typeof o.why === "string" && o.why.trim())) throw new TaskError("bad_request", "a rejection says why");
+    const s = await storesIfAny();
+    if (!s) return { reviewed: 0, more: false };
+    const tasks = await s.tasks.list({ group, ...(o.type ? { type: o.type } : {}), review: "none", limit: TASK_LIST_MAX });
+    const ids = tasks.map((t) => t.id);
+    const leases = await s.tasks.leasesOf(ids);
+    const given = new Set((await s.tasks.reviewsOf(ids)).map((r) => `${r.task}\0${r.worker}`));
+    let reviewed = 0;
+    // Oldest first, as the answers were given.
+    for (const t of [...tasks].reverse()) {
+      const answers = answersOf(leases.filter((l) => l.task === t.id));
+      for (const l of answers) {
+        if (given.has(`${t.id}\0${l.worker}`)) continue;
+        await review({ task: t.id, ...(answers.length > 1 ? { worker: l.worker } : {}), verdict: o.verdict, ...(o.why !== undefined ? { why: o.why } : {}), ...(o.by !== undefined ? { by: o.by } : {}) });
+        reviewed++;
+      }
+    }
+    return { reviewed, more: tasks.length >= TASK_LIST_MAX };
   };
 
   // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────
@@ -2684,6 +2769,7 @@ export function createTasks(deps: TasksDeps): TasksService {
     },
     takeBack,
     review,
+    reviewGroup,
     tests,
     onGraded(listener) {
       gradedListeners.add(listener);
@@ -2734,6 +2820,14 @@ function randomId(): string {
 function need(name: string, v: unknown): string {
   if (typeof v !== "string" || !v) throw new TaskError("bad_request", `${name} is required`);
   return v;
+}
+
+/** A group's name (`TaskRecord.group`): trimmed, 1 to `GROUP_MAX`
+ *  characters on one line. */
+function groupOf(v: unknown): string {
+  const g = typeof v === "string" ? v.trim() : "";
+  if (!g || g.length > GROUP_MAX || /[\r\n]/.test(g)) throw new TaskError("bad_request", `group is a name of 1 to ${GROUP_MAX} characters on one line`);
+  return g;
 }
 
 function actorOk(actor: unknown): asserts actor is string {
