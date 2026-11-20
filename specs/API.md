@@ -2765,7 +2765,13 @@ A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
 only a full-scope listing mints one, and the framed document is read with
 it. The flag hides the app; what it may DO is its grants and its steps'
 own checks. `strut/earnings` and `strut/staff` (§14.15) say it; their
-usage (`GET /apps/:name/usage`, §14.6) is an admin's too.
+usage (`GET /apps/:name/usage`, §14.6) is an admin's too. A PACKAGE's
+`admin: true` app — its version installed by the package, under its
+prefix — shown on a full-scope connection gets the admin's scope for that
+package's own steps: each call's `secrets` is bound to it, so they find
+`secrets.deployment` for the names the package provides (§16, "Secrets a
+package provides"). A member's session, a run the page launches and any
+other package's step get none of it.
 
 **Its steps** go through the admin door (`src/steps/lib/earnings/_door.ts`):
 each is the route it names, made as an in-process request in the viewer's
@@ -3300,7 +3306,9 @@ A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 enforced — `requires?`, `job?: { tools, approve? }` — steps of the package
 the `job` workflow's agent may call, by their names inside it or globs over
 them, and the ones among them that ask first; a name that matches none of
-its steps refuses the package, `plans/followed-repos.md` §3) and the folders `workflows/`,
+its steps refuses the package, `plans/followed-repos.md` §3, `provides?: {
+secrets? }` — the secrets its steps manage, "Secrets a package provides"
+below) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
@@ -3679,11 +3687,74 @@ secrets its package declares: any other `secrets.get(NAME)` fails
 `secret_fenced: <step> came from the package <package>, which declares
 only …` (`src/packages/fence.ts`).
 
+**Secrets a package provides.** A package names the secrets its steps
+MANAGE, each one they may read (else `bad_package`):
+
+```yaml
+requires:
+  optional: [HOOK_TOKEN, HOOK_SECRET]   # what its steps may read
+provides:
+  secrets: [HOOK_TOKEN, HOOK_SECRET]    # what they may also set and delete
+```
+
+A person's own value (a token they connect or paste) is `own`'s; the
+deployment's is for a value that is the server's and nobody's — a webhook's
+signing secret the package makes once, a bot's token an admin pastes.
+
+`provides` takes no other key, so a strut from before a key refuses the
+package instead of installing it without it. Reading stays
+`ctx.services.secrets.get(NAME)` — the run's person's value, else the
+deployment's, else the environment. Beside it, a step of the package finds
+two scopes, each `{ get(name), set(name, value), delete(name) → boolean }`:
+
+| Scope | Holds | On which calls |
+| --- | --- | --- |
+| `secrets.own` | the run's PERSON's own value — their actor secret (`/actors/:actor/secrets/:name`), never the deployment's | any run or call with a principal: a page's call for its viewer, a workflow run as its person, the job agent's tool call |
+| `secrets.deployment` | the DEPLOYMENT's value (`/secrets/:name`); a read falls back to the environment as `get` does, a delete removes the store's alone | only a call from the package's OWN `admin: true` app (§14.14) whose connection holds full scope — an admin's session, the deployment key. Never a member's session, another package's app or a non-admin one, a host's or a visitor's call, a preview, a run the page launches, a workflow run or the job agent |
+
+A scope the call does not have is absent (`if (secrets.deployment) …`).
+Each takes the names the package provides and no other: `secret_fenced:
+<step> came from the package <package>, which provides only … — it may not
+set the deployment's NAME`. A name follows `PUT /secrets/:name`'s rules
+(`secret_name:`, a name no step reads included) and a value is a non-empty
+string (`secret_empty:`). A step of strut's own or the workspace's has
+neither scope, and a package's step finds no `secretBlanks` on its bag:
+it writes a secret through its scopes or not at all. Strut never logs,
+returns or records a value; a step that reads one decides what its output
+says, and a step that takes one lists the field in `redact`, so a run's
+events, the events sink and the app monitor hold `"[redacted]"`.
+
+```ts
+// steps/me.ts: "Connected as …", from the viewer's own token alone. A
+// deployment value never stands in for a person's
+async run(_cfg, ctx) {
+  const token = await ctx.services.secrets.own?.get("HOOK_TOKEN");
+  return token ? { connected: true, login: await loginOf(ctx, token) } : { connected: false };
+}
+// steps/token.ts (redact: ["token"]): a person pastes their own token, or disconnects
+async run(cfg, ctx) {
+  const mine = ctx.services.secrets.own;
+  if (!mine) throw new Error("a person's: this run has no person");
+  if (cfg.token) await mine.set("HOOK_TOKEN", cfg.token);
+  else await mine.delete("HOOK_TOKEN");
+  return { connected: !!cfg.token };
+}
+// steps/hook-secret.ts: the package's admin app makes the webhook's signing secret, once.
+// The secret is the deployment's and nobody's
+async run(_cfg, ctx) {
+  const deployment = ctx.services.secrets.deployment;
+  if (!deployment) throw new Error("an admin's, from this package's admin app");
+  if (!(await deployment.get("HOOK_SECRET"))) await deployment.set("HOOK_SECRET", crypto.randomUUID());
+  return { ready: true }; // never the value
+}
+```
+
 ```jsonc
 // InstalledPackage
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
@@ -3702,7 +3773,11 @@ an edited page, and the helpers while a forked step of the package stays
 are kept and listed in `kept: [{ kind, name, reason }]`; so is a page with a
 page under it that stays — one this strut added under the package's root,
 an edited page — and every page above it, since retiring a page deletes
-its edges. 404
+its edges. The values of the secrets it provided stay: they are the
+people's and the deployment's, other steps read them by name, and a
+reinstall finds them (revoking them is the package's to do before it
+goes; deleting them is `DELETE /secrets/:name` and
+`DELETE /actors/:actor/secrets/:name`). 404
 `package_not_installed`; 409 `package_busy` while one of its workflows has
 a run in flight; 409 `package_distro_owned` for a package the distro
 installed.

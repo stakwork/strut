@@ -465,6 +465,31 @@ instead of baked into env at deploy time.
   `list_secrets`. A run's `input` is persisted on `run.start`, so this is
   how a per-user credential reaches a workflow without ever being in it.
 
+- **A package's steps manage the secrets it provides** (`provides.secrets`
+  in `strut.yaml`; src/packages/fence.ts, `own` / `deployment` in
+  src/capabilities.ts). Reads stay one merged lookup for every step. Beside
+  it a package's step gets two scopes, each `{ get, set, delete }` and each
+  held to the names its package provides (`secret_fenced:` for any other):
+  `secrets.own`, the run's principal's own actor secrets apart from the
+  deployment's — wherever the run has a principal, so a page's call for its
+  viewer, a workflow run as its person, the job agent's tool call — and
+  `secrets.deployment`, the deployment's store (a read falls back to the
+  environment, as `get` does), only on a call from the package's own
+  `admin: true` app whose connection holds full scope. The app door decides
+  that (`packageAdminOf`, src/apps/tools.ts) from what it already knows — the
+  connection's scope (`AppRef.admin`) and the app version's `upstream` — and
+  binds that ONE call's `secrets` (`adminSecrets`); a run the page launches
+  takes the shared bag, so it has none. The writers hang off strut's own
+  capability in a module-private map (`secretScopesOf`), never on an object
+  a step reads, and are not exported from strut's index: a step of strut's
+  own or the workspace's has no scope, and a package's step has no
+  `secretBlanks` either, so a member's call never sets a deployment secret
+  whatever the step does. Names and values follow the routes' rules
+  (`secret_name:`, hidden names included; `secret_empty:`). Strut never logs
+  or returns a value; a step that takes one lists the field in `redact`.
+  Uninstalling the package leaves the values. Not isolation — a step has
+  `shell` — but the door it is given says what it may do.
+
 - **A person's SSH key is used, never held** (src/ssh-agent.ts,
   `ssh/keygen`). A job someone lets into a server logs in with ONE key per
   person: `ssh/keygen` makes it in code and stores the private half as the

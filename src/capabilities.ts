@@ -39,6 +39,7 @@ import {
 } from "node:path";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
+import { isValidSecretName } from "./secret-store.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
@@ -65,6 +66,34 @@ export interface SecretsCapability {
    *  principal, so a step never does — it just reads `secrets.get(NAME)`.
    *  Absent when the deployment has no actor secrets. */
   forPrincipal?(principal: string): SecretsCapability;
+  /** The run's PERSON's own values — their actor secrets
+   *  (src/actor-secrets.ts) — apart from the deployment's: what "connected
+   *  as" reads, what Disconnect deletes, what a person pastes. Only on a
+   *  PACKAGE's step, for the names its package provides (`provides.secrets`,
+   *  src/packages/fence.ts), in a run or call that has a principal. */
+  own?: SecretScope;
+  /** The DEPLOYMENT's values, apart from any person's: a read is what a run
+   *  with no value of its own reads (the store, then strut's environment);
+   *  a write is the store's. Only on a package's step called from that
+   *  package's own `admin: true` app shown to an admin (src/apps/tools.ts),
+   *  for the names it provides — never in a workflow run, an agent's tool
+   *  call or a member's call. */
+  deployment?: SecretScope;
+}
+
+/** One holder's secret values, apart from any other's
+ *  (`SecretsCapability.own`, `.deployment`): what `GET`, `PUT` and `DELETE`
+ *  of `/actors/:actor/secrets/:name` and `/secrets/:name` do, from a step.
+ *  A name is a secret's name (letters, digits and `_`) that some step may
+ *  read (`hiddenFromSteps`, env.ts), else `secret_name:`; a value is a
+ *  non-empty string, else `secret_empty:`. Nothing here logs or returns a
+ *  value: a step that reads one decides what its output says. */
+export interface SecretScope {
+  /** This holder's value, or undefined: never another holder's. */
+  get(name: string): Promise<string | undefined>;
+  set(name: string, value: string): Promise<void>;
+  /** Whether this holder had one. */
+  delete(name: string): Promise<boolean>;
 }
 
 /** The narrow read surface a secrets capability needs from a backing store —
@@ -76,6 +105,86 @@ export interface SecretReadable {
 /** The read surface of an actor-secret store (actor-secrets.ts). */
 export interface ActorSecretReadable {
   get(actor: string, name: string): Promise<string | undefined>;
+}
+
+/** A store the capability can also WRITE (a `SecretStore`): what makes
+ *  `deployment` possible. */
+interface SecretWritable extends SecretReadable {
+  set(name: string, value: string): Promise<void>;
+  delete(name: string): Promise<boolean>;
+}
+
+/** An actor-secret store the capability can also write: what makes `own`
+ *  possible. */
+interface ActorSecretWritable extends ActorSecretReadable {
+  set(actor: string, name: string, value: string): Promise<void>;
+  delete(actor: string, name: string): Promise<boolean>;
+}
+
+const writes = (store: unknown): boolean => {
+  const s = store as { set?: unknown; delete?: unknown } | undefined;
+  return typeof s?.set === "function" && typeof s.delete === "function";
+};
+
+/**
+ * What strut's own capability can WRITE, kept OFF the object a step sees, so
+ * no step reaches it by reading `ctx.services`: a package's step gets it
+ * through its fence alone (`secretScopesOf`, src/packages/fence.ts), as
+ * `own` and `deployment`, for the names its package provides. Neither
+ * function below is exported from strut's index, so a step's `import
+ * "strut"` reaches neither. Not isolation — a step has `shell` — but the
+ * door a step is given says what it may do.
+ */
+export interface SecretScopes {
+  /** The principal's own: set on a capability bound to one (`forPrincipal`). */
+  own?: SecretScope;
+  /** The deployment's: set where the capability's store writes. */
+  deployment?: SecretScope;
+  /** The package whose own `admin: true` app this call is, shown to an
+   *  admin (`adminSecrets`): the one package whose steps get `deployment`. */
+  admin?: string;
+}
+const SCOPES = new WeakMap<SecretsCapability, SecretScopes>();
+
+/** The scopes behind a capability strut built, for the fence. */
+export function secretScopesOf(cap: SecretsCapability | undefined): Readonly<SecretScopes> | undefined {
+  return cap ? SCOPES.get(cap) : undefined;
+}
+
+/** `cap` as one call holds it from a package's own `admin: true` app shown
+ *  to an admin (src/apps/tools.ts): that package's steps get `deployment`
+ *  through their fence, and binding it to the viewer keeps it. Only the app
+ *  door binds it, for one call's bag: never the shared one, so a run the
+ *  page launches, an agent or a member's page never holds it. */
+export function adminSecrets(cap: SecretsCapability, pkg: string): SecretsCapability {
+  const scopes = SCOPES.get(cap);
+  if (!scopes?.deployment) return cap;
+  const bind = cap.forPrincipal?.bind(cap);
+  const admin: SecretsCapability = {
+    get: (name: string) => cap.get(name),
+    ...(bind ? { forPrincipal: (principal: string) => adminSecrets(bind(principal), pkg) } : {}),
+  };
+  SCOPES.set(admin, { ...scopes, admin: pkg });
+  if ((cap as { [HIDDEN]?: true })[HIDDEN]) Object.defineProperty(admin, HIDDEN, { value: true });
+  return admin;
+}
+
+/** A scope over one holder's reads and writes, with the name and value rules. */
+function secretScope(read: (name: string) => Promise<string | undefined>, write: (name: string, value: string) => Promise<void>, drop: (name: string) => Promise<boolean>): SecretScope {
+  const named = (name: string): string => {
+    if (typeof name !== "string" || !isValidSecretName(name)) throw new Error(`secret_name: "${String(name).slice(0, 80)}" is not a secret name — letters, digits and _, not starting with a digit`);
+    if (hiddenFromSteps(name)) throw new Error(`secret_name: ${name} is read by the server alone, never by a step`);
+    return name;
+  };
+  return Object.freeze({
+    get: async (name: string) => read(named(name)),
+    set: async (name: string, value: string) => {
+      named(name);
+      if (typeof value !== "string" || !value) throw new Error(`secret_empty: no value for ${name}`);
+      await write(name, value);
+    },
+    delete: async (name: string) => drop(named(name)),
+  });
 }
 
 /**
@@ -109,6 +218,9 @@ export function hideSecrets(cap: SecretsCapability): SecretsCapability {
     ...(cap.forPrincipal ? { forPrincipal: (principal: string) => hideSecrets(cap.forPrincipal!(principal)) } : {}),
   };
   Object.defineProperty(hidden, HIDDEN, { value: true });
+  // A scope refuses a hidden name itself (`secretScope`).
+  const scopes = SCOPES.get(cap);
+  if (scopes) SCOPES.set(hidden, scopes);
   return hidden;
 }
 
@@ -127,6 +239,10 @@ function unhiddenSecrets(
         return fallback?.[name];
       },
     };
+    if (writes(store)) {
+      const w = store as SecretWritable;
+      SCOPES.set(base, { deployment: secretScope(base.get, (n, v) => w.set(n, v), (n) => w.delete(n)) });
+    }
   } else {
     const flat = source as Record<string, string | undefined>;
     base = {
@@ -148,9 +264,15 @@ function unhiddenSecrets(
         // Re-binding replaces the principal rather than stacking.
         forPrincipal: (p) => (p === principal ? bound : withActors.forPrincipal!(p)),
       };
+      if (writes(actors)) {
+        const w = actors as ActorSecretWritable;
+        const own = secretScope((n) => w.get(principal, n), (n, v) => w.set(principal, n, v), (n) => w.delete(principal, n));
+        SCOPES.set(bound, { ...SCOPES.get(base), own });
+      } else if (SCOPES.has(base)) SCOPES.set(bound, SCOPES.get(base)!);
       return bound;
     },
   };
+  if (SCOPES.has(base)) SCOPES.set(withActors, SCOPES.get(base)!);
   return withActors;
 }
 

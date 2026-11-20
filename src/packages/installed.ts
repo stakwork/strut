@@ -57,6 +57,10 @@ export interface InstalledPackage {
   commit?: string;
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
+  /** What it provides (`provides` in its `strut.yaml`): `secrets`, the ones
+   *  its steps manage — a person's own value, and on an admin's call from
+   *  its own `admin: true` app the deployment's (src/packages/fence.ts). */
+  provides?: { secrets?: string[] };
   /** Which door wrote it: a person's install, or the distro, whose package
    *  only the distro updates or removes (plans/marketplace.md §12). Absent
    *  for a package of Concepts alone, which records no door. */
@@ -130,8 +134,9 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
       releasedAt.set(upstream.package, at);
       const source = versions[installed]!.source;
       const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, door });
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.provides ? { provides: upstream.provides } : {}), door });
       if (!upstream.commit) delete p.commit;
+      if (!upstream.provides) delete p.provides;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });
