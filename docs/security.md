@@ -484,7 +484,10 @@ instead of baked into env at deploy time.
   a step reads, and are not exported from strut's index: a step of strut's
   own or the workspace's has no scope, and a package's step has no
   `secretBlanks` either, so a member's call never sets a deployment secret
-  whatever the step does. Names and values follow the routes' rules
+  whatever the step does. Nor does its `secrets` have `forPrincipal`: a
+  package's step works for the run's person alone and never re-binds to
+  read another person's value or manage their `own` (a nested or launched
+  run is bound to its own person by the runner). Names and values follow the routes' rules
   (`secret_name:`, hidden names included; `secret_empty:`). Strut never logs
   or returns a value; a step that takes one lists the field in `redact`.
   Uninstalling the package leaves the values. Not isolation — a step has
