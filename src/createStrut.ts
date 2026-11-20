@@ -1809,7 +1809,7 @@ export async function createStrut<TServices = unknown>(
       }
       return standingTask(flow, type);
     },
-    // Round types (Tasks and workers' Send a round): the workflow a round
+    // Round types (Workers' Send a round): the workflow a round
     // runs must make tasks of the type — a `human` step of it, in a
     // `foreach` too.
     round: async (type, workflow) => {

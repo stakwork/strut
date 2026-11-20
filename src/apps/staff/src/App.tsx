@@ -100,7 +100,7 @@ export default function App() {
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 bg-background p-4 text-foreground sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <Users className="size-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Tasks and workers</h1>
+        <h1 className="text-lg font-semibold">Workers</h1>
         <span className="hidden text-sm text-muted-foreground md:inline">The people who answer this server's workflows, and what they answered.</span>
         <Button variant="ghost" size="icon-sm" className="ml-auto" title="Read again" onClick={() => void qc.invalidateQueries({ queryKey: ["staff"] })}>
           <RefreshCw className={cn((types.isFetching || workers.isFetching) && "animate-spin")} />

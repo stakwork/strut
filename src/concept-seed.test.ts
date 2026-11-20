@@ -171,10 +171,10 @@ describe("concept files (pure)", () => {
     // Ruling 12: open paid work needs no qualifying test first.
     assert.doesNotMatch(work.docs!, /first needs a short qualifying test/, "open paid work is not held for a test");
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
-    // A worker app's links are shared from Tasks and workers, which opens with
+    // A worker app's links are shared from Workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.
     for (const c of [wb, app, work]) {
-      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Tasks and workers`);
+      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Workers`);
       assert.match(c.docs!, /never\s+paste\s+a\s+link/, `${c.name}: no link pasted in a reply`);
       assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
     }

@@ -598,7 +598,7 @@ answers and photos with them. So what the answers come to (a report, a
 tally, the photos marked up) is never a tab of the worker app, and never
 grant it the workflow whose runs hold them. Hiding a tab behind
 `useHost().public` locks nothing: the grant is what opens the runs. The
-person reads the answers in Tasks and workers (each task with its answer,
+person reads the answers in Workers (each task with its answer,
 its photos and its run); a page of their own over the runs, when they ask
 for one, is a separate app that is never made public.
 
@@ -716,16 +716,16 @@ offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
 writes. Say in your reply that later publishes are drafts until someone
-makes them live. The person shares a worker app from Tasks and workers
+makes them live. The person shares a worker app from Workers
 (`strut/staff`), whose first page opens with its links, a QR code and
 Invite (a one-use link that sets up a new worker's phone): point them
 there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
-say "Tasks and workers"), and never paste a link from the result (or `GET
+say "Workers"), and never paste a link from the result (or `GET
 /public/apps`) in your reply, nor build one by hand.
 
 A worker app is the WORKERS' page and nothing else. Never build an admin
 app for work by people — costs, budgets, time per worker, settings,
-grants: Tasks and workers has them, and a type's `limits` are its budget
+grants: Workers has them, and a type's `limits` are its budget
 and daily cap (`Worker Tasks`, "What is built in").
 
 ## The assistant

@@ -197,8 +197,8 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.deepEqual(mergeType("court-paper", { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 72, enabled: true, holdHours: 72, attachments: { max: 4, min: 1, types: ["image/*"] } }, { attachments: { max: 2 } }).attachments, { max: 2, min: 1, types: ["image/*"] });
     // Only people you invite: the admin gives it to each.
     const invite = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false });
-    assert.equal(field(invite, "Who can do it")!.value, "Only people you invite: give it to each of them in Tasks and workers.");
-    assert.equal(field(invite, "Workers")!.value, "none yet: you give it to each worker in Tasks and workers (strut/staff)");
+    assert.equal(field(invite, "Who can do it")!.value, "Only people you invite: give it to each of them in Workers.");
+    assert.equal(field(invite, "Workers")!.value, "none yet: you give it to each worker in Workers (strut/staff)");
     assert.match(invite.summary!, /^Only people you invite can do the "pet match" task/);
     // A new type with no answer: nothing to hand in but what the files rule says; nothing that fails.
     const none = typeCard({ name: "pet-match", app: "workers" });
@@ -236,9 +236,9 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.equal(standing.summary, 'Anyone signed in to the worker page can do the "labels" task whenever they like, as many as they like, unpaid.');
     assert.equal(field(standing, "When")!.value, "Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow nutrition-label.");
     assert.equal(field(standing, "Time limits")!.value, "10 minutes to finish one once started", "a standing task has no expiry: it lives as long as its lease");
-    // A round type: one for each item, sent from Tasks and workers or by asking.
+    // A round type: one for each item, sent from Workers or by asking.
     const round = typeCard({ name: "visits", app: "workers", answer: MATCH, round: { workflow: "shop-visits" } });
-    assert.equal(field(round, "When")!.value, "One for each item, when you send a round: from Tasks and workers (Send a round), or by asking here. The workflow shop-visits makes them.");
+    assert.equal(field(round, "When")!.value, "One for each item, when you send a round: from Workers (Send a round), or by asking here. The workflow shop-visits makes them.");
     // What the person decides on is never folded, nor is any danger.
     for (const c of [card, invite, paid, paidOpen, noTests, standing, round]) {
       for (const f of c.fields!) assert.ok(!(f.detail && f.danger), `${f.label}: a danger is never folded`);

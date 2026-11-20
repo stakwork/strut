@@ -75,7 +75,7 @@ is. Workers answer in a worker app: every server has
 `strut/worker`, which draws a photo and plain fields, and a build makes
 another only when the task needs its own view. Workers are anyone
 signed in to the app's public page (Peel signs them in); admins manage
-them and their pay in Tasks and workers (strut/staff). Before the
+them and their pay in Workers (strut/staff). Before the
 build starts, open its page in the second list (`Worker Tasks`) and
 settle with the person, in one message, what it says is theirs to
 decide.
