@@ -22,6 +22,13 @@
  * step runs, and a package's step works for that person alone — it never
  * reads or manages another person's value by re-binding.
  *
+ * And it starts work only as ITS run's person (stadeum plans/software.md §5,
+ * item 15: a package never names a person). Each capability that starts a
+ * run, or says whom one is for, is handed to it held to the actor and
+ * principal the runner gave this step, whatever it passes
+ * (`heldToItsRun`), and what only a person or the server does is not on
+ * its bag at all.
+ *
  * Steps only: a bought WORKFLOW is YAML whose `secretsEnv` names a person
  * reads in the install ask; a bought step is code that could ask for any
  * name at run time. Not isolation — the step still has `shell` and `http` —
@@ -29,6 +36,11 @@
  */
 import type { AnyStepDef, StepContext } from "../core.js";
 import { secretScopesOf, type SecretScope, type SecretsCapability } from "../capabilities.js";
+import type { AuthoringCapability } from "../authoring.js";
+import type { JobsCapability } from "../jobs.js";
+import type { PeersCapability } from "../peers.js";
+import type { ProposalsCapability } from "../proposals.js";
+import type { RunsCapability } from "../runs.js";
 import type { Upstream, WorkspaceStore } from "../workspace.js";
 
 export type Fence = Pick<Upstream, "package" | "secrets" | "provides">;
@@ -89,8 +101,101 @@ export function fenceStep(def: AnyStepDef, fence: Fence): AnyStepDef {
 }
 
 function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: Fence): StepContext<any> {
-  const services = ctx?.services as { secrets?: SecretsCapability; secretBlanks?: unknown } | undefined;
-  if (!ctx || !services || (!services.secrets && !services.secretBlanks)) return ctx as StepContext<any>;
-  const { secretBlanks: _blanks, ...rest } = services;
-  return { ...ctx, services: { ...rest, ...(services.secrets ? { secrets: fencedSecrets(services.secrets, type, fence) } : {}) } };
+  const services = ctx?.services as (Record<string, unknown> & { secrets?: SecretsCapability }) | undefined;
+  if (!ctx || !services || typeof services !== "object") return ctx as StepContext<any>;
+  // Not a package step's: a blank of the deployment's to fill, the
+  // scheduler's API (a package's schedules are its `schedules:`), and
+  // trials (an admin's page starts them).
+  const { secretBlanks: _blanks, automations: _automations, trials: _trials, ...rest } = services;
+  return {
+    ...ctx,
+    services: {
+      ...rest,
+      ...(services.secrets ? { secrets: fencedSecrets(services.secrets, type, fence) } : {}),
+      ...heldToItsRun(services, ctx, type, fence),
+    },
+  };
+}
+
+/** `cap` with `methods` in place of its own; the rest as it is. */
+const over = <T extends object>(cap: T, methods: Record<string, unknown>): T => Object.freeze(Object.assign(Object.create(cap) as T, methods));
+
+/**
+ * The capabilities that start a run, or say whom one is for, as a package's
+ * step holds them: for the person of ITS run — the actor and principal the
+ * runner gave this step — whatever it passes. `runs.launch` takes the run's
+ * own caller; `authoring.runWorkflow`, `resumeRun` and `controlRun`,
+ * `jobs.launch` and `proposals.propose` take the run's actor and principal;
+ * a request to a peer carries the run's principal as `x-strut-actor`, or
+ * none. A run that acts for nobody launches none from it (`runs.launch`,
+ * `jobs.launch`): with no person, a launch runs as the launched workflow's
+ * owner (`principalFor`). A nested run (`runWorkflow`) has no such
+ * fallback, so it runs as nobody, as its parent does. Deciding a proposal
+ * is a person's (`decide` is not there): its apply runs as its proposer.
+ */
+function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, type: string, fence: Fence): Record<string, unknown> {
+  const { actor, principal } = ctx;
+  const person = { ...(actor ? { actor } : {}), ...(principal ? { principal } : {}) };
+  const someone = () => {
+    if (!principal) throw new Error(`run_as_fenced: ${type} came from the package ${fence.package}, whose steps start a run only as their own run's person — and this run acts for nobody`);
+  };
+  const out: Record<string, unknown> = {};
+  const runs = services["runs"] as RunsCapability | undefined;
+  if (runs?.launch) {
+    out["runs"] = over(runs, {
+      launch: (q: Parameters<RunsCapability["launch"]>[0]) => {
+        someone();
+        return runs.launch(q, {
+          ...person,
+          ...(ctx.app ? { app: ctx.app } : {}),
+          ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
+          ...(ctx.branch ? { branch: ctx.branch } : {}),
+          ...(ctx.trial ? { trial: ctx.trial } : {}),
+        });
+      },
+    });
+  }
+  const authoring = services["authoring"] as AuthoringCapability | undefined;
+  if (authoring?.runWorkflow) {
+    out["authoring"] = over(authoring, {
+      runWorkflow: (...[name, input, params, version, opts]: Parameters<AuthoringCapability["runWorkflow"]>) => {
+        const { actor: _a, principal: _p, ...rest } = opts ?? {};
+        return authoring.runWorkflow(name, input, params, version, { ...rest, ...person });
+      },
+      resumeRun: (...[name, runId, body]: Parameters<AuthoringCapability["resumeRun"]>) => authoring.resumeRun(name, runId, body, principal ? { principal } : {}),
+      controlRun: (...[name, runId, action, caller]: Parameters<AuthoringCapability["controlRun"]>) =>
+        authoring.controlRun(name, runId, action, { ...(caller?.force ? { force: true } : {}), ...(principal ? { principal } : {}) }),
+    });
+  }
+  const jobs = services["jobs"] as JobsCapability | undefined;
+  if (jobs?.launch) {
+    const launch = jobs.launch.bind(jobs);
+    out["jobs"] = over(jobs, {
+      launch: (opts: Parameters<typeof launch>[0]) => {
+        someone();
+        const { actor: _a, principal: _p, ...rest } = opts;
+        return launch({ ...rest, ...person });
+      },
+    });
+  }
+  const proposals = services["proposals"] as ProposalsCapability | undefined;
+  if (proposals?.propose) {
+    out["proposals"] = over(proposals, {
+      propose: (p: Parameters<ProposalsCapability["propose"]>[0]) => {
+        const { actor: _a, principal: _p, ...by } = p.by;
+        return proposals.propose({ ...p, by: { ...by, ...person } });
+      },
+      decide: undefined,
+    });
+  }
+  const peers = services["peers"] as PeersCapability | undefined;
+  if (peers?.fetch) {
+    out["peers"] = over(peers, {
+      fetch: (...[id, path, init]: Parameters<PeersCapability["fetch"]>) => {
+        const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).filter(([k]) => k.toLowerCase() !== "x-strut-actor"));
+        return peers.fetch(id, path, { ...init, headers: { ...headers, ...(principal ? { "x-strut-actor": principal } : {}) } });
+      },
+    });
+  }
+  return out;
 }

@@ -191,6 +191,7 @@ export function brief(a: AutomationView) {
     running: a.running,
     prompt: typeof input.prompt === "string" ? unescaped(input.prompt) : "",
     ...(a.lastFireError ? { lastFireError: a.lastFireError } : {}),
+    ...(a.nobodyToRunAs ? { nobodyToRunAs: a.nobodyToRunAs } : {}),
   };
 }
 

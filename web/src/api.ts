@@ -1965,6 +1965,11 @@ export interface AutomationView extends Automation {
   running: boolean;
   /** Why the latest fire launched nothing. */
   lastFireError?: string;
+  /** The person its fires run as: its workflow's owner, whose secrets they
+   *  read and who pays. Absent when it has none. */
+  runsAs?: string;
+  /** Why a fire would launch nothing, said before one does: nobody to run as. */
+  nobodyToRunAs?: string;
 }
 
 export interface AutomationDraft {

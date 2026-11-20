@@ -6119,7 +6119,7 @@ export async function createStrut<TServices = unknown>(
     cache: packageStore,
     install: (refs, o) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return installs.start({ ref: refs.map((x) => x.ref).join(", "), door: o.door ?? "distro" }, (progress) =>
+      return installs.start({ ref: refs.map((x) => x.ref).join(", "), door: o.door ?? "distro", ...(o.actor ? { actor: o.actor } : {}) }, (progress) =>
         oneAtATime(() =>
           recorded(
             () => installPackages(packageDeps, refs, { ...o, progress, busy: busyWorkflow, forget: forgetWorkflow }),
@@ -6132,7 +6132,13 @@ export async function createStrut<TServices = unknown>(
     installed: () => listInstalledPackages(packageDeps),
     // A `git+` subscription's branch, read as serve mode reads its ref.
     dataDir,
-    ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+    // The gate reads what the subscription's runs would: its person's view
+    // (theirs, then the deployment's, then env), or the deployment's.
+    ...(secretsCap
+      ? { secret: (name: string, actor?: string) => (actor && secretsCap.forPrincipal ? secretsCap.forPrincipal(actor) : secretsCap).get(name) }
+      : {}),
+    // A person's subscription reads its branch with their own token alone.
+    own: (actor: string, name: string) => actorSecrets.get(actor, name),
     ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
   });
 
@@ -6222,7 +6228,11 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages/subscriptions", async (c) => c.json({ subscriptions: await subscriptions.list() }));
   app.put("/packages/subscriptions/:id", async (c) => {
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-    const sub = { ...body, id: c.req.param("id") } as Subscription;
+    // Its person is whoever makes the PUT (stadeum plans/software.md §5,
+    // item 15): never a name the body gives.
+    if ("actor" in body) return c.json({ error: "subscription_invalid: a subscription's person is whoever makes the PUT (the request's actor), never a field of its body" }, 400);
+    const actor = await resolveActor(c);
+    const sub = { ...body, id: c.req.param("id"), ...(actor ? { actor } : {}) } as Subscription;
     const problem = subscriptionProblem(sub);
     if (problem) return c.json({ error: `subscription_invalid: ${problem}` }, 400);
     const info = await subscriptions.set(sub);
@@ -9087,9 +9097,9 @@ export async function createStrut<TServices = unknown>(
     workspace,
     store,
     secrets: automationCallbacks,
-    // `principal`: whom the fire runs as (`runsAs`, scheduler.ts) — a
-    // package's schedule names its workflow's owner; any other leaves it to
-    // `principalFor`, the same owner.
+    // `principal`: whom the fire runs as (`runsAs`, workspace.ts): its
+    // workflow's owner; absent only for a person's automation on an ownerless
+    // workflow where nobody need be billed, which `principalFor` leaves so.
     launch: (flow, input, automation, callback, principal) =>
       launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}), ...(principal ? { principal } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),

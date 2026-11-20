@@ -14,8 +14,9 @@
  * A package's schedules (`schedules:` in its strut.yaml) are automations
  * too, marked with their package and made exactly by
  * `syncPackageSchedules`: when one runs, its name and its input are the
- * package's, and on or off is the admin's. `runsAs` names whom a fire runs
- * as.
+ * package's, and on or off is the admin's. Whom a fire runs as is
+ * `runsAs` (workspace.ts): the workflow's owner, the one rule for work
+ * nobody launched.
  */
 import { randomUUID } from "node:crypto";
 import type { z } from "zod";
@@ -42,7 +43,7 @@ import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
-import { workflowDisabled, type WorkspaceStore } from "./workspace.js";
+import { runsAs, workflowDisabled, type WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
@@ -85,6 +86,13 @@ export interface AutomationView extends Automation {
   running: boolean;
   /** Why the latest fire launched nothing (memory only; lost on restart). */
   lastFireError?: string;
+  /** The person its fires run as (`runsAs`, workspace.ts): its workflow's
+   *  owner, whose secrets they read and who pays. Absent when it has none. */
+  runsAs?: string;
+  /** Why a fire would launch nothing, said before one does: nobody to run
+   *  as (a package's schedule on a workflow with no owner, or any automation
+   *  where the deployment requires someone to bill), and what to do. */
+  nobodyToRunAs?: string;
 }
 
 export type AutomationsResult<T> = ({ ok: true } & T) | { error: string };
@@ -287,11 +295,10 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       if (draining) return { error: draining };
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
-      // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather
-      // than a run that dies at its first LLM step.
-      const unowned = await ownerGate(workflow, true);
-      if (unowned) throw new Error(unowned);
-      const person = await runsAs(workflow, automation);
+      // Nobody to run as → nothing launches (surfaces as `lastFireError`),
+      // rather than a run as nobody on the deployment's secrets, or one that
+      // dies at its first LLM step with nobody to bill.
+      const person = await personFor(workflow, automation);
       if ("error" in person) throw new Error(person.error);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
@@ -336,7 +343,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
 
   // ── Views ────────────────────────────────────────────────────────────────
 
-  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string): AutomationView {
+  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string, person?: { principal?: string } | { error: string }): AutomationView {
     const k = key(workflow, automation.id);
     // Before the first load there is no entry yet: compute rather than show "never".
     const next = entries.get(k)?.nextRunAt ?? (automation.enabled && !loaded ? nextFire(automation.trigger, clock()) : null);
@@ -350,12 +357,15 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       lastRun: facts?.lastRun ?? null,
       running: !!facts?.inFlight,
       ...(fireError ? { lastFireError: fireError } : {}),
+      ...(person && "principal" in person && person.principal ? { runsAs: person.principal } : {}),
+      ...(person && "error" in person ? { nobodyToRunAs: person.error } : {}),
     };
   }
 
   async function viewsOf(workflow: string, automations: Automation[], category?: string): Promise<AutomationView[]> {
     const facts = await runFacts(workflow, automations.map((a) => a.id));
-    return automations.map((a) => view(workflow, a, facts.get(a.id), category));
+    const people = await Promise.all(automations.map((a) => personFor(workflow, a)));
+    return automations.map((a, i) => view(workflow, a, facts.get(a.id), category, people[i]));
   }
 
   // ── Callbacks ────────────────────────────────────────────────────────────
@@ -406,28 +416,20 @@ export function createAutomations(deps: AutomationsDeps): Automations {
   }
 
   /**
-   * Whom a fire runs as: its principal, whose secrets it reads and who pays.
-   * THE PLACE A PERSON IS NAMED for a schedule nobody launches (stadeum
-   * plans/software.md §5, item 15: unattended work runs as a person).
-   *
-   * Today: an automation a person made through a door gives no principal,
-   * so the launch takes the workflow's owner, else none (createStrut
-   * `principalFor`). A PACKAGE's schedule was made by nobody, so it runs as
-   * its workflow's owner — whoever installed the package through a
-   * person's door — and with no owner (the distro's install, a boot
-   * install, an install with no actor) it launches nothing and says why,
-   * rather than run as nobody on the deployment's secrets.
+   * Whom a fire runs as: `runsAs` (workspace.ts), the one rule for a run
+   * nobody launched — its workflow's OWNER, with their secrets and on their
+   * bill. A package's schedule was set up by nobody, so with no owner (the
+   * distro's install, a boot install or subscription, an install with no
+   * actor) it launches nothing and says what to do; so does any automation
+   * where the deployment requires someone to bill (`principalRequired`). An
+   * automation a person made, on a box that bills nobody, still runs as
+   * nobody when its workflow has no owner, as it always has.
    */
-  async function runsAs(workflow: string, automation: Automation): Promise<{ principal?: string } | { error: string }> {
-    if (!automation.package) return {};
-    const owner = (await workspace.getWorkflowMetadata(workflow))?.owner;
-    if (owner) return { principal: owner };
-    return {
-      error:
-        `nobody to run as: "${automation.name}" is the package ${automation.package}'s schedule, which runs as a person — ` +
-        `the workflow's owner, whoever installed the package — and "${workflow}" has no owner. ` +
-        `Claim it (POST /actor/claim) or give it one (PUT /workflows/:name/owner), and it runs as them.`,
-    };
+  async function personFor(workflow: string, automation: Automation): Promise<{ principal?: string } | { error: string }> {
+    const work = automation.package ? `the package ${automation.package}'s schedule "${automation.name}"` : `the automation "${automation.name}"`;
+    const person = await runsAs(workspace, workflow, work);
+    if ("principal" in person || automation.package || principalRequired()) return person;
+    return {};
   }
 
   /** A package's schedule: what only its releases change. */

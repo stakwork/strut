@@ -46,6 +46,18 @@
  * gate runs even when nothing moved, so a secret set (or removed) since the
  * last sync is acted on with no new release. A person's install is not
  * gated: its `missing` reports, and the person decides.
+ *
+ * A subscription a PERSON made is theirs (stadeum plans/software.md §5,
+ * item 15): the `PUT`'s actor is recorded on it, never a field of its body.
+ * Every release it applies installs as that person's own install would —
+ * they own the workflows it adds, so its package's schedules run as them
+ * (`runsAs`, workspace.ts) — a `git+` branch is read with their OWN secret
+ * alone (`deps.own`; a deployment's token is never used for it), and the
+ * gate reads what their runs would (theirs, then the deployment's, then
+ * env). One nobody made (the operator's key, a boot or a distro
+ * subscription) installs what nobody owns, reads the deployment's token,
+ * and its schedules launch nothing until an admin gives their workflows an
+ * owner. A later `PUT` by another person hands the subscription to them.
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -89,6 +101,10 @@ export interface Subscription {
   ref?: string;
   /** The NAME of the secret `ref` is read with (default GITHUB_TOKEN). A public repo needs none. */
   tokenSecret?: string;
+  /** The person who made it: the `PUT`'s actor, never a field of its body.
+   *  What it installs is theirs, as their own install is; a `git+` branch
+   *  is read with their own token alone. None: nobody's. */
+  actor?: string;
 }
 
 export interface SubscriptionState {
@@ -102,7 +118,8 @@ export interface SubscriptionState {
   checkedAt?: string;
   error?: string;
   /** The secrets a package of the release requires and this deployment has
-   *  not set: it is not installed until the next sync after they are. */
+   *  not set (for its person, theirs or the deployment's): it is not
+   *  installed until the next sync after they are. */
   waiting?: { secrets: string[] };
   /** What the last apply said without failing (a removal it could not make, a claim that did not record). */
   warnings?: string[];
@@ -139,17 +156,21 @@ export interface SubscriptionsDeps {
   cache: PackageCache;
   /** One install of the whole set, through the distro's door: `commit`, a
    *  `git+` ref's, goes on each version's upstream. */
-  install(refs: Array<{ ref: string; digest: string; commit?: string }>, opts: { door: PackageDoor }): Promise<InstallResult>;
+  install(refs: Array<{ ref: string; digest: string; commit?: string }>, opts: { door: PackageDoor; actor?: string }): Promise<InstallResult>;
   uninstall(pkg: string, opts: { door: PackageDoor }): Promise<unknown>;
   installed(): Promise<InstalledPackage[]>;
   fetch?: typeof fetch;
   /** A `git+` ref's: where `repos/` (the bare caches) lives (default the
    *  cache's parent), and git's shell. */
   dataDir?: string;
-  /** The deployment's secrets by NAME (the capability, which falls back to
-   *  strut's environment): a `git+` ref's token, and the gate's
-   *  `requires.secrets`. Without it, every required secret is unset. */
-  secret?(name: string): Promise<string | undefined>;
+  /** A secret by NAME as a run as `actor` reads it (theirs, then the
+   *  deployment's, then strut's environment), or the deployment's with no
+   *  actor: the gate's `requires.secrets`, and the token of a `git+` ref
+   *  nobody subscribed to. Without it, every required secret is unset. */
+  secret?(name: string, actor?: string): Promise<string | undefined>;
+  /** A person's OWN secret by NAME, never the deployment's: the token a
+   *  `git+` subscription they made is read with. Without it, none. */
+  own?(actor: string, name: string): Promise<string | undefined>;
   shell?: ShellCapability;
 }
 
@@ -331,12 +352,12 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
    *  package waits when its `requires.secrets` names one this deployment
    *  has not set, or when it requires a package of the set that waits.
    *  `go` is what may go in; `waiting`, the secrets to set. */
-  const gate = async <T extends { package: string; requires?: PackageManifest["requires"] }>(set: T[]): Promise<{ go: T[]; waiting?: { secrets: string[] } }> => {
+  const gate = async <T extends { package: string; requires?: PackageManifest["requires"] }>(set: T[], actor: string | undefined): Promise<{ go: T[]; waiting?: { secrets: string[] } }> => {
     const held = new Set<string>();
     const secrets = new Set<string>();
     for (const t of set) {
       for (const name of t.requires?.secrets ?? []) {
-        if ((await deps.secret?.(name).catch(() => undefined)) !== undefined) continue;
+        if ((await deps.secret?.(name, actor).catch(() => undefined)) !== undefined) continue;
         secrets.add(name);
         held.add(t.package);
       }
@@ -351,17 +372,31 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
   /** A `git+` ref: the branch read as serve mode reads it, its package
    *  installed when its digest moved. */
   const syncGit = async (sub: Subscription & { ref: string }, state: SubscriptionState, at: string): Promise<SyncOutcome> => {
-    const { id, ref } = sub;
+    const { id, ref, actor } = sub;
     const last = state.applied?.ref === ref ? state.applied : undefined;
     const from = last?.commit;
     let to: string | undefined;
+    // The token: a person's subscription reads its branch with their own
+    // secret alone, never a deployment's that happens to be set; nobody's,
+    // with the deployment's.
+    let tokenless = false;
+    const own = deps.own;
+    const secret = actor
+      ? async (name: string) => {
+          const v = (await own?.(actor, name).catch(() => undefined)) || undefined;
+          tokenless = !v;
+          return v;
+        }
+      : deps.secret
+        ? (name: string) => deps.secret!(name)
+        : undefined;
     try {
       const info = await resolvePackage(ref, {
         cache: deps.cache,
         branch: true,
         ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
         ...(sub.tokenSecret ? { tokenSecret: sub.tokenSecret } : {}),
-        ...(deps.secret ? { secret: deps.secret } : {}),
+        ...(secret ? { secret } : {}),
         ...(deps.shell ? { shell: deps.shell } : {}),
         // The branch still at the commit applied: nothing read out of git.
         ...(last?.commit ? { known: { commit: last.commit, digest: last.digest } } : {}),
@@ -369,14 +404,14 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
       to = info.commit!;
       const { error: _error, waiting: _waiting, ...kept } = state;
       const release = [{ package: info.manifest.package, version: info.manifest.version, digest: info.digest, requires: info.manifest.requires }];
-      const { go, waiting } = await gate(release);
+      const { go, waiting } = await gate(release, actor);
       const wait = waiting ? { waiting } : {};
       if (last?.digest === info.digest && sameAs(last, go)) {
         // The package did not move, and neither did the gate: the commit is recorded.
         await writeState(id, { ...kept, ...wait, applied: { ...last, commit: to }, checkedAt: at });
         return { id, status: waiting ? "waiting" : "current", ...(from ? { from } : {}), to, ...wait };
       }
-      const result = go.length ? await deps.install([{ ref: subscriptionRef(id), digest: info.digest, commit: to }], { door: "distro" }) : undefined;
+      const result = go.length ? await deps.install([{ ref: subscriptionRef(id), digest: info.digest, commit: to }], { door: "distro", ...(actor ? { actor } : {}) }) : undefined;
       const warnings = [...(result?.warnings ?? [])];
       await dropOthers(id, release, go, warnings, "branch");
       await writeState(id, {
@@ -388,7 +423,13 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
       });
       return { id, status: waiting ? "waiting" : "applied", ...(from ? { from } : {}), to, ...wait, ...(result ? { result } : {}) };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      let error = err instanceof Error ? err.message : String(err);
+      if (actor && tokenless && error.startsWith("package_repo_denied:")) {
+        const name = sub.tokenSecret ?? DEFAULT_TOKEN_SECRET;
+        error +=
+          ` — this subscription is ${actor}'s, and is read with their own ${name} alone (never the deployment's), which they have not set: ` +
+          `they set it (PUT /actors/${encodeURIComponent(actor)}/secrets/${name}), or a person who has one makes the subscription again (PUT /packages/subscriptions/${encodeURIComponent(id)}) and it is theirs`;
+      }
       await writeState(id, { ...state, checkedAt: at, error }).catch(() => undefined);
       return { id, status: "error", ...(from ? { from } : {}), ...(to ? { to } : {}), error };
     }
@@ -407,7 +448,7 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
       const targets = targetsOf(sub, card);
       // The catalog carries each release's `requires`, sealed with it: a
       // package that waits is never fetched.
-      const { go, waiting } = await gate(targets.map((t) => ({ ...t, requires: t.release.requires })));
+      const { go, waiting } = await gate(targets.map((t) => ({ ...t, requires: t.release.requires })), sub.actor);
       const { error: _error, waiting: _waiting, ...kept } = state;
       const wait = waiting ? { waiting } : {};
       if (state.applied?.digest === digest && !state.error && sameAs(state.applied, go)) {
@@ -420,7 +461,7 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
         await fetchAll(sub, card, go);
         result = await deps.install(
           go.map((t) => ({ ref: subscriptionRef(id), digest: t.release.digest })),
-          { door: "distro" },
+          { door: "distro", ...(sub.actor ? { actor: sub.actor } : {}) },
         );
         warnings.push(...result.warnings);
       }
@@ -476,7 +517,10 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
     async set(sub) {
       const problem = subscriptionProblem(sub);
       if (problem) throw new Error(`subscription_invalid: ${problem}`);
-      const { id, ...rest } = sub.ref !== undefined ? { id: sub.id, ref: sub.ref, ...(sub.tokenSecret ? { tokenSecret: sub.tokenSecret } : {}) } : { ...sub, url: normalizeBaseUrl(sub.url!) };
+      const { id, ...rest } =
+        sub.ref !== undefined
+          ? { id: sub.id, ref: sub.ref, ...(sub.tokenSecret ? { tokenSecret: sub.tokenSecret } : {}), ...(sub.actor ? { actor: sub.actor } : {}) }
+          : { ...sub, url: normalizeBaseUrl(sub.url!) };
       const before = await read(id);
       await deps.secrets.set(keyFor(id), JSON.stringify(rest));
       // Another publisher or ref under the same name starts over: its seq

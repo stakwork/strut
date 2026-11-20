@@ -519,6 +519,35 @@ instead of baked into env at deploy time.
   Uninstalling the package leaves the values. Not isolation — a step has
   `shell` — but the door it is given says what it may do.
 
+- **Work nobody launched runs as a person** (stadeum plans/software.md §5,
+  item 15; the owner's rule of 2026-11-20: there is no box token, every
+  token is a person's). `runsAs` (src/workspace.ts) names that person for
+  every such run: the OWNER of the workflow it runs, with their secrets and
+  on their bill, and nobody else — whoever brought it in as a person (their
+  install, their subscription, their publish) or whom an admin gave it to.
+  A package never names a person: no manifest key, step or request does,
+  and an admin changes who with the owner routes that exist. With no owner
+  a package's work launches nothing and says what to do (docs/automations.md).
+  A subscription a person makes is theirs (`actor`, the `PUT`'s; never a
+  field of the body): it installs as them, and its git branch is read with
+  their OWN actor secret alone — a deployment value of the same name is
+  never sent for a person (src/packages/subscriptions.ts `own`). One nobody
+  made reads the deployment's value, as before, and its work has no owner.
+  A package's STEP starts work only as its own run's person
+  (`heldToItsRun`, src/packages/fence.ts): `runs.launch` takes the run's own
+  caller, `authoring.runWorkflow` / `resumeRun` / `controlRun`,
+  `jobs.launch` and `proposals.propose` take the run's actor and principal
+  whatever the step passed, a request to a peer carries the run's principal
+  as `x-strut-actor` (or none), and in a run for nobody a launch is
+  refused (`run_as_fenced:`), since it would run as the launched
+  workflow's owner. Its bag has no `proposals.decide` (a person decides,
+  and the apply runs as the proposer), no `automations` (the scheduler's
+  API: `fire` would run any workflow as its owner) and no `trials`. Strut's
+  own steps pass the run's person anyway; what is still open: a run that
+  acts for nobody which launches another workflow (a `run/launch` in YAML,
+  an app page's call with no viewer) runs it as that workflow's owner, the
+  principal rule's fallback (`principalFor`).
+
 - **A person's SSH key is used, never held** (src/ssh-agent.ts,
   `ssh/keygen`). A job someone lets into a server logs in with ONE key per
   person: `ssh/keygen` makes it in code and stores the private half as the
