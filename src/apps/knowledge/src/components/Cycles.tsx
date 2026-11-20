@@ -114,7 +114,7 @@ function CycleCard({ cycle, parentsOf, showTree, only }: { cycle: DreamCycle; pa
       )}
       {cycle.stuck.length > 0 && (
         <div className="space-y-0.5">
-          <p className="text-xs text-amber-800 dark:text-amber-300">Stuck: the page already says it, and it went wrong again</p>
+          <p className="text-xs text-amber-800 dark:text-amber-300">Stuck: the concept already says it, and it went wrong again</p>
           <ul className="list-disc space-y-0.5 pl-5 text-sm">
             {cycle.stuck.map((s, i) => (
               <li key={i} className="break-words">
@@ -155,8 +155,8 @@ function CycleChange({ cycle, parentsOf }: { cycle: DreamCycle; parentsOf: (name
     return (
       <p className="text-xs text-muted-foreground" data-testid="cycle-unchanged">
         {cycle.review
-          ? "No page changed under this dream: its changes waited for a person, and what they accepted is in Changes as its own commit."
-          : "No page changed under this dream."}
+          ? "No concept changed under this dream: its changes waited for a person, and what they accepted is in Changes as its own commit."
+          : "No concept changed under this dream."}
       </p>
     );
   }

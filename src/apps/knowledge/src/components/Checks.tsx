@@ -193,7 +193,7 @@ function CheckCard({ check, view, acts }: { check: Check; view: ChecksView; acts
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="break-words text-sm font-medium leading-snug">{check.text}</p>
           <p className="text-xs text-muted-foreground">
-            {speakerLabel(check.speaker)} · {judged ? `${tallyWords(check.samples)} on the page` : "Not run yet"}
+            {speakerLabel(check.speaker)} · {judged ? `${tallyWords(check.samples)} on the concept` : "Not run yet"}
           </p>
           {said && <p className="break-words text-xs text-muted-foreground">{said}</p>}
         </div>
@@ -266,7 +266,7 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
       if (r.proposed) {
         // A page whose text comes from git: the change is written to its file on an admin's yes, given here.
         const out = (await client.run("proposal/decide", { id: r.proposed.proposal, action: "accept" })) as { status: string; result?: { error?: string } };
-        onUsed(out.status === "applied" ? `Written to the page's file in ${r.proposed.checkout}.` : `It could not be written: ${out.result?.error ?? "the step failed"}`);
+        onUsed(out.status === "applied" ? `Written to the concept's file in ${r.proposed.checkout}.` : `It could not be written: ${out.result?.error ?? "the step failed"}`);
       } else onUsed(null);
     });
   return (
@@ -275,7 +275,7 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
       {view.checks.map((c) => (
         <div key={c.id}>
           {view.checks.length > 1 && <p className="truncate pt-1 text-xs text-muted-foreground">{c.text}</p>}
-          <Row label={test.live ? "The page" : "The page then"} samples={test.page.samples[c.id] ?? []} at={`${at}:page:${c.id}`} picked={acts.picked} onPick={acts.onPick} />
+          <Row label={test.live ? "The concept" : "The concept then"} samples={test.page.samples[c.id] ?? []} at={`${at}:page:${c.id}`} picked={acts.picked} onPick={acts.onPick} />
           <Row label="With the change" samples={test.change.samples[c.id] ?? []} at={`${at}:change:${c.id}`} picked={acts.picked} onPick={acts.onPick} />
         </div>
       ))}
@@ -287,7 +287,7 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
             {OUTCOME[outcome]}
           </span>
         )}
-        {!test.live && <span className="text-xs text-muted-foreground">On an earlier wording of the page</span>}
+        {!test.live && <span className="text-xs text-muted-foreground">On an earlier wording of the concept</span>}
         <span className="flex-1" />
         {acts.admin && usable && outcome === "change" && (
           <Button size="sm" variant="outline" className="h-7" disabled={acts.busy} onClick={() => void use()} data-testid="test-use">
@@ -374,7 +374,7 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
         <SectionLabel>
           Checks <span className="tabular-nums">{view.checks.length || ""}</span>
         </SectionLabel>
-        {!view.checks.length && <p className="text-xs text-muted-foreground">No checks on this page yet.</p>}
+        {!view.checks.length && <p className="text-xs text-muted-foreground">No checks on this concept yet.</p>}
         <ul className="space-y-2">
           {[...view.checks].sort(byStatus).map((c) => (
             <li key={c.id} className="space-y-0.5" data-testid="concept-check" data-status={c.status}>
@@ -388,7 +388,7 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
         </ul>
         {(admin || view.tests.length > 0) && (
           <button type="button" onClick={() => onWide(true)} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-            {admin ? "Run them, or test a change" : `${view.tests.length} test${view.tests.length === 1 ? "" : "s"} of this page`}
+            {admin ? "Run them, or test a change" : `${view.tests.length} test${view.tests.length === 1 ? "" : "s"} of this concept`}
           </button>
         )}
       </section>
@@ -431,8 +431,8 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
 
       {draft !== null && (
         <div className="space-y-2 rounded-lg border p-3" data-testid="checks-draft">
-          <p className="text-xs text-muted-foreground">Change the page, then test it against the page as it is. The page itself stays as it is.</p>
-          <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} className="max-h-96 min-h-40 font-mono text-xs md:text-xs" aria-label="The page's text" data-testid="checks-draft-text" />
+          <p className="text-xs text-muted-foreground">Change the concept, then test it against the concept as it is. The concept itself stays as it is.</p>
+          <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} className="max-h-96 min-h-40 font-mono text-xs md:text-xs" aria-label="The concept's text" data-testid="checks-draft-text" />
           {!anyCase && <p className="text-xs text-muted-foreground">No check here has a message yet: add one first, so there is something to run.</p>}
           <div className="flex items-center justify-end gap-2">
             <Button size="sm" variant="ghost" className="h-7" onClick={() => setDraft(null)}>
@@ -446,7 +446,7 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
         </div>
       )}
 
-      {!view.checks.length && <p className="text-xs text-muted-foreground">No checks on this page yet.</p>}
+      {!view.checks.length && <p className="text-xs text-muted-foreground">No checks on this concept yet.</p>}
       <ul className="space-y-2">
         {[...view.checks].sort(byStatus).map((c) => (
           <CheckCard key={c.id} check={c} view={view} acts={acts} />
@@ -475,7 +475,7 @@ export function ChecksSection({ id, name, admin, wide, onWide }: { id: string; n
             Tests <span className="tabular-nums">{view.tests.length}</span>
           </SectionLabel>
           {admin && view.fromGit && !view.fromGit.checkout && (
-            <p className="text-xs text-muted-foreground">This page's text comes from git ({view.fromGit.set}), so a wording that does better is put in its file, not here.</p>
+            <p className="text-xs text-muted-foreground">This concept's text comes from git ({view.fromGit.set}), so a wording that does better is put in its file, not here.</p>
           )}
           <ul className="space-y-2">
             {view.tests.map((t) => (
