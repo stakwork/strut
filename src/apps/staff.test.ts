@@ -592,7 +592,7 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
   it("is seeded at boot: built, first-party, `admin: true`; a reboot is a no-op; `staff: false` and STRUT_HOST_CONFIG turn it off", async () => {
     const app = await strut.apps.get(STAFF_APP);
     assert.ok(app, "seeded");
-    assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, true, "Tasks and workers"]);
+    assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, true, "Workers"]);
     assert.equal(app.hash, await treeHash(STAFF_DIR));
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     assert.deepEqual(info.warnings, []);

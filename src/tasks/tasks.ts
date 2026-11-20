@@ -381,7 +381,7 @@ export interface TaskTypeInput {
    *  step (`deps.standing` checks it); absent or null: not standing. */
   standing?: { workflow: string } | null;
   /** A ROUND type: `workflow`'s runs make its tasks, one for each item, and
-   *  staff send a round of it from Tasks and workers. The workflow must
+   *  staff send a round of it from Workers. The workflow must
    *  have a `human` step of this type (in a `foreach` too; `deps.round`
    *  checks it); never with `standing`. Absent or null: none named. */
   round?: { workflow: string } | null;

@@ -37,11 +37,11 @@ unless the task needs a view of its own (a box drawn on a photo, two images
 side by side); then build a worker app from strut/views' pieces. Workers
 reach a worker app only in the PUBLIC VIEW: when the app the type names is
 not there yet, ask for it with `app/make-public` and say so in your reply.
-Once the app is public, the person shares it from Tasks and workers
+Once the app is public, the person shares it from Workers
 (`strut/staff`), whose first page opens with its links: the Peel and web
 links, a QR code, and Invite, a one-use link that sets up a new worker's
 phone. Point them there with an artifact, `{ kind: "app", app:
-"strut/staff" }` (your words say "Tasks and workers"); never paste a link
+"strut/staff" }` (your words say "Workers"); never paste a link
 in your reply, nor build one by hand.
 
 A type is OPEN unless you ask for `open: false`: anyone signed in to its
@@ -85,7 +85,7 @@ the run that asked can reply, and only once the task is answered.
 When a run makes one task for each item of a list (each shop, each page),
 its `human` step in a `foreach` over the run's input, name that workflow on
 the type: ask for it with `round: { workflow: "<name>" }`. The person can
-then send a round from Tasks and workers (Send a round: the items ticked,
+then send a round from Workers (Send a round: the items ticked,
 all of them to start) as well as by asking in the conversation. The items
 the dialog lists are the workflow's first `json` input whose default is the
 list, so give that input the person's list as its default. A type is

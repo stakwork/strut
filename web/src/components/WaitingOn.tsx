@@ -11,7 +11,7 @@ export function WaitingOn(props: { on: readonly string[] | undefined; staffListe
         <span key={p.text}>
           {i > 0 && ", "}
           {p.app ? (
-            <button type="button" class="link-button" title="Open this task in Tasks and workers" onClick={() => props.onOpenApp!(p.app!.name, p.app!.input)}>
+            <button type="button" class="link-button" title="Open this task in Workers" onClick={() => props.onOpenApp!(p.app!.name, p.app!.input)}>
               {p.text}
             </button>
           ) : (

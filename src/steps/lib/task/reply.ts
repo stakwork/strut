@@ -21,7 +21,7 @@ import { TEST_FILE_MAX_BYTES } from "../../../tasks/test-files.js";
  *
  * `group` names the deliverable the task is part of — a book its pages, a
  * batch its ballots — which the run knows once the answer is in: staff read
- * and review a group together (Tasks and workers' Groups), and the worker's
+ * and review a group together (Workers' Groups), and the worker's
  * app lists their groups and each one's verdicts (`task/history`).
  */
 export default defineStep({

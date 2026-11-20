@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { staffCall, seg } from "./_door.js";
 
-/** `staff/send-round`: Send a round, from Tasks and workers. */
+/** `staff/send-round`: Send a round, from Workers. */
 export default defineStep({
   type: "staff/send-round",
   effect: "write",

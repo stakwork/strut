@@ -1,5 +1,5 @@
 /**
- * A ROUND type's workflow (Tasks and workers' Send a round): the workflow
+ * A ROUND type's workflow (Workers' Send a round): the workflow
  * whose run makes one task of the type for each item — a `human` step of the
  * type, usually the body of a `foreach` over the run's list. Read off the
  * workflow alone, before any run: whether it can make tasks of the type, and

@@ -158,7 +158,7 @@ export interface TaskRoutesDeps {
    *  Absent: the route refuses. */
   tasksOnline?: (actor: string | undefined) => Promise<{ app: string; public: true }>;
   publicUrl?: (c: Context) => string;
-  /** A ROUND type's workflow (Tasks and workers' Send a round): the items a
+  /** A ROUND type's workflow (Workers' Send a round): the items a
    *  round sends by default, read off it, and a round sent — the workflow
    *  launched as the admin, with `input` (a subset of the items) or its
    *  defaults; answers the run id. Absent: the round routes refuse. */

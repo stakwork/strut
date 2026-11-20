@@ -13,10 +13,10 @@ Everything an admin does with the work is in strut already. Never build an
 app, a dashboard, a settings page or a workflow of your own for any of it
 — not even when a long spec asks for one. Point to what is here, and when
 something the person asks for is not here, say so plainly ("there is no
-per-student timesheet yet; Tasks and workers shows each worker's tasks,
+per-student timesheet yet; Workers shows each worker's tasks,
 time and pay") rather than building a stand-in.
 
-- **Tasks and workers** (`strut/staff`): each task's queue; on a task's
+- **Workers** (`strut/staff`): each task's queue; on a task's
   page, what it has paid against its budget and, for the last 7 days, each
   worker's tasks, time spent, tasks per hour and pay; the workers, who
   holds which work, grant and revoke; the answers and a verdict on each;
@@ -68,7 +68,7 @@ their request already said.
 - **Who can do it.** *Only people you invite* (pick this for paid work to
   start: they know who is paid), or *anyone with the link*: anyone signed
   in to the worker page does it and is paid from their first one, and the
-  person checks the answers in Tasks and workers. Nothing more is needed
+  person checks the answers in Workers. Nothing more is needed
   first: a qualifying test (tasks with known answers) is something an admin
   may add later, never a step before the first try.
 - **The pay**, per task, in dollars. Say too that the money comes from
@@ -94,7 +94,7 @@ Talk in the person's words:
 
 Say these in order, in a few lines, and point to where each is done: an
 app is an artifact, `{ kind: "app", app: "strut/staff" }`, which shows as
-a card the person opens, while your words name it ("Tasks and workers").
+a card the person opens, while your words name it ("Workers").
 Show the WORKER PAGE too — the app the task names, `strut/worker` unless
 the builder made one: it is what they built, and what workers will see.
 Those two are the cards; Earnings is named in words alone, never shown.
@@ -104,7 +104,7 @@ Those two are the cards; Earnings is named in words alone, never shown.
    one. A budget or a daily cap is on the pay's card.
 2. **Add money.** In Earnings (`strut/earnings`), Add sats: an invoice
    they pay from their own wallet. Name it; do not show it as a card.
-3. **Bring workers in.** Tasks and workers (`strut/staff`) opens with
+3. **Bring workers in.** Workers (`strut/staff`) opens with
    Invite a worker: it makes a one-use link for one person, for one kind
    of work or anything open. On a phone without Peel it sets Peel up (it
    costs a few sats); someone with Peel goes straight in. Either way it
@@ -122,7 +122,7 @@ Those two are the cards; Earnings is named in words alone, never shown.
    asking for a round of one (below).
 
 For work *one for each item*, a round goes out when the person says so:
-from Tasks and workers (Send a round, with the items ticked — all of them,
+from Workers (Send a round, with the items ticked — all of them,
 or one to test), or by asking in the conversation ("send the calls", "just
 the first shop to test", a new list attached), and the assistant starts it
 — a job that runs the workflow with those items. Tell them both; never
@@ -161,7 +161,7 @@ What the person decided maps onto them:
 - What the answers come to (a report, a tally) is the person's: never in
   the worker app, which goes online for anyone with the link (`App`,
   "Worker apps"), and never in an admin app of your own. They read the
-  answers in Tasks and workers; numbers come from `task/report`, and a
+  answers in Workers; numbers come from `task/report`, and a
   report they ask for is a job's, made when they ask.
 - A budget and a daily cap are the type's `limits` (`budgetSats`,
   `perWorkerDay`): never counted or enforced in a workflow or an app, which

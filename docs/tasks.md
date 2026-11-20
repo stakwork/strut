@@ -179,7 +179,7 @@ index. A change in this area updates this file, not AGENTS.md.
   tests are fewer (`openPayProblem`, told why), a worker already in keeping
   their grant. `task/me` lists the app's open types a worker may enter,
   reading only.
-- **Round types** (Tasks and workers' Send a round; `round.ts`, `round` on
+- **Round types** (Workers' Send a round; `round.ts`, `round` on
   the type, `roundRuleOf` in tasks.ts, the `rounds` deps of routes.ts). A
   type saved `round: { workflow }` names the workflow whose run makes one
   task of it for each item; the save checks it has a `human` step of the

@@ -2792,11 +2792,11 @@ page or member's page reaches it, and each step refuses without both.
 
 Any other refusal is the step's error, the route's `code` first.
 
-### 14.15 `strut/staff` — Tasks and workers, for an admin (`plans/human-steps.md` §9)
+### 14.15 `strut/staff` — Workers, for an admin (`plans/human-steps.md` §9)
 
 The staff's `/tasks` routes (§22) as an app strut seeds on every server
 (`src/apps/staff/`, `src/apps/staff-seed.ts`, after `strut/views`: it
-imports `TaskForm`), titled "Tasks and workers", `admin: true` as
+imports `TaskForm`), titled "Workers", `admin: true` as
 `strut/earnings` is (§14.14): listed to full scope alone, its files,
 versions and usage `403` to anyone else. Strut's UI lists it under Apps to
 an admin, and a waiting run's `task:<id>` (the run overview's "Waiting on",
