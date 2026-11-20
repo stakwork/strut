@@ -107,6 +107,39 @@ export function gatewayLacksProvider(err: unknown): boolean {
 
 export type LlmAuth = (ctx: LlmAuthContext) => Promise<LlmAuthResult | undefined>;
 
+// ── Grants: model calls for a machine outside strut ────────────────────────
+//
+// `ctx.services.llm` (stakwork/pods PLAN.md §3.2): a step gives a machine
+// strut does not run (a pod) model calls of its own, through the same gateway
+// and billed to the run's principal. A host with a gateway builds it
+// (src/mothership.ts); core only binds it to the run's principal
+// (runner.ts `bindPrincipal`). No `llm` on the bag, or a `grant` that answers
+// null, is a strut with no gateway for this person: the machine gets no
+// variables.
+
+/** A grant: model calls for a machine outside strut. */
+export interface LlmGrant {
+  /** What a step keeps (a job's hold) and `revoke` takes. Never the key. */
+  id: string;
+  /** The standard variables an SDK reads: `OPENAI_BASE_URL`,
+   *  `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`. */
+  env: Record<string, string>;
+  /** When the grant ends: `hours` from now, or sooner when the person's
+   *  authorization ends sooner. */
+  expiresAt: string;
+}
+
+export interface LlmGrants {
+  /** A grant named `name` (what the gateway bills it as) for `hours`. Null
+   *  when nobody can be billed through the gateway here (no principal, or
+   *  none of theirs on file), unless every call must be (then an error). */
+  grant(req: { name: string; hours: number }): Promise<LlmGrant | null>;
+  /** Ends a grant now. One already gone is not an error. */
+  revoke(id: string): Promise<void>;
+  /** The same, billed to `principal`: the runner's call. */
+  forPrincipal?(principal: string): LlmGrants;
+}
+
 export interface ResolveModelOptions {
   /** alias | id | "provider/id" | "openrouter/org/id". Omit for the provider's default. */
   model?: string;

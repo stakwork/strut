@@ -25,6 +25,11 @@
  * (`mothership.json` beside `secrets.json`) — never on the services bag, so
  * no step (LLM-authored ones included) can read another user's macaroon
  * through `ctx.services.secrets`, and never in the Secrets list.
+ *
+ * With `grantsUrl`, `grants` is `ctx.services.llm` (stakwork/pods PLAN.md
+ * §3.2): model calls for a machine outside strut — a pod — through a key the
+ * host makes for it, billed to the run's principal under a cap and an expiry
+ * of its own: `createStrut({ services: { llm: ms.grants } })`.
  */
 
 import type { Hono } from "hono";
@@ -33,7 +38,7 @@ import { randomBytes } from "node:crypto";
 import { principalRequired, requireApiKey } from "./auth.js";
 import { FileSecretStore, type SecretStore } from "./secret-store.js";
 import type { WorkspaceStore } from "./workspace.js";
-import type { LlmAuth, LlmAuthContext, LlmAuthResult } from "./llm.js";
+import type { LlmAuth, LlmAuthContext, LlmAuthResult, LlmGrant, LlmGrants } from "./llm.js";
 import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
 import { DEFAULT_RUN_CAP_USD, resolveRunCap } from "./run-cap.js";
@@ -186,6 +191,37 @@ export function stepAgentName(stepPath: string): string {
 /** A run's cost cap (src/run-cap.ts): re-exported, the Mothership's to apply. */
 export { resolveRunCap };
 
+/** A grant's cap when `STRUT_GRANT_MAX_COST_USD` sets none. Still open in
+ *  stakwork/pods PLAN.md §15 item 6. */
+export const DEFAULT_GRANT_CAP_USD = 10;
+
+/** The longest a grant lives: a key for a machine outside strut is short-lived
+ *  (a pod lives 8 hours on Lambda), and the host refuses a longer one. */
+export const MAX_GRANT_HOURS = 24;
+
+/** A grant's cost cap: `STRUT_GRANT_MAX_COST_USD`, else $10. Anything that is
+ *  not a positive number is an error, as for a run's (`resolveRunCap`). */
+export function resolveGrantCap(env: Record<string, string | undefined> = bootEnv()): number {
+  const raw = env["STRUT_GRANT_MAX_COST_USD"];
+  const cap = raw != null && raw.trim() !== "" ? Number(raw) : DEFAULT_GRANT_CAP_USD;
+  if (!Number.isFinite(cap) || cap <= 0) {
+    throw new Error(`STRUT_GRANT_MAX_COST_USD must be a positive number of dollars, got ${JSON.stringify(raw)}`);
+  }
+  return cap;
+}
+
+/** The variables an OpenAI or Anthropic SDK reads, for `key` on the gateway's
+ *  public route at `address` (stakwork/pods PLAN.md §3.2). */
+export function grantEnv(address: string, key: string): Record<string, string> {
+  const root = address.replace(/\/+$/, "");
+  return {
+    OPENAI_BASE_URL: `${root}/openai/v1`,
+    OPENAI_API_KEY: key,
+    ANTHROPIC_BASE_URL: `${root}/anthropic`,
+    ANTHROPIC_API_KEY: key,
+  };
+}
+
 // ── The module ─────────────────────────────────────────────────────────────
 
 export interface MothershipOptions {
@@ -199,11 +235,18 @@ export interface MothershipOptions {
   runCapDefault?: number;
   /** Injectable clock (tests). */
   now?: () => Date;
+  /** Where strut asks the host for a grant's key (`STRUT_MOTHERSHIP_GRANTS_URL`;
+   *  stadeum-ui's `/api/mothership/keys`). Unset: no `grants`. */
+  grantsUrl?: string;
+  /** The fetch for `grantsUrl` (tests). */
+  fetch?: typeof globalThis.fetch;
 }
 
 export interface Mothership {
   /** Hand to `createStrut({ llmAuth })`. */
   llmAuth: LlmAuth;
+  /** `ctx.services.llm`, with `grantsUrl`: hand to `createStrut({ services })`. */
+  grants?: LlmGrants;
   delegations: DelegationStore;
   /** Adds the delegation routes to the app and gives the hook the workspace
    *  it reads run caps from. Call once, after `createStrut`. */
@@ -235,11 +278,29 @@ export function createMothership(opts: MothershipOptions): Mothership {
     exp,
     nonce: nonce(),
   });
-  /** `now + 8h`, or the parent's own exp string when that is sooner. The
-   *  verifier compares exps as strings, so the parent's is returned verbatim. */
-  const expFor = (now: Date, parentExp: string) => {
-    const mine = new Date(now.getTime() + LINK_TTL_MS).toISOString();
-    return Date.parse(mine) <= Date.parse(parentExp) ? mine : parentExp;
+  /** `now + 8h` (or `ttlMs`), or the parent's own exp string when that is
+   *  sooner. The verifier compares exps as strings, so the parent's is
+   *  returned verbatim. */
+  const expFor = (now: Date, parentExp: string, ttlMs = LINK_TTL_MS) => {
+    const mine = now.getTime() + ttlMs;
+    return mine <= Date.parse(parentExp) ? new Date(mine).toISOString() : parentExp;
+  };
+  /** The delegation `principal`'s spend goes under, or undefined: nobody to
+   *  bill here, so the provider directly — unless every call must be billed. */
+  const delegationFor = async (principal: string | undefined, what: string, now: Date): Promise<Delegation | undefined> => {
+    if (!principal) {
+      if (required()) throw new Error(`${what} has nobody to bill — launch the run as a known actor or set the workflow's owner (STRUT_MOTHERSHIP_REQUIRED=1)`);
+      return undefined;
+    }
+    const d = await delegations.get(principal);
+    if (!d) {
+      if (required()) throw new Error(`no Mothership authorization on file for ${principal} — open strut from hive to authorize (STRUT_MOTHERSHIP_REQUIRED=1)`);
+      return undefined;
+    }
+    if (Date.parse(d.exp) <= now.getTime()) {
+      throw new Error(`Mothership authorization for ${principal} expired at ${d.exp} — re-authorize from hive`);
+    }
+    return d;
   };
   /** The cap for a run, checked against the delegation's ceiling — a link
    *  above it would be rejected by the gateway, so fail here, loudly. */
@@ -280,19 +341,9 @@ export function createMothership(opts: MothershipOptions): Mothership {
 
   const llmAuth: LlmAuth = async (ctx) => {
     const principal = ctx.principal;
-    if (!principal) {
-      if (required()) throw new Error("this LLM call has nobody to bill — launch the run as a known actor or set the workflow's owner (STRUT_MOTHERSHIP_REQUIRED=1)");
-      return undefined;
-    }
-    const d = await delegations.get(principal);
-    if (!d) {
-      if (required()) throw new Error(`no Mothership authorization on file for ${principal} — open strut from hive to authorize (STRUT_MOTHERSHIP_REQUIRED=1)`);
-      return undefined;
-    }
     const now = clock();
-    if (Date.parse(d.exp) <= now.getTime()) {
-      throw new Error(`Mothership authorization for ${principal} expired at ${d.exp} — re-authorize from hive`);
-    }
+    const d = await delegationFor(principal, "this LLM call", now);
+    if (!d || !principal) return undefined;
     const gk = await import("gatekey");
     const m = gk.decodeMacaroon(d.macaroon);
     let links: Attenuation[];
@@ -340,6 +391,81 @@ export function createMothership(opts: MothershipOptions): Mothership {
     };
   };
 
+  // ── Grants: model calls for a machine outside strut ──────────────────────
+  // (stakwork/pods PLAN.md §3.2.) A link of the grant's own off the person's
+  // invocation — its own run id, so the gateway caps its spend apart from any
+  // run's, and its own expiry — then the host makes a virtual key under the
+  // person's gateway customer and joins the two. The link does not bind
+  // whoever holds the key: gatekey carries each link's HMAC, so dropping the
+  // link leaves the person's whole delegation. So the host is sent the cap and
+  // the expiry too, and holds the key to them.
+
+  const grantsUrl = opts.grantsUrl?.replace(/\/+$/, "");
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  /** One call to the host's grants endpoint, with the deployment key. */
+  const askHost = async (method: "POST" | "DELETE", url: string, body?: unknown, actor?: string) => {
+    const key = bootEnv()["STRUT_API_KEY"];
+    const res = await doFetch(url, {
+      method,
+      headers: {
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+        ...(actor ? { "x-strut-actor": actor } : {}),
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await res.text().catch(() => "");
+    return { ok: res.ok, status: res.status, text };
+  };
+
+  async function grant(principal: string | undefined, req: { name: string; hours: number }): Promise<LlmGrant | null> {
+    const { name: asked, hours } = req ?? ({} as typeof req);
+    if (typeof asked !== "string" || !asked.trim()) throw new Error("llm.grant: name (a string) is required");
+    if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > MAX_GRANT_HOURS) {
+      throw new Error(`llm.grant: hours must be a positive number, at most ${MAX_GRANT_HOURS}`);
+    }
+    // What the gateway bills it as, and the host's name for the key.
+    const name = stepAgentName(asked).slice(0, 64);
+    const now = clock();
+    const d = await delegationFor(principal, "this grant", now);
+    if (!d || !principal) return null;
+    const gk = await import("gatekey");
+    const m = gk.decodeMacaroon(d.macaroon);
+    const capUsd = resolveGrantCap();
+    if (capUsd > m.invocation.max_cost_usd) {
+      throw new Error(`grant cap $${capUsd} exceeds the delegation ceiling $${m.invocation.max_cost_usd} for ${principal} — lower STRUT_GRANT_MAX_COST_USD or re-authorize with a higher ceiling`);
+    }
+    const exp = expFor(now, m.invocation.exp, hours * 3600_000);
+    const link = gk.attenuate(gk.invocationSigBytes(m.invocation), caveats([STRUT_AGENT, name], `grant-${nonce()}`, capUsd, exp));
+    const macaroon = gk.encodeMacaroon({ ...m, attenuations: [link] });
+    const res = await askHost("POST", grantsUrl!, { name, macaroon, max_cost_usd: capUsd, expires_at: exp }, principal);
+    if (!res.ok) throw new Error(`no grant for ${principal}: ${grantsUrl} answered ${res.status} ${res.text.slice(0, 300)}`);
+    let body: { id?: unknown; key?: unknown; address?: unknown } | null = null;
+    try {
+      body = JSON.parse(res.text);
+    } catch {
+      /* checked below */
+    }
+    if (typeof body?.id !== "string" || !body.id || typeof body.key !== "string" || !body.key || typeof body.address !== "string" || !/^https?:\/\//.test(body.address)) {
+      throw new Error(`no grant for ${principal}: ${grantsUrl} answered without an id, a key and an address`);
+    }
+    return { id: body.id, env: grantEnv(body.address, body.key), expiresAt: exp };
+  }
+
+  /** The host deletes the key. No actor: a job's sweep releases with none. */
+  async function revoke(id: string): Promise<void> {
+    if (typeof id !== "string" || !id) throw new Error("llm.revoke: id (a string) is required");
+    const res = await askHost("DELETE", `${grantsUrl}/${encodeURIComponent(id)}`);
+    if (!res.ok && res.status !== 404) throw new Error(`could not revoke grant ${id}: ${grantsUrl} answered ${res.status} ${res.text.slice(0, 300)}`);
+  }
+
+  const grantsFor = (principal: string | undefined): LlmGrants => ({
+    grant: (req) => grant(principal, req),
+    revoke,
+    forPrincipal: grantsFor,
+  });
+
   function mount(strut: { app: Hono; workspace: WorkspaceStore }): void {
     workspace = strut.workspace;
     const app = strut.app;
@@ -376,7 +502,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     });
   }
 
-  return { llmAuth, delegations, mount };
+  return { llmAuth, ...(grantsUrl ? { grants: grantsFor(undefined) } : {}), delegations, mount };
 }
 
 /**
