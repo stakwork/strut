@@ -1,9 +1,11 @@
 # Jamie in tribes: the Sphinx daemon as a strut host
 
-> **Status (2026-11-18): proposed; items 1 (host keys and linked accounts)
-> and 2 (`delivered` on a wake turn's `run.end`) built on #737, item 1 with
-> `people-and-hosts.md` §2's accounts. Decision 1 is overruled
-> (2026-11-18): a person links through Peel, `people-and-hosts.md` §2.1.**
+> **Status (2026-11-20): items 1 (host keys and linked accounts) and 2
+> (`delivered` on a wake turn's `run.end`) built on #737, item 1 with
+> `people-and-hosts.md` §2's accounts; items 3 (two names) and 4 (the
+> strut host mode) built on stakwork/sphinx#439 and stakwork/sphinx#440.
+> Decision 1 is overruled (2026-11-18): a person links through Peel,
+> `people-and-hosts.md` §2.1. Item 5 (Stadeum) is what is left.**
 >
 > - **Written against:** strut `main` @53364a3d, stakwork/sphinx `master`
 >   @f5baba75, stakwork/hive `master` @64260e485 (what is built today),
@@ -138,6 +140,11 @@ it does with one changes:
    `4xx` is refused and dropped, with one line in the tribe when it is the
    linker's access that is gone.
 
+   **Built differently (stakwork/sphinx#440):** a `429` is a retry too, as
+   the daemon's Hive mode takes one. The room goes as `recent.txt` beside
+   at most nine files (strut's ten). A turn strut has no record of, ten
+   minutes after its `202`, frees its conversation (§6.2).
+
 ## 3. Who a turn runs as
 
 As today (hive#5688): the speaker, when the tribe names them and they are a
@@ -199,6 +206,19 @@ account by DM**. The daemon:
 
 Unlinking: the owner removes the account from the tribe, as today (the
 daemon sees it and forgets the link), or DMs `leave <link>`.
+
+**Built differently (stakwork/sphinx#440):** step 1's premise doesn't hold
+yet. Sphinx's tribe record (`GET /tribes/<pubkey>`, sphinx
+`sphinx/src/tribes/mod.rs` `Tribe`) carries `owner_alias` alone: the
+tribe server keeps the owner's key in its own db and serves it nowhere. So
+the daemon reads an `owner_pubkey` when a record has one, and otherwise
+refuses the DM'd link and says why: until a tribe server serves it, no
+tribe is linked by DM. The check is one function (`ownerOf`), pending a
+ruling: `owner_pubkey` on the record (a tribes change), a one-time code
+the owner posts in the tribe (the tribe's owner flag, set by the server
+from the signature, proves it), or no owner check. `leave <link>` is the
+linker's; the answer to a link names the tribe and says that, until the
+tribe shows who speaks, every turn there runs as the linker.
 
 The tribe names who spoke only once the owner marks the account to see
 senders (`ShowSenders`, sphinx `docs/tribe-sender-identity.md`). Until then
@@ -340,6 +360,17 @@ The callback's `run.end` (`CALLBACKS.md` §2):
   under the mention that started the job; the two differ only when a newer
   mention came in between.
 
+**Built differently (stakwork/sphinx#440):** the link into the Jamie app
+needs the box's address, which the daemon learns from `DAEMON_JAMIE_URL`
+(the Jamie app's page, `https://box/`); it adds `?input=session=<id>` as
+the kit's `shareLink` does. Without it, the line names the files with no
+link. The reply's text and its deliverable lines go as one post, so the
+budget's whole-or-nothing covers them together (§7); each proposal is a
+post of its own. A job's own `run.end` (it carries the turn's callback)
+posts nothing when its `wake` is `"launched"`, and its words otherwise.
+`metadata.strut` is `{ conversation, run, artifacts? }` on a reply and
+`{ conversation, proposals }` on a proposal's post.
+
 ### 6.1 A proposal
 
 As today (hive plan, "A proposal"), with the daemon doing what Hive did:
@@ -354,6 +385,12 @@ As today (hive plan, "A proposal"), with the daemon doing what Hive did:
 - None waits on an admin: a host's turn proposes nothing only an admin
   accepts (§5.1, "Never an admin").
 - A decision made in the Jamie app is not announced in the tribe (§11).
+
+**Built differently (stakwork/sphinx#440):** an accept or reject word
+counts only as the whole reply, an `@mention` aside (`yes`, `ok`,
+`approve`, `go ahead`, `👍`; `no`, `reject`, `cancel`, `👎` …): "yes, but
+change the title" is a turn. A reply folded with others that waited is a
+turn too.
 
 ### 6.2 A `run.end` that never comes
 
@@ -440,6 +477,24 @@ And:
 - **Hive's mode stays** until Hive goes: the central Jamie keeps serving the
   orgs linked through Hive.
 
+**Built differently (stakwork/sphinx#439, stakwork/sphinx#440):**
+
+- The tribe photo is `DAEMON_TRIBE_PHOTO`, a public link to an image; with
+  `DAEMON_TRIBE_ALIAS` and no photo, tribe posts carry none. The mention
+  follows `DAEMON_TRIBE_ALIAS` unless `DAEMON_MENTION` says otherwise.
+  sphinx-chat picks the name by kind in `Session.selfFor`.
+- The callback token is `DAEMON_CALLBACK_TOKEN`, made once and kept in
+  the account folder like the treasury's other tokens; it rides in the
+  callback URL (`?token=`), since strut sets no header on a callback.
+- The budget prices through a `spend` hook on sphinx-chat's `sendText`,
+  `joinTribe` and `leaveTribe`: the whole price, every part, before
+  anything is published. A leave it can't pay is not sent, but the
+  account marks the tribe left and stops answering there (the tribe server
+  keeps a member that leaves). `leave <link>` is the linker's.
+- `DAEMON_LOG=on` with `DAEMON_REPLY=strut` is a config error (§9
+  decision 7). What the mode keeps is `strut.json` in the account folder;
+  a held launch's files live in memory only.
+
 ## 8. On a Stadeum box
 
 No stadeum-ui change. In stakwork/stadeum:
@@ -448,7 +503,9 @@ No stadeum-ui change. In stakwork/stadeum:
   three tokens. Strut gets `STRUT_HOST_KEYS=sphinx:<it>`; the treasury gets
   `DAEMON_REPLY=strut`, `DAEMON_STRUT_URL=http://strut:3000`,
   `DAEMON_STRUT_KEY`, `DAEMON_CALLBACK_URL=http://treasury:8095`,
-  `DAEMON_TRIBE_ALIAS=Jamie`, `DAEMON_MENTION=jamie`.
+  `DAEMON_TRIBE_ALIAS=Jamie`, `DAEMON_MENTION=jamie`. Since items 3 and 4
+  were built: `DAEMON_JAMIE_URL` (the box's address, for the links into
+  the Jamie app, §6) and, for Jamie's face in tribes, `DAEMON_TRIBE_PHOTO`.
 - `docs/stack-spec.md`, the treasury: "it answers no mention and joins no
   tribe" becomes what it now does, and `AGENTS.md`'s row adds that it calls
   strut. Its rules hold: no published port, and nothing but strut calls it
@@ -482,8 +539,8 @@ Each is its own PR against its repo's default branch, never stacked.
 | --- | --- | --- | --- | --- |
 | 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link`. The DM link is replaced by Peel's (`people-and-hosts.md` item 6) |
 | 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
-| 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | — |
-| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply | 1 (a stand-in strut in its tests until 1 merges) | — |
+| 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | **Built (stakwork/sphinx#439)**: `DAEMON_TRIBE_ALIAS` and `DAEMON_TRIBE_PHOTO` (a link); the mention follows the tribe name (§7) |
+| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, the DMs it acts on, proposals by reply | 1 (a stand-in strut in its tests until 1 merges) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`). Differences in §2, §4, §6, §6.1, §7 |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4 released | — |
 
 A stand-in for strut's host routes goes into the daemon's tests, so item 4
