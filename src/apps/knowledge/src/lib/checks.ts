@@ -164,6 +164,30 @@ export function replyOf(out: { output?: unknown; error?: string }): string {
   return out.error ? `The run failed: ${out.error}` : "";
 }
 
+/** The job a trial's reply would have started, which was held: its title, its brief and the rest of what it named, a line each. */
+export interface HeldJob {
+  title?: string;
+  brief: string;
+  rest: string[];
+}
+
+/** The output's `held` (the orchestrator's: the job its reply would have started, src/workflows/orchestrator.yaml); null when it would have started none. The judge reads it with the reply. */
+export function heldOf(out: { output?: unknown }): HeldJob | null {
+  const o = out.output;
+  const h = o && typeof o === "object" ? (o as { held?: unknown }).held : undefined;
+  if (!h || typeof h !== "object" || Array.isArray(h)) return null;
+  const { title, brief, ...rest } = h as Record<string, unknown>;
+  if (typeof brief !== "string" || !brief.trim()) return null;
+  const said = (v: unknown) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length);
+  return {
+    ...(typeof title === "string" && title.trim() ? { title } : {}),
+    brief,
+    rest: Object.entries(rest)
+      .filter(([, v]) => said(v))
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(", ") : typeof v === "string" ? v : JSON.stringify(v)}`),
+  };
+}
+
 /** "Running: 5 of 16 judged", over everything in flight; null when nothing is. */
 export function runningWords(batches: readonly Pick<Batch, "total" | "done">[]): string | null {
   if (!batches.length) return null;

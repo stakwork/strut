@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useChecks } from "../lib/read";
 import {
-  OUTCOME, allSamples, capped, caseFor, caseLabel, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor,
+  OUTCOME, allSamples, capped, caseFor, caseLabel, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor,
   type Check, type ChecksView, type PageTest, type Sample,
 } from "../lib/checks";
 import { CLAIM_STATUS, byStatus, claimsUnavailable, evidenceLine } from "../lib/learning";
@@ -78,7 +78,7 @@ function Row({ label, samples, at, picked, onPick }: { label: string; samples: r
   );
 }
 
-/** The sample a dot opened: the message, the reply and the judge's line. Only a trial's run is opened. */
+/** The sample a dot opened: the message, the reply, the job it would have started (held) and the judge's line. Only a trial's run is opened. */
 function SamplePanel({ sample, admin }: { sample: Sample; admin: boolean }) {
   const client = useStrutClient();
   const open = admin && sample.trial === true && !!sample.workflow;
@@ -92,6 +92,7 @@ function SamplePanel({ sample, admin }: { sample: Sample; admin: boolean }) {
       return typeof r === "string" ? null : (r as { input: unknown; output?: unknown; error?: string });
     },
   });
+  const held = q.data ? heldOf(q.data) : null;
   return (
     <div className="space-y-2 rounded-md bg-muted/50 p-3 text-xs" data-testid="check-sample">
       {open && q.isLoading && <Skeleton className="h-10" />}
@@ -105,6 +106,14 @@ function SamplePanel({ sample, admin }: { sample: Sample; admin: boolean }) {
             <p className="text-muted-foreground">Reply</p>
             <p className="whitespace-pre-wrap break-words font-serif text-sm">{replyOf(q.data)}</p>
           </div>
+          {held && (
+            <div data-testid="check-sample-held">
+              <p className="text-muted-foreground">The job it would have started (held: a trial starts none)</p>
+              {held.title && <p className="font-medium">{held.title}</p>}
+              <p className="whitespace-pre-wrap break-words">{held.brief}</p>
+              {held.rest.length > 0 && <p className="text-muted-foreground">{held.rest.join(" · ")}</p>}
+            </div>
+          )}
         </>
       )}
       {!open && !sample.trial && <p className="text-muted-foreground">A person's own work, judged as it happened: it is not opened here.</p>}

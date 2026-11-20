@@ -27,7 +27,7 @@ import {
 } from "./knowledge/src/lib/learning.js";
 import { cycleSpan, cycleWords, cyclesFor, cyclesUnavailable, runsOf, CYCLES_STEP, type DreamCycle } from "./knowledge/src/lib/cycles.js";
 import {
-  DOTS_MAX, allSamples, capped, caseFor, caseLabel, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor, type Sample,
+  DOTS_MAX, allSamples, capped, caseFor, caseLabel, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor, type Sample,
 } from "./knowledge/src/lib/checks.js";
 import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
@@ -272,6 +272,15 @@ describe("strut/knowledge: a Concept's checks and the tests of its page", () => 
     assert.equal(replyOf({ output: { text: "Yes.", artifacts: [] } }), "Yes.");
     assert.equal(replyOf({ output: "plain" }), "plain");
     assert.equal(replyOf({ error: "boom" }), "The run failed: boom");
+    // The job a trial's reply would have started (the orchestrator's `held`), drawn under the reply.
+    assert.equal(heldOf({ output: { text: "Yes." } }), null);
+    assert.equal(heldOf({ output: { text: "On it.", held: { title: "x" } } }), null, "no brief, no job");
+    assert.equal(heldOf({ error: "boom" }), null);
+    assert.deepEqual(heldOf({ output: { text: "On it.", held: { brief: "Do the thing.", title: "The thing", kind: "Research", repos: ["https://github.com/a/b"], peer: "" } } }), {
+      title: "The thing",
+      brief: "Do the thing.",
+      rest: ["kind: Research", "repos: https://github.com/a/b"],
+    });
     assert.equal(runningWords([]), null);
     assert.equal(runningWords([{ total: 8, done: 3 }, { total: 8, done: 2 }]), "Running: 5 of 16 judged");
     assert.deepEqual(["4", "20", "0", "21", "2.5", "x", ""].map(samplesOf), [4, 20, null, null, null, null, null]);
