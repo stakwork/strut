@@ -1485,7 +1485,8 @@ describe("the API key gate", () => {
     // credit this strut bought at other struts (§10), and a served box's
     // state (plans/app-repos.md §4.4). And the task store's staff reads
     // (plans/human-steps.md §6): types, workers, tasks, and the tests, which
-    // hold the expected answers (§7.1); the queue and a task's file (§9.4).
+    // hold the expected answers (§7.1); the queue and a task's file (§9.4);
+    // the groups of tasks (task/reply's group).
     // And the Concept branches (plans/concept-evals.md items b, d): a branch
     // does not cross to another strut, nor does its compare with main. And
     // the worker invites (plans/human-steps.md §5.8), each a link to money.
@@ -1494,7 +1495,7 @@ describe("the API key gate", () => {
     // And people's names (plans/people-and-hosts.md §1): an admin's read.
     // And an app's database, every row of it (plans/apps.md §4.4).
     // And whether an account is linked (plans/jamie-in-tribes.md §5.2): a host key's alone.
-    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /branches", "GET /branches/x/compare"];
+    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/links/x", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
