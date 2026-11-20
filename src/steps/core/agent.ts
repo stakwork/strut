@@ -1380,7 +1380,7 @@ export default defineStep({
       .optional()
       .meta({
         description:
-          "model id, aieo alias ('sonnet', 'gemini', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
+          "model id, aieo alias ('sonnet', 'argon', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
         // The step editor offers the deployment's model catalog (GET /llm/models).
         suggest: "llm-models",
       }),

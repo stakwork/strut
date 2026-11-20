@@ -84,7 +84,7 @@ async function test(label: string, fn: () => unknown | Promise<unknown>) {
 
 await test("listModels: one entry per alias, PROVIDERS order, defaults flagged", () => {
   const all = listModels();
-  eq(all.map((m) => m.alias), ["sonnet", "opus", "haiku", "gemini", "carbon", "gpt", "kimi", "glm", "grok", "maple", "numes", "tokenfactory"], "aliases");
+  eq(all.map((m) => m.alias), ["sonnet", "opus", "haiku", "argon", "carbon", "neon", "hydrogen", "gpt", "kimi", "glm", "grok", "maple", "numes", "tokenfactory"], "aliases");
   eq(all.filter((m) => m.default).map((m) => m.provider), PROVIDERS, "exactly one default per provider");
   const sonnet = all.find((m) => m.alias === "sonnet")!;
   eq([sonnet.provider, sonnet.modelId, sonnet.default], ["anthropic", "claude-sonnet-5-5", true], "sonnet");
@@ -93,7 +93,9 @@ await test("listModels: one entry per alias, PROVIDERS order, defaults flagged",
   eq(all.find((m) => m.alias === "opus")!.modelId, "claude-opus-5-5", "opus");
   eq(all.find((m) => m.alias === "grok")!.modelId, "grok-4.7", "grok");
   eq(all.find((m) => m.alias === "gpt")!.modelId, "gpt-5.6-luna", "gpt");
-  eq(all.find((m) => m.alias === "gemini")!.modelId, "gemini-3.8-flash", "gemini");
+  eq(all.find((m) => m.alias === "argon")!.modelId, "gemini-4-argon", "argon");
+  eq(all.find((m) => m.alias === "argon")!.default, true, "argon is the google default");
+  eq(all.find((m) => m.alias === "carbon")!.default, false, "carbon is not");
   eq(all.find((m) => m.alias === "glm")!.modelId, "~z-ai/glm-flash-latest", "glm");
   eq(all.find((m) => m.alias === "glm")!.default, false, "kimi stays the openrouter default");
   eq(all.find((m) => m.alias === "maple")!.modelId, "gemma4-31b", "maple");
@@ -148,8 +150,10 @@ const canonCases: [string | undefined, string | undefined, [string, string, stri
   ["gpt", undefined, ["openai", "gpt-5.6-luna", "openai/gpt-5.6-luna"]],
   ["gpt-5.6-sol", undefined, ["openai", "gpt-5.6-sol", "openai/gpt-5.6-sol"]],                   // exact-match list
   ["gpt-5.4-mini", undefined, ["openai", "gpt-5.4-mini", "openai/gpt-5.4-mini"]],                 // vendor-prefix fallback
-  ["gemini-3.1-pro-preview", undefined, ["google", "gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"]],
-  ["gemini", undefined, ["google", "gemini-3.8-flash", "google/gemini-3.8-flash"]],
+  ["gemini-2.5-pro", undefined, ["google", "gemini-2.5-pro", "google/gemini-2.5-pro"]],
+  ["argon", undefined, ["google", "gemini-4-argon", "google/gemini-4-argon"]],
+  ["neon", undefined, ["google", "gemini-4-neon", "google/gemini-4-neon"]],
+  ["hydrogen", undefined, ["google", "gemini-4-hydrogen", "google/gemini-4-hydrogen"]],
   ["carbon", undefined, ["google", "gemini-4-carbon", "google/gemini-4-carbon"]],
   ["glm", undefined, ["openrouter", "~z-ai/glm-flash-latest", "openrouter/~z-ai/glm-flash-latest"]],
   ["openrouter/~z-ai/glm-flash-latest", undefined, ["openrouter", "~z-ai/glm-flash-latest", "openrouter/~z-ai/glm-flash-latest"]],
@@ -304,7 +308,7 @@ await test("resolveModel: context limits for the alias targets", async () => {
   eq(await limit("gpt"), 1_050_000, "gpt-5.6-luna");
   eq(await limit("grok"), 500_000, "grok-4.7");
   eq(await limit("kimi"), 1_048_576, "moonshotai/kimi-k3");
-  eq(await limit("gemini"), 1_048_576, "gemini-3.8-flash");
+  eq(await limit("argon"), 1_048_576, "gemini-4-argon");
   eq(await limit("glm"), 1_310_720, "~z-ai/glm-flash-latest");
   eq(await limit("openrouter/anthropic/claude-opus-5"), 1_000_000, "opus via OpenRouter");
   eq(await limit("openrouter/x-ai/grok-4.7"), 500_000, "grok via OpenRouter");
@@ -368,7 +372,7 @@ await test("resolveModel: getSecret miss falls back to process.env", async () =>
 });
 
 await test("resolveModel: no key anywhere → error names the env var", () =>
-  throwsWith(() => resolveModel({ model: "gemini" }), "set GOOGLE_API_KEY", "missing key"));
+  throwsWith(() => resolveModel({ model: "argon" }), "set GOOGLE_API_KEY", "missing key"));
 
 await test("resolveModel: the trap fires before any key lookup", async () => {
   let calls = 0;

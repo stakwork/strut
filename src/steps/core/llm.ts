@@ -45,7 +45,7 @@ export default defineStep({
       .optional()
       .meta({
         description:
-          "model id, aieo alias ('sonnet', 'gpt', 'gemini', 'kimi', 'glm', 'grok'), or 'provider/id' ('openrouter/moonshotai/kimi-k2.6'); the provider is inferred from it when `provider` is omitted",
+          "model id, aieo alias ('sonnet', 'gpt', 'argon', 'kimi', 'glm', 'grok'), or 'provider/id' ('openrouter/moonshotai/kimi-k2.6'); the provider is inferred from it when `provider` is omitted",
         // The step editor offers the deployment's model catalog (GET /llm/models).
         suggest: "llm-models",
       }),

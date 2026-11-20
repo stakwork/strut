@@ -233,43 +233,73 @@ const tests: TestCase[] = [
     },
   },
   {
-    label: 'google default model + fast → thinkingBudget 0',
+    label: 'google default model (argon) + fast → thinkingLevel low',
     provider: "google",
     thinkingSpeed: "fast",
     modelName: undefined,
     assert(result) {
       const c = (result as any).google.thinkingConfig;
-      if (c.thinkingBudget !== 0 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+      if (c.thinkingLevel !== "low" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
     },
   },
   {
-    label: 'google default model → thinkingBudget 24000',
+    label: 'google default model (argon) → thinkingLevel medium',
     provider: "google",
     thinkingSpeed: undefined,
     modelName: undefined,
     assert(result) {
       const c = (result as any).google.thinkingConfig;
-      if (c.thinkingBudget !== 24000 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+      if (c.thinkingLevel !== "medium" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
     },
   },
   {
-    label: 'google gemini-3.8-flash + fast → thinkingBudget 0',
+    label: 'google gemini-2.5-flash + fast → thinkingBudget 0',
     provider: "google",
     thinkingSpeed: "fast",
-    modelName: "gemini-3.8-flash",
+    modelName: "gemini-2.5-flash",
     assert(result) {
       const c = (result as any).google.thinkingConfig;
       if (c.thinkingBudget !== 0 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
     },
   },
   {
-    label: 'google gemini-3.8-flash + thinking → thinkingBudget 24000',
+    label: 'google gemini-2.5-flash + thinking → thinkingBudget 24000',
     provider: "google",
     thinkingSpeed: "thinking",
-    modelName: "gemini-3.8-flash",
+    modelName: "gemini-2.5-flash",
     assert(result) {
       const c = (result as any).google.thinkingConfig;
       if (c.thinkingBudget !== 24000 || "thinkingLevel" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google argon alias → thinkingLevel medium, no budget',
+    provider: "google",
+    thinkingSpeed: undefined,
+    modelName: "argon",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "medium" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google neon alias → thinkingLevel medium, no budget',
+    provider: "google",
+    thinkingSpeed: undefined,
+    modelName: "neon",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "medium" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
+    },
+  },
+  {
+    label: 'google hydrogen alias → thinkingLevel medium, no budget',
+    provider: "google",
+    thinkingSpeed: undefined,
+    modelName: "hydrogen",
+    assert(result) {
+      const c = (result as any).google.thinkingConfig;
+      if (c.thinkingLevel !== "medium" || "thinkingBudget" in c) throw new Error(`got ${JSON.stringify(c)}`);
     },
   },
 ];

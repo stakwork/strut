@@ -525,7 +525,7 @@ function renderModels(m: AiDeps["models"]): string {
   const keys = Object.entries(m.keyNames)
     .map(([p, k]) => `${p}: ${k}`)
     .join(", ");
-  return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, gemini, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, request_secret its key (${keys}) — or, without that tool, tell the user to add it under Secrets.\n\n`;
+  return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, argon, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, request_secret its key (${keys}) — or, without that tool, tell the user to add it under Secrets.\n\n`;
 }
 
 /**
