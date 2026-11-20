@@ -13,6 +13,12 @@ import { words } from "../words";
 // once (one tap a photo: the pages of a book). Every shot flashes, and the
 // shutter waits for the camera's first frame. Cancel, or the page going away,
 // answers null. In the page's language (../words).
+//
+// The shot shows the moment it is taken: the video stops on that frame while
+// the JPEG is made behind it (a phone's web view takes seconds to encode one,
+// and the live picture kept moving meanwhile, as if nothing was taken), and
+// Use photo waits for it only if it is not done yet. The camera stays on
+// while the person looks, so Retake is the live picture again at once.
 
 /** The size a frame of `w` × `h` is drawn at so its longest side is at most `max`. */
 export function photoSize(w: number, h: number, max: number): { width: number; height: number } {
@@ -42,16 +48,16 @@ export function CameraSheet(props: {
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const [shot, setShot] = useState<({ blob: Blob; url: string } & Size) | null>(null);
+  /** The shot being looked at: its JPEG, made in the background. */
+  const [shot, setShot] = useState<({ jpeg: Promise<Blob | null> } & Size) | null>(null);
   const [busy, setBusy] = useState(false);
   // The camera has a frame to take: until then a tap would take nothing.
   const [ready, setReady] = useState(false);
   // Each shot's flash, so the person sees it was taken.
   const [flash, setFlash] = useState(0);
 
-  // The camera, while the person frames a shot.
+  // The camera, while the sheet is open.
   useEffect(() => {
-    if (shot) return;
     setReady(false);
     let stream: MediaStream | undefined;
     let gone = false;
@@ -68,12 +74,13 @@ export function CameraSheet(props: {
       gone = true;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [shot, props.facing]);
-  useEffect(() => () => shot && URL.revokeObjectURL(shot.url), [shot]);
+  }, [props.facing]);
 
-  const hand = async (blob: Blob, size: Size) => {
+  const hand = async (jpeg: Promise<Blob | null>, size: Size) => {
     setBusy(true);
     try {
+      const blob = await jpeg;
+      if (!blob) throw new Error("could not make the photo");
       props.onDone({ name: "photo.jpg", mediaType: "image/jpeg", data: await base64Of(blob), width: size.width, height: size.height });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -82,32 +89,27 @@ export function CameraSheet(props: {
   };
   const take = () => {
     const v = video.current;
-    if (!v?.videoWidth || busy) return;
+    if (!v?.videoWidth || busy || shot) return;
     setFlash((n) => n + 1);
     const size = photoSize(v.videoWidth, v.videoHeight, props.maxSide);
     const c = document.createElement("canvas");
     c.width = size.width;
     c.height = size.height;
     c.getContext("2d")!.drawImage(v, 0, 0, size.width, size.height);
-    if (!props.review) setBusy(true);
-    c.toBlob(
-      (blob) => {
-        if (!blob) return setBusy(false);
-        if (props.review) setShot({ blob, url: URL.createObjectURL(blob), ...size });
-        else void hand(blob, size);
-      },
-      "image/jpeg",
-      0.88,
-    );
+    const jpeg = new Promise<Blob | null>((resolve) => c.toBlob(resolve, "image/jpeg", 0.88));
+    if (!props.review) return void hand(jpeg, size);
+    // The picture stops on the shot at once; the JPEG is made behind it.
+    v.pause();
+    setShot({ jpeg, ...size });
+  };
+  const retake = () => {
+    setShot(null);
+    void video.current?.play().catch(() => undefined);
   };
 
   return (
     <div class="camera-sheet" role="dialog" aria-label={`${props.app} ${words.asksForPhoto}`} data-testid="camera-sheet">
-      {shot ? (
-        <img class="camera-media" src={shot.url} alt={words.thePhoto} />
-      ) : (
-        <video ref={video} class="camera-media" autoPlay playsInline muted onLoadedData={() => setReady(true)} />
-      )}
+      <video ref={video} class="camera-media" autoPlay playsInline muted onLoadedData={() => setReady(true)} />
       {flash > 0 && <div key={flash} class="camera-flash" />}
       <div class="camera-top">
         <button type="button" class="camera-cancel" onClick={() => props.onDone(null)}>{words.cancel}</button>
@@ -120,8 +122,8 @@ export function CameraSheet(props: {
       <div class="camera-bar">
         {shot ? (
           <>
-            <button type="button" class="camera-btn" disabled={busy} onClick={() => setShot(null)}>{words.retake}</button>
-            <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void hand(shot.blob, shot)}>{words.usePhoto}</button>
+            <button type="button" class="camera-btn" disabled={busy} onClick={retake}>{words.retake}</button>
+            <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void hand(shot.jpeg, shot)}>{words.usePhoto}</button>
           </>
         ) : (
           <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error || !ready || busy} onClick={take} />
