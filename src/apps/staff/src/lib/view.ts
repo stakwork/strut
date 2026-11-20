@@ -3,10 +3,10 @@
 // and how things read. No React here: src/apps/staff.test.ts tests them.
 import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, SentFile, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
-export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
+export const TABS = ["queue", "types", "workers", "tasks", "groups", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
 
-export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts", support: "Support" };
+export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", groups: "Groups", tests: "Tests", payouts: "Payouts", support: "Support" };
 
 /** Where the page is: a tab and what is open in it. */
 export interface Place {
@@ -26,6 +26,8 @@ export interface Place {
   /** §9.6: tasks with an answer not reviewed, or marked so — the review
    *  queue. */
   review?: ReviewFilter;
+  /** On the Groups tab: one group (`task/reply`'s `group`), of `type`. */
+  group?: string;
 }
 
 export type ReviewFilter = "none" | Verdict;
@@ -47,6 +49,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   const named = (TABS as readonly string[]).includes(tab ?? "") ? (tab as Tab) : undefined;
   const review = REVIEW_FILTERS.find((r) => r === str("review"));
   if (str("payout")) return { tab: "payouts", payout: str("payout")! };
+  if (str("group")) return { tab: "groups", group: str("group")!, ...(str("type") ? { type: str("type")! } : {}) };
   if (named === "payouts") return { tab: "payouts", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (named === "support") return { tab: "support", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (str("task")) return { tab: "tasks", task: str("task")! };
@@ -55,13 +58,14 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   if (str("by")) return { tab: "tasks", by: str("by")! };
   if (str("worker")) return { tab: "workers", worker: str("worker")! };
   if (str("test")) return { tab: "tests", test: str("test")! };
-  if (str("type")) return named === "tests" || named === "tasks" ? { tab: named, type: str("type")! } : { tab: "types", type: str("type")! };
+  if (str("type")) return named === "tests" || named === "tasks" || named === "groups" ? { tab: named, type: str("type")! } : { tab: "types", type: str("type")! };
   return { tab: named ?? "queue" };
 }
 
 /** A place as the app link's input, the inverse of `placeOf`. */
 export function inputOf(p: Place): Record<string, string> {
   if (p.payout) return { payout: p.payout };
+  if (p.group) return { group: p.group, ...(p.type ? { type: p.type } : {}) };
   if (p.tab === "payouts") return { tab: "payouts", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.tab === "support") return { tab: "support", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.task) return { task: p.task };

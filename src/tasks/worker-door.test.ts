@@ -90,6 +90,7 @@ steps:
       show:
         note: Here it is
       files: ["{{ draw }}"]
+      group: Book one
 `;
 /** Another run that names a task it did not ask. */
 const MEDDLE = `name: meddle
@@ -409,6 +410,23 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     const read = await staff("GET", `/tasks/${task!.id}/files/images/remix.jpg`);
     assert.equal(read.status, 200);
     assert.equal(((await read.json()) as { base64?: string }).base64, picture.toString("base64"));
+
+    // The group the run named: staff read it and mark it ok at once; the
+    // worker reads their group and the verdict on their answer.
+    assert.equal((history.items.find((i) => i.lease === got.lease) as { group?: string }).group, "Book one");
+    const groups = (await (await staff("GET", "/tasks/groups?type=remix-photo")).json()) as { groups: Array<Record<string, unknown>> };
+    assert.deepEqual(groups.groups.map((g) => [g["group"], g["tasks"], g["unreviewed"], g["workers"]]), [["Book one", 1, 1, [worker.actor]]]);
+    const inGroup = (await (await staff("GET", `/tasks?group=${encodeURIComponent("Book one")}`)).json()) as { tasks: Array<{ id: string }> };
+    assert.deepEqual(inGroup.tasks.map((t) => t.id), [task!.id]);
+    const marked = await staff("POST", "/tasks/groups/review", { group: "Book one", verdict: "ok" });
+    assert.deepEqual(await marked.json(), { reviewed: 1, more: false });
+    assert.equal((await staff("POST", "/tasks/groups/review", { group: "Book one", verdict: "ok", by: "x" })).status, 400, "group, type, verdict and why alone");
+    const mine = (await call(worker.token, "task/history", { groups: true })).result as { items: Array<{ lease: string; review?: { verdict: string } }>; groups: Array<Record<string, unknown>> };
+    assert.deepEqual(mine.groups.map((g) => [g["group"], g["answers"], g["ok"], "workers" in g]), [["Book one", 1, 1, false]]);
+    assert.equal(mine.items.find((i) => i.lease === got.lease)!.review?.verdict, "ok");
+    const one = (await call(worker.token, "task/history", { group: "Book one" })).result as { items: Array<{ lease: string }> };
+    assert.deepEqual(one.items.map((i) => i.lease), [got.lease]);
+    assert.deepEqual(((await call(other.token, "task/history", { groups: true })).result as { groups: unknown[] }).groups, [], "another worker has none");
 
     // A page calling the step itself — a member's or a visitor's, on an app that grants task/* — is no step of the run.
     const minted = await req("/auth/ticket", { method: "POST", headers: auth, body: JSON.stringify({ actor: "eve-1" }) });

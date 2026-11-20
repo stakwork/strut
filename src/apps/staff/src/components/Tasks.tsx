@@ -235,6 +235,11 @@ function TaskDetail(props: Props & { id: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-semibold">{t.type}</h2>
         <StatusBadge status={t.status} />
+        {t.group && (
+          <Button size="xs" variant="outline" title="The group its run put it in" onClick={() => props.go({ tab: "groups", group: t.group, type: t.type })}>
+            {t.group}
+          </Button>
+        )}
         {t.test && <Badge variant="outline">test instance</Badge>}
         {copies && <Badge variant="outline">{t.copies} copies</Badge>}
         <span className="font-mono text-xs text-muted-foreground">{t.id}</span>
@@ -424,7 +429,7 @@ function NoFields({ files }: { files: number }) {
 
 /** §9.6: one answer's verdict, with Mark ok and Reject (why on a line in the
  *  page) while it can change. A first verdict can always be given. */
-function ReviewLine(props: { lease: Lease; who?: string; busy: boolean; onReview: (verdict: Verdict, why?: string) => void }) {
+export function ReviewLine(props: { lease: Lease; who?: string; busy: boolean; onReview: (verdict: Verdict, why?: string) => void }) {
   const r = props.lease.review;
   const now = Date.now();
   const open = !r || (!r.final && r.until > now);
@@ -514,7 +519,7 @@ function TaskFileView(props: { task: string; path: string; mediaType?: string; v
 /** Whether the element has come into view, once (`on` false: never asked).
  *  A page with ten pictures reads the ones in view, then each as it is
  *  scrolled to, not all ten at once. */
-function useSeen<T extends Element>(on: boolean) {
+export function useSeen<T extends Element>(on: boolean) {
   const ref = useRef<T>(null);
   const [seen, setSeen] = useState(false);
   useEffect(() => {

@@ -35,6 +35,8 @@ grants:
     - staff/file
     - staff/take-back
     - staff/review
+    - staff/groups
+    - staff/review-group
     - staff/tests
     - staff/test
     - staff/save-test

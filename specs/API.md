@@ -2736,7 +2736,7 @@ seeds nothing. The page is only a face: the routes decide.
 
 Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
 workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
-`test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`, `review=none|ok|rejected`
+`test=<id>`, `run=<workflow>/<runId>`, `group=<name>` (with `type=`, the Groups tab's page of one group), `by=<actor>`, `review=none|ok|rejected`
 (the review queue; with `by`, that worker's), `tab=support&worker=<actor>`
 (a worker's conversation with Support). Each move goes back to
 the host as `ui/open-link`, so its address bar follows.
@@ -2775,7 +2775,16 @@ the host as `ui/open-link`, so its address bar follows.
   a **Review** section — each answer's verdict, by whom, when and until
   when it can change, with Mark ok and Reject (the reason on a line in the
   page: an app frame has no `prompt`) while it can — its run now, and
-  "make a test of it".
+  "make a test of it"; a task in a group names it, a button to the group.
+- **Groups** (shown once a workflow named a group with `task/reply`'s
+  `group`): `GET /tasks/groups` by type — each group's type, who answered,
+  its tasks, its verdicts and its last answer; a group's page reads its
+  tasks (`GET /tasks?group=&type=`) and draws them oldest first as tiles —
+  the reply's first picture, else the answer's, read as it scrolls into
+  view, the reply's `title` and `ask` as a caption opening the task, and
+  each answer's verdict with Mark ok and Reject — with a filter (not
+  reviewed, rejected, ok) and **Mark the rest ok** (`POST
+  /tasks/groups/review`).
 - **Tests**: a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
@@ -2839,11 +2848,13 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
 | `staff/grant { actor, type, qualify? }` (`actor` `@me`: the admin themself, "Try it yourself") | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
 | `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
-| `staff/tasks { type?, status?, workflow?, runId?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
+| `staff/tasks { type?, status?, workflow?, runId?, group?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }`; each task's `group` when its run named one |
 | `staff/task { id }` | `GET /tasks/:id` | `{ task, run }`; `task.reply` is the run's reply to its workers, when it made one (§22, "A run's reply") |
 | `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers: the task's own, an answer's, or one its reply lists |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
 | `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
+| `staff/groups { type?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }] }`, the one with the newest task first |
+| `staff/review-group { group, type?, verdict, why? }` | `POST /tasks/groups/review` | `{ reviewed, more }`: the verdict on every answer in the group with none yet, one `review` each; a verdict given stays |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
 | `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
 | `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
@@ -5582,7 +5593,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
-| `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at } }] }` |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -5720,11 +5731,13 @@ server whose task store is its host's (which answers none of them).
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` (`:actor` `@me`: the signed-in admin themself) | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. The only way back into a type whose grant was revoked, open or not. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
+| `GET /tasks?type=&status=&workflow=&runId=&group=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `group` the tasks of one group (`task/reply`'s `group`; a task carries its `group`); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
 | `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, one its run's reply lists (`task.reply.files`), or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
+| `GET /tasks/groups?type=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered. `501 not_available` on a host's own store |
+| `POST /tasks/groups/review` | `{ group, type?, verdict, why? }` → `{ reviewed, more }`: the verdict ("Review" below) on every answer in the group (of `type`, when given) that has none yet, one review each, oldest first; a verdict given stays. A rejection says `why`. At most 1,000 tasks a call: `more` when there may be others |
 
 ```jsonc
 // TaskType
@@ -6308,7 +6321,17 @@ an `image` step drew from their photo):
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/reply` | `{ task, show?, files? }` | `{ task, at }` |
+| `task/reply` | `{ task, show?, files?, group? }` | `{ task, at }` |
+
+- **A group.** `group` (at most 200 characters, one line, trimmed) names the
+  deliverable the task is part of — a book its pages, a batch its photos —
+  which the run knows once the answer is in. A reply with only a group
+  leaves what was told as it was; a later reply without one keeps it. Staff
+  read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
+  `POST /tasks/groups/review`, §14.15's `staff/groups` and
+  `staff/review-group`, the staff app's Groups tab); the worker reads their
+  groups and each answer's verdict and why (`task/history { groups, group
+  }`), so their app can show what they handed in and what was sent back.
 
 - **Only the run that asked.** A workflow's step (`effect: "write"`, on the
   shared bag): the store reads the CALLING run off the step's run control

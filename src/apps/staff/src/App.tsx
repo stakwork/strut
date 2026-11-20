@@ -1,11 +1,13 @@
 // strut/staff (plans/human-steps.md §9, specs/API.md §14.15): the task
 // store's staff routes as a page, for an ADMIN — strut's own UI lists it in
 // Apps, a host (Stadeum) frames it for a person it signed in as an admin.
-// Seven tabs, each deep-linkable (`?input=tab=…`, `type=`, `worker=`,
-// `task=`, `test=`, `run=`, `payout=`, `tab=support&worker=`): the Queue (what
+// Eight tabs, each deep-linkable (`?input=tab=…`, `type=`, `worker=`,
+// `task=`, `group=`, `test=`, `run=`, `payout=`, `tab=support&worker=`): the Queue (what
 // waits, and what needs a person), the task Types (who draws them, the
 // answer's shape, pay, tests, copies, who holds them), the Workers (letting
 // them in, what they did and earned), the Tasks (every task and its answers),
+// the Groups (what a workflow put together with task/reply's group — a
+// book's pages — read and reviewed as one, shown once a workflow named one),
 // the Tests, the Payouts (workers' withdrawals: the switch, the caps, the
 // list), and Support (the chat with workers, plans/support-chat.md, with its
 // unread count on the tab; its tables are this app's own SQLite,
@@ -25,6 +27,7 @@ import { TABS, TAB_LABELS, inputOf, placeOf, shownOf, testsAnswerOf, type Place,
 import type { TaskType, Test, TypeShare, Worker } from "./lib/types";
 import { ErrorLine } from "./components/bits";
 import { Queue } from "./components/Queue";
+import { Groups } from "./components/Groups";
 import { Types } from "./components/Types";
 import { Workers } from "./components/Workers";
 import { Tasks } from "./components/Tasks";
@@ -56,6 +59,8 @@ export default function App() {
   const listed = useMemo(() => workers.data?.workers.map((w) => (names?.[w.actor] ? { ...w, name: names[w.actor] } : w)), [workers.data, names]);
   // Whether the test routes answer here (item 4): the Tests tab's own read.
   const tests = useQuery({ queryKey: ["staff", "tests", "all"], queryFn: () => client.run<{ tests: Test[] }>("staff/tests", {}) });
+  // Whether any workflow named a group (`task/reply`'s `group`): the Groups tab shows once one did.
+  const groups = useQuery({ queryKey: ["staff", "groups", "any"], queryFn: () => client.run<{ groups: unknown[] }>("staff/groups", { limit: 1 }), retry: false });
   // Whether the payout routes answer here (item 5b): the Payouts tab's own read.
   const payouts = useQuery({ queryKey: ["staff", "payouts", "any"], queryFn: () => client.run("staff/payouts", { limit: 1 }) });
   // Support (plans/people-and-hosts.md §5): its tables are this app's own
@@ -83,7 +88,8 @@ export default function App() {
       if (m.key === "invites") void qc.invalidateQueries({ queryKey: ["staff", "invites"] });
     },
   });
-  const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
+  const hasGroups = (groups.data?.groups.length ?? 0) > 0 || place.tab === "groups";
+  const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support) && (t !== "groups" || hasGroups));
   const unread = counts.data?.rows[0]?.unread ?? 0;
   const tab: Tab = tabs.includes(place.tab) ? place.tab : "queue";
   // Strut's own admin pages act as the person viewing them: with the bare
@@ -134,6 +140,7 @@ export default function App() {
           {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={types.error} />}
           {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={workers.error} />}
           {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={listed} />}
+          {tab === "groups" && <Groups go={go} place={place} types={types.data?.types} workers={listed} />}
           {tab === "tests" && shown.tests && <Tests go={go} place={place} types={types.data?.types} />}
           {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={listed} />}
           {tab === "support" && shown.support && <Support go={go} place={place} shown={shown} workers={listed} />}

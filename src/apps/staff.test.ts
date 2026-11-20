@@ -696,6 +696,12 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.deepEqual((await admin("staff/tasks", { review: "rejected", by: "w1" })).result.tasks.map((t: { id: string }) => t.id), [id]);
     assert.equal((await admin("staff/worker", { actor: "w1" })).result.recent[0].lease.review.verdict, "rejected", "the worker's page shows it");
     assert.match((await admin("staff/review", { task: id, verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
+    // Groups (task/reply's group): granted by the app, through the door in the
+    // admin's name; this run named none.
+    assert.deepEqual((await admin("staff/groups", { type: "pets" })).result, { groups: [] });
+    assert.deepEqual((await admin("staff/tasks", { group: "Book one" })).result.tasks, []);
+    assert.deepEqual((await admin("staff/review-group", { group: "Book one", verdict: "ok" })).result, { reviewed: 0, more: false });
+    assert.match((await admin("staff/review-group", { group: "Book one", verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
     assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
   });
@@ -736,8 +742,8 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {
     const member = page(signIn("bo", "member"));
-    const configs: Record<string, Record<string, unknown>> = { "staff/grant": { actor: "x", type: "pets" }, "staff/save-type": { name: "x", app: "workers", answer: MATCH }, "staff/review": { task: "t1", verdict: "ok" } };
-    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review"]) {
+    const configs: Record<string, Record<string, unknown>> = { "staff/grant": { actor: "x", type: "pets" }, "staff/save-type": { name: "x", app: "workers", answer: MATCH }, "staff/review": { task: "t1", verdict: "ok" }, "staff/review-group": { group: "g", verdict: "ok" } };
+    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review", "staff/groups", "staff/review-group"]) {
       const r = await member(type, configs[type] ?? {});
       assert.ok(r.error, type);
       assert.match(r.error, /admin/, type);
@@ -750,7 +756,7 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const p = await door("/mcp", peer, "staff/stats");
     assert.ok(p.error, "a peer gets nothing");
     assert.ok((await door("/mcp", peer, "staff/review", { task: "t1", verdict: "ok" })).error, "nor a verdict");
-    for (const path of ["/tasks/stats", "/tasks/types", "/tasks/workers/w1", "/tasks?by=w1", "/tasks?review=none"]) {
+    for (const path of ["/tasks/stats", "/tasks/types", "/tasks/workers/w1", "/tasks?by=w1", "/tasks?review=none", "/tasks/groups"]) {
       assert.equal((await strut.app.request(path, { headers: peer })).status, 403, path);
       assert.equal((await strut.app.request(path, { headers: { cookie: await signIn("bo", "member") } })).status, 403, path);
     }
