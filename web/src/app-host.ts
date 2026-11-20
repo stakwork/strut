@@ -35,7 +35,7 @@ import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { PAGE_CONTEXT } from "../../kit/src/links";
-import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCaptureParams, type CameraPhoto } from "@strut/kit/camera";
+import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCapture, type CameraPhoto } from "@strut/kit/camera";
 import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
 import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
@@ -86,7 +86,7 @@ export interface AppHostHandlers {
   /** The page asked for a photo (`strut/camera/capture`, @strut/kit/camera):
    *  the host's camera sheet, the photo the person took or null. Offered only
    *  to a page whose app declares `camera` — the frame itself gets none. */
-  onCapture?: (params: Required<Pick<CameraCaptureParams, "facing" | "maxSide">> & Pick<CameraCaptureParams, "title">) => Promise<CameraPhoto | null>;
+  onCapture?: (params: CameraCapture) => Promise<CameraPhoto | null>;
 }
 
 export interface AppHostOptions {
