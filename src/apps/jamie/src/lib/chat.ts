@@ -121,6 +121,17 @@ export const BUSY_NOTICE = "Still on your last message — send this once the re
  *  shared, and it has since been unshared, is refused. */
 export const NOT_YOURS_NOTICE = "This is someone else's conversation, and it is no longer shared: you can't add to it. Start a new chat to carry on.";
 
+/** What a link to a conversation the viewer may not read says. Strut answers
+ *  one that does not exist and one that is not theirs alike, so it says both. */
+export const NOT_SHARED_NOTICE = "This chat isn't shared with you, or it no longer exists. Ask whoever sent you the link to share it with the team.";
+
+/** A refused read (`conversation/get`) as the person reads it: the notice
+ *  for a conversation that is not theirs to read, else null (another error,
+ *  shown as it is). */
+export function readRefusal(message: string): string | null {
+  return /\bNo conversation ".*" \(or not yours to read\)/.test(message) ? NOT_SHARED_NOTICE : null;
+}
+
 export function sendRefusal(message: string): SendRefusal {
   if (/\bsession_busy:/.test(message) || /\bjob_busy:/.test(message)) return { kind: "busy", text: BUSY_NOTICE };
   if (/\bconversation_not_yours:/.test(message)) return { kind: "not-yours", text: NOT_YOURS_NOTICE };

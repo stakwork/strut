@@ -7,7 +7,9 @@
 // (`conversation/get { wait }`) and marked read while it is open. A host's
 // conversation (a Sphinx tribe's) is read-only here: its host alone takes a
 // turn in it, so in place of the composer a line says where to reply, and
-// Continue here forks it into the viewer's own.
+// Continue here forks it into the viewer's own. Share, in the header, puts it
+// in the team's list and copies its link (./Share). A link to one the viewer
+// may not read says so, with no composer: there is nothing to reply to.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Hash, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
@@ -15,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { hostPlace, inFlight, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
+import { hostPlace, inFlight, readRefusal, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
 import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useFork, useSend, useStop, useUpdateConversation } from "../hooks";
@@ -26,6 +28,7 @@ import { Composer } from "./Composer";
 import { JobCard, useJob } from "./JobCard";
 import { ProposalCard } from "./ProposalCard";
 import { CopyButton, IconButton, Notice, errorText } from "./bits";
+import { ShareMenu } from "./Share";
 import { TurnAttachments } from "./Attachments";
 
 export interface ThreadProps {
@@ -124,6 +127,8 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
   };
 
   const title = draft ? "New chat" : (conv.view?.conversation.title || (conv.view ? "Untitled" : ""));
+  /** A link to a conversation the viewer may not read: nothing to reply to. */
+  const unreadable = !draft && !!conv.error && !conv.view;
   const hosted = draft ? undefined : conv.view?.conversation.host;
   const continueHere = async () => {
     if (!session) return;
@@ -139,7 +144,7 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
           </IconButton>
         )}
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h1>
-        {conv.view?.conversation.shared && <span className="shrink-0 text-xs text-muted-foreground">Shared</span>}
+        {session && !draft && conv.view && <ShareMenu session={session} shared={!!conv.view.conversation.shared} onChanged={() => conv.refresh()} />}
         {hosted && <span className="shrink-0 text-xs text-muted-foreground">In {hostPlace(hosted)}</span>}
         <span className="shrink-0 text-xs text-muted-foreground">Jamie</span>
       </header>
@@ -155,7 +160,7 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
           {!session && <Empty />}
           {session && draft && <Empty />}
-          {conv.error && !conv.view && <Notice tone="error">{errorText(conv.error)}</Notice>}
+          {unreadable && <Notice tone={readRefusal(errorText(conv.error)) ? "warn" : "error"}>{readRefusal(errorText(conv.error)) ?? errorText(conv.error)}</Notice>}
           {session && !draft && !conv.view && !conv.error && <p className="text-sm text-muted-foreground">Loading…</p>}
           {conv.hasOlder && (
             <button type="button" onClick={() => void conv.loadOlder()} className="self-center text-xs text-muted-foreground hover:text-foreground">
@@ -172,7 +177,7 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-2">
           {refusal && <Notice tone={refusal.kind === "error" ? "error" : "warn"}>{refusal.text}</Notice>}
-          {hosted ? (
+          {unreadable ? null : hosted ? (
             <>
               {fork.isError && <Notice tone="error">{errorText(fork.error)}</Notice>}
               <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2.5" data-testid="hosted-bar">

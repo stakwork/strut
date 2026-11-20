@@ -22,3 +22,34 @@ export function appLink(name: string, input?: AppLinkInput): string {
   if (inner) q.set("input", inner);
   return `?${q}`;
 }
+
+/** The host context key a host puts its PAGE's address under: where a
+ *  person opens this app on that host (Stadeum's `https://box/`, strut's own
+ *  `https://strut/?app=<name>`), without the app's `input`. A host with no
+ *  address to give (a native app's web view) leaves it out. */
+export const PAGE_CONTEXT = "strut/page";
+
+/** The address a person can paste to open the app at `input`: the host's
+ *  `page` with `input` as its one query param, in place of any it had.
+ *  Without `input`, the page itself. */
+export function shareLink(page: string, input?: AppLinkInput): string {
+  const url = new URL(page);
+  const args = new URLSearchParams();
+  for (const [k, v] of Object.entries(input ?? {})) if (v != null) args.set(k, String(v));
+  const inner = args.toString();
+  if (inner) url.searchParams.set("input", inner);
+  else url.searchParams.delete("input");
+  return url.href;
+}
+
+/** A host's page address out of its context: an http(s) URL, else none. */
+export function pageOf(context: Record<string, unknown> | undefined): string | undefined {
+  const page = context?.[PAGE_CONTEXT];
+  if (typeof page !== "string") return undefined;
+  try {
+    const url = new URL(page);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}

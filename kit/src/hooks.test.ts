@@ -9,7 +9,7 @@ import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
   JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
-  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
+  useAppLink, useShareLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
   useNames, PEOPLE_NAMES_STEP,
   useSql, useSqlMutation, SQL_STEPS,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
@@ -17,7 +17,7 @@ import {
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
   useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
-import { appLink } from "./links.js";
+import { PAGE_CONTEXT, appLink, shareLink } from "./links.js";
 
 useActEnvironment();
 
@@ -564,6 +564,26 @@ describe("the host hooks", () => {
     const bare = await renderHook(() => useAppLink(), { client });
     assert.throws(() => bare.result()(), /no app identity/);
     await bare.unmount();
+  });
+
+  it("shareLink puts the input on the host's page; useShareLink reads the page off the host context, none without one", async () => {
+    assert.equal(shareLink("https://box.example/", { session: "ann/abc123" }), "https://box.example/?input=session%3Dann%252Fabc123");
+    assert.equal(
+      shareLink("https://strut.example/?app=strut%2Fjamie&input=session%3Dold", { session: "new" }),
+      "https://strut.example/?app=strut%2Fjamie&input=session%3Dnew",
+      "the page's own input is replaced",
+    );
+    assert.equal(shareLink("https://box.example/?input=x"), "https://box.example/", "no input: the page itself");
+
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const h = await renderHook(() => useShareLink(), { client, host });
+    assert.equal(h.result(), undefined, "a host with no page address: no link to paste");
+    await act(async () => { host.update({ context: { [PAGE_CONTEXT]: "https://box.example/" } }); });
+    assert.equal(h.result()?.({ session: "s1" }), "https://box.example/?input=session%3Ds1");
+    await act(async () => { host.update({ context: { [PAGE_CONTEXT]: "javascript:alert(1)" } }); });
+    assert.equal(h.result(), undefined, "only an http(s) page");
+    await h.unmount();
   });
 });
 

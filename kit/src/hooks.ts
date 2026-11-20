@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, serverName, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
-import { appLink, type AppLinkInput } from "./links.js";
+import { appLink, pageOf, shareLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
 import { formats, wordsFor, type Formats, type Words } from "./folds/words.js";
@@ -1721,6 +1721,16 @@ export function useAppLink(): (input?: AppLinkInput) => string {
     },
     [app?.name],
   );
+}
+
+/** Links a person can PASTE to open this app at an input: the host's page
+ *  address (`strut/page` in its context — Stadeum's own, or strut's UI) with
+ *  `?input=`, the same address the host's bar shows once the page is there
+ *  (`useAppLink` + `openLink`). Undefined where the host gives no address
+ *  (a native app's web view, an older host): offer no Copy link there. */
+export function useShareLink(): ((input?: AppLinkInput) => string) | undefined {
+  const page = pageOf(useHostState().context);
+  return useMemo(() => (page ? (input?: AppLinkInput) => shareLink(page, input) : undefined), [page]);
 }
 
 export interface UseHost {

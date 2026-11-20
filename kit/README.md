@@ -93,7 +93,9 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost` (theme,
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useShareLink` (the
+  address to paste: the host's page, `strut/page` in its context, with
+  `?input=`; undefined with none), `useHost` (theme,
   display mode, `sendMessage`, `openLink`; in a strut server's public view
   `public: true`, `runnable` — the granted workflows a VISITOR may start —
   and `results`, what it reads of the runs it launched of each (`output`:

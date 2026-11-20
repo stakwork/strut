@@ -6,16 +6,18 @@
 // with a pulse while it runs and its pull requests; a click opens the
 // conversation at that job's card. Share puts a conversation in everyone's
 // list ("Shared"): anyone can read it and reply, as themselves; opening it
-// makes it theirs. A tribe's conversation is marked with a #. Connect, in the
+// makes it theirs. It copies the chat's link too, and a shared row's menu
+// copies it again (./Share). A tribe's conversation is marked with a #. Connect, in the
 // header, links the viewer's Sphinx account.
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, Hash, Link2, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, Hash, Link2, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, UserX, Users, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { groupByDay, hostPlace } from "../lib/chat";
 import type { ConversationJob, ConversationListItem, ConversationPr } from "../lib/types";
 import { PAGE, useConversationList, useUpdateConversation } from "../hooks";
 import { IconButton, Notice, errorText } from "./bits";
+import { useShareChat } from "./Share";
 
 const TITLE_MAX = 200;
 
@@ -38,6 +40,7 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
   const archived = useConversationList({ archived: true, q: query, limit: 50, enabled: archivedOpen });
   const archivedCount = useConversationList({ archived: true, limit: 1, enabled: !archivedOpen });
   const update = useUpdateConversation();
+  const share = useShareChat();
   const rows = open.data?.conversations ?? [];
   // Shared by someone else, not opened yet: a group of their own, first.
   const team = rows.filter((r) => r.team);
@@ -102,7 +105,7 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
                 active={item.id === active}
                 onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
-                onShare={(shared) => update.mutate({ session: item.id, shared })}
+                share={share}
                 action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
               />
             ))}
@@ -120,7 +123,7 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
                 active={item.id === active}
                 onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
-                onShare={(shared) => update.mutate({ session: item.id, shared })}
+                share={share}
                 action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
               />
             ))}
@@ -140,13 +143,15 @@ export function ChatList({ active, onOpen, onNewChat, onHide, onConnect }: ChatL
                 active={item.id === active}
                 onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
-                onShare={(shared) => update.mutate({ session: item.id, shared })}
+                share={share}
                 action={{ label: "Restore", Icon: ArchiveRestore, run: () => update.mutate({ session: item.id, archived: false }) }}
               />
             ))}
           </Group>
         )}
         {update.isError && <Notice tone="error">{errorText(update.error)}</Notice>}
+        {share.update.isError && <Notice tone="error">{errorText(share.update.error)}</Notice>}
+        {share.copied && <Notice>Link copied.</Notice>}
       </div>
     </section>
   );
@@ -176,14 +181,14 @@ function Row({
   active,
   onOpen,
   onRename,
-  onShare,
+  share,
   action,
 }: {
   item: ConversationListItem;
   active: boolean;
   onOpen: (job?: string) => void;
   onRename: (title: string) => void;
-  onShare: (shared: boolean) => void;
+  share: ReturnType<typeof useShareChat>;
   action: { label: string; Icon: typeof Archive; run: () => void };
 }) {
   const [editing, setEditing] = useState(false);
@@ -264,10 +269,25 @@ function Row({
                 <Pencil />
                 Rename
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => onShare(!item.shared)}>
-                <Users />
-                {item.shared ? "Stop sharing" : "Share with the team"}
-              </DropdownMenuItem>
+              {item.shared ? (
+                <>
+                  {share.linkable && (
+                    <DropdownMenuItem onSelect={() => share.copy(item.id)}>
+                      <Link2 />
+                      Copy link
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onSelect={() => share.setShared(item.id, false)}>
+                    <UserX />
+                    Stop sharing
+                  </DropdownMenuItem>
+                </>
+              ) : (
+                <DropdownMenuItem onSelect={() => share.setShared(item.id, true)}>
+                  {share.linkable ? <Link2 /> : <Users />}
+                  {share.linkable ? "Share and copy link" : "Share with the team"}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onSelect={action.run}>
                 <action.Icon />
                 {action.label}
