@@ -458,6 +458,25 @@ interface Run {
 /** The pause between two taps: a tile that fades as it is selected. */
 const TAP_DELAY_MS = 300;
 
+/**
+ * The browser behind `ctx.services.browser`: every verb the `browser/*`
+ * steps and `app/look` call on it, and nothing else. `BrowserService` below
+ * is strut's own (Playwright). A host that drives another browser passes
+ * its own to `createStrut({ services: { browser } })` as
+ * `class … implements StrutBrowser`, so a change to a verb here fails the
+ * host's build, not its runs. A verb that browser cannot do throws, saying
+ * why; the step fails with that message. Each verb takes the run id first:
+ * one page per run, let go of at `dispose(runId)`.
+ */
+export type StrutBrowser = Pick<
+  BrowserService,
+  | "open" | "goto" | "back" | "closeRun" | "dispose"
+  | "snapshot" | "text" | "evaluate" | "observe" | "screenshot" | "state"
+  | "click" | "tap" | "fill" | "type" | "press" | "keydown" | "keyup" | "select" | "hover" | "scroll" | "wait"
+  | "capture" | "verify" | "walkthrough" | "captcha" | "lookAtApp"
+  | "keep" | "closeKept"
+>;
+
 export class BrowserService {
   readonly viewport: Viewport;
   readonly stepTimeoutMs: number;
