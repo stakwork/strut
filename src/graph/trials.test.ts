@@ -166,8 +166,10 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     }
     assert.ok(view.fromGit, "its text comes from git");
     // A second boot adds nothing: the same sentence, the same cases.
-    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: check.text, cases: check.cases }] }], SEED_SPEAKER);
-    assert.equal(of(await trials.checks(ORCHESTRATOR_PAGE), check.id).cases.length, 1);
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [check, quiet].map((c) => ({ text: c.text, cases: c.cases })) }], SEED_SPEAKER);
+    const again = (await trials.checks(ORCHESTRATOR_PAGE))!;
+    assert.deepEqual(again.checks.map((c) => c.id).sort(), [check.id, quiet.id].sort());
+    assert.equal(of(again, check.id).cases.length, 1);
 
     // One more case, a person's: the turn it gets would start a job.
     const cases = [...check.cases, { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "START A JOB for the thing" } }];
@@ -203,6 +205,25 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     // A run that was no trial is not opened this way.
     const plain = await strut.run(ORCHESTRATOR_WORKFLOW, { prompt: "What time is it?" });
     assert.equal(await trials.sample({ workflow: ORCHESTRATOR_WORKFLOW, run: plain.runId }), null);
+  });
+
+  it("a sentence the page's file no longer carries is retired at boot; a person's check stays", async () => {
+    const strut = await boot();
+    const trials = trialsOf(strut);
+    const view = (await trials.checks(ORCHESTRATOR_PAGE))!;
+    const [kept, dropped] = [view.checks.find((c) => /^Asked whether/.test(c.text))!, view.checks.find((c) => /^It never tells/.test(c.text))!];
+    const mine = ok(await trials.addCheck({ concept: ORCHESTRATOR_PAGE, text: "It is brief.", by: "ada" }));
+    // The file now carries one sentence: the seeder's other claim is retired, the person's is not touched.
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: kept.text, cases: kept.cases }] }], SEED_SPEAKER);
+    assert.deepEqual((await trials.checks(ORCHESTRATOR_PAGE))!.checks.map((c) => c.id).sort(), [kept.id, mine.id].sort());
+    // A file with no block left retires every claim the seeder wrote on the page.
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [] }], SEED_SPEAKER);
+    assert.deepEqual((await trials.checks(ORCHESTRATOR_PAGE))!.checks.map((c) => c.id), [mine.id]);
+    // The sentence back in the file is a claim again (a new one).
+    await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [{ text: dropped.text, cases: dropped.cases }] }], SEED_SPEAKER);
+    const back = (await trials.checks(ORCHESTRATOR_PAGE))!.checks.find((c) => c.text === dropped.text);
+    assert.ok(back && back.id !== dropped.id);
+    assert.deepEqual(back.cases, dropped.cases);
   });
 
   it("a change is tested against the page as it is and kept; a page from git is not changed here", async () => {
