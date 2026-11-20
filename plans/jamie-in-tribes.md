@@ -548,6 +548,30 @@ And:
 
   The linker of each tribe is the place's `account`. The daemon acts on
   no DM: every DM is Support's, as now.
+
+  **Built differently (stakwork/sphinx#440):**
+  - `PUT /hosts/me` is tried again each minute until strut answers.
+  - The nudge is answered `200` at once, and the reconcile follows. A
+    nudge during a reconcile runs one more after it.
+  - "A link it can't join" is any of:
+    - a link to another tribe than the place's key;
+    - a tribe record its server can't give (sphinx-chat's own refusal);
+    - three failed joins in a row;
+    - a request the tribe's owner turned down after the daemon asked for
+      that place.
+
+    A join over today's budget is not a failure: it is tried again the
+    next day, and the linker is told.
+  - "A tribe it joined for a place" includes one it was already in when the
+    place appeared: it follows that place, and leaves when it goes.
+  - What the daemon keeps is strut's list as last read, and the tribes it
+    follows places in (`strut.json`).
+  - A place carries the linker's key, never their name. So the linker's
+    name comes from the account's contacts. A linker who isn't a contact
+    is "the person who linked this tribe" in lines and in a turn's
+    `context.line`.
+  - The budget's DM goes to a linker who is a contact. Otherwise it is
+    logged: a DM never pays to meet someone (`POST /dm`'s rule).
 - **A daily budget for tribes** (ruling 6), `DAEMON_TRIBE_SATS_PER_DAY`
   (default 1,000): the most the account spends in all tribes together in a
   UTC day, counting join prices and every part of every post. A tribe's
@@ -645,7 +669,7 @@ Each is its own PR against its repo's default branch, never stacked.
 | 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link`. The DM link is replaced by Peel's (`people-and-hosts.md` item 6) |
 | 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | **Built (stakwork/sphinx#439)**: `DAEMON_TRIBE_ALIAS` and `DAEMON_TRIBE_PHOTO` (a link); the mention follows the tribe name (§7) |
-| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`). Differences in §2, §6, §6.1, §7. **Open:** its tribe linking is the DM (§4, "Replaced"); before it merges, the DM handling goes and the daemon follows its places (§7) |
+| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`, which stands in for item 6's `PUT /hosts/me`, `GET` and `DELETE /hosts/places` and the nudge too). It follows its places (§7). Its DM linking is gone. Differences in §2, §6, §6.1, §7 |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4, 6 released; 7 for the tap | — |
 | 6 | strut | **Linked places** (§5.4): the `places` and `hosts` tables in `people.db`; `GET`, `POST` and `DELETE /people/places` for a person token; `PUT /hosts/me`, `GET /hosts/places` and `DELETE /hosts/places/:key` for a host key; the nudge; a place going with its linker's account; `GET /hosts/links/:key` removed (nothing calls it). `specs/API.md` §13.4 and §13.6, `docs/security.md`, a host-door test | 1 | — |
 | 7 | peel, peel-android | **The Jamie row for a box** (§4): beside Hive's orgs, each linked box whose strut has a Sphinx host ready; on: `POST /people/places`, then approve the member request by the answered `account`; off: `DELETE` | 6 | — |
