@@ -277,7 +277,7 @@ const text = (v: unknown): string | undefined => (typeof v === "string" && v.tri
 const CLAIMS_AT_ONCE = 8;
 
 /** A claim as a tender (and a keeper) reads it. */
-function claimOf(c: ClaimListing): KnowledgeClaim {
+export function claimOf(c: ClaimListing): KnowledgeClaim {
   const l = c.latest;
   return {
     id: c.id,

@@ -181,7 +181,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       store: new MemoryRunStore(),
       dataDir: dir,
       serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false,
-      job: false, builder: false, orchestrator: {}, concepts: { personal: true },
+      job: false, builder: false, orchestrator: {}, concepts: { personal: true, claims: false },
       ...(readers ? { graphReaders: readers } : {}),
     });
     await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
@@ -210,8 +210,8 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     }
     throw new Error(`${workflow} never finished`);
   }
-  const say = async (text: string) => {
-    const run = await runOf(ORCHESTRATOR_WORKFLOW, { input: { prompt: text, session: "c-1" } });
+  const say = async (text: string, session = "c-1") => {
+    const run = await runOf(ORCHESTRATOR_WORKFLOW, { input: { prompt: text, session } });
     assert.equal(run["status"], "success", JSON.stringify(run).slice(0, 800));
     return run;
   };
@@ -311,10 +311,17 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.deepEqual(await knowledge.opened("dream", quiet["runId"]), []);
     assert.deepEqual((await verified("dream", run["runId"]))["checks"], []);
 
-    // The next turn opens the new page, and the judge is handed that run.
+    // The conversation the correction was made in keeps its first turn's prompt, which holds the page as it
+    // was: its next turn never read the new wording, so it is not judged against it (verify.ts `keptSystem`).
     verdict = true;
     calls = [];
-    const next = await say("summarise Tuesday's notes");
+    const same = await say("and Monday's again");
+    assert.equal(same["output"]["session"]["keptSystem"], true);
+    assert.deepEqual((await verified(ORCHESTRATOR_WORKFLOW, same["runId"]))["checks"], []);
+    assert.equal(judged.length, 0);
+
+    // A new conversation's first turn reads the new page, and the judge is handed that run.
+    const next = await say("summarise Tuesday's notes", "c-2");
     const pass = await verified(ORCHESTRATOR_WORKFLOW, next["runId"]);
     assert.deepEqual(pass["checks"].map((k: any) => [k.path, k.lastVerify]), [["concept:Personal", { ran: true }]]);
     assert.equal(judged.length, 1);
@@ -326,7 +333,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     assert.match(claim!["latest"].checkVersion, new RegExp(`^${CONCEPT_CHECK_WORKFLOW}@`));
 
     // Judged once per version of the page: the turn after it runs no judge.
-    const again = await say("and Wednesday's");
+    const again = await say("and Wednesday's", "c-2");
     assert.deepEqual((await verified(ORCHESTRATOR_WORKFLOW, again["runId"]))["checks"].map((k: any) => k.lastVerify), [{ skipped: "policy" }]);
     assert.equal(judged.length, 1);
   });
@@ -401,7 +408,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
         store: new MemoryRunStore(),
         dataDir: dir,
         serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false,
-        job: false, builder: false, orchestrator: {}, concepts: { personal: true },
+        job: false, builder: false, orchestrator: {}, concepts: { personal: true, claims: false },
         ...(readers ? { graphReaders: readers } : {}),
       });
       await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
@@ -536,7 +543,7 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
 
     // What a person said is evidence only about a run that opened the claim's page.
     const turn = await say("write to Sam");
-    assert.deepEqual(await knowledge.opened(ORCHESTRATOR_WORKFLOW, turn["runId"]), ["Job", "Workflow Builder", "Personal"], "the three roots an orchestrator turn reads");
+    assert.deepEqual(await knowledge.opened(ORCHESTRATOR_WORKFLOW, turn["runId"]), ["Orchestrator", "Job", "Workflow Builder", "Personal"], "its own rules, and the three roots an orchestrator turn reads");
     assert.equal(await knowledge.opened(ORCHESTRATOR_WORKFLOW, "1"), null, "no such run: its log does not say");
     const unread = await knowledge.addEvidence({ claim: (made as { id: string }).id, workflow: ORCHESTRATOR_WORKFLOW, runId: turn["runId"], supports: false, said: "no greeting, I said" });
     assert.match((unread as { error: string }).error, /did not execute a subject of this claim[^]*only about a run that OPENED "Communication Style"/);

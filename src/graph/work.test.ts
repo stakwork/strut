@@ -162,7 +162,8 @@ for (const tb of testBackends()) describe(`a claim on a Concept judged against t
       registry,
       dataDir: dir,
       serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false, wakeDelayMs: 0,
-      job: false, builder: false, orchestrator: {},
+      // The pages strut ships, without the claims their files carry: this suite counts its own judge's runs.
+      job: false, builder: false, orchestrator: {}, concepts: { claims: false },
     });
     struts.push(strut);
     waker = strut.parking.register("ans", source);
@@ -262,7 +263,7 @@ for (const tb of testBackends()) describe(`a claim on a Concept judged against t
       assert.match(sent, /RUN 2: job, a job RUN 1 started/);
       assert.match(sent, /RUN 3: orchestrator, a turn reporting on RUN 2/);
       assert.match(sent, /PLAN THIS: the launch/);
-      assert.match(sent, /CONCEPT PAGES OPENED IN THE WORK: Job, Workflow Builder, Planning/);
+      assert.match(sent, /CONCEPT PAGES OPENED IN THE WORK: Orchestrator, Job, Workflow Builder, Planning/);
       assert.match(sent, /it delivered: \\+"The plan\\+" at job-[A-Za-z0-9._-]+\/plan\.md/);
     }
     // It opened the plan through its one tool, and judged by what it read.

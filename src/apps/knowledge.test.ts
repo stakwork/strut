@@ -26,6 +26,9 @@ import {
   byStatus, changesByConcept, claimsUnavailable, conceptOfChange, evidenceLine, waitingAcross, waitingWords, DREAM, type PageClaim, type PendingChange,
 } from "./knowledge/src/lib/learning.js";
 import { cycleSpan, cycleWords, cyclesFor, cyclesUnavailable, runsOf, CYCLES_STEP, type DreamCycle } from "./knowledge/src/lib/cycles.js";
+import {
+  DOTS_MAX, allSamples, capped, caseFor, caseLabel, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor, type Sample,
+} from "./knowledge/src/lib/checks.js";
 import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
 
@@ -224,6 +227,66 @@ describe("strut/knowledge: claims and the changes waiting on a person", () => {
   });
 });
 
+describe("strut/knowledge: a Concept's checks and the tests of its page", () => {
+  const s = (supports: boolean, run = "1"): Sample => ({ run, supports });
+  const pass = (n: number) => Array.from({ length: n }, (_, i) => s(true, `p${i}`));
+  const fail = (n: number) => Array.from({ length: n }, (_, i) => s(false, `f${i}`));
+
+  it("a row draws its newest ten dots and counts the earlier ones; a tally in words", () => {
+    assert.equal(DOTS_MAX, 10);
+    assert.deepEqual(capped(pass(4)), { more: 0, shown: pass(4) });
+    const many = [...fail(6), ...pass(10)];
+    assert.deepEqual(capped(many), { more: 6, shown: pass(10) }, "the earlier six are a count");
+    assert.deepEqual(tally(many), { passed: 10, judged: 16 });
+    assert.equal(tallyWords(many), "10 of 16 passed");
+    assert.equal(tallyWords([]), "Not run yet");
+  });
+
+  it("which wording did better is the share that passed on each; none while a side has no verdict", () => {
+    assert.equal(outcomeOf(pass(16), fail(16)), "page");
+    assert.equal(outcomeOf([...pass(14), ...fail(2)], pass(16)), "change");
+    assert.equal(outcomeOf(pass(4), pass(8)), "same", "a share, not a count");
+    assert.equal(outcomeOf(pass(4), []), "none");
+    assert.equal(outcomeOf([], fail(4)), "none");
+    assert.equal(allSamples({ samples: { a: pass(2), b: fail(1) } }).length, 3, "every check's verdicts on a wording");
+  });
+
+  it("a case in a line, and a message as a new case shaped like the check's own", () => {
+    const ask = { workflow: "orchestrator", input: { prompt: "Can you use bash?" } };
+    assert.equal(caseLabel(ask), "Can you use bash?");
+    assert.equal(caseLabel({ input: { a: 1, b: "x" } }), '{"a":1,"b":"x"}');
+    assert.equal(workflowFor({ cases: [ask] }), "orchestrator");
+    assert.equal(workflowFor({ cases: [] }, [{ cases: [] }, { cases: [ask] }]), "orchestrator", "another check's on the page");
+    assert.equal(workflowFor({ cases: [] }), undefined);
+    assert.deepEqual(caseFor({ cases: [ask] }, "  Can you read a PDF? ", "orchestrator"), { workflow: "orchestrator", input: { prompt: "Can you read a PDF?" } });
+    assert.deepEqual(caseFor({ cases: [{ workflow: "ask", input: { question: "q" } }] }, "Why?", "ask"), { workflow: "ask", input: { question: "Why?" } }, "the field the check's cases use");
+    assert.deepEqual(caseFor({ cases: [] }, "Hi", "greeter"), { workflow: "greeter", input: { prompt: "Hi" } });
+    assert.equal(caseFor({ cases: [] }, "Hi", undefined), null);
+    assert.equal(caseFor({ cases: [ask] }, " ", "orchestrator"), null);
+  });
+
+  it("who wrote a check; a sample's message and reply; what is running; the samples asked for", () => {
+    assert.deepEqual(["strut", "ai", "person", undefined, "evan"].map(speakerLabel), ["Seeded", "Learned", "Added here", "Added here", "By evan"]);
+    assert.equal(messageOf({ prompt: "Can you use bash?" }), "Can you use bash?");
+    assert.equal(messageOf({ prompt: "x", session: "s" }), '{"prompt":"x","session":"s"}');
+    assert.equal(replyOf({ output: { text: "Yes.", artifacts: [] } }), "Yes.");
+    assert.equal(replyOf({ output: "plain" }), "plain");
+    assert.equal(replyOf({ error: "boom" }), "The run failed: boom");
+    // The job a trial's reply would have started (the orchestrator's `held`), drawn under the reply.
+    assert.equal(heldOf({ output: { text: "Yes." } }), null);
+    assert.equal(heldOf({ output: { text: "On it.", held: { title: "x" } } }), null, "no brief, no job");
+    assert.equal(heldOf({ error: "boom" }), null);
+    assert.deepEqual(heldOf({ output: { text: "On it.", held: { brief: "Do the thing.", title: "The thing", kind: "Research", repos: ["https://github.com/a/b"], peer: "" } } }), {
+      title: "The thing",
+      brief: "Do the thing.",
+      rest: ["kind: Research", "repos: https://github.com/a/b"],
+    });
+    assert.equal(runningWords([]), null);
+    assert.equal(runningWords([{ total: 8, done: 3 }, { total: 8, done: 2 }]), "Running: 5 of 16 judged");
+    assert.deepEqual(["4", "20", "0", "21", "2.5", "x", ""].map(samplesOf), [4, 20, null, null, null, null, null]);
+  });
+});
+
 describe("strut/knowledge: what the dream learned, cycle by cycle", () => {
   const lesson = (concept: string, change?: string) => ({ session: "c-1", turn: 1, said: "too long", concept, claim: "Summaries are short", ...(change ? { change } : {}) });
   const cycle = (run: string, over: Partial<DreamCycle> = {}): DreamCycle => ({
@@ -295,8 +358,11 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.deepEqual(app.manifest.grants.workflows, []);
     assert.deepEqual(app.manifest.grants.steps, [
       "graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search", "history/read",
-      // The learning loop: a Concept's claims, what the dream learned (an admin's), and its changes a person decides here.
-      "knowledge/page", "knowledge/claims", "knowledge/cycles", "proposal/list", "proposal/get", "proposal/decide",
+      // The learning loop: the Concepts that carry claims; a Concept's checks and the tests of its page, which an
+      // admin runs, adds to and uses; what the dream learned (an admin's), and its changes a person decides here.
+      "knowledge/claims",
+      "knowledge/checks", "knowledge/add-check", "knowledge/cases", "knowledge/trial", "knowledge/test", "knowledge/use", "knowledge/sample",
+      "knowledge/cycles", "proposal/list", "proposal/get", "proposal/decide",
     ]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
@@ -501,8 +567,21 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     assert.deepEqual((await ada("proposal/list", { workflow: DREAM, status: "pending" })).result.proposals, []);
 
     // No claims layer on this server: the card says so in one line.
-    const claims = await ada("knowledge/page", { name: "Apps" });
+    const claims = await ada("knowledge/checks", { concept: "Apps" });
     assert.equal(claimsUnavailable(claims.error!), "This server keeps no claims.");
+    // Running a check, testing a change and using a wording are an admin's page's alone: a member's is refused
+    // before anything is read, an admin's gets as far as the claims layer this server lacks.
+    for (const [step, config] of [
+      ["knowledge/add-check", { concept: "Apps", text: "x" }],
+      ["knowledge/cases", { claim: "c1", cases: [] }],
+      ["knowledge/trial", { claim: "c1", n: 1 }],
+      ["knowledge/test", { concept: "Apps", docs: "x", n: 1 }],
+      ["knowledge/use", { test: "t1" }],
+      ["knowledge/sample", { workflow: "orchestrator", run: "1" }],
+    ] as const) {
+      assert.match((await mo(step, config)).error!, /is an admin's/, step);
+      assert.match((await ada(step, config)).error!, /claims layer/, step);
+    }
 
     // What the dream learned: granted, and an admin's alone (its lessons quote what people said); a member's page
     // is refused before anything is read, and sees no button. With no claims layer there is no dream to read.

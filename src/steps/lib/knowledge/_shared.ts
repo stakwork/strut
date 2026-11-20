@@ -1,4 +1,6 @@
-import { workflowOf, type StepContext } from "../../../core.js";
+import { isFirstParty, workflowOf, type StepContext } from "../../../core.js";
+import { RUN_STEP_FLOW } from "../../../run-step.js";
+import type { TrialsCapability } from "../../../trials.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 import type { Proposal } from "../../../proposals.js";
 import { boundsOf, graphFor, readsNamespace } from "../../../graph/scope.js";
@@ -33,6 +35,29 @@ export function requireTree(ctx: StepContext | undefined, step: string): void {
     if (bounds && !readsNamespace(bounds.list, view.namespace, view.namespace)) {
       throw new Error(`${step}: this caller may not read "${view.namespace}", where the Concept tree is kept${ctx?.app ? " (an app's page reads only what an app may)" : ""}`);
     }
+  }
+}
+
+/** The trials and tests of the pages (src/trials.ts), for a caller that may read the tree. */
+export function requireTrials(ctx: StepContext | undefined, step: string): TrialsCapability {
+  const services = ctx?.services as { trials?: TrialsCapability } | undefined;
+  if (!services?.trials) throw new Error(`${step} needs the claims layer (ctx.services.trials): a graph-backed workspace with claims on`);
+  requireTree(ctx, step);
+  return services.trials;
+}
+
+/**
+ * Refused unless the call is strut's own page's, shown to an ADMIN of this
+ * server, made by the page itself (as `knowledge/cycles` and
+ * `proposal/decide` ask): what runs a page's checks, tests a change to it
+ * and puts a wording on it. Never a workflow, an agent's tool, a member's
+ * page or a model-written one: a trial spends, and a page's words are an
+ * agent's rules.
+ */
+export function requireAdminPage(ctx: StepContext | undefined, step: string): void {
+  const app = ctx?.app;
+  if (!app || !isFirstParty(app) || app.admin !== true || workflowOf(ctx!) !== RUN_STEP_FLOW) {
+    throw new Error(`${step} is an admin's: only strut's own page, shown to an admin of this server, runs a page's checks or changes what it is held to`);
   }
 }
 

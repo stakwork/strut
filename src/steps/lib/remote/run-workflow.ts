@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { coerceJsonArg, defineStep, type RunEvent, type StepContext } from "../../../core.js";
+import { coerceJsonArg, defineStep, TRIAL_HELD, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { RemoteError, type RemoteRunHandle } from "../../../remote.js";
 import { launchKeyOf, remoteOf, SPENDS_HELD_CREDIT, withCharge } from "./_shared.js";
@@ -71,6 +71,8 @@ export default defineStep({
     existing: z.boolean().optional(),
   }),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    // A trial buys nothing from another strut (src/trials.ts).
+    if (ctx.trial) throw new Error(`${TRIAL_HELD} — the workflow at ${cfg.url} was not run`);
     const remote = remoteOf(ctx, "remote/run-workflow");
     const seller = remote.seller(cfg.url);
     const key = cfg.key ?? launchKeyOf(ctx);

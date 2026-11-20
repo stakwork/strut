@@ -8,8 +8,9 @@ import { conceptPagePath, useStrutClient, type StrutClient } from "@strut/kit";
 import { getEdges, getNeighbors, readLog, type GraphHit } from "strut/views";
 import { buildTree, conceptOf, TREE_TYPE, type Concept, type ConceptTree } from "./tree";
 import { groupLinks, isSystemType, orderTypes, typeDescription, type OntologyType } from "./ontology";
-import { DREAM, type ClaimedConcept, type PageClaim, type PendingChange } from "./learning";
+import { DREAM, type ClaimedConcept, type PendingChange } from "./learning";
 import { CYCLES_STEP, cycleSpan, runsOf, type DreamCycle } from "./cycles";
+import type { ChecksView } from "./checks";
 
 export const FIND = "graph/find";
 /** A page of Concepts: docs run to ~6k chars, so 200 stays far under step_run's 5 MB. */
@@ -138,18 +139,23 @@ export function useLinks(refId: string | null) {
   });
 }
 
-/** A Concept as its keeper reads it (`knowledge/page`): its claims, with what the evidence says. Null when there is
- *  no Concept of that name. Refused where the page may not read the tree's namespace: the error says so at once. */
-export function usePage(name: string | undefined) {
+/** How often the checks are read again while samples are being judged. */
+const CHECKS_LIVE_MS = 1_500;
+
+/** A Concept's checks, their verdicts and the tests of its page (`knowledge/checks`), read again while any sample
+ *  is still being judged. Null when there is no Concept of that name. Refused where the page may not read the
+ *  tree's namespace, or with no claims layer: the error says so at once. */
+export function useChecks(name: string | undefined) {
   const client = useStrutClient();
   return useQuery({
-    queryKey: ["knowledge", "page", name],
+    queryKey: ["knowledge", "checks", name],
     enabled: !!name,
-    staleTime: 30_000,
+    staleTime: 10_000,
     retry: false,
+    refetchInterval: (q) => ((q.state.data as ChecksView | null | undefined)?.running.length ? CHECKS_LIVE_MS : false),
     queryFn: async () => {
-      const r = await client.run("knowledge/page", { name });
-      return typeof r === "string" ? null : (r as { ref_id: string; name: string; claims: PageClaim[] });
+      const r = await client.run("knowledge/checks", { concept: name });
+      return typeof r === "string" ? null : (r as ChecksView);
     },
   });
 }

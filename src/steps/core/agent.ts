@@ -2220,7 +2220,11 @@ export default defineStep({
               ...(from !== undefined ? { replayFrom: from } : {}),
             },
           });
-          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
+          // `keptSystem`: the thread ran on its first turn's prompt and this
+          // step was handed another. What a step rendered into THIS turn's
+          // `system` the model never read, so the run does not observe those
+          // pages (`subjectsOfRun`, src/verify.ts).
+          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset, ...(session.system != null && session.system !== cfg.system ? { keptSystem: true as const } : {}) } };
           if (toTell.length) await proposalsOf(ctx?.services)?.markReported(toTell.map((p) => p.id)).catch(() => {});
         }
         const spent = { modelCalls: out["steps"] as number, usage: out["usage"] as TokenUsage, cost: out["cost"] as number };

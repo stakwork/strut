@@ -47,6 +47,7 @@ import type { TaskTypesCapability } from "./tasks/set-type.js";
 import type { PublicViewCapability } from "./public-view.js";
 import type { RemoteCapability } from "./remote.js";
 import type { KnowledgeCapability } from "./knowledge.js";
+import type { TrialsCapability } from "./trials.js";
 import type { BranchesCapability } from "./branches.js";
 import type { ConceptSources } from "./concept-sources.js";
 
@@ -426,6 +427,11 @@ export interface StrutCapabilities {
    *  evidence. Set by the standard server wherever the claims layer is on;
    *  the `knowledge/*` steps are thin over it. */
   knowledge?: KnowledgeCapability;
+  /** Trials and tests (src/trials.ts, plans/claim-trials.md): a claim's
+   *  cases run as trials, two wordings of a page run against the same
+   *  checks, and what the Knowledge app's checks are read from. Set by the
+   *  standard server wherever the claims layer is on. */
+  trials?: TrialsCapability;
   /** The Concept branches (src/branches.ts): set by the standard server on a
    *  graph workspace. `knowledge/merge` merges one into main. */
   branches?: BranchesCapability;

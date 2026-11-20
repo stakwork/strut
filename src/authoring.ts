@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
+import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type RunTrial, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
@@ -478,6 +478,8 @@ export interface RunStepArgs {
   /** The calling run's Concept branch (`ctx.branch`, src/branches.ts): the
    *  step runs on it. */
   branch?: string;
+  /** The calling run is a trial (`ctx.trial`, src/trials.ts): so is the step's run. */
+  trial?: RunTrial;
 }
 
 /**
@@ -825,6 +827,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           workspace,
           keep: args.keep === true,
           ...(args.branch ? { branch: args.branch } : {}),
+          ...(args.trial ? { trial: args.trial } : {}),
           ...(deps.reach ? { aiAuthored: true } : {}),
           ...(args.cassette
             ? {
@@ -988,6 +991,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
           // The parent's Concept branch, or the one it named from main (trackRun).
           ...((tracked?.controller?.branch ?? opts?.branch) ? { branch: (tracked?.controller?.branch ?? opts?.branch)! } : {}),
+          // A trial's child is a trial (src/trials.ts): the parent's, from trackRun.
+          ...(tracked?.controller?.trial ? { trial: tracked.controller.trial } : {}),
         });
         // The graph nodes the child run touched, off its log — what its
         // steps and agents' tool calls reported (`step.end.nodes`), so the

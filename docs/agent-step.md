@@ -38,7 +38,10 @@ index. A change in this area updates this file, not AGENTS.md.
   run log records the TURN (`step.end.messages` = the system prompt + this
   turn), so logs grow linearly; `GET …/transcripts/<path>?full=1` stitches
   the thread to that turn from the store. The step's output gains
-  `session: { id, turn, offset }`.
+  `session: { id, turn, offset }`, with `keptSystem: true` when the step
+  was handed another system prompt than the thread's first and ran on the
+  first: a verify pass then leaves out the Concept pages `context/concept`
+  rendered into the unused one (docs/knowledge.md "Trials and tests").
   **History is append-only**, the chat's rule: the system prompt is frozen
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
