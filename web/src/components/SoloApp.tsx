@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import { nativeWalletOf } from "@strut/kit/wallet";
 import * as api from "../api";
 import { appToolInput, namesApp, publicAppHop } from "../app-links";
 import { replaceUrl, reportReady } from "../embed";
@@ -39,8 +40,9 @@ import { words } from "../words";
 // opens that app here, in place (`publicAppHop`): the same page, `solo` and
 // `public` kept, the address the browser's — or Peel's web view's — history
 // goes Back through, and `&back=<the app it came from>`, for which this page
-// draws a Back bar over the app. A worker's dashboard (strut/worker) lists
-// every app's task types and opens a type of another app this way.
+// draws a Back bar over the app — except in Peel's web view, whose own bar
+// has Back. A worker's dashboard (strut/worker) lists every app's task
+// types and opens a type of another app this way.
 //
 // `&theme=light` (or `dark`): the theme the app is handed, for a host whose
 // own page is light; strut's UI is dark, the default. The page around it
@@ -59,8 +61,14 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     ? visitorApp ? { name: visitorApp.name, version: visitorApp.version, title: visitorApp.title, ...(from ? { from } : {}) } : null
     : listed.app;
   const [input, setInput] = useState(props.input ?? null);
-  /** The app this page was opened from (`&back=`), on a visitor's page: Back returns there. */
-  const [back] = useState(() => (visitor && !from ? new URLSearchParams(location.search).get("back") : null));
+  /** The app this page was opened from (`&back=`), on a visitor's page: Back returns there.
+   *  None in a native host's web view (Peel's, which has the native wallet
+   *  from the document's start) with somewhere to go back to: Peel draws
+   *  its own Back whenever its web view can go back, and a second one
+   *  under it says the same thing twice. */
+  const [back] = useState(() =>
+    visitor && !from && !(nativeWalletOf(window) && history.length > 1) ? new URLSearchParams(location.search).get("back") : null,
+  );
   /** A link to this same app (the kit's `appLink`): its input, in place,
    *  with the address bar following (replaced, as the full UI does) — so a
    *  host that reads it has the link to what is on screen. A file or
