@@ -63,6 +63,8 @@ export function invitedAppUrl(base: string, code: string, o: { createdAt?: strin
  *  work it is for, none for open work alone. */
 export interface InviteNote {
   type?: string;
+  /** The admin who made it (an actor); invites made before this have none. */
+  by?: string;
 }
 
 /** The invites' notes, by code. */
@@ -156,6 +158,10 @@ export interface InviteView {
   createdAt?: string;
   /** The kind of work it opens (and gives, when invite-only); none: open work. */
   type?: string;
+  /** When its link stops working: createdAt + INVITE_TOKEN_DAYS. */
+  expiresAt?: string;
+  /** Who made it (an actor), when known. */
+  by?: string;
 }
 
 export interface InvitesList {
@@ -182,7 +188,7 @@ export interface InvitesDeps {
 
 export interface Invites {
   /** A new invite, its link opening Tasks on `type` when given. */
-  create(o: { sats?: number; type?: string; base: string }): Promise<InviteView>;
+  create(o: { sats?: number; type?: string; base: string; by?: string }): Promise<InviteView>;
   /** Every invite the daemon keeps, newest first. */
   list(o: { base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
@@ -230,6 +236,8 @@ export function createInvites(deps: InvitesDeps): Invites {
       status: inv.status,
       ...(inv.createdAt ? { createdAt: inv.createdAt } : {}),
       ...(note?.type ? { type: note.type } : {}),
+      ...(Number.isFinite(Date.parse(inv.createdAt ?? "")) ? { expiresAt: new Date(Date.parse(inv.createdAt as string) + INVITE_TOKEN_DAYS * 86_400_000).toISOString() } : {}),
+      ...(note?.by ? { by: note.by } : {}),
     };
   };
   const tasksOnline = async () => (await deps.publicApps()).includes(WORKER_APP);
@@ -256,7 +264,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       // Before anything is paid: the wallet that can.
       const payer = await payerOf();
       const inv = await payer.invite({ sats }).catch(fromWallet);
-      const note: InviteNote = o.type ? { type: o.type } : {};
+      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}) };
       await notes.set(inv.code, note);
       return view(inv, o.base, true, note);
     },

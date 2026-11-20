@@ -1,6 +1,6 @@
 // Workers (plans/human-steps.md §9.5): the workers, `new` first: the people
-// who signed in and wait, then the rest; below them, the invites (§5.8,
-// ./Invite). Several new ones may be granted a type at
+// who signed in and wait, then the rest; above them the Invite a worker box (§5.8, ./Share), whose
+// body is the invites made, with who took each (a worker's grant `by` it). Several new ones may be granted a type at
 // once (one door call each; the page says which failed); an open type's
 // worker took it up themselves (ruling 9), and their grant says so. A worker shows
 // their status with its acts, their note, their grants (revoked ones with
@@ -23,7 +23,6 @@ import {
 } from "../lib/view";
 import type { TaskType, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
-import { Invites } from "./Invite";
 import { BringWorkersIn } from "./Share";
 
 interface Props {
@@ -43,9 +42,8 @@ export function Workers(props: Props) {
   if (props.place.worker) return <WorkerDetail {...props} actor={props.place.worker} />;
   return (
     <>
-      {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} />}
+      {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} workers={props.workers} history />}
       <WorkerList {...props} workers={props.workers} />
-      <Invites types={props.types} />
     </>
   );
 }

@@ -309,7 +309,8 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       if (extra.length) throw new TaskError("bad_request", `an invite takes sats and type; not ${extra.join(", ")}`);
       if (b["sats"] !== undefined && typeof b["sats"] !== "number") throw new TaskError("bad_request", "sats is a whole number of sats");
       if (b["type"] !== undefined && (typeof b["type"] !== "string" || !b["type"])) throw new TaskError("bad_request", "type is a task type's name");
-      return { ...(await i.create({ base, ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
+      const maker = (await by(c)).by;
+      return { ...(await i.create({ base, ...(maker ? { by: maker } : {}), ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
     }),
   );
 

@@ -22,7 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
 import {
   anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, queueWarnings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
-  INVITE_WORDS, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
+  INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -357,7 +357,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
   });
 
   it("Invite (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
-    assert.deepEqual(inviteSatsOf(""), {}, "blank is the settings' default");
+    assert.deepEqual(inviteSatsOf(" "), { problem: "Enter the sats they start with." }, "blank is a problem: the box starts filled");
     assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
     assert.deepEqual((["sending", "ready", "failed", "used", "cancelled"] as const).filter((status) => inviteOpen({ status })), ["sending", "ready"]);
@@ -374,6 +374,28 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     const wa = new URL(whatsappUrl(link));
     assert.equal(wa.origin, "https://wa.me");
     assert.ok(wa.searchParams.get("text")!.endsWith(link), "the link whole, # and all");
+  });
+
+  it("Invite history: newest first, who took it, link expiry, badges", () => {
+    const inv = (code: string, createdAt?: string) => ({ code, ...(createdAt ? { createdAt } : {}) });
+    assert.deepEqual(
+      sortInvites([inv("none"), inv("old", "2026-01-01T00:00:00Z"), inv("new", "2026-03-01T00:00:00Z"), inv("none2")]).map((i) => i.code),
+      ["new", "old", "none", "none2"],
+    );
+    const workers = [
+      { actor: "secp:aaaaaaaaaaaaaaaa", name: "Ada", grants: [{ type: "t", at: 5, by: "invite:c1" }] },
+      { actor: "secp:bbbbbbbbbbbbbbbb", grants: [{ type: "t", at: 9, by: "invite:c2" }] },
+    ];
+    assert.deepEqual(acceptedBy({ code: "c1" }, workers), { who: "Ada", at: 5 });
+    assert.equal(acceptedBy({ code: "c2" }, workers)!.who, "secp:bbbb…bbb");
+    assert.equal(acceptedBy({ code: "c3" }, workers), null);
+    assert.equal(acceptedBy({ code: "c1" }, undefined), null);
+    assert.equal(inviteExpiry({ createdAt: "2026-01-01T00:00:00Z" }), Date.parse("2026-04-01T00:00:00Z"));
+    assert.equal(inviteExpiry({ createdAt: "2026-01-01T00:00:00Z", expiresAt: "2026-02-01T00:00:00Z" }), Date.parse("2026-02-01T00:00:00Z"));
+    assert.equal(inviteExpiry({}), null);
+    assert.equal(inviteBadge("ready").label, "Ready · unused");
+    assert.match(inviteBadge("used").className, /green/);
+    assert.match(inviteBadge("failed").className, /destructive/);
   });
 
   it("the Queue's line on what workers are owed beside the wallet; none for a strut that never paid one", () => {
