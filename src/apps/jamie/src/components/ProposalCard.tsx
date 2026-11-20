@@ -4,7 +4,8 @@
 // (`proposal/decide`): accept runs it, reject records why. Read live
 // (`proposal/get`), since a decision made elsewhere moves it too. One only
 // an admin accepts (installing a package) says so to anyone else, in place
-// of an Accept the decision would refuse (lib/proposals.ts).
+// of an Accept the decision would refuse (lib/proposals.ts). In a thread
+// its viewer only reads (an admin reading someone else's), it decides nothing.
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Lightbulb, Loader2, RotateCcw, ShieldCheck, X } from "lucide-react";
@@ -13,8 +14,9 @@ import { Markdown } from "./Markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Tone } from "../lib/jobs";
-import type { Proposal, ProposalBrief, ProposalStatus } from "../lib/types";
+import type { CardField, Proposal, ProposalBrief, ProposalStatus } from "../lib/types";
 import { ADMIN_MUST_APPROVE, acceptLook } from "../lib/proposals";
+import { useReadOnly } from "../viewer";
 import { Notice, Pill, errorText } from "./bits";
 
 const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
@@ -26,6 +28,8 @@ const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
 };
 
 const WAITING_ON_ADMIN: { label: string; tone: Tone } = { label: "Waiting on an admin", tone: "attention" };
+/** Pending, in a thread its viewer only reads: not theirs to decide. */
+const WAITING: { label: string; tone: Tone } = { label: "Waiting", tone: "attention" };
 
 /** `graph/create-node` → "Graph · create node". */
 export const stepLabel = (step: string) => {
@@ -34,9 +38,26 @@ export const stepLabel = (step: string) => {
   return ns ? `${ns[0]!.toUpperCase()}${ns.slice(1)} · ${words}` : words;
 };
 
+/** A card's fields, label beside value; a danger's label in red. */
+function Fields({ fields }: { fields: CardField[] }) {
+  return (
+    <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+      {fields.map((f, i) => (
+        <div key={i} className="contents">
+          <dt className={cn("text-muted-foreground", f.danger && "text-rose-600")}>{f.label}</dt>
+          <dd className="min-w-0 whitespace-pre-wrap break-words">
+            {f.kind === "markdown" ? <Markdown text={f.value} className="text-xs" /> : f.kind === "code" ? <code className="whitespace-pre-wrap font-mono text-[11px]">{f.value}</code> : f.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   const client = useStrutClient();
   const qc = useQueryClient();
+  const readOnly = useReadOnly();
   const key = ["assistant", "proposal", brief.id];
   const live = useQuery({ queryKey: key, queryFn: () => client.run<Proposal>("proposal/get", { id: brief.id }), staleTime: 10_000, refetchInterval: (q) => (q.state.data?.status === "accepted" ? 2_000 : false) });
   const [deciding, setDeciding] = useState<"accept" | "reject" | null>(null);
@@ -44,9 +65,14 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   const p = live.data;
   const status: ProposalStatus = p?.status ?? brief.status;
   const card = p?.card ?? brief.card;
-  const canDecide = status === "pending" || status === "failed";
+  // Replaced by a newer card while it waited (the turn's brief may predate it).
+  const replaced = !!(p?.replacedBy ?? brief.replacedBy);
+  // A setting most people need not read is folded under Details; a danger never is.
+  const shown = card?.fields.filter((f) => !f.detail || f.danger) ?? [];
+  const folded = card?.fields.filter((f) => f.detail && !f.danger) ?? [];
+  const canDecide = !readOnly && (status === "pending" || status === "failed");
   const accept = acceptLook(p?.approver ?? brief.approver, p?.viewer);
-  const look = status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
+  const look = status === "pending" && readOnly ? WAITING : status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
 
   const decide = async (action: "accept" | "reject") => {
     setDeciding(action);
@@ -62,6 +88,7 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
     }
   };
 
+  if (replaced) return null;
   return (
     <div
       className={cn("rounded-lg border bg-card text-card-foreground transition-opacity", (status === "applied" || status === "rejected") && "opacity-70")}
@@ -79,17 +106,14 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
           </div>
           <div className={cn("break-words text-sm font-medium", status === "rejected" && "line-through decoration-1")}>{card?.title ?? p?.title ?? brief.title}</div>
           {(card?.summary ?? brief.summary) && <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{card?.summary ?? brief.summary}</p>}
-          {card?.fields.length ? (
-            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
-              {card.fields.map((f, i) => (
-                <div key={i} className="contents">
-                  <dt className={cn("text-muted-foreground", f.danger && "text-rose-600")}>{f.label}</dt>
-                  <dd className="min-w-0 break-words">
-                    {f.kind === "markdown" ? <Markdown text={f.value} className="text-xs" /> : f.kind === "code" ? <code className="whitespace-pre-wrap font-mono text-[11px]">{f.value}</code> : f.value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+          {shown.length ? <Fields fields={shown} /> : null}
+          {folded.length ? (
+            <details className="text-xs" data-testid="proposal-details">
+              <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">Details</summary>
+              <div className="pt-1">
+                <Fields fields={folded} />
+              </div>
+            </details>
           ) : null}
           {(p?.rationale ?? brief.rationale) && <p className="text-xs italic text-muted-foreground">{p?.rationale ?? brief.rationale}</p>}
           {p?.decision?.reason && status === "rejected" && <p className="text-xs text-muted-foreground">Reason: {p.decision.reason}</p>}

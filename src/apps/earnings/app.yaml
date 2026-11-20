@@ -1,0 +1,25 @@
+title: Earnings
+description: >-
+  What this server earned from what anyone may run here, and its Lightning
+  wallet (plans/paid-runs.md §8–§10): the balance, earned, cost and margin by
+  item and by day, Add sats (an invoice to pay from your own wallet),
+  Withdraw (pay an invoice out), the sends still on their way, and the credit
+  this server bought at other strut servers. Strut ships it and seeds it on
+  every server; it is an admin's: listed to an admin alone, and its steps
+  answer an admin alone.
+icon: wallet
+admin: true
+grants:
+  workflows: []
+  steps:
+    - earnings/read
+    - earnings/wallet
+    - earnings/entries
+    - earnings/deposit
+    - earnings/deposit-read
+    - earnings/read-invoice
+    - earnings/withdraw
+    - earnings/withdrawal-read
+    - earnings/withdrawal-resolve
+    - earnings/remote-credit
+    - earnings/drop-purchase

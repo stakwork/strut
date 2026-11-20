@@ -1,6 +1,7 @@
 import type {
   AppRef,
   Flow,
+  HostRef,
   McpServer,
   RunAttachment,
   Step,
@@ -15,7 +16,7 @@ import type {
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
 import { assertWorkflowEnabled } from "./workspace.js";
-import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy, type WakeMark } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -28,10 +29,12 @@ import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
-import { appSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
+import { appSessionId, hostSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
+import { bindBranch, branchOfServices, type BranchesCapability } from "./branches.js";
 import { outputTooBig } from "./output-cap.js";
 import { guardEscapes } from "./escaped-errors.js";
+import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkingCapability } from "./park.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -109,6 +112,10 @@ export interface RunOptions<TServices = unknown> {
    *  credential's own and the run may open that actor's sessions
    *  (`bindPeer`). Recorded on `run.start`. */
   peerPerson?: boolean;
+  /** With `origin: "host"`: the host that launched it (plans/jamie-in-tribes.md
+   *  §5.1). Its sessions open under `host/<host>/` (`bindHost`). Recorded on
+   *  `run.start`. */
+  host?: string;
   /** The automation firing this run — recorded on `run.start` and on the
    *  summary (see `RunSummary.automation`), handed to every step as
    *  `ctx.automation`. The scheduler's launch is the one site that sets it. */
@@ -132,6 +139,18 @@ export interface RunOptions<TServices = unknown> {
    *  the run is already on the list. */
   job?: string;
   title?: string;
+  /** The Concept BRANCH the run is on (src/branches.ts, ruling 10): a
+   *  launch-level field beside `job`, recorded on `run.start` and the
+   *  summary, handed to every step as `ctx.branch`, read back by a resume.
+   *  Its Concepts are the branch's, the rest of the graph live (`bindBranch`).
+   *  A run launched with a bag already on a branch (a step's `ctx.services`)
+   *  is on that one, and may name no other. It must exist
+   *  (`services.branches`), or the run fails at its start. */
+  branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/core.ts): a launch-level field
+   *  beside `branch`, recorded on `run.start` and the summary, handed to
+   *  every step as `ctx.trial`, read back by a resume. */
+  trial?: RunTrial;
   /** A job run: the TURN that started it (`RunEvent.startedBy`) — recorded
    *  on `run.start` and on the job's record; the job launcher is the one
    *  site that sets it. */
@@ -157,6 +176,10 @@ export interface RunOptions<TServices = unknown> {
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
    *  Nothing a launch body sends can set it. */
   app?: AppRef;
+  /** A HOST's call of an app's tool (plans/people-and-hosts.md §3): handed
+   *  to every step as `ctx.host`. The host's door (`runSingleStep { host }`)
+   *  is the one site that sets it; nothing records it. */
+  hostCall?: HostRef;
   /** The package the run's own steps look a bare name up in first
    *  (src/package-lookup.ts) — the workflow's prefix when not given; a
    *  single-step run for an app passes the app's (`runSingleStep`). */
@@ -187,6 +210,14 @@ export interface RunOptions<TServices = unknown> {
   /** A public run a visitor's app page launched: the visit's hash
    *  (plans/paid-runs.md §10), on `run.start` and the summary. */
   visitor?: string;
+  /** Why this run may not PARK (src/park.ts): `ctx.park` fails the step
+   *  with it instead. A single-step run passes one (`runSingleStep`): it
+   *  has nothing to resume. */
+  noPark?: string;
+  /** With `resume`: the resume is a WAKE (src/park.ts) — recorded on
+   *  `run.resumed` as `woken: true`, which the crash-loop guard does not
+   *  count. */
+  woken?: boolean;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -228,14 +259,20 @@ function causeChain(err: Error): string {
   return parts.join(" <- ");
 }
 
-/** The run's view of the services bag: `secrets` bound to the principal when
- *  the capability supports it (`forPrincipal`, capabilities.ts), else the
- *  bag itself. */
+/** The run's view of the services bag: `secrets` and `llm` (the grants it
+ *  bills, src/llm.ts) bound to the principal when the capability supports it
+ *  (`forPrincipal`), else the bag itself. */
 function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
   if (!principal || services == null || typeof services !== "object") return services;
-  const secrets = (services as { secrets?: { forPrincipal?: (p: string) => unknown } }).secrets;
-  if (typeof secrets?.forPrincipal !== "function") return services;
-  return { ...(services as object), secrets: secrets.forPrincipal(principal) } as TServices;
+  const view: Record<string, unknown> = { ...(services as object) };
+  let bound = false;
+  for (const name of ["secrets", "llm"]) {
+    const cap = view[name] as { forPrincipal?: (p: string) => unknown } | undefined;
+    if (typeof cap?.forPrincipal !== "function") continue;
+    view[name] = cap.forPrincipal(principal);
+    bound = true;
+  }
+  return bound ? (view as TServices) : services;
 }
 
 /** A PEER's run opens its sessions under `PEER_NAMESPACE` (plans/federation.md
@@ -251,6 +288,21 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(peerSessionId(id, person, continues), holder),
     holder: (id) => sessions.holder(peerSessionId(id, person, continues)),
+  };
+  return { ...(services as object), sessions: view } as TServices;
+}
+
+/** A HOST's run opens its sessions under `host/<host>/` (`hostSessionId`):
+ *  the conversation it was launched on is there already, and a session id a
+ *  workflow makes of the host's input never opens a person's own thread. A
+ *  per-run view like `bindPeer`'s. */
+function bindHost<TServices>(services: TServices, origin: RunOrigin | undefined, host: string | undefined): TServices {
+  if (origin !== "host" || !host || services == null || typeof services !== "object") return services;
+  const sessions = (services as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return services;
+  const view: SessionsCapability = {
+    open: (id, holder) => sessions.open(hostSessionId(id, host), holder),
+    holder: (id) => sessions.holder(hostSessionId(id, host)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -274,16 +326,18 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
  *  `public/<runId>/`, or a priced run's under `public/<token id>/`
  *  (`publicSessionId`): a name a stranger chooses is never a local thread,
  *  nor another caller's. The twin of `bindPeer`, with no exception: a
- *  stranger owns no thread here. */
+ *  stranger owns no thread here. Nor a grant (`llm`): what a machine outside
+ *  strut spends is outside the run's own cap. */
 function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefined, scope: string): TServices {
   if (origin !== "public" || services == null || typeof services !== "object") return services;
-  const sessions = (services as { sessions?: SessionsCapability }).sessions;
-  if (typeof sessions?.open !== "function") return services;
+  const { llm: _grants, ...bag } = services as Record<string, unknown>;
+  const sessions = (bag as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return bag as TServices;
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(publicSessionId(id, scope), holder),
     holder: (id) => sessions.holder(publicSessionId(id, scope)),
   };
-  return { ...(services as object), sessions: view } as TServices;
+  return { ...bag, sessions: view } as TServices;
 }
 
 /** Did the AI write the version of `workflow` that runs (`which`, else the
@@ -319,7 +373,12 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  /** The run's Concept branch (`StepContext.branch`). */
+  branch?: string;
+  /** The run is a trial (`StepContext.trial`). */
+  trial?: RunTrial;
   app?: AppRef;
+  hostCall?: HostRef;
   automation?: { id: string };
   wake?: WakeMark;
   mcp?: McpServer[];
@@ -333,6 +392,54 @@ interface Exec {
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
   disposers: Array<(info: RunEndInfo) => unknown>;
+  /** `ctx.park` for every step of the run (src/park.ts). */
+  park: (on: string) => never;
+  /** Why `park` would refuse a target of a prefix (`ctx.parkRefusal`). */
+  parkRefusal: (prefix: string) => string | undefined;
+}
+
+/** Why `ctx.park(on)` would fail the step in one run, or undefined when
+ *  something here can wake the run: a park nobody could wake would leave
+ *  the run waiting for good. */
+function parkRefusalFor(services: unknown, opts: Pick<RunOptions, "noPark" | "origin"> | undefined): (on: string) => string | undefined {
+  return (on: string) => {
+    const parking = (services as { parking?: ParkingCapability } | null | undefined)?.parking;
+    return parkPrefix(on) === null
+      ? `"${String(on).slice(0, 80)}" is not a park target (<prefix>:<id>, the prefix lowercase letters)`
+      : opts?.noPark
+        ? opts.noPark
+        : opts?.origin === "public"
+          ? "a public run cannot wait"
+          : !parking
+            ? "nothing on this server wakes a parked run"
+            : !parking.accepts(on)
+              ? `nothing on this server wakes a run parked on "${on}" (no source for "${parkPrefix(on)}")`
+              : undefined;
+  };
+}
+
+
+/** A trial schedules nothing (`RunTrial`, src/trials.ts): an automation's
+ *  fires are runs of their own, outside it. The consumer's bag is never
+ *  mutated. What else a trial holds (a job, a proposal, a run on another
+ *  strut) its steps hold themselves, from `ctx.trial`. */
+function bindTrial<TServices>(services: TServices, trial: RunTrial | undefined): TServices {
+  if (!trial || services == null || typeof services !== "object") return services;
+  const automations = (services as { automations?: { api?: Record<string, unknown> } }).automations;
+  if (!automations?.api) return services;
+  const refuse = async () => {
+    throw new Error(`${TRIAL_HELD} — nothing was scheduled`);
+  };
+  return { ...services, automations: { ...automations, api: { ...automations.api, create: refuse, update: refuse, fire: refuse } } };
+}
+/** `ctx.park` for one run: a `ParkedError` when something here can wake
+ *  the run, else an ordinary error that fails the step. */
+function parkFor(refusal: (on: string) => string | undefined): (on: string) => never {
+  return (on: string): never => {
+    const refused = refusal(on);
+    if (refused) throw new Error(`park_refused: ${refused}`);
+    throw new ParkedError([on]);
+  };
 }
 
 export async function runWorkflow<TServices = unknown>(
@@ -388,6 +495,8 @@ export function summaryFromLog(
     ...(start?.actor ? { actor: start.actor } : {}),
     ...(start?.principal ? { principal: start.principal } : {}),
     ...(start?.job ? { job: start.job } : {}),
+    ...(start?.branch ? { branch: start.branch } : {}),
+    ...(start?.trial ? { trial: start.trial } : {}),
     ...(start?.origin ? { origin: start.origin } : {}),
     ...(start?.app ? { app: start.app } : {}),
     ...(start?.visitor ? { visitor: start.visitor } : {}),
@@ -437,12 +546,19 @@ async function executeRun<TServices = unknown>(
   const store = opts.store;
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
+  // The Concept branch: the bag's it was launched with (a step's
+  // `ctx.services`, already on one), else the launch's. A launch naming
+  // another than its bag's fails below (`branch_fixed:`).
+  const onBag = branchOfServices(opts?.services);
+  const branch = onBag ?? opts?.branch;
   // On every summary this run can write (see `RunSummary.automation`).
   const summaryStamp = {
     ...(opts?.automation ? { automation: opts.automation } : {}),
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
     ...(opts?.job ? { job: opts.job } : {}),
+    ...(branch ? { branch } : {}),
+    ...(opts?.trial ? { trial: opts.trial } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(opts?.app ? { app: opts.app } : {}),
     ...(opts?.origin === "public" && opts.visitor ? { visitor: opts.visitor } : {}),
@@ -456,19 +572,24 @@ async function executeRun<TServices = unknown>(
   // peer's run gets its own session namespace the same way (bindPeer). Its
   // graph writes are heard (bindGraph, plans/live-feeds.md §2): told to the
   // run's job and kept in the deployment's change feed.
+  // On a Concept branch its Concepts are the branch's (bindBranch); on any
+  // run, a conversation stays on its first turn's branch.
   const { services, reporter: graphReports } = bindGraph(
-    bindApp(
-      bindPeer(
-        bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId),
-        opts?.origin,
-        opts?.peerPerson ? opts.actor : undefined,
+    bindTrial(bindBranch(
+      bindApp(
+        bindPeer(
+          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
+          opts?.origin,
+          opts?.peerPerson ? opts.actor : undefined,
+          opts?.continues,
+        ),
+        opts?.app,
+        opts?.actor,
+        opts?.job,
         opts?.continues,
       ),
-      opts?.app,
-      opts?.actor,
-      opts?.job,
-      opts?.continues,
-    ),
+      branch,
+    ), opts?.trial),
     { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
   );
 
@@ -504,13 +625,22 @@ async function executeRun<TServices = unknown>(
     await onEvent?.(full);
   };
 
-  // Validate input
+  // Validate input, and the branch the run is on.
   let parsedInput: unknown;
   try {
+    if (opts?.branch && onBag && opts.branch !== onBag) {
+      throw new Error(`branch_fixed: this run is started from one on Concept branch "${onBag}", and stays on it — it cannot run on "${opts.branch}"`);
+    }
+    if (branch) {
+      const branches = (opts?.services as { branches?: BranchesCapability } | undefined)?.branches;
+      if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (a graph workspace does) — the run cannot be on "${branch}"`);
+      if (!(await branches.get(branch))) throw new Error(`no_branch: there is no Concept branch "${branch}" here (it was dropped, or never made) — GET /branches lists them`);
+    }
     parsedInput = workflow.input.parse(input);
   } catch (err) {
+    const branchErr = err instanceof Error && /^(branch_fixed|no_branch):/.test(err.message);
     const error = {
-      message: `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: branchErr ? (err as Error).message : `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
       stack: err instanceof Error ? err.stack : undefined,
     };
     await emit({ type: "run.error", path: wfName, error });
@@ -544,6 +674,7 @@ async function executeRun<TServices = unknown>(
       // changed.
       ...(opts.workflowHash ? { workflowHash: opts.workflowHash } : {}),
       ...(opts.resumeChanged ? { changed: opts.resumeChanged } : {}),
+      ...(opts.woken ? { woken: true as const } : {}),
       ...(opts.callback ? { callback: opts.callback } : {}),
       ...(opts.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
     });
@@ -557,12 +688,15 @@ async function executeRun<TServices = unknown>(
       ...(opts?.cassette ? { cassette: opts.cassette } : {}),
       ...(opts?.origin ? { origin: opts.origin } : {}),
       ...(opts?.origin === "peer" && opts.peerPerson ? { peerPerson: true as const } : {}),
+      ...(opts?.origin === "host" && opts.host ? { host: opts.host } : {}),
       ...(opts?.continues ? { continues: opts.continues } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
+      ...(branch ? { branch } : {}),
+      ...(opts?.trial ? { trial: opts.trial } : {}),
       ...(opts?.app ? { app: opts.app } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
@@ -602,6 +736,8 @@ async function executeRun<TServices = unknown>(
     }
   }
 
+  /** Why a park in this run fails the step, or nothing (src/park.ts). */
+  const refusePark = parkRefusalFor(services, opts);
   const exec: Exec = {
     registry,
     runId,
@@ -618,7 +754,10 @@ async function executeRun<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    ...(branch ? { branch } : {}),
+    ...(opts?.trial ? { trial: opts.trial } : {}),
     app: opts?.app,
+    ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
@@ -626,7 +765,14 @@ async function executeRun<TServices = unknown>(
     ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts?.aiAuthored || (await aiAuthored(services, wfName, opts?.workflowHash ? { hash: opts.workflowHash } : undefined)) ? { aiAuthored: true } : {}),
     disposers: [],
+    park: parkFor(refusePark),
+    parkRefusal: (prefix: string) => refusePark(`${prefix}:_`),
   };
+  /** Set when the run parks, or is cancelled with its open branches parked:
+   *  what the teardown hooks are told. */
+  let parkedOn: string[] | undefined;
+  /** How it ended, for the teardown hooks. */
+  let endStatus: RunEndInfo["status"];
 
   try {
     const output = await executeFlow(workflow, parsedInput, exec, wfName, opts?.params);
@@ -646,9 +792,36 @@ async function executeRun<TServices = unknown>(
       stepCounts,
       ...spent(),
     });
+    endStatus = "success";
     return { runId, status: "success", output };
   } catch (err) {
-    const cancelled = isCancelledError(err);
+    // Every branch ended or parked, and some parked (src/park.ts): the run
+    // WAITS. Not an end — no `run.end`, no error — and it leaves memory: a
+    // wake resumes it from its journal under the same id. Unless it is being
+    // cancelled: a cancel that came after the last checkpoint any branch
+    // reached would be lost, so the run ends cancelled, and what it parked
+    // on is told so (`RunEndInfo.waitingOn` with `status: "cancelled"`).
+    if (isParkedError(err) && opts?.controller?.state === "cancelling") parkedOn = err.on;
+    else if (isParkedError(err)) {
+      parkedOn = err.on;
+      const finishedAt = new Date().toISOString();
+      await emit({ type: "run.waiting", path: wfName, on: err.on });
+      await store.finalize(wfName, runId, {
+        runId,
+        workflow: wfName,
+        startedAt,
+        finishedAt,
+        durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+        status: "waiting",
+        waitingOn: err.on,
+        input: parsedInput,
+        ...summaryStamp,
+        stepCounts,
+        ...spent(),
+      });
+      return { runId, status: "waiting", waitingOn: err.on };
+    }
+    const cancelled = parkedOn !== undefined || isCancelledError(err);
     const error = {
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
@@ -675,6 +848,7 @@ async function executeRun<TServices = unknown>(
       stepCounts,
       ...spent(),
     });
+    endStatus = cancelled ? "cancelled" : "error";
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {
     // Generic per-run teardown hook. A consumer's services bag may implement
@@ -690,7 +864,12 @@ async function executeRun<TServices = unknown>(
     // The second argument names WHICH run settled — what a post-run
     // consumer (the verify pass, plans/claims.md §4) needs and a teardown
     // hook can ignore.
-    const info: RunEndInfo = { workflow: wfName, ...(opts?.origin ? { origin: opts.origin } : {}) };
+    const info: RunEndInfo = {
+      workflow: wfName,
+      ...(opts?.origin ? { origin: opts.origin } : {}),
+      ...(parkedOn ? (endStatus ? { waitingOn: parkedOn } : { parked: true as const, waitingOn: parkedOn }) : {}),
+      ...(endStatus ? { status: endStatus } : {}),
+    };
     // The run's last graph writes, sent now rather than a second from now
     // (never throws: a report is a notification).
     await graphReports?.flush();
@@ -882,10 +1061,15 @@ async function executeFlow(
     (r): r is PromiseRejectedResult => r.status === "rejected",
   );
   if (rejections.length > 0) {
-    // Prefer a REAL failure over a CancelledError so a genuine error isn't
-    // masked when cancellation raced in behind it.
-    const real = rejections.find((r) => !isCancelledError(r.reason));
-    throw (real ?? rejections[0]!).reason;
+    // The worst branch decides: a REAL failure over a CancelledError (so a
+    // genuine error isn't masked when cancellation raced in behind it), and
+    // either over a park — the flow parks only when every branch that did
+    // not finish parked, waiting on all of their targets (src/park.ts).
+    const real = rejections.find((r) => !isCancelledError(r.reason) && !isParkedError(r.reason));
+    if (real) throw real.reason;
+    const cancelled = rejections.find((r) => isCancelledError(r.reason));
+    if (cancelled) throw cancelled.reason;
+    throw mergeParked(rejections.map((r) => r.reason));
   }
 
   // Return last step's output (by array order). If skipped, return undefined.
@@ -928,9 +1112,11 @@ async function executeStep(
   // Resume replay (RUN_CONTROL_SPEC §5): a step whose path has a journaled
   // output replays it — zero cost, no side effects re-executed. Emitted as
   // `step.replayed`, never a fake `step.end` (honest timings). The first path
-  // NOT in the journal executes live below.
+  // NOT in the journal executes live below. A step that held something in
+  // memory (a job's hold) takes it again first (`StepDef.onReplay`).
   if (exec.journal && hasOwn(exec.journal, path)) {
     const output = exec.journal[path];
+    await onReplay(step, scope, exec, path, output);
     await exec.emit({ type: "step.replayed", path, stepType: baseType(step.type), output });
     return output;
   }
@@ -1010,6 +1196,12 @@ async function executeStep(
       // Cancellation is NOT the error path (§3): never retried, never
       // diverted into onError — the branch stops at this boundary.
       if (isCancelledError(err)) throw err;
+      // Nor is a park (src/park.ts): the step waits, and runs again from the
+      // top when the run wakes.
+      if (isParkedError(err)) {
+        await exec.emit({ type: "step.parked", path, stepType: baseType(step.type), on: err.on });
+        throw err;
+      }
 
       lastError = err instanceof Error ? err : new Error(String(err));
 
@@ -1038,6 +1230,11 @@ async function executeStep(
             );
             return fallbackOutput;
           } catch (fallbackErr) {
+            // The fallback parked: the step waits with it.
+            if (isParkedError(fallbackErr)) {
+              await exec.emit({ type: "step.parked", path, stepType: baseType(step.type), on: fallbackErr.on });
+              throw fallbackErr;
+            }
             // Fallback itself failed
             await exec.emit({
               type: "step.error",
@@ -1104,57 +1301,88 @@ async function dispatchStep(
       // Validate config against step's input schema.
       // Default to {} when no config is provided in the YAML.
       const validConfig = def.input.parse(resolvedConfig ?? {});
-
-      const stepJournal = sliceJournal(exec.journal, path);
-      const ctx: StepContext<unknown> = withinReach(step.type, validConfig, {
-        runId: exec.runId,
-        path,
-        workflow: exec.workflow,
-        ...(exec.package ? { package: exec.package } : {}),
-        frame: exec.frame,
-        ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
-        scope,
-        input: scope["input"],
-        emit: exec.emit,
-        services: exec.services,
-        registry: exec.registry,
-        settings: resolveSettings({ deployment: (exec.services as any)?.settings, workflow: scope["$settings"], step: step.options?.settings, run: exec.settings }),
-        // Unit-scoped control: a parked `ctx.control.checkpoint()` releases
-        // this unit so the subtree can quiesce (§2.2 threading).
-        ...(exec.controller ? { control: exec.controller.forUnit() } : {}),
-        ...(stepJournal ? { journal: stepJournal } : {}),
-        // Same run, same principal — a subflow's steps inherit these unchanged.
-        ...(exec.actor ? { actor: exec.actor } : {}),
-        ...(exec.principal ? { principal: exec.principal } : {}),
-        ...(exec.job ? { job: exec.job } : {}),
-        ...(exec.app ? { app: exec.app } : {}),
-        ...(exec.automation ? { automation: exec.automation } : {}),
-        ...(exec.wake ? { wake: exec.wake } : {}),
-        ...(exec.mcp ? { mcp: exec.mcp } : {}),
-        ...(exec.attachments ? { attachments: exec.attachments } : {}),
-        ...(exec.maxCostUsd !== undefined ? { maxCostUsd: exec.maxCostUsd } : {}),
-        // One disposer list per run (`Exec.disposers`), whatever frame the
-        // step runs in; drained in runWorkflow's `finally`.
-        onRunEnd: (fn) => void exec.disposers.push(fn),
-        ...(exec.aiAuthored ? { aiAuthored: true } : {}),
-      });
-
-      if (exec.controller) {
-        // checkpoint → beginUnit with no interleaving await, so a pause can
-        // never observe a false quiesce between the two.
-        await exec.controller.checkpoint();
-        exec.controller.beginUnit();
-      }
-      try {
-        // An error the step lets escape (a callback's throw, a promise it
-        // never awaits) fails the step, not the process (src/escaped-errors.ts).
-        const running = guardEscapes(`step "${path}"`, () => def.run(validConfig, ctx));
-        // A force-cancel stops waiting on a step that never returns.
-        return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
-      } finally {
-        exec.controller?.endUnit();
-      }
+      const ctx = stepContext(step, validConfig, scope, exec, path);
+      return runUnit(exec, path, () => def.run(validConfig, ctx));
     }
+  }
+}
+
+/** What a leaf step's body is handed (`ctx`). */
+function stepContext(step: Step, validConfig: unknown, scope: Record<string, unknown>, exec: Exec, path: string): StepContext<unknown> {
+  const stepJournal = sliceJournal(exec.journal, path);
+  return withinReach(step.type, validConfig, {
+    runId: exec.runId,
+    path,
+    workflow: exec.workflow,
+    ...(exec.package ? { package: exec.package } : {}),
+    frame: exec.frame,
+    ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
+    scope,
+    input: scope["input"],
+    emit: exec.emit,
+    services: exec.services,
+    registry: exec.registry,
+    settings: resolveSettings({ deployment: (exec.services as any)?.settings, workflow: scope["$settings"], step: step.options?.settings, run: exec.settings }),
+    // Unit-scoped control: a parked `ctx.control.checkpoint()` releases
+    // this unit so the subtree can quiesce (§2.2 threading).
+    ...(exec.controller ? { control: exec.controller.forUnit() } : {}),
+    ...(stepJournal ? { journal: stepJournal } : {}),
+    // Same run, same principal — a subflow's steps inherit these unchanged.
+    ...(exec.actor ? { actor: exec.actor } : {}),
+    ...(exec.principal ? { principal: exec.principal } : {}),
+    ...(exec.job ? { job: exec.job } : {}),
+    ...(exec.branch ? { branch: exec.branch } : {}),
+    ...(exec.trial ? { trial: exec.trial } : {}),
+    ...(exec.app ? { app: exec.app } : {}),
+    ...(exec.hostCall ? { host: exec.hostCall } : {}),
+    ...(exec.automation ? { automation: exec.automation } : {}),
+    ...(exec.wake ? { wake: exec.wake } : {}),
+    ...(exec.mcp ? { mcp: exec.mcp } : {}),
+    ...(exec.attachments ? { attachments: exec.attachments } : {}),
+    ...(exec.maxCostUsd !== undefined ? { maxCostUsd: exec.maxCostUsd } : {}),
+    // One disposer list per run (`Exec.disposers`), whatever frame the
+    // step runs in; drained in runWorkflow's `finally`.
+    onRunEnd: (fn) => void exec.disposers.push(fn),
+    park: exec.park,
+    parkRefusal: exec.parkRefusal,
+    ...(exec.aiAuthored ? { aiAuthored: true } : {}),
+  });
+}
+
+/** A leaf step's body as one unit of the run's work (RUN_CONTROL_SPEC §2.2). */
+async function runUnit<T>(exec: Exec, path: string, body: () => Promise<T>): Promise<T> {
+  if (exec.controller) {
+    // checkpoint → beginUnit with no interleaving await, so a pause can
+    // never observe a false quiesce between the two.
+    await exec.controller.checkpoint();
+    exec.controller.beginUnit();
+  }
+  try {
+    // An error the step lets escape (a callback's throw, a promise it
+    // never awaits) fails the step, not the process (src/escaped-errors.ts).
+    const running = guardEscapes(`step "${path}"`, body);
+    // A force-cancel stops waiting on a step that never returns.
+    return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
+  } finally {
+    exec.controller?.endUnit();
+  }
+}
+
+/** A replayed step's `onReplay` (StepDef.onReplay): what its run held in
+ *  this process's memory — a job's hold — taken again. A throw fails the
+ *  step as its `run` would (no retry: what it would retry is replayed). */
+async function onReplay(step: Step, scope: Record<string, unknown>, exec: Exec, path: string, output: unknown): Promise<void> {
+  const def = SELF_RESOLVING_STEPS.has(step.type) ? undefined : exec.registry[step.type];
+  if (!def?.onReplay) return;
+  try {
+    const validConfig = def.input.parse(resolveConfig(step.config, scope) ?? {});
+    const ctx = stepContext(step, validConfig, scope, exec, path);
+    await runUnit(exec, path, () => def.onReplay!(validConfig, ctx, output));
+  } catch (err) {
+    if (isCancelledError(err)) throw err;
+    const error = err instanceof Error ? err : new Error(String(err));
+    await exec.emit({ type: "step.error", path, stepType: baseType(step.type), error: { message: error.message, stack: error.stack } });
+    throw error;
   }
 }
 
@@ -1215,7 +1443,8 @@ async function executeLoop(
     });
 
     const startTime = Date.now();
-    current = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    // A parked iteration parks the loop: its iterations depend on each other.
+    current = await parkedIteration(exec, iterPath, rawBody, i, () => dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath));
     const tooBig = outputTooBig(current, `step "${iterPath}" output`);
     if (tooBig) throw tooBig;
 
@@ -1354,7 +1583,7 @@ async function executeForeach(
     });
 
     const startTime = Date.now();
-    const output = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    const output = await parkedIteration(exec, iterPath, rawBody, i, () => dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath));
     const tooBig = outputTooBig(output, `step "${iterPath}" output`);
     if (tooBig) throw tooBig;
 
@@ -1371,10 +1600,20 @@ async function executeForeach(
     results[i] = output;
   };
 
+  // A parked iteration does not stop the others (src/park.ts): the rest
+  // run, and the foreach parks at the end on every iteration that did — so
+  // a foreach over 100 documents makes its 100 waits in one pass.
+  const parked: unknown[] = [];
   if (concurrency === 1) {
     for (let i = 0; i < items.length; i++) {
-      await runIteration(i);
+      try {
+        await runIteration(i);
+      } catch (err) {
+        if (!isParkedError(err)) throw err;
+        parked.push(err);
+      }
     }
+    if (parked.length) throw mergeParked(parked);
     return results;
   }
 
@@ -1393,6 +1632,10 @@ async function executeForeach(
       try {
         await runIteration(i);
       } catch (err) {
+        if (isParkedError(err)) {
+          parked.push(err);
+          continue;
+        }
         failures.push({ i, err });
         return;
       }
@@ -1407,8 +1650,22 @@ async function executeForeach(
     failures.sort((a, b) => a.i - b.i);
     throw failures[0]!.err;
   }
+  if (parked.length) throw mergeParked(parked);
 
   return results;
+}
+
+/** One loop or foreach iteration's body: a park there is recorded at the
+ *  iteration's own path (`step.parked`) and passed on. */
+async function parkedIteration(exec: Exec, iterPath: string, body: Step, iteration: number, run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    return await run();
+  } catch (err) {
+    if (isParkedError(err)) {
+      await exec.emit({ type: "step.parked", path: iterPath, stepType: baseType(body.type), iteration, on: err.on });
+    }
+    throw err;
+  }
 }
 
 /** A step's input as its run events keep it: the fields its def names in

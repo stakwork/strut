@@ -17,12 +17,19 @@
  * reads a `{{ params.tools }}` grant). A name taken from the run's input is
  * chosen per run; it is said, not guessed — the pages a public run did read
  * are visible through the run anyway (§4).
+ *
+ * The same cascade is `app/make-public`'s (below): an agent ASKS to add an
+ * app, an admin says yes on a card that lists these lines, and the door adds
+ * what they pre-check (`withNeeds`) through the route's own save.
  */
-import type { StepRegistry } from "./core.js";
+import { z } from "zod";
+import type { CardField, ProposalDescription, StepRegistry } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
+import type { Proposal } from "./proposals.js";
+import { publicAppLinks } from "./public-routes.js";
 import { flowClosure, globToRegExp, walkSteps } from "./closure.js";
-import type { PublicConceptTree } from "./public-surface.js";
-import { VISITOR_GRAPH_READS, VISITOR_RUN_READS } from "./public-surface.js";
+import type { PublicConceptTree, PublicSurface, PublicVisitors } from "./public-surface.js";
+import { DEFAULT_SIGN_IN, signInOf, VISITOR_GRAPH_READS, VISITOR_RUN_READS } from "./public-surface.js";
 
 /** One line of the dialog's cascade: what it is, whether it starts checked,
  *  and what adding it shows anyone. */
@@ -47,8 +54,9 @@ export interface PublicViewDeps {
   workspace: Pick<WorkspaceStore, "getWorkflow" | "getWorkflowVersion">;
   registry: () => StepRegistry;
   stepSources: () => Record<string, string>;
-  /** The app's manifest at the version the public view would serve. */
-  app?: (name: string) => Promise<{ version: string; title: string; grants: { workflows: string[]; steps: string[] } } | null>;
+  /** The app's manifest at the version the public view would serve: the
+   *  one named, else the one live now. */
+  app?: (name: string, version?: string) => Promise<{ version: string; title: string; grants: { workflows: string[]; steps: string[] } } | null>;
   walk: (roots: string[]) => Promise<PublicConceptTree>;
 }
 
@@ -93,8 +101,9 @@ function conceptRootsOf(flow: { steps: unknown[]; params?: Record<string, unknow
   return { roots, perRun };
 }
 
-/** What adding `app` or `workflow` to the public view brings along. */
-export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; workflow?: string }): Promise<PublicViewNeeds | { error: string }> {
+/** What adding `app` (at `version`, else the one live now) or `workflow`
+ *  to the public view brings along. */
+export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; version?: string; workflow?: string }): Promise<PublicViewNeeds | { error: string }> {
   const registry = deps.registry();
   const sources = deps.stepSources();
   const isCustom = (t: string) => sources[t] === "custom";
@@ -102,8 +111,8 @@ export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; w
   let workflows: string[];
   let runs: boolean;
   if (q.app) {
-    const app = deps.app ? await deps.app(q.app) : null;
-    if (!app) return { error: `no app "${q.app}" on this strut server` };
+    const app = deps.app ? await deps.app(q.app, q.version) : null;
+    if (!app) return { error: `no app "${q.app}"${q.version ? ` at ${q.version}` : ""} on this strut server` };
     out.app = { name: q.app, version: app.version, title: app.title };
     workflows = app.grants.workflows;
     runs = true;
@@ -112,9 +121,12 @@ export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; w
       // rules (§5): nothing to tick for those, nor for a step no visitor
       // may call whatever is ticked.
       // (Launching, a job, a graph write, a paid step: refused to a visitor
-      // whatever is ticked, `visitorRefusal`.)
+      // whatever is ticked, `visitorRefusal`.) Nor for a WORKER's step
+      // (`task/*`): a signed-in worker calls it whatever is ticked
+      // (`signedInRefusal`), and it is never a read an anonymous visitor makes.
       if (VISITOR_RUN_READS.has(type) || VISITOR_GRAPH_READS.has(type) || /^(?:run|app|job|graph)\//.test(type) || ["llm", "agent", "exec", "acp/prompt"].includes(type)) continue;
       const def = registry[type];
+      if (def?.worker) continue;
       const custom = isCustom(type);
       out.reads.push({ name: type, checked: def?.effect === "read", note: def ? readNote(type, custom) : "not a step on this server" });
     }
@@ -176,3 +188,344 @@ export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; w
   }
   return out;
 }
+
+// ── app/make-public: an agent asks, an admin says yes ───────────────────────
+// (plans/public-surface.md §2 "The door", ruled 2026-11-13.) The public view
+// is a person's decision. The builder or the orchestrator may ASK to add an
+// app to it with `app/make-public`, a proposal only an ADMIN accepts, as
+// `app/grant`, `package/install` and `task/set-type` are. The door behind it
+// opens only for that accepted record on disk, adds the app the way the
+// Public view tab does (the lines `publicViewNeeds` pre-checks, held at the
+// version asked) and writes through `PUT /public-view`'s own save. It
+// removes nothing and leaves the sign-in as it is.
+
+export const MAKE_PUBLIC_STEP = "app/make-public";
+
+/** The step's input; the gate adds `rationale`. */
+export const makePublicInput = z.object({
+  name: z.string().min(1).describe("The app's name, as app/publish named it."),
+  version: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The version to make public (v3), as app/publish answered it. Left out: the version live when you ask, which the card names and the yes holds."),
+});
+export type MakePublic = z.infer<typeof makePublicInput>;
+
+/** The record with the cascade's PRE-CHECKED lines merged in: what the
+ *  Public view tab saves when the person unticks nothing — the dialog's
+ *  `mergeNeeds` over `checkedOf` (web/src/public-view.ts), held equal by its
+ *  test. It only adds. */
+export function withNeeds(surface: PublicSurface, needs: PublicViewNeeds): PublicSurface {
+  const next: PublicSurface = structuredClone(surface);
+  if (needs.app) {
+    const reads = needs.reads.filter((r) => r.checked).map((r) => r.name);
+    const at = next.apps.find((a) => a.name === needs.app!.name);
+    if (at) at.reads = [...new Set([...(at.reads ?? []), ...reads])];
+    else next.apps.push({ name: needs.app.name, ...(reads.length ? { reads } : {}) });
+  }
+  if (needs.workflow && !needs.workflows.length) next.workflows.push({ name: needs.workflow });
+  for (const w of needs.workflows) {
+    if (!w.checked) continue;
+    const at = next.workflows.find((x) => x.name === w.name);
+    if (at) at.runs = at.runs || w.runs || undefined;
+    else next.workflows.push({ name: w.name, ...(w.runs ? { runs: true } : {}) });
+  }
+  for (const s of needs.steps) if (s.checked && !next.steps.includes(s.name)) next.steps.push(s.name);
+  for (const c of needs.concepts) if (c.checked && !next.concepts.includes(c.name)) next.concepts.push(c.name);
+  for (const w of next.workflows) if (!w.runs) delete w.runs;
+  return next;
+}
+
+/** What the card reads at proposal time (`PublicViewCapability.plan`). */
+export interface MakePublicPlan {
+  /** The cascade at the version asked, as `GET /public-view/needs` answers it. */
+  needs: PublicViewNeeds | { error: string };
+  /** The version the yes holds: the one asked, else the one live now. */
+  version?: string;
+  /** The version people open now, and whether a release holds it. */
+  live?: { version: string; held: boolean };
+  /** Strut seeds the app: it always runs its committed version, never held. */
+  seeded?: boolean;
+  /** The app is in the public view already. */
+  listed: boolean;
+  /** The view's sign-in, unchanged: its own (`set`), else the default. */
+  visitors: { signIn: PublicVisitors["signIn"]; visitorKey?: "domain"; set: boolean };
+  /** A served box's package: its serve.yaml writes the public view. */
+  served?: string;
+}
+
+/** What a yes did. */
+export interface MadePublic {
+  app: string;
+  version: string;
+  /** What the cascade added, by kind (a line already there is not named). */
+  added: { workflows: string[]; steps: string[]; reads: string[]; concepts: string[] };
+  /** Who may sign in now. */
+  signIn: PublicVisitors["signIn"];
+  /** Its share links (`publicAppLinks`): the visitor's page, and the same
+   *  opened in Peel — what to hand the person. Absent when this server has
+   *  not yet seen where it is reached. */
+  link?: string;
+  peelLink?: string;
+}
+
+/** `ctx.services.publicView`: the card's read and `app/make-public`'s door. */
+export interface PublicViewCapability {
+  plan(name: string, version?: string): Promise<MakePublicPlan>;
+  /** Adds the app at `version` with its cascade — only as the apply of an
+   *  ACCEPTED `app/make-public` proposal on disk (an admin's) for that app
+   *  and version. */
+  addApp(name: string, version: string, o: { proposal: string; actor?: string }): Promise<MadePublic>;
+  /** Whether the app is in the public view, and its share links
+   *  (`publicAppLinks`) when it is and this server has seen where it is
+   *  reached: what strut/staff hands a task type's workers. A read. */
+  share(name: string): Promise<AppShare>;
+}
+
+/** A public view app's share (`PublicViewCapability.share`). */
+export interface AppShare {
+  public: boolean;
+  link?: string;
+  peelLink?: string;
+}
+
+/** The save `PUT /public-view` writes through (createStrut): its checks,
+ *  the record, and the hold — `holdAt` holds an app at that version, or
+ *  refuses the whole save. Answered as the route answers. */
+export type PublicViewSave = (body: unknown, o: { actor?: string; holdAt?: Record<string, string> }) => Promise<{ status: number; body: { error?: string; surface?: PublicSurface } & Record<string, unknown> }>;
+
+export interface PublicViewDoorDeps {
+  needs(app: string, version?: string): Promise<PublicViewNeeds | { error: string }>;
+  view(): Promise<PublicSurface>;
+  /** The app as people open it now, and whether `version` is a seed. */
+  app(name: string, version?: string): Promise<{ version: string; held: boolean; seeded: boolean } | null>;
+  /** The package a served box serves, or undefined. */
+  served(): string | undefined;
+  /** A proposal's record on disk, or null. */
+  proposal(id: string): Promise<Proposal | null>;
+  save: PublicViewSave;
+  /** Where people reach this server (an origin plus any mount path), for
+   *  the share links; undefined when not known yet. */
+  base?(): string | undefined;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapability {
+  return {
+    async plan(name, version) {
+      const [app, view] = await Promise.all([deps.app(name, version).catch(() => null), deps.view()]);
+      const at = version ?? app?.version;
+      const needs = await deps.needs(name, at);
+      const served = deps.served();
+      return {
+        needs,
+        ...(at ? { version: at } : {}),
+        ...(app ? { live: { version: app.version, held: app.held } } : {}),
+        ...(app?.seeded ? { seeded: true } : {}),
+        listed: view.apps.some((a) => a.name === name),
+        visitors: view.visitors
+          ? { signIn: view.visitors.signIn, ...(view.visitors.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}), set: true }
+          : { signIn: [...DEFAULT_SIGN_IN], set: false },
+        ...(served ? { served } : {}),
+      };
+    },
+
+    async share(name) {
+      const listed = (await deps.view()).apps.some((a) => a.name === name);
+      const base = listed ? deps.base?.() : undefined;
+      return { public: listed, ...(base ? publicAppLinks(base, name) : {}) };
+    },
+
+    async addApp(name, version, o) {
+      // The door: an ACCEPTED proposal of this very step, only an admin's to
+      // accept, for this app and this version — the admin's edits merged as
+      // the decision merged them, parsed as the step parses them.
+      const rec = typeof o?.proposal === "string" ? await deps.proposal(o.proposal) : null;
+      const asked = rec ? { ...(isRecord(rec.input) ? rec.input : {}), ...(isRecord(rec.decision?.input) ? rec.decision.input : {}) } : {};
+      const parsed = makePublicInput.safeParse(asked);
+      if (!rec || rec.step !== MAKE_PUBLIC_STEP || rec.status !== "accepted" || rec.approver !== "admin" || !parsed.success || parsed.data.name !== name || parsed.data.version !== version) {
+        throw new Error(
+          `make_public_needs_admin: adding the app ${name} to the public view runs only as the apply of a proposal an admin accepted for it at ${version}` +
+            (rec ? ` (proposal ${rec.id} is ${rec.status}, for ${rec.step}${typeof asked["name"] === "string" ? ` ${asked["name"]}${typeof asked["version"] === "string" ? ` ${asked["version"]}` : ""}` : ""})` : ""),
+        );
+      }
+      const needs = await deps.needs(name, version);
+      if ("error" in needs) throw new Error(`make_public: ${needs.error}`);
+      const before = await deps.view();
+      const next = withNeeds(before, needs);
+      const by = rec.decision?.by ?? o.actor;
+      // A seeded app is not held: only strut's seed writes it, so it follows
+      // strut's releases, and a hold has nothing to guard.
+      const seeded = (await deps.app(name, version).catch(() => null))?.seeded === true;
+      const out = await deps.save(next, { ...(seeded ? {} : { holdAt: { [name]: version } }), ...(by ? { actor: by } : {}) });
+      if (out.status !== 200 || !out.body.surface) throw new Error(out.body.error ?? `the public view was not saved (${out.status})`);
+      const saved = out.body.surface;
+      const base = deps.base?.();
+      const was = (list: string[], n: string) => list.includes(n);
+      const app = before.apps.find((a) => a.name === name);
+      return {
+        app: name,
+        version,
+        added: {
+          workflows: needs.workflows.filter((w) => w.checked && !before.workflows.some((x) => x.name === w.name && (x.runs || !w.runs))).map((w) => w.name),
+          steps: needs.steps.filter((s) => s.checked && !was(before.steps, s.name)).map((s) => s.name),
+          reads: needs.reads.filter((r) => r.checked && !was(app?.reads ?? [], r.name)).map((r) => r.name),
+          concepts: needs.concepts.filter((c) => c.checked && !was(before.concepts, c.name)).map((c) => c.name),
+        },
+        signIn: signInOf(saved),
+        ...(base ? publicAppLinks(base, name) : {}),
+      };
+    },
+  };
+}
+
+// ── the card ────────────────────────────────────────────────────────────────
+
+/** A sign-in method as the Public view tab names it (web/src/public-view.ts
+ *  `SIGN_IN_METHODS`). */
+const SIGN_IN_WORDS: Record<string, string> = {
+  sphinx: "their Sphinx account, through the wallet that holds it (Peel)",
+  key: "this browser's key",
+  lnurl: "a Lightning wallet (LNURL-auth)",
+  nostr: "a Nostr extension",
+  ticket: "a host's ticket",
+};
+/** A sign-in method in the words of a person who is not technical: the
+ *  card's "Who can open it". */
+const SIGN_IN_PLAIN: Record<string, string> = {
+  sphinx: "their Sphinx account, in the Peel app",
+  key: "a key their browser keeps",
+  lnurl: "a Lightning wallet",
+  nostr: "a Nostr extension",
+  ticket: "a ticket from your own site",
+};
+
+/** One cascade line as the dialog shows it: its name and what it exposes;
+ *  one it does not pre-check is said and not added. */
+export function needLine(l: NeedLine): string {
+  return l.checked ? `${l.name} — ${l.note}` : `${l.name} — not added: ${l.note}`;
+}
+
+/**
+ * The card (`app/make-public`'s `describe`), for a person who is not
+ * technical: `Put "<title>" online`, a few plain sentences, then who can
+ * open it and how they sign in, and how much else on this server it makes
+ * visible. Under Details (`CardField.detail`): the app and its version and
+ * hold, each line of the cascade with what it exposes (as the Public view
+ * tab shows it), and the sign-in's workings. Runs anyone reads whole, a
+ * read that reaches an outside service with this server's credentials, a
+ * live version that moves and no sign-in are dangers, never folded; so is
+ * anything that makes the yes fail. `input` pins the version.
+ */
+export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined): ProposalDescription {
+  const actions = { accept: "Put it online", reject: "Don't" };
+  if (!plan) return { title: `Put ${cfg.name} online`, actions };
+  const { needs, version, live } = plan;
+  const fails: string[] = [];
+  if (plan.served) fails.push(`this strut server serves ${plan.served}, whose serve.yaml writes the public view at every deploy`);
+  if ("error" in needs) {
+    fails.push(needs.error);
+    return {
+      title: `Put ${cfg.name} online`,
+      summary: `Approving it fails: ${fails.join("; ")}.`,
+      fields: [{ label: "App", value: `${cfg.name}${cfg.version ? ` ${cfg.version}` : ""} — ${needs.error}`, danger: true }],
+      actions,
+      full: true,
+    };
+  }
+  const app = needs.app!;
+  const v = version ?? app.version;
+  const vis = plan.visitors;
+  const nobody = !vis.signIn.length;
+  const moves = !!live && live.version !== v;
+
+  // Shown: what a person who is not technical decides on.
+  const fields: CardField[] = [];
+  const signIn = vis.signIn.map((m) => SIGN_IN_PLAIN[m] ?? m);
+  fields.push({
+    label: "Who can open it",
+    value: nobody
+      ? "Anyone with the link, but nobody can sign in to it, so nobody can work in it."
+      : `Anyone with the link. To use it, they sign in with ${orWords(signIn)}; anyone else sees it signed out.`,
+    ...(nobody ? { danger: true } : {}),
+  });
+  const counted: Array<[number, string, string]> = [
+    [needs.workflows.filter((l) => l.checked).length, "workflow", "workflows"],
+    [needs.reads.filter((l) => l.checked).length, "thing the page reads", "things the page reads"],
+    [needs.steps.filter((l) => l.checked).length, "step", "steps"],
+    [needs.concepts.filter((l) => l.checked).length, "Concept tree", "Concept trees"],
+  ];
+  const parts = counted.filter(([n]) => n > 0).map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
+  fields.push({
+    label: "What else they can see",
+    value: parts.length ? `${andWords(parts)} on this server, each listed under Details.` : "Nothing else: only this page.",
+  });
+
+  // Under Details: the app, its version and hold, each line of the cascade
+  // with what it exposes (as the Public view tab shows it), the sign-in.
+  // A danger is never folded.
+  const detail = (f: CardField): CardField => (f.danger ? f : { ...f, detail: true });
+  fields.push(detail({ label: "App", value: `${app.title} — ${app.name} ${v}` }));
+  fields.push(
+    detail({
+      label: "Held at",
+      value: plan.seeded
+        ? "not held: strut seeds this app, so it follows strut's releases"
+        : `${v}: a later publish is a draft until someone makes it live` +
+          (moves ? `. Its live version moves from ${live!.version} to ${v}, for everyone who opens it` : live?.held ? " (already held there)" : ""),
+      ...(moves && !plan.seeded ? { danger: true } : {}),
+    }),
+  );
+  const section = <L extends NeedLine>(label: string, lines: L[], danger: (l: L) => boolean) => {
+    if (!lines.length) return;
+    const d = lines.some((l) => l.checked && danger(l));
+    fields.push(detail({ label, value: lines.map(needLine).join("\n"), ...(d ? { danger: true } : {}) }));
+  };
+  section("Workflows", needs.workflows, (w) => w.runs);
+  section("Reads the page may call", needs.reads, (r) => r.note.startsWith("calls "));
+  section("Steps", needs.steps, () => false);
+  if (needs.concepts.length) {
+    fields.push(detail({ label: "Concept trees", value: needs.concepts.map((c) => `${needLine(c)} (read by ${c.from.join(", ")})`).join("\n") }));
+  }
+  if (needs.perRun.length) fields.push(detail({ label: "Decided per run, not added", value: needs.perRun.join("\n") }));
+  const how = vis.signIn.map((m) => SIGN_IN_WORDS[m] ?? m).join("; ");
+  const key = vis.visitorKey === "domain" ? "a key per domain, so a visitor is someone new on each domain" : "the root key, so a visitor is one person on every app here";
+  fields.push(
+    detail({
+      label: "Who can sign in",
+      value: nobody
+        ? "nobody: the public view offers no sign-in, so every visitor is anonymous and no worker can sign in. A person changes that in Publish → Public view."
+        : `${how}, with ${key}. ${vis.set ? "The public view's own setting, unchanged." : "The default; a person changes it in Publish → Public view."} Anyone else sees the page signed out.`,
+      ...(nobody ? { danger: true } : {}),
+    }),
+  );
+
+  const lines: string[] = [];
+  lines.push(`Anyone with the link can open "${app.title}".`);
+  if (plan.listed) lines.push("It is online already: only what it needs now and is not there yet is added.");
+  lines.push(nobody ? "Nobody can sign in to it, so nobody can work in it." : `To use it, people sign in with ${orWords(signIn)}.`);
+  lines.push(parts.length ? `It also lets them see ${andWords(parts)} on this server.` : "Nothing else on this server becomes visible.");
+  // The dangers, said plainly: what a stranger could read or reach.
+  const wholeRuns = needs.workflows.filter((w) => w.checked && w.runs).map((w) => w.name);
+  if (wholeRuns.length) lines.push(`Anyone with the link can read every run of ${andWords(wholeRuns)}, in full.`);
+  const outside = needs.reads.filter((r) => r.checked && r.note.startsWith("calls ")).map((r) => r.name);
+  if (outside.length) lines.push(`The page can call ${andWords(outside)}, an outside service, with this server's own credentials.`);
+  if (!plan.seeded) lines.push(moves ? `Everyone who opens it gets version ${v} from now on, and later changes wait until someone makes them live.` : "Later changes to it wait until someone makes them live.");
+  lines.push("Nothing already online is changed or taken down.");
+  if (fails.length) lines.push(`Approving it fails: ${fails.join("; ")}.`);
+  return {
+    title: `Put "${app.title}" online`,
+    summary: lines.join(" "),
+    fields,
+    actions,
+    full: true,
+    input: { name: cfg.name, version: v },
+  };
+}
+
+/** "a", "a or b", "a, b or c". */
+const orWords = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} or ${xs.at(-1)}` : (xs[0] ?? ""));
+/** "a", "a and b", "a, b and c". */
+const andWords = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : (xs[0] ?? ""));

@@ -31,6 +31,11 @@ export {
   type RunEvent,
   type RunResult,
   type RunSummary,
+  type ArchivedPart,
+  type PartState,
+  type RunParts,
+  logEvicted,
+  withPart,
   type RunEventType,
   type RunOrigin,
   type AccessedNode,
@@ -95,7 +100,12 @@ export {
   tailFromPolling,
   lastRunAtFromIds,
   summarizeFromEvents,
+  localRuns,
 } from "./store.js";
+
+// The run archive (plans/run-archive.md, plans/retention.md): what `createStrut({ archive })` takes.
+export { type RunArchive, RunArchiveError, archiveFromEnv } from "./run-archive.js";
+export { type ObjectStore, type S3Settings, MemoryObjectStore, S3ObjectStore } from "./object-store.js";
 
 // Chat persistence (detached AI-builder background jobs)
 export {
@@ -343,6 +353,7 @@ export {
   readJobRecord,
   touchJob,
   holdJob,
+  reholdJob,
   jobHolder,
   jobTtlMs,
   jobsCapability,
@@ -539,6 +550,7 @@ export {
   type EvidenceMode,
   type EvidenceStatus,
 } from "./graph/claims.js";
+export { conceptVersionOf, readConceptVersion } from "./graph/concept-version.js";
 export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
 export {
   buildClaimsAuthoring,
@@ -552,7 +564,7 @@ export {
   type ClaimListing,
   type ClaimsResult,
 } from "./claims-authoring.js";
-export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
+export { subjectSchema, personSubjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
 export { claimsRoutes, type ClaimsRoutesDeps } from "./claims-routes.js";
 // Automations — run a workflow on a schedule (plans/automations.md).
 export {
@@ -586,6 +598,7 @@ export {
   createVerifier,
   subjectsOfRun,
   jobSubjectPath,
+  conceptSubjectPath,
   mapCheckResult,
   policyFires,
   sampleFires,
@@ -703,12 +716,25 @@ export {
 export { builderSystem, renderBuilderSystem, BUILDER_ENTRY, type ConceptPage } from "./ai/builder-system.js";
 // The browser the browser/* lib steps drive (src/browser/service.ts):
 // createStrut builds one from BROWSER_* as `services.browser` unless the
-// host passes its own; and the browser workflows it seeds beside them.
-export { BrowserService, type BrowserServiceOptions } from "./browser/service.js";
+// host passes its own, which implements `StrutBrowser` (the types below are
+// what its verbs take and answer); and the browser workflows it seeds beside them.
+export {
+  BrowserService,
+  type BrowserServiceOptions,
+  type StrutBrowser,
+  type Target,
+  type Viewport,
+  type Navigated,
+  type Observations,
+  type KeptSession,
+  type CaptureStep,
+} from "./browser/service.js";
+export type { Shot, ShotSink } from "./browser/shot.js";
 export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";
 // Pseudonymization (src/privacy/, specs/PRIVACY_SPEC.md): the privacy/* steps' logic and the `private-ask` seed.
 export * from "./privacy/index.js";
 export { seedPrivacyWorkflows, PRIVACY_WORKFLOWS, PRIVACY_CATEGORY } from "./privacy/seed.js";
+export { seedMediaWorkflows, MEDIA_WORKFLOWS, MEDIA_CATEGORY } from "./media-seed.js";
 // The `orchestrator` workflow strut ships, seeded the same way; a host's
 // delta rides on `createStrut({ orchestrator })`.
 export {

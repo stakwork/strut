@@ -1,0 +1,37 @@
+name: image-gen
+# Make one image from a prompt with any image model (the `image` step) and
+# hand it back as a deliverable: `artifacts` names the file, so a run's
+# launcher (a host's callback, strut's UI, a stranger's public run) gets a
+# link to it. `cost` is what the model call cost in dollars, as the step
+# reported it: a public run of this workflow is charged base + markup × it.
+#
+# Through the deployment's LLM gateway: xai/…, openai/… and google/… models,
+# and openrouter/… models once the gateway holds its `openrouter-images`
+# provider (stakwork/stakgraph#1859) and Hive lists it in the virtual keys.
+#
+# Input:  { prompt, model? }
+# Output: { image, model, cost, artifacts: [{ id: image, kind: image, title, path }] }
+input:
+  prompt: { type: string, description: "what to draw" }
+  model:
+    type: string
+    default: xai/grok-imagine-image
+    description: "the image model as <provider>/<id>: xai/grok-imagine-image, openai/gpt-image-1-mini, google/gemini-2.5-flash-image, openrouter/black-forest-labs/flux.2-klein-4b"
+steps:
+  - id: image
+    type: image
+    config:
+      prompt: "{{ input.prompt }}"
+      model: "{{ input.model }}"
+
+  - id: out
+    type: pack
+    config:
+      image: "{{ image.path }}"
+      model: "{{ image.model }}"
+      cost: "{{ image.cost }}"
+      artifacts:
+        - id: image
+          kind: image
+          title: "{{ input.prompt }}"
+          path: "{{ image.path }}"

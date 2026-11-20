@@ -1,4 +1,4 @@
-// The calling end of a move (AGENTS.md, "Moving strut to another host"):
+// The calling end of a move (docs/moving.md, "Moving strut to another host"):
 // `check` a link, `send` this host's stopped folders to a strut serving
 // receive, `fetch` them from one serving a send-back.
 import { randomBytes } from "node:crypto";

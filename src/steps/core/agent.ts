@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
-import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
+import { attachmentParts, listedFileSchema, loadListedFiles, loadRunAttachments, type ListedFile } from "../../ai/attachments.js";
 import { applyToolWrappers } from "../../extensions.js";
 import { loadAieo, resolveModel, createWebTools, modelProvider, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
@@ -83,6 +83,7 @@ import os from "node:os";
 // shared with the chat builder's bash tool.
 
 import { runCmd, runShellProcess, killGroups, maskSecretValues, type ProcessResult } from "../../shell.js";
+import { serveSshAgent } from "../../ssh-agent.js";
 import { bootEnv } from "../../env.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
@@ -833,6 +834,13 @@ function summarizeForEvent(v: unknown): string {
  * Each tool's `toModelOutput` is `registryToolModelOutput`: a step that marks
  * its output with `withMedia` shows the model the media beside the JSON.
  */
+/** `ctx.park` for an agent's tool call: the call fails, which the model
+ *  reads (src/park.ts) — an agent cannot wait in the middle of a turn. */
+const refuseParkInTool = (on: string): never => {
+  throw new Error(`park_refused: this step waits (${on}); an agent cannot wait in the middle of a turn — run it as a step of the workflow`);
+};
+const parkRefusalInTool = (): string => "an agent cannot wait in the middle of a turn — run this step as a step of the workflow";
+
 export function buildRegistryTools(
   names: string[] | undefined,
   registry: StepRegistry | undefined,
@@ -904,10 +912,21 @@ export function buildRegistryTools(
         }
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
-        const childCtx: StepContext = options?.strutToolPath
-          ? { ...base, agentTool: true, path: options.strutToolPath }
-          : { ...base, agentTool: true };
-        if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
+        // A tool-step cannot PARK (src/park.ts): a turn cannot be resumed
+        // mid-loop, so a step that would wait fails this call instead.
+        const childCtx: StepContext = {
+          ...base,
+          agentTool: true,
+          ...(options?.strutToolPath ? { path: options.strutToolPath } : {}),
+          park: refuseParkInTool,
+          parkRefusal: parkRefusalInTool,
+        };
+        if (gated) {
+          // A call the step answers itself has nothing for a person to decide here.
+          const own = def.answerGated ? await guardEscapes(`tool "${childCtx.path || stepType}"`, () => def.answerGated!(parsed, childCtx)) : undefined;
+          if (own !== undefined) return own;
+          return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
+        }
         // An error the tool-step lets escape fails this call, which the model
         // reads, rather than the whole agent (src/escaped-errors.ts).
         const checked = withinReach(stepType, parsed, childCtx);
@@ -951,6 +970,25 @@ async function attachedParts(ctx: StepContext): Promise<unknown[]> {
   if (!artifacts) throw new Error("agent: this run has attachments but no artifacts capability to read them from");
   const loaded = await loadRunAttachments(artifacts, ctx.runId, ctx.attachments ?? []);
   return (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat();
+}
+
+/** The files the step lists (`attachments: [...]`, plans/human-steps.md
+ *  §5.6.4) — read from the run's artifacts, held to the chat's caps — as
+ *  user-message parts, and as the run records them. */
+export async function listedParts(ctx: StepContext | undefined, list: ListedFile[]): Promise<{ files: RunAttachment[]; parts: unknown[] }> {
+  if (!list.length) return { files: [], parts: [] };
+  const artifacts = (ctx?.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+  if (!ctx || !artifacts) throw new Error("agent: attachments lists files of the run, and this run has no artifacts capability to read them from");
+  let loaded: Awaited<ReturnType<typeof loadListedFiles>>;
+  try {
+    loaded = await loadListedFiles(artifacts, ctx.runId, list);
+  } catch (err) {
+    throw new Error(`agent: attachments: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return {
+    files: loaded.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.bytes.length, path: a.path })),
+    parts: (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat(),
+  };
 }
 
 /** The files a thread's turns carried (`SessionTurn.attachments`), newest
@@ -1316,6 +1354,12 @@ export default defineStep({
       .describe(
         "secret NAMES (from the deployment's secret store) to inject as env vars into the bash tool's subprocess — the agent writes `$NAME` in commands (e.g. curl auth headers) and the shell expands it at exec time. The VALUE never enters the prompt, the model's context, or the event log: bash gets it via env only, and every tool output is masked before the model sees it. Grant narrowly (a dedicated research sub-agent), never to a drafting/producing agent. Residual risk (accepted): a prompt-injected agent can still SEND $NAME somewhere — masking stops leakage into context/logs, not egress.",
       ),
+    sshKeys: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "secret NAMES holding SSH private keys (Ed25519, PKCS#8 PEM — what ssh/keygen makes) that an SSH agent in strut's own process signs with (src/ssh-agent.ts): the bash tool gets SSH_AUTH_SOCK, so ssh, scp, rsync and git over ssh log in with them, and the shell never holds a key — it can USE one while the run lasts, never copy it (unlike a key in secretsEnv, which ssh could only read from a file the shell wrote). Each name is resolved at every request, so a key stored mid-turn signs at once; one that resolves to nothing, or to no key strut can load, is skipped. Not on Windows.",
+      ),
     mcp: z
       .boolean()
       .default(true)
@@ -1323,17 +1367,20 @@ export default defineStep({
         "give this agent the CALLER's MCP servers as tools — the ones its run was launched with (`POST …/run { mcp }`), named `<server>_<tool>`; a run launched without any has none, whatever this says. `false` keeps an agent to its own tools (a judge, a narrow researcher), and the sub-agents and jobs it launches get none either.",
       ),
     attachments: z
-      .boolean()
+      .union([
+        z.boolean(),
+        z.array(listedFileSchema),
+      ])
       .default(true)
       .describe(
-        "put the files the run was launched with (`POST …/run { attachments }`) on this agent's prompt, after its text — an image or a PDF as a file the model sees, text inline, anything else by its saved path; a run launched without any has none. `false` for an agent that should not see them (a judge, a second agent of the workflow). A sub-agent (an agent called as a tool) never gets them.",
+        "the files on this agent's prompt, after its text — an image or a PDF as a file the model sees, text inline, anything else by its saved path. `true`: the files the run was launched with (`POST …/run { attachments }`); a run launched without any has none. `false`: none (a judge, a second agent of the workflow). A LIST: exactly those files of the run's artifacts, each a path or `{ path, name?, mediaType? }` — what a `human` step's `attachments` hands out, so `attachments: \"{{ photo.attachments }}\"` shows the agent the files a worker sent (a step that sent none leaves no list, and `true` applies); at most 10, 5 MB an image, 15 MB together, or the step fails. A sub-agent (an agent called as a tool) never gets any.",
       ),
     model: z
       .string()
       .optional()
       .meta({
         description:
-          "model id, aieo alias ('sonnet', 'gemini', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
+          "model id, aieo alias ('sonnet', 'argon', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
         // The step editor offers the deployment's model catalog (GET /llm/models).
         suggest: "llm-models",
       }),
@@ -1467,6 +1514,25 @@ export default defineStep({
           : "")
       : "";
 
+    // ── sshKeys: an SSH agent in this process; bash gets its socket ────────
+    // The keys stay here (src/ssh-agent.ts), read from the secrets at every
+    // request, so the note below says the same thing every turn whether a
+    // key is stored yet or not: the bash tool's description is part of the
+    // cached prefix.
+    const bashEnv: Record<string, string> = { ...secretEnv };
+    let sshNote = "";
+    if (cfg.sshKeys.length && process.platform !== "win32") {
+      const secrets = (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets;
+      if (!secrets) throw new Error("agent: sshKeys requires the secrets capability (ctx.services.secrets)");
+      const sshAgent = await serveSshAgent(async () =>
+        (await Promise.all(cfg.sshKeys.map((name: string) => secrets.get(name)))).filter((v): v is string => !!v),
+      );
+      ctx?.onRunEnd?.(() => sshAgent.close());
+      bashEnv["SSH_AUTH_SOCK"] = sshAgent.socket;
+      sshNote =
+        " An SSH agent holds this shell's keys (SSH_AUTH_SOCK is set): ssh, scp, rsync and git over ssh log in with them, and `ssh-add -L` prints their public halves — nothing when no key is stored yet. The private keys never reach the shell. A host it has not met needs `-o StrictHostKeyChecking=accept-new`.";
+    }
+
     // What a `bash` command leaves running in its process group once it has
     // returned — a dev server started in the background, a browser behind
     // `| tail` — is ended with the run (shell.ts `killGroups`), never left to
@@ -1514,7 +1580,8 @@ export default defineStep({
       bash: tool({
         description:
           `Execute a bash command inside the working dir. Use for listing dirs, reading files (cat/head), inspecting manifests/lockfiles/docker files, running installs/builds, and anything the other tools don't cover. One command may run for ${bashBudget}: at that point its whole process group is killed and the tool reports the timeout. So a program that never exits (a dev server), or a pipeline whose helper processes keep the pipe open (a browser behind \`| tail\`), is started in the background with its output redirected to a file, then polled.` +
-          secretsNote,
+          secretsNote +
+          sshNote,
         inputSchema: z.object({ command: z.string().describe("The bash command to execute") }) as any,
         execute: async ({ command }: { command: string }) => {
           if (!existsSync(cfg.cwd)) return "Working directory does not exist";
@@ -1537,7 +1604,7 @@ export default defineStep({
               cwd: cfg.cwd,
               timeoutMs: cfg.bashTimeoutMs,
               maxOutputChars: resultCap,
-              env: secretEnv,
+              env: bashEnv,
               signal: ac.signal,
               onLeftover: (pgid) => void leftovers.add(pgid),
             });
@@ -1758,6 +1825,7 @@ export default defineStep({
     // tools may hand them on (job/start): after this run's own, newest first.
     const earlierFiles = session ? threadAttachments(session.turns) : [];
     if (toolCtx && earlierFiles.length) toolCtx.attachments = [...(toolCtx.attachments ?? []), ...earlierFiles];
+    if (toolCtx && session) toolCtx.agentTurn = { session: session.id, turn: session.turns.length };
     const system = session?.system ?? cfg.system;
     // What the requests send: the same text, with its own cache breakpoint.
     const instructions = cachedSystem(system, providerOptions) as any;
@@ -1948,7 +2016,10 @@ export default defineStep({
       // parts the builder chat makes of a message's attachments. A
       // sub-agent's prompt is its caller's words: the files stay with the
       // caller.
-      const files = cfg.attachments && !ctx?.agentTool && ctx?.attachments?.length ? await attachedParts(ctx) : [];
+      // Or the files the step lists (plans/human-steps.md §5.6.4): a
+      // worker's photo from a `human` step, any file of the run.
+      const listed = Array.isArray(cfg.attachments) && !ctx?.agentTool ? await listedParts(ctx, cfg.attachments) : undefined;
+      const files = listed ? listed.parts : cfg.attachments === true && !ctx?.agentTool && ctx?.attachments?.length ? await attachedParts(ctx) : [];
       const task = { role: "user" as const, content: files.length ? [{ type: "text", text: basePrompt }, ...files] : basePrompt };
       // The REQUEST and the RECORD (plans/compaction.md §3). This turn's
       // record is `lead` (a compaction at open, if any), the task, then
@@ -2138,7 +2209,7 @@ export default defineStep({
               ...(ctx?.actor ? { actor: ctx.actor } : {}),
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
               ...(ctx?.job ? { job: ctx.job } : {}),
-              ...(files.length ? { attachments: ctx!.attachments } : {}),
+              ...(files.length ? { attachments: listed ? listed.files : ctx!.attachments } : {}),
               ...(ctx?.wake ? { wake: true as const } : {}),
               provider: resolved.provider,
               model: resolved.name,
@@ -2149,7 +2220,11 @@ export default defineStep({
               ...(from !== undefined ? { replayFrom: from } : {}),
             },
           });
-          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
+          // `keptSystem`: the thread ran on its first turn's prompt and this
+          // step was handed another. What a step rendered into THIS turn's
+          // `system` the model never read, so the run does not observe those
+          // pages (`subjectsOfRun`, src/verify.ts).
+          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset, ...(session.system != null && session.system !== cfg.system ? { keptSystem: true as const } : {}) } };
           if (toTell.length) await proposalsOf(ctx?.services)?.markReported(toTell.map((p) => p.id)).catch(() => {});
         }
         const spent = { modelCalls: out["steps"] as number, usage: out["usage"] as TokenUsage, cost: out["cost"] as number };

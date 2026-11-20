@@ -107,6 +107,26 @@ describe("app monitor", () => {
     void tick;
   });
 
+  it("volume for a worker's steps: per viewer, not per version (plans/human-steps.md §5.2)", () => {
+    const perViewer = (type: string) => type.startsWith("task/");
+    const { monitor, call } = setup({ perViewer });
+    // Six hundred workers each asking once: a busy app, no warning.
+    for (let i = 0; i < L.volume.minute; i++) call({ type: "task/next", viewer: `w${i}`, config: { wait: 25 } });
+    assert.deepEqual(monitor.report("dash").warnings, []);
+    assert.equal(monitor.report("dash").types.find((t) => t.type === "task/next")?.calls, L.volume.minute, "still counted");
+    // One worker in a loop: a warning, on the worker steps per viewer.
+    for (let i = 0; i < L.volume.minute; i++) call({ type: i % 2 ? "task/me" : "task/file", viewer: "loop", config: { i: i % 3 } });
+    const vol = monitor.report("dash").warnings.filter((w) => w.kind === "volume");
+    assert.deepEqual(vol.map((w) => [w.window, w.perViewer, w.peak]), [["1m", true, L.volume.minute]]);
+    assert.match(vol[0]!.message, /one viewer made 600 worker calls \(task\/\*\) in a minute/);
+    assert.match(vol[0]!.fix, /useTask/);
+    // The version's own count holds the other steps alone.
+    for (let i = 0; i < L.volume.minute - 1; i++) call({ viewer: `v${i % 50}`, config: { i: i % 7 } });
+    assert.equal(monitor.report("dash").warnings.filter((w) => w.kind === "volume" && !w.perViewer).length, 0);
+    call({ viewer: "v1" });
+    assert.equal(monitor.report("dash").warnings.filter((w) => w.kind === "volume" && !w.perViewer).length, 1);
+  });
+
   it("failing: one call failing over and over, with its last error", () => {
     const { monitor, call } = setup();
     for (let i = 0; i < L.failing.calls; i++) call({ type: "graph/create-node", status: "refused", bytes: 0, error: `step_run refused: a graph write on "Concept" is refused (${i})`, config: { node_type: "Concept" } });
@@ -211,6 +231,19 @@ describe("app monitor — kept on disk", () => {
     const c = createAppMonitor({ root, now: () => at, flushEveryMs: 0 });
     c.record({ app: "dash", version: "v1", type: "run/get", config: {}, viewer: "v0", status: "ok", ms: 1, bytes: 10 });
     assert.equal(c.report("dash").warnings.find((w) => w.kind === "volume")?.times, 1, "the same window: no second sighting");
+  });
+
+  it("a worker's steps read back from the files never count toward the version's volume", async () => {
+    const root = await fresh();
+    const perViewer = (type: string) => type.startsWith("task/");
+    const a = setup({ root, perViewer });
+    for (let i = 0; i < L.volume.minute - 1; i++) a.call({ type: "task/next", viewer: `w${i}` });
+    a.call({ viewer: "v1" });
+    await a.monitor.close();
+    const b = createAppMonitor({ root, now: a.at, flushEveryMs: 0, perViewer });
+    for (let i = 0; i < 10; i++) b.record({ app: "dash", version: "v1", type: "run/get", config: { i }, viewer: "v1", status: "ok", ms: 1, bytes: 10 });
+    assert.deepEqual(b.report("dash").warnings, [], "the minute's 600 were mostly a worker's");
+    assert.equal(b.report("dash").hour.calls, L.volume.minute + 10);
   });
 
   it("one file per UTC day under the app's .usage, a minute's lines summed on read, 30 days kept, a forgotten app's files gone", async () => {

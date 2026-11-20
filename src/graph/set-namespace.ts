@@ -13,6 +13,7 @@
  * registered partitions and strut leaves them as on main. An edge's search row (`EdgeText`, plans/graph-edge-search.md)
  * moves with its edge, in the same transaction.
  */
+import { assertBranchMove } from "./branch.js";
 import type { GraphBackend } from "./backend.js";
 import { GraphValidationError } from "./node-writer.js";
 import { namespaceName } from "./ladybug/namespaces.js";
@@ -46,6 +47,7 @@ export async function setNamespace(b: GraphBackend, input: SetNamespaceInput): P
     if (!raw || !type || type === "Schema" || raw.props["deleted_at"] != null) throw new GraphValidationError("NOT_FOUND", "node", `no node ${input.ref_id}`);
     const from = String(raw.props["namespace"] ?? b.namespace);
     if (from === ns) return { kind: "node", ref_id: input.ref_id, from, namespace: ns, moved: false };
+    assertBranchMove(b, { type, from, to: ns });
     const key = raw.props["key"];
     if (typeof key === "string" && key) {
       const held = await b.nodeEngine.refByKey(tx, type, key, ns);
@@ -69,6 +71,7 @@ async function moveEdge(b: GraphBackend, ref_id: string, ns: string): Promise<Se
     if (!rows.length) throw new GraphValidationError("NOT_FOUND", "edge", `no edge ${ref_id}`);
     const from = String(rows[0]!["ns"] ?? b.namespace);
     if (from === ns) return { kind: "edge", ref_id, from, namespace: ns, moved: false };
+    assertBranchMove(b, { from, to: ns });
     const now = Date.now();
     await tx.run(`MATCH (:Node)-[r {ref_id: $ref_id}]->(:Node) SET r.namespace = $ns, r.updated_at = CAST($now AS INT64)`, { ref_id, ns, now });
     await tx.run(`MATCH (n:Node {node_type: '${EDGE_TEXT_TYPE}', key: $k}) SET n.namespace = $ns, n.updated_at = CAST($now AS INT64)`, { k: rowKey(ref_id), ns, now });

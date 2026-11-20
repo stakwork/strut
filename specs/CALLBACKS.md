@@ -63,6 +63,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `error`      | `{ "message": "..." }` — on error only                       |
 | `transcripts`| one link per agent session the run recorded — only when it recorded any (see §3) |
 | `artifacts`  | the deliverables the workflow's output declared, resolved to links — only when it declared any (see §4) |
+| `delivered`  | on a WAKE turn's `run.end` (§9): what each job run it woke on (on this strut) delivered, `[{ job, runId, workflow, artifacts }]`, `artifacts` resolved as that run's own `run.end` carried them. A wake turn's own run holds none of the job's work, so its `artifacts` are not the job's. The same list the conversation shows under the turn (`API.md` §9.1). Only when one delivered any |
 | `durationMs` | wall time from launch to finish                              |
 
 Reply with any `2xx`. Strut retries a failed delivery a few times over about
@@ -557,6 +558,8 @@ the job's reply inline (6 000 chars at most) and its question. It runs:
   has them, so its `run.end` reaches you as a reply does — `wake: { job,
   runId }` on it and on its `run.start`, `wake: true` on the session's turn
   line. A reply of exactly `[silent]` means there is nothing to add: hide it.
+  Its `run.end` carries `delivered` (§2): the job's files, to show with the
+  reply, since the reply need not list them.
 
 **Gates.** Once per end of a job run: an end heard twice wakes once, and a
 run resumed under its own id wakes again when it ends again. Queued, never

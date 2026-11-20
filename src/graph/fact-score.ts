@@ -73,6 +73,8 @@ export interface EvidenceIn {
   check?: string;
   /** The Check that observed it. */
   check_id?: string;
+  /** The fact (edge ref_id) a refutation was about, when it says. */
+  fact?: string;
 }
 
 /** An edge of a slot, as the graph holds it (epoch ms). */
@@ -199,7 +201,9 @@ function newestOf(xs: EvidenceIn[] | undefined): EvidenceIn[] {
  *  after does not undo "that was never true", only the user backing it does.
  *  At the same time as their support, the refutation wins. */
 function refutedBy(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): boolean {
-  return newestOf(e.evidence?.filter((x) => !x.check && sayerOf(x.said_by, s).kind === "owner")).some((x) => x.strength < 0);
+  // A refutation of another fact on the claim (the one a correction replaced) is not this one's.
+  const own = (x: EvidenceIn) => x.strength >= 0 || !x.fact || x.fact === e.ref_id;
+  return newestOf(e.evidence?.filter((x) => !x.check && sayerOf(x.said_by, s).kind === "owner" && own(x))).some((x) => x.strength < 0);
 }
 
 /** Its newest check found the expected evidence missing: weakly against it.

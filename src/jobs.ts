@@ -17,7 +17,9 @@
  * nothing left is removed, and so is the record unless it holds the job's
  * history (runs or holds). `DELETE /jobs/:id` (`deleteJob`) is the only
  * other thing that removes a job's files, and the only thing that removes
- * a record with runs. The read side — the index — is `job-index.ts`.
+ * a record with runs. The read side — the index — is `job-index.ts`. Two
+ * small indexes beside the records (`.used`, `.sweep`) keep the sweep and
+ * the listing from reading every record on the server.
  *
  * A job also keeps HOLDS (§6): what a tool claimed that must outlive the
  * run — a pod — recorded through `ctx.services.jobs.hold` with the step
@@ -46,7 +48,7 @@ import { roomsFor } from "./rooms.js";
 import type { McpServer, StartedBy, StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
-import { encodeId, idProblem } from "./session-store.js";
+import { encodeId, idProblem, type SessionStore } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
 import { writeNewFile, type Attachment } from "./ai/attachments.js";
@@ -75,6 +77,12 @@ export interface JobRecord {
   /** Every run launched under the job, oldest first (plans/job-index.md §1).
    *  Absent until the first. */
   runs?: JobRun[];
+  /** The agent threads with a turn under the job (a session turn's `job`),
+   *  by session id, first seen first: written when such a turn commits
+   *  (`recordingJobSessions`), so reading the job never lists every
+   *  session on the server. A record from before it was kept is filled in
+   *  once, by the job index's one pass over the session store. */
+  sessions?: string[];
 }
 
 /** One run of a job, as the runner records it at `run.start`. A child run
@@ -164,15 +172,53 @@ async function writeJobRecord(root: string, rec: JobRecord): Promise<void> {
   await rename(`${root}.json.tmp`, `${root}.json`);
 }
 
+/** Add agent threads to a job's record (`JobRecord.sessions`), under its
+ *  lock. Not a use: `usedAt` stays. A job with no record gets none — a
+ *  thread does not make a job — and an id already there is not written. */
+export async function noteJobSessions(root: string, ids: readonly string[]): Promise<void> {
+  await withLock(`${root}.json`, async () => {
+    const rec = await readJobRecord(root);
+    if (!rec) return;
+    const have = new Set(rec.sessions ?? []);
+    const add = ids.filter((id) => !have.has(id) && have.add(id));
+    if (add.length === 0) return;
+    rec.sessions = [...(rec.sessions ?? []), ...add];
+    await writeJobRecord(root, rec);
+  });
+}
+
+/** The session store with each committed turn's thread noted on its job's
+ *  record (`noteJobSessions`): what the job index lists a job's threads
+ *  from. A note that fails is logged; the turn stands. */
+export function recordingJobSessions(store: SessionStore, dataDir: string): SessionStore {
+  return {
+    load: (id) => store.load(id),
+    turns: (id) => store.turns(id),
+    list: () => store.list(),
+    delete: (id) => store.delete(id),
+    async appendTurn(id, turn) {
+      const line = await store.appendTurn(id, turn);
+      const job = turn.record.job;
+      if (job && !idProblem(job)) {
+        await noteJobSessions(jobRoot(dataDir, job), [id]).catch((err) => console.warn(`[jobs] thread ${id} not noted on job ${job}:`, err));
+      }
+      return line;
+    },
+  };
+}
+
 /** Every write to a record: under its lock, the record (created now when
  *  there is none), `edit` applied, `usedAt` stamped — a write is a use. */
 async function updateJobRecord(root: string, name: string, edit: (rec: JobRecord) => void): Promise<JobRecord> {
   return withLock(`${root}.json`, async () => {
     const now = new Date().toISOString();
-    const rec = (await readJobRecord(root)) ?? { name, createdAt: now, usedAt: now, repos: {} };
+    const read = await readJobRecord(root);
+    const was = read?.usedAt;
+    const rec = read ?? { name, createdAt: now, usedAt: now, repos: {} };
     edit(rec);
     rec.usedAt = now;
     await writeJobRecord(root, rec);
+    await indexJob(root, rec, was);
     return rec;
   });
 }
@@ -186,6 +232,141 @@ export async function touchJob(
   return updateJobRecord(root, name, (rec) => {
     if (repo) rec.repos[repo.dir] = { cache: repo.cache, ref: repo.ref };
   });
+}
+
+// ── the indexes beside the records ────────────────────────────────────────
+
+/*
+ * Two indexes beside the records, so neither a turn's sweep nor `GET /jobs`
+ * reads every record on the server. A swarm holds 100k jobs after months,
+ * and both used to read them all: the sweep on every turn, the listing on
+ * every call.
+ *
+ * - `jobs/.used/<day>/<usedAt ms>-<encoded id>`: an empty file per job, at
+ *   its `usedAt`. `jobsByUse` reads it newest first, so a listing stops at
+ *   its `limit`.
+ * - `jobs/.sweep/<encoded id>`: an empty file per job the sweep has
+ *   something to look at (`needsSweep`). The sweep reads those records alone.
+ *
+ * `updateJobRecord` keeps both under the record's lock: it is every write
+ * that makes a record, stamps `usedAt`, or adds a repository or a hold. The
+ * sweep and `deleteJob` take a job out with its record. No job id starts
+ * with a dot, so neither folder is ever a job's. Records from before the
+ * indexes are put in by one pass per data directory (`jobsIndexed`).
+ */
+const USED_DIR = ".used";
+const SWEEP_DIR = ".sweep";
+const INDEXED_FILE = ".indexed";
+
+/** A job's entry in `.used` at `usedAt`. Fixed-width milliseconds, so a
+ *  day's names sort by time. */
+function usedFile(root: string, usedAt: string): string {
+  const ms = Math.max(0, Date.parse(usedAt) || 0);
+  return join(dirname(root), USED_DIR, new Date(ms).toISOString().slice(0, 10), `${String(ms).padStart(15, "0")}-${basename(root)}`);
+}
+
+const sweepFile = (root: string): string => join(dirname(root), SWEEP_DIR, basename(root));
+
+/** Whether the sweep has anything to look at in a job: repositories to
+ *  remove, holds to let go, or (for a record with no runs, which no history
+ *  keeps) a directory that may be empty once the job is `idle`. A job the
+ *  sweep has seen idle with none of these leaves `.sweep` until a write
+ *  puts it back. A record of runs alone is history: the sweep never
+ *  changes it. */
+function needsSweep(rec: JobRecord, idle: boolean): boolean {
+  return Object.keys(rec.repos).length > 0 || !!rec.holds?.length || (!rec.runs?.length && !idle);
+}
+
+/** Put a record just written into both indexes. Its entry at `was` (the
+ *  `usedAt` before this write) goes after the new one is in, so a listing
+ *  never misses the job. */
+async function indexJob(root: string, rec: JobRecord, was?: string): Promise<void> {
+  const used = usedFile(root, rec.usedAt);
+  await mkdir(dirname(used), { recursive: true });
+  await writeFile(used, "");
+  if (was !== undefined && usedFile(root, was) !== used) await rm(usedFile(root, was), { force: true });
+  if (needsSweep(rec, false)) {
+    await mkdir(dirname(sweepFile(root)), { recursive: true });
+    await writeFile(sweepFile(root), "");
+  }
+}
+
+/** Take a removed job out of both indexes. */
+async function unindexJob(root: string, rec: JobRecord | null): Promise<void> {
+  if (rec) await rm(usedFile(root, rec.usedAt), { force: true });
+  await rm(sweepFile(root), { force: true });
+}
+
+const indexing = new Map<string, Promise<void>>();
+
+/**
+ * The one pass that puts the records from before the indexes into them:
+ * once per data directory, each record under its lock, stamped in
+ * `jobs/.indexed`. The sweep and the listing await it, so the first of them
+ * after an upgrade reads every record once, as each of them used to every
+ * time. A pass that fails is logged and the next caller tries again. Never
+ * throws.
+ */
+export function jobsIndexed(dataDir: string): Promise<void> {
+  const base = resolve(dataDir, "jobs");
+  let pass = indexing.get(base);
+  if (pass) return pass;
+  pass = (async () => {
+    if (existsSync(join(base, INDEXED_FILE))) return;
+    let files: string[];
+    try {
+      files = await readdir(base);
+    } catch (err) {
+      // No jobs yet: every record will be written through `updateJobRecord`.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      const root = join(base, file.slice(0, -".json".length));
+      await withLock(`${root}.json`, async () => {
+        const rec = await readJobRecord(root);
+        if (rec) await indexJob(root, rec);
+      });
+    }
+    await writeFile(join(base, INDEXED_FILE), `${new Date().toISOString()}\n`);
+  })().catch((err) => {
+    indexing.delete(base);
+    console.warn("[jobs] the job indexes were not built; the next sweep or listing tries again:", err);
+  });
+  indexing.set(base, pass);
+  return pass;
+}
+
+/**
+ * The job records newest-used first, read one at a time from `.used`, so a
+ * reader that stops at its `limit` reads about what it returns. `keep` (on
+ * the job's id) passes a job over before its record is read. A job's newest
+ * entry wins; one whose record is gone is passed over.
+ */
+export async function* jobsByUse(dataDir: string, keep?: (job: string) => boolean): AsyncGenerator<JobRecord> {
+  await jobsIndexed(dataDir);
+  const base = join(dataDir, "jobs");
+  const newestFirst = async (dir: string) => (await readdir(dir).catch(() => [] as string[])).sort().reverse();
+  const seen = new Set<string>();
+  for (const day of await newestFirst(join(base, USED_DIR))) {
+    for (const entry of await newestFirst(join(base, USED_DIR, day))) {
+      const file = entry.slice("000000000000000-".length);
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (keep) {
+        let job: string;
+        try {
+          job = decodeURIComponent(file);
+        } catch {
+          continue; // not a name strut wrote
+        }
+        if (!keep(job)) continue;
+      }
+      const rec = await readJobRecord(join(base, file));
+      if (rec) yield rec;
+    }
+  }
 }
 
 // ── live updates (plans/live-artifacts.md) ────────────────────────────────
@@ -626,8 +807,53 @@ export function holdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd" | "
   if (!ctx.onRunEnd) return;
   held.set(root, ctx.runId);
   ctx.onRunEnd(() => {
-    if (held.get(root) === ctx.runId) held.delete(root);
+    if (held.get(root) !== ctx.runId) return;
+    held.delete(root);
+    const waiting = letGo.get(root);
+    letGo.delete(root);
+    for (const told of waiting ?? []) told();
   });
+}
+
+/** Who waits for a job's hold to go (`reholdJob`): told the moment it does. */
+const letGo = new Map<string, Set<() => void>>();
+/** How often a run waiting for a job's hold looks at its own cancel and pause. */
+const REHOLD_CHECK_MS = 250;
+
+/** `holdJob` for a run a durable resume carries past the step that took the
+ *  hold (`StepDef.onReplay`: a wake, a restart, a person's resume). A park
+ *  or the dead process let the hold go, so it is taken again before the
+ *  steps it guards. When another run took the job in between, the resumed
+ *  run WAITS for that one to let go — live, its cancel and pause looked at
+ *  every quarter second, told at once when the hold goes — and never fails
+ *  `job_busy:`, which is a fresh launch's answer: a resume is the same run
+ *  going on, and a run that waited days for a person must not be lost to a
+ *  turn that happened to be running. */
+export async function reholdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd" | "control">, root: string, name: string): Promise<void> {
+  if (!ctx.onRunEnd) return;
+  let said = false;
+  for (;;) {
+    const by = held.get(root);
+    if (by === undefined || by === ctx.runId || isAncestorRun(ctx.control, by)) return holdJob(ctx, root, name);
+    if (!said) {
+      console.log(`[jobs] run ${ctx.runId} waits for run ${by} to let go of job "${name}" before it goes on`);
+      said = true;
+    }
+    await new Promise<void>((resolve) => {
+      const waiting = letGo.get(root) ?? new Set<() => void>();
+      letGo.set(root, waiting);
+      const done = () => {
+        clearTimeout(timer);
+        waiting.delete(done);
+        if (!waiting.size && letGo.get(root) === waiting) letGo.delete(root);
+        resolve();
+      };
+      const timer = setTimeout(done, REHOLD_CHECK_MS);
+      waiting.add(done);
+    });
+    // Throws when the run is being cancelled; blocks while it is paused.
+    await ctx.control?.checkpoint();
+  }
 }
 
 /** The run holding a job's directory, if any. */
@@ -672,54 +898,67 @@ export interface SweepOptions {
  * record is the job's history (it has runs — the index, plans/job-index.md;
  * only `DELETE /jobs/:id` removes that). Run by every
  * `job/dir` and kept checkout, so disk — and a pod — is reclaimed without
- * a timer. Returns the names it touched. Never throws: a job that cannot
- * be swept, and a hold that will not release, are tried again next time.
+ * a timer. It reads only the jobs in `.sweep` (`needsSweep`): jobs with
+ * repositories or holds, and fresh records with no runs. A job of runs
+ * alone, which is most of them, costs a turn nothing. Returns the names it
+ * touched. Never throws: a job that cannot be swept, and a hold that will
+ * not release, are tried again next time.
  */
 export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: number, opts: SweepOptions = {}): Promise<string[]> {
   if (!ttlMs) return [];
   const now = opts.now ?? Date.now();
+  const idle = (rec: JobRecord) => now - Date.parse(rec.usedAt) > ttlMs;
   const base = join(dataDir, "jobs");
-  let files: string[];
+  await jobsIndexed(dataDir);
+  let marks: string[];
   try {
-    files = (await readdir(base)).filter((f) => f.endsWith(".json"));
+    marks = await readdir(join(base, SWEEP_DIR));
   } catch {
     return [];
   }
   const swept: string[] = [];
-  for (const file of files) {
-    const root = join(base, file.slice(0, -".json".length));
+  for (const mark of marks) {
+    const root = join(base, mark);
     if (held.has(root)) continue;
     const rec = await readJobRecord(root);
-    if (!rec || !(now - Date.parse(rec.usedAt) > ttlMs)) continue;
-    const repos = Object.entries(rec.repos);
-    try {
-      let released = 0;
-      if (rec.holds?.length) {
-        if (!opts.release) continue;
-        released = (await releaseHolds(root, rec, opts.release)).released.length;
-      }
-      for (const [dir, { cache }] of repos) {
-        await removeJobRepo(shell, dir, cache);
-        delete rec.repos[dir];
-      }
-      let left: string[] = [];
+    if (rec && idle(rec)) {
+      const repos = Object.entries(rec.repos);
       try {
-        left = await readdir(root);
-      } catch {
-        /* the directory is already gone */
+        let released = 0;
+        if (rec.holds?.length) {
+          if (!opts.release) continue;
+          released = (await releaseHolds(root, rec, opts.release)).released.length;
+        }
+        for (const [dir, { cache }] of repos) {
+          await removeJobRepo(shell, dir, cache);
+          delete rec.repos[dir];
+        }
+        let left: string[] = [];
+        try {
+          left = await readdir(root);
+        } catch {
+          /* the directory is already gone */
+        }
+        if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
+          await rm(root, { recursive: true, force: true });
+          await rm(`${root}.json`, { force: true });
+          await setJobCallback(root, null);
+          await unindexJob(root, rec);
+          swept.push(rec.name);
+        } else if (repos.length || released) {
+          await withLock(`${root}.json`, () => writeJobRecord(root, rec));
+          swept.push(rec.name);
+        }
+      } catch (err) {
+        console.warn(`[jobs] could not sweep job "${rec.name}":`, (err as Error).message);
+        continue;
       }
-      if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
-        await rm(root, { recursive: true, force: true });
-        await rm(`${root}.json`, { force: true });
-        await setJobCallback(root, null);
-        swept.push(rec.name);
-      } else if (repos.length || released) {
-        await withLock(`${root}.json`, () => writeJobRecord(root, rec));
-        swept.push(rec.name);
-      }
-    } catch (err) {
-      console.warn(`[jobs] could not sweep job "${rec.name}":`, (err as Error).message);
     }
+    // Read again under the lock: a write since may have given it more to sweep.
+    await withLock(`${root}.json`, async () => {
+      const after = await readJobRecord(root);
+      if (!after || !needsSweep(after, idle(after))) await rm(sweepFile(root), { force: true });
+    });
   }
   return swept;
 }
@@ -756,6 +995,7 @@ export async function deleteJob(
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.json`, { force: true });
   await setJobCallback(root, null);
+  await unindexJob(root, rec);
   return { released };
 }
 
@@ -803,23 +1043,28 @@ export async function deleteJobUpload(root: string, job: string, relPath: string
 
 /** Relative paths of every file in a job's directory, recursive and sorted,
  *  skipping its repositories (a checkout is not a deliverable, and can be
- *  enormous). `[]` for a job with no directory. */
+ *  enormous): the walk never enters one, so a checkout's `node_modules` is
+ *  not read on every `GET /jobs/:id`. `[]` for a job with no directory. */
 export async function listJobFiles(root: string, rec: JobRecord | null): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(root, { recursive: true, withFileTypes: true });
-  } catch (err: any) {
-    if (err?.code === "ENOENT") return [];
-    throw err;
-  }
-  const repoDirs = Object.keys(rec?.repos ?? {}).map((d) => resolve(d));
-  const inRepo = (abs: string) => repoDirs.some((d) => abs === d || abs.startsWith(d + sep));
-  return entries
-    .filter((e) => e.isFile())
-    .map((e) => join(e.parentPath, e.name))
-    .filter((abs) => !inRepo(abs))
-    .map((abs) => relative(root, abs))
-    .sort();
+  const repoDirs = new Set(Object.keys(rec?.repos ?? {}).map((d) => resolve(d)));
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err: any) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return; // no directory, or gone mid-walk
+      throw err;
+    }
+    for (const e of entries) {
+      const abs = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!repoDirs.has(resolve(abs))) await walk(abs);
+      } else if (e.isFile()) out.push(relative(root, abs));
+    }
+  };
+  await walk(root);
+  return out.sort();
 }
 
 // ── one writer per key ────────────────────────────────────────────────────

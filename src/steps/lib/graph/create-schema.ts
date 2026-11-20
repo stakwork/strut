@@ -7,7 +7,6 @@ const EXAMPLE = `- id: evidence_type
   type: graph/create-schema
   config:
     type: Evidence
-    parent: Thing
     attributes:
       description: string
       content: "?string"
@@ -23,7 +22,7 @@ export default defineStep({
     "graph/create-node and graph/create-triplet refuse a node whose type has no schema, or whose properties the schema " +
     "does not declare — call this first when the type (or attribute) you need is missing from graph_get_ontology. " +
     "`attributes` maps attribute name → type: string | boolean | int | float | complex | datetime | list, with a `?` prefix " +
-    "for OPTIONAL (e.g. '?float'); no prefix = REQUIRED on every node. `name` (string) is inherited from Thing and always " +
+    "for OPTIONAL (e.g. '?float'); no prefix = REQUIRED on every node. `name` (string) every type has, always " +
     "available. `key_spec` is the identity: `-`-joined attribute names (default 'name') — two nodes with the same key_spec " +
     "values in a namespace are the same node (`node_key` is accepted as its old name). `index` (default: the key_spec attributes) lists the searchable attributes. " +
     "`title_key` names the attribute a node's title comes from, or a template like '{first} {last}' (default 'name'). " +
@@ -36,7 +35,7 @@ export default defineStep({
     EXAMPLE,
   input: z.object({
     type: z.string().describe("The node type label to register, e.g. 'Evidence'. Letters/digits/underscore, starts with a letter."),
-    parent: z.string().optional().default("Thing").describe("Parent type in the ontology (must exist). Attributes are inherited from it. Default 'Thing'."),
+    parent: z.string().optional().describe("Parent type in the ontology (must exist), whose attributes it inherits. Leave out for a top-level type."),
     attributes: z
       .record(z.string(), z.string())
       .describe("Attribute name → type string ('string', '?float', 'list', …). '?' prefix = optional. May be {} to only rely on inherited attributes."),

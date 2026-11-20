@@ -1,20 +1,44 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
-import { RANGES, byEarned, fmtSats, fmtUsd, priceLine, rangeFrom, subjectLabel, withdrawBlocked, withdrawRefusal, type RangeId } from "../earnings";
+import {
+  RANGES,
+  byEarned,
+  coverLine,
+  fmtSats,
+  fmtUsd,
+  priceLine,
+  rangeFrom,
+  sendPurposeNote,
+  showsWorkers,
+  subjectLabel,
+  withdrawBlocked,
+  withdrawRefusal,
+  workersAcceptedLine,
+  workersDayMsat,
+  workersOutLine,
+  workersOwedSub,
+  workersPaidSub,
+  type RangeId,
+} from "../earnings";
 import { fmtTime } from "./JobTimeline";
 import { ConfirmButton } from "./ConfirmButton";
 import { WithdrawDialog } from "./WithdrawDialog";
+import { DepositDialog } from "./DepositDialog";
+import { BuyingSection } from "./BuyingSection";
 
 // ── The Publish dialog's Earnings tab (plans/paid-runs.md §8) ──────────────
 //
 // What this server earned from what anyone may run here, and the wallet it
 // lands in. Earned and cost are dollars, so the margin is their difference;
 // sats are what the wallet holds. On top: the wallet's balance in sats and
-// at the rate of the moment, Withdraw beside it, and the credit still owed
-// as service; then earned, cost, margin, received and withdrawn over a
-// range, by day and by item; at the bottom the wallet's settings
-// (`GET`/`PUT /earnings/wallet`). Every number is the ledger's rollups.
+// at the rate of the moment, Add sats and Withdraw beside it, the credit
+// still owed as service and, once any worker was paid, what workers are owed
+// for accepted answers (plans/human-steps.md §8.1) with whether the balance
+// covers it; then earned, cost, margin, received and withdrawn
+// over a range, by day and by item; the credit this server BUYS with at
+// other servers; at the bottom the wallet's settings (`GET`/`PUT
+// /earnings/wallet`). Every number is the ledger's rollups.
 
 export function EarningsPanel() {
   const [range, setRange] = useState<RangeId>("30d");
@@ -22,6 +46,7 @@ export function EarningsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [withdrawing, setWithdrawing] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [byDay, setByDay] = useState<api.EarningsRow[]>([]);
 
   useEffect(() => {
@@ -46,8 +71,15 @@ export function EarningsPanel() {
   const items = view ? byEarned(view.rows) : [];
   const received = new Map(view?.received.days.map((d) => [d.day, d]) ?? []);
   const withdrawn = new Map(view?.withdrawn.days.map((d) => [d.day, d]) ?? []);
-  const days = [...new Set([...byDay.map((d) => d.key), ...received.keys(), ...withdrawn.keys()])].sort().reverse();
+  const deposited = new Map(view?.deposited.days.map((d) => [d.day, d]) ?? []);
+  // What workers are owed: shown once any worker was paid, so a strut that
+  // never paid one reads as it did.
+  const workers = showsWorkers(view?.workers) ? view!.workers : undefined;
+  const workerDays = new Map(workers?.accepted.days.map((d) => [d.day, d]) ?? []);
+  const days = [...new Set([...byDay.map((d) => d.key), ...received.keys(), ...withdrawn.keys(), ...deposited.keys(), ...workerDays.keys()])].sort().reverse();
+  const addBlocked = !wallet?.receive ? "Set a wallet first: under Wallet, below" : null;
   const dayRow = new Map(byDay.map((d) => [d.key, d]));
+  const cover = coverLine(wallet);
 
   return (
     <div class="earnings-panel">
@@ -61,7 +93,7 @@ export function EarningsPanel() {
       {view && (
         <>
           <div class="earnings-wallet">
-            <div class="earnings-wallet-figures">
+            <div class={`earnings-wallet-figures${workers ? " has-workers" : ""}`}>
               <div>
                 <div class="ov-tile-label">Wallet</div>
                 <div class="earnings-big">{wallet?.balance ? fmtSats(wallet.balance.msat) : "—"}</div>
@@ -70,6 +102,7 @@ export function EarningsPanel() {
                     ? `≈ ${fmtUsd(wallet.balance.usd)} at ${fmtUsd(wallet.rate)} per bitcoin`
                     : wallet?.error ?? ""}
                 </div>
+                {cover && <div class={`ov-tile-sub earnings-cover${cover.short ? " is-short" : ""}`}>{cover.text}</div>}
               </div>
               <div title="Paid for and not yet charged: what buyers are still owed as service. The sats are yours either way.">
                 <div class="ov-tile-label">Owed as service</div>
@@ -79,16 +112,28 @@ export function EarningsPanel() {
                   {view.outstanding.held > 0 && ` · ${fmtUsd(view.outstanding.held)} held for runs in flight`}
                 </div>
               </div>
+              {workers && (
+                <div title="Earned by workers for accepted answers, less what was taken back: sats this wallet must hold for them. Held earnings wait out their task type's hold before they can be withdrawn.">
+                  <div class="ov-tile-label">Owed to workers</div>
+                  <div class="earnings-big">{fmtSats(workers.owedMsat)}</div>
+                  <div class="ov-tile-sub earnings-wrap">{workersOwedSub(workers, wallet?.rate)}</div>
+                </div>
+              )}
               <div class="earnings-withdraw">
-                <button class="btn btn-primary" disabled={!!blocked} title={blocked ?? "Pay a Lightning invoice out of this wallet"} onClick={() => setWithdrawing(true)}>
-                  Withdraw
-                </button>
+                <div class="earnings-wallet-buttons">
+                  <button class="btn" disabled={!!addBlocked} title={addBlocked ?? "An invoice into this wallet, to pay from your own"} onClick={() => setAdding(true)}>
+                    Add sats
+                  </button>
+                  <button class="btn btn-primary" disabled={!!blocked} title={blocked ?? "Pay a Lightning invoice out of this wallet"} onClick={() => setWithdrawing(true)}>
+                    Withdraw
+                  </button>
+                </div>
                 {blocked && <div class="ov-tile-sub earnings-blocked">{blocked}</div>}
               </div>
             </div>
             {wallet && (wallet.balance || wallet.expectedMsat !== 0) && (
               <div class="auto-hint earnings-check">
-                The books say it should hold {fmtSats(Math.max(0, wallet.expectedMsat))}: everything received, less everything sent and its fees
+                The books say it should hold {fmtSats(Math.max(0, wallet.expectedMsat))}: everything received and added, less everything sent and its fees
                 {wallet.pendingMsat > 0 ? `, and less the ${fmtSats(wallet.pendingMsat)} still on its way` : ""}.
                 {wallet.differenceMsat !== undefined && wallet.differenceMsat !== 0 && (
                   <> It holds {fmtSats(Math.abs(wallet.differenceMsat))} {wallet.differenceMsat > 0 ? "more — money that came some other way, or a paid invoice whose credit was never used" : "less — money that left some other way"}.</>
@@ -114,15 +159,23 @@ export function EarningsPanel() {
             ))}
           </div>
 
-          <div class="earnings-tiles">
+          <div class={`earnings-tiles${workers ? " has-workers" : ""}`}>
             <Tile label="Earned" value={fmtUsd(view.totals.earned)} sub={`${view.totals.calls} run${view.totals.calls === 1 ? "" : "s"}${view.totals.failed ? ` · ${view.totals.failed} failed` : ""}`} />
             <Tile label="Cost" value={fmtUsd(view.totals.cost)} sub="what they spent on models" />
             <Tile label="Margin" value={fmtUsd(view.totals.margin)} sub="earned − cost" tone={view.totals.margin < 0 ? "loss" : undefined} />
             <Tile label="Received" value={fmtSats(view.received.msat)} sub={`${view.received.count} payment${view.received.count === 1 ? "" : "s"} · ${fmtUsd(view.received.usd)} of credit`} />
             <Tile label="Withdrawn" value={fmtSats(view.withdrawn.msat)} sub={`${view.withdrawn.count} · fees ${fmtSats(view.withdrawn.feeMsat)}`} />
+            {workers && <Tile label="Paid to workers" value={fmtSats(workers.paidOut?.msat ?? 0)} sub={workersPaidSub(workers)} />}
           </div>
+          {view.deposited.count > 0 && (
+            <div class="auto-hint">Also added by hand: {fmtSats(view.deposited.msat)} ({view.deposited.count}). Not credit and not earnings: sats this server may spend.</div>
+          )}
           {view.purchases.count > 0 && (
             <div class="auto-hint">Also paid out: {fmtSats(view.purchases.msat)} for credit bought from other servers ({view.purchases.count}, fees {fmtSats(view.purchases.feeMsat)}).</div>
+          )}
+          {workers && workersOutLine(workers) && <div class="auto-hint">{workersOutLine(workers)}</div>}
+          {workers && workers.accepted.answers > 0 && (
+            <div class="auto-hint">In this range, {workersAcceptedLine(workers)} Worker pay is owed in sats, apart from what this server earned.</div>
           )}
 
           <div class="flyout-section">
@@ -161,13 +214,18 @@ export function EarningsPanel() {
             ) : (
               <table class="earnings-table">
                 <thead>
-                  <tr><th>Day (UTC)</th><th>Runs</th><th>Earned</th><th>Cost</th><th>Margin</th><th>Received</th><th>Withdrawn</th></tr>
+                  <tr>
+                    <th>Day (UTC)</th><th>Runs</th><th>Earned</th><th>Cost</th><th>Margin</th><th>Received</th>{deposited.size > 0 && <th>Added</th>}<th>Withdrawn</th>
+                    {workers && <th title="Sats that day's accepted answers earned workers, less what of them was taken back">Workers</th>}
+                  </tr>
                 </thead>
                 <tbody>
                   {days.map((day) => {
                     const d = dayRow.get(day);
                     const rin = received.get(day);
                     const out = withdrawn.get(day);
+                    const add = deposited.get(day);
+                    const pay = workerDays.get(day);
                     return (
                       <tr key={day}>
                         <td>{day}</td>
@@ -176,7 +234,13 @@ export function EarningsPanel() {
                         <td>{fmtUsd(d?.cost ?? 0)}</td>
                         <td class={(d?.margin ?? 0) < 0 ? "is-loss" : ""}>{fmtUsd(d?.margin ?? 0)}</td>
                         <td>{rin ? fmtSats(rin.msat) : ""}</td>
+                        {deposited.size > 0 && <td>{add ? fmtSats(add.msat) : ""}</td>}
                         <td>{out ? fmtSats(out.msat) : ""}</td>
+                        {workers && (
+                          <td title={pay ? `${pay.answers} answer${pay.answers === 1 ? "" : "s"}${pay.takenBackAnswers ? `, ${pay.takenBackAnswers} taken back` : ""}` : undefined}>
+                            {pay ? fmtSats(workersDayMsat(pay)) : ""}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -185,14 +249,28 @@ export function EarningsPanel() {
             )}
           </div>
 
+          <BuyingSection reload={reload} />
+
           <WalletForm onSaved={() => setReload((n) => n + 1)} />
         </>
+      )}
+
+      {adding && (
+        <DepositDialog
+          {...(wallet?.rate ? { rate: wallet.rate } : {})}
+          onClose={() => {
+            setAdding(false);
+            setReload((n) => n + 1);
+          }}
+          onAdded={() => setReload((n) => n + 1)}
+        />
       )}
 
       {withdrawing && wallet && view && (
         <WithdrawDialog
           wallet={wallet}
           outstanding={view.outstanding}
+          {...(workers ? { workers } : {})}
           onClose={() => {
             setWithdrawing(false);
             setReload((n) => n + 1);
@@ -241,16 +319,18 @@ function PendingRow(props: { p: api.PendingWithdrawal; onChanged: () => void }) 
     ? "being read now"
     : p.otherWallet
       ? `went out through another wallet (${p.payer || "an earlier one"}): set it back to read it`
-      : p.stale
-        ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
-        : p.answered
-          ? "sent, not settled yet: read again every minute"
-          : "the wallet never answered: read it now";
+      : p.stale && p.cancelAt !== undefined
+        ? "stale: the wallet was asked to cancel it, and it is read every minute until the wallet says how it ended"
+        : p.stale
+          ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
+          : p.answered
+            ? "sent, not settled yet: read again every minute"
+            : "the wallet never answered: read it now";
   const decide = p.stale || p.otherWallet;
   return (
     <div class={`earnings-pending-item${decide ? " is-stale" : ""}`}>
       <div class="earnings-pending-row">
-        <span>{fmtSats(p.msat)}{p.purpose === "purchase" ? " · credit" : ""}</span>
+        <span>{fmtSats(p.msat)}{sendPurposeNote(p.purpose)}</span>
         <span class="auto-hint">{state}</span>
         <span class="auto-hint">{fmtTime(new Date(p.at).toISOString())}</span>
       </div>
@@ -366,13 +446,20 @@ function WalletForm(props: { onSaved: () => void }) {
               <span class="auto-hint">{info.url ?? info.relays?.join(", ")}</span>
               <span class={`badge ${info.receive ? "badge-ok" : ""}`}>{info.receive ? "receives" : "cannot receive"}</span>
               <span class={`badge ${info.pay ? "badge-ok" : "badge-warning"}`}>{info.pay ? "can pay" : "cannot pay"}</span>
+              {info.messages && <span class="badge badge-ok">Support</span>}
               {info.check && (info.check.ok ? <span class="auto-hint">answers: {fmtSats(info.check.msat)}</span> : <span class="auto-hint earnings-blocked">{info.check.error}</span>)}
             </>
           )}
-          {info.note && <div class="auto-hint">{info.note}</div>}
+          {info.note && !info.env && <div class="auto-hint">{info.note}</div>}
         </div>
       )}
-      {!editing && (
+      {info?.env && (
+        <div class="auto-hint">
+          Set by this server's deployment (<code>LIGHTNING_*</code> in its environment), which writes it again at every boot: change it there.
+          {!info.pay && " Withdraw needs a pay credential there too."}
+        </div>
+      )}
+      {!editing && !info?.env && (
         <div class="earnings-wallet-actions">
           <button class="btn btn-sm" onClick={() => setEditing(true)}>{info?.provider ? "Change" : "Set a wallet"}</button>
           {info?.provider && !info.pay && <button class="btn btn-sm" onClick={() => setEditing(true)}>Add a pay credential</button>}
@@ -394,9 +481,10 @@ function WalletForm(props: { onSaved: () => void }) {
           </label>
           {provider === "sphinx" ? (
             <>
-              {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury:8090", false)}
+              {field("url", "Daemon URL", sameProvider ? "keep as it is" : "http://treasury.sphinx:8095", false)}
               {field("token", "Receive token", sameProvider ? "keep as it is" : "the daemon's receive token")}
               {field("payToken", "Pay token", info?.pay && sameProvider ? "keep as it is" : "the daemon's pay token — Withdraw needs it")}
+              {field("messageToken", "Message token", info?.messages && sameProvider ? "keep as it is" : "the daemon's message token — Support (the staff's chat with workers) needs it")}
             </>
           ) : (
             <>

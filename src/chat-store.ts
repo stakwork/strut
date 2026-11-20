@@ -8,7 +8,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { serially, tailJsonl } from "./store.js";
+import { newestWritten, serially, tailJsonl } from "./store.js";
 import type { ElicitationRecord } from "./ai/elicitation.js";
 import { bootEnv } from "./env.js";
 
@@ -154,11 +154,18 @@ export function isChatTerminal(e: ChatEvent): boolean {
 
 // ── Interface ──────────────────────────────────────────────────────────────
 
+/** `GET /chats`: the newest this many chats when no `limit` is asked, and at
+ *  most `CHAT_LIST_MAX_LIMIT` — each is a meta read, and reconciled. */
+export const CHAT_LIST_DEFAULT_LIMIT = 100;
+export const CHAT_LIST_MAX_LIMIT = 500;
+
 export interface ChatStore {
   createChat(init: { id: string; title?: string; model?: string }): Promise<ChatMeta>;
   getMeta(chatId: string): Promise<ChatMeta | null>;
   setMeta(chatId: string, patch: Partial<ChatMeta>): Promise<ChatMeta | null>;
-  listChats(): Promise<ChatMeta[]>;
+  /** Newest first (by `updatedAt`); with `limit`, the newest that many,
+   *  reading no other chat's meta. */
+  listChats(opts?: { limit?: number }): Promise<ChatMeta[]>;
   appendMessages(chatId: string, messages: StoredMessage[]): Promise<void>;
   loadMessages(chatId: string): Promise<StoredMessage[]>;
   appendEvent(chatId: string, event: ChatEvent): Promise<void>;
@@ -435,7 +442,7 @@ export class FileChatStore implements ChatStore {
     });
   }
 
-  async listChats(): Promise<ChatMeta[]> {
+  async listChats(opts: { limit?: number } = {}): Promise<ChatMeta[]> {
     const dir = join(this.workspaceRoot, "chats");
     let ids: string[];
     try {
@@ -444,7 +451,11 @@ export class FileChatStore implements ChatStore {
       return [];
     }
     const metas: ChatMeta[] = [];
-    for (const id of ids) {
+    // A page reads its own metas alone: the newest written first (`setMeta`
+    // stamps `updatedAt` as it writes the file).
+    const limit = opts.limit;
+    for (const id of limit === undefined ? ids : await newestWritten(ids, (id) => this.metaFile(id))) {
+      if (limit !== undefined && metas.length >= limit) break;
       const meta = await this.getMeta(id);
       if (meta) metas.push(meta);
     }
@@ -552,8 +563,8 @@ export class MemoryChatStore implements ChatStore {
     return next;
   }
 
-  async listChats(): Promise<ChatMeta[]> {
-    return [...this.metas.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  async listChats(opts: { limit?: number } = {}): Promise<ChatMeta[]> {
+    return [...this.metas.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, opts.limit);
   }
 
   async appendMessages(chatId: string, messages: StoredMessage[]): Promise<void> {

@@ -6,11 +6,12 @@ import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
+import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, serverName, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
-import { appLink, type AppLinkInput } from "./links.js";
+import { appLink, pageOf, shareLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
+import { formats, wordsFor, type Formats, type Words } from "./folds/words.js";
 
 /** The run steps the hooks call (§5). */
 export const RUN_STEPS = {
@@ -333,7 +334,12 @@ export interface UseRunFileUrl {
  */
 export function useRunFileUrl(workflow: string, runId: string | undefined, path: string | undefined, opts: UseRunFileOptions = {}): UseRunFileUrl {
   const q = useRunFile(workflow, runId, path, opts);
-  const file = q.data;
+  return useBlobUrl(q.data, q.isLoading, q.error as Error | null, () => void q.refetch());
+}
+
+/** A run file's (or a task file's) `blob:` URL, made when the file is read
+ *  and let go of when it changes or the component unmounts. */
+function useBlobUrl(file: RunFile | null | undefined, loading: boolean, readError: Error | null, refetch: () => void): UseRunFileUrl {
   const [made, setMade] = useState<{ file: RunFile | null | undefined; url: string | null; error: Error | null }>({ file: undefined, url: null, error: null });
   useEffect(() => {
     if (!file) {
@@ -354,9 +360,9 @@ export function useRunFileUrl(workflow: string, runId: string | undefined, path:
   return {
     url: current ? made.url : null,
     file,
-    pending: q.isLoading || (!!file && !current),
-    error: (q.error as Error | null) ?? (current ? made.error : null),
-    refetch: () => void q.refetch(),
+    pending: loading || (!!file && !current),
+    error: readError ?? (current ? made.error : null),
+    refetch,
   };
 }
 
@@ -836,6 +842,502 @@ export function useGraphChanges(types: readonly string[] | undefined, opts: UseG
   return { ...state, error };
 }
 
+// ── A worker's page (plans/human-steps.md §5.3) ──────────────────────────
+//
+// A worker app draws tasks: a `human` step in a workflow made one, a signed-in
+// worker the app's page shows takes it, answers it, and the run goes on. The
+// worker is always the page's viewer — the steps read it from the session,
+// never from the page. Grant `task/next`, `task/submit`, `task/skip`,
+// `task/file` and `task/me` in app.yaml's `grants.steps` (`task/history` for
+// a list of what they did, `task/withdraw` to take their earnings out).
+
+/** The worker's steps. */
+export const TASK_STEPS = {
+  next: "task/next",
+  submit: "task/submit",
+  skip: "task/skip",
+  file: "task/file",
+  me: "task/me",
+  history: "task/history",
+  withdraw: "task/withdraw",
+} as const;
+
+/** The token a worker's invite link opened the app with (its tool input's
+ *  `invite`, plans/human-steps.md §5.8): `useTask` and `useWorker` send it,
+ *  and the server gives that worker the app's invite-only task types. */
+function useInvite(): string | undefined {
+  const invite = useToolInput<{ invite?: unknown }>()?.invite;
+  return typeof invite === "string" && invite ? invite : undefined;
+}
+
+/** `useWorker()`'s query: what an answer or a skip in `useTask` reads again. */
+const WORKER_QUERY_KEY = ["strut", "task", "me"] as const;
+/** `useTaskHistory()`'s: read again with it. */
+const HISTORY_QUERY_KEY = ["strut", "task", "history"] as const;
+
+/** How long `useTask` holds one `task/next`: the server's most. */
+export const TASK_WAIT_S = 25;
+/** After a refused or failed `task/next`, the next waits this long; a worker
+ *  who may take nothing here (`not_active`, `not_granted`, `limit_reached`)
+ *  waits longer. */
+const TASK_RETRY_MS = 5_000;
+const TASK_INACTIVE_RETRY_MS = 30_000;
+
+/** A task in the worker's hands, as `task/next` hands it out. */
+export interface WorkerTask {
+  /** What the answer, a skip and a file are asked by. */
+  lease: string;
+  /** The task type: which of the app's views draws it. */
+  type: string;
+  /** What the `human` step handed the worker: any JSON. */
+  show: unknown;
+  /** The files the worker may open (`useTaskFile`). */
+  files: string[];
+  /** When the lease runs out, epoch ms: the task goes to someone else. */
+  expires: number;
+  /** The task type's answer schema: what `submit` must fit, and what
+   *  strut/views' `TaskForm` draws. */
+  answer: unknown;
+  /** What an answer earns, in msat (1,000 to a sat): the task type's pay
+   *  when this task was taken, locked — a later change of pay never reaches
+   *  it. 0: unpaid. */
+  payMsat: number;
+  /** The files an answer carries (a photo of a document): how many, and
+   *  of what media types (`image/*` a family) — `submit(answer, files)`.
+   *  Absent: the task type takes none. */
+  attachments?: TaskAttachmentRule;
+}
+
+/** What files a task type takes with an answer (`WorkerTask.attachments`). */
+export interface TaskAttachmentRule {
+  /** At most this many. */
+  max: number;
+  /** At least this many: 0 when they are optional. */
+  min: number;
+  /** Media types; `image/*` is any image. */
+  types: string[];
+}
+
+/** A worker's payout on its way (`task/me`'s `payout.out`). */
+export interface WorkerPayoutOut {
+  key: string;
+  /** What the worker receives. */
+  msat: number;
+  /** The most the routing fee may come to: it comes off the balance. */
+  maxFeeMsat: number;
+  /** When it was asked, epoch ms. */
+  at: number;
+  /** Still unanswered a day on: staff settle it. */
+  stale: boolean;
+}
+
+/** Whether the viewer may withdraw here, and how much (`task/me`). */
+export interface WorkerPayout {
+  /** Withdrawing is open here now. */
+  on: boolean;
+  /** Why not. `no_address`: sign in with Peel, which sends the account's address. */
+  why?: "off" | "no_wallet" | "no_keysend" | "no_address" | "not_here";
+  minMsat: number;
+  /** This worker's cap left today. */
+  dayLeftMsat: number;
+  /** The most one withdrawal may ask now; 0 when under `minMsat`. */
+  maxMsat: number;
+  out?: WorkerPayoutOut;
+}
+
+/** What a worker is owed here, in msat (`task/me`). An earning waits in its
+ *  hold (the task type's) before it can be withdrawn. */
+export interface WorkerBalance {
+  /** Earned, less what was taken back and withdrawn. */
+  totalMsat: number;
+  /** Of which still in its hold. */
+  heldMsat: number;
+  /** Past its hold: what a withdrawal may take. */
+  withdrawableMsat: number;
+  /** When the next held earning releases, epoch ms. */
+  nextReleaseAt?: number;
+}
+
+/** A task type on the worker's menu (`task/me`). */
+export interface WorkerType {
+  name: string;
+  /** What workers call it, in their language (plans/i18n.md); absent: its
+   *  name, as `typeLabel` writes it. Absent from a server before titles. */
+  title?: string;
+  app: string;
+  /** What an answer earns now, msat; 0 when unpaid. */
+  payMsat: number;
+  /** Every task they get of it is a test until they qualify, so tasks
+   *  arrive at once. A flag, never a score. */
+  qualifying: boolean;
+  /** There is work of it whenever they ask: their ask makes the task.
+   *  Absent from a server before the dashboard. */
+  standing?: boolean;
+  /** How many of its tasks wait that they could take. Absent from a server
+   *  before the dashboard. */
+  waiting?: number;
+}
+
+/** One of the viewer's tasks here (`task/history`), newest first. */
+export interface WorkerHistoryItem {
+  lease: string;
+  type: string;
+  /** What the task asked, as they saw it (`show.ask`, else `show.title`). */
+  ask?: string;
+  /** When they took it, and when it left their hand; epoch ms. */
+  taken: number;
+  closed?: number;
+  /** `open`: in hand; `submitted`: answered; `skipped`; `expired`: it ran
+   *  out, or was closed. */
+  status: "open" | "submitted" | "skipped" | "expired";
+  /** A paid answer: what it earned, when its hold ends (then it can be
+   *  withdrawn), and whether it was taken back. */
+  earned?: { msat: number; releases: number; takenBack?: true };
+  /** What the workflow told them after their answer (its `task/reply`
+   *  step), on an answer of theirs alone: open its files with
+   *  `useTaskFile(item, file.path)`. Absent: it told them nothing (yet). */
+  reply?: TaskReply;
+  /** The group the workflow put the task in (its `task/reply`'s `group`:
+   *  a book, a batch). */
+  group?: string;
+  /** Staff's verdict on the answer: `rejected` with why is what to fix. */
+  review?: { verdict: "ok" | "rejected"; why?: string; at: number };
+}
+
+/** One of the viewer's groups (`useTaskHistory({ groups: true })`): their
+ *  own answers in it and how staff reviewed them. */
+export interface WorkerTaskGroup {
+  group: string;
+  type: string;
+  tasks: number;
+  answers: number;
+  ok: number;
+  rejected: number;
+  unreviewed: number;
+  /** When its first task was made, and its newest answered; epoch ms. */
+  first: number;
+  last: number;
+}
+
+/** What a workflow tells the workers who answered a task, after the answer
+ *  (`task/reply`): a JSON object and files of its run. */
+export interface TaskReply {
+  show?: Record<string, unknown>;
+  files?: TaskReplyFile[];
+  /** When it was made, epoch ms: a later reply replaces it. */
+  at: number;
+}
+
+/** One file of a reply: read it with `useTaskFile(item, path)`. */
+export interface TaskReplyFile {
+  name: string;
+  mediaType: string;
+  size: number;
+  path: string;
+}
+
+/** Who the viewer is as a worker here (`task/me`). */
+export interface WorkerInfo {
+  actor: string;
+  /** `new`: not granted anything yet; only `active` takes tasks. */
+  status: "new" | "active" | "suspended" | "banned";
+  /** The task types they hold that this app draws: the app's menu. */
+  types: WorkerType[];
+  /** The task in their hand now: `useTask` hands it back before any other,
+   *  and asking for another type is refused until it is answered or skipped.
+   *  `lease` lets a dashboard let it go whichever app draws it:
+   *  `task/skip { lease, all: true }` (strut/views' WorkHome). */
+  holding?: { type: string; expires: number; lease?: string };
+  /** What they are owed here: zeros with nothing earned. */
+  balance: WorkerBalance;
+  /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
+  payout?: WorkerPayout;
+}
+
+/** The refusal code a task call's error begins with (`not_active`,
+ *  `lease_expired`, …), or undefined. */
+export function taskErrorCode(err: unknown): string | undefined {
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /\b(not_active|not_granted|limit_reached|wrong_app|lease_held|no_lease|lease_closed|lease_expired|task_closed|too_many|unknown_type|type_disabled|bad_answer|bad_request|not_listed|no_file)\b:/.exec(message)?.[1];
+}
+
+/** Refusals after which the task in hand is no longer the worker's. */
+const LOST = new Set(["no_lease", "lease_closed", "lease_expired", "task_closed", "not_granted", "not_active"]);
+
+/** - `waiting`: no task in hand; a `task/next { wait }` is held on the server.
+ *  - `working`: a task in hand.
+ *  - `sending`: an answer or a skip on its way.
+ *  - `inactive`: the viewer may take no task here now (`useWorker` says why).
+ *  - `error`: a call failed; it is asked again shortly. */
+export type TaskHookStatus = "waiting" | "working" | "sending" | "inactive" | "error";
+
+export interface UseTask {
+  /** The task in hand, or null. */
+  task: WorkerTask | null;
+  /** Answer it: in the task type's answer schema, with the `files` its
+   *  `attachments` rule takes (a photo from `useCamera().capture()`: at
+   *  most 10, 5 MB an image, 15 MB together) — saved in the task's run for
+   *  the workflow's next steps. Then the next one is asked for, and
+   *  `useWorker()` is read again, so its balance moves. */
+  submit: (answer: unknown, files?: readonly File[]) => Promise<void>;
+  /** Pass on it: it goes to someone else, never back to this worker. */
+  skip: (reason?: string) => Promise<void>;
+  status: TaskHookStatus;
+  error: Error | null;
+}
+
+export interface UseTaskOptions {
+  enabled?: boolean;
+}
+
+/**
+ * The next task for the page's viewer (`task/next`): of `type`, or of any
+ * type they hold that this app draws — its `type` says which view to show.
+ * One held `task/next { wait }` at a time while there is no task in hand,
+ * and none while the page is hidden; a page that reloads gets its task back.
+ * The task is dropped when its lease runs out or the server says it is no
+ * longer the worker's, and the next is asked for.
+ */
+export function useTask(type?: string, opts: UseTaskOptions = {}): UseTask {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const invite = useInvite();
+  const [task, setTask] = useState<WorkerTask | null>(null);
+  const [status, setStatus] = useState<TaskHookStatus>("waiting");
+  const [error, setError] = useState<Error | null>(null);
+  /** Moves on each time the task in hand is let go of: asks again. */
+  const [round, setRound] = useState(0);
+  const enabled = opts.enabled !== false;
+  const taskRef = useRef<WorkerTask | null>(null);
+  taskRef.current = task;
+
+  const drop = useCallback(() => {
+    setTask(null);
+    setStatus("waiting");
+    setRound((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    let endPause: (() => void) | undefined;
+    /** A wait that ends at once when the hook stops. */
+    const pause = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        endPause = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+    void (async () => {
+      while (!stopped) {
+        await whenVisible(() => stopped);
+        if (stopped) return;
+        try {
+          const got = await client.run<WorkerTask | { none: true }>(TASK_STEPS.next, compact({ type, wait: TASK_WAIT_S, invite }));
+          if (stopped) return;
+          setError(null);
+          if ("none" in got) {
+            setStatus("waiting");
+            continue;
+          }
+          setTask(got);
+          setStatus("working");
+          return;
+        } catch (e) {
+          if (stopped) return;
+          const err = e instanceof Error ? e : new Error(String(e));
+          const code = taskErrorCode(err);
+          // A type's limit (its budget, the worker's day) waits like no grant.
+          const inactive = code === "not_active" || code === "not_granted" || code === "limit_reached";
+          setError(err);
+          setStatus(inactive ? "inactive" : "error");
+          await pause(inactive ? TASK_INACTIVE_RETRY_MS : TASK_RETRY_MS);
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+      endPause?.();
+    };
+  }, [client, type, round, enabled, invite]);
+
+  // A lease that ran out is someone else's task: let it go and ask again
+  // (a clock ahead of the server's just gets the same lease back).
+  useEffect(() => {
+    if (!task) return;
+    const timer = setTimeout(() => {
+      if (taskRef.current?.lease === task.lease) drop();
+    }, Math.max(0, task.expires - Date.now()) + 1_000);
+    return () => clearTimeout(timer);
+  }, [task, drop]);
+
+  const send = useCallback(
+    async (step: string, config: Record<string, unknown>) => {
+      const held = taskRef.current;
+      if (!held) throw new Error("no task in hand");
+      setStatus("sending");
+      try {
+        await client.run(step, { lease: held.lease, ...config });
+        setError(null);
+        drop();
+        // An answer earned and a skip let one go: the balance and the
+        // waiting counts `useWorker()` shows moved, and `useTaskHistory()`
+        // has one more.
+        void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
+        void qc.invalidateQueries({ queryKey: HISTORY_QUERY_KEY });
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        const code = taskErrorCode(err);
+        if (code && LOST.has(code)) drop();
+        else setStatus("working");
+        throw err;
+      }
+    },
+    [client, drop, qc],
+  );
+  const submit = useCallback(
+    async (answer: unknown, files?: readonly File[]) => {
+      const attachments = files?.length ? await Promise.all(files.map(fileData)) : undefined;
+      await send(TASK_STEPS.submit, compact({ answer, attachments }));
+    },
+    [send],
+  );
+  const skip = useCallback((reason?: string) => send(TASK_STEPS.skip, compact({ reason })), [send]);
+  return { task, submit, skip, status, error };
+}
+
+/** Who the page's viewer is as a worker here (`task/me`): their status and
+ *  the task types they hold that this app draws — with `all`, of every app
+ *  they can open here, each naming its `app` (`task/next` still hands out
+ *  only this app's: open the type's app for the rest). The first call writes a
+ *  viewer the server has not seen as a `new` worker, for an admin to grant. */
+export function useWorker(opts: { enabled?: boolean; all?: boolean } = {}): UseQueryResult<WorkerInfo> {
+  const client = useStrutClient();
+  const invite = useInvite();
+  return useQuery({
+    queryKey: [...WORKER_QUERY_KEY, ...(opts.all ? ["all"] : []), invite ?? ""],
+    queryFn: () => client.run<WorkerInfo>(TASK_STEPS.me, compact({ invite, all: opts.all || undefined })),
+    enabled: opts.enabled ?? true,
+  });
+}
+
+/** The viewer's own tasks here, newest first, at most 50 (`task/history`;
+ *  with `all`, of every app they can open here, each naming its type):
+ *  what they did, how each ended, what each answer earned, what the
+ *  workflow replied (`reply`), the group it put the task in (`group`) and
+ *  staff's verdict (`review`, a rejection's `why` is what to fix). With
+ *  `group`, every answer of theirs in that group instead; with `groups`,
+ *  also their groups and each one's verdicts. Grant `task/history`. An answer or a skip in
+ *  `useTask` reads it again; `refetchInterval` (ms) reads it again while the
+ *  page is shown, to wait for a reply after an answer. */
+export function useTaskHistory(
+  opts: { enabled?: boolean; all?: boolean; group?: string; groups?: boolean; refetchInterval?: number | false } = {},
+): UseQueryResult<{ items: WorkerHistoryItem[]; groups?: WorkerTaskGroup[] }> {
+  const client = useStrutClient();
+  const input = { ...(opts.all ? { all: true } : {}), ...(opts.group ? { group: opts.group } : {}), ...(opts.groups ? { groups: true } : {}) };
+  return useQuery({
+    // Under the history's key, so an answer's refresh reaches every read of it.
+    queryKey: Object.keys(input).length ? [...HISTORY_QUERY_KEY, input] : HISTORY_QUERY_KEY,
+    queryFn: () => client.run<{ items: WorkerHistoryItem[]; groups?: WorkerTaskGroup[] }>(TASK_STEPS.history, input),
+    enabled: opts.enabled ?? true,
+    retry: false,
+    ...(opts.refetchInterval ? { refetchInterval: opts.refetchInterval } : {}),
+  });
+}
+
+/** How often `useWithdraw` reads `useWorker()` again while a payout is on its way. */
+const PAYOUT_POLL_MS = 5_000;
+
+/** What `task/withdraw` answers: `settled`, `pending` (on its way, and
+ *  `useWorker().data.payout.out` shows it) or `failed` (the reserve is back),
+ *  with the fee. */
+export interface WithdrawResult {
+  state: "settled" | "pending" | "failed";
+  /** The payout's key: `payout.out.key` while it is on its way. */
+  key: string;
+  msat: number;
+  feeMsat: number;
+  maxFeeMsat: number;
+  /** A failed payout's words. */
+  error?: string;
+}
+
+export interface UseWithdraw {
+  /** Withdraw `msat` to the viewer's own Sphinx account (`task/withdraw`):
+   *  `msat` is what they receive, and a fee of at most `maxFeeMsat` comes off
+   *  their balance. Throws the refusal (`below_minimum`, `over_balance`,
+   *  `payout_out`, `no_address`, …). The server picks the address, never the page. */
+  withdraw(msat: number): Promise<WithdrawResult>;
+  status: "idle" | "sending" | "error";
+  error: Error | null;
+}
+
+/** Withdraw what passed its hold. Grant `task/withdraw` (and `task/me`) in
+ *  app.yaml. Reads `useWorker()` again when a withdrawal answers, then every
+ *  5 s while its `payout.out` is there. */
+export function useWithdraw(): UseWithdraw {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const me = useWorker();
+  const [status, setStatus] = useState<UseWithdraw["status"]>("idle");
+  const [error, setError] = useState<Error | null>(null);
+  const out = me.data?.payout?.out;
+  useEffect(() => {
+    if (!out) return;
+    const timer = setInterval(() => void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY }), PAYOUT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [out?.key, qc]);
+  const withdraw = useCallback(
+    async (msat: number) => {
+      setStatus("sending");
+      try {
+        const r = await client.run<WithdrawResult>(TASK_STEPS.withdraw, { msat });
+        setError(null);
+        setStatus("idle");
+        return r;
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus("error");
+        throw err;
+      } finally {
+        void qc.invalidateQueries({ queryKey: WORKER_QUERY_KEY });
+      }
+    },
+    [client, qc],
+  );
+  return { withdraw, status, error };
+}
+
+/** `task/file`: one file the task in hand names (`task.files`), read
+ *  through its lease — as text or base64, `run/files`' shape, so
+ *  `runFileBlob` turns it into a Blob. Only a path on the task's list. Pass
+ *  `useTask().task`; nothing is read without one. After an answer, pass the
+ *  `useTaskHistory()` item instead: its lease reads the files of the
+ *  workflow's `reply`, and nothing else. */
+export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<RunFile> {
+  const client = useStrutClient();
+  const lease = task?.lease;
+  return useQuery({
+    queryKey: ["strut", "task", "file", lease ?? "", path ?? ""],
+    queryFn: () => client.run<RunFile>(TASK_STEPS.file, { lease, path }),
+    enabled: (opts.enabled ?? true) && !!lease && !!path,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/** A task's file as a `blob:` URL (`task/file` → `runFileBlob`), for an
+ *  `<img>`, a `<video>`, a viewer: let go of when the file changes or the
+ *  component unmounts. A file cut short (past its cap) is an `error`. */
+export function useTaskFileUrl(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseRunFileUrl {
+  const q = useTaskFile(task, path, opts);
+  return useBlobUrl(q.data, q.isLoading, q.error as Error | null, () => void q.refetch());
+}
+
 /** A browser file as a step takes one: `{ name, mediaType, data }`, the
  *  bytes base64 — so a page never writes `FileReader` code. */
 export async function fileData(file: File): Promise<{ name: string; mediaType?: string; data: string }> {
@@ -927,6 +1429,120 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
   return { run, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
 }
 
+/** The step behind `useNames` (plans/people-and-hosts.md §1). */
+export const PEOPLE_NAMES_STEP = "people/names";
+/** How many actors one `people/names` call asks for: the server's most. */
+const PEOPLE_NAMES_MAX = 200;
+/** Every `useNames` list's query key starts with this. */
+const NAMES_KEY = ["strut", "people", "names"] as const;
+
+/** People's names, by actor (`people/names`; grant it): only those who have
+ *  one, so `names[actor] ?? <what showed before>` is what to show — a name
+ *  is for showing, and the actor stays the person. Asked once for the list,
+ *  200 actors a call; a visitor's page gets the visitor's own name alone.
+ *  `data` is undefined until the answer, and on an error. Every answer
+ *  also updates the page's other lists holding the same people, so two
+ *  lists never show one person under two names. */
+export function useNames(actors: readonly string[] | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<Readonly<Record<string, string>>> {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const list = [...new Set(actors ?? [])].sort();
+  return useQuery({
+    queryKey: [...NAMES_KEY, list],
+    queryFn: async () => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < list.length; i += PEOPLE_NAMES_MAX) {
+        const got = await client.run<{ people: Record<string, { name?: string }> }>(PEOPLE_NAMES_STEP, { actors: list.slice(i, i + PEOPLE_NAMES_MAX) });
+        for (const [actor, p] of Object.entries(got?.people ?? {})) if (typeof p?.name === "string" && p.name) out[actor] = p.name;
+      }
+      // The newest answer is every list's: another list holding any of these
+      // people takes their names from it.
+      for (const [key, old] of qc.getQueriesData<Record<string, string>>({ queryKey: NAMES_KEY })) {
+        const theirs = key[NAMES_KEY.length];
+        if (!old || !Array.isArray(theirs)) continue;
+        const shared = list.filter((a) => (theirs as string[]).includes(a));
+        if (!shared.length || shared.every((a) => old[a] === out[a])) continue;
+        const next = { ...old };
+        for (const a of shared) {
+          if (out[a] === undefined) delete next[a];
+          else next[a] = out[a];
+        }
+        qc.setQueryData(key, next);
+      }
+      return out;
+    },
+    enabled: (opts.enabled ?? true) && list.length > 0,
+    staleTime: 60_000,
+  });
+}
+
+/** The steps behind `useSql` and `useSqlMutation`: the app's own SQLite
+ *  (plans/apps.md §4.4; grant it with `grants: { sqlite: true }`). */
+export const SQL_STEPS = { query: "sqlite/query", exec: "sqlite/exec", batch: "sqlite/batch" } as const;
+
+/** What `sqlite/query` answers: one object per row, keyed by column. */
+export interface SqlRows<Row = Record<string, unknown>> {
+  columns: string[];
+  rows: Row[];
+  /** There were more rows than `maxRows` (default 1000): page with LIMIT … OFFSET. */
+  truncated: boolean;
+}
+
+export interface UseSqlOptions {
+  enabled?: boolean;
+  /** At most this many rows (default 1000, at most 10000). */
+  maxRows?: number;
+  /** Read again every this many ms (react-query's `refetchInterval`). */
+  refetchInterval?: number | false;
+}
+
+/** ONE read of the app's own tables (`sqlite/query`), as a query: refetched
+ *  when a `useSqlMutation` write lands. Values go in `params` (`?` as a list,
+ *  `:name` as an object), never into the text. A blob comes back as `{ base64 }`. */
+export function useSql<Row = Record<string, unknown>>(sql: string | undefined, params?: unknown[] | Record<string, unknown>, opts: UseSqlOptions = {}): UseQueryResult<SqlRows<Row>> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["strut", "sqlite", sql, params ?? null, opts.maxRows ?? null],
+    queryFn: () =>
+      client.run<SqlRows<Row>>(SQL_STEPS.query, {
+        sql,
+        ...(params !== undefined ? { params } : {}),
+        ...(opts.maxRows !== undefined ? { maxRows: opts.maxRows } : {}),
+      }),
+    enabled: (opts.enabled ?? true) && !!sql,
+    ...(opts.refetchInterval !== undefined ? { refetchInterval: opts.refetchInterval } : {}),
+  });
+}
+
+/** A statement to write: SQL text, or `{ sql, params }`. */
+export type SqlStatement = string | { sql: string; params?: unknown[] | Record<string, unknown> };
+
+export interface UseSqlMutation {
+  /** ONE statement (`sqlite/exec`): `{ changes, lastInsertRowid }`. */
+  exec: (sql: string, params?: unknown[] | Record<string, unknown>) => Promise<{ changes: number; lastInsertRowid: number | string }>;
+  /** Several in ONE transaction, all or none (`sqlite/batch`). */
+  batch: (statements: SqlStatement[]) => Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>;
+  pending: boolean;
+  error: Error | null;
+}
+
+/** Writes to the app's own tables — functions to call, never on a render.
+ *  Each one that lands refetches every `useSql` read. */
+export function useSqlMutation(): UseSqlMutation {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (v: { exec: { sql: string; params?: unknown[] | Record<string, unknown> } } | { batch: SqlStatement[] }) =>
+      "exec" in v
+        ? client.run(SQL_STEPS.exec, { sql: v.exec.sql, ...(v.exec.params !== undefined ? { params: v.exec.params } : {}) })
+        : client.run(SQL_STEPS.batch, { statements: v.batch }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["strut", "sqlite"] }),
+  });
+  const exec = useCallback((sql: string, params?: unknown[] | Record<string, unknown>) => m.mutateAsync({ exec: { sql, ...(params !== undefined ? { params } : {}) } }) as Promise<{ changes: number; lastInsertRowid: number | string }>, [m.mutateAsync]);
+  const batch = useCallback((statements: SqlStatement[]) => m.mutateAsync({ batch: statements }) as Promise<{ results: Array<{ changes: number; lastInsertRowid: number | string }> }>, [m.mutateAsync]);
+  return { exec, batch, pending: m.isPending, error: m.error };
+}
+
 /** The step behind `useAppState` (src/apps/state.ts on the server). */
 export const APP_STATE_STEP = "app/state";
 /** A page's state writes go out at most this often, every key set since
@@ -1008,6 +1624,26 @@ class AppStateStore {
     });
   }
 
+  /** The viewer changed (a visitor signed in or out, plans/app-repos.md
+   *  §5): the new viewer's state is read anew, and what this page set and
+   *  strut did not keep is dropped — an app that wants it kept sets it
+   *  again once signed in (a functional set reads the new state). */
+  reload() {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.pending = new Map();
+    this.sending = new Map();
+    this.server = {};
+    this.error = null;
+    if (!this.started || !this.client.app) return this.emit();
+    this.loaded = false;
+    this.emit();
+    void this.send({}).then(() => {
+      this.loaded = true;
+      this.emit();
+    });
+  }
+
   private send(config: Record<string, unknown>): Promise<boolean> {
     const call = this.queue.then(() => this.client.run<{ state: AppState }>(APP_STATE_STEP, config)).then(
       (r) => {
@@ -1026,6 +1662,11 @@ class AppStateStore {
 }
 
 const appStateStores = new WeakMap<StrutClient, AppStateStore>();
+
+/** Read this page's `useAppState` again, for a new viewer (`useVisitor`). */
+export function reloadAppState(client: StrutClient): void {
+  appStateStores.get(client)?.reload();
+}
 
 /**
  * What THIS viewer's page remembers, across visits, hosts and devices — a
@@ -1059,6 +1700,27 @@ function useHostState(): HostState {
   return useSyncExternalStore(host.subscribe, host.getState, host.getState);
 }
 
+/** The page's locale (BCP 47, plans/i18n.md): the host's — `ui/initialize`'s
+ *  `locale`, which strut's UI takes from the link's `lang=` or the browser —
+ *  else the browser's, else `en-US`. */
+export function useLocale(): string {
+  const s = useHostState();
+  return s.locale || (typeof navigator !== "undefined" && navigator.language) || "en-US";
+}
+
+/** A screen's words in the page's language (`{ en, es }`: the folds'
+ *  `Words`), English when it has none there. */
+export function useWords<W>(words: Words<W>): W {
+  return wordsFor(words, useLocale());
+}
+
+/** Numbers, sats and times as the page's locale writes them (the folds'
+ *  `formats`). */
+export function useFormats(): Formats {
+  const locale = useLocale();
+  return useMemo(() => formats(locale), [locale]);
+}
+
 /** Which app this page is (plans/apps.md §7.2), off its identity: the
  *  workspace app `{ name, version }`. Undefined under a host's own client. */
 export function useApp(): AppIdentity | undefined {
@@ -1086,6 +1748,16 @@ export function useAppLink(): (input?: AppLinkInput) => string {
     },
     [app?.name],
   );
+}
+
+/** Links a person can PASTE to open this app at an input: the host's page
+ *  address (`strut/page` in its context — Stadeum's own, or strut's UI) with
+ *  `?input=`, the same address the host's bar shows once the page is there
+ *  (`useAppLink` + `openLink`). Undefined where the host gives no address
+ *  (a native app's web view, an older host): offer no Copy link there. */
+export function useShareLink(): ((input?: AppLinkInput) => string) | undefined {
+  const page = pageOf(useHostState().context);
+  return useMemo(() => (page ? (input?: AppLinkInput) => shareLink(page, input) : undefined), [page]);
 }
 
 export interface UseHost {
@@ -1116,6 +1788,10 @@ export interface UseHost {
    *  `useRunEvents`, `useWorkProducts` and a run timeline are refused — or
    *  `run`, everything. */
   results: Readonly<Record<string, PublicResults>>;
+  /** The strut server's name, when a person gave it one (its brand): who
+   *  the server is to the people who use it — the employer a worker works
+   *  for. Put it where a page says whose it is. */
+  name?: string;
 }
 
 /** The host behind the page: theme, display mode, locale, and the two
@@ -1135,6 +1811,10 @@ export function useHost(): UseHost {
       openLink: (url: string) => host.openLink(url),
       requestDisplayMode: (mode: DisplayMode) => host.requestDisplayMode(mode),
       public: isPublicView(),
+      ...(() => {
+        const name = serverName();
+        return name ? { name } : {};
+      })(),
       ...(() => {
         const items = publicRunnableItems();
         return { runnable: items.map((i) => i.name), results: Object.fromEntries(items.map((i) => [i.name, i.results])) };

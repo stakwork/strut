@@ -22,12 +22,17 @@
  *   "drop", feeMsat? }`: a person settles one by hand — a stale one the
  *   wallet will never answer for (the Sphinx mixer keeps a debit it never
  *   resolves), or one that went through a wallet no longer set.
+ * - `POST /earnings/deposit { sats }`: an invoice INTO the wallet, for an
+ *   admin to pay from their own (deposits.ts): sats to buy credit at other
+ *   struts with. `POST /earnings/deposits/:paymentHash/read` reads it now,
+ *   and records it in the books once it settled.
  */
 
 import type { Context, Hono } from "hono";
 import { checkEarningsQuery, readEarnings, type EarningsDeps } from "./earnings.js";
 import { microsToUsd, type EntryKind, type LedgerEntry, type LedgerStore } from "./ledger.js";
 import { WithdrawError, type Withdrawals } from "./withdrawals.js";
+import { DepositError, type DepositAnswer, type Deposits } from "./deposits.js";
 
 const KINDS: readonly EntryKind[] = ["payment", "hold", "charge", "carry", "expiry", "withdrawal"];
 
@@ -39,6 +44,7 @@ export interface EarningsRoutesDeps {
   /** The ledger to read, or null when none was ever opened. */
   ledger: () => Promise<LedgerStore | null>;
   withdrawals: Withdrawals;
+  deposits: Deposits;
 }
 
 /** An entry as the routes answer it: dollars, not micro-dollars. */
@@ -131,6 +137,42 @@ export function earningsRoutes(app: Hono, deps: EarningsRoutesDeps): void {
       return c.json({ action: r.action, ...(r.entry ? { entry: entryView(r.entry) } : {}) });
     } catch (err) {
       return refusal(c, err);
+    }
+  });
+
+  const depositRefusal = (c: Context, err: unknown) => {
+    if (err instanceof DepositError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  };
+  const depositView = (a: DepositAnswer) => {
+    const { deposit, ...rest } = a;
+    return { ...rest, ...(deposit ? { deposit: { ...deposit, at: new Date(deposit.at).toISOString() } } : {}) };
+  };
+
+  app.post("/earnings/deposit", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is { sats }", code: "bad_request" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "sats");
+    if (extra.length) return c.json({ error: `deposit takes sats alone; not ${extra.join(", ")}`, code: "bad_request" }, 400);
+    const actor = await deps.actorOf(c);
+    try {
+      return c.json(depositView(await deps.deposits.ask({ sats: body["sats"] as number, ...(actor ? { actor } : {}) })));
+    } catch (err) {
+      return depositRefusal(c, err);
+    }
+  });
+
+  app.post("/earnings/deposits/:paymentHash/read", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    const hash = c.req.param("paymentHash");
+    if (!HASH.test(hash)) return c.json({ error: "paymentHash is 64 hex characters", code: "bad_request" }, 400);
+    try {
+      return c.json(depositView(await deps.deposits.read(hash.toLowerCase())));
+    } catch (err) {
+      return depositRefusal(c, err);
     }
   });
 

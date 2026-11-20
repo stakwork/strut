@@ -1,7 +1,8 @@
 import type { ConnectionRequest } from "@strut/kit/wallet";
-import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
+import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage, type WorkersView } from "@strut/kit/folds";
 import { takeTicket } from "./ticket";
 import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
+import { setVisitorSession } from "./visitor-signin";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -119,8 +120,11 @@ export async function downloadArtifact(path: string): Promise<void> {
 // Bearer`. A host that spawns strut (desktop app) hands the per-launch key to
 // the UI as `?key=` on first load; we stash it in sessionStorage and strip
 // it from the URL. A user can also paste one in Settings (localStorage),
-// for a server deployment. sessionStorage (this launch) wins.
+// for a server deployment. sessionStorage (this launch) wins. Beside the key
+// the host may name the person the UI is shown to (`&actor=`): sent with the
+// key as `x-strut-actor`, which strut honors from a request that carries it.
 const KEY_STORAGE = "strut/apiKey";
+const ACTOR_STORAGE = "strut/actor";
 
 function captureKeyFromUrl(): void {
   try {
@@ -128,7 +132,11 @@ function captureKeyFromUrl(): void {
     const key = url.searchParams.get("key");
     if (!key) return;
     sessionStorage.setItem(KEY_STORAGE, key);
+    const actor = url.searchParams.get("actor")?.trim();
+    if (actor) sessionStorage.setItem(ACTOR_STORAGE, actor);
+    else sessionStorage.removeItem(ACTOR_STORAGE);
     url.searchParams.delete("key");
+    url.searchParams.delete("actor");
     history.replaceState(history.state, "", url.pathname + url.search + url.hash);
   } catch {
     // no storage / no history API — the key just isn't remembered
@@ -182,8 +190,10 @@ export interface SessionInfo {
   /** When the session ends (ms since the epoch). */
   exp: number;
   /** What a host's ticket signed the person in as (plans/member-rights.md):
-   *  an admin gets the shell, a member their apps. None for the key login. */
-  role?: "admin" | "member";
+   *  an admin gets the shell, a member their apps — a visitor
+   *  (plans/app-repos.md §5) neither: it uses the public apps alone. None
+   *  for the key login. */
+  role?: "admin" | "member" | "visitor";
 }
 
 /** The marker kept for a session the server answered with. */
@@ -242,7 +252,17 @@ export async function signOut(): Promise<void> {
 
 function authHeaders(): Record<string, string> {
   const key = getSession() ? "" : getApiKey();
-  return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+  return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}`, ...hostActor() } : {}) };
+}
+
+/** The person the host named beside the key it handed over, as the header strut reads. */
+function hostActor(): Record<string, string> {
+  try {
+    const actor = sessionStorage.getItem(KEY_STORAGE) ? sessionStorage.getItem(ACTOR_STORAGE) : null;
+    return actor ? { "x-strut-actor": actor } : {};
+  } catch {
+    return {};
+  }
 }
 
 /** The headers every UI request carries — the UI marker (the server's CSRF
@@ -295,6 +315,17 @@ export async function fetchJSON<T>(path: string, opts?: RequestInit): Promise<T>
   return res.json() as Promise<T>;
 }
 
+/** `GET /people`: these actors' names (plans/people-and-hosts.md §1), each
+ *  actor asked with `name` when one is kept; null when the server would not
+ *  answer (a member's session: names are an admin's read). At most 200. */
+export async function getPeople(actors: string[]): Promise<Record<string, { name?: string }> | null> {
+  const q = new URLSearchParams();
+  for (const a of actors) q.append("actor", a);
+  const res = await apiFetch(`/people?${q}`);
+  if (!res.ok) return null;
+  return ((await res.json()) as { people: Record<string, { name?: string }> }).people;
+}
+
 // ── Sign-in ticket ─────────────────────────────────────────────────────────
 // A host that frames the UI for ONE person (stadeum) loads it as
 // `?ticket=<a ticket it minted with the key>` (./ticket). The ticket is
@@ -342,7 +373,14 @@ async function tradeTicket(ticket: string): Promise<TicketSignIn> {
       headers: { "Content-Type": "application/json", "x-strut-ui": "1" },
       body: JSON.stringify({ ticket }),
     });
-    const body = (await res.json().catch(() => null)) as SessionInfo | null;
+    const body = (await res.json().catch(() => null)) as (SessionInfo & { token?: string }) | null;
+    // A VISITOR's ticket (plans/app-repos.md §5.3, `ticket`): its own
+    // cookie, and the token this page keeps for a frame that drops it.
+    if (res.ok && body?.role === "visitor" && body.actor && body.token) {
+      setSignedInByHost(false);
+      setVisitorSession({ actor: body.actor, token: body.token, exp: body.exp });
+      return "signed-in";
+    }
     if (res.ok && typeof body?.exp === "number") {
       setSession(markerOf(body));
       return "signed-in";
@@ -367,6 +405,16 @@ const hostTicket = takeTicketFromUrl();
 /** The host's sign-in, started as this module loads. */
 export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise.resolve("none") : tradeTicket(hostTicket);
 
+/** A served box's page that is not `?shell=1` (./page `pickPage`): its app
+ *  as a visitor's whatever the session, so there is none to ask about. */
+function servedVisit(): boolean {
+  try {
+    return !!document.querySelector('meta[name="strut-serve"]') && new URLSearchParams(location.search).get("shell") !== "1";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The session this page runs under, asked of the server once the ticket
  * (if any) is traded: `GET /auth/session` — the cookie is HttpOnly, so the
@@ -375,13 +423,14 @@ export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise
  * with no session; the marker follows the answer.
  */
 export const pageSession: Promise<SessionInfo | null> = ticketSignIn.then(async (signedIn) => {
-  if (signedIn === "refused") return null;
+  if (signedIn === "refused" || servedVisit()) return null;
   if (!getSession() && getApiKey()) return null;
   try {
     const res = await fetch(`${BASE}/auth/session`, { headers: { "x-strut-ui": "1" } });
     if (!res.ok) return null;
     const body = (await res.json().catch(() => null)) as SessionInfo | null;
-    if (typeof body?.exp !== "number") return null;
+    // A visitor's session is the public apps' (./visitor-signin), never this page's.
+    if (typeof body?.exp !== "number" || body.role === "visitor") return null;
     setSession(markerOf(body));
     return getSession();
   } catch {
@@ -546,6 +595,12 @@ export interface FlowDef {
   promotes?: PromoteSpec[];
   /** Open to other workspaces: `true`, or `"person"` (a person's credential only). */
   peer?: true | "person";
+  /** The workflow's own `retain:` as text (`1h`, `runs:20`), and the fleet
+   *  default (`STRUT_RETENTION`, or its first name `STRUT_RUN_RETENTION`;
+   *  `fleetRetentionEnv` says which) that applies when it sets none. */
+  retain?: string;
+  fleetRetention?: string;
+  fleetRetentionEnv?: string;
 }
 
 /** Parsed flow of a workflow — the active version, or a pinned historical
@@ -594,9 +649,10 @@ export interface WorkflowVersionStats {
 }
 
 /** Every version, newest first, with its run counts (the Versions tab).
- *  `unattributed` = finished runs that recorded no version hash. */
+ *  `unattributed` = finished runs that recorded no version hash. Counted
+ *  over the newest `scanned` runs; `more` = older runs were not read. */
 export const getWorkflowVersions = (name: string) =>
-  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number }>(`${workflowPath(name)}/versions`);
+  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number; scanned: number; more?: true }>(`${workflowPath(name)}/versions`);
 
 /** Make a stored version the active one — what Run, schedules and the
  *  canvas use. A rollback publishes nothing. */
@@ -876,6 +932,10 @@ export interface StepStatsResponse {
    *  own YAML, otherwise reached through a subflow. */
   workflows: Array<{ name: string; direct: boolean }>;
   runs: { total: number; success: number; error: number; lastAt: string | null };
+  /** The runs `runs` counts: the newest, at most 1,000. */
+  scanned: number;
+  /** Older runs were not read. */
+  more?: true;
 }
 
 export const getStepStats = (type: string) =>
@@ -894,7 +954,24 @@ export interface RunSummary {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  /** `waiting`: the run parked (src/park.ts) — out of memory until a wake
+   *  resumes it; `waitingOn` says on what. */
   status: string;
+  waitingOn?: string[];
+  /** Where retention moved the run's parts (plans/retention.md): `log`
+   *  today. `evictedAt`: not on the server's disk; with `archive` (`bytes`
+   *  of log as a `size`-byte object, uploaded `at`) it is in the bucket and
+   *  opening the run restores it, without it the log is gone. `restoredAt`:
+   *  when a read last brought it back. */
+  parts?: {
+    log?: {
+      archive?: { key: string; bytes: number; size: number; at: string };
+      evictedAt?: string;
+      restoredAt?: string;
+    };
+  };
+  /** The run died with its process (no summary of its own). */
+  crashed?: boolean;
   input?: unknown;
   output?: unknown;
   error?: { message: string };
@@ -916,6 +993,8 @@ export interface RunSummary {
 }
 
 export interface RunEvent {
+  /** On `step.parked` / `run.waiting`: what it waits for (src/park.ts). */
+  on?: string[];
   ts: string;
   runId: string;
   path: string;
@@ -1102,7 +1181,7 @@ export interface JobRunView {
   runId: string;
   at: string;
   parentRunId?: string;
-  status: "running" | "success" | "error" | "cancelled" | "stale";
+  status: "running" | "success" | "error" | "cancelled" | "waiting" | "stale";
   durationMs?: number;
   error?: string;
   sealed?: true;
@@ -1407,7 +1486,7 @@ export interface ChatMeta {
   updatedAt: string;
   currentTurn: number;
   /** Who started the chat (the first speaker with an actor) and who spoke
-   *  last. Whole actor ids — `displayActor` shortens them for the UI. */
+   *  last. Whole actor ids — `Who` (components/Who.tsx) names them for the UI. */
   createdBy?: string;
   actor?: string;
   /** The builder is waiting on this question; the flyout shows its form. */
@@ -1500,8 +1579,9 @@ export const getChatMeta = (chatId: string) =>
 export const getToolProgress = (chatId: string, toolCallId: string) =>
   fetchJSON<{ outputs: any[] }>(`/chat/${chatId}/progress/${encodeURIComponent(toolCallId)}`);
 
-/** List chat sessions (newest first). */
-export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
+/** List chat sessions (newest first): the newest `limit` (the server's
+ *  default 100, at most 500). */
+export const listChats = (limit?: number) => fetchJSON<ChatMeta[]>(`/chats${limit ? `?limit=${limit}` : ""}`);
 
 /** Stop a chat's live turn (409 when nothing is running). The turn ends
  *  with `chat.end`, so an attached stream finishes as usual. */
@@ -1662,8 +1742,8 @@ export const deleteSecret = (name: string) =>
 // otherwise, and the panel hides itself.
 
 export interface ClaimSubject {
-  kind: "step" | "workflow" | "job";
-  /** Workflow name, custom step type, or job id. */
+  kind: "step" | "workflow" | "job" | "concept";
+  /** Workflow name, custom step type, job id, or Concept name. */
   name: string;
 }
 
@@ -1812,8 +1892,8 @@ export const verifyJob = (id: string, claims?: string[]) =>
 /** One check's verdict on one run (`RunEvidence`, src/claims-authoring.ts). */
 export interface RunEvidence {
   claim: { id: string; text: string };
-  /** The workflow, or a step it executed — and the version that ran. */
-  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** The workflow, a step it executed, its job, or a Concept whose page it opened — and the version observed. */
+  subject?: { kind: "step" | "workflow" | "job" | "concept"; name: string; version: string };
   /** `open` = an external check's question, still waiting on someone. */
   verdict: "supports" | "refutes" | "open";
   content?: string;
@@ -1867,6 +1947,10 @@ export interface Automation {
   enabled: boolean;
   trigger: Trigger;
   input: Record<string, unknown>;
+  /** The package that ships it (`schedules:` in its strut.yaml): when it
+   *  runs, its name and its input are the package's, so an admin pauses or
+   *  resumes it and nothing else. */
+  package?: string;
 }
 
 /** An automation plus what the server derives for display. */
@@ -1876,11 +1960,16 @@ export interface AutomationView extends Automation {
   summary: string;
   /** ISO instant; null when paused or never again. */
   nextRunAt: string | null;
-  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled"; startedAt: string } | null;
+  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled" | "waiting"; startedAt: string } | null;
   /** Its previous run is still going — a fire now would be skipped. */
   running: boolean;
   /** Why the latest fire launched nothing. */
   lastFireError?: string;
+  /** The person its fires run as: its workflow's owner, whose secrets they
+   *  read and who pays. Absent when it has none. */
+  runsAs?: string;
+  /** Why a fire would launch nothing, said before one does: nobody to run as. */
+  nobodyToRunAs?: string;
 }
 
 export interface AutomationDraft {
@@ -1922,6 +2011,8 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** Folded under "Details": a setting most people need not read. */
+  detail?: boolean;
 }
 
 /** What a person decides on (src/proposal-card.ts, specs/API.md §12). */
@@ -2149,6 +2240,38 @@ export const setAppPinned = (name: string, pinned: boolean) =>
     body: JSON.stringify({ pinned }),
   });
 
+/** One screenshot an app's `app.yaml` names (`GET /apps/:name/screenshots`). */
+export interface AppScreenshotEntry {
+  file: string;
+  caption?: string;
+}
+
+/** A version's screenshots: the live one's unless `version` names another. */
+export const getAppScreenshots = (name: string, version?: string) =>
+  fetchJSON<{ name: string; version: string; screenshots: AppScreenshotEntry[] }>(
+    `/apps/${encodeURIComponent(name)}/screenshots${version ? `?version=${encodeURIComponent(version)}` : ""}`,
+  );
+
+/** Save a new list (`PUT /apps/:name/screenshots`): a file the version has,
+ *  or a new image's base64 bytes. Published as a new version on `version` —
+ *  a draft when the app is held. */
+export const saveAppScreenshots = (
+  name: string,
+  version: string,
+  screenshots: Array<{ file: string; caption?: string } | { data: string; type: string; caption?: string }>,
+) =>
+  fetchJSON<{ ok: true; name: string; version: string; changed: boolean; live: boolean; liveVersion?: string }>(`/apps/${encodeURIComponent(name)}/screenshots`, {
+    method: "PUT",
+    body: JSON.stringify({ version, screenshots }),
+  });
+
+/** Look at a version as a person opening it sees it, and hand back the shot (`POST /apps/:name/screenshots/take`). */
+export const takeAppScreenshot = (name: string, opts: { version?: string; viewport?: { width: number; height: number } }) =>
+  fetchJSON<{ type: string; data: string; bytes: number; width: number; height: number }>(`/apps/${encodeURIComponent(name)}/screenshots/take`, {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+
 export const deleteApp = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
 
@@ -2217,6 +2340,7 @@ export function appDocumentPath(name: string, version: string, peer?: string): s
 export interface AppBuildInfo {
   title?: string;
   wallet?: ConnectionRequest;
+  account?: { corner?: string; style?: string };
   permissions?: string[];
 }
 export async function fetchAppBuildInfo(
@@ -2267,6 +2391,7 @@ export function getBrandStyles(): Promise<BrandStyles | null> {
 /** What a package needs of the strut that installs it, as its strut.yaml says. */
 export interface PackageRequires {
   secrets?: string[];
+  optional?: string[];
   binaries?: string[];
   runtimes?: Array<{ name: string; image?: string; binaries?: string[] }>;
   packages?: Array<{ package: string; digest: string; source: string }>;
@@ -2314,7 +2439,8 @@ export interface PublisherInfo {
   name?: string;
   host: "self";
   createdAt: string;
-  /** The PUBLIC key, once a channel was made public: what the world will follow. */
+  /** The PUBLIC key, once a channel was made public or this server asked an
+   *  index to list it: what the world will follow. */
   public?: string;
   /** The channels in the public catalog; every other channel is the fleet's alone. */
   publicChannels: string[];
@@ -2400,6 +2526,101 @@ export interface PublishResult {
 export const publishPackage = (req: PublishRequest) =>
   fetchJSON<PublishResult>("/packages/publish", { method: "POST", body: JSON.stringify(req) });
 
+// ── Repos (plans/app-repos.md §3; src/packages/repos.ts) ──────────────────
+
+/** An item of a repo's package: a workflow, step or app by its name here, a Concept by its page's name. */
+export interface RepoItem {
+  kind: "workflow" | "step" | "app" | "concept";
+  name: string;
+}
+
+/** `GET /packages/repos`: a package this strut works on as a git checkout. */
+export interface RepoInfo {
+  package: string;
+  url: string;
+  /** The branch it follows: what Pull merges, and a straight Commit pushes to. */
+  branch: string;
+  path?: string;
+  ref: string;
+  /** The commit last installed. */
+  commit: string;
+  digest: string;
+  tokenSecret?: string;
+  openedAt: string;
+  by?: string;
+  /** Create repo's bare originals, offered for retirement. */
+  originals?: RepoItem[];
+  /** A pull's merge waits on a conflict (the commit holding the edits). */
+  merge?: string;
+  workdir: string;
+  /** New here: added under the package's prefix, not in the commit yet. */
+  added: RepoItem[];
+  /** Edited here since the commit installed. */
+  forked: RepoItem[];
+  /** Deleted here since the commit installed. */
+  deleted: RepoItem[];
+  /** Files a pull's merge left in conflict. */
+  conflict?: string[];
+}
+
+export interface RepoDiff {
+  files: Array<{ path: string; status: "added" | "modified" | "deleted" }>;
+  stat: string;
+  patch: string;
+  truncated?: boolean;
+}
+
+export interface RepoCommitResult {
+  package: string;
+  committed: boolean;
+  commit: string;
+  branch?: string;
+  pushed?: boolean;
+  pr?: { url: string; number: number; created: boolean };
+  prSkipped?: string;
+  diff: RepoDiff;
+  stamped: RepoItem[];
+}
+
+export interface RepoPullResult {
+  package: string;
+  commit: string;
+  local?: string;
+  conflict?: string[];
+  error?: string;
+}
+
+const repoPath = (pkg: string) => `/packages/repos/${pkg.split("/").map(encodeURIComponent).join("/")}`;
+
+export const listRepos = () => fetchJSON<{ repos: RepoInfo[] }>("/packages/repos").then((r) => r.repos);
+
+export const openRepo = (req: { url: string; ref?: string; path?: string; tokenSecret?: string }) =>
+  fetchJSON<RepoInfo>("/packages/repos", { method: "POST", body: JSON.stringify(req) });
+
+/** `POST /packages/repos/create`: the picks built and pushed as the first
+ *  commit of an EMPTY remote, then opened. */
+export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string; tokenSecret?: string }) =>
+  fetchJSON<RepoInfo & { originals: RepoItem[] }>("/packages/repos/create", { method: "POST", body: JSON.stringify(req) });
+
+/** What a Commit would push: the workspace's edits written into the working copy, staged. */
+export const repoDiff = (pkg: string) => fetchJSON<RepoDiff>(`${repoPath(pkg)}/diff`);
+
+export const commitRepo = (pkg: string, req: { message: string; branch?: string; pr?: boolean }) =>
+  fetchJSON<RepoCommitResult>(`${repoPath(pkg)}/commit`, { method: "POST", body: JSON.stringify(req) });
+
+/** `POST …/pull`: a conflict is an answer too (409, with the files). */
+export async function pullRepo(pkg: string): Promise<RepoPullResult> {
+  const res = await apiFetch(`${repoPath(pkg)}/pull`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const body = (await res.json().catch(() => ({}))) as RepoPullResult & { error?: string };
+  if (res.ok || (res.status === 409 && body.conflict)) return body;
+  throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+}
+
+export const retireRepoOriginals = (pkg: string, items: RepoItem[]) =>
+  fetchJSON<{ retired: RepoItem[]; failed: Array<RepoItem & { error: string }> }>(`${repoPath(pkg)}/retire`, { method: "POST", body: JSON.stringify({ items }) });
+
+export const closeRepo = (pkg: string) => fetchJSON<{ ok: true }>(repoPath(pkg), { method: "DELETE" });
+
 /** Point `channel` at one of a package's releases (a rollback is moving it
  *  back), or with `digest: null` take the package out — every strut that
  *  follows the channel then uninstalls it. `public: true` marks the channel
@@ -2423,7 +2644,7 @@ export interface InstalledPackage {
   source?: { ref: string };
   secrets?: string[];
   /** A person's install, or the distro's (a subscription). */
-  door?: "install" | "distro";
+  door?: "install" | "distro" | "repo";
   items: Array<{
     kind: "workflow" | "step" | "app" | "concept";
     name: string;
@@ -2451,7 +2672,7 @@ export const installPackage = (ref: string, opts: { index?: string; digest?: str
 export interface PackageInstallState {
   id: string;
   ref: string;
-  door: "install" | "distro";
+  door: "install" | "distro" | "repo";
   actor?: string;
   status: "queued" | "running" | "done" | "failed";
   phase: string;
@@ -2503,15 +2724,21 @@ export interface PackageSearch {
 export const searchPackages = (q: string, limit = 30) =>
   fetchJSON<PackageSearch>(`/packages/search?q=${encodeURIComponent(q)}&limit=${limit}`);
 
-/** `GET /packages/subscriptions`: the catalogs this strut follows. Never a token. */
+/** `GET /packages/subscriptions`: the catalogs and git branches this strut
+ *  follows. Never a token. */
 export interface SubscriptionInfo {
   id: string;
-  key: string;
-  url: string;
+  /** A catalog's: the publisher's key, the strut serving it, the channel. */
+  key?: string;
+  url?: string;
   channel?: string;
-  token: boolean;
+  token?: boolean;
+  /** A git branch's: the `git+` ref and the NAME of the secret it is read with. */
+  ref?: string;
+  tokenSecret?: string;
   accepted?: { seq: number; digest: string; at: string };
-  applied?: { seq: number; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
+  /** A catalog's `seq`, or a branch's ref and the commit it was last at. */
+  applied?: { seq?: number; ref?: string; commit?: string; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
   checkedAt?: string;
   /** What stopped the last sync: this strut stays on the release it applied last. */
   error?: string;
@@ -2548,6 +2775,8 @@ export interface ListingLine {
   row?: { key: string; urls: string[]; description?: string; url?: string };
   /** Another key holds our name there. */
   heldBy?: string;
+  /** The live row under our name: the store shows this server's public view. */
+  live?: { url: string; description?: string };
   cardError?: string;
   asked?: { status: "listed" | "pending" | "removed" | "refused" | "error"; reason?: string; base?: string; description?: string; url?: string; live?: boolean; at: string };
 }
@@ -2576,6 +2805,8 @@ export interface PendingListing {
   live?: boolean;
   receivedAt: string;
   catalog: { seq: number; digest: string; packages: string[] };
+  /** What the server's public view showed, when the name is used by the view alone. */
+  view?: { apps: number; workflows: number; steps: number; concepts: number; runnable: number };
   heldBy?: string;
   from?: string;
 }
@@ -2635,11 +2866,18 @@ export interface PackageCan {
   acts: boolean;
   code: boolean;
 }
+/** An app's screenshot in a package (app.yaml `screenshots`): its path in
+ *  the package, served by `storeScreenshotUrl`. */
+export interface AppScreenshot {
+  path: string;
+  caption?: string;
+}
 export interface AppDetail {
   name: string;
   title: string;
   description?: string;
   icon?: string;
+  screenshots?: AppScreenshot[];
   grants: { workflows: string[]; steps: string[] };
   can: PackageCan;
   files: number;
@@ -2655,6 +2893,8 @@ export interface WorkflowDetail {
   peer?: true | "person";
   sealed?: true;
   claims?: number;
+  /** When strut runs it on its own: the package's `schedules:` on it, as sentences. */
+  schedules?: string[];
   error?: string;
 }
 export interface StepDetail {
@@ -2684,17 +2924,23 @@ export interface PackageDetail {
   steps: StepDetail[];
   concepts: ConceptDetail[];
   secrets: string[];
+  /** Secrets its steps may read but can do without (`requires.optional`). */
+  optional?: string[];
+  /** The steps the manifest's `job:` gives the job agent, by their names
+   *  inside the package, and the ones among them that ask first. */
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   files: number;
   bytes: number;
 }
 /** The short form a search hit carries. */
 export interface DetailSummary {
-  apps: Array<{ name: string; title: string; description?: string; icon?: string; can: PackageCan }>;
+  apps: Array<{ name: string; title: string; description?: string; icon?: string; screenshots?: AppScreenshot[]; can: PackageCan }>;
   workflows: number;
   steps: number;
   concepts: number;
   secrets: string[];
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   readme: boolean;
 }
@@ -2768,7 +3014,12 @@ async function storeJSON<T>(path: string): Promise<T> {
 }
 export const storeCatalog = () => storeJSON<IndexCard>("/index/catalog");
 export const storeSearch = (q = "", limit = 200) => storeJSON<{ packages: StoreHit[] }>(`/index/packages?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.packages);
-export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}`);
+/** A package's page, without its Concept pages' text (`docs=0`): the tree is
+ *  drawn from names, and a page's docs are `storeConcept`'s. */
+export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}?docs=0`);
+/** One of a package's app screenshots, at that release (so cached for good). */
+export const storeScreenshotUrl = (pkg: string, path: string, digest: string) =>
+  `${BASE}/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/screenshot?path=${encodeURIComponent(path)}&digest=${encodeURIComponent(digest)}`;
 export const storeConcepts = (q = "") => storeJSON<{ concepts: StoreConcept[] }>(`/index/concepts?q=${encodeURIComponent(q)}`).then((r) => r.concepts);
 export const storeConcept = (name: string) => storeJSON<StoreConceptPage>(`/index/concepts/${encodeURIComponent(name)}`);
 /** Where this index's card is served, for the link into a strut: what the
@@ -2790,6 +3041,8 @@ export interface PublicRunnable {
   capUsd?: number;
   dailyCapUsd?: number;
   results?: "output" | "run";
+  /** A workflow's launch may carry files (`attachments`). */
+  attachments?: boolean;
 }
 export interface PublicViewRecord {
   concepts: string[];
@@ -2798,6 +3051,15 @@ export interface PublicViewRecord {
   types: string[];
   apps: Array<{ name: string; reads?: string[]; domains?: string[] }>;
   runnable: PublicRunnable[];
+  /** Who may sign in to the public apps (plans/app-repos.md §5); absent,
+   *  every visitor is anonymous. */
+  visitors?: PublicVisitors;
+}
+/** The record's sign-in: the methods, a key per domain, the daily limits. */
+export interface PublicVisitors {
+  signIn: Array<"key" | "ticket" | "lnurl" | "nostr" | "sphinx">;
+  visitorKey?: "domain";
+  limits?: { writesPerDay?: number; launchesPerDay?: number };
 }
 /** `GET /public-view/runnable`: what the "anyone can run it" box shows. */
 export interface PublicRunInfo {
@@ -2854,6 +3116,13 @@ export interface PublicAppInfo {
   icon?: string;
   /** The browser features its frame is granted (./frame-permissions). */
   permissions?: string[];
+  /** The wallet connection its version requests (its build's `wallet`):
+   *  what a native host's sheet asks the visitor for (specs/WALLET.md §1.1).
+   *  Another server's is checked before it is used (./native-pay
+   *  `nativeWalletApp`). */
+  wallet?: ConnectionRequest;
+  /** Where its account widget sits by default (`app.yaml`'s `account:`). */
+  account?: { corner?: string; style?: string };
 }
 /** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
 async function publicFetch(path: string): Promise<Response> {
@@ -2883,6 +3152,70 @@ export async function fetchPublicAppDocument(name: string): Promise<string> {
   return res.text();
 }
 
+// ── Another strut server's public app, hosted here (specs/API.md §17.9) ─────
+// Read from that server in this browser, with no credential of anyone's:
+// its `/public` answers anyone, CORS open. `from` is its base URL
+// (./remote-app `remoteBase`).
+
+const hostOf = (from: string) => {
+  try {
+    return new URL(from).host;
+  } catch {
+    return from;
+  }
+};
+/** A public app on another strut server, as it lists it; null when it is
+ *  not in that server's public view. */
+export async function getRemotePublicApp(from: string, name: string): Promise<PublicAppInfo | null> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}`, { credentials: "omit", cache: "no-cache", headers: { accept: "application/json" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  const info = (await res.json()) as PublicAppInfo;
+  if (!info || typeof info.name !== "string" || typeof info.version !== "string") throw new Error(`${hostOf(from)} did not answer with an app`);
+  return { ...info, title: typeof info.title === "string" ? info.title : info.name };
+}
+/** Whether that server's public apps may be hosted by another strut UI:
+ *  its `GET /public` says `host.remote` (src/public-routes.ts
+ *  `PUBLIC_HOST`). A strut from before it says nothing — its `/public/mcp`
+ *  answers no page on another origin — and one that does not answer at all
+ *  is an error naming it. */
+export async function remoteHostable(from: string): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`${from}/public`, { credentials: "omit", cache: "no-cache", headers: { accept: "application/json" } });
+  } catch {
+    throw new Error(`${hostOf(from)} did not answer`);
+  }
+  if (!res.ok) throw new Error(`${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  const body = (await res.json().catch(() => null)) as { host?: { remote?: unknown } } | null;
+  return typeof body?.host?.remote === "number" && body.host.remote >= 1;
+}
+
+/** The sentence for a server whose public apps cannot be hosted here yet. */
+export const notHostableYet = (from: string) => `${hostOf(from)} runs an older strut, whose public apps cannot be hosted from another strut yet`;
+
+/** The rate THIS strut trusts (`GET /rate`): what a stranger's invoice is
+ *  priced at in dollars. Read once per page; null with no credential here
+ *  or no rate to be had — then the sheet shows sats alone. */
+let trustedRateRead: Promise<{ usdPerBtc: number; source: string } | null> | undefined;
+export function trustedRate(): Promise<{ usdPerBtc: number; source: string } | null> {
+  // Not apiFetch: a visitor with no credential here is no session that ran
+  // out, and must never be asked for the key.
+  return (trustedRateRead ??= fetch(`${BASE}/rate`, { headers: authHeaders(), cache: "no-cache" })
+    .then((res) => (res.ok ? (res.json() as Promise<{ usdPerBtc?: unknown; source?: unknown }>) : null))
+    .then(
+      (r) => (r && typeof r.usdPerBtc === "number" && r.usdPerBtc > 0 && typeof r.source === "string" ? { usdPerBtc: r.usdPerBtc, source: r.source } : null),
+      () => null,
+    ));
+}
+
+/** That app's document, its visitor's identity written in by its server. */
+export async function fetchRemotePublicAppDocument(from: string, name: string): Promise<string> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}/document`, { credentials: "omit", cache: "no-cache" });
+  if (!res.ok) throw new Error(res.status === 404 ? `"${name}" is not in ${hostOf(from)}'s public view` : `${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  return res.text();
+}
+
 // ── The store's LIVE items (plans/public-surface.md §8) ─────────────────────
 // What the index's live rows show (`GET /index/live`), and the item itself,
 // read from its publisher's server in the visitor's browser — the
@@ -2899,6 +3232,11 @@ export interface StoreLiveItem {
   version?: string;
   runs?: boolean;
   pages?: number;
+  /** Anyone may run it on its server (plans/paid-runs.md §10): its price as
+   *  the index's crawl read it. */
+  run?: { base: number; markup: number; capUsd: number | null; reserve: number; results: "output" | "run"; recent?: { days: number; runs: number; average: number } };
+  /** Runnable, its definition not public: its page reads `/public` alone. */
+  definition?: false;
 }
 export const storeLive = (q = "") => storeJSON<{ items: StoreLiveItem[] }>(`/index/live?q=${encodeURIComponent(q)}`).then((r) => r.items);
 
@@ -2947,11 +3285,53 @@ export interface LiveConceptPage {
   children: Array<{ name: string; description?: string }>;
 }
 
+// ── The store's Run form (plans/paid-runs.md §10 "The store") ───────────────
+// A launch, a read and a call on the PUBLISHER's server, from the visitor's
+// browser. No cookie, never the operator's key: a priced one presents the
+// visitor's own credit credential as `Authorization: L402 …`, in a header
+// alone — never in a URL. A run's reads present its run token (a receipt
+// for that run alone) as a Bearer.
+
+/** One answer of a publisher's public door: its status, body and
+ *  `Retry-After`. A network failure throws. */
+export interface LiveAnswer {
+  status: number;
+  body: unknown;
+  retryAfter: string | null;
+}
+async function liveSend(url: string, init: RequestInit): Promise<LiveAnswer> {
+  const res = await fetch(url, { ...init, credentials: "omit", cache: "no-store" });
+  return { status: res.status, body: await res.json().catch(() => null), retryAfter: res.headers.get("retry-after") };
+}
+const l402 = (credential: string | undefined): Record<string, string> => (credential ? { authorization: `L402 ${credential}` } : {});
+const enc2 = (s: string) => s.split("/").map(encodeURIComponent).join("/");
+
+/** `GET <base>/public`: what the publisher's server shows and lets anyone run. */
+export const liveListing = (base: string) => liveJSON<{ runnable?: import("./store-run").LiveRunnableItem[] }>(base, "/public");
+/** Launch a workflow anyone may run there: `{ input, key }`. */
+export const liveLaunch = (base: string, name: string, body: { input: Record<string, unknown>; key: string }, credential?: string) =>
+  liveSend(`${base}/public/workflows/${encodeURIComponent(name)}/run`, { method: "POST", headers: { "content-type": "application/json", ...l402(credential) }, body: JSON.stringify(body) });
+/** Call a step anyone may call there: `{ config }`. */
+export const liveCall = (base: string, type: string, config: Record<string, unknown>, credential?: string) =>
+  liveSend(`${base}/public/steps/${enc2(type)}/run`, { method: "POST", headers: { "content-type": "application/json", ...l402(credential) }, body: JSON.stringify({ config }) });
+/** The launcher's view of a run launched there, by its run token; `wait`
+ *  holds while it is in flight. */
+export const liveRun = (base: string, name: string, runId: string, token: string, wait = 0) =>
+  liveSend(`${base}/public/workflows/${encodeURIComponent(name)}/runs/${encodeURIComponent(runId)}${wait > 0 ? `?wait=${wait}` : ""}`, { headers: { accept: "application/json", authorization: `Bearer ${token}` } });
+/** The visitor's credit there (`GET /public/credit`). */
+export const liveCredit = (base: string, credential: string) => liveSend(`${base}/public/credit`, { headers: { accept: "application/json", ...l402(credential) } });
+/** Claim an invoice paid without a preimage (`POST /public/credit/claim`). */
+export async function liveClaim(base: string, macaroon: string): Promise<ClaimAnswer> {
+  const a = await liveSend(`${base}/public/credit/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ macaroon }) });
+  return claimAnswerOf(a.status, a.body, a.retryAfter);
+}
+
 // ── Earnings and Withdraw (plans/paid-runs.md §8) ──────────────────────────
 // Full scope only: the key or an admin's session. Dollars for earned, cost
 // and margin; msat for what the wallet holds and pays.
 
 export type EarningsBy = "item" | "day" | "package" | "total";
+export type { WorkersView };
 export interface EarningsRow {
   /** `workflow:<name>`, `step:<type>`, `expired`, a day, a package, or `total`. */
   key: string;
@@ -2966,10 +3346,14 @@ export interface WalletInfo {
   provider: "sphinx" | "nwc" | null;
   receive: boolean;
   pay: boolean;
+  /** A Sphinx daemon's message token is on file: Support can send (plans/people-and-hosts.md §4). */
+  messages?: true;
   url?: string;
   relays?: string[];
   from?: "env" | "api";
   setAt?: string;
+  /** The environment names the wallet: the deployment owns it, and `PUT` is refused. */
+  env?: boolean;
   note?: string;
   check?: { ok: true; msat: number } | { ok: false; error: string };
 }
@@ -2982,8 +3366,8 @@ export interface PendingWithdrawal {
   /** The wallet answered `pending`: it is out. False: its pay call never answered. */
   answered: boolean;
   actor?: string;
-  /** A person's withdrawal, or credit this strut bought (item 9). */
-  purpose: "withdrawal" | "purchase";
+  /** A person's withdrawal, credit this strut bought (item 9), or a worker's payout (§8.2). */
+  purpose: "withdrawal" | "purchase" | "worker";
   /** The wallet it went through (`sphinx:<url>`, `nwc:<pubkey>`). */
   payer: string;
   /** Past its invoice's expiry and an hour: no more polling — record it or drop it. */
@@ -2994,6 +3378,9 @@ export interface PendingWithdrawal {
   otherWallet: boolean;
   lastError?: string;
   checkedAt?: number;
+  /** A worker's payout, a day old: epoch ms, when the wallet took the ask to
+   *  cancel it. It is read every minute until the wallet says how it ended. */
+  cancelAt?: number;
 }
 export interface EarningsView {
   from?: string;
@@ -3004,10 +3391,15 @@ export interface EarningsView {
   totals: Omit<EarningsRow, "key" | "price">;
   rows: EarningsRow[];
   outstanding: { tokens: number; usd: number; held: number };
+  /** What workers are owed for accepted answers (plans/human-steps.md §8.1),
+   *  in sats; not in a view scoped to a package. */
+  workers?: WorkersView;
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   /** Credit this strut bought from other struts (item 9). */
   purchases: { count: number; msat: number; feeMsat: number };
+  /** Sats an admin added to the wallet by hand (Add sats): never credit, never earnings. */
+  deposited: { count: number; msat: number; days: Array<{ day: string; count: number; msat: number }> };
   pending: PendingWithdrawal[];
   wallet?: WalletInfo & {
     balance?: { msat: number; sats: number; usd?: number };
@@ -3016,6 +3408,10 @@ export interface EarningsView {
     expectedMsat: number;
     pendingMsat: number;
     differenceMsat?: number;
+    /** What workers are owed now, held and withdrawable both. */
+    owedToWorkersMsat: number;
+    /** balance − owed to workers, when the balance was read: below 0, short. */
+    coverMsat?: number;
   };
 }
 export interface LedgerEntryView {
@@ -3045,6 +3441,56 @@ export const getEarningsEntries = (q: { kind?: LedgerEntryView["kind"]; runId?: 
 };
 export const getWallet = (check = false) => fetchJSON<WalletInfo>(`/earnings/wallet${check ? "?check=1" : ""}`);
 export const putWallet = (body: Record<string, unknown>) => fetchJSON<WalletInfo>("/earnings/wallet", { method: "PUT", body: JSON.stringify(body) });
+
+/** An invoice INTO this server's wallet (`POST /earnings/deposit`), and
+ *  where it stands (`POST /earnings/deposits/:hash/read`). */
+export interface DepositAnswer {
+  state: "pending" | "settled" | "expired";
+  paymentHash: string;
+  /** What the invoice asks. */
+  msat: number;
+  /** ISO 8601. */
+  expires: string;
+  /** While pending: the invoice to pay. */
+  invoice?: string;
+  /** Once settled: what settled, and when (ISO 8601). */
+  deposit?: { at: string; msat: number; paymentHash: string; actor?: string };
+  /** Pending: why the wallet could not be asked just now. */
+  error?: string;
+}
+export const askDeposit = (sats: number) => fetchJSON<DepositAnswer>("/earnings/deposit", { method: "POST", body: JSON.stringify({ sats }) });
+export const readDeposit = (paymentHash: string) => fetchJSON<DepositAnswer>(`/earnings/deposits/${paymentHash}/read`, { method: "POST", body: "{}" });
+
+/** What this strut holds at another strut's public door (`GET /remote/credit?balance=1`, plans/paid-runs.md §10). */
+export interface RemoteBalance {
+  seller: string;
+  held: boolean;
+  remaining_usd?: number;
+  remaining_sats?: number;
+  held_usd?: number;
+  spent_usd?: number;
+  paid_usd?: number;
+  expires?: string;
+  expired?: boolean;
+  replaced?: boolean;
+  /** The seller could not be asked, or refused the token. */
+  error?: string;
+  buying?: { usd: number; at: string };
+}
+export interface HeldAtSeller {
+  seller: string;
+  /** The credit token held there (never the token itself). */
+  credit?: { tokenId: string; paymentHash: string; boughtAt: string; usd: number; sats: number; expires: string; carried?: string; proposal?: string };
+  /** A purchase asked for and not yet stored. */
+  purchase?: { proposal: string; actor?: string; usd: number; sats: number; msat: number; paymentHash: string; tokenId: string; invoiceExpiresAt: number; validUntil: number; carries: boolean; at: number; sent?: boolean; checkedAt?: number; lastError?: string };
+  /** Remote runs a step is waiting on now. */
+  runs: number;
+  balance?: RemoteBalance;
+}
+export const remoteCredit = (balance = false) => fetchJSON<{ sellers: HeldAtSeller[] }>(`/remote/credit${balance ? "?balance=1" : ""}`);
+/** Forget a purchase the seller will never answer for, so a new one can go. */
+export const dropRemotePurchase = (seller: string) =>
+  fetchJSON<{ seller: string; dropped?: unknown }>(`/remote/purchases?seller=${encodeURIComponent(seller)}`, { method: "DELETE" });
 
 /** What `POST /earnings/withdraw` answered: the payment, or the refusal. */
 export type WithdrawResult =

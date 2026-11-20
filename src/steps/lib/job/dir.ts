@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { shellCapability, type StrutCapabilities } from "../../../capabilities.js";
-import { holdJob, jobRoot, jobTtlMs, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
+import { holdJob, jobRoot, jobTtlMs, reholdJob, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
 
 const EXAMPLE = `- id: dir
   type: job/dir
@@ -37,7 +37,7 @@ export default defineStep({
   description:
     `This run's JOB directory: <dataDir>/jobs/<job>/, created on first use, the SAME path for every run launched with the same \`job\` (POST …/run { job }). ` +
     `Point an agent step's cwd at \`path\` so what it writes (plan.md, a page, screenshots) is there next turn and served at GET /jobs/<job>/files/<path>; declare deliverables in the workflow's output as artifacts: [{ id, title, path }]. ` +
-    `Held by this run until it ends (a second run of the job fails \`job_busy:\`; a child run this one launches through meta/run-workflow shares it). Repositories checked out into it (git/checkout with workdir: "{{ $job }}") are removed once the job is idle for STRUT_WORKDIR_TTL_DAYS, and what the job holds (ctx.services.jobs — a pod a tool claimed) is released then; its other files are kept. ` +
+    `Held by this run until it ends (a second run of the job fails \`job_busy:\`; a child run this one launches through meta/run-workflow shares it). A run that parks (a human step) lets it go while it waits, and takes it again when it wakes, after any run that took the job meanwhile. Repositories checked out into it (git/checkout with workdir: "{{ $job }}") are removed once the job is idle for STRUT_WORKDIR_TTL_DAYS, and what the job holds (ctx.services.jobs — a pod a tool claimed) is released then; its other files are kept. ` +
     `With \`hold: false\` it returns the directory WITHOUT holding it, for a run that only reads what is there (a job's uploads/): several such runs of one job run at once, beside the one run that holds it, if any. Strut does not make a run that does not hold read-only — only take it for one whose steps cannot write there. ` +
     `Without a job (the Run button, a plain POST) it returns the run's own artifact directory, so the workflow still works as a one-shot. Output: { path, job?, created }\n\n${EXAMPLE}`,
   input: z.object({
@@ -65,5 +65,13 @@ export default defineStep({
     await touchJob(root, ctx.job);
     await sweepJobs(services?.shell ?? shellCapability(), dataDir, jobTtlMs(), { release: releaseWith(ctx.registry, ctx.services) });
     return { path: root, job: ctx.job, created };
+  },
+  // A resume replays this step (a wake after a park, a restart): the hold
+  // went with the park or the process, and is taken again here, where the
+  // run first took it — waiting for a run that took the job meanwhile.
+  async onReplay(cfg, ctx: StepContext<StrutCapabilities>) {
+    if (!ctx.job || !cfg.hold) return;
+    const dataDir = (ctx.services as Partial<StrutCapabilities> | undefined)?.dataDir ?? join(tmpdir(), "strut");
+    await reholdJob(ctx, jobRoot(dataDir, ctx.job), ctx.job);
   },
 });

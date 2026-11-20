@@ -82,7 +82,7 @@ describe("a peer's app, hosted by a person's own strut (plans/apps.md §7.4)", (
     process.env["STRUT_PEER_KEY"] = PEER_KEY;
     const kit = await kitForTests();
     root = await mkdtemp(join(tmpdir(), "strut-peer-host-"));
-    const quiet = { scheduler: false, serveUi: false, enableChat: false, enableMcp: true, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, views: false } as const;
+    const quiet = { scheduler: false, serveUi: false, enableChat: false, enableMcp: true, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false, views: false } as const;
 
     acme = await createStrut({ workspace: new FileWorkspaceStore(join(root, "acme")), store: acmeStore, registry: await createRegistry([whoami]), kit, ...quiet });
     // NOT open to peers: no `peer:` in its YAML. The app grants it.

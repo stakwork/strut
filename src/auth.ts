@@ -18,7 +18,7 @@ import { bootEnv } from "./env.js";
  *
  * The same secret authenticates first-party services in both directions
  * within a deployment: mcp uses it to register steps with strut, and strut's
- * uploaded step files use it to call back to mcp. See AGENTS.md.
+ * uploaded step files use it to call back to mcp. See docs/security.md "Auth".
  *
  * A second, narrower key, `STRUT_PEER_KEY`, is what ANOTHER strut holds for
  * this one (plans/federation.md §3): it authenticates like the deployment
@@ -26,6 +26,10 @@ import { bootEnv } from "./env.js";
  * gate in createStrut lets it read, launch a run, and control a run a peer
  * launched, nothing else. A PERSON TOKEN (`POST /peers/tokens`, "Person
  * tokens" below) is the same key attenuated to one actor: `peer:person`.
+ *
+ * A HOST KEY (`STRUT_HOST_KEYS`, "Host keys" below) is what a program that
+ * brings people to strut holds — the Sphinx daemon on a box: it acts only as
+ * a person it names by their account (`x-strut-account`), scope `host`.
  */
 
 const ENV_VAR = "STRUT_API_KEY";
@@ -161,8 +165,20 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
  * signed in with `role: "member"` ("Sessions" below). A member uses apps:
  * the gate passes the few routes strut's page calls to show one, and
  * `/mcp` gives it an app's `step_run` alone, as the viewer.
+ *
+ * `visitor` (plans/app-repos.md §5): a VISITOR's session, someone known only
+ * by a key they signed strut's challenge with ("Visitors" below), or a
+ * person a host vouched for with `role: "visitor"`. A visitor is not a
+ * member: the gate passes the public apps' pages, `POST /public/mcp` as
+ * itself, its app's channel ticket and the sign-in routes, nothing else.
+ *
+ * `host` (plans/jamie-in-tribes.md §5.1): a HOST KEY ("Host keys" below), a
+ * program that brings people to strut. It acts only as a person it names by
+ * their account (`x-strut-account`), never as an admin: it launches turns of
+ * its own conversations (`host/<name>/…`), reads them, decides their
+ * proposals and links accounts. The gate refuses it everything else.
  */
-export type Scope = "full" | "peer" | "peer:person" | "member";
+export type Scope = "full" | "peer" | "peer:person" | "member" | "visitor" | "host";
 
 /** Is this a peer's request — a strut server's, or a person's through one? */
 export function isPeerScope(scope: Scope | undefined): boolean {
@@ -170,15 +186,63 @@ export function isPeerScope(scope: Scope | undefined): boolean {
 }
 
 /** The default `resolveScope`: `full` for the deployment key (or its
- *  session, an admin's included), else `peer:person` for a person token,
- *  `peer` for the peer key, `member` for a member's session, and `full`
- *  for the rest (dev mode). */
+ *  session, an admin's included), else `host` for a host key (dev mode
+ *  too), `peer:person` for a person token,
+ *  `peer` for the peer key, `member` for a member's session, `visitor` for
+ *  a visitor's, and `full` for the rest (dev mode — and a request the gate
+ *  already refused). */
 export function scopeFromKey(c: Context): Scope {
   if (inProcessOf(c)) return "full";
   if (configuredKey() && carriesApiKey(c)) return "full";
+  if (hostOf(c)) return "host";
   if (personOf(c)) return "peer:person";
   if (carriesPeerKey(c)) return "peer";
-  return configuredKey() && memberOf(c) ? "member" : "full";
+  if (!configuredKey()) return "full";
+  if (memberOf(c)) return "member";
+  return visitorOf(c) ? "visitor" : "full";
+}
+
+// ── Host keys ────────────────────────────────────────────────────────────
+//
+// A HOST (plans/jamie-in-tribes.md §1, §5.1) is a program that brings people
+// to strut: it knows who is speaking and where, launches each turn as that
+// person, and carries the answer back. The deployment key would let it run
+// as anyone and do anything; a host that reads messages from strangers and
+// holds money should not hold it. `STRUT_HOST_KEYS="sphinx:<token>"` (a
+// comma between hosts) names each host and its token. The name is also the
+// KIND of account it vouches for: the Sphinx daemon names the speaker as
+// `x-strut-account: sphinx:<66 hex>`. Bearer only — a host is a server.
+
+const HOST_ENV = "STRUT_HOST_KEYS";
+const HOST_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+let warnedHosts = "";
+
+/** The configured host keys, `name` → `token`, read at request time. An
+ *  entry that is not `name:token` is skipped, with one warning. */
+export function hostKeys(): Map<string, string> {
+  const raw = bootEnv()[HOST_ENV] ?? "";
+  const out = new Map<string, string>();
+  const bad: string[] = [];
+  for (const entry of raw.split(",").map((e) => e.trim()).filter(Boolean)) {
+    const at = entry.indexOf(":");
+    const name = entry.slice(0, at).trim();
+    const token = entry.slice(at + 1).trim();
+    if (at < 1 || !HOST_NAME.test(name) || !token || out.has(name)) bad.push(at < 1 ? "(no name)" : name);
+    else out.set(name, token);
+  }
+  if (bad.length && warnedHosts !== raw) {
+    warnedHosts = raw;
+    console.warn(`[strut] ${HOST_ENV}: skipped ${bad.join(", ")} — each entry is <name>:<token>, a name of lowercase letters, digits and -, once`);
+  }
+  return out;
+}
+
+/** The host whose key this request carries, as `Authorization: Bearer`. */
+export function hostOf(c: Context): { name: string } | undefined {
+  const got = presentedKey(c.req.header("authorization"));
+  if (!got) return undefined;
+  for (const [name, token] of hostKeys()) if (token === got) return { name };
+  return undefined;
 }
 
 // ── File read tokens ─────────────────────────────────────────────────────
@@ -403,12 +467,14 @@ export function actorFromHeader(c: Context): string | undefined {
 // host's sign-in ticket instead of the key ("Sign-in tickets" below).
 //
 // Roles (plans/member-rights.md). A ticket names the person's ROLE, which
-// the session keeps: `admin` or `member`, the host's own words. An admin's
-// session is the key's equal, as the key login's (no role) is. A MEMBER's
-// is not: `carriesApiKey` does not count it, its scope is `member`, and
-// the gate passes it only the routes strut's page calls to show an app
-// alone (createStrut's `MEMBER_ROUTES`) — admins run the box, members use
-// apps.
+// the session keeps: `admin`, `member` or `visitor`, the host's own words.
+// An admin's session is the key's equal, as the key login's (no role) is —
+// and NOTHING else is: `fullSession` is an allowlist, so a role added later
+// opens nothing by being unknown. A MEMBER's is not: `carriesApiKey` does
+// not count it, its scope is `member`, and the gate passes it only the
+// routes strut's page calls to show an app alone (createStrut's
+// `MEMBER_ROUTES`) — admins run the box, members use apps. A VISITOR's
+// lives in a cookie of its own ("Visitors" below).
 //
 // In a frame. `SameSite=Lax` sends the cookie to a framed page only when
 // strut and the page framing it are SAME-SITE (`strut.acme.com` in
@@ -440,10 +506,11 @@ const DEFAULT_SESSION_HOURS = 12;
 const UI_HEADER = "x-strut-ui";
 
 /** A person's role, as a host names it on a sign-in ticket: an admin runs
- *  the box, a member uses its apps (plans/member-rights.md). */
-export type Role = "admin" | "member";
-export const ROLES: readonly Role[] = ["admin", "member"];
-export const isRole = (r: unknown): r is Role => r === "admin" || r === "member";
+ *  the box, a member uses its apps (plans/member-rights.md), a visitor uses
+ *  the public apps as itself (plans/app-repos.md §5.1). */
+export type Role = "admin" | "member" | "visitor";
+export const ROLES: readonly Role[] = ["admin", "member", "visitor"];
+export const isRole = (r: unknown): r is Role => r === "admin" || r === "member" || r === "visitor";
 
 /** What a session cookie holds: who signed in, when it ends (ms), and the
  *  role a host's ticket named — none for the key login. */
@@ -451,12 +518,18 @@ export interface Session {
   actor?: string;
   exp: number;
   role?: Role;
+  /** A visitor's Sphinx address (`<pubkey>_<lsp_pubkey>_<scid>`), kept from
+   *  a `sphinx` sign-in whose address is the signing key's own (claim
+   *  `address`). The door hands it to a worker step; the page never sees it. */
+  sphinxAddress?: string;
 }
 
 /** Is this session the key's equal? The key login's (no role) and an
- *  admin's are; a member's is not. False with no session. */
-function fullSession(session: Session | undefined): boolean {
-  return session !== undefined && session.role !== "member";
+ *  admin's are, and nothing else — an allowlist, so a member's, a
+ *  visitor's, or a role this strut does not know is not. False with no
+ *  session. */
+export function fullSession(session: Session | undefined): boolean {
+  return session !== undefined && (session.role === undefined || session.role === "admin");
 }
 
 /** A session's life: `STRUT_SESSION_HOURS`, default 12. */
@@ -466,9 +539,10 @@ export function sessionTtlMs(): number {
 }
 
 /** A signed token's kinds: a session cookie, a person token, a catalog
- *  read token, a channel ticket, a sign-in ticket. The kind is in the HMAC
- *  input, so one is never accepted as another. */
-type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket";
+ *  read token, a channel ticket, a sign-in ticket, a visitor's challenge,
+ *  a worker invite, a link challenge. The kind is in the HMAC input, so one
+ *  is never accepted as another. */
+type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket" | "challenge" | "invite" | "link";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -509,7 +583,7 @@ function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number
 /** The signed token for a session — `base64url(json).hmac` — or undefined
  *  with no secret to sign it. */
 export function sessionToken(session: Session): string | undefined {
-  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}) });
+  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}), ...(session.sphinxAddress ? { address: session.sphinxAddress } : {}) });
 }
 
 /** The session a token names, if the signature holds and it has not
@@ -517,10 +591,11 @@ export function sessionToken(session: Session): string | undefined {
 export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
   const claims = readClaims("session", token, now);
   if (!claims) return undefined;
-  const { actor, exp, role } = claims;
+  const { actor, exp, role, address } = claims;
   if (actor !== undefined && typeof actor !== "string") return undefined;
   if (role !== undefined && !isRole(role)) return undefined;
-  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}) };
+  if (address !== undefined && typeof address !== "string") return undefined;
+  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}), ...(address ? { sphinxAddress: address } : {}) };
 }
 
 /**
@@ -536,8 +611,8 @@ export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()
 }
 
 /** A session for `actor` from now, as the cookie value and what it names. */
-function startSession(actor: string | undefined, ttlMs: number, role?: Role): { token: string; session: Session } | undefined {
-  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}) };
+function startSession(actor: string | undefined, ttlMs: number, role?: Role, sphinxAddress?: string): { token: string; session: Session } | undefined {
+  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}), ...(sphinxAddress ? { sphinxAddress } : {}) };
   const token = sessionToken(session);
   return token ? { token, session } : undefined;
 }
@@ -564,8 +639,38 @@ export const SIGN_IN_TICKET_MS = 60_000;
 /** The `jti`s redeemed, each until its ticket's `exp`. */
 const redeemedTickets = new Map<string, number>();
 
+// ── worker invites (plans/human-steps.md §5.8) ──────────────────────────
+
+const INVITE_PREFIX = "strut-invite.";
+
+/** The token a worker invite's link carries to the worker app it opens
+ *  (`input=invite=…`): the daemon's invite `code` and the `app` it opens,
+ *  signed, so the worker who opens it with it is given invite-only task
+ *  types (the task service's `enterInvite`) — one worker per invite, while
+ *  the daemon still has it. `types` names exactly the types it gives (none,
+ *  `[]`: an invite to open work alone); left out — a token made before
+ *  invites named their work — it gives every invite-only type `app` draws.
+ *  `exp` fixed by the caller, so a listing's link is the one the worker was
+ *  sent. Undefined with no secret to sign it. */
+export function inviteToken(code: string, app: string, exp: number, types?: string[]): string | undefined {
+  const signed = signClaims("invite", { c: code, a: app, exp, ...(types ? { t: types } : {}) });
+  return signed ? `${INVITE_PREFIX}${signed}` : undefined;
+}
+
+/** The invite a token names, if it is strut's, signed here and not past its
+ *  `exp`; undefined otherwise. `types` only when the token names them. */
+export function inviteOf(token: string, now = Date.now()): { code: string; app: string; types?: string[] } | undefined {
+  if (typeof token !== "string" || !token.startsWith(INVITE_PREFIX)) return undefined;
+  const claims = readClaims("invite", token.slice(INVITE_PREFIX.length), now);
+  if (!claims || typeof claims["c"] !== "string" || typeof claims["a"] !== "string") return undefined;
+  const t = claims["t"];
+  if (t !== undefined && !(Array.isArray(t) && t.every((x) => typeof x === "string"))) return undefined;
+  return { code: claims["c"], app: claims["a"], ...(t ? { types: t as string[] } : {}) };
+}
+
 /** A sign-in ticket for `actor` as `role` (a member unless said),
- *  living `ttlMs` — or undefined with no secret to sign it. */
+ *  living `ttlMs` — or undefined with no secret to sign it. A `visitor`'s
+ *  ticket buys a visitor's session ("Visitors" below). */
 export function signInTicket(actor: string, role: Role = "member", ttlMs = SIGN_IN_TICKET_MS): { ticket: string; exp: number } | undefined {
   const exp = Date.now() + ttlMs;
   const signed = signClaims("ticket", { actor, role, exp, jti: randomBytes(16).toString("base64url") });
@@ -589,15 +694,16 @@ export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now =
   for (const [id, exp] of redeemedTickets) if (exp <= now) redeemedTickets.delete(id);
   if (redeemedTickets.has(jti)) return undefined;
   redeemedTickets.set(jti, claims.exp);
-  return startSession(actor, ttlMs, role);
+  return startSession(actor, role === "visitor" ? visitorSessionMs() : ttlMs, role);
 }
 
 /** The `Set-Cookie` value that stores a session token, or clears it
  *  (`token` undefined). `Secure` on https, where the cookie must never
- *  travel in clear; a local strut is plain http. */
-export function sessionCookie(token: string | undefined, exp: number, secure: boolean): string {
+ *  travel in clear; a local strut is plain http. `name`: the visitor's
+ *  cookie is `VISITOR_COOKIE`. */
+export function sessionCookie(token: string | undefined, exp: number, secure: boolean, name = SESSION_COOKIE): string {
   const maxAge = token ? Math.max(1, Math.floor((exp - Date.now()) / 1000)) : 0;
-  return `${SESSION_COOKIE}=${token ?? ""}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
+  return `${name}=${token ?? ""}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
 }
 
 /** Is this request on https — directly, or behind a proxy that says so? */
@@ -608,13 +714,14 @@ export function isSecureRequest(c: Context): boolean {
 }
 
 /** The session a `Cookie` header carries, verified — the CSRF rules aside
- *  (for the WebSocket upgrade, a GET; everything else asks `sessionOf`). */
-export function sessionFromCookie(cookie: string | undefined): Session | undefined {
+ *  (for the WebSocket upgrade, a GET; everything else asks `sessionOf`).
+ *  `name`: the visitor's cookie is `VISITOR_COOKIE`. */
+export function sessionFromCookie(cookie: string | undefined, name = SESSION_COOKIE): Session | undefined {
   if (!cookie) return undefined;
   for (const part of cookie.split(";")) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
-    if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
     const value = part.slice(eq + 1).trim();
     return value ? verifySessionToken(value) : undefined;
   }
@@ -642,6 +749,171 @@ export function memberOf(c: Context): Session | undefined {
   return session?.role === "member" ? session : undefined;
 }
 
+// ── Visitors (plans/app-repos.md §5) ─────────────────────────────────────
+//
+// A VISITOR of a public app is someone known only by a key: they sign
+// strut's CHALLENGE with it and are then that key's actor here
+// (`<scheme>:<public key>`, src/visitors.ts). Or a host that knows the
+// person vouches with a sign-in ticket of `role: "visitor"`.
+//
+// The challenge: `strut-visitor.<claims>.<hmac>`, claims `{ host,
+// visitorKey, nonce, exp }`, signed like a sign-in ticket and as stateless.
+// It lives a minute and is good ONCE: a redeemed nonce is remembered, in
+// memory, until its `exp` — the ticket's `jti` rule.
+//
+// The session: signed exactly as an admin's or a member's (`role:
+// "visitor"`), in a cookie of its own, `strut_visitor`, so a visitor's
+// sign-in on a box never replaces the operator's console session on the
+// same origin, and `sessionOf` never sees it. A visitor's token is ALSO
+// accepted as `Authorization: Bearer <token>` (ruled 2026-11-10, 4): framed
+// by a page of another site, the browser drops this site's cookie, so
+// strut's host page keeps the token the sign-in returned and sends it.
+// Only a visitor's: an admin's or a member's session stays a cookie, under
+// the CSRF rules above. The cookie keeps them too: a request that is not a
+// read is honored with `x-strut-ui: 1`. A visitor's session lives
+// `VISITOR_SESSION_DAYS`: a player signs in once.
+
+const VISITOR_COOKIE = "strut_visitor";
+/** How long a visitor's session lives. */
+export const VISITOR_SESSION_DAYS = 30;
+const visitorSessionMs = () => VISITOR_SESSION_DAYS * 86_400_000;
+
+/** The `Set-Cookie` value that stores a visitor's token, or clears it. */
+export function visitorSessionCookie(token: string | undefined, exp: number, secure: boolean): string {
+  return sessionCookie(token, exp, secure, VISITOR_COOKIE);
+}
+
+/** A visitor's session for `actor` from now, as its token and what it
+ *  names (and the Sphinx address it keeps, if any) — or undefined with no
+ *  secret to sign it. */
+export function startVisitorSession(actor: string, sphinxAddress?: string): { token: string; session: Session } | undefined {
+  return startSession(actor, visitorSessionMs(), "visitor", sphinxAddress);
+}
+
+/** Where a visitor's token rides when `Authorization` carries something
+ *  else: on `POST /public/mcp`, a priced launch's credit token
+ *  (`Authorization: L402 …`, plans/paid-runs.md §10). */
+export const VISITOR_HEADER = "x-strut-visitor";
+
+/** The VISITOR's session this request carries: a visitor's token as
+ *  `Authorization: Bearer` (or `x-strut-visitor`), else the visitor's
+ *  cookie under `sessionOf`'s CSRF rules (a read, or `x-strut-ui: 1`).
+ *  Only a session of role `visitor` with an actor. */
+export function visitorOf(c: Context): Session | undefined {
+  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(\S+)\s*$/i)?.[1] ?? c.req.header(VISITOR_HEADER)?.trim();
+  const fromBearer = bearer ? verifySessionToken(bearer) : undefined;
+  if (fromBearer) return fromBearer.role === "visitor" && fromBearer.actor ? fromBearer : undefined;
+  const session = sessionFromCookie(c.req.header("cookie"), VISITOR_COOKIE);
+  if (!session || session.role !== "visitor" || !session.actor) return undefined;
+  if (c.req.header(UI_HEADER) === "1" || c.req.method === "GET" || c.req.method === "HEAD") return session;
+  return undefined;
+}
+
+const CHALLENGE_PREFIX = "strut-visitor.";
+/** A challenge's life: to sign, not to keep. */
+export const VISITOR_CHALLENGE_MS = 60_000;
+/** The nonces redeemed, each until its challenge's `exp`. */
+const redeemedChallenges = new Map<string, number>();
+
+/** Whose key signs: the visitor's ROOT key (one actor on every box), or a
+ *  child derived from the host (one actor per domain; LUD-05). */
+export type VisitorKeyMode = "root" | "domain";
+
+/** What a challenge holds. */
+export interface VisitorChallenge {
+  host: string;
+  visitorKey: VisitorKeyMode;
+  nonce: string;
+  exp: number;
+}
+
+/** A challenge for a visitor of `host`, living a minute — or undefined with
+ *  no secret to sign it. */
+export function visitorChallenge(host: string, visitorKey: VisitorKeyMode, ttlMs = VISITOR_CHALLENGE_MS): { challenge: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("challenge", { host, visitorKey, nonce: randomBytes(16).toString("hex"), exp });
+  return signed ? { challenge: `${CHALLENGE_PREFIX}${signed}`, exp } : undefined;
+}
+
+/** A challenge's claims, if strut signed it and it has not expired —
+ *  redeemed or not. */
+export function readVisitorChallenge(challenge: string, now = Date.now()): VisitorChallenge | undefined {
+  if (typeof challenge !== "string" || !challenge.startsWith(CHALLENGE_PREFIX)) return undefined;
+  const claims = readClaims("challenge", challenge.slice(CHALLENGE_PREFIX.length), now);
+  if (!claims) return undefined;
+  const { host, visitorKey, nonce } = claims;
+  if (typeof host !== "string" || typeof nonce !== "string" || (visitorKey !== "root" && visitorKey !== "domain")) return undefined;
+  return { host, visitorKey, nonce, exp: claims.exp };
+}
+
+/** Spend a challenge: its claims, once — undefined for one that is not
+ *  strut's, has expired, or was spent. Called once its signature holds, so
+ *  a challenge someone only saw cannot be burned. */
+export function redeemVisitorChallenge(challenge: string, now = Date.now()): VisitorChallenge | undefined {
+  const claims = readVisitorChallenge(challenge, now);
+  return claims && spendNonce(claims.nonce, claims.exp, now) ? claims : undefined;
+}
+
+/** Remembers `nonce` until `exp`: true the first time, false after. */
+function spendNonce(nonce: string, exp: number, now: number): boolean {
+  for (const [n, e] of redeemedChallenges) if (e <= now) redeemedChallenges.delete(n);
+  if (redeemedChallenges.has(nonce)) return false;
+  redeemedChallenges.set(nonce, exp);
+  return true;
+}
+
+// ── Link challenges (plans/people-and-hosts.md §2.1) ─────────────────────
+//
+// Peel links its Sphinx key to a person here by SIGNING a link challenge:
+// `strut-link.<claims>.<hmac>`, claims `{ host, actor?, name?, nonce, exp }`.
+// The person's own signed-in page mints one naming them (`account/link`, ten
+// minutes): `POST /people/link` links the key that signed it to `actor`.
+// `GET /people/challenge` mints one naming nobody (a minute): Peel signs it
+// again for a new token (`POST /people/token`). Stateless, and good ONCE, as
+// a visitor's challenge is.
+
+const LINK_PREFIX = "strut-link.";
+/** How long a challenge that links a key may wait for Peel. */
+export const LINK_CHALLENGE_MS = 10 * 60_000;
+/** How long a challenge that renews a token lives: to sign, not to keep. */
+export const RENEW_CHALLENGE_MS = 60_000;
+
+/** What a link challenge holds: the box it is for, and the person it
+ *  links (with the name Peel shows), or nobody (a renewal). */
+export interface LinkChallenge {
+  host: string;
+  actor?: string;
+  name?: string;
+  nonce: string;
+  exp: number;
+}
+
+/** A link challenge for `host`, naming `actor` (and their `name`) or
+ *  nobody, living `ttlMs` — or undefined with no secret to sign it. */
+export function linkChallenge(claims: { host: string; actor?: string; name?: string }, ttlMs = LINK_CHALLENGE_MS): { challenge: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("link", { ...claims, nonce: randomBytes(16).toString("hex"), exp });
+  return signed ? { challenge: `${LINK_PREFIX}${signed}`, exp } : undefined;
+}
+
+/** A link challenge's claims, if strut signed it and it has not expired —
+ *  spent or not. */
+export function readLinkChallenge(challenge: unknown, now = Date.now()): LinkChallenge | undefined {
+  if (typeof challenge !== "string" || !challenge.startsWith(LINK_PREFIX)) return undefined;
+  const claims = readClaims("link", challenge.slice(LINK_PREFIX.length), now);
+  if (!claims) return undefined;
+  const { host, actor, name, nonce } = claims;
+  if (typeof host !== "string" || typeof nonce !== "string" || (actor !== undefined && typeof actor !== "string") || (name !== undefined && typeof name !== "string")) return undefined;
+  return { host, ...(actor ? { actor } : {}), ...(name ? { name } : {}), nonce, exp: claims.exp };
+}
+
+/** Spend a link challenge: its claims, once. Called once its signature
+ *  holds, so a challenge someone only saw cannot be burned. */
+export function redeemLinkChallenge(challenge: unknown, now = Date.now()): LinkChallenge | undefined {
+  const claims = readLinkChallenge(challenge, now);
+  return claims && spendNonce(claims.nonce, claims.exp, now) ? claims : undefined;
+}
+
 // ── Person tokens ────────────────────────────────────────────────────────
 //
 // The peer key stands for a STRUT, and its request names a person only by
@@ -660,21 +932,28 @@ export function memberOf(c: Context): Session | undefined {
 const PERSON_PREFIX = "strut-person.";
 /** A person token's default life, mcp's `lab:peer` default. */
 export const PERSON_TOKEN_DAYS = 60;
+/** The life of the token Peel holds for a link (plans/people-and-hosts.md
+ *  §2.1): Peel renews it by signing again. */
+export const LINKED_TOKEN_DAYS = 7;
 
-/** What a person token holds: the actor, and when it ends (ms). */
+/** What a person token holds: the actor, and when it ends (ms). A token
+ *  Peel holds for a link also names the account (`sphinx:<66 hex>`): it
+ *  holds only while that account is linked to the actor (the gate checks). */
 export interface PersonToken {
   actor: string;
   exp: number;
+  account?: string;
 }
 
 /** A person token for `actor`, living `ttlMs` — or undefined with no
  *  secret to sign it (dev mode with no `STRUT_SECRET_KEY`). `secret` is for
  *  a process that mints for a strut it is not (`strut move serve`, before the
  *  strut it receives has started): that strut's `STRUT_API_KEY`, else its
- *  `STRUT_SECRET_KEY`, as `tokenSecret` picks. */
-export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000, secret?: string): { token: string; exp: number } | undefined {
+ *  `STRUT_SECRET_KEY`, as `tokenSecret` picks. `account`: the linked
+ *  account the token stands on (§2.1). */
+export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000, opts: { secret?: string; account?: string } = {}): { token: string; exp: number } | undefined {
   const exp = Date.now() + ttlMs;
-  const signed = signClaims("person", { actor, exp }, secret ?? tokenSecret());
+  const signed = signClaims("person", { actor, exp, ...(opts.account ? { account: opts.account } : {}) }, opts.secret ?? tokenSecret());
   return signed ? { token: `${PERSON_PREFIX}${signed}`, exp } : undefined;
 }
 
@@ -684,7 +963,8 @@ export function verifyPersonToken(token: string, now = Date.now()): PersonToken 
   if (!token.startsWith(PERSON_PREFIX)) return undefined;
   const claims = readClaims("person", token.slice(PERSON_PREFIX.length), now);
   if (!claims || typeof claims.actor !== "string" || !claims.actor) return undefined;
-  return { actor: claims.actor, exp: claims.exp };
+  if (claims["account"] !== undefined && typeof claims["account"] !== "string") return undefined;
+  return { actor: claims.actor, exp: claims.exp, ...(claims["account"] ? { account: claims["account"] as string } : {}) };
 }
 
 /** The person token this request carries as `Authorization: Bearer`,

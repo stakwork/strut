@@ -40,20 +40,27 @@ describe("the runnable record", () => {
     assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", dailyCapUsd: 0 }] })!, /refuses every run/);
     assert.match(surfaceProblem({ runnable: [{ kind: "step", name: "s", results: "run" }] })!, /results is a workflow's/);
     assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", results: "all" }] })!, /"output" or "run"/);
+    assert.equal(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", attachments: true }] }), undefined);
+    assert.match(surfaceProblem({ runnable: [{ kind: "step", name: "s", attachments: true }] })!, /attachments is a workflow's/);
+    assert.match(surfaceProblem({ runnable: [{ kind: "workflow", name: "x", attachments: "yes" }] })!, /attachments is true or false/);
   });
 
-  it("normalizes: zero prices and the default results dropped, each item once", () => {
+  it("normalizes: zero prices, the default results and attachments off dropped, each item once", () => {
     assert.deepEqual(
       normalizeSurface({
         runnable: [
           { kind: "workflow", name: "a", base: 0, markup: 0, results: "output", dailyCapUsd: 5 },
           { kind: "workflow", name: "a", base: 9 },
           { kind: "step", name: "a", base: 1 },
+          { kind: "workflow", name: "b", attachments: false },
+          { kind: "workflow", name: "c", attachments: true },
         ],
       }).runnable,
       [
         { kind: "workflow", name: "a", dailyCapUsd: 5 },
         { kind: "step", name: "a", base: 1 },
+        { kind: "workflow", name: "b" },
+        { kind: "workflow", name: "c", attachments: true },
       ],
     );
   });
@@ -143,6 +150,8 @@ describe("PUT /public-view: what anyone may run", () => {
     await ws.createWorkflow("wraps-graded", `name: wraps-graded\n${WITH_INPUT}steps:\n  - id: inner\n    type: subflow\n    config:\n      workflow: graded\n`);
     await ws.createWorkflow("asks", `name: asks\n${WITH_INPUT}steps:\n  - id: ask\n    type: llm\n    config:\n      prompt: "{{ input.q }}"\n`);
     await ws.createWorkflow("acts", `name: acts\n${WITH_INPUT}steps:\n  - id: w\n    type: test/write\n    config: {}\n  - id: sh\n    type: exec\n    config:\n      cmd: echo\n`);
+    await ws.createWorkflow("asks-person", `name: asks-person\n${WITH_INPUT}steps:\n  - id: ask\n    type: human\n    config:\n      task: review\n`);
+    await ws.createWorkflow("wraps-person", `name: wraps-person\n${WITH_INPUT}steps:\n  - id: inner\n    type: subflow\n    config:\n      workflow: asks-person\n`);
     const put = (body: unknown) => strut.app.request("/public-view", { method: "PUT", headers: auth, body: JSON.stringify(body) });
     const refused = async (runnable: unknown[], re: RegExp) => {
       const res = await put({ runnable });
@@ -166,6 +175,10 @@ describe("PUT /public-view: what anyone may run", () => {
     for (const t of ["agent", "llm", "exec", "acp/prompt"]) await refused([{ kind: "step", name: t }], /spends or runs a shell/);
     for (const t of ["subflow", "foreach", "loop", "if"]) await refused([{ kind: "step", name: t }], /runs other steps/);
     await refused([{ kind: "step", name: "meta/run-workflow" }], /step "meta\/run-workflow" is sealed/);
+    // A public run cannot wait: `human` parks, so every run would fail park_refused:.
+    await refused([{ kind: "workflow", name: "asks-person" }], /workflow "asks-person" reaches step "human", which waits for a person, and a public run cannot wait/);
+    await refused([{ kind: "workflow", name: "wraps-person" }], /workflow "wraps-person" reaches step "human"/);
+    await refused([{ kind: "step", name: "human" }], /step "human" waits for a person, and a public run cannot wait/);
     // Every item is checked: one good item does not carry a bad one.
     await refused([{ kind: "workflow", name: "plain" }, { kind: "workflow", name: "noinput" }], /noinput/);
   });

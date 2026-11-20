@@ -16,6 +16,7 @@ import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js"
 import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
 import { bootEnv } from "./env.js";
 import { packagePrefixOf } from "./package-lookup.js";
+import { checkRetain } from "./retention.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -73,6 +74,9 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   if (peer != null && typeof peer !== "boolean" && peer !== "person") {
     throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut server may launch it), `person` (only through a credential that names a person) or absent.");
   }
+  // `retain:` is a duration or `{ runs: N }`; a typo must fail the publish.
+  const retain = (parsed as { retain?: unknown } | null)?.retain;
+  if (retain != null) checkRetain(retain);
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;
   // what it names (step types, the sealed check) is the claims layer's
@@ -162,6 +166,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     ...(data.settings != null ? { settings: data.settings } : {}),
     ...(data.sealed === true ? { sealed: true } : {}),
     ...(data.peer === true || data.peer === "person" ? { peer: data.peer as PeerOpen } : {}),
+    ...(data.retain != null ? { retain: checkRetain(data.retain) } : {}),
   };
 }
 
@@ -180,6 +185,8 @@ export interface WorkflowContent {
   /** `peer: true` — another strut may launch it (plans/federation.md §3);
    *  `"person"` — only through a credential that names a person. */
   peer?: boolean | PeerOpen;
+  /** `retain: 1h` / `{ runs: 20 }` — how long finished runs' logs are kept (`src/retention.ts`). */
+  retain?: string | { runs: number };
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -195,6 +202,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           ...(content.claims != null ? { claims: content.claims } : {}),
           ...(content.sealed ? { sealed: true } : {}),
           ...(content.peer ? { peer: content.peer } : {}),
+          ...(content.retain != null ? { retain: content.retain } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );
@@ -222,9 +230,10 @@ export interface WorkflowVersionInfo {
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
  *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
  *  `install` a person's package install (marketplace.md §3), `distro` a
- *  package the operator's distro applied, with no ask (§12).
+ *  package the operator's distro applied, with no ask (§12), `repo` a
+ *  package this strut works on as a git checkout (app-repos.md §3).
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro" | "repo";
 
 /** Where an installed version came from (marketplace.md §3): which package
  *  at which version, its tree digest, the source it was fetched from, and the
@@ -244,7 +253,20 @@ export interface Upstream {
    *  follows this key, and an index row that later names another is asked
    *  about, never followed. */
   key?: string;
+  /** The commit a `git+` ref resolved (app-repos.md §3.1). What an update
+   *  re-resolves is `source.ref` — the branch or tag — never this. */
+  commit?: string;
   secrets: string[];
+  /** The manifest's `provides` (src/packages/format.ts): `secrets`, the
+   *  ones the package's steps manage — their fence's second list
+   *  (src/packages/fence.ts). Absent when the package provides nothing. */
+  provides?: { secrets?: string[] };
+  /** When a package's door wrote this version or, a known one, stamped it
+   *  the release's again (ISO; one time for the whole release): what the
+   *  installed fold reads to tell which release is here once a fork is
+   *  active (src/packages/installed.ts). Absent on a version written
+   *  before 2026-11-18. A fork carries it forward with the rest. */
+  at?: string;
 }
 
 /** Provenance a publish records on the version it writes. */
@@ -253,6 +275,26 @@ export interface PublishOptions {
   actor?: string;
   /** This version's upstream; `null` clears what would be carried forward. */
   upstream?: Upstream | null;
+  /** KNOWN content: record this publish's `source`, `actor` and `upstream`
+   *  on the version that holds it, in place of what it recorded — how a
+   *  package's door makes a version the release's: a repo's apply (app-repos.md
+   *  §3.3: a fork committed to the repo is no longer one), and a release
+   *  whose content is an older version's (a branch or channel moved back),
+   *  whose `upstream.at` then says when. New content records them as any
+   *  publish does. */
+  stamp?: boolean;
+}
+
+/** What a `stamp` publish writes on the known version (`PublishOptions.stamp`),
+ *  or nothing when it is not one or would change nothing. */
+export function stampFor(
+  recorded: { source?: unknown; actor?: unknown; upstream?: unknown },
+  opts?: PublishOptions,
+): Pick<WorkflowVersionInfo, "source" | "actor" | "upstream"> | undefined {
+  if (!opts?.stamp) return undefined;
+  const next = { ...(opts.source ? { source: opts.source } : {}), ...(opts.actor ? { actor: opts.actor } : {}), ...(opts.upstream ? { upstream: opts.upstream } : {}) };
+  const same = (Object.keys(next) as Array<keyof typeof next>).every((k) => JSON.stringify(recorded[k]) === JSON.stringify(next[k]));
+  return same ? undefined : next;
 }
 
 /** The upstream a new version records: the publish's own, none when it
@@ -437,6 +479,8 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held. */
   live?: string;
+  /** Present (true) only when its manifest says `admin: true`: listed to full scope alone. */
+  admin?: true;
 }
 
 /** `getApp`: one version (the active one by default) with the app's record around it. */
@@ -532,24 +576,35 @@ export interface StepListEntry {
 /** The package prefix a name sits under (src/package-lookup.ts). */
 export { packagePrefixOf };
 
+/** Which installed packages are OPEN — worked on here as a git repo
+ *  (app-repos.md §3; src/packages/repos.ts): a new name under one's prefix
+ *  is the author adding to the repo, written into it by the next Commit.
+ *  Set on a store by createStrut (`WorkspaceStore.setOpenPackages`). */
+export type OpenPackages = (prefix: string) => Promise<boolean>;
+
 /** A publish of a NEW name under an INSTALLED package's prefix is refused
  *  (marketplace.md §3, the name rule after install): only that package's
  *  install — a publish carrying its `upstream` — adds a name there. Editing
  *  one of its items is a fork; adding a sibling into someone else's
- *  namespace is not. `installedUnder` says whether the store holds an item
- *  of that package under it. */
+ *  namespace is not — unless the package is OPEN, a repo this strut works
+ *  on (`openUnder`), whose author adds items here and commits them.
+ *  `installedUnder` says whether the store holds an item of that package
+ *  under it. */
 export async function refuseUnderInstalledPackage(
   kind: "workflow" | "step" | "app",
   name: string,
   opts: PublishOptions | undefined,
   installedUnder: (prefix: string) => Promise<boolean>,
+  openUnder?: OpenPackages,
 ): Promise<void> {
   const prefix = packagePrefixOf(name);
   if (!prefix || opts?.upstream?.package === prefix) return;
   if (!(await installedUnder(prefix))) return;
+  if (await openUnder?.(prefix).catch(() => false)) return;
   throw new Error(
     `package_conflict: ${name} is under ${prefix}, an installed package — its prefix holds the package's own items. ` +
-      `Name the ${kind} outside ${prefix}/, or edit one of the package's items (an edit is a fork).`,
+      `Name the ${kind} outside ${prefix}/, or edit one of the package's items (an edit is a fork). ` +
+      `To add one to the package, open its git repository here (Packages → Repos): a package opened as a repo takes new names under ${prefix}/, and its next Commit writes them.`,
   );
 }
 
@@ -714,12 +769,22 @@ export interface WorkspaceStore extends SubflowResolver {
    *  return the directory root — what `buildRegistry(customDir)` loads. A
    *  file-backed store already has it; other backends write to scratch. */
   materializeCustomSteps(): Promise<string>;
+  /** Which installed packages are opened as git repos here: a new name
+   *  under one's prefix is allowed (`refuseUnderInstalledPackage`). Set by
+   *  createStrut; a store that never gets one keeps the rule for every
+   *  installed package. */
+  setOpenPackages?(check: OpenPackages): void;
 }
 
 // ── Filesystem implementation ──────────────────────────────────────────────
 
 export class FileWorkspaceStore implements WorkspaceStore {
   private root: string;
+  private openPackages?: OpenPackages;
+
+  setOpenPackages(check: OpenPackages): void {
+    this.openPackages = check;
+  }
 
   constructor(root?: string) {
     this.root = root ?? bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
@@ -879,7 +944,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   ): Promise<void> {
     const dir = this.workflowDir(name);
     const prior = await this.readWorkflowMetadata(name);
-    if (!prior) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!prior) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${version}.yaml`), yamlStr, "utf-8");
 
@@ -1077,7 +1142,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       );
       if (match) {
         const [vid, info] = match;
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) await this.patchWorkflowMetadata(name, (m) => Object.assign(m.versions[vid]!, door));
         if (meta.active === vid || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: vid, changed: false };
@@ -1168,7 +1233,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
     const meta = (await this.readStepMetadata(customDir)) ?? { steps: {} };
     const existing = meta.steps[name];
-    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
 
     // Content already known → no-op (if active) or re-activate that version
     // (unless the caller opted out of re-activation).
@@ -1191,7 +1256,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           existing.publisher = publisher;
           dirty = true;
         }
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) {
           Object.assign(info, door);
           dirty = true;
@@ -1312,7 +1377,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
-    if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     if (meta) {
       const match = Object.entries(meta.versions).find(([, v]) => v.hash === hash);
       if (match) {
@@ -1330,6 +1395,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
         const owner = opts?.owner ?? opts?.actor;
         if (!meta.owner && owner) {
           meta.owner = owner;
+          dirty = true;
+        }
+        const stamp = stampFor(meta.versions[vid]!, opts);
+        if (stamp) {
+          Object.assign(meta.versions[vid]!, stamp);
           dirty = true;
         }
         if (dirty) await this.writeAppMetadata(name, meta);
@@ -1803,6 +1873,7 @@ export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "v
     ...(meta.owner ? { owner: meta.owner } : {}),
     ...(meta.pinned ? { pinned: true } : {}),
     ...(meta.live ? { live: meta.live } : {}),
+    ...(m.admin ? { admin: true as const } : {}),
   };
 }
 
@@ -2041,4 +2112,29 @@ export async function workflowDisabled(ws: MetadataReader, name: string): Promis
 export async function assertWorkflowEnabled(ws: MetadataReader, name: string): Promise<void> {
   const refused = await workflowDisabled(ws, name);
   if (refused) throw new Error(refused);
+}
+
+/**
+ * WHOM A RUN NOBODY LAUNCHED ACTS AS (stadeum plans/software.md §5, item 15:
+ * every token is a person's, so unattended work runs as a person): the OWNER
+ * of the workflow it runs, with their secrets and on their bill, and nobody
+ * else. The owner is whoever brought the workflow in as a person — their
+ * install, their subscription, their publish — or whom an admin gave it to
+ * (`PUT /workflows/:name/owner`, `POST /actor/claim`). Nothing a package, a
+ * manifest, a step or a request says names anyone else. With no owner the
+ * work has nobody to run as, and the refusal says what to do. `work` names
+ * it for that refusal: `the package acme/code's schedule "check"`.
+ *
+ * The one place such a run is named: a package's schedule (scheduler.ts),
+ * and any other work a package sets up that no person launches.
+ */
+export async function runsAs(ws: MetadataReader, workflow: string, work: string): Promise<{ principal: string } | { error: string }> {
+  const owner = ws?.getWorkflowMetadata ? (await ws.getWorkflowMetadata(workflow).catch(() => null))?.owner : undefined;
+  if (owner) return { principal: owner };
+  return {
+    error:
+      `nobody to run as: ${work} runs as the owner of the workflow "${workflow}" — whoever brought it in as a person (their install, subscription or publish), ` +
+      `or whom an admin gave it to — and it has no owner, so nothing ran. An admin gives it one (PUT /workflows/${encodeURIComponent(workflow)}/owner { "owner": "<actor>" }) ` +
+      `or a person claims it (POST /actor/claim), and it runs as them, with their own secrets.`,
+  };
 }

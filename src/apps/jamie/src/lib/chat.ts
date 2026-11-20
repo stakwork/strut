@@ -34,6 +34,33 @@ export function timeLine(now: Date, timeZone?: string): string {
   }
 }
 
+/** A closing sentence that asks the person for something: a question, a
+ *  request ("I'd also need the names of your shops."), or one that tells
+ *  them how to answer ("Reply \"yes\" with those, or change anything."). */
+const ASKS = /\?["\u201d')\]]*$|^(also |and |then |so |just )?(please )?(send|tell|let me know|reply|answer|attach|confirm|share|upload)\b|\b(i|i'd|i would|we) (also )?need\b/i;
+
+/**
+ * The reply as Jamie shows it above the turn's `ask`: the model is told the
+ * question shows apart, under the reply, yet often asks it at the end of
+ * `text` too, in other words. So when there is an `ask`, the reply's last
+ * paragraph loses its closing sentences that ask for something, and the
+ * question shows once, in its box. A list, a paragraph left with nothing,
+ * or a reply that would be empty is left as it is.
+ */
+export function withoutAsk(text: string, ask: string | undefined): string {
+  if (!ask?.trim()) return text;
+  const paragraphs = text.trimEnd().split(/\n\s*\n/);
+  const last = paragraphs.at(-1) ?? "";
+  if (/^\s*([-*+]|\d+[.)])\s/m.test(last)) return text;
+  const sentences = last.match(/[^.!?]+[.!?]+["\u201d')\]]*\s*|[^.!?]+$/g) ?? [last];
+  let keep = sentences.length;
+  while (keep > 0 && ASKS.test(sentences[keep - 1]!.trim())) keep--;
+  if (keep === sentences.length) return text;
+  const rest = sentences.slice(0, keep).join("").trim();
+  const out = [...paragraphs.slice(0, -1), ...(rest ? [rest] : [])].join("\n\n").trimEnd();
+  return out || text;
+}
+
 /** The orchestrator's `input.context` for a turn sent now. */
 export function turnContext(now: Date, timeZone?: string): { line: string; where: string; timeZone?: string } {
   const zone = timeZone?.trim();
@@ -85,6 +112,33 @@ export function isOwn(id: string, viewer: string | undefined): boolean {
   return !!viewer && (id === viewer || id.startsWith(`${viewer}/`));
 }
 
+/** May the viewer add to this conversation (plans/jamie-app.md §2.2)? Their
+ *  own id, one they took a turn in, or a shared one. An admin reads anyone's
+ *  (§2.3) and continues only these: the rest is read-only, with Continue here. */
+export function mayContinue(view: { conversation: Pick<ConversationListItem, "shared">; participants: readonly string[] }, session: string, viewer: string | undefined): boolean {
+  return isOwn(session, viewer) || (!!viewer && view.participants.includes(viewer)) || !!view.conversation.shared;
+}
+
+/** Whose a conversation of an admin's Everyone is, as it says it: the
+ *  person whose id it is under (`<actor>/…`: a fork's first turns are its
+ *  source's), else who started it (Hive's bare ids, a host's), else where a
+ *  host's is continued. */
+export function ownerLabel(item: Pick<ConversationListItem, "id" | "startedBy" | "host">): string {
+  const under = !item.host && item.id.includes("/") ? item.id.slice(0, item.id.indexOf("/")) : undefined;
+  return under ?? item.startedBy ?? (item.host ? hostPlace(item.host) : "");
+}
+
+/** Opened from an admin's Everyone as a reader (`everyone`), unless it is
+ *  plainly the viewer's own: their id, or a conversation they started. */
+export function readsAsAdmin(item: Pick<ConversationListItem, "id" | "startedBy">, viewer: string | undefined): boolean {
+  return !isOwn(item.id, viewer) && !(viewer && item.startedBy === viewer);
+}
+
+/** The line every viewer reads under the composer (plans/jamie-app.md §2.3).
+ *  Recommended, not yet ruled: to drop it, delete this and the one line in
+ *  Thread.tsx that shows it (`data-testid="admins-read"`). */
+export const ADMINS_READ = "Admins on this server can read conversations with Jamie.";
+
 /** What a refused send means to the person. */
 export type SendRefusal = { kind: "busy"; text: string } | { kind: "not-yours"; text: string } | { kind: "error"; text: string };
 
@@ -93,6 +147,17 @@ export const BUSY_NOTICE = "Still on your last message — send this once the re
  *  one (plans/jamie-app.md §2.2): someone who only read one while it was
  *  shared, and it has since been unshared, is refused. */
 export const NOT_YOURS_NOTICE = "This is someone else's conversation, and it is no longer shared: you can't add to it. Start a new chat to carry on.";
+
+/** What a link to a conversation the viewer may not read says. Strut answers
+ *  one that does not exist and one that is not theirs alike, so it says both. */
+export const NOT_SHARED_NOTICE = "This chat isn't shared with you, or it no longer exists. Ask whoever sent you the link to share it with the team.";
+
+/** A refused read (`conversation/get`) as the person reads it: the notice
+ *  for a conversation that is not theirs to read, else null (another error,
+ *  shown as it is). */
+export function readRefusal(message: string): string | null {
+  return /\bNo conversation ".*" \(or not yours to read\)/.test(message) ? NOT_SHARED_NOTICE : null;
+}
 
 export function sendRefusal(message: string): SendRefusal {
   if (/\bsession_busy:/.test(message) || /\bjob_busy:/.test(message)) return { kind: "busy", text: BUSY_NOTICE };
@@ -164,4 +229,10 @@ export function sentModel(pick: string, catalog: ModelCatalog | undefined): stri
  *  run on one model. */
 export function modelParams(model: string): { params?: { model: string } } {
   return model ? { params: { model } } : {};
+}
+
+/** Where a host's conversation is continued, as a person reads it: a Sphinx
+ *  tribe for the Sphinx daemon's, else the host's name. */
+export function hostPlace(host: string): string {
+  return host === "sphinx" ? "a Sphinx tribe" : host;
 }

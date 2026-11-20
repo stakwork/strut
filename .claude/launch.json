@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "web", "run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "store",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["STRUT_DEV_INDEX=https://index.stakwork.ai", "npm", "--prefix", "web", "run", "dev", "--", "--port", "5183", "--strictPort"],
+      "port": 5183
     }
   ]
 }

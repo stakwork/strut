@@ -16,6 +16,25 @@ export const subjectSchema = z
   })
   .describe("A claim's subject — the STABLE identity, never a version: the claim applies to whatever version is active when a run is verified (for a job, to its newest turn).");
 
+/**
+ * A subject at a door that keeps the Concept tree (the `/claims` routes):
+ * the kinds above, and a CONCEPT — a page of the knowledge graph, by its
+ * exact name. The doors of ordinary work are not offered that kind: the
+ * builder's tools and their `meta/*` twins take `subjectSchema`. A claim
+ * about a Concept says what the work of every run that opened the page must
+ * look like, so it is written where the tree is tended, never in passing
+ * (`ClaimActor.concepts`, claims-authoring.ts). Its check reads the RUN that opened the page, as
+ * a workflow's check does, plus `{{ input.concept }}`, `{{ input.concepts }}`
+ * (every page the run opened, by name), `{{ input.dir }}` (the run's files:
+ * its job's directory, else its artifacts) and `{{ input.job }}`; a check
+ * that does not apply to the run returns no `supports`, and nothing is
+ * recorded.
+ */
+export const personSubjectSchema = z.object({
+  kind: z.enum(["step", "workflow", "job", "concept"]),
+  name: z.string(),
+});
+
 export const checkSpecSchema = z
   .object({
     type: z
@@ -66,5 +85,42 @@ export const claimsArgSchema = z
 
 /** The `claims:` block of a workflow YAML — the publish arg's shape, in the file. */
 export type ClaimsBlock = NonNullable<z.infer<typeof claimsArgSchema>>;
+
+/** One CASE of a claim on a Concept (src/trials.ts, plans/claim-trials.md
+ *  §3): a workflow and one input to it. A trial runs it as a fresh run, and
+ *  the claim judges what the run did. */
+export const caseSchema = z.object({
+  workflow: z.string().min(1).describe("The workflow the case runs, by name."),
+  input: z.record(z.string(), z.any()).describe("That workflow's input for this case, e.g. { prompt: \"Can you use bash?\" }."),
+});
+export type Case = z.infer<typeof caseSchema>;
+
+/** The `claims:` block of a Concept PAGE's front matter: the rules its
+ *  readers are held to, and the cases that test each, shipped with the page
+ *  (strut's own pages, a package's). Each claim is its sentence, the
+ *  `workflow` its cases run, and the `cases`, each that workflow's input.
+ *  The check is always the standard one (`concept-check`). */
+const pageClaimsSchema = z.array(
+  z
+    .object({
+      text: z.string().min(1),
+      workflow: z.string().min(1).optional(),
+      cases: z.array(z.record(z.string(), z.any())).optional(),
+    })
+    .refine((c) => !c.cases?.length || !!c.workflow, { message: "a claim with cases names the workflow they run" }),
+);
+
+/** A claim a page's file carries: its sentence and its cases. */
+export interface PageClaim {
+  text: string;
+  cases: Case[];
+}
+
+/** A page's `claims:` block, read: null when it is not one. */
+export function readPageClaims(raw: unknown): PageClaim[] | null {
+  const r = pageClaimsSchema.safeParse(raw);
+  if (!r.success) return null;
+  return r.data.map((c) => ({ text: c.text.trim(), cases: (c.cases ?? []).map((input) => ({ workflow: c.workflow!, input })) }));
+}
 
 export const CLAIMS_OFF = "Claims need the graph-backed workspace (this deployment keeps workflows and steps on the filesystem).";

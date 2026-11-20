@@ -74,8 +74,9 @@ export function latestRefs(e: Pick<EvidenceRow, "about" | "source">): { about?: 
   return { ...(e.about?.content_hash ? { about: e.about.content_hash } : {}), ...(locator ? { locator } : {}) };
 }
 
-/** One list per subject: a workflow by name, a step by type (`step:<type>`
- *  only if a workflow shares the name). */
+/** One list per subject: a workflow by name, a step by type, a job by id,
+ *  a Concept by name (`<kind>:<name>` only when an earlier subject already
+ *  took the name). */
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export const VERIFY_NOTIFICATION_PREFIX = "[verify-notification]";
@@ -92,17 +93,19 @@ function mergeLastVerify(all: LastVerify[]): LastVerify | undefined {
  * The ledger for `subjects`. `lastVerify` comes from a verify result when
  * there is one; `pending` marks every runnable check instead (a run was just
  * launched and its pass has not settled). Subjects with no claims are left
- * out, so an empty ledger means "nothing here carries a contract".
+ * out, so an empty ledger means "nothing here carries a contract". A
+ * Concept's status is read on `branch` (a run on a Concept branch: its
+ * pages, its works), else on main.
  */
 export async function buildLedger(
   reader: Pick<ClaimsReader, "statusFor">,
   subjects: readonly SubjectRef[],
-  opts: { result?: Pick<VerifyResult, "checks">; pending?: boolean } = {},
+  opts: { result?: Pick<VerifyResult, "checks">; pending?: boolean; branch?: string } = {},
 ): Promise<Ledger> {
   const ledger: Ledger = {};
   const names = new Set<string>();
   for (const subject of subjects) {
-    const rows = await reader.statusFor(subject);
+    const rows = await reader.statusFor(subject, opts.branch ? { branch: opts.branch } : {});
     if (rows.length === 0) continue;
     let key = subjectName(subject);
     if (names.has(key)) key = `${subject.kind}:${key}`;

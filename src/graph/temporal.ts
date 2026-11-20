@@ -45,7 +45,7 @@ import type { EngineLike, GraphTx } from "./engine.js";
 import { edgeKeyFor } from "./edge-writer.js";
 import { writeNamespace } from "./ladybug/namespaces.js";
 import { recordFactEvidence } from "./ladybug/fact-claims.js";
-import { composeFact, createTemporalEdge, factRows, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
+import { composeFact, createTemporalEdge, factRows, pairEdges, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeById, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { asEngine } from "./neo4j-engine.js";
 import { boundsOf } from "./scope.js";
 import { GraphValidationError, type Embedder } from "./node-writer.js";
@@ -94,6 +94,24 @@ export interface AssertInput {
   namespace?: string;
   /** Who is asserting it: the host's name for the caller's actor. */
   created_by?: string;
+  /** The ref_id of a fact (the same subject's) this one corrects or
+   *  replaces: held now, it ends as superseded; either way its
+   *  `superseded_by` is this one. */
+  replaces?: string;
+  /** The person's own words it was learned from, kept as the evidence's
+   *  content (the sentence, `text`, when left out). */
+  words?: string;
+  /** The agent session and its turn (0-based) that asserted it, kept on the
+   *  evidence beside the run. */
+  session?: string;
+  turn?: number;
+}
+
+/** A current fact between the same two nodes, as a result lists it. */
+export interface PairFact {
+  ref_id: string;
+  edge_type: string;
+  text: string;
 }
 
 export type AssertAction = "created" | "superseded" | "history" | "reconfirmed" | "unchanged" | "refuted";
@@ -110,6 +128,15 @@ export interface AssertResult {
   /** A new edge's search row is still to be embedded (no embedder, or the
    *  embedding failed): written keyword-only, its vector filled later. */
   unembedded?: boolean;
+  /** The fact `replaces` named, now superseded by this one. */
+  replaced?: string;
+  /** Other current facts from the same subject to the same target: this
+   *  one may correct one of them, or add to them. */
+  between?: PairFact[];
+  /** A re-confirm whose held sentence is not the one given: the held one. */
+  held_text?: string;
+  /** The edge type has no `volatility`: how fast its facts change is unknown. */
+  no_volatility?: boolean;
 }
 
 export interface AssertOptions {
@@ -189,7 +216,11 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     }
   }
 
-  const go = async (tx: GraphTx): Promise<AssertResult> => {
+  const replaces = input.replaces?.trim() || undefined;
+  if (replaces && refuted) throw new GraphValidationError("WRONG_TYPE", edge, "a refuted fact replaces nothing: assert the new fact with `replaces` alone, not `refuted`", "replaces");
+  let rule: { volatility?: unknown } = {};
+
+  const write = async (tx: GraphTx): Promise<AssertResult> => {
     const ends = await engine.edgeEngine.endpoints(tx, [input.source_ref_id, input.target_ref_id, ...(saidBy ? [saidBy] : [])]);
     const s = ends.get(input.source_ref_id);
     const t = ends.get(input.target_ref_id);
@@ -199,12 +230,14 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     const match = await resolver.edgeSchema(edge, s.type, t.type, tx);
     if (!match) throw new GraphValidationError("WRONG_TYPE", edge, `no edge schema ${s.type}-[${edge}]->${t.type}`);
     if (!match.rule.temporal) throw new GraphValidationError("WRONG_TYPE", edge, `${edge} is not a temporal edge type: write it with graph/create-triplet`);
+    rule = match.rule;
     const one = match.rule.cardinality === "one";
     // Where it was learned and who said it: each kept once among the edge's sources.
     const given = [...new Set([input.source?.trim(), saidBy, input.run ? runSource(input.run) : undefined].filter((x): x is string => !!x))];
     // This mention as evidence for the fact's claim (plans/memory-truth-layer.md), in the same transaction.
-    const evidence = (namespace: string | undefined, strength = 1) =>
+    const evidence = (namespace: string | undefined, strength = 1, fact?: string) =>
       recordFactEvidence(tx, {
+        ...(fact ? { fact } : {}),
         subject: input.source_ref_id,
         edge,
         target: input.target_ref_id,
@@ -213,6 +246,9 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
         ...(saidBy ? { said_by: saidBy } : {}),
         ...(input.source?.trim() ? { message: input.source.trim() } : {}),
         ...(input.run ? { run: input.run } : {}),
+        ...(input.session ? { session: input.session } : {}),
+        ...(input.turn !== undefined ? { turn: input.turn } : {}),
+        ...(input.words?.trim() ? { content: input.words.trim() } : {}),
         observed_at: observed,
         strength,
         ...(input.created_by ? { created_by: input.created_by } : {}),
@@ -220,12 +256,13 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       });
 
     // The same edge held now, or for a past fact, held before.
+    // The fact `replaces` names is never the one re-confirmed: a new one takes its place.
     const current = await slotEdges(tx, edge, input.source_ref_id);
-    const held = current.find((x) => x.target === input.target_ref_id);
-    const hit = held ?? (past ? (await slotEdges(tx, edge, input.source_ref_id, true)).find((x) => x.target === input.target_ref_id) : undefined);
+    const held = current.find((x) => x.target === input.target_ref_id && x.ref_id !== replaces);
+    const hit = held ?? (past ? (await slotEdges(tx, edge, input.source_ref_id, true)).find((x) => x.target === input.target_ref_id && x.ref_id !== replaces) : undefined);
     // Said to be false, and not held now: kept as evidence against it, no fact made.
     if (refuted && !held) {
-      await evidence(s.namespace ?? engine.namespace, -1);
+      await evidence(s.namespace ?? engine.namespace, -1, hit?.ref_id);
       return { ref_id: hit?.ref_id ?? "", action: "refuted", superseded: [], ended: true };
     }
     if (hit) {
@@ -260,7 +297,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
         }, now);
       }
       // Saying it is over is world time, not support; saying it is false is evidence against it.
-      if (refuted) await evidence(s.namespace ?? engine.namespace, -1);
+      if (refuted) await evidence(s.namespace ?? engine.namespace, -1, hit.ref_id);
       else if (!ending) await evidence(s.namespace ?? engine.namespace);
       if (refuted) return { ref_id: hit.ref_id, action: "refuted", superseded: [], ended: true };
       return { ref_id: hit.ref_id, action: "reconfirmed", superseded: [], ended: hit.expired_at !== null || expire, ...(filled.length ? { filled } : {}) };
@@ -320,6 +357,30 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       ended,
       ...(vector ? {} : { unembedded: true }),
     };
+  };
+  // After the write, on its transaction: the fact it replaces, and what else the pair holds.
+  const go = async (tx: GraphTx): Promise<AssertResult> => {
+    const r = await write(tx);
+    if (r.action === "refuted") return r;
+    if (replaces && replaces !== r.ref_id) {
+      const o = await temporalEdgeById(tx, replaces);
+      if (!o) throw new GraphValidationError("MISSING_REQUIRED", edge, `replaces ${replaces}: no such fact`, "replaces");
+      if (o.source !== input.source_ref_id) throw new GraphValidationError("WRONG_TYPE", edge, `replaces ${replaces}: a fact about another subject`, "replaces");
+      const end = o.expired_at === null ? { expired_at: now, invalid_at: endOfReplaced(o, valid, now) } : {};
+      if (o.expired_at === null || o.superseded_by === null) {
+        await setTemporalEdge(tx, o.edge, o.ref_id, { ...end, ...(o.superseded_by === null ? { superseded_by: r.ref_id } : {}), updated_at: now });
+        if (o.expired_at === null) await syncEdgeRow(tx, o.ref_id, end, now);
+      }
+      r.replaced = o.ref_id;
+    }
+    const between = (await pairEdges(tx, input.source_ref_id, input.target_ref_id)).filter((x) => x.ref_id !== r.ref_id && x.ref_id !== replaces);
+    if (between.length) r.between = between.map((x) => ({ ref_id: x.ref_id, edge_type: x.edge, text: x.text }));
+    if (r.action === "reconfirmed" || r.action === "unchanged") {
+      const [held] = await tx.run(`MATCH ()-[x:\`${edge}\` {ref_id: $id}]->() RETURN x.text AS text`, { id: r.ref_id });
+      if (held && typeof held["text"] === "string" && foldText(held["text"]) !== foldText(text)) r.held_text = held["text"];
+    }
+    if (!rule.volatility) r.no_volatility = true;
+    return r;
   };
   const out = await (opts.tx ? go(opts.tx) : engine.tx(go));
   // A row written without its vector is filled in the background once the

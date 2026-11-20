@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,9 +11,11 @@ import { MemoryRunStore } from "./store.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { Scope } from "./auth.js";
 import type { RunEvent } from "./core.js";
-import { isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs } from "./conversations.js";
+import { createConversations, isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs, type ConversationRecord } from "./conversations.js";
+import { countReads } from "./test-util/count-reads.js";
 import { encodeId } from "./session-store.js";
 import listStep from "./steps/lib/conversation/list.js";
+import { createProposal, proposalsRoot } from "./proposals.js";
 
 describe("conversations: the pure parts", () => {
   it("titleOf: Hive's leading @<workspace> line left out, whitespace as one space, cut", () => {
@@ -80,13 +82,152 @@ describe("conversations: the pure parts", () => {
       /not available to an app's page/,
     );
   });
+
+  it("`everyone` is strut's own page shown to an admin, in its own call: never a member's, a model-written page, a run it launched or a workflow", async () => {
+    const asked: unknown[] = [];
+    const conversations = { list: async (_q: unknown, by: unknown) => (asked.push(by), { conversations: [] }) };
+    const call = (ctx: Record<string, unknown>) => listStep.run({ everyone: true }, { services: { conversations }, actor: "root", ...ctx } as never);
+    const jamie = { name: "strut/jamie", version: "v1", firstParty: true };
+    for (const [ctx, why] of [
+      [{ app: jamie, path: "__run_step__/s" }, "a member's page"],
+      [{ app: { ...jamie, admin: true }, path: "orchestrator/agent" }, "a run the admin's page launched"],
+      [{ path: "some-workflow/s" }, "a workflow"],
+    ] as const) {
+      await assert.rejects(() => call(ctx), /conversation\/list \{ everyone \} is an admin's/, why);
+    }
+    await assert.rejects(() => call({ app: { name: "plain", version: "v1", admin: true }, path: "__run_step__/s" }), /not available to an app's page/);
+    const out = await call({ app: { ...jamie, admin: true }, path: "__run_step__/s" });
+    assert.deepEqual([out, asked], [{ conversations: [], viewer: "root", admin: true }, [{ actor: "root", person: true, everyone: true }]]);
+    asked.length = 0;
+    const plain = await listStep.run({}, { services: { conversations }, actor: "root", app: jamie, path: "__run_step__/s" } as never);
+    assert.deepEqual([plain, asked], [{ conversations: [], viewer: "root" }, [{ actor: "root", person: true }]], "a member's page: their own, and no `admin`");
+  });
+});
+
+// A server holds 100k+ conversations after months: a call opens the records
+// it returns, or those written since a mark, never every one on file.
+describe("conversations: reads bounded by what is returned", () => {
+  let dir = "";
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "strut-conversations-reads-"));
+  });
+  afterEach(() => rm(dir, { recursive: true, force: true }));
+
+  const index = () =>
+    createConversations({
+      dataDir: dir,
+      store: new MemoryRunStore(),
+      sessions: { turns: async () => [], list: async () => [] } as never,
+      getWorkflow: async () => ({ params: { wake: "w" } }) as never,
+      running: () => false,
+      liveState: () => undefined,
+      artifactRefs: async () => undefined,
+    });
+  const sessions = () => join(dir, "conversations", "sessions");
+  /** A record an older process wrote, last changed `daysAgo` days ago. */
+  const older = async (id: string, daysAgo: number, extra: Partial<ConversationRecord> = {}) => {
+    const at = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    const rec: ConversationRecord = { id, title: id, createdAt: at, updatedAt: at, rev: 1, viewers: ["alice"], turns: [{ runId: `r-${id}`, workflow: "orchestrator", at, by: "alice", status: "success" }], jobs: [], ...extra };
+    await mkdir(sessions(), { recursive: true });
+    await writeFile(join(sessions(), `${encodeId(id)}.json`), JSON.stringify(rec));
+  };
+  const turn = (c: ReturnType<typeof index>, id: string, actor = "alice") => c.launched(id, { runId: `r-${id}-${Math.random()}`, workflow: "orchestrator", actor, prompt: `about ${id}` });
+
+  it("changed(since) opens the records written since, off the day logs; the log of older records is filled once", async () => {
+    for (let i = 0; i < 30; i++) await older(`old-${i}`, 10 + (i % 5));
+    const c = index();
+    const before = new Date(Date.now() - 1000).toISOString();
+    // The first read fills the day logs from the records on file, once.
+    assert.deepEqual((await c.changed(before)).map((e) => e.id), []);
+    await turn(c, "old-3");
+    await turn(c, "new-1");
+
+    const { value, reads } = await countReads(dir, () => c.changed(before));
+    assert.deepEqual(value.map((e) => e.id).sort(), ["new-1", "old-3"]);
+    assert.equal(reads.filter((f) => f.startsWith(sessions())).length, 2, `opened ${reads.length} files: ${reads.join(", ")}`);
+    assert.equal(reads.filter((f) => f.endsWith(".log")).length, 1, "today's log alone");
+    // Older windows come off the logs the fill wrote, each record in its day's.
+    assert.equal((await c.changed(new Date(Date.now() - 12.5 * 86_400_000).toISOString())).length, 2 + 18);
+    // No mark: every one on file.
+    assert.equal((await c.changed()).length, 31);
+  });
+
+  it("a list reads the viewer's file and one file of the shared ones, never their records", async () => {
+    const c = index();
+    for (let i = 0; i < 20; i++) {
+      await turn(c, `alice/${i}`);
+      await c.update({ session: `alice/${i}`, shared: true }, { actor: "alice" });
+    }
+    const { value, reads } = await countReads(dir, () => c.list({ limit: 5 }, { actor: "carol" }));
+    assert.deepEqual([value.conversations.length, value.conversations.every((r) => r.team), !!value.next], [5, true, true]);
+    assert.equal(reads.filter((f) => f.startsWith(sessions())).length, 0, `opened ${reads.join(", ")}`);
+    // Unshared: out of the list of whoever never opened it; a turn in a shared one moves its row.
+    await c.update({ session: "alice/0", shared: false }, { actor: "alice" });
+    await turn(c, "alice/1", "bob");
+    const rows = (await c.list({ limit: 50 }, { actor: "carol" })).conversations;
+    assert.deepEqual([rows.length, rows[0]!.id, rows[0]!.turns], [19, "alice/1", 2]);
+  });
+
+  it("an admin's Everyone: every conversation once, off the people's lists, never the records; a host's marked; read without a trace", async () => {
+    const c = index();
+    await turn(c, "alice/1");
+    await turn(c, "alice/1", "bob");
+    await turn(c, "bob/2", "bob");
+    await turn(c, "host/sphinx/0123456789ab", "carol");
+    await c.update({ session: "alice/1", archived: true }, { actor: "alice" });
+    // A row from before `startedBy` was kept: whose id it is under.
+    await older("dave/3", 3, { viewers: ["dave"], turns: [{ runId: "r-old", workflow: "orchestrator", at: new Date(Date.now() - 3 * 86_400_000).toISOString(), status: "success" }] });
+    const daveAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    await writeFile(join(dir, "conversations", "viewers", "dave.json"), JSON.stringify({ conversations: { "dave/3": { id: "dave/3", title: "old one", createdAt: daveAt, updatedAt: daveAt, turns: 1, jobs: [] } } }));
+
+    const everyone = { actor: "root", everyone: true as const };
+    const { value, reads } = await countReads(dir, () => c.list({}, everyone));
+    assert.deepEqual(
+      value.conversations.map((r) => [r.id, r.startedBy, r.host, r.unread, r.archived]),
+      [
+        ["host/sphinx/0123456789ab", "carol", "sphinx", false, undefined],
+        ["bob/2", "bob", undefined, false, undefined],
+        ["alice/1", "alice", undefined, false, undefined],
+        ["dave/3", "dave", undefined, false, undefined],
+      ],
+      "each once, archived by its person or not, never unread",
+    );
+    assert.equal(reads.filter((f) => f.startsWith(sessions())).length, 0, `opened ${reads.join(", ")}`);
+    assert.deepEqual((await c.list({ q: "carol" }, everyone)).conversations.map((r) => r.id), ["host/sphinx/0123456789ab"], "the words name who started it");
+    assert.deepEqual((await c.list({ q: "dave old" }, everyone)).conversations.map((r) => r.id), ["dave/3"], "with the title's");
+    const first = await c.list({ limit: 2 }, everyone);
+    assert.deepEqual((await c.list({ limit: 2, before: first.next! }, everyone)).conversations.map((r) => r.id), ["alice/1", "dave/3"]);
+    assert.deepEqual((await c.list({}, { actor: "root" })).conversations, [], "the admin's own list has none of them");
+
+    // Read: never made theirs, nobody's seen moved.
+    const viewersFile = (who: string) => readFile(join(dir, "conversations", "viewers", `${who}.json`), "utf-8").catch(() => null);
+    const [alice, bob] = [await viewersFile("alice"), await viewersFile("bob")];
+    const rev = (await c.record("bob/2"))!.rev;
+    const view = await c.get({ session: "bob/2" }, everyone);
+    assert.deepEqual([view?.conversation.unread, view?.participants], [false, ["bob"]]);
+    assert.equal(await c.get({ session: "bob/2" }, { actor: "root" }), null, "without `everyone` it is still not theirs");
+    assert.deepEqual([(await c.record("bob/2"))!.viewers, (await c.record("bob/2"))!.rev], [["bob"], rev]);
+    assert.deepEqual([await viewersFile("alice"), await viewersFile("bob"), await viewersFile("root")], [alice, bob, null]);
+    await assert.rejects(() => c.update({ session: "bob/2", seen: true }, everyone), /changes none/);
+  });
+
+  it("a shared.json from before the rows (ids alone) still lists them, and is rewritten as rows at its next write", async () => {
+    await older("alice/a", 1, { shared: true });
+    await older("alice/b", 2, { shared: true });
+    await writeFile(join(dir, "conversations", "shared.json"), JSON.stringify({ ids: ["alice/a", "alice/b"] }));
+    const c = index();
+    assert.deepEqual((await c.list({}, { actor: "carol" })).conversations.map((r) => r.id), ["alice/a", "alice/b"]);
+    await turn(c, "alice/b");
+    const file = JSON.parse(await readFile(join(dir, "conversations", "shared.json"), "utf-8"));
+    assert.deepEqual([file.ids, Object.keys(file.conversations).sort()], [undefined, ["alice/a", "alice/b"]]);
+  });
 });
 
 describe("conversations through a whole strut", () => {
   let dir = "";
   const servers: http.Server[] = [];
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "STRUT_HOST_KEYS", "AI_SDK_LOG_WARNINGS"];
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "strut-conversations-"));
@@ -94,6 +235,7 @@ describe("conversations through a whole strut", () => {
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     process.env["AI_SDK_LOG_WARNINGS"] = "false";
     delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_HOST_KEYS"];
   });
   afterEach(async () => {
     for (const s of servers.splice(0)) s.close();
@@ -277,6 +419,40 @@ describe("conversations through a whole strut", () => {
     assert.equal(wake.delivered, undefined, "the job delivered nothing");
   });
 
+  it("a job's proposal shows under the turn that started it, where its card is; one made elsewhere, or not the reader's, does not", async () => {
+    const { say, get, idle } = await boot({
+      reply: (body) => (lastUser(body).includes("flights?") ? { text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] } : { text: "Hello.", artifacts: [] }),
+    });
+    const session = "alice/c-1";
+    await say("alice", session, "flights?", { wake: true });
+    await until(async () => ((await get("alice", session)).body.turns.length === 2 ? true : undefined), "the wake turn");
+    await say("alice", session, "thanks");
+    await idle();
+    const started = (await get("alice", session)).body.turns.find((t: any) => t.jobs.length);
+    const { job, runId } = started.jobs[0];
+    const root = proposalsRoot(dir);
+    const by = { workflow: "builder", path: "builder/agent", job, actor: "alice" };
+    const propose = (title: string, b: Record<string, unknown>) => createProposal(root, { step: "task/set-type", input: {}, title, by: { ...by, ...b } as never });
+    const ofRun = await propose("by the job's run", { runId, conversation: session });
+    const ofChild = await propose("by a run inside the job", { runId: "child-run", conversation: session });
+    await propose("by the job, from another conversation", { runId: "elsewhere", conversation: "alice/c-2" });
+    await propose("by another job", { runId: "other", job: "not-here", conversation: session });
+    const bobs = await propose("by the job, for bob", { runId, conversation: session, actor: "bob" });
+    const turns = (await get("alice", session)).body.turns;
+    const where = (id: string) => turns.filter((t: any) => t.proposals.some((p: any) => p.id === id)).map((t: any) => t.runId);
+    assert.deepEqual(where(ofRun.id), [started.runId], "on the turn that started the job run");
+    assert.deepEqual(where(ofChild.id), [started.runId], "a run inside the job: on the turn holding the job's card");
+    assert.deepEqual(
+      turns.flatMap((t: any) => t.proposals.map((p: any) => p.title)),
+      ["by the job's run", "by a run inside the job", "by the job, for bob"],
+      "made elsewhere, or by a job not started here, it shows nowhere here",
+    );
+    // A person's token: only their own, as visibleTo decides.
+    const mine = (await get("alice", session, "", "peer:person")).body.turns.flatMap((t: any) => t.proposals.map((p: any) => p.id));
+    assert.deepEqual(mine, [ofRun.id, ofChild.id]);
+    assert.ok(!mine.includes(bobs.id));
+  });
+
   it("a wake turn carries what the job run it woke on delivered, resolved, with the run's workflow", async () => {
     const { strut, say, get, idle } = await boot({
       reply: () => ({ text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] }),
@@ -421,6 +597,40 @@ describe("conversations through a whole strut", () => {
     assert.equal((await update("bob", { session: "c-2", seen: true }, "peer")).status, 403);
   });
 
+  it("everyone=1: an admin's session lists and reads every person's conversation, without a trace, and forks one as its own; nobody else may ask", async () => {
+    const { say, list, get, req, as } = await boot();
+    await say("alice", "alice/c-1", "plan the offsite");
+    await say("bob", "bob/c-2", "draft the budget");
+    const aliceRow = async () => (await list("alice")).body.conversations.map((c: any) => [c.id, c.unread, c.seenAt]);
+    const before = await aliceRow();
+
+    const all = await list("root", "?everyone=1");
+    assert.equal(all.status, 200, JSON.stringify(all.body));
+    assert.deepEqual(all.body.conversations.map((c: any) => [c.id, c.startedBy, c.unread]), [["bob/c-2", "bob", false], ["alice/c-1", "alice", false]]);
+    assert.deepEqual((await list("root", "?everyone=1&q=alice")).body.conversations.map((c: any) => c.id), ["alice/c-1"], "searched by who started it");
+    const read = await get("root", "alice/c-1", "&everyone=1");
+    assert.equal(read.status, 200);
+    assert.deepEqual([read.body.conversation.unread, read.body.participants, read.body.turns[0].prompt], [false, ["alice"], "plan the offsite"]);
+    assert.equal((await get("root", "alice/c-1")).status, 404, "without everyone=1 it is not theirs");
+    assert.deepEqual((await list("root")).body.conversations, [], "nothing read became theirs");
+    assert.deepEqual(await aliceRow(), before, "alice's unread and seen as they were");
+
+    const fork = await req("/conversations/fork", { method: "POST", body: { session: "bob/c-2", everyone: true }, headers: as("root") });
+    assert.equal(fork.status, 201, JSON.stringify(fork.body));
+    assert.match(fork.body.id, /^root\/[0-9a-f]{12}$/);
+    assert.equal(fork.body.forkedFrom, "bob/c-2");
+    assert.deepEqual((await list("root")).body.conversations.map((c: any) => c.id), [fork.body.id], "the copy is the admin's");
+    assert.deepEqual((await list("bob")).body.conversations.map((c: any) => c.id), ["bob/c-2"], "and not bob's");
+    assert.equal((await req("/conversations/fork", { method: "POST", body: { session: "bob/c-2" }, headers: as("root") })).status, 404, "a fork without it reads as before");
+
+    for (const scope of ["peer:person", "peer", "host"] as Scope[]) {
+      assert.equal((await list("bob", "?everyone=1", scope)).status, 403, `list as ${scope}`);
+      assert.equal((await get("bob", "alice/c-1", "&everyone=1", scope)).status, 403, `read as ${scope}`);
+    }
+    const personFork = await req("/conversations/fork", { method: "POST", body: { session: "alice/c-1", everyone: true }, headers: as("bob", "peer:person") });
+    assert.deepEqual([personFork.status, personFork.body.error], [403, "forbidden: every person's conversations are an admin's read (an admin's session, or the deployment key)"]);
+  });
+
   it("a person's token continues a conversation it took a turn in, or a shared one, as it is; never another's", async () => {
     const { say, req, get, update, idle, requests, as } = await boot();
     // Hive's ids are bare: its turns run with the deployment's key.
@@ -465,5 +675,85 @@ describe("conversations through a whole strut", () => {
     assert.equal((await turn("alice", "scratch", "hello")).status, 202);
     await idle();
     assert.deepEqual(await sessionIds(), ["c-1", "c-2", "peer/scratch"]);
+  });
+
+  it("a host key (plans/jamie-in-tribes.md §5.1): turns of its own conversations as a linked person, read back; continued by it alone", async () => {
+    process.env["STRUT_HOST_KEYS"] = "sphinx:host-token-1";
+    const { strut, req, say, list, idle, as } = await boot();
+    const ADA = `02${"ab".repeat(32)}`;
+    const BOB = `03${"cd".repeat(32)}`;
+    const host = (account?: string) => ({ authorization: "Bearer host-token-1", ...(account ? { "x-strut-account": account } : {}) });
+    const session = "host/sphinx/3f9a0c21b7e4";
+    const launch = { input: { prompt: "Ada: @jamie what did we decide?", session }, wake: true };
+    const turn = (account: string | undefined, body: Record<string, unknown>) =>
+      req(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { method: "POST", body, headers: host(account) });
+
+    // A turn needs a linked person: no account, another kind's, or one
+    // nobody linked is refused, and nothing launches.
+    assert.equal((await turn(undefined, launch)).status, 400);
+    assert.equal((await turn("email:ada@example.com", launch)).status, 400);
+    const unlinked = await turn(`sphinx:${ADA}`, launch);
+    assert.equal(unlinked.status, 403);
+    assert.match(unlinked.body.error, /^not_linked: sphinx:02abab/);
+
+    // Ada links her key (through Peel, plans/people-and-hosts.md §2.1). A
+    // host links nothing itself, and no longer asks who a key is: a place
+    // carries its linker (plans/jamie-in-tribes.md §5.4).
+    assert.equal((await req("/hosts/link", { method: "POST", body: { code: "link-abcdefgh", key: ADA }, headers: host() })).status, 403);
+    assert.equal((await req(`/hosts/links/${ADA}`, { headers: host() })).status, 403);
+    await strut.people.link({ kind: "sphinx", key: ADA }, "ada", { name: "ada on sphinx" });
+    await strut.people.link({ kind: "sphinx", key: BOB }, "bob");
+
+    // The workflow as published, on the host's own namespace, a conversation workflow.
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, params: { model: "x" } })).status, 403);
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, input: { prompt: "hi", session: "ada/1" } })).status, 403);
+    assert.equal((await turn(`sphinx:${ADA}`, { ...launch, input: { prompt: "hi", session: "host/email/1" } })).status, 403);
+    assert.equal((await req("/workflows/job/run", { method: "POST", body: { input: { prompt: "x", session } }, headers: host(`sphinx:${ADA}`) })).status, 403);
+
+    // As Ada: woken like her own turn, never an admin's.
+    const ok = await turn(`sphinx:${ADA}`, launch);
+    assert.equal(ok.status, 202, JSON.stringify(ok.body));
+    assert.equal(ok.body.wake, true);
+    await idle();
+    const start = ((await req(`/workflows/${ORCHESTRATOR_WORKFLOW}/runs/${ok.body.runId}/events`)).body as any[]).find((e) => e.type === "run.start");
+    assert.deepEqual([start.origin, start.host, start.actor, start.wakeAsked], ["host", "sphinx", "ada", true]);
+
+    // The host reads its own conversations, whoever spoke, and no other.
+    const read = await req(`/conversations/item?id=${encodeURIComponent(session)}`, { headers: host() });
+    assert.equal(read.status, 200);
+    assert.equal(read.body.conversation.host, "sphinx");
+    assert.deepEqual(read.body.turns.map((t: any) => [t.prompt, t.status]), [["Ada: @jamie what did we decide?", "success"]]);
+    await say("bob", "c-2", "bob's own");
+    assert.equal((await req("/conversations/item?id=c-2", { headers: host() })).status, 404);
+    // Listed for Ada, who took a turn, with its host; for nobody named "host".
+    assert.deepEqual((await list("ada")).body.conversations.map((c: any) => [c.id, c.host]), [[session, "sphinx"]]);
+    assert.deepEqual((await list("host")).body.conversations, []);
+
+    // Continued by its host alone; Ada forks it to continue it in the app.
+    const hers = await req(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { method: "POST", body: { input: { prompt: "from the app", session } }, headers: as("ada", "peer:person") });
+    assert.equal(hers.status, 403);
+    assert.match(hers.body.error, /^conversation_hosted: /);
+    const fork = await req("/conversations/fork", { method: "POST", body: { session }, headers: as("ada", "peer:person") });
+    assert.equal(fork.status, 201, JSON.stringify(fork.body));
+    assert.ok(fork.body.id.startsWith("ada/"));
+    assert.equal(fork.body.host, undefined);
+
+    // A proposal made there: decided as the person the turn ran as, never as an admin.
+    const root = proposalsRoot(dir);
+    const by = { workflow: ORCHESTRATOR_WORKFLOW, runId: ok.body.runId, path: "orchestrator/agent", conversation: session, actor: "ada" };
+    const install = await createProposal(root, { step: "package/install", input: {}, title: "Install a package", approver: "admin", by });
+    const decide = (id: string, account: string, action = "accept") => req(`/proposals/${id}/decide`, { method: "POST", body: { action }, headers: host(account) });
+    const refused = await decide(install.id, `sphinx:${ADA}`);
+    assert.equal(refused.status, 403);
+    assert.match(refused.body.error, /^admin_required:/);
+    assert.equal((await decide(install.id, `sphinx:${BOB}`, "reject")).status, 403, "not Bob's");
+    assert.equal((await decide(install.id, `sphinx:${ADA}`, "reject")).status, 200);
+    const elsewhere = await createProposal(root, { step: "package/install", input: {}, title: "x", by: { ...by, conversation: "ada/other" } });
+    assert.equal((await decide(elsewhere.id, `sphinx:${ADA}`, "reject")).status, 404);
+
+    // Nothing else opens to the host key.
+    for (const [method, path] of [["GET", "/workflows"], ["GET", "/conversations"], ["POST", "/conversations/fork"], ["GET", "/people"], ["POST", `/workflows/${ORCHESTRATOR_WORKFLOW}/runs/${ok.body.runId}/cancel`], ["POST", `/workflows/${ORCHESTRATOR_WORKFLOW}/v1/run`]] as const) {
+      assert.equal((await req(path, { method, headers: host(`sphinx:${ADA}`), ...(method === "POST" ? { body: {} } : {}) })).status, 403, `${method} ${path}`);
+    }
   });
 });

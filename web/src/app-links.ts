@@ -44,6 +44,17 @@ export function appToolInput(input: string | null | undefined): Record<string, s
   return Object.keys(out).length ? out : undefined;
 }
 
+/** The address a person opens app `key` on in this UI — `href`'s page
+ *  (origin and path) with `?app=<key>` alone, every other param dropped —
+ *  which the app builds its links to paste on (`strut/page`, @strut/kit
+ *  `useShareLink`). */
+export function appPageAddress(href: string, key: string): string {
+  const url = new URL(href);
+  const page = new URL(url.pathname, url.origin);
+  page.searchParams.set("app", key);
+  return page.href;
+}
+
 /** A strut link from a PEER's app, as this strut's UI follows it. The page
  *  names apps and files where it lives, so `app=<name>` is that peer's
  *  `@<peer>/<name>`, its `input` kept, and `artifact=<served path>` that
@@ -79,6 +90,25 @@ export function panelTarget(params: Record<string, string>, onScreen: { name: st
   const app = params["app"];
   if (!app || !parseAppKey(app) || onScreen.some((a) => namesApp(app, a))) return null;
   return { app, ...(params["input"] ? { input: params["input"] } : {}) };
+}
+
+/** Where a link to ANOTHER app of this server's public view goes from a
+ *  visitor's page alone (./components/SoloApp): this page's own address with
+ *  that app and its `input` in place of this one's — `solo`, `public` and
+ *  `theme` kept — and `back=<this app>` (none with `back: false`). Null for
+ *  a link that names no plain app of this server: a peer's (`@peer/name`), a
+ *  pinned version, or this app itself. Pure: `href` is the page's own. */
+export function publicAppHop(params: Record<string, string>, current: string, href: string, o: { back?: boolean } = {}): string | null {
+  const key = params["app"];
+  const to = key ? parseAppKey(key) : null;
+  if (!to || to.peer || to.version || to.name === current) return null;
+  const url = new URL(href);
+  url.searchParams.set("app", to.name);
+  if (params["input"]) url.searchParams.set("input", params["input"]);
+  else url.searchParams.delete("input");
+  if (o.back === false) url.searchParams.delete("back");
+  else url.searchParams.set("back", current);
+  return url.href;
 }
 
 /** Whether a link's `app` key names the app on screen — its name and peer,

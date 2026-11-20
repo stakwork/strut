@@ -68,6 +68,7 @@ import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
 import { composeNodeKey } from "../graph/node-writer.js";
+import { isBranchNamespace } from "../graph/search.js";
 import type { NodeSchema } from "../graph/schema-resolver.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
@@ -82,7 +83,8 @@ import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
 import { allTypeFiles, exportTypes } from "./graph-types.js";
 import { suggest, type SuggestDeps, type Suggested } from "./suggest.js";
-import { conceptPrefix, listInstalledPackages } from "./installed.js";
+import { parseServeFile, planServe, SERVE_FILE } from "./serve.js";
+import { conceptPrefix, listInstalledPackages, packageConcepts } from "./installed.js";
 
 export interface BuildDeps {
   workspace: WorkspaceStore;
@@ -133,6 +135,11 @@ export interface BuildRequest {
    *  cache holds, pinned whether or not the closure reaches it. An item the
    *  closure reaches under one must be in that package as it is here. */
   requires?: { packages?: Array<{ package: string; digest: string }> };
+  /** `serve.yaml`'s fields (src/packages/serve.ts): the package as a served
+   *  box shows it — its app, by the name the package gives it, and what a
+   *  visitor may read and run. Written as the package's top-level file and
+   *  checked against what the build carries. */
+  serve?: Record<string, unknown>;
 }
 
 export interface BuildResult {
@@ -221,6 +228,14 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     // A package that cannot travel is refused here, dry run included, never
     // kept for an archive route that could not serve it.
     const read = await readPackage(scratch);
+    // A `serve.yaml` names what the package carries (its app, its workflows).
+    if (req.serve !== undefined) {
+      try {
+        planServe(parseServeFile(String(files.get(SERVE_FILE))), read);
+      } catch (err) {
+        throw refused([err instanceof Error ? err.message.replace(/^serve_invalid: /, "") : String(err)]);
+      }
+    }
     const unarchivable = await archiveProblem(scratch, read.files);
     if (unarchivable) throw new Error(`package_unarchivable: ${pkg} cannot be sent to another strut server: ${unarchivable}`);
     if (opts.dryRun) {
@@ -237,6 +252,13 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
  *  whole workspace, in the whole mode `wholeFiles` describes. */
 export const EVERYTHING = "everything";
 
+/** `packageFiles`' pick for a REPO's commit (app-repos.md §3.3): every
+ *  item under one package's prefix, as this workspace has it now
+ *  (`underFiles`). */
+export interface PackageUnder {
+  under: string;
+}
+
 /** A package directory as files: path → text or bytes, `strut.yaml` among
  *  them. */
 export interface PackageFiles {
@@ -247,6 +269,9 @@ export interface PackageFiles {
   suggested?: Suggested;
   /** A build's: what it leaves to the installing strut (`BuildResult`). */
   leftToInstaller?: LeftToInstaller[];
+  /** `PackageUnder`'s: each file's item — a workflow, step or app by its
+   *  name here, a Concept by its page's name. */
+  items?: Map<string, { kind: "workflow" | "step" | "app" | "concept"; name: string }>;
 }
 
 /**
@@ -259,9 +284,11 @@ export interface PackageFiles {
  * history.
  */
 export async function packageFiles(deps: BuildDeps, picks: BuildRequest): Promise<PackageFiles>;
-export async function packageFiles(deps: WholeDeps, picks: typeof EVERYTHING): Promise<PackageFiles>;
-export async function packageFiles(deps: BuildDeps | WholeDeps, picks: BuildRequest | typeof EVERYTHING): Promise<PackageFiles> {
-  return picks === EVERYTHING ? wholeFiles(deps) : pickedFiles(deps as BuildDeps, picks);
+export async function packageFiles(deps: WholeDeps, picks: typeof EVERYTHING | PackageUnder): Promise<PackageFiles>;
+export async function packageFiles(deps: BuildDeps | WholeDeps, picks: BuildRequest | typeof EVERYTHING | PackageUnder): Promise<PackageFiles> {
+  if (picks === EVERYTHING) return wholeFiles(deps);
+  if ("under" in picks) return underFiles(deps, picks.under);
+  return pickedFiles(deps as BuildDeps, picks);
 }
 
 async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageFiles> {
@@ -712,6 +739,15 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
     ...(Object.keys(requires).length ? { requires } : {}),
   };
   files.set(MANIFEST_FILE, dumpYaml(manifest));
+  if (req.serve !== undefined) {
+    const text = dumpYaml(req.serve);
+    try {
+      parseServeFile(text);
+    } catch (err) {
+      throw refused([err instanceof Error ? err.message.replace(/^serve_invalid: /, "") : String(err)]);
+    }
+    files.set(SERVE_FILE, text);
+  }
   // What the package leaves to the installing strut beyond strut's own: said, never refused.
   const leftToInstaller = [...left.values()].sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
   for (const l of leftToInstaller) {
@@ -895,7 +931,7 @@ async function conceptFiles(
  *  `NOT_ATTRIBUTES` names), its parents by name, its docs — and the node
  *  key the file is named by. The one writer of a page, for a build and a
  *  snapshot alike. Null for a node with no name. */
-function conceptPageFile(schema: NodeSchema, props: Record<string, unknown>, parents: readonly string[]): { key: string; name: string; text: string } | null {
+export function conceptPageFile(schema: NodeSchema, props: Record<string, unknown>, parents: readonly string[]): { key: string; name: string; text: string } | null {
   const name = props["name"];
   if (typeof name !== "string" || !name) return null;
   const attributes = Object.fromEntries(
@@ -951,7 +987,8 @@ export const WORKSPACE_PACKAGE = { package: "strut/workspace", version: "snapsho
  *   steps/<name>.claims.yaml     its live claims beside it
  *   apps/<name>/…                every app's active version, its sources
  *   concepts/<key>.md            every live Concept in the backend's own namespace
- *   namespaces/<ns>/concepts/…   every live Concept in any other
+ *   namespaces/<ns>/concepts/…   every live Concept in any other but a Concept
+ *                                branch's (its own git branch holds those)
  *   graph/<Type>.yaml            every type in the ontology but strut's own,
  *                                with its rules (`allTypeFiles`)
  *   strut.yaml                   `WORKSPACE_PACKAGE`, pinning every installed package
@@ -1043,22 +1080,100 @@ async function wholeFiles(deps: WholeDeps): Promise<PackageFiles> {
 }
 
 /**
+ * Every item under one package's prefix as the workspace has it now — what
+ * a repo's Commit writes into its working copy (app-repos.md §3.3). The
+ * whole mode's writers held to one package: each workflow's and step's
+ * active version as published (names stay as they are: an installed item
+ * says what its file said), each step's live claims, each app's active
+ * sources, and the package's Concept pages — those stamped `pkg/<package>/`
+ * and every unstamped page under one — each a new-form page under its node
+ * key (a page stamped by another seeder under one is left out, said).
+ * Paths are the package's: the prefix stripped. No `strut.yaml` and no
+ * `graph/`: the manifest is the repo's, and a type is the graph's.
+ */
+async function underFiles(deps: WholeDeps, pkg: string): Promise<PackageFiles> {
+  const prefix = `${pkg}/`;
+  const files = new Map<string, string | Buffer>();
+  const items = new Map<string, { kind: "workflow" | "step" | "app" | "concept"; name: string }>();
+  const warnings: string[] = [];
+  const put = (file: string, body: string | Buffer, item: { kind: "workflow" | "step" | "app" | "concept"; name: string }) => {
+    files.set(file, body);
+    items.set(file, item);
+  };
+  for (const w of await deps.workspace.listWorkflows()) {
+    if (!w.name.startsWith(prefix)) continue;
+    const text = await deps.workspace.getWorkflowSource(w.name, w.activeVersion).catch(() => undefined);
+    if (text === undefined) warnings.push(`the workflow ${w.name} ${w.activeVersion} could not be read`);
+    else put(`workflows/${w.name.slice(prefix.length)}.yaml`, text, { kind: "workflow", name: w.name });
+  }
+  const types = Object.keys(await deps.workspace.getActiveStepHashes()).filter((t) => t.startsWith(prefix));
+  for (const type of types) {
+    const src = await deps.workspace.getStepSource(type).catch(() => null);
+    if (!src || src.origin !== "custom") warnings.push(`the step ${type} could not be read`);
+    else put(`steps/${type.slice(prefix.length)}.ts`, src.code, { kind: "step", name: type });
+  }
+  if (deps.claims) {
+    const always: InsideCheck = async () => ({ outside: null, steps: [] });
+    const said = new Set<string>();
+    for (const type of types.filter((t) => !isHelperName(t))) {
+      const kept = await stepClaims(deps.claims, type, always, said);
+      if (kept.claims.length) put(`steps/${type.slice(prefix.length)}.claims.yaml`, dumpYaml(kept.claims), { kind: "step", name: type });
+    }
+    warnings.push(...said);
+  }
+  for (const a of await deps.workspace.listApps()) {
+    if (!a.name.startsWith(prefix)) continue;
+    const rec = await deps.workspace.getApp(a.name);
+    const read = rec ? await appSources(deps, a.name, rec.version, rec.hash) : { problem: `the app ${a.name} could not be read` };
+    if ("problem" in read) warnings.push(read.problem);
+    else for (const [file, bytes] of read.files) put(`apps/${a.name.slice(prefix.length)}/${file}`, bytes, { kind: "app", name: a.name });
+  }
+  if (deps.graph) {
+    const stamped = await packageConcepts(deps.graph, pkg);
+    const names = new Set(stamped.map((c) => c.name));
+    // The roots: a page of the package none of whose parents is one. A
+    // parent the walk does not reach is read off the page as it is now.
+    const schema = await deps.graph.schemas.schema("Concept");
+    const roots: string[] = [];
+    if (schema) {
+      for (const c of stamped) {
+        const parents = await deps.graph.tx(async (tx) => {
+          const ups = await deps.graph!.edgeEngine.liveEdgesOf(tx, c.ref_id, "PARENT_OF", false);
+          return Promise.all((ups?.edges ?? []).map(async (e) => (await deps.graph!.nodeEngine.readRaw(tx, e.other))?.props["name"]));
+        });
+        if (!parents.some((n) => typeof n === "string" && names.has(n))) roots.push(c.name);
+      }
+    }
+    const problems: string[] = [];
+    const said = new Set<string>();
+    for (const [file, page] of await conceptFiles(deps.graph, { subtree: roots, alone: [] }, pkg, [], new Set(), problems, said)) put(file, page.text, { kind: "concept", name: page.name });
+    warnings.push(...problems.map((p) => `${p} — left out`), ...said);
+  }
+  return { files, manifest: { package: pkg, version: "workspace" }, warnings, items };
+}
+
+/**
  * Every live Concept in every namespace as its page, in two reads: the
  * nodes, and every live `PARENT_OF` into one with its parent's name — never
  * a read per node. A page in the backend's own namespace is
  * `concepts/<key>.md`, one in any other `namespaces/<ns>/concepts/<key>.md`.
- * The page is `conceptPageFile`'s, the writer a build uses.
+ * The page is `conceptPageFile`'s, the writer a build uses. With `only`, that
+ * namespace's pages alone, each `concepts/<key>.md`: a Concept branch's, as
+ * its git branch records them (src/history.ts).
  */
-async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise<Map<string, string>> {
+async function allConceptFiles(graph: GraphBackend, warnings: string[], only?: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const schema = await graph.schemas.schema("Concept");
   if (!schema) return out;
   const d = graph.dialect;
   const fields = [...new Set(["ref_id", "name", "docs", "namespace", ...Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a))])];
-  const nodes = await graph.query(`MATCH (n) WHERE ${d.isType("n", ["Concept"])} AND ${d.live("n")} RETURN ${d.project("n", fields)} AS p`);
+  const inNs = (v: string) => (only !== undefined ? ` AND ${v}.namespace = $ns` : "");
+  const params = only !== undefined ? { ns: only } : undefined;
+  const nodes = await graph.query(`MATCH (n) WHERE ${d.isType("n", ["Concept"])} AND ${d.live("n")}${inNs("n")} RETURN ${d.project("n", fields)} AS p`, params);
   const ups = await graph.query(
-    `MATCH (p)-[r:PARENT_OF]->(c) WHERE ${d.isType("c", ["Concept"])} AND ${d.live("c")} AND ${d.live("p")} AND ${d.edgeLive("r")}
+    `MATCH (p)-[r:PARENT_OF]->(c) WHERE ${d.isType("c", ["Concept"])} AND ${d.live("c")} AND ${d.live("p")} AND ${d.edgeLive("r")}${inNs("c")}
      RETURN c.ref_id AS child, p.name AS parent`,
+    params,
   );
   const parents = new Map<string, string[]>();
   for (const r of ups) {
@@ -1069,14 +1184,25 @@ async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise
   }
   for (const row of nodes) {
     const props = row["p"] as Record<string, unknown>;
+    const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
+    // A Concept branch's copies are not the workspace's (src/branches.ts):
+    // its own git branch records them (`conceptFilesOf`).
+    if (only === undefined && isBranchNamespace(ns)) continue;
     const page = conceptPageFile(schema, props, parents.get(String(props["ref_id"])) ?? []);
     if (!page) continue;
-    const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
-    const file = ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
+    const file = only !== undefined || ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
     if (out.has(file)) warnings.push(`two Concepts are ${file}: only one is in the snapshot`);
     else out.set(file, page.text);
   }
   return out;
+}
+
+/** One namespace's live Concepts as their pages, `concepts/<key>.md` each,
+ *  as a snapshot writes the graph's own: what a Concept branch's git branch
+ *  holds under `concepts/` (src/history.ts). */
+export async function conceptFilesOf(graph: GraphBackend, namespace: string): Promise<{ files: Map<string, string>; warnings: string[] }> {
+  const warnings: string[] = [];
+  return { files: await allConceptFiles(graph, warnings, namespace), warnings };
 }
 
 /** An app version's sources (what its version hash covers: never `dist/`

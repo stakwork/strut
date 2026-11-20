@@ -41,7 +41,7 @@ import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
-import { Neo4jReader, type GraphReader } from "./search.js";
+import { Neo4jReader, type BranchesHeld, type GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
 import { migrateExactKeys, type ExactKeyMigrationReport } from "./exact-key-migration.js";
@@ -83,6 +83,11 @@ export interface GraphBackendBase extends GraphEngine {
   readonly reader: GraphReader;
   /** Live schema resolution shared by the writers and reader. */
   readonly schemas: SchemaResolver;
+  /** Whether the graph holds a Concept branch (src/branches.ts), one object
+   *  every handle and view shares: the branches service keeps it, and a
+   *  Ladybug search that names no namespace leaves `branch-*` out only
+   *  while it is set. Absent on a backend not opened here. */
+  readonly branches?: BranchesHeld;
   readonly embedder: Embedder | undefined;
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
@@ -190,7 +195,8 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
     // there (`attach`).
     const given = typeof opts.embeddings === "object" ? opts.embeddings : undefined;
     const load = opts.embeddings !== false && !given;
-    const readerOpts: { embedder?: Embedder } = {};
+    const branches: BranchesHeld = { held: false };
+    const readerOpts: { embedder?: Embedder; branches: BranchesHeld } = { branches };
     const writerOpts: { embedder?: Embedder; resolver?: SchemaResolver; later?: (refs: string[]) => void } = {};
     const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
@@ -209,6 +215,7 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       edges: new EdgeWriter(engine, { resolver: schemas }),
       reader: new LadybugReader(engine, readerOpts),
       schemas,
+      branches,
       embedder: undefined,
       seed: undefined,
       embeddings: undefined,
@@ -359,6 +366,7 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
       edges: new EdgeWriter(engine, { resolver: schemas }),
       reader: new Neo4jReader(bolt, { embedder, resolver: schemas }),
       schemas,
+      branches: { held: false },
       embedder,
       seed,
       veinMigration,

@@ -73,7 +73,7 @@ before(async () => {
     orchestrator: false,
     builder: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
   });
   await workspace.publishWorkflowByContent("greet-wf", "name: greet-wf\nsteps:\n  - id: say\n    type: log\n    config:\n      message: hi\n");
   await strut.run("greet-wf", {});

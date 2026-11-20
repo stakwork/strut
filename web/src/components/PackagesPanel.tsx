@@ -7,7 +7,9 @@ import { errorMessage } from "../helpers";
 import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
 import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
+import { ListingLines } from "./ListingLines";
 import { CopyButton } from "./CopyButton";
+import { CreateRepo, PackageRepos } from "./PackageRepos";
 
 // ── Packages (the Publish dialog's Packages tab) ────────────────────────────
 //
@@ -25,8 +27,10 @@ import { CopyButton } from "./CopyButton";
 // indexes this strut follows and its peers' installs, a hit installed by
 // its NAME (the index's signed card names the key, so nothing in a search
 // answer is trusted as is). Then, read only, what this strut FOLLOWS and has
-// INSTALLED (specs/API.md §16). Publishing and installing are a person's
-// acts; no builder tool does either.
+// INSTALLED (specs/API.md §16), and the REPOS this strut works on as git
+// checkouts (./PackageRepos.tsx: Open, Commit, Pull; Create repo on a
+// package's page). Publishing, installing, committing and pulling are a
+// person's acts; an agent may only propose a commit (package/commit).
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** A digest, short: the first 12 hex. The full one rides in the title. */
@@ -188,145 +192,6 @@ function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined;
       )}
       {error && <div class="auto-error">{error}</div>}
     </>
-  );
-}
-
-/** Why a listing request waits for the index's operator, in words. */
-export const WAIT_WORDS: Record<api.PendingListing["reason"], string> = {
-  host: "this server's host is not one the index lists with no person",
-  "second name": "this key already holds another name there",
-  "same host": "this server's host already holds a name there",
-  move: "the name is moving to another host",
-  takeover: "another key holds the name",
-  "live row": "the name already shows a server's public view there, listed by the index's operator",
-};
-
-/** Where this server is reached, as a listing names it: the page's origin and its mount. */
-const defaultBase = () => `${location.origin}${api.API_BASE}`.replace(/\/+$/, "");
-
-/** The indexes this strut could be listed on (plans/index-listing.md §1):
- *  one line each — listed (read off the index's signed card), waiting for
- *  its operator, refused — with List, Change and Take off. Each ask is a
- *  request sealed by the PUBLIC key, sent from this server. */
-function ListingLines(props: { publisher: api.PublisherInfo }) {
-  const [lines, setLines] = useState<api.ListingLine[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<{ index: string; base: string; description: string; url: string; live: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [said, setSaid] = useState<string | null>(null);
-  const load = () => api.listListings().then(setLines, (err) => setError(errorMessage(err)));
-  useEffect(() => {
-    void load();
-  }, [props.publisher.public, props.publisher.name]);
-  if (!props.publisher.public || !props.publisher.name || !lines?.length) return error ? <div class="auto-error">{error}</div> : null;
-
-  const open = (l: api.ListingLine) =>
-    setForm({
-      index: l.index,
-      base: l.asked?.base ?? defaultBase(),
-      description: l.asked?.description ?? l.row?.description ?? "",
-      url: l.asked?.url ?? l.row?.url ?? "",
-      live: l.asked?.live ?? false,
-    });
-  const send = async () => {
-    if (!form) return;
-    setBusy(true);
-    setError(null);
-    setSaid(null);
-    try {
-      // `live` only when it says something: on, or off after this server asked
-      // for it. Left out, the index leaves a live row under the name alone.
-      const askedLive = lines?.find((l) => l.index === form.index)?.asked?.live === true;
-      const live = form.live ? { live: true } : askedLive ? { live: false } : {};
-      const r = await api.askListing({ index: form.index, base: form.base.trim(), ...(form.description.trim() ? { description: form.description.trim() } : {}), ...(form.url.trim() ? { url: form.url.trim() } : {}), ...live });
-      setSaid(r.status === "listed" ? "Listed." : `Sent: waiting for the index's operator — ${WAIT_WORDS[r.reason as api.PendingListing["reason"]] ?? r.reason}.`);
-      setForm(null);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-      void load();
-    }
-  };
-  const takeOff = async (index: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.withdrawListing(index);
-      setSaid("Taken off the index.");
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-      void load();
-    }
-  };
-
-  return (
-    <div class="listing-lines">
-      {lines.map((l) => {
-        const name = l.label ?? l.index;
-        const waiting = !l.listed && l.asked?.status === "pending";
-        return (
-          <div class="listing-line" key={l.index}>
-            <span class="auto-meta">{name}</span>
-            {l.listed ? (
-              <span class="badge badge-accent" title={`${props.publisher.name} is on ${name}'s signed card with this server's public key`}>Listed</span>
-            ) : l.heldBy ? (
-              <span class="badge badge-warning" title={`Another key holds ${props.publisher.name} there: ${l.heldBy}`}>Name held by another key</span>
-            ) : waiting ? (
-              <span class="badge" title={l.asked?.reason ? WAIT_WORDS[l.asked.reason as api.PendingListing["reason"]] ?? l.asked.reason : undefined}>Waiting for approval</span>
-            ) : l.asked?.status === "refused" ? (
-              <span class="badge badge-warning" title={l.asked.reason}>Refused</span>
-            ) : null}
-            {!l.requests ? (
-              <span class="auto-hint">Its card is a file: ask its operator to list this server.</span>
-            ) : l.listed ? (
-              <>
-                <button class="btn btn-sm" disabled={busy} onClick={() => open(l)}>Change</button>
-                <ConfirmButton class="btn btn-sm btn-danger" label="Take off" note={`Take ${props.publisher.name} off ${name}: new installs stop finding it by name. Copies already installed keep working.`} confirmLabel="Take off" tone="danger" disabled={busy} onConfirm={() => void takeOff(l.index)} />
-              </>
-            ) : waiting ? (
-              <button class="btn btn-sm" disabled={busy} onClick={() => void takeOff(l.index)}>Withdraw</button>
-            ) : (
-              <button class="btn btn-sm btn-primary" disabled={busy} onClick={() => open(l)}>List on {name}</button>
-            )}
-            {l.asked?.status === "refused" && l.asked.reason && <div class="auto-error">{l.asked.reason.replace(/^listing_refused: /, "Refused: ")}</div>}
-            {l.asked?.status === "error" && l.asked.reason && !l.listed && <div class="auto-error">{l.asked.reason}</div>}
-            {l.cardError && <div class="auto-hint">Its card could not be read: {l.cardError}</div>}
-            {form?.index === l.index && (
-              <div class="listing-form">
-                <label>
-                  <span class="auto-meta">This server's address</span>
-                  <input type="text" value={form.base} onInput={(e) => setForm({ ...form, base: (e.target as HTMLInputElement).value })} />
-                </label>
-                <label>
-                  <span class="auto-meta">Description</span>
-                  <input type="text" maxLength={280} value={form.description} placeholder="What your packages do" onInput={(e) => setForm({ ...form, description: (e.target as HTMLInputElement).value })} />
-                </label>
-                <label>
-                  <span class="auto-meta">Homepage</span>
-                  <input type="text" value={form.url} placeholder="https://" onInput={(e) => setForm({ ...form, url: (e.target as HTMLInputElement).value })} />
-                </label>
-                <label class="listing-check">
-                  <input type="checkbox" checked={form.live} onChange={(e) => setForm({ ...form, live: (e.target as HTMLInputElement).checked })} />
-                  <span>Also show this server's public view in the store</span>
-                </label>
-                <div class="auto-hint">
-                  {name} reads this server's public catalog at that address and checks it is signed with this server's public key. Then it lists <code>{props.publisher.name}</code> at once, or its operator decides.
-                </div>
-                <div class="auto-card-actions">
-                  <button class="btn btn-primary" disabled={busy || !form.base.trim()} onClick={() => void send()}>{busy ? "Sending…" : l.listed ? "Send the change" : "Ask to be listed"}</button>
-                  <button class="btn" disabled={busy} onClick={() => setForm(null)}>Cancel</button>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
-      {said && <div class="auto-hint">{said}</div>}
-      {error && <div class="auto-error">{error}</div>}
-    </div>
   );
 }
 
@@ -630,6 +495,17 @@ function PackagePage(props: {
         <button class="btn btn-primary" disabled={busy || !version.trim() || empty} onClick={() => void publish()}>
           {busy ? "Publishing…" : "Publish"}
         </button>
+        <CreateRepo pkg={props.pkg} disabled={busy || !version.trim() || empty} onCreated={props.onChanged}
+          request={() => ({
+            package: props.pkg,
+            version: version.trim(),
+            workflows: picks.workflows,
+            ...(picks.apps.length ? { apps: picks.apps } : {}),
+            ...(picks.concepts.length ? { concepts: picks.concepts } : {}),
+            ...(picks.conceptsAlone.length ? { conceptsAlone: picks.conceptsAlone } : {}),
+            ...(picks.types.length ? { types: picks.types } : {}),
+            ...(description.trim() ? { description: description.trim() } : {}),
+          })} />
       </div>
       {error && <div class="auto-error package-refusal">{error}</div>}
       {result && (
@@ -910,6 +786,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
                 <span>brings {[h.detail.apps.length && `${h.detail.apps.length} app${h.detail.apps.length === 1 ? "" : "s"}`, h.detail.workflows && `${h.detail.workflows} workflow${h.detail.workflows === 1 ? "" : "s"}`, h.detail.steps && `${h.detail.steps} step${h.detail.steps === 1 ? "" : "s"}`, h.detail.concepts && `${h.detail.concepts} concept${h.detail.concepts === 1 ? "" : "s"}`].filter(Boolean).join(", ") || "nothing"}</span>
                 <span>{canWords(h.detail.can).join(" · ")}</span>
                 {h.detail.secrets.length > 0 && <span>needs {h.detail.secrets.join(", ")}</span>}
+                {h.detail.job && h.detail.job.tools.length > 0 && <span title={`The job agent's tools: ${h.detail.job.tools.join(", ")}${h.detail.job.approve.length ? `; asks first: ${h.detail.job.approve.join(", ")}` : ""}`}>gives the job agent {h.detail.job.tools.length} tool{h.detail.job.tools.length === 1 ? "" : "s"}</span>}
               </div>
             )}
             {going?.ref === h.package && progressOf(going)}
@@ -974,7 +851,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
         <>
           <div class="flyout-section">
             <PublisherHead publisher={publisher} onChanged={setPublisher} />
-            {publisher && <ListingLines publisher={publisher} />}
+            {publisher && <ListingLines mode="packages" publisher={publisher} onPublisher={setPublisher} />}
             {errors.catalog && <div class="auto-error">{errors.catalog}</div>}
             <div class="flyout-section-title">Here</div>
             {catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
@@ -993,6 +870,8 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
 
           <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
 
+          <PackageRepos onChanged={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
+
           <div class="flyout-section">
             <div class="flyout-section-title">Following</div>
             {errors.subs && <div class="auto-error">{errors.subs}</div>}
@@ -1002,10 +881,10 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
               <div class="auto-card" key={s.id}>
                 <div class="auto-card-head">
                   <span class="package-name">{s.id}</span>
-                  <span class="badge">{s.channel ?? "newest releases"}</span>
+                  <span class="badge">{s.ref ? "git branch" : (s.channel ?? "newest releases")}</span>
                 </div>
                 <div class="auto-meta">
-                  <span class="package-url">{s.url}</span>
+                  <span class="package-url">{s.ref ?? s.url}</span>
                   {s.checkedAt && <span title={new Date(s.checkedAt).toLocaleString()}>checked {ago(secs(s.checkedAt))}</span>}
                   {s.applied && <span title={new Date(s.applied.at).toLocaleString()}>applied {ago(secs(s.applied.at))}</span>}
                 </div>
@@ -1038,7 +917,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                 <div class="auto-card-head">
                   <span class="package-name">{p.package} {p.version && <span class="package-version">{p.version}</span>}</span>
                   {p.door && (
-                    <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : "A person installed it"}>
+                    <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : p.door === "repo" ? "Opened here as a git repo: Commit and Pull, under Repos" : "A person installed it"}>
                       {p.door}
                     </span>
                   )}

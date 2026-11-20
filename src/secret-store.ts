@@ -73,8 +73,16 @@ export interface SecretBlanks {
   /** Store `value` under `name` → the name alone. Throws `secret_name:` for
    *  a name that is not one, `secret_empty:` for an empty value, and
    *  `secret_set:` when the name has a value in the store or in the
-   *  environment — never naming the value. */
-  fill(name: string, value: string): Promise<{ name: string }>;
+   *  environment — never naming the value. With `actor`, the blank is that
+   *  ACTOR's (actor-secrets.ts): set unless the actor has a value of its own
+   *  — what `ssh/keygen` stores a person's key in. */
+  fill(name: string, value: string, actor?: string): Promise<{ name: string }>;
+}
+
+/** The part of an actor-secret store (actor-secrets.ts) a fill needs. */
+interface ActorBlanks {
+  get(actor: string, name: string): Promise<string | undefined>;
+  set(actor: string, name: string, value: string): Promise<void>;
 }
 
 /** Fill-a-blank over `store`, with `env` (the boot environment, which the
@@ -82,14 +90,24 @@ export interface SecretBlanks {
  *  shadow the env's, so either refuses: a person never replaces the team's
  *  model or GitHub key with their own. One fill at a time, so two never
  *  both find the name blank. */
-export function secretBlanks(store: SecretStore, env: () => Record<string, string | undefined> = bootEnv): SecretBlanks {
+export function secretBlanks(
+  store: SecretStore,
+  env: () => Record<string, string | undefined> = bootEnv,
+  actors?: ActorBlanks,
+): SecretBlanks {
   let last: Promise<unknown> = Promise.resolve();
   return {
-    fill(name, value) {
+    fill(name, value, actor) {
       const run = last.then(async () => {
         if (!isValidSecretName(name)) throw new Error(`secret_name: "${name.slice(0, 80)}" is not a secret name — letters, digits and _, not starting with a digit`);
         if (hiddenFromSteps(name)) throw new Error(`secret_name: ${name} is read by the server alone, never by a step — an admin sets it`);
         if (!value.trim()) throw new Error(`secret_empty: no value for ${name}`);
+        if (actor !== undefined) {
+          if (!actors) throw new Error("secret_actor: this server keeps no per-person secrets");
+          if ((await actors.get(actor, name)) !== undefined) throw new Error(`secret_set: ${name} already has a value for this person`);
+          await actors.set(actor, name, value);
+          return { name };
+        }
         const fromEnv = env()[name];
         if ((await store.get(name)) !== undefined || (fromEnv !== undefined && fromEnv !== "")) {
           throw new Error(`secret_set: ${name} already has a value here — an admin changes or removes it`);

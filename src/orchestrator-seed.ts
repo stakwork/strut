@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
+import { parseConceptFile } from "./concept-seed.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
 import { idProblem } from "./session-store.js";
@@ -51,16 +53,30 @@ export const ORCHESTRATOR_DESCRIPTION =
   "Input: { prompt, session? (the conversation's thread), context?: { line, where?, timeZone? } (put before the prompt: the time, the person's time zone; where the conversation is read) }. " +
   "Launched with wake: true, a turn asks strut to wake the session when a job it started ends: one more turn whose prompt is params.wake (the 202 says wake: true). " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
-  "params.tools (job/start, continue, stop, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
+  "Its rules are the Orchestrator Concept's page, read into the system prompt every turn (params.rulesText is the same text, for a workspace with no graph). " +
+  "That page, params.tools (job/start, continue, stop, list, get, read, strut/list-peers, strut/run-workflow, graph/graph-get — a kind's page) and params.system (the reply's fields) are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 
 const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.url);
 
-/** The `orchestrator` template with the host's delta applied. */
+/** The Concept page the orchestrator's rules are (`params.rules`), and its
+ *  file among the pages strut ships (src/concepts/). */
+export const ORCHESTRATOR_PAGE = "Orchestrator";
+const ORCHESTRATOR_PAGE_FILE = new URL(`./concepts/${ORCHESTRATOR_PAGE}.md`, import.meta.url);
+
+/** The rules as strut ships them: the `Orchestrator` page's docs, read from
+ *  its file. One text, two ways to the prompt: the page in the graph
+ *  (context/concept, which a turn opens and a claim judges), and this, the
+ *  template's `params.rulesText`, where there is no graph. */
+export async function orchestratorRules(): Promise<string> {
+  return parseConceptFile(`${ORCHESTRATOR_PAGE}.md`, await readFile(ORCHESTRATOR_PAGE_FILE, "utf-8"), "").docs ?? "";
+}
+
+/** The `orchestrator` template with the host's delta applied, and the
+ *  rules strut ships as its fallback (`params.rulesText`). */
 export async function orchestratorWorkflowYaml(opts?: OrchestratorSeedOptions): Promise<string> {
-  const text = await templateWithDelta(ORCHESTRATOR_YAML, opts);
-  if (!opts?.personalConcept) return text;
-  const doc = yaml.load(text) as { params: Record<string, unknown> };
-  doc.params["personalConcept"] = opts.personalConcept;
+  const doc = yaml.load(await templateWithDelta(ORCHESTRATOR_YAML, opts)) as { params: Record<string, unknown> };
+  doc.params["rulesText"] = await orchestratorRules();
+  if (opts?.personalConcept) doc.params["personalConcept"] = opts.personalConcept;
   return yaml.dump(doc, { lineWidth: -1, noRefs: true });
 }
 

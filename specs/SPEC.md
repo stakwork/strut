@@ -38,6 +38,7 @@ src/
       log.ts
       llm.ts
       wait.ts
+      human.ts          # a person answers: the run waits for them
     lib/                # built-in domain integrations (dynamically imported)
       github/
         fetch-pr.ts
@@ -263,6 +264,33 @@ Config:
 - Calls an LLM with the resolved prompt. If `schema` is provided, uses structured output (e.g. `generateObject`).
 - Output: `{ text, usage, cost }` (no schema) or the parsed object plus `usage` and `cost` (with schema; the object's own fields win a name clash).
 
+#### 4.1.6a `image`
+
+Config:
+
+```ts
+{
+  prompt: string,
+  model: string,          // "<provider>/<id>": xai/grok-imagine-image, openai/gpt-image-1-mini,
+                          // google/gemini-2.5-flash-image, openrouter/<org>/<model>
+  size?: string,          // "1024x1024" — models that take a size
+  aspectRatio?: string,   // "16:9" — models that take an aspect ratio
+  seed?: number,
+  providerOptions?: Record<string, Record<string, unknown>>, // passed through: { openai: { quality: low } }
+  name?: string,          // the file's name; default the step's own place in the run
+  images?: Array<string | { path: string, name?: string, mediaType?: string }>,
+                          // source images to EDIT: files of the run, e.g. "{{ photo.attachments }}"
+}
+```
+
+- Makes ONE image (the AI SDK's `generateImage`) and writes it where the run's files go: `images/<name>.<ext>` under the run's artifacts, or the job's directory on a job run (as browser screenshots do).
+- Output: `{ path, url, mediaType, bytes, model, cost, usage, revisedPrompt? }`. `path` is relative, so a workflow declares the image as a deliverable: `artifacts: [{ id, kind: image, path: "{{ <step>.path }}" }]`.
+- `cost` is the call's dollars: what the provider reported (OpenRouter's and a gateway's `usage.cost`, xAI's `cost_in_usd_ticks`), else the model's datasheet price (image tokens, else per image). A model with neither is refused before the call (`image_unpriced:`): a cost is never guessed. It is reported through `withUsage`, so a run's totals and a public run's charge count it.
+- With `images` the model EDITS them (`generateImage`'s `prompt: { images, text }`): files of the run, read through `ctx.services.artifacts` like an `agent`'s `attachments` list (a `human` step's `attachments` hands them out), png, jpeg, gif or webp, at most 10, 5 MB each, 15 MB together. A file that is not the run's, or not an image, fails the step before anything is sent; no list draws from the prompt alone. Models that edit: openai `gpt-image-…`, google `gemini-…-image`, xai `grok-imagine-image`, and OpenRouter's image models (`input_references`) directly; through a gateway only openai and google (its `/openai/v1/images/edits`) — an xai or OpenRouter edit there is refused before anything is sent unless the grant allows a direct call. The source images are in the cost (OpenAI's input image tokens; Gemini's input tokens; xAI's and OpenRouter's reported cost).
+- Through an `llmAuth` grant (a gateway), image models ride the gateway's OpenAI-compatible route: xai and google named by provider (`xai/…`, `gemini/…`), openai by its bare id, and OpenRouter's as `openrouter-images/<org>/<model>`, the gateway's custom provider on OpenRouter's images API (Bifrost's own openrouter provider has no image generation).
+- As an agent's tool (`agentTools`), the model sees a 0.6× copy of the image (`withMedia`).
+- `image` spends like `llm` and `agent`: never a page's call, a public tool or an AI-published app's grant.
+
 #### 4.1.7 `pack`
 
 Config: any object. Output: that object, template-resolved. The workflow's
@@ -301,6 +329,114 @@ child env is scrubbed, `secretsEnv` names are injected and masked.
     cmd: ffmpeg
     args: ["-y", "-ss", "{{ input.start }}", "-t", "30", "-i", "video.mp4", "clip.mp4"]
 ```
+
+#### 4.1.9 `human`
+
+Config: `{ task, show?, files?, withinHours?, copies? }`. Output: `{ answer, by, task, pay?, answers? }`.
+
+A person as a step of a workflow (plans/human-steps.md §3). The step makes a
+TASK of the task type `task` in the task store (`ctx.services.tasks.ensure`,
+the one call of the store a step finds on its bag; `src/tasks/`) and the run PARKS on it (`ctx.park("task:<id>")`,
+RUN_CONTROL_SPEC §5.6): it leaves memory with `status: "waiting"`. A worker
+signed in to the type's app takes the task, answers it in the shape the type
+says, and the answer settles the task; the store, registered as the `task`
+park source, wakes the run, whose journal replays and whose `human` step runs
+again from the top and returns the answer. `by` is the worker's actor, `task`
+the task's id.
+
+```yaml
+- id: review
+  type: human
+  config:
+    task: pet-match          # the task type: an admin made it, with its app and answer shape
+    show:                    # what the worker's app is handed
+      lost: "{{ input.lost }}"
+      guess: "{{ match.object }}"
+    files: ["found.jpg", "lost/*.jpg"]
+    withinHours: 48
+  options:
+    onError:                 # nobody answered in time: keep the model's guess
+      id: guess
+      type: pack
+      config: { answer: "{{ match.object }}", by: model }
+```
+
+- `task`: the task type's name. It must exist and be enabled (`unknown_type:`,
+  `type_disabled:` otherwise). The answer's shape, the app, the lease and the
+  pay are the type's, an admin's: the workflow cannot set them.
+- `show`: any JSON, at most 256 KB. Files are named, not inlined.
+- `files`: paths under the run's files — the job's directory on a job run,
+  else the run's artifacts, where `run/files` reads — kept with the task with
+  where they are rooted. `*` and `?` match within one folder (a name starting
+  with `.` only when the pattern's segment does), expanded when the task is
+  MADE, so its list is fixed; a file written later does not join it. A path
+  that is not a file, or a pattern that matches none, fails the step
+  (`task_file_missing:`) and makes no task. At most 200 files.
+- `withinHours`: how long the task may stay unanswered (fractions allowed);
+  the type's default otherwise. Past it the store's sweep expires the task,
+  which wakes the run, and the step fails `task_expired:`, so `onError`
+  applies. A task the run's cancel closed fails it `task_cancelled:`.
+- `copies` (plans/human-steps.md §7.6): how many workers answer, 1 by
+  default, at most the type's `copies.max` — a type with no copies rule asks
+  one (`bad_request: copies:` otherwise, and no task is made): each copy is
+  paid work, and how much a step may ask is the admin's. Each worker answers
+  on their own lease; a worker never answers one task twice. When every
+  answer asked for is in (a worker already at it is never cut off), the
+  type's rule decides: answers that match (`equal`, or a sealed step
+  comparing two) group, and a group of `agree` settles the task — `answer`
+  is the agreed one, `by` the first worker who gave it, and `answers` every
+  answer as `[{ answer, by, agrees }]` in the order given. Otherwise the
+  task asks one more worker (`onDisagree: more`, up to `max`), and then, or
+  at once with `fail`, it is DISPUTED: the step fails `task_disputed: the 3
+  answers to task <id> (<type>) did not agree`, so `onError` applies (asking
+  an expert's task type is the usual one). With `copies: 1` the output is as
+  it always was, with no `answers`. Each copy earns as any answer does, and
+  `pay` is every copy's; a disputed task's step fails, so its copies' pay is
+  not in the run's cost (an expired one's answered copies neither).
+- One task per workflow, run id and step path, whatever wakes the run: the
+  step finds the task it made. So `retry` reads the same closed task and fails
+  again; `onError` is how a workflow goes on without the answer.
+- Refused before any task is made where nothing could wake the run (a
+  single-step run, a public run, an agent's tool call: `park_refused:`) and
+  in a run that may not ask a person — a stranger's public run, a run another
+  strut launched with no person's credential, and the runs either started
+  (`refused:`).
+- A run cancelled — while it waits or while it runs — cancels the tasks it
+  left open. A run that fails keeps them, so a resume finds them.
+- `pay` (plans/human-steps.md §8.1): when the type pays, `{ msat, usd? }` —
+  what the answer earned, the type's pay when the worker took the task, and
+  its dollars at the rate (`GET /rate`) when the step returns. The step's
+  `step.end` then carries those dollars as `cost` with `modelCalls: 0`, so
+  the run's `totals.cost` counts its human work beside its model calls (a
+  journal replay counts nothing again). Never against a workflow's
+  `maxRunCostUsd` or the Mothership: they cap model calls at the gateway,
+  and a run stopped after a worker answered still owes the worker. With no
+  rate the output has `msat` alone and no cost is marked. What is OWED is
+  the ledger's record, written when the answer was accepted, held for the
+  type's `holdHours` (specs/API.md §22, "Pay"), never this output.
+- `attachments` (plans/human-steps.md §5.6): when the type takes files
+  with an answer (its `attachments` rule: a photo of a court paper), the
+  worker sends them with it, and they are saved in this run's artifacts as
+  `tasks/<task id>/<name>` before the run wakes. The output names them,
+  `[{ name, mediaType, size, path }]` (absent with none; with copies, each
+  of `answers` carries its own and these are the agreed answer's). An
+  `agent` step later in the run sees them on its prompt with `attachments:
+  "{{ <this step's id>.attachments }}"`: the agent's `attachments` takes a
+  LIST of the run's files beside `true` (the files the run was launched
+  with, the default) and `false`.
+- A worker answers in the task type's app, through the `task/*` steps
+  (`task/next`, `task/submit`, `task/skip`, `task/file`, `task/me`) on the
+  app door, as the page's signed-in viewer; an admin makes the task types
+  and grants them through the `/tasks` routes, or accepts the builder's
+  `task/set-type` proposal for a type, which grants it to nobody
+  (specs/API.md §22).
+- Tests (plans/human-steps.md §7) change nothing here. A task type with
+  `tests` mixes TESTS — tasks whose answer staff know, kept apart from every
+  run — among its tasks, to qualify and score its workers; a worker under
+  the type's threshold loses the type. A test is served as an instance with
+  no run, so answering one wakes none, and the step's task is only ever
+  answered by a worker who holds the type (specs/API.md §22, "Tests,
+  grading and standing").
 
 ### 4.2 Lib Steps
 
@@ -367,7 +503,7 @@ Available bindings inside a step config:
 - `params` — the workflow's tunable *knobs* (prompts, thresholds, sample sizes). Defaults live in the workflow's `params:` block and are shallow-merged with per-run overrides. Always present (`{}` if the workflow declares none).
 - `<stepId>` — output of any previously completed step at the same level.
 - `$current` — only inside a `loop` body; previous iteration's output (undefined on iteration 0).
-- `$runId` — the id of the current run. Lets a workflow return where its files are: a run's artifact dir is served at `/artifacts/<runId>/<path>` (§4.1.8, AGENTS.md "Artifacts").
+- `$runId` — the id of the current run. Lets a workflow return where its files are: a run's artifact dir is served at `/artifacts/<runId>/<path>` (§4.1.8, docs/engine.md "Artifacts").
 
 `input` vs `params` is a deliberate split: `input` is *what* a run is about (no defaults, validated), `params` is *how* it's processed (all defaults, sparsely overridden per run). The experiment surface is `params` — an agent or human sweeps it without touching `input` or step code. See §11.1.
 
@@ -478,7 +614,7 @@ Sketch:
 import http from "./core/http.js";
 // …other core imports
 
-const CORE_STEPS = { http, if: ifStep, loop, subflow, log, llm, wait };
+const CORE_STEPS = { http, if: ifStep, loop, subflow, log, llm, wait, human };
 const LIB_DIR = join(dirname(fileURLToPath(import.meta.url)), "lib");
 
 export async function buildRegistry(customDir?: string): Promise<StepRegistry> {
@@ -668,6 +804,8 @@ steps:
 Each field has a `type` (`string`, `number`, `boolean`, or `json` — any JSON value) and optionally `required`, `default` and `description`. A field is required unless it has a `default` or says `required: false`. The block becomes the flow's `input` schema (§3.1): a missing required field or a wrong type fails the run before any step (`Input validation failed`), a default fills an omitted field, and keys the block does not name are dropped. `GET /workflows/:name/flow` returns it as `input`; the UI's Run form is built from it. Without the block a YAML workflow accepts any input (equivalent to `z.any()`) and the UI infers its Run form from the `{{ input.* }}` references in the steps.
 
 #### `params` — tunable defaults (the experiment surface)
+
+A workflow may declare a top-level `retain:` — `retain: 1h` (a duration: s, m, h, d, w) or `retain: { runs: 20 }` — how long a finished run's event log is kept; past it the log and run directory are deleted and the summary stays, with `parts.log.evictedAt` (docs/engine.md "Retention"). With a run archive configured (`STRUT_ARCHIVE_S3_BUCKET`, plans/run-archive.md) the log is uploaded to the bucket first, the summary records it (`parts.log.archive`), and a read of the log restores it. `STRUT_RETENTION` is the default for a workflow with none. plans/retention.md extends the same rule, with a bucket, to everything strut keeps; with no bucket only a run's log is ever deleted.
 
 A workflow may declare a top-level `params:` block of default knobs — prompts, thresholds, sample sizes, model names. Step configs reference them via `{{ params.* }}`, exactly like `input`. Position in the file is cosmetic; conventionally it sits at the bottom (like Docker Compose's `volumes:`).
 

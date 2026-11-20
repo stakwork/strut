@@ -62,13 +62,19 @@ export interface FactEvidence {
   /** The message it was read from, and the run that asserted it. */
   message?: string;
   run?: string;
+  /** The conversation and its turn (0-based) the run was, when an agent session asserted it. */
+  session?: string;
+  turn?: number;
+  /** The fact (edge ref_id) a refutation is about: the claim is the slot,
+   *  and a later fact on it (a correction) is not what was refuted. */
+  fact?: string;
   /** When the evidence is from (epoch ms). */
   observed_at: number;
   /** 1 backs it; −1 says it is false; a check's finding is weaker. */
   strength: number;
   /** The check that found it (`observed` evidence); absent for something said. */
   check?: { id: string; step: string };
-  /** What was found, when not the fact's sentence. */
+  /** What was found or said, when not the fact's sentence: a check's finding, the person's own words. */
   content?: string;
   created_by?: string;
   now: number;
@@ -166,6 +172,7 @@ async function writeEvidence(tx: GraphTx, claim: string, id: string, f: FactEvid
   await tx.run(`CREATE (:Node {${fields(ev, p, "e")}})`, p);
   const context = JSON.stringify({
     ...(f.said_by ? { said_by: f.said_by } : {}), ...(f.message ? { message: f.message } : {}), ...(f.run ? { run: f.run } : {}),
+    ...(f.session ? { session: f.session } : {}), ...(f.turn !== undefined ? { turn: f.turn } : {}), ...(f.fact ? { fact: f.fact } : {}),
     ...(f.check ? { check: f.check.step, check_id: f.check.id } : {}),
   });
   const rel = { ref_id: randomUUID(), edge_key: edgeKeyFor(CLAIM_EDGES.EVIDENCED_BY), strength: f.strength, context, ...base };
@@ -231,6 +238,7 @@ export async function factEvidence(run: (cypher: string, params?: Params) => Pro
       ...(typeof context["said_by"] === "string" ? { said_by: context["said_by"] } : {}),
       ...(typeof context["check"] === "string" ? { check: context["check"] } : {}),
       ...(typeof context["check_id"] === "string" ? { check_id: context["check_id"] } : {}),
+      ...(typeof context["fact"] === "string" ? { fact: context["fact"] } : {}),
       observed_at: at,
       strength: Number(r["strength"] ?? 0),
     });

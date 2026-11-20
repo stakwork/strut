@@ -8,11 +8,19 @@
  * and pay, never a credential (`?check=1` also asks the wallet its balance).
  * `PUT /earnings/wallet`: set it, change it, or remove it (`{ provider:
  * null }`). 501 for both when the host brought its own `services.lightning`.
+ * When the ENVIRONMENT names the wallet (`LIGHTNING_*`), the deployment
+ * owns it and writes it again at every boot: `GET` says so (`env: true`)
+ * and `PUT` is a 409, so a change here never looks made and then comes
+ * undone at the next restart.
  */
 
 import type { Context, Hono } from "hono";
 import type { LightningCapability } from "./lightning.js";
 import { checkWalletUpdate, walletInfo, type WalletCredentials, type WalletInfo, type WalletSettings } from "./settings.js";
+
+/** What `GET` says, and `PUT` refuses with, when the environment names the wallet. */
+export const ENV_WALLET_NOTE =
+  "set by this server's deployment (LIGHTNING_* in its environment), which writes it again at every boot: change it there";
 
 /** How long `check` waits for the wallet's balance. */
 export const WALLET_CHECK_MS = 5_000;
@@ -60,7 +68,7 @@ export function walletRoutes(app: Hono, deps: WalletRoutesDeps): void {
   const answer = async (info: WalletInfo, check: boolean) => ({
     ...info,
     ...(check ? { check: await checkWallet(deps.lightning()) } : {}),
-    ...(deps.envWallet ? { note: "LIGHTNING_* in the environment sets the wallet again at the next boot" } : {}),
+    ...(deps.envWallet ? { env: true, note: ENV_WALLET_NOTE } : {}),
   });
 
   app.get("/earnings/wallet", async (c) => {
@@ -73,6 +81,7 @@ export function walletRoutes(app: Hono, deps: WalletRoutesDeps): void {
   app.put("/earnings/wallet", async (c) => {
     const refused = await refuse(c);
     if (refused) return refused;
+    if (deps.envWallet) return c.json({ error: `wallet_from_env: the wallet is ${ENV_WALLET_NOTE}` }, 409);
     const body = await c.req.json().catch(() => undefined);
     let creds: WalletCredentials | null;
     try {

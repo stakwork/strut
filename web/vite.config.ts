@@ -12,6 +12,10 @@ const sseConfigure = (proxy: any) => {
   });
 };
 
+// `STRUT_DEV_INDEX=https://index.stakwork.ai npm run dev`: the store front
+// (`?store=1`) of this checkout over a deployed index's open reads.
+const index = process.env.STRUT_DEV_INDEX;
+
 export default defineConfig({
   // Relative asset URLs so the built UI can be served from any mount path
   // (root or a sub-path like /lab) without a baked-in base. Pairs with the
@@ -30,6 +34,9 @@ export default defineConfig({
       "@strut/kit/wallet": fileURLToPath(new URL("../kit/src/wallet/index.ts", import.meta.url)),
       // The channels contract and the relay a browser host runs (plans/app-channels.md).
       "@strut/kit/channels": fileURLToPath(new URL("../kit/src/channels/index.ts", import.meta.url)),
+      // The visitor contract (plans/app-repos.md §5): what the host's sign-in sheet answers.
+      "@strut/kit/visitor": fileURLToPath(new URL("../kit/src/visitor/index.ts", import.meta.url)),
+      "@strut/kit/camera": fileURLToPath(new URL("../kit/src/camera/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",
@@ -63,8 +70,19 @@ export default defineConfig({
       // it installed or follows (specs/API.md §16).
       "/packages": "http://localhost:3000",
       "/publisher": "http://localhost:3000",
+      // Paid runs: Earnings, the wallet, Add sats, Withdraw; the rate; the
+      // credit held at other struts; the Public view and what it serves.
+      "/earnings": "http://localhost:3000",
+      "/rate": "http://localhost:3000",
+      "/remote": "http://localhost:3000",
+      "/public-view": "http://localhost:3000",
+      "/public": "http://localhost:3000",
+      // The task store's staff routes (plans/human-steps.md §6).
+      "/tasks": "http://localhost:3000",
+      // People's names (plans/people-and-hosts.md §1).
+      "/people": "http://localhost:3000",
       // The index role's open reads: the store front (`?store=1`).
-      "/index": "http://localhost:3000",
+      "/index": index ? { target: index, changeOrigin: true } : "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
       // An app's channel socket (plans/app-channels.md): a WebSocket.

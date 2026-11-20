@@ -132,3 +132,10 @@ export function conceptOf(n: { ref_id: string; name?: string; properties?: Recor
     file: text("file"),
   };
 }
+
+/** Each Concept's parents by NAME, as a diff names its pages: so a parent the diff lacks climbs to its root. */
+export function parentsByName(tree?: ConceptTree): (name: string) => readonly string[] | undefined {
+  const m = new Map<string, string[]>();
+  if (tree) for (const [id, c] of Object.entries(tree.nodes)) m.set(c.name, (tree.parents[id] ?? []).map((p) => tree.nodes[p]?.name ?? p));
+  return (name) => m.get(name);
+}

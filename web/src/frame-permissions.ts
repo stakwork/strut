@@ -88,3 +88,25 @@ export function mcpPermissions(permissions?: unknown): McpPermissions {
     clipboardWrite: {},
   };
 }
+
+/** A STRANGER's page — another strut server's public app, hosted here
+ *  (./remote-app, specs/API.md §17.9) — runs as a frame of THIS strut's
+ *  page, so whatever the browser granted this origin (the microphone a
+ *  person allowed for dictation) a feature in its `allow` would hand it
+ *  unasked. It gets scripts, a form's submit event, the clipboard, pointer
+ *  lock, the gamepad and the wake lock: no microphone, none of what its
+ *  version declares, no download (a file saved from this origin), and no
+ *  fullscreen (a page that could cover this host's own sheets) — with it no
+ *  orientation lock, which needs fullscreen. */
+export const STRANGER_SANDBOX = ["allow-scripts", "allow-forms", "allow-pointer-lock"] as const;
+export const STRANGER_ALLOW = ["clipboard-write", "gamepad", "screen-wake-lock"] as const;
+
+/** A stranger's frame: `STRANGER_SANDBOX`, `STRANGER_ALLOW`. */
+export function strangerFrameAttributes(): { sandbox: string; allow: string } {
+  return { sandbox: STRANGER_SANDBOX.join(" "), allow: STRANGER_ALLOW.join("; ") };
+}
+
+/** What a stranger's frame is granted of MCP Apps' four: the clipboard. */
+export function strangerMcpPermissions(): McpPermissions {
+  return { clipboardWrite: {} };
+}

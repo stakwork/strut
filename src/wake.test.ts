@@ -301,6 +301,42 @@ describe("the wake through a whole strut", () => {
     assert.deepEqual(lines.map((t) => !!t.wake), [false, true], "the session's turn line marks the wake");
   });
 
+  it("a wake turn's run.end carries what the job run it woke on delivered, as the conversation index shows it; nothing delivered, none", async () => {
+    const { strut, say, wakeEnds } = await boot({
+      reply: () => ({ text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] }),
+    });
+    const indexed = async (session: string, runId: string) => {
+      const res = await strut.app.request(`/conversations/item?id=${encodeURIComponent(session)}`, { headers: { "x-test-actor": "alice" } });
+      return ((await res.json()) as any).turns.find((t: any) => t.runId === runId);
+    };
+
+    // The stand-in job delivers nothing.
+    await say({ prompt: "flights?", session: "c-1" });
+    const bare = await until(() => wakeEnds()[0], "the first wake turn's end");
+    assert.equal(bare.delivered, undefined, "nothing delivered, no field");
+    assert.equal((await indexed("c-1", bare.runId)).delivered, undefined);
+
+    await strut.workspace.publishWorkflow("job", "v2", {
+      steps: [{ id: "result", type: "pack", config: { text: "found 3", artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", title: "Fares", url: "https://example.com/fares" },
+      ] } }],
+    });
+    await say({ prompt: "flights again?", session: "c-2" });
+    const wakeEnd = await until(() => wakeEnds().find((e) => e.runId !== bare.runId), "the second wake turn's end");
+    assert.deepEqual(wakeEnd.delivered, [{
+      job: wakeEnd.wake.job,
+      runId: wakeEnd.wake.runId,
+      workflow: "job",
+      artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", kind: "url", title: "Fares", url: "https://example.com/fares" },
+      ],
+    }]);
+    assert.deepEqual(wakeEnd.artifacts ?? [], [], "the wake turn's own run delivered nothing");
+    assert.deepEqual((await indexed("c-2", wakeEnd.runId)).delivered, wakeEnd.delivered, "what the conversation index shows");
+  });
+
   it("a job a host launched names the conversation; ends that wait for a busy conversation go as ONE turn", async () => {
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
@@ -557,6 +593,31 @@ describe("the wake through a whole strut", () => {
     const none = await stop(post, "no-such-job");
     assert.equal(none.status, "error");
     assert.match(none.error!.message, /No job "no-such-job"/);
+  });
+
+  it("job/stop reaches a run the job left going that waits on a person (parked): cancelled where it waits, its source told", async () => {
+    const { strut, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 50 });
+    const told: string[] = [];
+    strut.parking.register("ans", { settled: async () => false, cancelled: async (on) => void told.push(on) });
+    await strut.workspace.publishStep(
+      "test/park",
+      'export default { type: "test/park", description: "waits on an answer", input: { parse: (v) => v }, output: { parse: (v) => v }, run: async (_cfg, ctx) => ctx.park("ans:1") };\n',
+    );
+    await strut.rebuildRegistry();
+    await strut.workspace.createWorkflow("slow", ["name: slow", "steps:", "  - id: ask", "    type: test/park", "    config: {}"].join("\n"));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const turn = await post("/workflows/builder/run", { job: "j-p", input: { prompt: "build" }, conversation: "c-p", wake: true, callback: { url: callback } });
+    assert.equal((await endOf(turn.body.runId)).output.text, "testing", "a run that waits is a run still going");
+    const [run] = await runsOf(strut, "slow");
+    await until(async () => ((await strut.store.getRunSummary("slow", run!))?.status === "waiting" ? true : undefined), "the run parks");
+    await idle();
+
+    const out = await stop(post, "j-p");
+    assert.deepEqual(out.output.stopped, [{ workflow: "slow", runId: run }]);
+    assert.match(out.output.note, /left going/);
+    assert.equal((await strut.store.getRunSummary("slow", run!))?.status, "cancelled");
+    assert.deepEqual(told, ["ans:1"], "what the run opened is closed");
+    assert.equal((await runsOf(strut, "builder")).length, 1, "and nothing wakes");
   });
 
   it("a stop that outlasts its wait says so, and the turn's end wakes the conversation as a stopped turn's does", async () => {

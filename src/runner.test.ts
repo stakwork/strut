@@ -243,7 +243,10 @@ describe("runWorkflow - event logging", () => {
     await runWorkflow(bad, {}, makeRegistry(), opts("s-2"));
     const failed = await store.getRunSummary("sched", "s-2");
     assert.deepEqual([failed?.status, failed?.automation], ["error", { id: "a-1" }]);
-    assert.deepEqual(ended, [{ workflow: "sched", origin: "schedule" }, { workflow: "sched", origin: "schedule" }]);
+    assert.deepEqual(ended, [
+      { workflow: "sched", origin: "schedule", status: "success" },
+      { workflow: "sched", origin: "schedule", status: "error" },
+    ]);
 
     await runWorkflow(ok, {}, makeRegistry(), { runId: "s-3", store });
     assert.equal((await store.getRunSummary("sched", "s-3"))?.automation, undefined, "an ordinary run carries no stamp");

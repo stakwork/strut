@@ -52,9 +52,15 @@ export interface InstalledPackage {
    *  alone, off its directory in the cache when it is there. */
   version?: string;
   digest?: string;
-  source?: { ref: string };
+  source?: { ref: string; url?: string };
+  /** The commit a `git+` ref resolved at that release. */
+  commit?: string;
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
+  /** What it provides (`provides` in its `strut.yaml`): `secrets`, the ones
+   *  its steps manage — a person's own value, and on an admin's call from
+   *  its own `admin: true` app the deployment's (src/packages/fence.ts). */
+  provides?: { secrets?: string[] };
   /** Which door wrote it: a person's install, or the distro, whose package
    *  only the distro updates or removes (plans/marketplace.md §12). Absent
    *  for a package of Concepts alone, which records no door. */
@@ -63,10 +69,11 @@ export interface InstalledPackage {
 }
 
 /** The doors that write a package's versions: a person's install (`POST
- *  /packages/install`), or the operator's distro, which applies a release
- *  with no ask and is the one door that updates (§12, §12.1). */
-export type PackageDoor = Extract<VersionSource, "install" | "distro">;
-const PACKAGE_DOORS: readonly VersionSource[] = ["install", "distro"];
+ *  /packages/install`), the operator's distro, which applies a release
+ *  with no ask and updates (§12, §12.1), or a repo this strut works on as a
+ *  git checkout, whose commits it applies (app-repos.md §3; ./repos.ts). */
+export type PackageDoor = Extract<VersionSource, "install" | "distro" | "repo">;
+const PACKAGE_DOORS: readonly VersionSource[] = ["install", "distro", "repo"];
 
 export interface InstalledDeps {
   workspace: WorkspaceStore;
@@ -80,24 +87,41 @@ interface VersionRecord {
   upstream?: Upstream;
 }
 
+/** Does the package still give this box anything: is something of it its
+ *  OWN here — a workflow, step or app whose active version it wrote? An
+ *  uninstall that keeps a fork leaves only forks (and the helpers they
+ *  import), which are this box's own work: it no longer grants the job
+ *  agent its steps (src/job-seed.ts) nor runs its schedules
+ *  (./schedules.ts). */
+export const holdsItsOwn = (p: InstalledPackage): boolean => !!p.digest && p.items.some((i) => i.kind !== "concept" && !i.helper && !i.modified);
+
 /** A version the package wrote, through either of its doors. */
 export const byPackage = (v: VersionRecord | undefined): boolean => !!v?.upstream && !!v.source && PACKAGE_DOORS.includes(v.source);
 
+/** When a package's door last wrote this version or stamped it the
+ *  release's (`upstream.at`); for a version from before doors recorded
+ *  that, when it was written. */
+const doorAt = (v: VersionRecord): string => v.upstream?.at ?? v.createdAt ?? "";
+
 /** The version the package put there: the ACTIVE one when the package wrote
  *  it — so an update that was taken back, or an older release a person made
- *  active again, reads as what is running — else the newest one it wrote
- *  (the release a fork has not taken), else (a record from before steps kept
- *  their door) the oldest that names a package. */
+ *  active again, reads as what is running — else the one its door wrote or
+ *  stamped last, the higher label on a tie (the release a fork has not
+ *  taken; a branch moved back stamps the older release's version, writing
+ *  none), else (a record from before steps kept their door) the oldest that
+ *  names a package. */
 function installedVersion(versions: Record<string, VersionRecord>, active: string): string | undefined {
   if (byPackage(versions[active])) return active;
   const labels = Object.keys(versions).sort(versionLabelOrder);
-  return [...labels].reverse().find((l) => byPackage(versions[l])) ?? labels.find((l) => versions[l]!.upstream);
+  let last: string | undefined;
+  for (const l of labels) if (byPackage(versions[l]) && (!last || doorAt(versions[l]!) >= doorAt(versions[last]!))) last = l;
+  return last ?? labels.find((l) => versions[l]!.upstream);
 }
 
 /** Every installed package, sorted by name, its items by kind then name. */
 export async function listInstalledPackages(deps: InstalledDeps): Promise<InstalledPackage[]> {
   const packages = new Map<string, InstalledPackage>();
-  /** When the package's release, as `packages` has it, was written. */
+  /** When the package's release, as `packages` has it, went in (`doorAt`). */
   const releasedAt = new Map<string, string>();
   const entry = (name: string): InstalledPackage => {
     let p = packages.get(name);
@@ -110,14 +134,17 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     // An item is its package's only under its prefix.
     if (!installed || !upstream || packagePrefixOf(name) !== upstream.package) return;
     const p = entry(upstream.package);
-    // The package is at the release its newest installed version came
-    // from: an item the release dropped and a fork kept still names the
-    // release before.
-    const at = versions[installed]!.createdAt ?? "";
+    // The package is at the release its installed version written or
+    // stamped last came from: an item the release dropped and a fork kept
+    // still names the release before.
+    const at = doorAt(versions[installed]!);
     if (!p.digest || at > (releasedAt.get(upstream.package) ?? "")) {
       releasedAt.set(upstream.package, at);
-      const door = versions[installed]!.source === "distro" ? "distro" : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, secrets: upstream.secrets, door });
+      const source = versions[installed]!.source;
+      const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.provides ? { provides: upstream.provides } : {}), door });
+      if (!upstream.commit) delete p.commit;
+      if (!upstream.provides) delete p.provides;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });

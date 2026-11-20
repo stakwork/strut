@@ -49,9 +49,11 @@ import {
   validateWorkflowName,
   provenance,
   missingProvenance,
+  stampFor,
   upstreamFor,
   fromPackage,
   refuseUnderInstalledPackage,
+  type OpenPackages,
   appListEntry,
   appRecord,
   newestVersion,
@@ -80,6 +82,7 @@ import { appVersionDir, validateAppName } from "../apps/files.js";
 import { readStepSourceFromDisk, type StepSource } from "../steps/registry.js";
 import { contentHash, nextVersionLabel } from "../version.js";
 import type { GraphBackend } from "./backend.js";
+import { WORKFLOW_USAGE_FIELDS } from "./strut-schemas.js";
 
 export interface GraphWorkspaceStoreOptions {
   /** Where active custom steps are written for the module loader. Default:
@@ -104,6 +107,13 @@ interface WorkflowRow {
   owner?: string;
   max_run_cost_usd?: number;
   disabled?: boolean;
+  /** The run counts the projector writes (`refreshWorkflowUsage`). */
+  usage_count?: number;
+  usage_count_30d?: number;
+  success_count?: number;
+  error_count?: number;
+  last_run_at?: number;
+  last_run_status?: string;
 }
 
 /** A workflow row's automations; a blob that fails to parse reads as none. */
@@ -203,7 +213,7 @@ function parseJson<T>(text: string | undefined): T | undefined {
   }
 }
 
-const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd", "disabled"] as const;
+const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd", "disabled", ...WORKFLOW_USAGE_FIELDS] as const;
 const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
 const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
@@ -258,6 +268,11 @@ function collectStepRefs(node: unknown, out: Array<{ type: string; config: Recor
 
 export class GraphWorkspaceStore implements WorkspaceStore {
   private readonly ns: string;
+  private openPackages?: OpenPackages;
+
+  setOpenPackages(check: OpenPackages): void {
+    this.openPackages = check;
+  }
   private readonly materializeDir: string;
   private readonly appsDir: string;
 
@@ -469,7 +484,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const hash = contentHash(yamlStr);
     const { nodes } = this.backend;
     const w = await this.workflowRow(name);
-    if (!w) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!w) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     const versions = await this.versionRows(name);
     const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === w?.active_version)?.upstream));
     const existing = versions.find((v) => v.content_hash === hash);
@@ -544,8 +559,20 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   }
 
   /** A known version's missing door, filled in by a publish of its content
-   *  (`missingProvenance`). */
-  private async fillDoor(row: { ref_id: string; version_source?: VersionSource; actor?: string }, opts?: PublishOptions): Promise<void> {
+   *  (`missingProvenance`) — or, for a `stamp` publish, its door, actor and
+   *  upstream replaced (`stampFor`). */
+  private async fillDoor(row: { ref_id: string; version_source?: VersionSource; actor?: string; upstream?: string }, opts?: PublishOptions): Promise<void> {
+    const stamp = stampFor({ source: row.version_source, actor: row.actor, upstream: parseJson<Upstream>(row.upstream) }, opts);
+    if (stamp) {
+      const desired = {
+        ...(stamp.source ? { version_source: stamp.source } : {}),
+        ...(stamp.actor ? { actor: stamp.actor } : {}),
+        ...(stamp.upstream ? { upstream: JSON.stringify(stamp.upstream) } : {}),
+      };
+      const patch = patchFor(row as unknown as Record<string, unknown>, desired);
+      if (patch) await this.backend.nodes.update(row.ref_id, patch);
+      return;
+    }
     const door = missingProvenance({ source: row.version_source, actor: row.actor }, opts);
     if (!door) return;
     // An absent `actor` must stay out of the patch: patchFor removes a field
@@ -673,13 +700,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   /** Soft, like `deleteStep`: the nodes stay, stamped `deleted_at`, and
    *  their edges go. A later publish under the same name RESTORES the
    *  workflow node (the node writer clears the markers on a key match), so the metadata that would otherwise
-   *  ride along — schedules, owner, cap, category, the publisher stamp — is cleared first: the
+   *  ride along — schedules, owner, cap, category, the publisher stamp, the run counts — is cleared first: the
    *  new workflow is a new one, not this one back. Versions stay deleted
    *  unless their exact content is published again. */
   async deleteWorkflow(name: string): Promise<boolean> {
     const w = await this.workflowRow(name);
     if (!w) return false;
-    const remove = (["automations", "owner", "max_run_cost_usd", "disabled", "category", "publisher"] as const).filter((k) => w[k] != null);
+    const remove = (["automations", "owner", "max_run_cost_usd", "disabled", "category", "publisher", ...WORKFLOW_USAGE_FIELDS] as const).filter((k) => w[k] != null);
     if (remove.length) await this.backend.nodes.update(w.ref_id, { remove: [...remove] });
     for (const v of await this.versionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(w.ref_id);
@@ -876,7 +903,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const { nodes } = this.backend;
     const existing = await this.stepRow(name);
     const versions = existing ? await this.stepVersionRows(name) : [];
-    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
 
     if (existing) {
       const match = versions.find((v) => v.content_hash === hash);
@@ -1053,7 +1080,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     validateAppName(name);
     const { nodes } = this.backend;
     const existing = await this.appRow(name);
-    if (!existing) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     const versions = existing ? await this.appVersionRows(name) : [];
     const owner = opts?.owner ?? opts?.actor;
 
@@ -1072,6 +1099,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
         if (patch) await nodes.update(existing.ref_id, patch);
         if (changed) await this.swapActiveEdge("StrutApp", existing.ref_id, "StrutAppVersion", match.ref_id);
+        if (opts?.stamp) await this.fillDoor(match, opts);
         return { version: match.version_label, changed };
       }
     }

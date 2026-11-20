@@ -14,7 +14,13 @@
 // with (`?input=`) to `ui/notifications/tool-input`. For a VISITOR's page
 // (the public view) the relay also names the visit and PAYS for a priced
 // launch (plans/paid-runs.md §10, ./visitor-pay): the one call it does not
-// pass through as it is.
+// pass through as it is. A visitor's page of ANOTHER strut server (`from`,
+// ./remote-app, specs/API.md §17.9) is the same with every request sent to
+// that server, its purse and its visitor's session kept apart under that
+// server's base, and its links read against that server. Either may sign
+// the visitor in (./visitor-signin): in a native host's web view (Peel), as
+// the person's Sphinx account (`sign_in`, ./native-pay `signInAsk`).
+import { LOCALE } from "./words";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -22,13 +28,22 @@ import {
   WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
+import { parsePlacement, creditOf, type CreditView, type PlacementController } from "./account-widget";
+import { checkChallenge } from "./challenge";
+import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, type SignInAsk, type WalletAsk } from "./native-pay";
+import { remoteAppLink, remoteHere } from "./remote-app";
+import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
+import { PAGE_CONTEXT } from "../../kit/src/links";
+import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCapture, type CameraPhoto } from "@strut/kit/camera";
+import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
+import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
 import { strutLink } from "./app-links";
-import { mcpPermissions } from "./frame-permissions";
+import { mcpPermissions, strangerMcpPermissions } from "./frame-permissions";
 import {
   callPaying, createClaimKeeper, loadPurse, payInTurn, savePurse, visitorHeaders,
-  type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome,
+  type CallParams, type CallResult, type ClaimEnd, type ClaimKeeper, type PaymentRequired, type PayOutcome, type VisitorPurse,
 } from "./visitor-pay";
 
 // The pure parts — where a link leads, what a message becomes — are
@@ -46,12 +61,32 @@ export interface AppHostHandlers {
   onNavigate?: (params: Record<string, string>) => boolean | void;
   /** The page's `ui/notifications/initialized`: it has started. */
   onInitialized?: () => void;
-  /** A VISITOR's priced launch (plans/paid-runs.md §10): show the invoice
-   *  until `settled` says how it ended — the host keeps claiming it either
-   *  way — and answer the credential (`<macaroon>:<preimage>`), `again` for
-   *  a new invoice, or null when the visitor cancels. Absent, the page's
-   *  launch answers that the run was not paid for. */
-  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) => Promise<PayOutcome>;
+  /** A VISITOR's priced launch (plans/paid-runs.md §10), its challenge
+   *  checked (./challenge): show the invoice until `settled` says how it
+   *  ended — the host keeps claiming it either way — and answer the
+   *  credential (`<macaroon>:<preimage>`), `again` for a new invoice, or null
+   *  when the visitor cancels. `wallet`, when this page is a native host's
+   *  main frame (Peel): ask its wallet first (./native-pay), the QR code
+   *  being what is left when it does not pay. Absent, the page's launch
+   *  answers that the run was not paid for. */
+  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) => Promise<PayOutcome>;
+  /** A VISITOR's page asks to sign the visitor in (plans/app-repos.md §5):
+   *  sign them in to its server — this one, or `from` — by one of `methods`
+   *  (the sheet), answering the session, or null when they closed it.
+   *  `sphinx`, when this page is a native host's main frame whose wallet
+   *  signs a visitor in (Peel): ask it first (./native-pay `signInAsk`).
+   *  `silent` (the page's `{ silent: true }`, @strut/kit/visitor): only
+   *  that wallet, and only if it answers without asking the person — no
+   *  sheet, no browser key made; null otherwise. Absent, no sign-in is
+   *  offered. */
+  onSignIn?: (methods: SignInMethod[], sphinx?: SignInAsk, o?: { silent?: boolean }) => Promise<VisitorSession | null>;
+  /** The PAGE signed the visitor in or out (`strut/visitor/*`): the account
+   *  widget reads who is signed in again. */
+  onSession?: () => void;
+  /** The page asked for a photo (`strut/camera/capture`, @strut/kit/camera):
+   *  the host's camera sheet, the photo the person took or null. Offered only
+   *  to a page whose app declares `camera` — the frame itself gets none. */
+  onCapture?: (params: CameraCapture) => Promise<CameraPhoto | null>;
 }
 
 export interface AppHostOptions {
@@ -67,17 +102,28 @@ export interface AppHostOptions {
   /** A VISITOR's page (the public view, plans/public-surface.md §5): the
    *  relay calls `/public/mcp` with no credential at all. */
   visitor?: boolean;
-  /** The app as a native host's wallet names it — its identity, title and
-   *  `wallet:` request (specs/WALLET.md §1.1) — for an app that requests a
-   *  wallet. When this page is a native host's main frame (Peel's web view),
-   *  the host's wallet is offered to the page and its `strut/wallet/*` calls
-   *  are relayed there; anywhere else it is unused. */
+  /** A visitor's page of ANOTHER strut server (./remote-app): its base URL.
+   *  The relay calls `<from>/public/mcp`, its credit is kept under that
+   *  server, its links are read against it, and the frame is a stranger's
+   *  (no microphone, nothing its version declares). */
+  from?: string;
+  /** A visitor's app as the server serves it: what a native wallet's sheet
+   *  names when it pays for the page's credit. */
+  visitorApp?: { name: string; version: string; title: string };
+  /** The app as a native host's wallet names it — its identity, the seller
+   *  whose app it is, its title and `wallet:` request (specs/WALLET.md §1.1,
+   *  ./native-pay `nativeWalletApp`) — for an app that requests a wallet: a
+   *  member's page or a visitor's, this server's or another's. When this
+   *  page is a native host's main frame (Peel's web view), the host's wallet
+   *  is offered to the page and its `strut/wallet/*` calls are relayed
+   *  there; anywhere else it is unused. */
   wallet?: NativeWalletApp;
   /** The app, at the version on screen: the host then carries its
    *  channels (plans/app-channels.md §3) — one socket to this strut's
    *  `/channels` for the page, opened with a ticket on its first join. A
    *  peer's app names its peer, and this strut relays the socket there
-   *  (§4). Left out for a visitor: there is no viewer to mint for. */
+   *  (§4). For a visitor's page, a ticket only once the visitor signed in
+   *  (plans/app-repos.md §5.1): until then a join waits and tries again. */
   channels?: { name: string; version: string; peer?: string };
   /** This strut's brand (`GET /brand`): each theme's style variables, sent
    *  in the host context so the kit's tokens take them (src/brand.ts). */
@@ -87,10 +133,36 @@ export interface AppHostOptions {
    *  Apps' own four are reported in `ui/initialize` as
    *  `hostCapabilities.sandbox.permissions`. */
   permissions?: string[];
+  /** A visitor's account widget (./account-widget): offered to the page as
+   *  `experimental["strut/account"]`, its `strut/account/placement` moving or
+   *  collapsing it under the controller's limits. */
+  account?: PlacementController;
+  /** The app's identity (its document's `strut-app-token`, ./account-widget
+   *  `appIdentityOf`): what `run` calls `step_run` as. */
+  identity?: string;
+  /** The address of the page a person opens this app on — strut's own
+   *  (`?app=<key>`), or the framing host's (./embed `embedPage`) — handed to
+   *  the app as `strut/page` in its host context, so it can give a link to
+   *  paste (@strut/kit `useShareLink`). None: no link to give. */
+  page?: string;
+}
+
+/** What the account widget asks of the connection, for a visitor's page. */
+export interface AccountApi {
+  /** The visitor's credit at this seller, from the purse's L402 credential; null with none. */
+  credit(): Promise<CreditView | null>;
+  /** The host's own `step_run` as the app's viewer (the grants and the visitor's
+   *  rules apply as for the page); throws the refusal. Absent without the app's identity. */
+  run?: (type: string, config: Record<string, unknown>) => Promise<unknown>;
+  /** The same sign-in flow the page's `useVisitor().signIn` draws (the sheet,
+   *  Peel's wallet first); absent where the server offers no sign-in. */
+  signIn?: () => Promise<VisitorSession | null>;
 }
 
 export interface AppHostConnection {
   bridge: AppBridge;
+  /** For a visitor's page: what its account widget reads and does. */
+  accountApi?: AccountApi;
   /** A theme change → `ui/notifications/host-context-changed`. */
   setTheme(theme: McpUiTheme): void;
   /** What the page is opened with (`?input=`, ./app-links `appToolInput`)
@@ -124,6 +196,41 @@ const claimKeeper = createClaimKeeper({ purse: visitorPurse, claim: claimPublicC
 claimKeeper.resume();
 /** One payment sheet at a time for that purse, whichever frame asked. */
 const visitorPayTurn = payInTurn(visitorPurse);
+
+/** What the page holds for one server's visitor pages: the purse, its
+ *  claims, its one-sheet-at-a-time turn. */
+interface VisitorWallet {
+  purse: VisitorPurse;
+  save: () => void;
+  keeper: ClaimKeeper;
+  payTurn: ReturnType<typeof payInTurn>;
+}
+const thisServer: VisitorWallet = { purse: visitorPurse, save: savePurseNow, keeper: claimKeeper, payTurn: visitorPayTurn };
+/** The native host's wallet for a visitor's credit (Peel's web view),
+ *  asked once per page what it takes: warmed as a visitor's relay connects,
+ *  so a priced launch never waits on the question (./native-pay). */
+const hostWallet = createHostWalletProbe();
+
+/** The strut server a page's app is of, as a native wallet's sheet names
+ *  it and keys its connection by: another server's base (`from`), or this
+ *  one's — the page's own origin on a box that serves it (a direct open,
+ *  where the native host checks against the origin it loaded). */
+export const sellerOf = (from?: string) => sellerBase(from, API_BASE, location.href);
+
+/** A link a page may open in a new tab: the web's own, and mail. Never a
+ *  `javascript:` URL, which a new window runs on THIS page's origin. */
+const OPENABLE = /^(https?|mailto):$/;
+/** An app's own link the page may hand to the device: Peel's
+ *  (`peel://strut/link?…`, plans/people-and-hosts.md §2.1). Followed in
+ *  place, so the device opens Peel and no blank tab is left behind. */
+const APP_SCHEME = /^peel:$/;
+
+/** This server's, or ANOTHER server's (`from`): one purse per server, so two
+ *  servers never see each other's visit or credit. Another server's is the
+ *  one the store's Run form keeps for it in this page (./store-purse). */
+function visitorWalletFor(from?: string): VisitorWallet {
+  return from ? storePurse(from) : thisServer;
+}
 /** While a paying launch waits, `notifications/progress` for the page's
  *  request this often: the frame's request times out after 60 s unless
  *  progress resets it (ext-apps' `callServerTool` asks for that). */
@@ -133,16 +240,26 @@ const PROGRESS_EVERY_MS = 15_000;
  *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request.
  *  A visitor's goes to `/public/mcp` with no credential of the UI's, naming
  *  the visit and, once paid, presenting the credit credential. */
-export function createRelayClient(base = "", visitor = false): { client: Client; transport: StreamableHTTPClientTransport } {
+export function createRelayClient(base = "", visitor = false, from?: string): { client: Client; transport: StreamableHTTPClientTransport } {
   const client = new Client({ name: "strut-ui", version: "0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href), {
+  const remote = visitor && !!from;
+  const url = remote ? new URL(`${from}/public/mcp`) : new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href);
+  // The visit and the credit are that server's alone: sent there and nowhere else.
+  const purse = visitor ? visitorWalletFor(remote ? from : undefined).purse : undefined;
+  const transport = new StreamableHTTPClientTransport(url, {
     requestInit: visitor ? { credentials: "omit" } : { headers: apiHeaders() },
-    ...(visitor
+    ...(purse
       ? {
+          // The visit and its credit; and a signed-in visitor's session —
+          // its cookie where the browser sends it, its token beside the
+          // credit token (plans/app-repos.md §5.2).
           fetch: (url: string | URL, init?: RequestInit) => {
             const headers = new Headers(init?.headers);
-            for (const [k, v] of Object.entries(visitorHeaders(visitorPurse))) headers.set(k, v);
-            return fetch(url, { ...init, headers, credentials: "omit" });
+            // A signed-in visitor's session: this server's, or the other
+            // server's own (`from`) — each sent only to its server.
+            const auth = visitorAuth(true, remote ? from : undefined);
+            for (const [k, v] of Object.entries({ ...auth, ...visitorHeaders(purse) })) headers.set(k, v);
+            return fetch(url, { ...init, headers, credentials: remote ? "omit" : "same-origin" });
           },
         }
       : {}),
@@ -151,8 +268,9 @@ export function createRelayClient(base = "", visitor = false): { client: Client;
 }
 
 /** The host context the page is handed at `ui/initialize`, and again on a
- *  theme change: the brand's variables for that theme with it. */
-export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): McpUiHostContext {
+ *  theme change: the brand's variables for that theme with it, and the
+ *  page's address when it has one (`strut/page`, @strut/kit `PAGE_CONTEXT`). */
+export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null, page?: string): McpUiHostContext {
   // The spec types the variables as every standard name; the brand sets a
   // few, and the page reads a missing one as unset.
   const variables = brand?.[theme]?.variables as NonNullable<McpUiHostContext["styles"]>["variables"] | undefined;
@@ -161,10 +279,13 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): M
     ...(variables ? { styles: { variables } } : {}),
     displayMode: "fullscreen",
     availableDisplayModes: ["fullscreen"],
-    locale: typeof navigator !== "undefined" ? navigator.language : undefined,
+    // The link's `lang=`, else the browser's (./words): the app and the
+    // sheets strut draws over it speak one language.
+    locale: LOCALE,
     timeZone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined,
     userAgent: "strut-ui",
     platform: "web",
+    ...(page ? { [PAGE_CONTEXT]: page } : {}),
   };
 }
 
@@ -176,41 +297,100 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): M
  * answers in the page are wired here.
  */
 export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConnection> {
-  const { client, transport } = createRelayClient(opts.base, opts.visitor);
+  const from = opts.visitor ? opts.from : undefined;
+  const { client, transport } = createRelayClient(opts.base, opts.visitor, from);
   await client.connect(transport);
   // A native host's wallet (Peel's Sphinx account), asked what it offers
   // this app before the bridge exists: the offer rides in ui/initialize.
   const native = opts.wallet ? nativeWalletOf(window) : undefined;
   const capability = native && opts.wallet ? await probeNativeWallet(native, opts.wallet) : undefined;
+  // A visitor's page: who is signed in, and how one signs in to its server
+  // (a server from before the sign-in routes answered another origin: none).
+  const signIn = opts.visitor && opts.handlers.onSignIn ? await visitorInfo(from).catch(() => null) : null;
+  const visitorCap = signIn && (signIn.methods.length || signIn.actor) ? { v: 1 as const, methods: signIn.methods, ...(signIn.actor ? { actor: signIn.actor } : {}) } : undefined;
+  // A visitor's page carries channels only where a visitor may sign in, and
+  // only this server's: another server's socket is not relayed (yet).
+  const channels = opts.visitor ? (visitorCap && !from ? opts.channels : undefined) : opts.channels;
+  const accountOn = !!(opts.visitor && opts.account);
+  // The camera is the host's (an opaque-origin frame gets none): for an app
+  // that declares it, on this server.
+  const cameraOn = !!opts.handlers.onCapture && !from && (opts.permissions ?? []).includes("camera");
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
     {
       serverTools: {},
       openLinks: {},
-      sandbox: { permissions: mcpPermissions(opts.permissions) },
+      sandbox: { permissions: from ? strangerMcpPermissions() : mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability || opts.channels
-        ? { experimental: { ...(capability ? { [WALLET_CAPABILITY]: capability } : {}), ...(opts.channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}) } }
+      ...(capability || channels || visitorCap || accountOn || cameraOn
+        ? {
+            experimental: {
+              ...(capability ? { [WALLET_CAPABILITY]: capability } : {}),
+              ...(channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
+              ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
+              ...(accountOn ? { [ACCOUNT_CAPABILITY]: { v: 1 } } : {}),
+              ...(cameraOn ? { [CAMERA_CAPABILITY]: { v: 1 } } : {}),
+            },
+          }
         : {}),
     },
-    { hostContext: hostContextFor(opts.theme, opts.brand) },
+    { hostContext: hostContextFor(opts.theme, opts.brand, opts.page) },
   );
   let stopWallet = () => {};
   if (native && capability && opts.wallet) {
     const relay = relayNativeWallet({ bridge: bridge as unknown as RelayBridge, native, app: opts.wallet, capability });
     stopWallet = nativeWalletNotifications(window).register(opts.wallet, relay.notify);
   }
-  const channels = opts.channels;
   const channelRelay = channels
     ? relayChannels({
         bridge: bridge as unknown as Parameters<typeof relayChannels>[0]["bridge"],
         async open(client) {
-          const { ticket } = await channelTicket(channels.name, channels.version, channels.peer);
+          const { ticket } = opts.visitor ? await visitorChannelTicket(channels.name, channels.version) : await channelTicket(channels.name, channels.version, channels.peer);
           return new WebSocket(channelSocketUrl(ticket, client));
         },
       })
     : undefined;
+  // Sign the visitor in: the page's `strut/visitor/sign-in` and the account
+  // widget's button are the one flow.
+  const signInFlow = visitorCap
+    ? async (o?: { silent?: boolean }) => {
+        // Peel's web view: the person's Sphinx account signs the visitor in.
+        const sphinx = signInAsk({ wallet: await hostWallet(window), seller: sellerOf(from), app: opts.visitorApp });
+        return opts.handlers.onSignIn!(visitorCap.methods as SignInMethod[], sphinx, o?.silent === true ? { silent: true } : undefined);
+      }
+    : undefined;
+  if (signInFlow) {
+    bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async (params: unknown) => {
+      const silent = (params as { silent?: unknown } | undefined)?.silent === true;
+      const session = await signInFlow(silent ? { silent } : undefined);
+      opts.handlers.onSession?.();
+      return session ? { actor: session.actor } : {};
+    }) as never);
+    bridge.setRequestHandler(VISITOR_SIGN_OUT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
+      await signOutVisitor(from);
+      opts.handlers.onSession?.();
+      return {};
+    }) as never);
+  }
+  if (accountOn) {
+    const placement = opts.account!;
+    // A request (the bridge allows one handler per method, so no notification
+    // form): answered, or refused, with what the widget will show.
+    bridge.setRequestHandler(ACCOUNT_PLACEMENT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async (params: unknown) => {
+      const parsed = parsePlacement(params);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return placement.request(parsed.placement);
+    }) as never);
+  }
+  if (cameraOn) {
+    const onCapture = opts.handlers.onCapture!;
+    bridge.setRequestHandler(CAMERA_CAPTURE_METHOD as never, { params: CAMERA_PASS_THROUGH } as never, (async (params: unknown) => {
+      const parsed = parseCaptureParams(params);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return (await onCapture(parsed.params)) ?? { cancelled: true };
+    }) as never);
+  }
   bridge.onmessage = async (params) => {
     const text = (params.content ?? [])
       .map((c) => (c.type === "text" ? c.text : ""))
@@ -219,11 +399,23 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     if (text) await opts.handlers.onMessage?.(text);
     return {};
   };
+  // A remote page's links are its own server's: `?app=<other>` is an app
+  // there, never one of this strut's (./remote-app `remoteHere`).
+  const here = from ? remoteHere(from) : opts.here ?? { origin: location.origin, pathname: location.pathname };
   bridge.onopenlink = async ({ url }) => {
-    const params = strutLink(url, opts.here ?? { origin: location.origin, pathname: location.pathname });
-    if (!params || !opts.handlers.onNavigate || opts.handlers.onNavigate(params) === false) {
-      window.open(url, "_blank", "noopener");
+    const params = strutLink(url, here);
+    if (params && opts.handlers.onNavigate && opts.handlers.onNavigate(params) !== false) return {};
+    // Another app on a remote page's server: hosted HERE too, never by that
+    // server's own UI (./remote-app `remoteAppLink`).
+    const hosted = from && params ? remoteAppLink(params, from, new URL(`${API_BASE}/`, location.href).href) : null;
+    let href: URL;
+    try {
+      href = new URL(hosted ?? url, `${here.origin}${here.pathname}`);
+    } catch {
+      return {};
     }
+    if (OPENABLE.test(href.protocol)) window.open(href.href, "_blank", "noopener");
+    else if (APP_SCHEME.test(href.protocol)) window.location.assign(href.href);
     return {};
   };
   // `tool-input` goes after the page's `initialized`, as the spec orders it.
@@ -243,6 +435,10 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // before the document loads.
   if (opts.visitor) {
     const pay = opts.handlers.onPayment;
+    const w = visitorWalletFor(from);
+    void hostWallet(window);
+    // The server the credit is bought on, as a native wallet's sheet names it.
+    const seller = sellerOf(from);
     bridge.oncalltool = async (params, extra) => {
       // The page's request stays alive while the visitor pays: progress for
       // its token resets the frame's timeout.
@@ -256,19 +452,27 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       try {
         return (await callPaying(params as CallParams, {
           call: async (p) => (await client.request({ method: "tools/call", params: p }, { signal: extra.mcpReq.signal })) as CallResult,
-          purse: visitorPurse,
-          save: savePurseNow,
+          purse: w.purse,
+          save: w.save,
           pay: (p, workflow) =>
-            visitorPayTurn((q, w) => {
-              if (!pay) return Promise.resolve(null);
-              // Claimed from now until it settles or ends, sheet or no sheet;
-              // a top-up replaces the credential it was minted to carry from.
-              const settled = claimKeeper.watch({
+            w.payTurn(async (q, wf): Promise<PayOutcome> => {
+              // Junk — an invoice the macaroon does not name, a price that
+              // differs from the invoice's — is never shown nor paid.
+              const check = checkChallenge(q);
+              if (!check.ok) return { error: check.error };
+              if (!pay) return null;
+              // Claimed from now until it settles or ends, sheet or no sheet,
+              // wallet or no wallet; a top-up replaces the credential it was
+              // minted to carry from.
+              // Until the invoice's own end as decoded, never the seller's word.
+              const settled = w.keeper.watch({
                 macaroon: q.macaroon,
-                ...(q.expires ? { expires: q.expires } : {}),
-                ...(q.carries && visitorPurse.credential ? { carriesFrom: visitorPurse.credential } : {}),
+                expires: new Date(check.checked.expiresAt * 1000).toISOString(),
+                ...(q.carries && w.purse.credential ? { carriesFrom: w.purse.credential } : {}),
               });
-              return pay(q, w, settled);
+              // Peel's web view: its wallet pays with one tap, before any QR.
+              const wallet = walletAsk({ wallet: await hostWallet(window), p: q, checked: check.checked, seller, app: opts.visitorApp, workflow: wf });
+              return pay(q, wf, settled, wallet);
             }, p, workflow),
         })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
       } finally {
@@ -276,9 +480,37 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       }
     };
   }
+  const identity = opts.identity;
+  const accountApi: AccountApi | undefined = opts.visitor
+    ? {
+        async credit() {
+          const credential = visitorWalletFor(from).purse.credential;
+          if (!credential) return null;
+          const a = await liveCredit(from ?? API_BASE, credential).catch(() => null);
+          return a ? creditOf(a.status, a.body) : null;
+        },
+        ...(identity
+          ? {
+              run: async (type: string, config: Record<string, unknown>) => {
+                const r = (await client.request({ method: "tools/call", params: { name: "step_run", arguments: { type, config, app: identity } } })) as CallResult;
+                const text = (r.content as Array<{ type: string; text?: string }> | undefined)?.find((c) => c.type === "text")?.text;
+                if (r.isError) throw new Error(text || `${type} failed`);
+                if (r.structuredContent !== undefined) return r.structuredContent;
+                try {
+                  return text === undefined ? undefined : JSON.parse(text);
+                } catch {
+                  return text;
+                }
+              },
+            }
+          : {}),
+        ...(signInFlow ? { signIn: signInFlow } : {}),
+      }
+    : undefined;
   return {
     bridge,
-    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand), theme }),
+    ...(accountApi ? { accountApi } : {}),
+    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand, opts.page), theme }),
     setToolInput(args) {
       toolInput = args;
       if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });

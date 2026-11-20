@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { compress } from "hono/compress";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
@@ -11,11 +12,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
-import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
+import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, summarizeFromEvents } from "./store.js";
+import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
+  CHAT_LIST_DEFAULT_LIMIT,
+  CHAT_LIST_MAX_LIMIT,
   FileChatStore,
   MemoryChatStore,
   generateChatId,
@@ -25,7 +29,7 @@ import {
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
 import { createDrain, DrainingError, parseDrainBody } from "./drain.js";
-import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
+import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, versionLabelOrder, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -35,7 +39,9 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { inviteOf, principalRequired } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
 import { PAYMENTS_FILE } from "./payments/settings.js";
@@ -44,13 +50,31 @@ import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
+import { taskRoutes } from "./tasks/routes.js";
+import { sphinxCapability, type SphinxDaemon } from "./payments/sphinx-dm.js";
+import { payoutLine, SUPPORT_APP } from "./steps/lib/support/_shared.js";
+import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
+import { saveAnswerAttachments } from "./tasks/answer-files.js";
+import { standingTask } from "./tasks/standing.js";
+import { roundItems, roundProblem } from "./tasks/round.js";
+import { graderProblem, stepGrader } from "./tasks/grade-step.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
+import type { EarningsAdminDoor } from "./steps/lib/earnings/_door.js";
+import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./steps/lib/_admin-door.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
+import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX } from "./payments/invites.js";
+import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
+import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
+import { taskAppProblem } from "./tasks/answer-schema.js";
+import { createTaskTypes } from "./tasks/set-type.js";
+import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, placeInput, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
+import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
@@ -59,9 +83,13 @@ import {
   FileSessionStore,
   MemorySessionStore,
   PEER_NAMESPACE,
+  HOST_NAMESPACE,
+  hostOfSession,
   appSessionId,
   idProblem,
   peerSessionId,
+  SESSION_LIST_DEFAULT_LIMIT,
+  SESSION_LIST_MAX_LIMIT,
   sessionInfo,
   sessionsCapability,
   type SessionStore,
@@ -72,13 +100,18 @@ import {
   isValidSecretName,
   secretBlanks,
 } from "./secret-store.js";
-import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { runStep, runSingleStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { applyScreenshots, screenshotsProblem, type ScreenshotEntry } from "./apps/screenshots.js";
+import { shotProblem } from "./steps/lib/app/look.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunLaunchBy, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import type { AppManifest } from "./apps/manifest.js";
+import type { GraphReader } from "./graph/search.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, isRelayStart, parseWakeDoor, replyOf, runReply, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
+import { recordCaused } from "./work.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
 import { automationsRoutes } from "./automations-routes.js";
@@ -86,8 +119,10 @@ import { createAutomations, type Automations } from "./scheduler.js";
 import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
+import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
-import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
+import { packageJobGrants, seedJobWorkflow, withJobGrants, type JobSeedOptions } from "./job-seed.js";
+import { installedSchedules } from "./packages/schedules.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -98,23 +133,30 @@ import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { DETACHED_HINT, aiWroteVersion, buildAuthoringCapability, type DetachedRun } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
-import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
-import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
+import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { createAppDatabases } from "./apps/data.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
+import { seedEarningsApp } from "./apps/earnings-seed.js";
+import { seedStaffApp } from "./apps/staff-seed.js";
+import { seedWorkerApp, WORKER_APP } from "./apps/worker-seed.js";
+import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
-import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
-import { packArchive } from "./packages/archive.js";
+import { packArchive, packTar } from "./packages/archive.js";
+import { packageTorrent } from "./packages/torrent.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
-import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
+import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
+import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
-import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
+import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
-import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
+import { LISTING_MAX_BYTES, baseProblem, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
 import { packageCache } from "./packages/cache.js";
@@ -123,6 +165,7 @@ import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
 import {
   installPackage,
   installPackages,
+  repoOwned,
   uninstallPackage,
   type InstallOptions,
   type InstallResult,
@@ -133,10 +176,16 @@ import {
 import { listInstalledPackages } from "./packages/installed.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
+import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, SERVE_POLL_MINUTES, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
+import { createTrials, SEED_SPEAKER } from "./trials.js";
+import type { PageClaim } from "./claims-schemas.js";
+import { MergeConflict, MergeRefused } from "./branch-merge.js";
+import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSources } from "./concept-sources.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
@@ -155,7 +204,7 @@ import { createChannels, type ChannelApp, type Channels, type ChannelTransport }
 import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
-import type { Duplex } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import { fmtBytes, positiveBytes } from "./output-cap.js";
 import { installEscapeGuard } from "./escaped-errors.js";
@@ -170,12 +219,13 @@ import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.j
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
 import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_STOP_WAIT_MS, JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobStop, type JobsCapability } from "./jobs.js";
+import { JOB_STOP_WAIT_MS, JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobStop, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
+import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
@@ -184,14 +234,32 @@ import { seedBrowserWorkflows } from "./browser/seed.js";
 import { openHistory, type History, type HistoryCapability, type HistoryTouch } from "./history.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { appOfDomain, createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
-import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
-import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
+import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
+import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
+/** How long `GET /llms.txt` keeps a page it built, per base URL. */
+const LLMS_TXT_CACHE_MS = 30_000;
+/** The most an app door's MCP request may be when its caller is known — a
+ *  key, a member's or a person's token on `POST /mcp`, a signed-in
+ *  visitor's session on `POST /public/mcp` — so a page's files fit, a
+ *  worker's photos with an answer among them (plans/human-steps.md §5.6.7):
+ *  what a public launch with files may be. An anonymous request stays at
+ *  the SDK's 4 MB (`MCP_BODY_MAX_BYTES`). */
+const APP_DOOR_BODY_MAX_BYTES = PUBLIC_RUN_FILES_BODY_MAX_BYTES;
+/** The most a HOST's call on `POST /mcp` may be (plans/people-and-hosts.md
+ *  §3): a 25 MiB file as base64 (about 33.4 MiB), with room for the rest of
+ *  the message. Every other caller keeps its own cap. */
+export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
+/** The most a body Peel posts to link or renew may be (`POST /people/link`,
+ *  `/people/token`): a challenge, a key, a signature, a name, an address. */
+const PEEL_BODY_MAX_BYTES = 8 * 1024;
+import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
-import { publicViewNeeds } from "./public-view.js";
+import { createPublicViewDoor, publicViewNeeds, withNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -245,6 +313,12 @@ export interface StrutOptions<TServices = unknown> {
    *  rooted at the workspace path. Pass `new MemoryRunStore()` for
    *  ephemeral / test environments. */
   store?: RunStore;
+
+  /** Where finished runs' logs are archived before retention evicts them
+   *  (plans/run-archive.md). Default: the bucket `STRUT_ARCHIVE_S3_*`
+   *  names, and none when no bucket is set. Given to `store` when it can
+   *  take one (`RunStore.useArchive`: a `FileRunStore` can). */
+  archive?: RunArchive;
 
   /** Consumer-defined capabilities bag exposed to every step via
    *  `ctx.services`. Use this to inject environment-specific
@@ -323,12 +397,25 @@ export interface StrutOptions<TServices = unknown> {
    *  record of the same id. A bare package name installs through them. */
   packageIndexes?: IndexSubscription[];
   /** Packages installed at FIRST BOOT (src/packages/boot.ts), after
-   *  `STRUT_PACKAGES` — each `{ ref, url?, digest? }`, what `POST
+   *  `STRUT_PACKAGES` — each `{ ref, url?, digest?, tokenSecret? }`, what `POST
    *  /packages/install` takes. A listed package not installed here is
    *  installed in the background once the boot is done; one already here,
    *  at any digest, is left alone. A bad entry fails the boot; a failed
    *  install is a warning, tried again next boot. */
   packages?: BootPackage[];
+  /** SERVE MODE (src/packages/serve.ts; plans/app-repos.md §4): the
+   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL` +
+   *  `STRUT_SERVE_TOKEN_SECRET` (this wins; `false`: none) — `{ ref, url?,
+   *  tokenSecret? }`, a ref the install takes. At boot it is installed
+   *  through the distro's door, its `serve.yaml` is the public view (`PUT
+   *  /public-view` is refused), and `/` is its app alone. A `git+` ref is
+   *  fetched every `servePoll` minutes and on `POST /serve/sync`; any other
+   *  is followed as a subscription is. A bad ref fails the boot. */
+  serve?: ServeRef | false;
+  /** How often a served `git+` ref is fetched, in minutes:
+   *  `STRUT_SERVE_POLL_MINUTES`, default 5; `0` or `false` = at boot and on
+   *  `POST /serve/sync` only. */
+  servePoll?: number | false;
   /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
    *  what `strut/list-peers` reports as `self` so an agent knows which repos
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
@@ -365,6 +452,22 @@ export interface StrutOptions<TServices = unknown> {
    *  src/public-runs.ts): a launch past it is a 429. `STRUT_HOST_CONFIG`'s
    *  `publicRuns` sets `principal`. */
   publicRuns?: { principal?: string; maxInFlight?: number };
+  /** The task store (plans/human-steps.md §4, src/tasks/). `now`: its clock,
+   *  for a test — when a lease runs out, a task is due, an earning releases.
+   *  `principal`: who a step grader of test answers is billed to
+   *  (plans/human-steps.md §7.12, 1), else the admin who last saved the task
+   *  type; `STRUT_HOST_CONFIG`'s `tasks` sets it. */
+  tasks?: { now?: () => number; principal?: string };
+  /** How strut reaches the Sphinx daemon on its MESSAGE token (a test's
+   *  `fetch`): the `sphinx` capability (plans/people-and-hosts.md §4) and
+   *  the account a link code is sent to. */
+  sphinx?: { fetch?: typeof fetch };
+  /** The proxies whose `x-forwarded-for` names the visitor every public
+   *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
+   *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
+   *  private addresses. A peer outside the set is the visitor itself,
+   *  whatever its header says. */
+  trustedProxies?: readonly string[];
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -412,6 +515,11 @@ export interface StrutOptions<TServices = unknown> {
    *  object to tune the guards. Every root run the last death cut off is
    *  considered (`AutoResumeOptions.since`, from `<dataDir>/boot.json`). */
   autoResume?: boolean | AutoResumeOptions;
+
+  /** How long a WAKE of a parked run (src/park.ts) waits for others of the
+   *  same run before it resumes it, in ms: a burst of answers is one resume.
+   *  1000 by default. */
+  wakeDelayMs?: number;
 
   /** The largest run log a durable resume will READ, in bytes — boot-time
    *  auto-resume and `POST …/resume` alike: a log past it is skipped (one
@@ -471,8 +579,10 @@ export interface StrutOptions<TServices = unknown> {
    *  `seedConcepts` once this returned. `false` seeds nothing.
    *  `{ personal: true }` also seeds `Personal`, the root of a person's
    *  own knowledge (`PERSONAL_CONCEPTS`), for a host whose graph is one
-   *  person's. */
-  concepts?: false | { personal?: boolean };
+   *  person's. `{ claims: false }` seeds the pages without the claims and
+   *  cases their files carry (src/trials.ts): the checks of strut's own
+   *  pages are not recorded, so nothing judges work against them. */
+  concepts?: false | { personal?: boolean; claims?: boolean };
   /** The `orchestrator` workflow strut ships (`src/orchestrator-seed.ts`):
    *  one conversation turn that answers with its tools and starts jobs
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
@@ -503,6 +613,21 @@ export interface StrutOptions<TServices = unknown> {
    *  at boot after `strut/views` (it imports it; none without it). `false`
    *  seeds nothing. */
   knowledge?: false;
+  /** `strut/earnings` (`src/apps/earnings-seed.ts`, specs/API.md §14.14):
+   *  the Earnings tab — wallet, Add sats, Withdraw, what was earned, credit
+   *  bought elsewhere — as a first-party, ADMIN-ONLY app a host frames for
+   *  an admin. `false` seeds nothing. */
+  earnings?: false;
+  /** `strut/staff` (`src/apps/staff-seed.ts`, plans/human-steps.md §9):
+   *  task types, workers, the queue and what was answered, as a
+   *  first-party, ADMIN-ONLY app — the `/tasks` routes as a page. Seeded
+   *  after `strut/views` (it imports `TaskForm`). `false` seeds nothing. */
+  staff?: false;
+  /** `strut/worker` (`src/apps/worker-seed.ts`, plans/human-steps.md §5): a
+   *  worker app for any task type whose answer is a photo and plain fields
+   *  (strut/views' `WorkerPage`). Seeded after `strut/views`; nobody outside
+   *  sees it until an admin makes it public. `false` seeds nothing. */
+  worker?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -519,7 +644,10 @@ export interface StrutOptions<TServices = unknown> {
   /** The `private-ask` workflow strut ships beside the privacy/* steps
    *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
   privacyWorkflows?: false;
-  /** Home sync (src/home-sync.ts, AGENTS.md "Home sync"): `"box"` serves
+  /** The `image-gen` workflow strut ships beside the `image` step
+   *  (src/media-seed.ts), seeded at boot by content hash. `false` seeds none. */
+  mediaWorkflows?: false;
+  /** Home sync (src/home-sync.ts, docs/moving.md "Home sync"): `"box"` serves
    *  `POST /home/pull` and `/home/push` to a person's credential, so a strut
    *  that keeps a read copy of this memory can sync with it (on, it hands
    *  the whole memory to any person token this strut minted); `"copy"`
@@ -767,16 +895,22 @@ export interface Strut<TServices = unknown> {
    *  remove / preview / fire. Ticks by itself unless `scheduler: false`. */
   automations: Automations;
 
+  /** The run-retention sweep (src/retention.ts), which with an archive
+   *  uploads before it evicts. Sweeps by itself, at boot then hourly,
+   *  unless `scheduler: false`: a host that owns the clock calls `sweep()`. */
+  retention: Retainer;
+
   /** Packages (plans/marketplace.md), in process: what `POST
    *  /packages/install` and `DELETE /packages/…` do, one write at a time
    *  with them — plus the distro's door (`door: "distro"`, §12), which
    *  applies a release with no ask and updates an installed package item by
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
-    /** `ref` is `file:`, `pk:` (with `url`), or a bare name looked up in
-     *  the indexes this strut follows — the first that lists its publisher,
-     *  or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
+    /** `ref` is `file:`, `pk:` (with `url`), `git+<repo>[@<ref>][#<path>]`
+     *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
+     *  bare name looked up in the indexes this strut follows — the first
+     *  that lists its publisher, or the one `index` names. */
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "adoptPages" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -786,12 +920,21 @@ export interface Strut<TServices = unknown> {
      *  that ended in the last hour (src/packages/progress.ts) — what
      *  `GET /packages/installs` serves. */
     installs: Pick<InstallTracker, "get" | "list">;
+    /** The repos this strut works on as git checkouts (plans/app-repos.md
+     *  §3; src/packages/repos.ts): Open, Create, Commit, Pull — what
+     *  `/packages/repos` is over. Call them one at a time per package. */
+    repos: Repos;
   };
 
   /** Package subscriptions (plans/marketplace.md §12.1): this strut
    *  following another's catalog by its key — what `/packages/subscriptions`
    *  is over. `sync` reads one now and applies what is new. */
   subscriptions: Subscriptions;
+
+  /** Serve mode (src/packages/serve.ts) — null unless a ref is served
+   *  (`StrutOptions.serve`, STRUT_SERVE). `sync` reads the ref and deploys
+   *  it when it moved; `status` is `GET /serve`. */
+  serve: ServeService | null;
 
   /** The history (src/history.ts) — null when it is off: no graph, no
    *  `git`, `history: false` or STRUT_HISTORY=0. */
@@ -818,6 +961,23 @@ export interface Strut<TServices = unknown> {
    *  the run store is — so a strut that sells and gives nothing never makes
    *  the file; closed by `close()`. What the launch and the charge write. */
   ledger(): Promise<LedgerStore>;
+
+  /** PEOPLE (plans/people-and-hosts.md §1, src/people.ts): a name per
+   *  person, which a host's ticket and a visitor's own sign-in write and
+   *  `nameOf` / `names` read. Opened on the first name —
+   *  `<dataDir>/people.db`, or memory where the run store is — closed by
+   *  `close()`. */
+  people: People;
+
+  /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
+   *  a step of a workflow. `capability` is the whole store, which the staff
+   *  routes hold; every step's `ctx.services.tasks` is `human` (`ensure`
+   *  alone), and a worker's step on an app door gets `worker` on its own
+   *  call's bag (§9.2). `onSettle`, `settled`, `cancel` and `cancelRun` are
+   *  what a parked run's source needs. Opened on first use —
+   *  `<dataDir>/tasks/tasks.db`, or memory where the run store is — swept
+   *  every minute, closed by `close()`. */
+  tasks: TasksService;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -851,6 +1011,13 @@ export interface Strut<TServices = unknown> {
 
   /** Stop the server started by `listen()` (no-op otherwise). */
   close: () => Promise<void>;
+
+  /** Parked runs (src/park.ts, plans/human-steps.md §2): a SOURCE — what a
+   *  step parks on with `ctx.park("<prefix>:<id>")` — registers under its
+   *  prefix and gets the way it wakes a run when that settles. Registering
+   *  asks it about every run already waiting on the prefix, so a settle the
+   *  server never woke for (a restart in between) wakes now. */
+  parking: { register(prefix: string, source: ParkSource): ParkWaker };
 }
 
 export interface StrutRunOptions<TServices = unknown> {
@@ -885,12 +1052,23 @@ export interface StrutRunOptions<TServices = unknown> {
    *  (src/mcp-servers.ts), handed to the run's steps as `ctx.mcp`. Not
    *  validated here, as the route's is. */
   mcp?: McpServer[];
+  /** The Concept branch to run on — the twin of `POST …/run { branch }`
+   *  (src/branches.ts). With `parentRunId`, the parent's branch, and no other. */
+  branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/trials.ts): what it starts is held. */
+  trial?: RunTrial;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
 
 /** Resolve a dotted/bracketed path (`a.b`, `a[0].b`) into a nested value.
  *  Used to pull a promote spec's `from` value out of a run's output. */
+/** A listing's `?limit=`: a positive integer up to `max`, else `fallback`. */
+function pageLimit(asked: string | undefined, fallback: number, max: number): number {
+  const n = Number(asked);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 function getByPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
   const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean);
@@ -941,6 +1119,14 @@ export async function createStrut<TServices = unknown>(
   // first, so a bad value fails the boot before anything opens; installed
   // once the boot is done.
   const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
+  // The package this box SERVES (src/packages/serve.ts), checked as early.
+  const serveRef = serveRefOf(opts.serve, bootEnv());
+  // Who a public request is from: the socket's peer, or `x-forwarded-for`
+  // when that peer is a trusted proxy (src/visitor-address.ts). Checked as
+  // early: a proxy list strut cannot read fails the boot.
+  const visitorAddress = visitorAddressFor(
+    trustedProxies(opts.trustedProxies ?? trustedProxiesFromEnv(bootEnv()[TRUSTED_PROXIES_ENV]) ?? DEFAULT_TRUSTED_PROXIES),
+  );
   if (opts.escapeGuard !== false) installEscapeGuard();
   const baseWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
@@ -976,11 +1162,33 @@ export async function createStrut<TServices = unknown>(
     workspace: baseWorkspace,
     claims: () => claimsAuthoring,
     apps: () => apps,
+    // Each Concept branch is a git branch too (plans/concept-evals.md item c).
+    branches: () => branchesCap,
   });
-  const workspace: WorkspaceStore = history ? history.watch(baseWorkspace) : baseWorkspace;
+  // What the app door remembers of each app version (`apps.manifestOf`,
+  // read on every call a page makes): forgotten when the app's record is
+  // written through this store, whoever writes it — the apps capability, a
+  // seed, a package install.
+  const appVersions = appManifests();
+  const workspace: WorkspaceStore = watchAppWrites(history ? history.watch(baseWorkspace) : baseWorkspace, appVersions.forget);
   /** `fn` as one commit under its own cause (an install, an uninstall). */
   const recorded = <T,>(fn: () => Promise<T>, touchOf: (r: T | undefined) => HistoryTouch): Promise<T> => (history ? history.hold(fn, touchOf) : fn());
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
+  // The archive tier for run logs (plans/run-archive.md): the store uploads
+  // through it and restores from it; the retention sweep (below) drives it.
+  const archive = ((): RunArchive | undefined => {
+    const configured = opts.archive ?? archiveFromEnv(bootEnv());
+    if (!configured) return undefined;
+    if (!store.useArchive || !store.archiveRun) {
+      console.warn(`[archive] ${configured.label} is configured, but this run store keeps no files to archive: the archive is off`);
+      return undefined;
+    }
+    store.useArchive(configured);
+    return configured;
+  })();
+  /** For a scan over many runs: it reads what is on this disk and never
+   *  restores from the archive. */
+  const localStore = localRuns(store);
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   // The voice service a person's call is handed to (src/voice.ts); half a
@@ -1026,7 +1234,7 @@ export async function createStrut<TServices = unknown>(
    *  request its seal, the ping nothing (it only makes the index read a
    *  catalog it already lists). Budgeted per address. */
   const INDEX_POSTS = new Set(["/index/requests", "/index/ping"]);
-  const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$))/;
+  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$)/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
   const INDEX_MCP = "/index/mcp";
@@ -1041,6 +1249,79 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
+  // Which Concept pages' text comes from git (src/concept-sources.ts,
+  // plans/concept-evals.md item e): never changed automatically, by a merge
+  // or the dream; a change to one is a proposal into its checkout — strut's
+  // own in dev mode (STRUT_DEV_CONCEPTS=1, strut run from a git checkout),
+  // or a package opened here as a repo — and skipped where there is none.
+  const devSets = graph && opts.concepts !== false ? await devConcepts([STRUT_CONCEPTS, PERSONAL_CONCEPTS]) : undefined;
+  if (devSets && "sets" in devSets) console.log(`[concepts] dev: a change to strut's own pages is proposed into ${STRUT_CONCEPTS.dir} (${DEV_CONCEPTS_ENV}=1)`);
+  else if (devSets && bootEnv()[DEV_CONCEPTS_ENV] === "1") console.log(`[concepts] ${DEV_CONCEPTS_ENV}=1 is not honoured: ${devSets.off}`);
+  let reposForSources: Repos | undefined;
+  const conceptSources: ConceptSources | undefined = graph
+    ? createConceptSources({
+        graph,
+        dataDir,
+        dev: devSets && "sets" in devSets ? devSets.sets : [],
+        repos: () => reposForSources,
+        proposals: () => (services as Record<string, unknown>)["proposals"] as ProposalsCapability | undefined,
+        ...(history ? { history } : {}),
+      })
+    : undefined;
+  // Concept branches (src/branches.ts, plans/concept-evals.md item b): a
+  // named copy of the Concept tree in a graph namespace of its own, which a
+  // launch's `branch` points a run at. One is dropped only with no run on
+  // it in flight here. Each is a git branch of the same name in the history
+  // (item c): made from main's commit, kept aside when dropped. A merge
+  // (item e) applies what one changed onto main, then drops it.
+  const branchesCap: BranchesCapability | undefined = graph
+    ? createBranches({
+        dataDir,
+        graph,
+        inFlight: (name) => [...controllers.values()].some((c) => c.branch === name),
+        ...(history ? { history } : {}),
+        ...(conceptSources ? { sources: conceptSources } : {}),
+      })
+    : undefined;
+  // Before anything reads: a read on main leaves the branches out while there are any.
+  await branchesCap?.load();
+  // Parked runs (src/park.ts, plans/human-steps.md §2): a run that waits
+  // leaves memory as `waiting`; a source wakes it, and the wake is the
+  // durable resume (§5) marked `woken`. The waiting runs are kept beside the
+  // run store's kind, so a source's registration at the next boot finds
+  // what settled while no process listened.
+  const parking = createParking({
+    index: store instanceof MemoryRunStore ? new MemoryWaitingIndex() : new FileWaitingIndex(dataDir),
+    delayMs: opts.wakeDelayMs ?? 1000,
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    holdReason: () => drain.refusal() ?? null,
+    // Under the run's lock, so a cancel of the waiting run never interleaves
+    // with its wake (`cancelWaitingRun`).
+    wake: (workflow, runId) =>
+      withLock(`park:${workflow}/${runId}`, async () => {
+        if (controllers.has(`${workflow}/${runId}`)) return { waiting: false as const };
+        if (!(await stillWaiting(workflow, runId))) return { waiting: false as const };
+        const draining = drain.refusal();
+        if (draining) return { refused: draining };
+        const prepared = await prepareDurableResume(workflow, runId, {});
+        if (!prepared.ok) return { refused: prepared.error };
+        // Two resumes never launch onto one log: checked with no await
+        // before the launch registers the controller.
+        if (controllers.has(`${workflow}/${runId}`)) return { waiting: false as const };
+        launchDurableResume(prepared, { woken: true });
+        return { woken: true as const };
+      }),
+  });
+  /** Does a run still wait: its summary says so, or its log was cut off
+   *  right after `run.waiting`, before the summary (then boot's auto-resume
+   *  may have resumed it already, which the caller's liveness check sees). */
+  const stillWaiting = async (workflow: string, runId: string): Promise<boolean> => {
+    const summary = await store.getRunSummary(workflow, runId);
+    if (summary) return summary.status === "waiting";
+    if (await logTooBig(workflow, runId)) return true; // the resume refuses, and says why
+    const events = await store.getRunEvents(workflow, runId);
+    return events[events.length - 1]?.type === "run.waiting";
+  };
   /** The live runs a peer launched (`origin: "peer"`), known from the
    *  launch — before `run.start` reaches the log — so a peer's cancel of the
    *  run it has just launched is never refused. A dead run is judged by its
@@ -1058,7 +1339,12 @@ export async function createStrut<TServices = unknown>(
   };
   /** The deployment's drain (src/drain.ts, `PUT /drain`). Lifting it — by
    *  hand or at its deadline — launches the wake turns it held back. */
-  const drain = createDrain({ onLift: () => void wakes.reconcile() });
+  const drain = createDrain({
+    onLift: () => {
+      void wakes.reconcile();
+      parking.flush();
+    },
+  });
   /** The builder chats with a turn running in this process (set by the chat
    *  block; none with the chat off) — what `GET /drain` waits on beside runs. */
   let liveChats = (): string[] => [];
@@ -1079,9 +1365,14 @@ export async function createStrut<TServices = unknown>(
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
    *  untrack fn belongs in the launcher's finally. `job` is the launch's
    *  job and title, shown on the run's row until its summary is written. */
-  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }) => {
+  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }, branch?: string, trial?: RunTrial) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
+    // A run on a Concept branch starts every run on it (src/branches.ts):
+    // its child inherits it and names no other.
+    if (parent?.branch && branch && branch !== parent.branch) {
+      throw new Error(`branch_fixed: run ${parent.runId} is on Concept branch "${parent.branch}", and so is every run it starts — it cannot start one on "${branch}"`);
+    }
     // While draining (src/drain.ts) nothing new starts: every launch path
     // registers here, so this is where a new ROOT run is refused. A run a
     // run in flight launches is part of that run's work and still starts.
@@ -1089,12 +1380,17 @@ export async function createStrut<TServices = unknown>(
     if (draining) throw new DrainingError(draining);
     const controller = new RunController(runId, workflow, parent);
     if (job) controller.job = job;
+    if (parent?.branch ?? branch) controller.branch = (parent?.branch ?? branch)!;
+    // A trial's runs are trials (src/trials.ts): what one starts holds what it would start, too.
+    if (parent?.trial ?? trial) controller.trial = (parent?.trial ?? trial)!;
     controllers.set(key, controller);
     controllersByRunId.set(runId, controller);
     const untrack = () => {
       controllers.delete(key);
       if (controllersByRunId.get(runId) === controller) controllersByRunId.delete(runId);
       controller.detach();
+      // A wake held while the run was live goes now (src/park.ts).
+      parking.released(workflow, runId);
     };
     return { controller, untrack };
   };
@@ -1114,8 +1410,8 @@ export async function createStrut<TServices = unknown>(
   /** A live public run's visit (plans/paid-runs.md §10), as its summary
    *  will carry it: a visitor's own runs list before they end. */
   const liveVisitor = (controller: RunController | undefined) => {
-    const visitor = controller ? launchedAs.get(controller)?.visitor : undefined;
-    return visitor ? { visitor } : {};
+    const as = controller ? launchedAs.get(controller) : undefined;
+    return { ...(as?.visitor ? { visitor: as.visitor } : {}), ...(as?.actor ? { actor: as.actor } : {}) };
   };
   /** Append a control marker (run.paused / run.resumed) to a run's log so
    *  the parked gap is visible in the record (§4 observability). A
@@ -1183,7 +1479,11 @@ export async function createStrut<TServices = unknown>(
     ((opts.chatStore ? opts.chatStore instanceof FileChatStore : fileBacked)
       ? new FileSessionStore(dataDir)
       : new MemorySessionStore());
-  const sessions = sessionsCapability(sessionStore);
+  // What commits turns (an agent's, a conversation's fork): each turn made
+  // under a job notes its thread on the job's record, which is how the job
+  // index lists a job's threads without reading every session.
+  const committingSessions = recordingJobSessions(sessionStore, dataDir);
+  const sessions = sessionsCapability(committingSessions);
   // A consumer's own `sessions` capability is theirs: the `/sessions`
   // endpoints (which manage OUR store) then report 501, like `/secrets`.
   const sessionsInjected =
@@ -1254,6 +1554,53 @@ export async function createStrut<TServices = unknown>(
     // accepts is refused to one who is not (proposals.ts `proposeCall`).
     personIsAdmin: (runId) => personIsAdmin(runId),
   });
+  // People (plans/people-and-hosts.md §1, src/people.ts): a name per
+  // person, written by a host's ticket and a visitor's own sign-in, read by
+  // `GET /people` and the `people/names` step. Opened on the first name;
+  // memory where the run store is. A change to a host's places nudges the
+  // host (plans/jamie-in-tribes.md §5.4): `{ event: "places" }` to the hook
+  // it named, naming nothing; the host reads its places and joins or
+  // leaves to match. Posted as a callback is: retried briefly, then dropped.
+  const people = createPeople(store instanceof MemoryRunStore ? PEOPLE_IN_MEMORY : peoplePath(dataDir), {
+    onPlaces: (host) =>
+      void (async () => {
+        const self = await people.hostOf(host);
+        if (self) await postCallback(self.hook, { event: "places" }, { tag: `[places] ${host} nudge` });
+      })().catch((err) => console.error(`[places] ${host} was not nudged:`, err)),
+  });
+  // Each app's own SQLite (plans/apps.md §4.4, src/apps/data.ts):
+  // `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on and an
+  // app's migrations are applied to. Memory where the run store is.
+  const appDb = createAppDatabases(store instanceof MemoryRunStore ? { memory: true } : { dataDir });
+  // SENDING AS SUPPORT (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts):
+  // the treasury daemon on its MESSAGE token. Never on the shared bag: on
+  // the admin door's (a first-party page shown to an admin), on a run such
+  // an app launched (`launchDetached`), and in the payout line's hook alone.
+  const sphinxDaemon = async (): Promise<SphinxDaemon | null> => {
+    if (payments.injected) return null;
+    const w = await payments.settings.wallet().catch(() => null);
+    return w?.provider === "sphinx" && w.messageToken ? { url: w.url, token: w.messageToken } : null;
+  };
+  const sphinx = sphinxCapability({ daemon: sphinxDaemon, ...(opts.sphinx?.fetch ? { fetch: opts.sphinx.fetch } : {}) });
+  /** A settled payout's line from Support, the engine's own (§4): to a
+   *  worker who is Support's contact, while strut/staff has its tables and
+   *  the daemon its message token. */
+  const supportPayoutLine = async (p: { key: string; worker: string; msat: number }): Promise<void> => {
+    try {
+      if (!appDb.has(SUPPORT_APP) || !(await sphinxDaemon())) return;
+      await payoutLine(await appDb.open(SUPPORT_APP), sphinx, p);
+    } catch (err) {
+      console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  /** Does a run for this app carry `sphinx` (§4)? An admin's first-party
+   *  app — a `strut/` name at a version strut seeded, its manifest
+   *  `admin: true` — so `strut/staff`'s `support-outbox`. No other run's. */
+  const sendsAsSupport = async (app: AppRef | undefined): Promise<boolean> => {
+    if (!app || !isFirstPartyName(app.name)) return false;
+    const found = await apps.manifestOf(app.name, app.version).catch(() => null);
+    return !!found?.seeded && found.manifest.admin === true;
+  };
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1263,9 +1610,10 @@ export async function createStrut<TServices = unknown>(
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
     // A person's one write to the deployment's secrets, from an app: fill
-    // a blank, never overwrite (`secret/add`, plans/member-rights.md). Only
-    // when strut owns the store.
-    ...(secretsInjected ? {} : { secretBlanks: secretBlanks(secretStore) }),
+    // a blank, never overwrite (`secret/add`, plans/member-rights.md) —
+    // or an actor's own blank, what `ssh/keygen` keeps a person's key in.
+    // Only when strut owns the store.
+    ...(secretsInjected ? {} : { secretBlanks: secretBlanks(secretStore, bootEnv, actorSecrets) }),
     sessions,
     // The job record's writer (standardServices gives a bare one) plus the
     // INDEX that reads it back (plans/job-index.md): the run store for
@@ -1286,6 +1634,17 @@ export async function createStrut<TServices = unknown>(
     // `agentTools: [mcp/<server>/*]` reaches.
     mcpRegistry,
     proposals: ownProposals,
+    // Names, read alone (`people/names`); a visitor's bag carries their own.
+    people: peopleReader(people),
+    // The apps' own databases (`sqlite/*`): `ctx.app`'s, or the app a call
+    // with none names.
+    appDb,
+    // A person's linked accounts and a challenge that links one
+    // (`account/*`, plans/people-and-hosts.md §2.1): strut's own app's page
+    // alone. A challenge names strut's address, so the app door hands each
+    // request one bound to where it reached strut (`requestServices`); this
+    // one has only `STRUT_PUBLIC_URL`.
+    accounts: accountsCapability(people, opts.publicUrl ? { base: opts.publicUrl.replace(/\/+$/, ""), host: hostOfRequest({ url: opts.publicUrl }) } : undefined),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
@@ -1293,6 +1652,10 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // The Concept branches a run may be on (the runner checks its launch's).
+    ...(branchesCap ? { branches: branchesCap } : {}),
+    // Which Concept pages come from git, and their proposals (item e).
+    ...(conceptSources ? { conceptSources } : {}),
     // The history `history/read` reads and a run's graph view tells
     // (src/history.ts): its reads and its touches, never `hold` or `close`.
     ...(history
@@ -1355,6 +1718,166 @@ export async function createStrut<TServices = unknown>(
     });
     return ledgerOpen;
   };
+  // Earnings (plans/paid-runs.md §8) and a worker's balance
+  // (plans/human-steps.md §8.1): a READ opens the ledger only where one
+  // already is, so looking at an empty Earnings tab, or a worker with
+  // nothing earned asking `task/me`, never makes the file.
+  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
+    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
+  // The task store (plans/human-steps.md §4, src/tasks/): opened on first
+  // use, so a strut that never runs a `human` step makes no `tasks/tasks.db`;
+  // memory where the run store is, since its tasks are those runs' steps.
+  // A test's files (§7.1) beside it, `<dataDir>/tasks/tests/<id>/`.
+  const testFiles = store instanceof MemoryRunStore ? memoryTestFiles() : dirTestFiles(testFilesRoot(dataDir));
+  /** One of a task's files' bytes, where its root keeps them — the job's
+   *  directory on a job run, a test instance's test's folder, else the run's
+   *  artifacts — or null. Each guard keeps the path inside. */
+  const taskBytes = async (t: { root: string; job?: string; runId: string; test?: string }, path: string): Promise<Uint8Array | null> => {
+    try {
+      if (t.root === "test") return t.test ? await testFiles.read(t.test, path) : null;
+      if (t.root === "job" && t.job) return new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, t.job), path)));
+      return artifacts ? await artifacts.read(t.runId, path) : null;
+    } catch (err: any) {
+      if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
+      throw err;
+    }
+  };
+  const tasks = createTasks({
+    open: () => (store instanceof MemoryRunStore ? Promise.resolve(memoryTaskStores()) : openTaskStores({ dataDir })),
+    exists: () => !(store instanceof MemoryRunStore) && existsSync(tasksPath(dataDir)),
+    // A run that may not ask a person (plans/human-steps.md §3): the trees
+    // that never spend credit bought here either — a stranger's public run,
+    // a run a peer launched with no person's credential, the runs either
+    // started. A task is work someone is paid for.
+    refusal: (control) =>
+      runLineage(control).some((c) => noRemoteSpend.has(c))
+        ? "a stranger's public run, a run another strut launched without a person's credential, or a run either started cannot ask a person (plans/human-steps.md §3)"
+        : undefined,
+    // `task/file` (plans/human-steps.md §5.5): one of a task's files, read
+    // where its run's files are, as `run/files` reads a run's — a test
+    // instance's from its test's copy, through the same `fileResult`, so a
+    // page cannot tell them apart (§7.1). The service checked the lease and
+    // the task's list first.
+    file: async (t, path) => {
+      const bytes = await taskBytes(t, path);
+      return bytes ? fileResult(path, bytes) : null;
+    },
+    // Tests (plans/human-steps.md §7): their files; a real task's, copied
+    // into a test made from it; a step grader — sealed, on an allowlist bag,
+    // never kept (src/tasks/grade-step.ts) — billed to the grading principal.
+    testFiles,
+    bytes: taskBytes,
+    // Files from a worker (plans/human-steps.md §5.6.3): an answer's files
+    // in its task's run's artifacts, `tasks/<task id>/<name>`, written before
+    // the task settles — on a job run too, never the job's directory.
+    saveAttachments: async (t, files) => {
+      if (!artifacts) throw new Error("this server keeps no run artifacts: a worker's files have nowhere to go");
+      return saveAnswerAttachments(artifacts, t.runId, t.id, files);
+    },
+    graderProblem: graderProblem(() => registry),
+    grade: stepGrader({ registry: () => registry, services: () => services as Record<string, unknown> }),
+    ...(opts.tasks?.principal ? { principal: opts.tasks.principal } : {}),
+    // Earnings (plans/human-steps.md §8.1): a paid answer is booked in the
+    // ledger, beside the withdrawals 5b will write; the first paid answer
+    // makes `payments/ledger.db`, a balance read makes none. A settled
+    // task's pay in dollars, for its run's cost, is at the rate this strut
+    // trusts.
+    ledger,
+    ledgerIfAny,
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    // Withdraw (plans/human-steps.md §8.2): the payer's third door, built
+    // below beside the withdrawals it sends through.
+    payouts: { pay: (actor, o) => payouts.pay(actor, o), view: (actor, o) => payouts.view(actor, o) },
+    // Invites (plans/human-steps.md §5.8): the token an invite's link opens
+    // the worker app with gives its worker the app's invite-only types,
+    // while the daemon still has the invite — cancelled or failed, it
+    // gives nothing; a daemon that cannot answer, nothing now.
+    invite: {
+      read: (token) => inviteOf(token),
+      live: async (code) => {
+        // A grant link's code is strut's own: its signed token is the proof.
+        if (code.startsWith(GRANT_LINK_PREFIX)) return true;
+        const payer = await payments.payer();
+        if (!payer?.invites) return false;
+        const inv = (await payer.invites()).find((i) => i.code === code);
+        return !!inv && (inv.status === "sending" || inv.status === "ready" || inv.status === "used");
+      },
+    },
+    // Standing types (plans/human-steps.md §5.7): a pick-up is read off the
+    // type's workflow — on, with someone to bill, its first step the type's
+    // `human` step — and each answer launches that workflow under the run id
+    // the pick-up chose, as an automation's fire launches: no actor, billed
+    // to the workflow's owner, input `{}`. A run on file under that id is
+    // launched already (a crash between the launch and its record).
+    standing: async (type, workflow) => {
+      const flow = await workspace.getWorkflow(workflow).catch(() => null);
+      if (!flow) return { problem: `no workflow ${workflow} here` };
+      const disabled = await workflowDisabled(workspace, workflow);
+      if (disabled) return { problem: disabled };
+      if (principalRequired() && !(await standingPayer(workflow))) {
+        return { problem: `workflow "${workflow}" has no owner and its active version no publisher, so its runs would have nobody to bill; claim the workflow first` };
+      }
+      return standingTask(flow, type);
+    },
+    // Round types (Workers' Send a round): the workflow a round
+    // runs must make tasks of the type — a `human` step of it, in a
+    // `foreach` too.
+    round: async (type, workflow) => {
+      const flow = await workspace.getWorkflow(workflow).catch(() => null);
+      if (!flow) return `no workflow ${workflow} here`;
+      return roundProblem(flow, type);
+    },
+    launch: async (t) => {
+      if (controllers.has(`${t.workflow}/${t.runId}`) || (await store.logWrittenAt(t.workflow, t.runId)) !== null) return;
+      const draining = drain.refusal();
+      if (draining) throw new Error(draining);
+      const disabled = await workflowDisabled(workspace, t.workflow);
+      if (disabled) throw new Error(disabled);
+      // Billed to the owner by the principal rule; an ownerless workflow to
+      // whoever published its active version.
+      const owner = await principalFor(t.workflow);
+      const payer = owner ? undefined : await standingPayer(t.workflow);
+      launchDetached(await workspace.getWorkflow(t.workflow), { runId: t.runId, input: {} }, payer ? { principal: payer } : undefined);
+    },
+    runId: generateRunId,
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
+  });
+  // On the shared bag, the `human` step's `ensure` alone (plans/human-steps.md
+  // §9.2): any step reaches the bag, a custom step the builder wrote
+  // included, so neither the worker's calls (which take any actor) nor the
+  // staff's are on it. A worker's step gets the worker's calls on its own
+  // call's bag on an app door (`workerTasks`, below); the staff routes hold
+  // the whole store. A host's own `services.tasks` is kept as it is.
+  const hostTasks = (services as Record<string, unknown>)["tasks"] as TasksCapability | undefined;
+  if (!hostTasks) (services as Record<string, unknown>)["tasks"] = tasks.human;
+  /** The worker's calls of the bag's task store — strut's own, or a host's
+   *  bound — for a `worker: true` step's own call on an app door (`step_run`
+   *  on `POST /mcp` and `POST /public/mcp`, §5.2), never the shared bag. */
+  const workerTasks: WorkerTasksCapability | undefined = !hostTasks
+    ? tasks.worker
+    : (["next", "submit", "skip", "file", "me"] as const).every((k) => typeof hostTasks[k] === "function")
+      ? Object.freeze({
+          next: hostTasks.next.bind(hostTasks),
+          submit: hostTasks.submit.bind(hostTasks),
+          skip: hostTasks.skip.bind(hostTasks),
+          file: hostTasks.file.bind(hostTasks),
+          me: hostTasks.me.bind(hostTasks),
+          ...(typeof hostTasks.history === "function" ? { history: hostTasks.history.bind(hostTasks) } : {}),
+        })
+      : undefined;
+  /** A worker step's own bag on an app door (§5.2): the worker's calls, and
+   *  the Sphinx address the viewer's session carries — what `task/withdraw`
+   *  pays (§8.2), handed by the door, never sent by the page. */
+  /** `apps`: the apps whose task types a list across apps may name (`task/me
+   *  { all }`) — the public view's for a visitor; left out on a member's
+   *  door, which opens every app. */
+  const workerServicesOf = (address: string | undefined, apps?: WorkerApps) =>
+    workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } } : {};
+  /** The Sphinx address a visitor's session carries (plans/human-steps.md
+   *  §8.2): kept by `POST /visitors/session` in the session's signed claims
+   *  when it is the signing key's own. With none, `task/withdraw` answers
+   *  `no_address`. */
+  const sessionAddress = (session: { sphinxAddress?: string } | undefined): string | undefined => session?.sphinxAddress;
   // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
   // caps a launch is admitted against, what a run in flight counts for, and
   // its charge when it ends. What is not yet charged is on file beside the
@@ -1382,19 +1905,47 @@ export async function createStrut<TServices = unknown>(
     rate: payments.rate,
     lightning: () => payments.lightning(),
   });
-  // Earnings (plans/paid-runs.md §8): a READ opens the ledger only where one
-  // already is, so looking at an empty Earnings tab never makes the file.
-  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
-    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
   // Withdraw (§8, src/payments/withdrawals.ts): pays through the payer —
   // `payments.payer()`, never on the services bag — and keeps a payment the
   // wallet answered `pending` on file beside the ledger until it settles
   // (one `withdrawal` entry) or fails.
+  // Ruling 7 (plans/human-steps.md §8.2): a send that is not a worker's is
+  // refused when it would leave the wallet short of what workers are owed —
+  // read where a ledger is, by the task store's clock.
   const withdrawals = createWithdrawals({
     payer: () => payments.payer(),
     ledger,
     ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    owedToWorkers: async () => (await (await ledgerIfAny())?.owedToWorkers({ now: (opts.tasks?.now ?? Date.now)() }))?.owedMsat ?? 0,
+    balance: () => walletBalanceMsat(payments.lightning(), 5_000),
+    sweep: () => payouts.sweep(),
+    // A line from Support to the worker (plans/people-and-hosts.md §4), on
+    // its own: the payout is booked whatever becomes of it.
+    paid: (p) => void supportPayoutLine(p),
+  });
+  // A worker's withdrawal (plans/human-steps.md §8.2, src/payments/payouts.ts):
+  // the payer's THIRD door — a keysend to the Sphinx address the worker's
+  // sign-in gave, with nobody's yes per payment, inside the payout settings
+  // (off until an admin turns them on), the solvency check and the ledger's
+  // reserve. Handed to the task service (`withdraw`, `me`'s `payout`) and the
+  // staff's `/tasks/payouts` routes; never on a bag.
+  const payouts = createPayouts({
+    ledger,
+    ledgerIfAny,
+    withdrawals,
+    payer: () => payments.payer(),
+    lightning: () => payments.lightning(),
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
+  });
+  // Add sats (§8, §9; src/payments/deposits.ts): an invoice INTO the wallet,
+  // made by its receive side, for an admin to pay from their own, so this
+  // strut has sats to buy credit with before it sold anything. Kept on file
+  // beside the ledger until it settles (one row in `deposits`) or expires.
+  const deposits = createDeposits({
+    lightning: () => payments.lightning(),
+    ledger,
+    ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, DEPOSITS_FILE) }),
   });
   // A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
   // this strut holds at other struts' public doors, in an encrypted file of
@@ -1456,6 +2007,39 @@ export async function createStrut<TServices = unknown>(
     console.log(`[events-sink] posting every run's events to ${callbackOrigin(url)}`);
   }
 
+  // Parked runs (src/park.ts): `ctx.park` asks the bag whether a source
+  // here wakes the target; each run's end tells the bookkeeping whether it
+  // parked (kept, and its sources asked at once) or really ended.
+  {
+    const bag = services as Record<string, unknown>;
+    if (!bag["parking"]) bag["parking"] = Object.freeze({ accepts: (on: string) => parking.accepts(on) });
+    const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
+    bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
+      try {
+        await prior?.(runId, info);
+      } finally {
+        if (info?.workflow) {
+          // A run cancelled with its open branches parked (the cancel came
+          // after their last checkpoint) tells their sources, as a cancel of
+          // a waiting run does.
+          await (info.parked
+            ? parking.parked(info.workflow, runId, info.waitingOn ?? [])
+            : info.status === "cancelled" && info.waitingOn?.length
+              ? parking.cancelled(info.workflow, runId, info.waitingOn)
+              : parking.ended(info.workflow, runId)
+          ).catch((err) => console.error(`[parking] ${info.workflow}/${runId}:`, err));
+          // A run cancelled while live leaves no task open behind it: a
+          // worker would answer for nothing (a waiting run's cancel told the
+          // task source already). A run that failed keeps its tasks: a
+          // resume finds them, answered or not.
+          if (info.status === "cancelled") {
+            await tasks.cancelRun(info.workflow, runId).catch((err) => console.error(`[tasks] closing the tasks of cancelled run ${info.workflow}/${runId}:`, err));
+          }
+        }
+      }
+    };
+  }
+
   let ownBrowser: BrowserService | undefined;
   if (!(services as Record<string, unknown>)["browser"]) {
     try {
@@ -1492,9 +2076,24 @@ export async function createStrut<TServices = unknown>(
   // A request strut made to itself (auth.ts `inProcessRequest`, app/look's
   // page) names its actor and is `full`, before any host hook is asked.
   const hostActor = opts.resolveActor ?? actorFromHeader;
+  /** A host key's request, as the gate read it: the host, the account its
+   *  `x-strut-account` named, and who that account is (`people.actorOf`). */
+  interface HostCall {
+    host: string;
+    account?: Account;
+    person?: AccountActor;
+  }
+  const hostCalls = new WeakMap<Request, HostCall>();
+  // A HOST key's request (auth.ts `hostOf`, plans/jamie-in-tribes.md §5.1)
+  // acts as the person its `x-strut-account` names — resolved once, in the
+  // gate (`hostCalls`) — and only when that account is linked: an unlinked
+  // key's own actor runs nothing here (plans/people-and-hosts.md §2).
   const resolveActor = (c: Context) => {
     const own = inProcessOf(c);
-    return own ? own.actor : hostActor(c);
+    if (own) return own.actor;
+    const call = hostCalls.get(c.req.raw);
+    if (call) return call.person?.linked ? call.person.actor : undefined;
+    return hostActor(c);
   };
   // And what it may do: a `peer` (another strut) reads, launches, and
   // controls the runs a peer launched (plans/federation.md §3); a
@@ -1504,13 +2103,33 @@ export async function createStrut<TServices = unknown>(
   // A member's session is strut's own credential, whatever a host's hook
   // maps (plans/member-rights.md): one that carries nothing else is
   // `member`, before the hook is asked.
-  const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && memberOf(c) !== undefined;
-  const resolveScope = (c: Context) => (inProcessOf(c) ? ("full" as const) : memberOnly(c) ? ("member" as const) : hostScope(c));
+  const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !hostOf(c) && memberOf(c) !== undefined;
+  // And a VISITOR's (plans/app-repos.md §5.1): strut's own credential too,
+  // whatever a host maps — a visitor is never a member, nor the key's equal.
+  const visitorOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && !hostOf(c) && !memberOf(c) && visitorOf(c) !== undefined;
+  // And a HOST key (plans/jamie-in-tribes.md §5.1): strut's own, `host`,
+  // whatever a host's hook maps — and never the deployment key's equal.
+  const resolveScope = (c: Context) =>
+    inProcessOf(c)
+      ? ("full" as const)
+      : hostOf(c)
+        ? ("host" as const)
+        : memberOnly(c)
+          ? ("member" as const)
+          : visitorOnly(c)
+            ? ("visitor" as const)
+            : hostScope(c);
   const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
   const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
+  };
+  /** Who a run with no actor is billed to: the workflow's owner, else the
+   *  actor who published its active version (a standing type's runs). */
+  const standingPayer = async (workflow: string): Promise<string | undefined> => {
+    const meta = await workspace.getWorkflowMetadata(workflow).catch(() => null);
+    return meta?.owner ?? meta?.versions[meta.active]?.actor;
   };
   /** A workflow with no owner is adopted by the first actor who publishes it. */
   const adoptWorkflow = async (name: string, actor: string | undefined) => {
@@ -1570,7 +2189,9 @@ export async function createStrut<TServices = unknown>(
   // page makes (`step_run`), for `GET /apps/:name/usage`, the UI's warning
   // dot and `app/get`'s `usage` — kept in each app's `.usage/` under dataDir,
   // so a restart loses only the last few seconds.
-  const appMonitor = createAppMonitor({ root: appsRoot(dataDir) });
+  // A worker's step (`task/*`, plans/human-steps.md §5.2) is counted per
+  // viewer by the volume rules: a worker app's calls grow with its workers.
+  const appMonitor = createAppMonitor({ root: appsRoot(dataDir), perViewer: (type) => registry[type]?.worker === true });
   // A person's grants of sealed workflows to an app — the assistant for an
   // app's own chat (src/apps/grants.ts): read by the publish and by the run
   // doors below (`openFlow`), on every backend under dataDir.
@@ -1589,6 +2210,9 @@ export async function createStrut<TServices = unknown>(
       grants: appGrants,
       // The viewers' state (src/apps/state.ts), dropped with the app.
       dataDir,
+      // Its migrations, applied at publish and tried at build (src/apps/data.ts).
+      appDb,
+      manifests: appVersions,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
     });
@@ -1625,14 +2249,32 @@ export async function createStrut<TServices = unknown>(
   // host's delta changed; before the claims reconcile below, which records
   // a seeded workflow's `claims:` block. A workspace that will not take it
   // is a warning, never a failed boot.
-  if (opts.job !== false) {
+  //
+  // `job` takes the installed packages' grants too (plans/followed-repos.md
+  // §3; src/job-seed.ts `packageJobGrants`), so it is seeded again after
+  // every package write — inside `oneAtATime` (below), which every install,
+  // update, uninstall, subscription sync and repo Open, Pull or Commit goes
+  // through, so two re-seeds never race on the publish. A re-seed that
+  // finds the packages granting what they granted last publishes nothing:
+  // a workspace edit of `job` lasts until what packages grant changes, or
+  // the next boot.
+  const packageStore = packageCache(dataDir);
+  let jobGrants: string | undefined;
+  const seedJob = async (): Promise<void> => {
+    if (opts.job === false) return;
     try {
-      const { version, changed } = await seedJobWorkflow(workspace, opts.job);
-      if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
+      const grants = await packageJobGrants({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      const key = JSON.stringify(grants);
+      if (key === jobGrants) return;
+      const { version, changed } = await seedJobWorkflow(workspace, withJobGrants(opts.job, grants));
+      jobGrants = key;
+      const n = grants.tools.length;
+      if (changed) console.log(`[job] seeded workflow: job @ ${version}${n ? ` (${n} tool${n === 1 ? "" : "s"} from packages)` : ""}`);
     } catch (err) {
       console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
     }
-  }
+  };
+  await seedJob();
   if (opts.orchestrator !== false) {
     try {
       // A host that keeps the person's own pages: the orchestrator follows them.
@@ -1664,8 +2306,9 @@ export async function createStrut<TServices = unknown>(
   }
   // `strut/jamie` (src/apps/jamie-seed.ts): the person's assistant as a
   // first-party app. After strut/views, whose components it imports. The
-  // app it was before it was Jamie goes.
-  if (opts.jamie !== false) {
+  // app it was before it was Jamie goes. Neither it nor strut/knowledge on a
+  // served box: it has no members to use them (plans/app-repos.md §4.1).
+  if (opts.jamie !== false && !serveRef) {
     try {
       const r = await seedJamieApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
       if (r?.changed) console.log(`[jamie] seeded app: strut/jamie @ ${r.version}`);
@@ -1675,7 +2318,7 @@ export async function createStrut<TServices = unknown>(
   }
   // `strut/knowledge` (src/apps/knowledge-seed.ts): the Concept tree as a
   // first-party app. After strut/views, whose components it imports.
-  if (opts.knowledge !== false) {
+  if (opts.knowledge !== false && !serveRef) {
     try {
       const r = await seedKnowledgeApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
       if (r?.changed) console.log(`[knowledge] seeded app: strut/knowledge @ ${r.version}`);
@@ -1683,8 +2326,55 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[knowledge] could not seed strut/knowledge:`, err instanceof Error ? err.message : err);
     }
   }
+  // `strut/earnings` (src/apps/earnings-seed.ts): the Earnings tab as an
+  // admin-only first-party app, for a host that frames apps for an admin
+  // and never shows strut's own UI. A served box too: its operator sells.
+  if (opts.earnings !== false) {
+    try {
+      const r = await seedEarningsApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[earnings] seeded app: strut/earnings @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[earnings] could not seed strut/earnings:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/staff` (src/apps/staff-seed.ts, plans/human-steps.md §9): the
+  // task store's staff routes as an admin-only first-party app, after
+  // strut/views (it imports TaskForm). A served box too, as strut/earnings.
+  if (opts.staff !== false) {
+    try {
+      const r = await seedStaffApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[staff] seeded app: strut/staff @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[staff] could not seed strut/staff:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/worker` (src/apps/worker-seed.ts, plans/human-steps.md §5): the
+  // worker app every server has, after strut/views (it is WorkerPage).
+  if (opts.worker !== false) {
+    try {
+      const r = await seedWorkerApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[worker] seeded app: strut/worker @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[worker] could not seed strut/worker:`, err instanceof Error ? err.message : err);
+    }
+  }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
     await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
+  }
+  // A seeded app's migrations (plans/people-and-hosts.md item 4): its
+  // version's `db/*.sql`, applied to its database at every boot, once each,
+  // since a seed is published here and never through `apps.publish`. A seed
+  // that will not migrate is a warning, as one that will not seed is.
+  for (const { name } of await workspace.listApps().catch(() => [])) {
+    try {
+      if (!(await apps.manifestOf(name))?.seeded) continue;
+      const at = await apps.versionDir(name);
+      const r = at ? await appDb.migrate(name, at.path) : null;
+      if (r && !r.ok) console.warn(`[apps] ${name}'s migrations: ${r.errors.join("; ")}`);
+      else if (r?.applied.length) console.log(`[apps] ${name}: applied ${r.applied.join(", ")}`);
+    } catch (err) {
+      console.warn(`[apps] could not migrate ${name}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
@@ -1698,12 +2388,18 @@ export async function createStrut<TServices = unknown>(
     console.warn(`[apps] could not compact app versions:`, err instanceof Error ? err.message : err);
   }
 
+  // The claims and cases those pages' files carry (plans/claim-trials.md
+  // §3): recorded once the claims layer is up (`trials.seed`, below).
+  const seededClaims: Array<{ name: string; claims: PageClaim[] }> = [];
   // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
-  // page the builder's prompt reads and the `Job` page the job agent opens
-  // first. On a graph only; a page that will not seed is a warning.
+  // page the builder's prompt reads, the `Job` page the job agent opens
+  // first, and the `Dream` pages the dream's rules are. On a graph only; a
+  // page that will not seed is a warning.
   if (graph && opts.concepts !== false) {
     try {
-      await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
+      const seeded = await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
+      // Every page that is the seed's, a block or none: a sentence its file no longer carries is retired.
+      if (opts.concepts?.claims !== false) for (const p of seeded) if (p.action !== "error" && p.action !== "skip") seededClaims.push({ name: p.name, claims: p.claims ?? [] });
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }
@@ -1722,6 +2418,13 @@ export async function createStrut<TServices = unknown>(
   if (opts.privacyWorkflows !== false) {
     for (const w of await seedPrivacyWorkflows(workspace)) {
       if (w.changed) console.log(`[privacy] seeded workflow: ${w.name} @ ${w.version}`);
+    }
+  }
+
+  // `image-gen` (src/media-seed.ts), seeded like the browser workflows.
+  if (opts.mediaWorkflows !== false) {
+    for (const w of await seedMediaWorkflows(workspace)) {
+      if (w.changed) console.log(`[media] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 
@@ -1760,6 +2463,8 @@ export async function createStrut<TServices = unknown>(
         graph: claimsGraph,
         workspace,
         jobs: claimsJobs,
+        // A Concept's status on a branch counts from when it was made (plans/concept-evals.md item d).
+        ...(branchesCap ? { branches: branchesCap } : {}),
         getRegistry: async () => {
           await rebuildRegistry();
           return registry;
@@ -1802,14 +2507,64 @@ export async function createStrut<TServices = unknown>(
         store,
         workspace,
         jobs: claimsJobs,
+        ...(branchesCap ? { branches: branchesCap } : {}),
         services: () => services,
         getRegistry: async () => {
           await rebuildRegistry();
           return registry;
         },
         onSettled: (r) => verifySettled?.(r),
+        // A work is not done while one of its runs is still in flight here (src/work.ts).
+        isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
       })
     : null;
+  // The WORK record (src/work.ts, plans/concept-evals.md): every run another
+  // run caused is noted under its cause as it starts, so the verify pass
+  // finds every run of a work and judges the Concepts it opened once all of
+  // it is done. Only where the claims layer is: nothing else reads it.
+  if (verifier) {
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEvent"] as ((workflow: string, event: RunEvent) => unknown) | undefined)?.bind(bag);
+    bag["onRunEvent"] = async (workflow: string, event: RunEvent) => {
+      try {
+        await prior?.(workflow, event);
+      } finally {
+        if (event.type === "run.start") await recordCaused(dataDir, workflow, event).catch((err) => console.error(`[work] ${workflow}/${event.runId} was not recorded under what caused it:`, err));
+      }
+    };
+  }
+  /** Runs `launchDetached` reports the end of, by `<workflow>/<runId>`:
+   *  the run-end hook, which fires first, marks one due (`true`) where it
+   *  would verify it, and the launcher verifies it once strut has decided
+   *  whether the end wakes a conversation (src/wake.ts) — so a work is
+   *  never judged before the turn that reports on its job. */
+  const detachedEnds = new Map<string, boolean>();
+  // The Knowledge door (src/knowledge.ts): what a workflow that tends the
+  // Concept tree works through. A host's own wins.
+  if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["knowledge"]) {
+    (services as Record<string, unknown>)["knowledge"] = createKnowledge({ graph: claimsGraph, claims: claimsAuthoring, verifier, store, ...(branchesCap ? { branches: branchesCap } : {}) });
+  }
+  // Trials and tests (src/trials.ts, plans/claim-trials.md): a claim's
+  // cases run as trials, and two wordings of a page run against the same
+  // checks. What the Knowledge app's checks are read and run through.
+  if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["trials"]) {
+    const trials = createTrials({
+      dataDir,
+      graph: claimsGraph,
+      claims: claimsAuthoring,
+      verifier,
+      store,
+      ...(branchesCap ? { branches: branchesCap } : {}),
+      ...(conceptSources ? { sources: conceptSources } : {}),
+      ...(history ? { history } : {}),
+      hasWorkflow: async (name) => !!(await workspace.getWorkflow(name).catch(() => null)),
+      run: (workflow, input, o) => run(workflow, input, o),
+    });
+    (services as Record<string, unknown>)["trials"] = trials;
+    // The pages strut ships carry their claims and cases; a test branch a restart left goes.
+    await trials.seed(seededClaims, SEED_SPEAKER).catch((err) => console.warn(`[trials] the seeded pages' claims were not recorded:`, err instanceof Error ? err.message : err));
+    void trials.sweep().catch(() => {});
+  }
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
   if (verifier && claimsJobs) {
@@ -1845,7 +2600,9 @@ export async function createStrut<TServices = unknown>(
         // Check runs are never projected or verified (the recursion guard);
         // a single-step run is verified by `runStep`, once it reaches the
         // real store.
-        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
+        // A parked run is not over: it is projected and verified at its real
+        // end (src/park.ts).
+        if (info?.workflow && !info.parked && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
           const key = info.workflow;
           // With the job index, so a run launched under a job refreshes
           // its `StrutJob` (plans/job-index.md §6).
@@ -1857,7 +2614,8 @@ export async function createStrut<TServices = unknown>(
           void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined, ownProposals).catch((err) =>
             console.error(`[projector] run ${key}/${runId} was not projected:`, err),
           );
-          verifier?.schedule(key, runId);
+          if (detachedEnds.has(`${key}/${runId}`)) detachedEnds.set(`${key}/${runId}`, true);
+          else verifier?.schedule(key, runId);
         }
       }
     };
@@ -1919,6 +2677,15 @@ export async function createStrut<TServices = unknown>(
   // 2.8 MB took 7 s raw (swarm38, 2026-09-30). SSE is skipped by content
   // type, so the streams flush event by event as before.
   app.use(compress());
+  /** Where the last request reached this server (`baseOfRequest`): the base
+   *  of a link made outside a request, an accepted `app/make-public`'s. */
+  let lastBase: string | undefined;
+  app.use("*", async (c, next) => {
+    // A request strut made to itself (an admin door's, app/look's) is
+    // `http://strut.invalid`, not where anyone reaches this server.
+    if (!inProcessOf(c)) lastBase = baseOfRequest(c);
+    await next();
+  });
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   //
@@ -1961,11 +2728,13 @@ export async function createStrut<TServices = unknown>(
   // gate's mode. With the INDEX role on, `GET /index/catalog`,
   // `/index/packages…` and `/index/concepts…` are open the same way — the
   // phone book and the search over public catalogs, public by construction
-  // (§7) — and so are `GET /llms.txt` (the same store as a markdown page
-  // for an agent that fetches URLs; llmstxt.org) and ONE POST,
+  // (§7) — and so is ONE POST,
   // `/index/mcp`: the same three reads as MCP tools for an agent with no
   // credential (src/packages/index-tools.ts); nothing on them installs or
-  // writes. And a peer may POST one more route,
+  // writes. `GET /llms.txt` is open whatever the role (llmstxt.org): the
+  // index's store as a markdown page, else the public view's — what anyone
+  // may run here and its price (plans/paid-runs.md §10) — and a 404 when
+  // nothing is public. And a peer may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //
@@ -1994,7 +2763,8 @@ export async function createStrut<TServices = unknown>(
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   /** What a member's session may call: the page of one app, its calls, its
    *  channels, and a file it hands the side panel. `GET /brand` is the
-   *  style the app is shown in; `GET` and `DELETE /mcp` answer 405 (the
+   *  style the app is shown in; `GET /rate` what a stranger's invoice is
+   *  priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
    *  page's MCP client asks for a stream once). */
   const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
@@ -2002,6 +2772,7 @@ export async function createStrut<TServices = unknown>(
     ["GET", /^\/apps\/[^/]+\/versions$/],
     ["GET", /^\/apps\/[^/]+\/[^/]+\/files(?:\/.+)?$/],
     ["GET", /^\/brand$/],
+    ["GET", /^\/rate$/],
     ["POST", /^\/mcp$/],
     ["GET", /^\/mcp$/],
     ["DELETE", /^\/mcp$/],
@@ -2011,6 +2782,42 @@ export async function createStrut<TServices = unknown>(
   ];
   const memberMay = (method: string, path: string) =>
     MEMBER_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
+  /** What a VISITOR's session may call past what is open to anyone (the
+   *  public apps' pages and files, `POST /public/mcp`, `/visitors/*`): who
+   *  it is, and its app's channel ticket — which names it, for a public
+   *  app at the version the public view serves (plans/app-repos.md §5.1). */
+  const VISITOR_ROUTES: Array<[method: string, path: RegExp]> = [
+    ["GET", /^\/auth\/session$/],
+    ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
+  ];
+  const visitorMay = (method: string, path: string) =>
+    VISITOR_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
+  /** What a HOST key may call (plans/jamie-in-tribes.md §5.1): a turn of
+   *  one of its own conversations, as the person it names, read back; a
+   *  proposal made there, decided as that person; who and where it is, and
+   *  its places (§5.4); and the tools an app's `hosts:` lets it call, on
+   *  `POST /mcp` (plans/people-and-hosts.md §3). No other read, no
+   *  publishing, no secret, no other session. */
+  const HOST_ROUTES: Array<[method: string, path: RegExp]> = [
+    ["POST", /^\/workflows\/[^/]+\/run$/],
+    ["GET", /^\/conversations\/item$/],
+    ["POST", PROPOSAL_DECIDE],
+    ["PUT", /^\/hosts\/me$/],
+    ["GET", /^\/hosts\/places$/],
+    ["DELETE", /^\/hosts\/places\/[^/]+$/],
+    ["POST", /^\/mcp$/],
+  ];
+  /** A person's own place, which their token removes (§5.4). */
+  const PERSON_PLACE = /^\/people\/places\/[^/]+\/[^/]+$/;
+  const hostMay = (method: string, path: string) => HOST_ROUTES.some(([m, re]) => m === method && re.test(path));
+  /** The sign-in routes: open to anyone, since signing in is how a visitor
+   *  gets a credential (src/visitors.ts). */
+  const VISITOR_OPEN_READ = /^\/visitors(?:\/challenge|\/lnurl)?$/;
+  const VISITOR_SESSION_PATH = "/visitors/session";
+  /** Peel's link (plans/people-and-hosts.md §2.1): open to anyone, since a
+   *  link challenge and the key's signature over it are the credential. */
+  const PEEL_POSTS = new Set(["/people/link", "/people/token"]);
+  const PEEL_CHALLENGE_PATH = "/people/challenge";
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -2018,20 +2825,66 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path));
+      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c) || VISITOR_OPEN_READ.test(path) || path === PEEL_CHALLENGE_PATH
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (path === VISITOR_SESSION_PATH && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && (PUBLIC_PATH.test(path) || VISITOR_OPEN_READ.test(path) || path === VISITOR_SESSION_PATH)) || (c.req.method === "POST" && (PUBLIC_POST.test(path) || PEEL_POSTS.has(path))) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
+    // A person token Peel holds for a link (plans/people-and-hosts.md §2.1)
+    // names the account it stands on: it holds while that account is still
+    // linked to its actor, and not a request longer.
+    const person = personOf(c);
+    if (person?.account) {
+      const account = parseAccount(person.account);
+      if ((account ? await people.linkOf(account) : undefined)?.actor !== person.actor) {
+        return c.json({ error: `unauthorized: ${person.account} is no longer linked to ${person.actor} here — link Peel again` }, 401);
+      }
+    }
+    // A HOST key (plans/jamie-in-tribes.md §5.1): `HOST_ROUTES` alone, as the
+    // person its `x-strut-account` names. Read here once: `resolveActor`
+    // answers that person when the account is linked, and nobody else.
+    const host = hostOf(c);
+    if (host) {
+      if (!hostMay(c.req.method, path)) {
+        return c.json({ error: "forbidden: a host key launches turns of its own conversations as the person it names, reads them, decides their proposals, says who it is and reads its places, and calls the tools an app lets it call (POST /mcp) — nothing else" }, 403);
+      }
+      const raw = c.req.header(ACCOUNT_HEADER);
+      const account = raw === undefined ? undefined : parseAccount(raw);
+      if (raw !== undefined && account?.kind !== host.name) {
+        return c.json({ error: `${ACCOUNT_HEADER} must be "${host.name}:<key>": an account of the kind this host vouches for` }, 400);
+      }
+      const person = account ? await people.actorOf(account) : undefined;
+      hostCalls.set(c.req.raw, { host: host.name, ...(account ? { account } : {}), ...(person ? { person } : {}) });
+      // What the speaker goes by there, as they wrote it
+      // (plans/people-and-hosts.md §1): kept as `self`, on the account when
+      // it is linked, else as its key's own actor's name.
+      const named = c.req.header(ACCOUNT_NAME_HEADER);
+      if (named !== undefined) {
+        if (!account) return c.json({ error: `${ACCOUNT_NAME_HEADER} is the name of the account ${ACCOUNT_HEADER} names: send both` }, 400);
+        let name: string;
+        try {
+          name = decodeURIComponent(named);
+        } catch {
+          return c.json({ error: `${ACCOUNT_NAME_HEADER} must be percent-encoded UTF-8` }, 400);
+        }
+        await people.setAccountName(account, name).catch((err) => console.error(`[people] ${accountText(account)}'s name was not kept:`, err));
+      }
+      return next();
+    }
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
       return c.json({ error: "forbidden: a member's session opens the apps here and nothing else; ask an admin for the rest" }, 403);
+    }
+    if (visitorOnly(c)) {
+      if (visitorMay(c.req.method, path)) return next();
+      return c.json({ error: "forbidden: a visitor's session opens this server's public apps and nothing else" }, 403);
     }
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path));
-      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made and change or fork its conversations" }, 403);
+      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path) || path === "/people/places");
+      const personDelete = scope === "peer:person" && c.req.method === "DELETE" && PERSON_PLACE.test(path);
+      if (isPeerScope(scope) && !personDelete && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made, change or fork its conversations, and link or remove its places" }, 403);
       }
     }
     return next();
@@ -2052,6 +2905,13 @@ export async function createStrut<TServices = unknown>(
     if (body.ticket !== undefined) {
       const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim()) : undefined;
       if (!redeemed) return c.json({ error: "unauthorized: this sign-in ticket has expired, was already used, or is not this strut's" }, 401);
+      // A visitor's (plans/app-repos.md §5.3, `ticket`): its own cookie, and
+      // the token, which a page framed by another site keeps and sends as a
+      // bearer (ruled 4).
+      if (redeemed.session.role === "visitor") {
+        c.header("set-cookie", visitorSessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
+        return c.json({ ...redeemed.session, token: redeemed.token });
+      }
       c.header("set-cookie", sessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
       return c.json(redeemed.session);
     }
@@ -2073,7 +2933,7 @@ export async function createStrut<TServices = unknown>(
   // and as what (`role`: a host's ticket's; none for the key login); 404
   // for a request the key or nothing authenticated.
   app.get("/auth/session", (c) => {
-    const session = sessionOf(c);
+    const session = sessionOf(c) ?? visitorOf(c);
     return session ? c.json(session) : c.json({ error: "no session" }, 404);
   });
 
@@ -2090,21 +2950,81 @@ export async function createStrut<TServices = unknown>(
   // person token and a member off every POST but theirs); the actor and
   // the role are the host's to name, as with `x-strut-actor` beside the
   // key. No role is a member's (plans/member-rights.md): a host that does
-  // not say signs nobody in with the console.
+  // not say signs nobody in with the console. A `name` is the person's as
+  // the host knows them, kept as a host's (plans/people-and-hosts.md §1).
   app.post("/auth/ticket", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = await c.req.json<{ actor?: unknown; role?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown });
+    const body = await c.req.json<{ actor?: unknown; role?: unknown; name?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown; name?: unknown });
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
       return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
     }
     const role = body.role ?? "member";
-    if (!isRole(role)) return c.json({ error: 'role must be "admin" or "member": an admin runs this strut server, a member uses its apps' }, 400);
+    if (!isRole(role)) return c.json({ error: 'role must be "admin", "member" or "visitor": an admin runs this strut server, a member uses its apps, a visitor uses its public apps as itself' }, 400);
+    if (body.name != null && typeof body.name !== "string") return c.json({ error: "name must be a string: the person's name, one line, at most 80 characters" }, 400);
     const minted = signInTicket(actor, role)!;
+    if (typeof body.name === "string") await people.setName(actor, body.name, "host").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
   });
 
+  // ── People (plans/people-and-hosts.md §1; src/people.ts) ───────────────
+  // The names of a list of people, for strut's own UI to show in place of
+  // their actors: each actor asked, with `name` when one is kept. An
+  // admin's read (full scope); an app's page asks `people/names`.
+  app.get("/people", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: people's names are an admin's read (an app's page asks people/names)" }, 403);
+    const actors = c.req.queries("actor") ?? [];
+    if (actors.length > PEOPLE_READ_MAX) return c.json({ error: `at most ${PEOPLE_READ_MAX} actors at a time (?actor=…&actor=…), not ${actors.length}` }, 400);
+    if (actors.some((a) => !a || a.length > 512)) return c.json({ error: "each actor is 1 to 512 characters" }, 400);
+    return c.json({ people: await people.names(actors) });
+  });
+
+  // ── Hosts: places (plans/jamie-in-tribes.md §5.4; src/people.ts) ───────
+  // A person links an account through Peel (`POST /people/link`, below with
+  // the visitors' sign-in), and a place with the token Peel then holds
+  // (`/people/places`, below). A host says who and where it is, reads its
+  // places, and drops one it no longer answers in. A host key's routes alone.
+  const hostRoute = (c: Context): string | Response =>
+    hostCalls.get(c.req.raw)?.host ?? c.json({ error: "forbidden: a host's route — it takes a host key (STRUT_HOST_KEYS)" }, 403);
+  /** The key a host names, bare or as `<kind>:<key>` of its own kind. */
+  const hostKeyOf = (host: string, raw: unknown) =>
+    accountKey(host, typeof raw === "string" && raw.startsWith(`${host}:`) ? raw.slice(host.length + 1) : raw);
+
+  // Who the host is on its medium (handed to Peel, which approves its join
+  // of a private tribe), and the hook a change to its places is nudged on.
+  // The daemon sends it at every start.
+  app.put("/hosts/me", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    const body = (await c.req.json().catch(() => null)) as { account?: unknown; hook?: unknown } | null;
+    const key = hostKeyOf(host, body?.account);
+    if (!key) return c.json({ error: `account is this host's own ${host} account: <key> or ${host}:<key>` }, 400);
+    let hook: string;
+    try {
+      hook = parseCallback({ url: body?.hook }).url;
+    } catch {
+      hook = "";
+    }
+    if (!hook || hook.length > 2_000) return c.json({ error: "hook is an http(s) URL, at most 2,000 characters: where strut tells this host its places changed" }, 400);
+    const self = await people.setHost(host, { kind: host, key }, hook);
+    return c.json({ name: self.name, account: self.account, at: self.at });
+  });
+
+  // Its places, every linker's: the host joins each and leaves the rest.
+  app.get("/hosts/places", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    return c.json({ places: await people.hostPlaces(host) });
+  });
+
+  // A place it no longer answers in: removed from the tribe, or a link it
+  // couldn't join.
+  app.delete("/hosts/places/:key", async (c) => {
+    const host = hostRoute(c);
+    if (host instanceof Response) return host;
+    return c.json({ removed: await people.unlinkPlace(host, c.req.param("key")) });
+  });
   // ── Workflows ────────────────────────────────────────────────────────────
 
   app.get("/workflows", async (c) => {
@@ -2276,7 +3196,19 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/workflows/:name/runs/:runId/events", async (c) => {
     const { name, runId } = c.req.param();
-    const events = await store.getRunEvents(name, runId);
+    // An archived log is restored by this read; a bucket that cannot give
+    // it back is said so, never served as an empty run.
+    const events = await store.getRunEvents(name, runId).catch((err) => {
+      if (err instanceof RunArchiveError) return err;
+      throw err;
+    });
+    if (events instanceof RunArchiveError) return c.json({ error: events.message }, 503);
+    if (!events.length && !archive) {
+      // A log an archive holds, on a strut that has none now (its bucket
+      // was unset, or its data moved here): say so, not "no events".
+      const held = (await store.getRunSummary(name, runId))?.parts?.log?.archive;
+      if (held) return c.json({ error: `The log of run ${runId} of "${name}" is in a run archive (${held.key}), and this strut has no archive configured (STRUT_ARCHIVE_S3_BUCKET)` }, 503);
+    }
     return c.json(events.map((e) => withTranscriptLink(name, e)));
   });
 
@@ -2557,7 +3489,7 @@ export async function createStrut<TServices = unknown>(
   };
 
   /** Relaunch a prepared durable resume under its ORIGINAL runId (§5). */
-  const launchDurableResume = (p: PreparedResume) => {
+  const launchDurableResume = (p: PreparedResume, how: { woken?: boolean } = {}) => {
     launchDetached(
       p.flow,
       {
@@ -2566,17 +3498,22 @@ export async function createStrut<TServices = unknown>(
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
         ...(p.runStart.job ? { job: p.runStart.job } : {}),
+        // A run stays on its Concept branch (src/branches.ts).
+        ...(p.runStart.branch ? { branch: p.runStart.branch } : {}),
         ...(p.runStart.conversation ? { conversation: p.runStart.conversation } : {}),
         ...(p.runStart.wakeAsked ? { wake: true } : {}),
       },
       {
         journal: p.journal,
         resume: true,
+        ...(how.woken ? { woken: true } : {}),
         ...(p.version ? { version: p.version } : {}),
         ...(p.changed ? { resumeChanged: p.changed } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
+        // A host's turn stays the host's: never an admin's, its sessions under it.
+        ...(p.runStart.origin === "host" && p.runStart.host ? { origin: "host" as const, host: p.runStart.host } : {}),
         ...(p.runStart.continues ? { continues: p.runStart.continues } : {}),
         // An app's run stays the app's: its sessions under the app's
         // namespace (runner.ts `bindApp`), never the ids its page passed.
@@ -2589,6 +3526,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "public" && p.runStart.visitor ? { visitor: p.runStart.visitor } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
+        // A trial stays one (src/trials.ts): resumed, it still holds what it starts.
+        ...(p.runStart.trial ? { trial: p.runStart.trial } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -2716,8 +3655,9 @@ export async function createStrut<TServices = unknown>(
         report(name, runId, "skipped", `last event ${Math.round(ageMs / 3_600_000)}h ago exceeds the ${Math.round(maxAgeMs / 3_600_000)}h age cap`);
         return "seen";
       }
-      // Durable resumes only: an unpause of a live run (`live`) is no restart.
-      const resumes = events.filter((e) => e.type === "run.resumed" && !e.live).length;
+      // Durable resumes only: an unpause of a live run (`live`) is no
+      // restart, nor is the wake of a parked one (`woken`, src/park.ts).
+      const resumes = events.filter((e) => e.type === "run.resumed" && !e.live && !e.woken).length;
       if (resumes >= maxResumes) {
         report(name, runId, "skipped", `already resumed ${resumes} times (cap ${maxResumes}) — a step may be crashing the server; resume by hand`);
         return "seen";
@@ -2810,10 +3750,22 @@ export async function createStrut<TServices = unknown>(
     const { controller, summary, exists, byPeer } = await findRun(name, runId);
     if (!exists) return { ok: false, error: `Run "${runId}" not found`, status: 404 };
     if (peer && !byPeer) return { ok: false, error: NOT_A_PEER_RUN, status: 403 };
+    // A PARKED run is cancelled where it waits (src/park.ts): finalized as
+    // cancelled, and each source told so it closes what it opened.
+    if (!controller && action === "cancel" && summary?.status === "waiting") {
+      const out = await cancelWaitingRun(name, runId);
+      if (out === "cancelled") return { ok: true, runId, state: "cancelled", status: 202 };
+      if (out === "live") return controlLiveRun(name, runId, action, peer, force);
+    }
     if (!controller) {
       return {
         ok: false,
-        error: summary ? `Run already terminal (${summary.status})` : `Run is not live (stale) — nothing to ${action}`,
+        error:
+          summary?.status === "waiting"
+            ? `Run is waiting (parked on ${(summary.waitingOn ?? []).join(", ") || "something"}) — nothing to ${action}; cancel it, or resume it to wake it now`
+            : summary
+              ? `Run already terminal (${summary.status})`
+              : `Run is not live (stale) — nothing to ${action}`,
         status: 409,
       };
     }
@@ -2836,6 +3788,28 @@ export async function createStrut<TServices = unknown>(
     await appendControlEvent(name, runId, "run.resumed");
     return { ok: true, runId, state: controller.state, status: 202 };
   };
+  /** Cancel a PARKED run (src/park.ts) under the run's lock, which its wake
+   *  takes too: its end written as any dead run's is (`finalizeDeadRun`:
+   *  `run.cancelled`, the summary, its `run.end`), each source told, and
+   *  the run's end hooks run — the projection and the verify pass a park
+   *  put off. `live` when a wake resumed it first; `gone` when it no longer
+   *  waits. */
+  const cancelWaitingRun = (name: string, runId: string): Promise<"cancelled" | "live" | "gone"> =>
+    withLock(`park:${name}/${runId}`, async () => {
+      if (controllers.has(`${name}/${runId}`)) return "live";
+      const summary = await store.getRunSummary(name, runId);
+      if (summary?.status !== "waiting") return "gone";
+      const events = await store.getRunEvents(name, runId);
+      await finalizeDeadRun(name, runId, events, "cancelled");
+      await parking.cancelled(name, runId, summary.waitingOn ?? []);
+      const origin = events.find((e) => e.type === "run.start")?.origin;
+      try {
+        await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown }).onRunEnd?.(runId, { workflow: name, status: "cancelled", ...(origin ? { origin } : {}) });
+      } catch (err) {
+        console.error(`[parking] the end hooks of cancelled run ${name}/${runId} failed:`, err);
+      }
+      return "cancelled";
+    });
   /** The chat-tool view of controlLiveRun: same result minus the HTTP code. */
   const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume", force = false) => {
     const { status: _status, ...rest } = await controlLiveRun(name, runId, action, false, force);
@@ -3058,6 +4032,8 @@ export async function createStrut<TServices = unknown>(
   // tab. A run is attributed by the content hash it recorded (summary, else
   // `run.start` for runs that predate the summary stamp); identical content
   // published twice goes to the newest twin that existed when the run started.
+  // Counted over the newest `RUN_LIST_SCAN_MAX` runs, no further (`scanned`;
+  // `more`: older runs were not read): a busy workflow holds 100k runs.
   app.get("/workflows/:name/versions", async (c) => {
     const name = c.req.param("name");
     const meta = await workspace.getWorkflowMetadata(name);
@@ -3070,7 +4046,8 @@ export async function createStrut<TServices = unknown>(
         ...(info.source ? { source: info.source } : {}),
         ...(info.actor ? { actor: info.actor } : {}),
       }))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // Newest first; two published in one millisecond, the later label first.
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || versionLabelOrder(b.version, a.version));
     const hashes = new Map<string, string | null>();
     await Promise.all(versions.map(async (v) => hashes.set(v.version, await workspace.getWorkflowHash(name, v.version))));
     const stats = new Map<string, { runs: number; success: number; error: number; lastRunAt?: string }>();
@@ -3081,7 +4058,7 @@ export async function createStrut<TServices = unknown>(
       const summary = await store.getRunSummary(name, runId);
       if (!summary) return; // in flight — counted once it finishes
       const hash =
-        summary.workflowHash ?? ((await store.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
+        summary.workflowHash ?? ((await localStore.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
       const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
       const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
       if (!v) { unattributed++; return; }
@@ -3092,12 +4069,15 @@ export async function createStrut<TServices = unknown>(
       if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
       stats.set(v.version, s);
     };
-    const runIds = await store.listRuns(name);
+    const all = await store.listRuns(name);
+    const runIds = all.slice(0, RUN_LIST_SCAN_MAX);
     for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
     return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
       unattributed,
+      scanned: runIds.length,
+      ...(all.length > runIds.length ? { more: true } : {}),
     });
   });
 
@@ -3118,6 +4098,13 @@ export async function createStrut<TServices = unknown>(
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
         ...(flow.sealed ? { sealed: true } : {}),
         ...(flow.peer ? { peer: flow.peer } : {}),
+        // The workflow's own `retain:` and the fleet default, both as text (`1h`, `runs:20`).
+        ...(flow.retain ? { retain: formatRetention(flow.retain) } : {}),
+        ...(fleetRetention
+          ? { fleetRetention: formatRetention(fleetRetention.retention), fleetRetentionEnv: fleetRetention.env }
+          : archive
+            ? { fleetRetention: formatRetention(ARCHIVE_LOCAL_WINDOW), fleetRetentionEnv: "archived first" }
+            : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -3323,9 +4310,15 @@ export async function createStrut<TServices = unknown>(
   // gate's mode. The record's door is `/public-view` — behind the gate like
   // every route (a peer's write is a 403), and no step or builder tool
   // writes it. Never a "publish": nothing is copied or versioned.
+  // The public view reads this disk only: an anonymous caller walking a
+  // public workflow's run ids must not be able to restore its whole archive.
+  /** This server's name (the brand's `name`, src/brand.ts), read per use: an
+   *  app document carries it (`<meta name="strut-name">`) and the invite page
+   *  says it. A brand file that does not read is no name. */
+  const serverName = async (): Promise<string | undefined> => (await readBrand(dataDir).catch(() => undefined))?.name;
   const publicSurface = createPublicSurface({
     dataDir,
-    store,
+    store: localStore,
     ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
   });
   {
@@ -3359,6 +4352,11 @@ export async function createStrut<TServices = unknown>(
       ...(view.manifest.description ? { description: view.manifest.description } : {}),
       ...(view.manifest.icon ? { icon: view.manifest.icon } : {}),
       ...(view.manifest.permissions?.length ? { permissions: view.manifest.permissions } : {}),
+      // The wallet it asks for, as its build recorded it: a visitor's page
+      // in a native host's web view is offered the person's wallet on it
+      // (plans/app-payments.md §11 R8).
+      ...(view.build?.wallet ? { wallet: view.build.wallet } : {}),
+      ...(view.build?.account ? { account: view.build.account } : {}),
     };
   };
   /** What the `runnable` checks ask of the server (src/public-runnable.ts). */
@@ -3397,8 +4395,17 @@ export async function createStrut<TServices = unknown>(
   });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
+    baseOf: (c) => baseOfRequest(c),
+    visitorAddress,
+    // An ACTIVE worker's requests count against the worker, not the address
+    // (plans/human-steps.md §5.2): a room of workers shares one address. A
+    // `new` worker, or anyone else, is counted per address.
+    budgetKey: (c) => {
+      const actor = visitorOf(c)?.actor;
+      return actor && tasks.isActiveWorker(actor) ? { key: `worker:${actor}`, limit: TASK_REQUESTS_PER_MINUTE } : undefined;
+    },
     workspace,
-    store,
+    store: localStore,
     runnable: async () => {
       let descriptions: Map<string, string | undefined> | undefined;
       return listRunnable(await publicSurface.get(), {
@@ -3412,6 +4419,7 @@ export async function createStrut<TServices = unknown>(
     ...(artifacts ? { artifacts } : {}),
     fileHeaders: (path) => artifactHeaders(path),
     documentHeaders: (path) => artifactHeaders(path, true),
+    serverName,
     liveStatus,
     apps: {
       info: publicAppInfo,
@@ -3431,7 +4439,7 @@ export async function createStrut<TServices = unknown>(
           const item = surface.runnable.find((r) => r.kind === "workflow" && r.name === full);
           if (item) runnable.push({ name: g, results: item.results === "run" ? "run" : "output" });
         }
-        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable, await serverName()) };
       },
     },
     // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
@@ -3459,6 +4467,7 @@ export async function createStrut<TServices = unknown>(
           ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
           ...(o.credit ? { credit: o.credit } : {}),
           ...(o.visitor ? { visitor: o.visitor } : {}),
+          ...(o.attachments?.length ? { attachments: o.attachments } : {}),
         });
       },
       cancel: async (name, runId) => {
@@ -3486,15 +4495,38 @@ export async function createStrut<TServices = unknown>(
     const s = await publicSurface.get();
     return c.json({ surface: s, missing: await publicViewMissing(s) });
   });
-  app.put("/public-view", async (c) => {
-    const body: unknown = await c.req.json().catch(() => undefined);
+  /** `PUT /public-view`'s save, the ONE function the route and
+   *  `app/make-public`'s door (src/public-view.ts) write the record through,
+   *  so the two cannot drift: its checks, the record, the hold. `holdAt`
+   *  (the door's) holds an app at that version before anything is written,
+   *  and a hold that fails refuses the whole save. */
+  const savePublicView: PublicViewSave = async (body, o) => {
+    // A served box's public view is its package's (plans/app-repos.md §2.1):
+    // written from `serve.yaml` at every deploy, never by hand.
+    if (serveRef) {
+      return { status: 409, body: { error: `serve_owned: this strut server serves ${serveRef.ref}, whose ${SERVE_FILE} writes the public view at every deploy — change ${SERVE_FILE} in the package and deploy it` } };
+    }
     const problem = surfaceProblem(body);
-    if (problem) return c.json({ error: problem }, 400);
+    if (problem) return { status: 400, body: { error: problem } };
     // What anyone may run is checked whole at every save (plans/paid-runs.md
     // §2): each refusal names its item, and nothing is written.
     const normalized = normalizeSurface(body);
     const problems = await runnableProblems(normalized, runnableDeps);
-    if (problems.length) return c.json({ error: problems.join("; "), problems }, 400);
+    if (problems.length) return { status: 400, body: { error: problems.join("; "), problems } };
+    const by = o.actor ? { by: o.actor } : {};
+    const held: Array<{ app: string; version?: string; release?: string; error?: string }> = [];
+    // The door's hold, at the version the admin accepted: before the record
+    // says the app is public, so a failure writes nothing.
+    for (const [name, version] of Object.entries(o.holdAt ?? {})) {
+      try {
+        const rel = await apps.releases(name);
+        if (rel && rel.live !== "latest" && rel.releases.find((r) => r.id === rel.live)?.version === version) continue;
+        const release = await apps.promote(name, version, by);
+        held.push({ app: name, version, release: release.id });
+      } catch (err) {
+        return { status: 409, body: { error: `hold_failed: ${name} cannot be held at ${version}: ${err instanceof Error ? err.message : String(err)}` } };
+      }
+    }
     // The first priced item mints the credit tokens' root (§4.2), before the
     // record says anything is for sale.
     if (normalized.runnable.some(isPriced)) await payments.settings.ensureL402Root();
@@ -3503,22 +4535,30 @@ export async function createStrut<TServices = unknown>(
     // An app added to the public view is HELD at the version it shows
     // (plans/public-surface.md §2, as pinning holds, plans/app-releases.md):
     // a builder's later publish is a draft until a person moves the release.
-    const actor = await resolveActor(c);
-    const held: Array<{ app: string; version?: string; release?: string; error?: string }> = [];
     for (const a of next.apps) {
-      if (before.has(a.name)) continue;
+      if (before.has(a.name) || o.holdAt?.[a.name]) continue;
       try {
+        // A seeded app follows strut's releases: nothing to hold.
+        const rec = await workspace.getApp(a.name).catch(() => null);
+        if (rec?.versions[rec.active]?.source === "seed") continue;
         const rel = await apps.releases(a.name);
         if (!rel || rel.live !== "latest") continue;
         const dir = await apps.versionDir(a.name);
         if (!dir) continue;
-        const release = await apps.promote(a.name, dir.version, actor ? { by: actor } : {});
+        const release = await apps.promote(a.name, dir.version, by);
         held.push({ app: a.name, version: dir.version, release: release.id });
       } catch (err) {
         held.push({ app: a.name, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
+    viewChanged();
+    return { status: 200, body: { surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) } };
+  };
+  app.put("/public-view", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const actor = await resolveActor(c);
+    const out = await savePublicView(body, actor ? { actor } : {});
+    return c.json(out.body, out.status as 200 | 400 | 409);
   });
   // What the dialog's third box ("anyone can run it") shows for a workflow
   // or a step (plans/paid-runs.md §2): what its closure can do, what its
@@ -3546,25 +4586,48 @@ export async function createStrut<TServices = unknown>(
     });
   });
   // What adding an app or a workflow brings along, for the dialog to
-  // pre-check (src/public-view.ts): every line with what it exposes.
+  // pre-check (src/public-view.ts): every line with what it exposes. The
+  // same reads `app/make-public`'s card lists.
+  const publicViewDeps: PublicViewDeps = {
+    workspace,
+    registry: () => registry,
+    stepSources: () => stepSources,
+    app: async (name, version) => {
+      const view = await apps.get(name, version).catch(() => null);
+      return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
+    },
+    walk: (roots) => publicSurface.walk(roots),
+  };
   app.get("/public-view/needs", async (c) => {
     const appName = c.req.query("app");
+    const version = c.req.query("version");
     const wf = c.req.query("workflow");
-    const out = await publicViewNeeds(
-      {
-        workspace,
-        registry: () => registry,
-        stepSources: () => stepSources,
-        app: async (name) => {
-          const view = await apps.get(name).catch(() => null);
-          return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
-        },
-        walk: (roots) => publicSurface.walk(roots),
-      },
-      { ...(appName ? { app: appName } : {}), ...(wf ? { workflow: wf } : {}) },
-    );
+    const out = await publicViewNeeds(publicViewDeps, { ...(appName ? { app: appName } : {}), ...(appName && version ? { version } : {}), ...(wf ? { workflow: wf } : {}) });
     return "error" in out ? c.json(out, 404) : c.json(out);
   });
+  // `app/make-public`'s door on the shared bag (src/public-view.ts;
+  // plans/public-surface.md §2 "The door", ruled 2026-11-13): the card's
+  // reads, and an add that opens only for an ACCEPTED proposal of that step
+  // on disk (an admin's) for the app and version — the record is the proof,
+  // as for package/install and task/set-type — written through the route's
+  // own save. A host's own `publicView` wins.
+  if (!(services as Record<string, unknown>)["publicView"]) {
+    (services as Record<string, unknown>)["publicView"] = Object.freeze(
+      createPublicViewDoor({
+        needs: async (name, version) => publicViewNeeds(publicViewDeps, { app: name, ...(version ? { version } : {}) }),
+        view: () => publicSurface.get(),
+        app: async (name, version) => {
+          const rec = await workspace.getApp(name).catch(() => null);
+          if (!rec) return null;
+          return { version: rec.version, held: !!rec.live, seeded: rec.versions[version ?? rec.version]?.source === "seed" };
+        },
+        served: () => serveRef?.ref,
+        proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+        save: savePublicView,
+        base: () => lastBase,
+      }),
+    );
+  }
 
   // ── Apps (plans/apps.md §7.2) ────────────────────────────────────────────
   // A workspace app's pointers and its version directories. The files are
@@ -3588,12 +4651,29 @@ export async function createStrut<TServices = unknown>(
     return { name };
   };
 
-  app.get("/apps", async (c) => c.json({ apps: await apps.list() }));
+  // An ADMIN-ONLY app (`admin: true` in its manifest, specs/API.md §14.4)
+  // is an admin's: left out of the list, and its version's files refused,
+  // for anyone short of full scope — a member's session, a person token, a
+  // peer. Read by its file token, the document still opens: only a listing
+  // a full-scope caller made mints one.
+  app.get("/apps", async (c) => {
+    const listed = await apps.list();
+    const full = (await scopeOf(c)) === "full";
+    return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
+  });
+  const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
+    if (version && isPreviewLabel(version)) return null;
+    if ((await scopeOf(c)) === "full") return null;
+    const rec = await workspace.getApp(name, version).catch(() => null);
+    return rec?.manifest.admin ? c.json({ error: `App "${name}" is an admin's: the deployment key or an admin's session` }, 403) : null;
+  };
 
   app.get("/apps/:name", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
     const version = c.req.query("version") || undefined;
+    const admin = await adminAppRefusal(c, at.name, version);
+    if (admin) return admin;
     const view = await apps.get(at.name, version);
     if (!view) return c.json({ error: version ? `App "${at.name}" has no version ${version}` : `App "${at.name}" not found` }, 404);
     return c.json(view);
@@ -3605,6 +4685,9 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps/:name/usage", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
+    // An admin's app (strut/earnings, strut/staff): its calls are an admin's too.
+    const admin = await adminAppRefusal(c, at.name);
+    if (admin) return admin;
     if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
     return c.json(appMonitor.report(at.name));
   });
@@ -3612,6 +4695,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps/:name/versions", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
+    const admin = await adminAppRefusal(c, at.name);
+    if (admin) return admin;
     const rec = await workspace.getApp(at.name);
     if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
     // `live`, `releases` (with their locks) and `behind`: plans/app-releases.md §1.2.
@@ -3644,6 +4729,10 @@ export async function createStrut<TServices = unknown>(
     if (refused) return refused;
     const at = await appVersionRoute(c);
     if (at instanceof Response) return at;
+    if (!carriesFileToken(c)) {
+      const admin = await adminAppRefusal(c, at.name, at.version);
+      if (admin) return admin;
+    }
     const token = fileToken({ kind: "app", id: `${at.name}@${at.version}` });
     return c.json({ app: at.name, version: at.version, hash: at.hash, files: await listAppFiles(at.path), ...(token ? { token } : {}) });
   });
@@ -3653,6 +4742,10 @@ export async function createStrut<TServices = unknown>(
     if (refused) return refused;
     const at = await appVersionRoute(c);
     if (at instanceof Response) return at;
+    if (!carriesFileToken(c)) {
+      const admin = await adminAppRefusal(c, at.name, at.version);
+      if (admin) return admin;
+    }
     const relPath = c.req.param("path");
     let bytes: Uint8Array | null;
     try {
@@ -3672,7 +4765,8 @@ export async function createStrut<TServices = unknown>(
       const html = Buffer.from(bytes).toString("utf8");
       const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
       const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
-      const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
+      const name = await serverName();
+      const served = identity ? withToken(html, identity, name) : withoutTokenMeta(html, name);
       // The same bytes every time a version is served (the identity is a
       // signature of it, not a nonce), so a host keeps them and asks again
       // with If-None-Match: a rebuild, a rotated key or another version
@@ -3778,6 +4872,92 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, name: at.name, pinned: body.pinned, live, ...(made ? { release: made } : {}) });
   });
 
+  // An app's SCREENSHOTS, a person's door (src/apps/screenshots.ts; the
+  // Versions flyout's Screenshots section): the list a version's app.yaml
+  // names, and a new list saved as a new version — a draft when the app is
+  // held. `take` looks at a version as a person opening it sees it
+  // (`app/look`) and hands back the PNG, which a save then includes.
+  // The app's own SQLite (plans/apps.md §4.4): the file as it is now, a
+  // copy taken in one go (VACUUM INTO). Every row of every table, so an
+  // admin's read (full scope), as GET /people is.
+  app.get("/apps/:name/data", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: an app's database is an admin's read (the deployment key or an admin's session)" }, 403);
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    if (!(await workspace.getApp(at.name).catch(() => null))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const copy = await appDb.copy(at.name);
+    if (!copy) return c.json({ error: `App "${at.name}" has no database yet: its migrations (db/*.sql) make one at publish` }, 404);
+    return new Response(Readable.toWeb(copy.stream) as ReadableStream, {
+      headers: {
+        "content-type": "application/vnd.sqlite3",
+        "content-length": String(copy.bytes),
+        "content-disposition": `attachment; filename="${at.name.replace(/\//g, "-")}.db"`,
+        "cache-control": "no-store",
+      },
+    });
+  });
+
+  app.get("/apps/:name/screenshots", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const found = await apps.manifestOf(at.name, c.req.query("version") || undefined);
+    if (!found) return c.json({ error: `App "${at.name}" not found` }, 404);
+    return c.json({ name: at.name, version: found.version, screenshots: found.manifest.screenshots ?? [] });
+  });
+
+  app.put("/apps/:name/screenshots", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const reserved = reservedAppName(at.name);
+    if (reserved) return c.json({ error: reserved }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; screenshots?: unknown };
+    const problem = screenshotsProblem(body.screenshots);
+    if (problem) return c.json({ error: problem }, 400);
+    const base = typeof body.version === "string" && body.version ? body.version : undefined;
+    if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const scratch = await mkdtemp(join(tmpdir(), "strut-app-screenshots-"));
+    let result: AppPublishResult;
+    try {
+      const dir = join(scratch, "app");
+      await apps.checkout(at.name, dir, base);
+      await applyScreenshots(dir, body.screenshots as ScreenshotEntry[]);
+      const actor = await resolveActor(c);
+      result = await apps.publish(dir, at.name, { surface: "person", source: "api", ...(actor ? { actor } : {}) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, /not found|has no version/.test(message) ? 404 : 400);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+    if (!result.ok) return c.json({ error: `the app did not build with these screenshots: ${result.errors.join("; ")}`, errors: result.errors, warnings: result.warnings }, 400);
+    return c.json(result);
+  });
+
+  app.post("/apps/:name/screenshots/take", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; viewport?: unknown; input?: unknown; fullPage?: unknown };
+    const config: Record<string, unknown> = { name: at.name };
+    if (typeof body.version === "string" && body.version) config.version = body.version;
+    if (body.viewport && typeof body.viewport === "object") config.viewport = body.viewport;
+    if (body.input && typeof body.input === "object") config.input = body.input;
+    if (body.fullPage === true) config.fullPage = true;
+    const looked = await runSingleStep("app/look", registry, services, { config, ...(await actorStamp(c)) });
+    if (looked.status !== "success") return c.json({ error: looked.error?.message ?? "the look did not finish" }, 400);
+    const out = looked.output as { dir: string; path: string; width: number; height: number; rendered: boolean; hostError?: string; stopped?: { message: string } };
+    const shot = join(out.dir, out.path);
+    try {
+      const why = shotProblem(out);
+      if (why) return c.json({ error: `No screenshot: ${why}` }, 422);
+      const bytes = await readFile(shot);
+      return c.json({ type: "image/png", data: bytes.toString("base64"), bytes: bytes.length, width: out.width, height: out.height });
+    } finally {
+      // The look's own run: nothing keeps it, so its shot goes too.
+      if (looked.runId && out.dir.endsWith(looked.runId)) await rm(out.dir, { recursive: true, force: true });
+      else await rm(shot, { force: true });
+    }
+  });
+
   // A person's grants of SEALED workflows to an app (src/apps/grants.ts):
   // the assistant (`orchestrator`) for an app with a chat of its own. The
   // builder's door is `app/grant`, run on an accepted proposal; this is a
@@ -3831,6 +5011,16 @@ export async function createStrut<TServices = unknown>(
     // holds the version when the relay connects.
     const peer = typeof body.peer === "string" && body.peer ? body.peer : undefined;
     if (body.peer !== undefined && !peer) return c.json({ error: "peer: a peer id" }, 400);
+    // A signed-in VISITOR (plans/app-repos.md §5.1): a public app at the
+    // version the public view serves, here, named as the visitor itself.
+    const visitor = visitorOnly(c) ? visitorOf(c) : undefined;
+    if (visitor) {
+      const live = (await apps.versionDir(at.name).catch(() => null))?.version;
+      if (peer || !(await publicSurface.get()).apps.some((a) => a.name === at.name) || live !== version) {
+        return c.json({ error: `forbidden: a visitor's channels are a public app's, at the version the public view serves` }, 403);
+      }
+      return c.json(channelTicket({ actor: visitor.actor!, app: at.name, version }));
+    }
     if (peer) {
       if (!(await peerRecords.get(peer))) return c.json({ error: `no peer "${peer}" on file` }, 404);
       if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return c.json({ error: `"${version}" is not a version label` }, 404);
@@ -3839,6 +5029,302 @@ export async function createStrut<TServices = unknown>(
     }
     const actor = await resolveActor(c);
     return c.json(channelTicket({ ...(actor ? { actor } : {}), app: at.name, version, ...(peer ? { peer } : {}) }));
+  });
+
+  // ── Visitors (plans/app-repos.md §5; src/visitors.ts) ──────────────────
+  //
+  // A visitor of a public app signs strut's CHALLENGE with a key and is then
+  // that key's actor here. `GET /visitors` says how (the public view's
+  // `visitors`: on a served box, serve.yaml's `signIn`, `visitorKey`) and who
+  // this request is; `GET /visitors/challenge` mints a challenge for this
+  // host; `POST /visitors/session` checks the signature with the method's
+  // verifier and answers the visitor's cookie and `{ actor, token, exp }`
+  // (the token for a page framed by another site, ruled 4), keeping a
+  // `name` the body carries as the visitor's own (plans/people-and-hosts.md
+  // §1: Peel's `sign_in` answers `alias`, which strut's UI sends); `DELETE` signs
+  // out. LNURL-auth's wallet calls back on `GET /visitors/lnurl`. All open to
+  // anyone: signing in is how a visitor gets a credential.
+  const lnurlLogins = createLnurlLogins();
+  const visitorBudget = createVisitorBudget();
+  /** The methods offered here, and whose key signs. */
+  const visitorConfig = async (): Promise<{ methods: string[]; visitorKey: VisitorKeyMode }> => {
+    const surface = await publicSurface.get();
+    const visitorKey: VisitorKeyMode = surface.visitors?.visitorKey === "domain" ? "domain" : "root";
+    return { methods: offeredMethods(signInOf(surface), visitorKey), visitorKey };
+  };
+  const requestHost = (c: Context) => hostOfRequest({ forwardedHost: c.req.header("x-forwarded-host"), host: c.req.header("host"), url: c.req.url });
+  /** Sign `actor` in: the visitor's cookie, and the token beside it. A
+   *  `name` the visitor gave is kept as their own (plans/people-and-hosts.md
+   *  §1); one that cannot be kept never fails the sign-in. */
+  const signVisitorIn = async (c: Context, actor: string, sphinxAddress?: string, name?: unknown) => {
+    const started = startVisitorSession(actor, sphinxAddress)!;
+    if (typeof name === "string") await people.setName(actor, name, "self").catch((err) => console.error(`[people] ${actor}'s name was not kept:`, err));
+    c.header("set-cookie", visitorSessionCookie(started.token, started.session.exp, isSecureRequest(c)));
+    c.header("cache-control", "no-store");
+    return c.json({ actor, token: started.token, exp: started.session.exp });
+  };
+  const noSecret = (c: Context) => c.json({ error: "sign-in needs STRUT_API_KEY or STRUT_SECRET_KEY: a visitor's session is signed with it" }, 503);
+  async function visitorCors(c: Context, next: () => Promise<void>) {
+    if (c.req.method === "OPTIONS") {
+      return c.body(null, 204, {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, DELETE",
+        // `authorization`: the visitor's token (GET /visitors), or a NIP-98 event.
+        "access-control-allow-headers": "content-type, authorization, x-strut-ui",
+        "access-control-max-age": "600",
+      });
+    }
+    c.header("access-control-allow-origin", "*");
+    await next();
+  }
+
+  // A host page on ANOTHER origin signs a visitor in here: another strut's
+  // UI hosting this server's public app (specs/API.md §17.9). It reads with
+  // no credential of its own — the visitor's token as a bearer — so `*`
+  // holds, and the cookie a cross-site answer sets is never stored.
+  // One registration: Hono's `/visitors/*` matches `/visitors` too.
+  app.use("/visitors/*", visitorCors);
+
+  app.get("/visitors", async (c) => {
+    const session = visitorOf(c);
+    return c.json({ ...(await visitorConfig()), ...(session ? { actor: session.actor, exp: session.exp } : {}) });
+  });
+
+  /** The `/public` budget per address (1200 a minute): the sign-in routes
+   *  are open to anyone, and an LNURL login keeps state. */
+  const overVisitorBudget = (c: Context) =>
+    publicDoors.overBudget(visitorAddress(c)) ? c.json({ error: "too many requests from this address: try again in a minute" }, 429, { "retry-after": "60" }) : null;
+
+  app.get("/visitors/challenge", async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const { methods, visitorKey } = await visitorConfig();
+    if (!methods.length) return c.json({ error: "no sign-in on this strut server: its public view names no method (serve.yaml's signIn)" }, 404);
+    const minted = visitorChallenge(requestHost(c), visitorKey);
+    if (!minted) return noSecret(c);
+    c.header("cache-control", "no-store");
+    return c.json({ challenge: minted.challenge, exp: minted.exp, methods, visitorKey });
+  });
+
+  app.post(VISITOR_SESSION_PATH, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const raw = await c.req.text();
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "the body is JSON: { challenge, method, … }" }, 400);
+    }
+    const challenge = typeof body["challenge"] === "string" ? body["challenge"] : "";
+    const method = body["method"];
+    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const claims = readVisitorChallenge(challenge);
+    if (!isVisitorMethod(method) || method === "ticket") {
+      return c.json({ error: "method is key, lnurl, nostr or sphinx (a host's ticket is traded at POST /auth/session { ticket })" }, 400);
+    }
+    // An LNURL login already registered: the page asks whether its wallet
+    // has signed (the challenge is spent and may have expired since).
+    const host = requestHost(c);
+    if (method === "lnurl" && typeof body["k1"] === "string") {
+      const got = lnurlLogins.take(body["k1"], challenge, host);
+      if ("error" in got) return refuse(got.error);
+      if ("pending" in got) return c.json({ pending: true, exp: got.exp }, 202);
+      return signVisitorIn(c, got.actor, undefined, body["name"]);
+    }
+    if (!claims) return refuse("this challenge has expired or is not this server's — ask GET /visitors/challenge for another");
+    if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`);
+    if (!offeredMethods(signInOf(await publicSurface.get()), claims.visitorKey).includes(method)) {
+      return refuse(`"${method}" is not a sign-in this server offers${claims.visitorKey === "domain" && METHOD_INFO[method].rootOnly ? " where its app asks for a key per domain" : ""}`);
+    }
+    let actor: string | null = null;
+    let sphinxAddress: string | undefined;
+    if (method === "key") {
+      const key = fromHex(body["key"]);
+      const sig = fromHex(body["sig"]);
+      if (!key || !sig) return c.json({ error: "key and sig are hex: the public key (SEC1) and the signature (r ‖ s)" }, 400);
+      actor = await VERIFIERS["ecdsa-p256"]!(new TextEncoder().encode(challenge), key, sig);
+      if (!actor) return refuse("the signature does not hold for this challenge and key");
+    } else if (method === "sphinx") {
+      // The person's Sphinx key (their wallet's: specs/WALLET.md §1.2
+      // `sign_in`), a Lightning signed message over the challenge.
+      const key = fromHex(body["key"]);
+      const sig = fromHex(body["sig"]);
+      if (!key || !sig) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
+      actor = await VERIFIERS["ln-message"]!(new TextEncoder().encode(challenge), key, sig);
+      if (!actor) return refuse("the signature does not hold for this challenge and key");
+      // The account's own address, for a payout (plans/human-steps.md §8.2):
+      // kept in the session only when its pubkey is the key that signed;
+      // else dropped, and the sign-in holds (an older Peel sends none).
+      sphinxAddress = keptSphinxAddress(method, key, body["address"]);
+    } else if (method === "nostr") {
+      const signer = await nostrSigner(c.req.header("authorization"), { url: `${publicUrlOf(c)}${new URL(c.req.url).pathname}`, method: "POST", body: raw }, Date.now(), (u) => {
+        try {
+          const url = new URL(u);
+          return hostOfRequest({ host: url.host, url: u }) === host && url.pathname.endsWith(VISITOR_SESSION_PATH);
+        } catch {
+          return false;
+        }
+      });
+      if ("error" in signer) return refuse(signer.error);
+      actor = await VERIFIERS.bip340!(signer.id, signer.key, signer.sig);
+      if (!actor) return refuse("nostr: the event's signature does not hold");
+    }
+    // Spent once its signature holds, so a challenge someone only saw
+    // cannot be burned.
+    if (!redeemVisitorChallenge(challenge)) return refuse("this challenge was already used");
+    if (method === "lnurl") {
+      const { k1, exp } = lnurlLogins.register(challenge, host);
+      return c.json({ pending: true, k1, exp, ...lnurlLogin(publicUrlOf(c), k1) }, 202);
+    }
+    return signVisitorIn(c, actor!, sphinxAddress, body["name"]);
+  });
+
+  app.delete(VISITOR_SESSION_PATH, (c) => {
+    c.header("set-cookie", visitorSessionCookie(undefined, 0, isSecureRequest(c)));
+    return c.body(null, 204);
+  });
+
+  // LNURL-auth's callback (LUD-04): the WALLET, on a phone, signs `k1` with
+  // its linking key for this domain. Its answer is the spec's.
+  app.get("/visitors/lnurl", async (c) => {
+    c.header("access-control-allow-origin", "*");
+    if (publicDoors.overBudget(visitorAddress(c))) return c.json({ status: "ERROR", reason: "too many requests from this address" }, 429);
+    const k1 = c.req.query("k1") ?? "";
+    const sig = fromHex(c.req.query("sig"));
+    const key = fromHex(c.req.query("key"));
+    if (c.req.query("tag") !== "login" || !/^[0-9a-f]{64}$/.test(k1)) return c.json({ status: "ERROR", reason: "not an LNURL-auth login of this server" }, 400);
+    if (!sig || !key) return c.json({ status: "ERROR", reason: "sig and key are required (LUD-04)" }, 400);
+    const got = await lnurlLogins.sign(k1, sig, key);
+    return "error" in got ? c.json({ status: "ERROR", reason: got.error }) : c.json({ status: "OK" });
+  });
+
+  // ── Peel links to this strut (plans/people-and-hosts.md §2.1) ──────────
+  //
+  // A person signed in here opens Connect in the Jamie app, which shows a
+  // LINK CHALLENGE naming them (`account/link`, auth.ts "Link challenges").
+  // Peel signs it with its Sphinx key as a Lightning signed message, as its
+  // visitor `sign_in` does, and posts it: `POST /people/link` links
+  // `sphinx:<key>` to the challenge's person and answers a person token that
+  // names the account, for seven days. Peel renews it by signing again:
+  // `GET /people/challenge`, then `POST /people/token`. The key is the
+  // lasting credential; removing the link (`account/unlink`) ends the token
+  // at once (the gate checks it on every request). All three are open, as
+  // the visitors' sign-in is: the challenge and the signature are the
+  // credential. Budgeted per address as those are, bodies capped.
+  /** The host name a challenge is bound to: the one in strut's address as
+   *  this request reached it (`STRUT_PUBLIC_URL`, else the request's). */
+  const boxHost = (c: Context) => hostOfRequest({ url: baseOfRequest(c) });
+  const peelBody = bodyLimit({ maxSize: PEEL_BODY_MAX_BYTES, onError: (c) => c.json({ error: `the body is at most ${PEEL_BODY_MAX_BYTES} bytes` }, 413) });
+  /** The signed challenge a body carries: its claims, spent, and the key
+   *  that signed it — or the refusal. */
+  const peelSigned = async (c: Context, body: Record<string, unknown>): Promise<{ claims: LinkChallenge; account: Account } | Response> => {
+    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const claims = readLinkChallenge(body["challenge"]);
+    if (!claims) return refuse("this challenge has expired or is not this server's — ask for another");
+    if (claims.host !== boxHost(c)) return refuse(`this challenge was for ${claims.host}`);
+    const key = fromHex(body["key"]);
+    const sig = fromHex(body["sig"]);
+    const hexKey = accountKey("sphinx", typeof body["key"] === "string" ? body["key"] : "");
+    if (!key || !sig || !hexKey) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
+    if (!(await VERIFIERS["ln-message"]!(new TextEncoder().encode(body["challenge"] as string), key, sig))) return refuse("the signature does not hold for this challenge and key");
+    // Spent once its signature holds, so a challenge someone only saw
+    // cannot be burned.
+    if (!redeemLinkChallenge(body["challenge"])) return refuse("this challenge was already used");
+    return { claims, account: { kind: "sphinx", key: hexKey } };
+  };
+  /** Peel's token for `actor` on `account`, and who that is. */
+  const peelToken = async (c: Context, actor: string, account: Account) => {
+    const minted = personToken(actor, LINKED_TOKEN_DAYS * 86_400_000, { account: accountText(account) });
+    if (!minted) return noSecret(c);
+    const name = await people.nameOf(actor);
+    c.header("cache-control", "no-store");
+    return c.json({ actor, ...(name ? { name } : {}), token: minted.token, exp: minted.exp });
+  };
+  const readPeelBody = async (c: Context): Promise<Record<string, unknown> | Response> => {
+    const body = (await c.req.json().catch(() => null)) as unknown;
+    return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : c.json({ error: "the body is JSON: { challenge, key, sig, … }" }, 400);
+  };
+
+  app.post("/people/link", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    if (body["name"] != null && typeof body["name"] !== "string") return c.json({ error: "name must be a string: the account's own name, as its holder wrote it" }, 400);
+    const key = accountKey("sphinx", body["key"]);
+    if (body["address"] != null && (!key || !accountAddress({ kind: "sphinx", key }, body["address"]))) {
+      return c.json({ error: "address must be where this account is reached: <its key>_<the LSP's key>_<scid>" }, 400);
+    }
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const { claims, account } = signed;
+    if (!claims.actor) return c.json({ error: "unauthorized: this challenge links nobody — it renews a token (POST /people/token); a link starts in the Jamie app's Connect" }, 401);
+    const was = await people.linkOf(account);
+    if (was && was.actor !== claims.actor) return c.json({ error: `linked_elsewhere: ${accountText(account)} is linked to another person here — they remove it in Connect first` }, 409);
+    await people.link(account, claims.actor, { name: body["name"], address: body["address"] });
+    return peelToken(c, claims.actor, account);
+  });
+
+  app.get(PEEL_CHALLENGE_PATH, (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const minted = linkChallenge({ host: boxHost(c) }, RENEW_CHALLENGE_MS);
+    if (!minted) return noSecret(c);
+    c.header("cache-control", "no-store");
+    return c.json(minted);
+  });
+
+  app.post("/people/token", peelBody, async (c) => {
+    const over = overVisitorBudget(c);
+    if (over) return over;
+    const body = await readPeelBody(c);
+    if (body instanceof Response) return body;
+    const signed = await peelSigned(c, body);
+    if (signed instanceof Response) return signed;
+    const link = await people.linkOf(signed.account);
+    if (!link) return c.json({ error: `not_linked: ${accountText(signed.account)} is not linked to a person here — link it from the Jamie app's Connect` }, 403);
+    return peelToken(c, link.actor, signed.account);
+  });
+
+  // ── A person's places (plans/jamie-in-tribes.md §4, §5.4) ──────────────
+  // With the token Peel holds for this box, which names the person's
+  // account: the hosts ready to take a place and the person's own places;
+  // link one (the linker is that account, and another person's place is a
+  // 409); remove one's own. Each change nudges the host (`onPlaces`).
+  const placeLinker = (c: Context): { actor: string; account: Account } | Response => {
+    const person = personOf(c);
+    const account = person?.account ? parseAccount(person.account) : undefined;
+    if (!person || !account) return c.json({ error: "forbidden: a place is linked with the token Peel holds for this box, which names your account — link Peel in the Jamie app's Connect" }, 403);
+    return { actor: person.actor, account };
+  };
+  /** A host that may take a place: a key here, and it said who it is. */
+  const readyHost = async (name: string) => (hostKeys().has(name) ? await people.hostOf(name) : undefined);
+
+  app.get("/people/places", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    const self = await readyHost(linker.account.kind);
+    return c.json({ hosts: self ? [{ host: self.name, account: self.account }] : [], places: await people.placesOf(linker.actor) });
+  });
+
+  app.post("/people/places", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    const input = placeInput(await c.req.json().catch(() => null));
+    if (typeof input === "string") return c.json({ error: input }, 400);
+    if (input.host !== linker.account.kind) return c.json({ error: `a ${input.host} place is linked by a ${input.host} account, and this token's is ${linker.account.kind}` }, 400);
+    const self = await readyHost(input.host);
+    if (!self) return c.json({ error: `no_host: no ${input.host} host is ready here — it needs a key (STRUT_HOST_KEYS) and to have said who it is (PUT /hosts/me)` }, 404);
+    const linked = await people.linkPlace(input, linker.account, linker.actor);
+    if ("taken" in linked) return c.json({ error: `place_linked: ${input.host}:${input.key} is linked by another person here — they remove it first` }, 409);
+    return c.json({ place: linked.place, account: self.account });
+  });
+
+  app.delete("/people/places/:host/:key", async (c) => {
+    const linker = placeLinker(c);
+    if (linker instanceof Response) return linker;
+    return c.json({ removed: await people.unlinkPlace(c.req.param("host"), c.req.param("key"), linker.actor) });
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -3857,11 +5343,15 @@ export async function createStrut<TServices = unknown>(
   // every byte, so the answer never changes: an ETag of the digest, kept a
   // year. Behind the gate like every route; a package a catalog publishes
   // is opened to anyone with the catalog (§13), a sold one by its token (§6).
-  const packageStore = packageCache(dataDir);
   app.get("/packages/:publisher/:name/archive", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    // `format=tar`: the PLAIN TAR (§13, ruled 2026-11-11), the same bytes on
+    // every strut that holds the package and what its torrent hashes; with no
+    // format, the .tar.gz a strut from before it reads.
+    const format = c.req.query("format");
+    if (format !== undefined && format !== "tar") return c.json({ error: "format is tar, or left out for the .tar.gz" }, 400);
     // A PUBLIC read (§13): `?public=1` opens a digest the public catalog
     // lists, with no credential — and nothing else, whatever the gate's
     // mode, since a host's gate hands such a read through (mcp's labAuth).
@@ -3879,17 +5369,18 @@ export async function createStrut<TServices = unknown>(
     }
     const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
-    const etag = `"${digest}"`;
+    const plain = format === "tar";
+    const etag = plain ? `"${digest}.tar"` : `"${digest}"`;
     const headers = {
-      "content-type": "application/gzip",
-      "content-disposition": `attachment; filename="${pkg.replace("/", "-")}-${digest.slice(7, 19)}.tar.gz"`,
+      "content-type": plain ? "application/x-tar" : "application/gzip",
+      "content-disposition": `attachment; filename="${pkg.replace("/", "-")}-${digest.slice(7, 19)}${plain ? ".tar" : ".tar.gz"}"`,
       "x-content-type-options": "nosniff",
       "cache-control": "private, max-age=31536000, immutable",
       etag,
     };
     if (c.req.header("if-none-match") === etag) return c.body(null, 304, headers);
-    const gz = await packArchive(info.dir, info.files);
-    return c.body(gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, 200, headers);
+    const bytes = plain ? await packTar(info.dir, info.files) : await packArchive(info.dir, info.files);
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, headers);
   });
   // What a package in the cache holds, by each item's name INSIDE it — a
   // workflow's, step's or app's path, a Concept's page name, helpers left
@@ -3938,6 +5429,8 @@ export async function createStrut<TServices = unknown>(
     ...(secretsCap ? { secrets: secretsCap } : {}),
     path: bootEnv()["PATH"] ?? "",
     apps,
+    dataDir,
+    ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
     getRegistry: async () => {
       await rebuildRegistry();
       return registry;
@@ -3946,8 +5439,18 @@ export async function createStrut<TServices = unknown>(
   // Every install as it goes, whichever door (src/packages/progress.ts).
   const installs = createInstallTracker();
   let packageWrites: Promise<unknown> = Promise.resolve();
+  // Each write seeds `job` again after it, in its turn (`seedJob`, above),
+  // and makes the packages' schedules what they now ship (`syncSchedules`,
+  // below, where the automations are made).
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
-    const next = packageWrites.then(fn);
+    const next = packageWrites.then(async () => {
+      try {
+        return await fn();
+      } finally {
+        await seedJob();
+        await syncSchedules();
+      }
+    });
     packageWrites = next.catch(() => undefined);
     return next;
   };
@@ -4016,6 +5519,7 @@ export async function createStrut<TServices = unknown>(
   const packages: Strut["packages"] = {
     booted: Promise.resolve([]),
     installs,
+    repos: undefined as unknown as Repos, // set below, once the repos exist
     install: (ref, opts = {}) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
       return startInstall(ref, opts).done;
@@ -4024,6 +5528,8 @@ export async function createStrut<TServices = unknown>(
       oneAtATime(() =>
         recorded(
           async () => {
+            // An open repo's package goes with its repo: close it first.
+            if (await packages.repos.isOpen(pkg)) throw repoOwned(pkg);
             const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
             await rebuildRegistry();
             return out;
@@ -4056,11 +5562,11 @@ export async function createStrut<TServices = unknown>(
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
+    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned", "package_repo_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
-      : code === "package_index_unreachable"
+      : ["package_index_unreachable", "package_repo_unreachable", "package_repo_denied"].includes(code)
         ? 502
-      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown"].includes(code)
+      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown", "package_repo_not_found", "package_ref_not_found"].includes(code)
         ? 404
         : code === "bad_package" || code.startsWith("package_")
           ? 400
@@ -4070,9 +5576,12 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    type Body = { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown; wait?: unknown };
+    type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
     const body = await c.req.json<Body>().catch(() => ({}) as Body);
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, git+https://host/org/repo@<branch|tag|commit>[#<folder>], or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (body.tokenSecret !== undefined && (typeof body.tokenSecret !== "string" || !isValidSecretName(body.tokenSecret) || !body.ref.startsWith("git+"))) {
+      return c.json({ error: "tokenSecret is the NAME of the secret holding the token a git+ ref is read with (letters, digits, underscore; default GITHUB_TOKEN) — never the token itself" }, 400);
+    }
     if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
@@ -4082,7 +5591,13 @@ export async function createStrut<TServices = unknown>(
     }
     if (body.wait !== undefined && typeof body.wait !== "boolean") return c.json({ error: "wait is a boolean: false answers at once with the install's id, to follow at GET /packages/installs/:id" }, 400);
     const actor = await resolveActor(c);
-    const started = startInstall(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
+    const started = startInstall(body.ref, {
+      ...(body.digest ? { digest: body.digest as string } : {}),
+      ...(body.url ? { url: body.url as string } : {}),
+      ...(body.tokenSecret ? { tokenSecret: body.tokenSecret as string } : {}),
+      ...(body.index ? { index: body.index as string } : {}),
+      ...(actor ? { actor } : {}),
+    });
     if (body.wait === false) {
       // How it ends is on its record; nobody awaits it here.
       started.done.catch(() => undefined);
@@ -4118,6 +5633,8 @@ export async function createStrut<TServices = unknown>(
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
       return "requires is { packages: [{ package, digest }] }: packages built on this strut server, by the digest their build returned";
     }
+    const serveFields = body["serve"];
+    if (serveFields !== undefined && (!serveFields || typeof serveFields !== "object" || Array.isArray(serveFields))) return "serve is serve.yaml's fields: { app, title?, description?, image?, reads?, runnable?, concepts? }";
     return body as unknown as BuildRequest;
   };
   const builtBody = (built: Awaited<ReturnType<typeof buildPackage>>) => ({
@@ -4131,7 +5648,7 @@ export async function createStrut<TServices = unknown>(
     suggested: built.suggested,
   });
   /** A build reads the runs too, for what the workflows wrote and read (`suggested`). */
-  const buildDeps = { ...packageDeps, runs: store };
+  const buildDeps = { ...packageDeps, runs: localStore };
   app.post("/packages/build", async (c) => {
     const { dryRun, ...body } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
     if (dryRun !== undefined && typeof dryRun !== "boolean") return c.json({ error: "dryRun is true or false" }, 400);
@@ -4144,6 +5661,209 @@ export async function createStrut<TServices = unknown>(
       return packageError(c, err);
     }
   });
+
+  // ── Repos (plans/app-repos.md §3; src/packages/repos.ts) ────────────────
+  // A package this strut works ON as a git checkout: Open repo installs a
+  // branch through the `repo` door and keeps a working copy; Commit writes
+  // the workspace's edits into it and pushes (a branch and a PR, or the
+  // branch it follows); Pull commits the edits locally, lets git merge, and
+  // applies the result. Git merges; strut writes files and applies trees. A
+  // person's act like install — behind the key, one write at a time — or an
+  // accepted `package/commit` proposal (the door below).
+  const repoInstall = (ref: string, o: { digest: string; commit: string; actor?: string; adoptPages?: boolean }) =>
+    installs.start({ ref, door: "repo", ...(o.actor ? { actor: o.actor } : {}) }, (progress) =>
+      recorded(
+        () =>
+          installPackage(packageDeps, ref, {
+            digest: o.digest,
+            commit: o.commit,
+            door: "repo",
+            busy: busyWorkflow,
+            forget: forgetWorkflow,
+            progress,
+            ...(o.actor ? { actor: o.actor } : {}),
+            ...(o.adoptPages ? { adoptPages: true } : {}),
+          }),
+        (res) => ({ cause: res ? `repo ${res.package}@${o.commit.slice(0, 12)}` : `repo ${ref}`, ...(o.actor ? { actor: o.actor } : {}) }),
+      ),
+    ).done;
+  const repos = createRepos({
+    dataDir,
+    cache: packageStore,
+    files: packageDeps,
+    ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
+    ...((services as unknown as StrutCapabilities).http ? { http: (services as unknown as StrutCapabilities).http } : {}),
+    ...(secretsCap ? { secrets: secretsCap } : {}),
+    install: repoInstall,
+    build: async (req) => {
+      const built = await buildPackage(buildDeps, req);
+      const cached = await packageStore.get(built.digest);
+      if (!cached) throw new Error(`package_cache_corrupt: the build of ${built.package} is not in the cache`);
+      return cached;
+    },
+    retire: async (item) => {
+      if (item.kind === "workflow") {
+        if (busyWorkflow(item.name)) throw new Error(`package_busy: ${item.name} has a run in flight — cancel it first`);
+        await forgetWorkflow(item.name);
+        await workspace.deleteWorkflow(item.name);
+      } else if (item.kind === "step") {
+        await workspace.deleteStep(item.name);
+        await rebuildRegistry();
+      } else if (item.kind === "app") await apps.delete(item.name);
+      else throw new Error(`a ${item.kind} is not retired here`);
+    },
+  });
+  packages.repos = repos;
+  reposForSources = repos;
+  // An OPEN repo's prefix takes new names (src/workspace.ts `OpenPackages`):
+  // the author adds a workflow, step or app to the package from any door,
+  // and the next Commit writes it. Every other installed package keeps the
+  // name rule.
+  baseWorkspace.setOpenPackages?.((prefix) => repos.isOpen(prefix));
+  /** A repo refusal's code → its status, else as a package refusal. */
+  const repoError = (c: Context, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+    const status = ({ package_repo_not_open: 404, package_repo_open: 409, package_repo_merging: 409, package_repo_not_empty: 409, push_rejected: 409, no_push_permission: 403, package_repo_unreachable: 502 } as Record<string, 403 | 404 | 409 | 502>)[code];
+    return status ? c.json({ error: message }, status) : packageError(c, err);
+  };
+  const repoOf = (c: Context) => `${c.req.param("publisher")}/${c.req.param("name")}`;
+  const str = (v: unknown) => v === undefined || typeof v === "string";
+  app.get("/packages/repos", async (c) => c.json({ repos: await repos.list() }));
+  app.post("/packages/repos", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Opening a repo is disabled when the registry is provided at construction time" }, 409);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof body["url"] !== "string" || !body["url"] || !str(body["ref"]) || !str(body["path"]) || !str(body["tokenSecret"])) {
+      return c.json({ error: "url is the repository (https://github.com/acme/moonlander); ref (a branch), path (the folder holding strut.yaml) and tokenSecret (the NAME of the secret its token is in) are strings" }, 400);
+    }
+    const actor = await resolveActor(c);
+    try {
+      const opened = await oneAtATime(() =>
+        repos.open({
+          url: body["url"] as string,
+          ...(body["ref"] ? { ref: body["ref"] as string } : {}),
+          ...(body["path"] ? { path: body["path"] as string } : {}),
+          ...(body["tokenSecret"] ? { tokenSecret: body["tokenSecret"] as string } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(opened, 201);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/create", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Creating a repo is disabled when the registry is provided at construction time" }, 409);
+    const { url, branch, path, tokenSecret, ...rest } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof url !== "string" || !url || !str(branch) || !str(path) || !str(tokenSecret)) {
+      return c.json({ error: "url is the EMPTY repository to push to; branch (default main), path (a folder to put the package in) and tokenSecret are strings" }, 400);
+    }
+    const req = buildRequestOf(rest);
+    if (typeof req === "string") return c.json({ error: req }, 400);
+    const actor = await resolveActor(c);
+    try {
+      const created = await oneAtATime(() =>
+        repos.create({
+          ...req,
+          url,
+          ...(branch ? { branch: branch as string } : {}),
+          ...(path ? { path: path as string } : {}),
+          ...(tokenSecret ? { tokenSecret: tokenSecret as string } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(created, 201);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.get("/packages/repos/:publisher/:name", async (c) => {
+    const repo = await repos.get(repoOf(c));
+    return repo ? c.json(repo) : c.json({ error: `${repoOf(c)} is not opened here as a repo` }, 404);
+  });
+  app.get("/packages/repos/:publisher/:name/diff", async (c) => {
+    try {
+      return c.json(await oneAtATime(() => repos.diff(repoOf(c))));
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/commit", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof body["message"] !== "string" || !(body["message"] as string).trim() || !str(body["branch"]) || (body["pr"] !== undefined && typeof body["pr"] !== "boolean")) {
+      return c.json({ error: "message is the commit message; branch (where to push — the followed branch pushes straight to it) is a string, pr a boolean" }, 400);
+    }
+    const actor = await resolveActor(c);
+    try {
+      const done = await oneAtATime(() =>
+        repos.commit(repoOf(c), {
+          message: body["message"] as string,
+          ...(body["branch"] ? { branch: body["branch"] as string } : {}),
+          ...(body["pr"] !== undefined ? { pr: body["pr"] as boolean } : {}),
+          ...(actor ? { actor } : {}),
+        }),
+      );
+      return c.json(done, done.committed ? 201 : 200);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/pull", async (c) => {
+    const actor = await resolveActor(c);
+    try {
+      const pulled = await oneAtATime(() => repos.pull(repoOf(c), actor ? { actor } : {}));
+      if (pulled.conflict) {
+        return c.json(
+          {
+            error: `package_repo_conflict: git could not merge ${pulled.conflict.join(", ")} — resolve the conflict in the working copy and Pull again; nothing was installed`,
+            ...pulled,
+          },
+          409,
+        );
+      }
+      return c.json(pulled);
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.post("/packages/repos/:publisher/:name/retire", async (c) => {
+    const body = await c.req.json<{ items?: unknown }>().catch(() => ({}) as { items?: unknown });
+    const items = body.items;
+    if (!Array.isArray(items) || !items.every((i) => i && typeof i === "object" && typeof (i as RepoItem).name === "string" && ["workflow", "step", "app"].includes((i as RepoItem).kind))) {
+      return c.json({ error: "items is a list of { kind: workflow | step | app, name }: the bare originals Create repo named" }, 400);
+    }
+    try {
+      return c.json(await oneAtATime(() => repos.retire(repoOf(c), items as RepoItem[])));
+    } catch (err) {
+      return repoError(c, err);
+    }
+  });
+  app.delete("/packages/repos/:publisher/:name", async (c) => {
+    const closed = await oneAtATime(() => repos.close(repoOf(c)));
+    return closed ? c.json({ ok: true }) : c.json({ error: `${repoOf(c)} is not opened here as a repo` }, 404);
+  });
+  // `package/commit`'s door (src/steps/lib/package/commit.ts): a commit and
+  // push only as the apply of an ACCEPTED proposal of that step for this
+  // very package, message, branch and pull request — the record on disk is
+  // the proof, as for package/install.
+  packagesBag["repo"] ??= async (pkg: string) => {
+    const r = await repos.get(pkg);
+    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.added, ...r.forked, ...r.deleted] } : undefined;
+  };
+  packagesBag["commit"] ??= async (pkg: string, o: { proposal: string; message: string; branch?: string; pr?: boolean; actor?: string }) => {
+    const rec = typeof o?.proposal === "string" ? await readProposal(proposalsDir, o.proposal) : null;
+    const asked = (rec?.input ?? {}) as { package?: unknown; message?: unknown; branch?: unknown; pr?: unknown };
+    if (!rec || rec.step !== "package/commit" || rec.status !== "accepted" || asked.package !== pkg || asked.message !== o.message || asked.branch !== o.branch || asked.pr !== o.pr) {
+      throw new Error(
+        `package_commit_needs_person: committing ${pkg} runs only as the apply of a proposal a person accepted for it` +
+          (rec ? ` (proposal ${rec.id} is ${rec.status}, for ${rec.step}${asked.package ? ` ${String(asked.package)}` : ""})` : ""),
+      );
+    }
+    if (registryWasInjected) throw new Error("package_unsupported: committing is disabled when the registry is provided at construction time");
+    return oneAtATime(() =>
+      repos.commit(pkg, { message: o.message, ...(o.branch ? { branch: o.branch } : {}), ...(o.pr !== undefined ? { pr: o.pr } : {}), ...(o.actor ? { actor: o.actor } : {}) }),
+    );
+  };
 
   // ── The publisher (plans/marketplace.md §13, §12.1) ─────────────────────
   // This strut's Ed25519 key, in a file of its own beside peers.json, and
@@ -4230,11 +5950,24 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "description and url are strings, live a boolean" }, 400);
     }
     try {
+      if (!(await indexes.list()).some((x) => x.id === body.index)) throw new Error(`package_index_unknown: this strut server follows no index "${body.index}"`);
+      const name = (await publisher.get())?.name;
+      if (!name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
+      // A server with nothing public yet lists its public VIEW (plans/public-view-listing.md
+      // §1): the ask mints the public key and an empty public catalog, the index's proof
+      // that this base holds the key. Asked for nothing an index could list, it mints nothing.
+      const shown = (await catalogDeps.publicCatalogs.current())?.card.packages ?? {};
+      if (body.live !== true && !Object.keys(shown).some((p) => p.startsWith(`${name}/`))) {
+        throw new Error(`listing_nothing_public: this strut server has made no package under ${name}/ public — make one public, or ask for its public view (live: true)`);
+      }
+      const badBase = baseProblem(body.base, { allowHttp: true });
+      if (badBase) throw new Error(`listing_invalid: ${badBase}`);
+      if (body.live === true) await oneAtATime(() => ensurePublicCatalog(catalogDeps));
       return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-      const status = ({ publisher_not_public: 409, publisher_no_name: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
+      const status = ({ publisher_not_public: 409, publisher_no_name: 409, publisher_unsafe_key: 409, listing_nothing_public: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
       return c.json({ error: message }, status);
     }
   });
@@ -4265,7 +5998,10 @@ export async function createStrut<TServices = unknown>(
         }
         const built = await buildPackage(buildDeps, req);
         const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
-        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
+        // The release names its plain tar's sha256 and infohash (§13).
+        const torrent = packageTorrent(built.digest, await packTar(built.dir, built.files));
+        const tar = { sha256: torrent.sha256, infohash: torrent.infohash };
+        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, tar, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
         return { built, catalog, publicBefore };
       });
       pingSubscribers(catalog.card.key);
@@ -4329,6 +6065,15 @@ export async function createStrut<TServices = unknown>(
       return catalogError(c, err);
     }
   });
+  /** The public VIEW changed (a save, a served box's deploy): every index
+   *  this strut asked to list it reads it again (plans/public-view-listing.md
+   *  §6). The index re-reads the live row of each row naming the key. */
+  const viewChanged = () => {
+    void (async () => {
+      const key = (await publisher.get().catch(() => undefined))?.public;
+      if (key) await listings.ping(key);
+    })().catch(() => undefined);
+  };
   /** The same ping with the PUBLIC key, when the public catalog changed —
    *  what an index strut among the peers follows (§7). */
   const pingPublic = async (before: string | undefined) => {
@@ -4376,7 +6121,7 @@ export async function createStrut<TServices = unknown>(
     cache: packageStore,
     install: (refs, o) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return installs.start({ ref: refs.map((x) => x.ref).join(", "), door: o.door ?? "distro" }, (progress) =>
+      return installs.start({ ref: refs.map((x) => x.ref).join(", "), door: o.door ?? "distro", ...(o.actor ? { actor: o.actor } : {}) }, (progress) =>
         oneAtATime(() =>
           recorded(
             () => installPackages(packageDeps, refs, { ...o, progress, busy: busyWorkflow, forget: forgetWorkflow }),
@@ -4387,6 +6132,73 @@ export async function createStrut<TServices = unknown>(
     },
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
+    // A `git+` subscription's branch, read as serve mode reads its ref.
+    dataDir,
+    // The gate reads what the subscription's runs would: its person's view
+    // (theirs, then the deployment's, then env), or the deployment's.
+    ...(secretsCap
+      ? { secret: (name: string, actor?: string) => (actor && secretsCap.forPrincipal ? secretsCap.forPrincipal(actor) : secretsCap).get(name) }
+      : {}),
+    // A person's subscription reads its branch with their own token alone.
+    own: (actor: string, name: string) => actorSecrets.get(actor, name),
+    ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
+  });
+
+  // ── Serve mode (src/packages/serve.ts; plans/app-repos.md §4) ──────────
+  // The package this box serves: installed through the distro's door, its
+  // `serve.yaml` the public view, `/` its app alone (the UI's catch-all,
+  // below). Followed as a subscription is: the subscriptions' poll and the
+  // publisher's ping read the ref again.
+  const served: ServeService | null =
+    serveRef && !registryWasInjected
+      ? await createServe({
+          serve: serveRef,
+          dataDir,
+          cache: packageStore,
+          resolveName: (name) => indexes.resolveName(name),
+          install: (ref, o) => packages.install(ref, { ...o, door: "distro" }),
+          ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+          ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
+          apps,
+          workspace,
+          surfaceProblems: async (s) => {
+            const problems = await runnableProblems(s, runnableDeps);
+            // The first priced item mints the credit tokens' root (§4.2), as a person's save does.
+            if (!problems.length && s.runnable.some(isPriced)) await payments.settings.ensureL402Root();
+            return problems;
+          },
+          setSurface: async (s) => {
+            await publicSurface.set(s);
+            viewChanged();
+          },
+          icon: (name) => lucideIconSvg(opts.kit ?? {}, name),
+        })
+      : null;
+  if (serveRef && registryWasInjected) console.warn(`[serve] not serving ${serveRef.ref}: installing is disabled when the registry is provided at construction time`);
+  // Who is serving, and how the last deploy went: the operator's, full scope.
+  app.get("/serve", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: a served box's state is its operator's" }, 403);
+    if (!served) return c.json({ error: "this strut server serves no package (STRUT_SERVE)" }, 404);
+    return c.json(served.status());
+  });
+  // A push webhook (GitHub, GitLab, Forgejo): fetch the served ref now, at
+  // most once a minute — a ping inside the minute is one fetch when it is
+  // up. Open to anyone on a served box (the gate): all it can do is make
+  // strut read the ref it already follows. The body is not read.
+  app.post("/serve/sync", (c) => {
+    if (!served) return c.json({ error: "this strut server serves no package (STRUT_SERVE)" }, 404);
+    return c.json(served.ping(), 202);
+  });
+  // The image `serve.yaml` names, for a link's preview (og:image): open to
+  // anyone, as `/` is.
+  app.get(SERVE_IMAGE_PATH, async (c) => {
+    const file = served?.imageFile();
+    if (!file) return c.json({ error: "no image is served here" }, 404);
+    try {
+      return c.body(new Uint8Array(await readFile(file)), 200, { ...artifactHeaders(file), "cache-control": "public, max-age=300" });
+    } catch {
+      return c.json({ error: "no image is served here" }, 404);
+    }
   });
   // ── The indexes this strut FOLLOWS (§7, step 7's client half) ──────────
   // `{ id, key, urls }`: the operator's (full scope; a peer reads). Search
@@ -4418,7 +6230,11 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages/subscriptions", async (c) => c.json({ subscriptions: await subscriptions.list() }));
   app.put("/packages/subscriptions/:id", async (c) => {
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-    const sub = { ...body, id: c.req.param("id") } as Subscription;
+    // Its person is whoever makes the PUT (stadeum plans/software.md §5,
+    // item 15): never a name the body gives.
+    if ("actor" in body) return c.json({ error: "subscription_invalid: a subscription's person is whoever makes the PUT (the request's actor), never a field of its body" }, 400);
+    const actor = await resolveActor(c);
+    const sub = { ...body, id: c.req.param("id"), ...(actor ? { actor } : {}) } as Subscription;
     const problem = subscriptionProblem(sub);
     if (problem) return c.json({ error: `subscription_invalid: ${problem}` }, 400);
     const info = await subscriptions.set(sub);
@@ -4436,29 +6252,49 @@ export async function createStrut<TServices = unknown>(
     }
   });
   // The publisher's ping (a peer may send it): read the catalogs now — of
-  // the subscriptions to `key`, or all of them. Answered at once.
+  // the subscriptions to `key`, or all of them. Answered at once. A `git+`
+  // subscription has no publisher: its host syncs it by id (below), in its
+  // own window (plans/followed-repos.md §1.3).
   app.post("/packages/subscriptions/sync", async (c) => {
     const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
     if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
-    void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    void subscriptions.syncAll({ ...(body.key ? { key: body.key } : {}), git: false });
+    // A served ref is followed the same way (src/packages/serve.ts).
+    if (served?.follows(body.key)) void served.sync();
     // The index follows the same ping: a listed publisher's public catalog moved.
     if (index) void index.crawl(body.key ? { key: body.key } : {}).catch(() => undefined);
     return c.json({ ok: true }, 202);
+  });
+  // One subscription read now, answered with the outcome — the operator's
+  // (full scope: the peer gate lets a peer POST only the ping above). How a
+  // host moves a `git+` subscription in its window.
+  app.post("/packages/subscriptions/:id/sync", async (c) => {
+    const out = await subscriptions.sync(c.req.param("id"));
+    return c.json(out, out.error?.startsWith("subscription_unknown:") ? 404 : 200);
   });
 
   // ── The package INDEX (plans/marketplace.md §7, step 7) ─────────────────
   // This strut as the phone book and the crawler behind it (src/packages/
   // index.ts): the rows are a person's (full scope), the card and the
   // search are anyone's — open in the gate, as the public catalog is.
+  /** The scheme the request was made with, a proxy's header honored. */
+  const requestProto = (c: Context) => c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(c.req.url).protocol.replace(/:$/, "");
+  /** Where people reach this server, mount path included (mcp's `/lab`):
+   *  `STRUT_PUBLIC_URL`, else the request's origin and its
+   *  `x-forwarded-prefix`. A public app's share links (public-routes.ts
+   *  `publicAppLinks`). */
+  function baseOfRequest(c: Context): string {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+    const prefix = c.req.header("x-forwarded-prefix")?.split(",")[0]?.trim().replace(/\/+$/, "") ?? "";
+    return `${publicUrlOf(c)}${prefix}`;
+  }
   /** The base a caller OUTSIDE the UI is handed links on: `STRUT_PUBLIC_URL`
    *  (`opts.publicUrl`), else the request's own origin (a proxy's headers
    *  honored) — the MCP doors' links, the index door's store links. */
   const publicUrlOf = (c: Context) => {
     if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
-    const url = new URL(c.req.url);
-    const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
-    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
-    return `${proto}://${host}`;
+    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || new URL(c.req.url).host;
+    return `${requestProto(c)}://${host}`;
   };
   /** The index's requests desk, when this strut is an index. */
   let requestsDesk: RequestsDesk | undefined;
@@ -4480,6 +6316,29 @@ export async function createStrut<TServices = unknown>(
             : undefined,
       })
     : null;
+  /** `GET /llms.txt`, one page (the index's store, else the public view):
+   *  built at most every `LLMS_TXT_CACHE_MS` per base URL — it reads the
+   *  ledger and the store — and counted against the visitor address's
+   *  `/public` budget, as the reads it summarizes are. `null`: nothing to
+   *  show, a 404. */
+  const llmsCache = new Map<string, { at: number; text: string | null }>();
+  const llmsPage = async (c: Context, build: (publicUrl: string) => Promise<string | null>) => {
+    if (publicDoors.overBudget(visitorAddress(c))) return c.json({ error: `too many requests: ${PUBLIC_REQUESTS_PER_MINUTE} a minute` }, 429, { "retry-after": "60" });
+    const publicUrl = publicUrlOf(c);
+    let hit = llmsCache.get(publicUrl);
+    if (!hit || Date.now() - hit.at > LLMS_TXT_CACHE_MS) {
+      if (llmsCache.size > 100) llmsCache.clear();
+      hit = { at: Date.now(), text: await build(publicUrl) };
+      llmsCache.set(publicUrl, hit);
+    }
+    if (hit.text === null) return c.json({ error: "nothing is public on this strut server" }, 404);
+    return c.body(hit.text, 200, {
+      "content-type": "text/markdown; charset=utf-8",
+      "x-content-type-options": "nosniff",
+      "cache-control": "public, max-age=30",
+      "access-control-allow-origin": "*",
+    });
+  };
   if (index) {
     const indexError = (c: Context, err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -4609,7 +6468,32 @@ export async function createStrut<TServices = unknown>(
     app.get("/index/packages/:publisher/:name", async (c) => {
       const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
       const page = await index.package(name);
-      return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+      if (!page) return c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+      // `?docs=0`: without each Concept page's text. The store draws a
+      // package's tree from names alone and reads one page's docs from
+      // `/index/concepts/:name`; a package of 750 pages is megabytes of them.
+      return c.json(c.req.query("docs") === "0" ? withoutConceptDocs(page) : page, 200, { "cache-control": "public, no-cache" });
+    });
+    // One of a package's app screenshots (app.yaml `screenshots`), read from
+    // the index's cache: only a path the derived page lists. With `digest`
+    // (the store's links carry it) it is that release's for good.
+    app.get("/index/packages/:publisher/:name/screenshot", async (c) => {
+      const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
+      const path = c.req.query("path") ?? "";
+      const digest = c.req.query("digest");
+      if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
+      const shot = path ? await index.screenshot(name, path, digest) : undefined;
+      if (!shot) return c.json({ error: `${name} has no screenshot ${path ? `at ${path}` : "named"}${digest ? ` in ${digest}` : ""}` }, 404);
+      const etag = `"${shot.digest}:${path}"`;
+      const headers = {
+        "content-type": shot.type,
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+        "cache-control": digest ? "public, max-age=31536000, immutable" : "public, no-cache",
+        etag,
+      };
+      if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+      return c.body(shot.bytes.buffer.slice(shot.bytes.byteOffset, shot.bytes.byteOffset + shot.bytes.byteLength) as ArrayBuffer, 200, headers);
     });
     // The Concept pages across every crawled package (plans/marketplace.md
     // §7, the store): the tree, and one page with its docs.
@@ -4641,26 +6525,61 @@ export async function createStrut<TServices = unknown>(
     // agent that fetches URLs rather than speaks MCP: what the index is, the
     // door above, the open reads, every package and Concept page, each a
     // link to its JSON page here. Open like the reads; derived like them.
-    app.get("/llms.txt", async (c) => {
-      const { llmsTxt } = await import("./packages/index-tools.js");
-      const publicUrl = publicUrlOf(c);
-      const text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
-      return c.body(text, 200, { "content-type": "text/markdown; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "public, no-cache" });
-    });
+    app.get("/llms.txt", (c) =>
+      llmsPage(c, async (publicUrl) => {
+        const { llmsTxt } = await import("./packages/index-tools.js");
+        let text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
+        // An index that also sells (plans/paid-runs.md §10): what anyone may
+        // run HERE, after the store.
+        const runnable = await publicDoors.runnable().catch(() => []);
+        if (runnable.length) {
+          const { runnableSection } = await import("./public-agents.js");
+          const how = enableMcp
+            ? `over MCP at ${publicUrl}/public/mcp (list_public, run_workflow, call_tool, get_run, get_credit) or plain HTTP`
+            : "over plain HTTP";
+          text += `\n# Run on this server\n\nAnyone may run these here, with no account, ${how}.\n\n${runnableSection(runnable, publicUrl).join("\n")}\n`;
+        }
+        return text;
+      }),
+    );
+  } else {
+    // The public view as ONE markdown page (llmstxt.org, plans/paid-runs.md
+    // §10): what anyone may run here and its price, how an agent runs and
+    // pays for it, what else anyone may read. Open to anyone, like
+    // `/public`; nothing public, nothing here.
+    app.get("/llms.txt", (c) =>
+      llmsPage(c, async (publicUrl) => {
+        const listing = await publicDoors.listing();
+        if (!listing.runnable.length && !listing.workflows.length && !listing.apps.length && !listing.concepts.length && !listing.steps.length) return null;
+        const { publicLlmsTxt } = await import("./public-agents.js");
+        return publicLlmsTxt(listing, { publicUrl, mcp: enableMcp });
+      }),
+    );
   }
 
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
   const pollMinutes = opts.subscriptionPoll ?? (Number.isFinite(envPoll) && envPoll >= 0 ? envPoll : 10);
   const subscriptionTimers: NodeJS.Timeout[] = [];
+  // A served git+ ref has a poll of its own (below); any other is read
+  // again with the subscriptions.
+  const servesGit = !!served && served.ref.ref.startsWith("git+");
   if (pollMinutes !== false) {
     const tick = () => {
       void subscriptions.syncAll();
+      if (!servesGit) void served?.sync();
       if (index) void index.crawl().catch(() => undefined);
     };
     subscriptionTimers.push(setTimeout(tick, 3_000));
     if (pollMinutes > 0) subscriptionTimers.push(setInterval(tick, pollMinutes * 60_000));
-    for (const t of subscriptionTimers) t.unref?.();
   }
+  // Following the branch (plans/app-repos.md §4.3): fetched every
+  // STRUT_SERVE_POLL_MINUTES, deployed when the commit and the digest moved.
+  if (servesGit) {
+    const envServePoll = Number(bootEnv()["STRUT_SERVE_POLL_MINUTES"] ?? SERVE_POLL_MINUTES);
+    const servePoll = opts.servePoll ?? (Number.isFinite(envServePoll) && envServePoll >= 0 ? envServePoll : SERVE_POLL_MINUTES);
+    if (servePoll !== false && servePoll > 0) subscriptionTimers.push(setInterval(() => void served!.sync(), servePoll * 60_000));
+  }
+  for (const t of subscriptionTimers) t.unref?.();
 
   app.delete("/packages/:publisher/:name", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
@@ -4841,7 +6760,7 @@ export async function createStrut<TServices = unknown>(
     // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
       viewer: { scope, ...(actor ? { actor } : {}) },
-      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
+      limit: limitQ !== undefined ? Number(limitQ) : PROPOSAL_LIST_DEFAULT,
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
@@ -4887,6 +6806,16 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "input must be an object: the edits merged onto the proposal's input" }, 400);
     }
     if (body.reason !== undefined && typeof body.reason !== "string") return c.json({ error: "reason must be a string" }, 400);
+    // A host decides as the person it names, and only a proposal made in one
+    // of its own conversations (plans/jamie-in-tribes.md §6.1). Never as an
+    // admin: `decideProposal` takes `host` for a person's scope.
+    if (hostCalls.has(c.req.raw)) {
+      const as = hostPerson(c);
+      if (as instanceof Response) return as;
+      const p = await readProposal(proposalsDir, id);
+      const thread = p && (p.by.conversation ?? p.by.session);
+      if (!thread || hostOfSession(thread) !== as.host) return c.json({ error: `No proposal "${id}" in a conversation of this host` }, 404);
+    }
     const actor = await resolveActor(c);
     const outcome = await decide(id, {
       action: body.action,
@@ -4915,7 +6844,11 @@ export async function createStrut<TServices = unknown>(
     if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
     const busy = (id: string) => (sessions.holder(id) ? { busy: true } : {});
     if (c.req.query("id") === undefined) {
-      return c.json({ sessions: (await sessionStore.list()).map((s) => ({ ...s, ...busy(s.id) })) });
+      // The newest `limit`, reading no other session: a swarm holds one per
+      // job and conversation, months of them.
+      const limit = pageLimit(c.req.query("limit"), SESSION_LIST_DEFAULT_LIMIT, SESSION_LIST_MAX_LIMIT);
+      const listed = await sessionStore.list({ limit: limit + 1 });
+      return c.json({ sessions: listed.slice(0, limit).map((s) => ({ ...s, ...busy(s.id) })), ...(listed.length > limit ? { more: true } : {}) });
     }
     const at = sessionRoute(c);
     if (at instanceof Response) return at;
@@ -5112,6 +7045,20 @@ export async function createStrut<TServices = unknown>(
     envWallet: payments.envWallet,
   });
 
+  // ── The rate this strut trusts (src/payments/rate.ts) ───────────────────
+  // What strut's UI prices a STRANGER's invoice at (specs/API.md §17.9): the
+  // sats an invoice asks are the price, and dollars beside them come from
+  // here, never from the seller's own quote. Any credential, a member's
+  // session included (it hosts apps alone); read a minute at a time.
+  app.get("/rate", async (c) => {
+    try {
+      const r = await payments.rate.read();
+      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
+    }
+  });
+
   // ── Earnings and Withdraw (plans/paid-runs.md §8; src/payments/earnings*.ts) ──
   // Full scope only, reads included. The same read is `ctx.services.earnings`
   // (reads, nothing that pays), what the `earnings/read` step answers with.
@@ -5122,6 +7069,10 @@ export async function createStrut<TServices = unknown>(
     walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
     lightning: () => payments.lightning(),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    settleDeposits: () => deposits.check(),
+    // What workers are owed is held by the task store's clock
+    // (plans/human-steps.md §8.1), so the Earnings tab and `task/me` agree.
+    ...(opts.tasks?.now ? { now: opts.tasks.now } : {}),
     // A package published HERE: its items carry their bare local names
     // (plans/packages-ux.md), so its subjects come from its newest release —
     // each item by its name inside the package, and by the prefixed name
@@ -5152,7 +7103,125 @@ export async function createStrut<TServices = unknown>(
     earnings: earningsDeps,
     ledger: ledgerIfAny,
     withdrawals,
+    deposits,
   });
+
+  /** What is wrong with the app a task type names (§9.5's check): the
+   *  queue's, and `task/set-type`'s card. */
+  const typeAppProblem = async (name: string) => taskAppProblem(name, (await apps.manifestOf(name).catch(() => null))?.manifest ?? null);
+  // The TASK TYPES on the shared bag (plans/human-steps.md §9.2, §9.8;
+  // src/tasks/set-type.ts): the types read with their open tasks and how
+  // many workers hold each, and a save that opens only for an ACCEPTED
+  // `task/set-type` proposal on disk (an admin's), for that name and input —
+  // the record is the proof, as for package/install. Over the store the
+  // staff routes hold. A host's own `taskTypes` wins.
+  if (!(services as Record<string, unknown>)["taskTypes"]) {
+    (services as Record<string, unknown>)["taskTypes"] = Object.freeze(
+      createTaskTypes({
+        tasks: hostTasks ?? tasks.capability,
+        proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+        appProblem: typeAppProblem,
+        usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+      }),
+    );
+  }
+
+  // ── The task store's staff routes (plans/human-steps.md §6; src/tasks/routes.ts) ──
+  // Task types, workers and their grants, the tasks and their leases: full
+  // scope only, reads included, like the earnings. The worker's own door is
+  // the `task/*` steps through an app's `step_run` (§5).
+  taskRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    // The whole store, held here and nowhere on a bag (plans/human-steps.md
+    // §9.2): strut's own, or a host's own `services.tasks`.
+    tasks: hostTasks ?? tasks.capability,
+    // A person's take-back of an earning in its hold (§8.1), a verdict on
+    // an answer (§9.6) and the tests (§7.1): the service's, never a
+    // capability's. None with a host's own store.
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, reviewGroup: tasks.reviewGroup, tests: tasks.tests }),
+    // Withdraw's settings and payouts (§8.2): the payer's, whatever task
+    // store the routes hold.
+    payouts,
+    // A worker's invite (§5.8): the daemon's, through the payer; its link
+    // on the base the share links use, opening Tasks on the kind of work it
+    // is for — which strut notes beside tasks.db, as the daemon keeps no
+    // more than code, sats and status.
+    invites: createInvites({
+      payer: () => payments.payer(),
+      inviteSats: async () => (await payouts.settings()).inviteSats,
+      publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
+      typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
+      ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
+    }),
+    // Tasks online (§5.8): the one app a staff page puts in the public view
+    // itself, as the Public view tab saves it with nothing unticked —
+    // strut's own seed, calling only the worker's task/* steps.
+    tasksOnline: async (actor) => {
+      const needs = await publicViewNeeds(publicViewDeps, { app: WORKER_APP });
+      if ("error" in needs) throw new TaskError("refused", needs.error);
+      const out = await savePublicView(withNeeds(await publicSurface.get(), needs), actor ? { actor } : {});
+      if (out.status !== 200) throw new TaskError("refused", out.body.error ?? `the public view was not saved (${out.status})`);
+      return { app: WORKER_APP, public: true as const };
+    },
+    // The share links' base (`baseOfRequest`, with a mount path): a staff
+    // page's in-process request is `http://strut.invalid`, so it takes where
+    // the page's own request came (`lastBase`), as staff/types' share does.
+    publicUrl: (c) => (inProcessOf(c) && lastBase) || baseOfRequest(c),
+    // Send a round: a round type's items read off its workflow, and the
+    // workflow launched as the admin who sent it, with the items they
+    // ticked (or its defaults), as `POST /workflows/:name/run` launches.
+    rounds: {
+      items: async (workflow) => {
+        const flow = await workspace.getWorkflow(workflow).catch(() => null);
+        if (!flow) throw new TaskError("refused", `no workflow ${workflow} here`);
+        return roundItems(flow);
+      },
+      send: async (workflow, input, actor) => {
+        const draining = drain.refusal();
+        if (draining) throw new TaskError("refused", draining);
+        const flow = await workspace.getWorkflow(workflow).catch(() => null);
+        if (!flow) throw new TaskError("refused", `no workflow ${workflow} here`);
+        const disabled = await workflowDisabled(workspace, workflow);
+        if (disabled) throw new TaskError("refused", disabled);
+        const parsed = flow.input.safeParse(input ?? {});
+        if (!parsed.success) throw new TaskError("bad_request", `the round's input does not fit workflow ${workflow}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
+        return launchDetached(flow, { runId: generateRunId(), ...(input ? { input } : {}) }, actor ? { actor } : undefined);
+      },
+      workflowsFor: async (type) => {
+        const out: Array<{ name: string; standing: boolean }> = [];
+        for (const { name } of await workspace.listWorkflows()) {
+          const flow = await workspace.getWorkflow(name).catch(() => null);
+          if (!flow || flow.sealed || roundProblem(flow, type)) continue;
+          out.push({ name, standing: !("problem" in standingTask(flow, type)) });
+        }
+        return out.sort((a, b) => a.name.localeCompare(b.name));
+      },
+    },
+    // The queue's check of each type's app, and a task's run now (§9.4).
+    appProblem: typeAppProblem,
+    runOf: async (workflow, runId) => {
+      // The summary first: a run that parks writes it before its controller
+      // goes, and a resume drops it first thing (`launchDetached`).
+      const summary = await store.getRunSummary(workflow, runId);
+      if (summary) return { status: summary.status, ...(summary.waitingOn?.length ? { waitingOn: summary.waitingOn } : {}) };
+      if (controllers.has(`${workflow}/${runId}`)) return { status: "running" };
+      // Started and never finalized, and not live here: resumable (§5).
+      return (await store.getRunStart(workflow, runId)) ? { status: "stale" } : null;
+    },
+  });
+
+  // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
+  // in-process request, the viewer's own, for the steps strut's own admin
+  // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
+  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks).
+  // Handed to the app door's bag for a first-party page shown to an admin,
+  // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
+  // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
+  // file, `PUT /tasks/tests/:id/files/<path>`).
+  const sendInProcess = (req: Request, actor?: string) => Promise.resolve(app.fetch(inProcessRequest(req, actor)));
+  const earningsAdminDoor: EarningsAdminDoor = inProcessDoor(sendInProcess, EARNINGS_ROUTES, "admin");
+  const staffAdminDoor: AdminDoor = inProcessDoor(sendInProcess, STAFF_ROUTES, "staff");
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
   // What this strut bought where, and what is still being paid: an admin's
@@ -5677,7 +7746,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/steps/:type{.+}/stats", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
-    return c.json(await stepStats(workspace, store, type));
+    return c.json(await stepStats(workspace, localStore, type));
   });
 
   // Source code for a step. In-code steps (injected via createRegistry) carry
@@ -5902,6 +7971,12 @@ export async function createStrut<TServices = unknown>(
      *  artifacts when it starts, put on each `agent` step's prompt. The
      *  bytes never reach the log. */
     attachments?: unknown;
+    /** The Concept BRANCH the run is on (src/branches.ts, ruling 10): a
+     *  launch-level field like `job`, never in `input`. Its Concepts are the
+     *  branch's, the rest of the graph live; every run it starts is on it.
+     *  Full scope only; a peer's launch is refused it. Recorded on
+     *  `run.start` and the summary. */
+    branch?: string;
   }
 
   /**
@@ -5921,9 +7996,17 @@ export async function createStrut<TServices = unknown>(
    *  `app/…`) or no conversation stays in the caller's namespace, as
    *  before. Any other the index decides: a conversation they took a turn
    *  in, or a shared one, opens as it is; another person's is refused. */
+  function hostedRefusal(id: string, host: string): string {
+    return `conversation_hosted: "${id}" is a conversation the host "${host}" opened — it is continued there (a tribe: reply there); fork it to continue it here (conversation/fork)`;
+  }
   async function continuesFor(flow: Flow, input: unknown, actor: string | undefined): Promise<{ continues?: string } | { refused: string }> {
     const id = (input as Record<string, unknown> | undefined)?.["session"];
     if (!actor || typeof id !== "string" || !id || !isConversationFlow(flow)) return {};
+    // A host's conversation is continued by its host alone (plans/jamie-in-tribes.md
+    // ruling 9): a turn from here would be answered here, and its jobs'
+    // wakes there. Forking it is how a person continues it here.
+    const host = hostOfSession(id);
+    if (host) return { refused: hostedRefusal(id, host) };
     if (id === actor || id.startsWith(`${actor}/`) || outsideConversations(id) || idProblem(id)) return {};
     const may = await conversations.mayContinue(id, actor);
     if (may === true) return { continues: id };
@@ -5943,7 +8026,10 @@ export async function createStrut<TServices = unknown>(
       /** An automation's fire (plans/automations.md §3), a peer's launch
        *  (plans/federation.md §3), an app's (plans/apps.md §5), or anyone's
        *  (`POST /public/workflows/:name/run`, plans/paid-runs.md §6). */
-      origin?: "schedule" | "peer" | "app" | "public";
+      origin?: "schedule" | "peer" | "app" | "public" | "host";
+      /** A host's turn (`origin: "host"`, plans/jamie-in-tribes.md §5.1):
+       *  the host's name, on `run.start`; its sessions under `host/<host>/`. */
+      host?: string;
       /** The run's own cost cap (a public run's, plans/paid-runs.md §7):
        *  recorded on `run.start`, handed to `llmAuth`. */
       maxCostUsd?: number;
@@ -5991,12 +8077,19 @@ export async function createStrut<TServices = unknown>(
       savedAttachments?: RunAttachment[];
       /** A wake turn (src/wake.ts): the job run(s) it woke on. */
       wake?: WakeMark;
+      /** The run is a TRIAL (`RunTrial`, src/trials.ts): the Knowledge door's
+       *  to launch, never a request's — so here, not on the body. Recorded on
+       *  `run.start`; no wake and no callback follow its end. */
+      trial?: RunTrial;
       /** The conversation a person's turn continues (`continuesFor`,
        *  plans/jamie-app.md §2.2): opened as it is. */
       continues?: string;
       /** A durable resume onto another version: the top-level steps that
        *  re-run because they changed — recorded on `run.resumed`. */
       resumeChanged?: string[];
+      /** A durable resume that WAKES a parked run (src/park.ts): recorded
+       *  on `run.resumed` as `woken`. */
+      woken?: boolean;
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -6005,8 +8098,11 @@ export async function createStrut<TServices = unknown>(
       runId,
       undefined,
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
+      body.branch,
+      extra?.trial,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
+    detachedEnds.set(`${flow.name}/${runId}`, false);
     const launcher = extra?.startedBy?.runId ? controllersByRunId.get(extra.startedBy.runId) : undefined;
     if (extra?.origin === "public" || (extra?.origin === "peer" && !extra.peerPerson) || (launcher && treeSpendsNot(launcher))) {
       noRemoteSpend.add(controller);
@@ -6064,6 +8160,8 @@ export async function createStrut<TServices = unknown>(
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
+      // An admin's first-party app's run sends as Support (§4); no other does.
+      const bag = (await sendsAsSupport(extra?.app)) ? { ...services, sphinx } : services;
       principal ??= await principalFor(flow.name, extra?.actor);
       // Once who pays is known: an automation's turn is its owner's. On
       // record before the run starts.
@@ -6083,7 +8181,7 @@ export async function createStrut<TServices = unknown>(
         runId,
         store,
         workspace,
-        services,
+        services: bag,
         params: body.params,
         settings: body.settings,
         paramOverrides: body.paramOverrides,
@@ -6093,8 +8191,10 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
         ...(extra?.resumeChanged ? { resumeChanged: extra.resumeChanged } : {}),
+        ...(extra?.woken ? { woken: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
+        ...(extra?.origin === "host" && extra.host ? { host: extra.host } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
@@ -6102,6 +8202,8 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
+        ...(body.branch ? { branch: body.branch } : {}),
+        ...(controller.trial ? { trial: controller.trial } : {}),
         ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(body.conversation ? { conversation: body.conversation } : {}),
         ...(body.wake === true ? { wakeAsked: true } : {}),
@@ -6132,12 +8234,18 @@ export async function createStrut<TServices = unknown>(
         },
       )
       .then(async (res) => {
+        // A PARKED run is not over (src/park.ts): nothing is charged, woken
+        // or posted until it really ends, after the wake that resumes it.
+        if (res.status === "waiting") return res;
         // A public run is charged when it ends (src/public-runs.ts): its
         // cost into the ledger's `daily`, which the daily cap reads.
         if (isPublic) await publicRuns.ended(flow.name, runId);
         return res;
       })
       .then(async (res) => {
+        if (res.status === "waiting") return;
+        // A trial's end reaches nobody (src/trials.ts): no wake, no callback.
+        if (controller.trial) return;
         // What strut does about the end — a job turn's wake, decided before
         // its run.end goes out, which says so; a wake turn's end — then the
         // host hears it.
@@ -6155,6 +8263,11 @@ export async function createStrut<TServices = unknown>(
       })
       .finally(() => {
         untrack();
+        // After the wake is decided and the run let go: verified where the
+        // run-end hook would have, and asked whether it was the last of its work.
+        const due = detachedEnds.get(`${flow.name}/${runId}`);
+        detachedEnds.delete(`${flow.name}/${runId}`);
+        if (due) verifier?.schedule(flow.name, runId);
         if (!session) return;
         const live = liveSessions.get(session);
         live?.delete(runId);
@@ -6186,7 +8299,7 @@ export async function createStrut<TServices = unknown>(
   const conversations = createConversations({
     dataDir,
     store,
-    sessions: sessionStore,
+    sessions: committingSessions,
     getWorkflow: (name) => workspace.getWorkflow(name),
     running: (id) => liveSessions.has(id) || !!sessions.holder(id),
     liveState: (workflow, runId) => controllers.get(`${workflow}/${runId}`)?.state,
@@ -6215,6 +8328,7 @@ export async function createStrut<TServices = unknown>(
         {
           input: run.input,
           ...(run.params ? { params: run.params } : {}),
+          ...(run.branch ? { branch: run.branch } : {}),
           ...(run.job ? { job: run.job } : {}),
           ...(run.conversation ? { conversation: run.conversation } : {}),
           ...(run.asked ? { wake: true } : {}),
@@ -6274,17 +8388,20 @@ export async function createStrut<TServices = unknown>(
    *  comes back `running`, the turn ends saying so, and the run's end
    *  starts the job's next turn. A turn stopped while it looks stops the
    *  run too. Undefined for a caller strut does not wake, whose run stays
-   *  a child it waits out. */
+   *  a child it waits out — a TRIAL's among them (src/trials.ts): nothing
+   *  a trial starts leaves it, and its end wakes nobody. */
   async function runOwn(
     caller: { workflow: string; runId: string; job?: string },
     flow: Flow,
-    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[] },
+    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[]; branch?: string },
   ): Promise<RunResult | DetachedRun | undefined> {
+    if (controllersByRunId.get(caller.runId)?.trial) return undefined;
     const session = await jobWakeSessionOf(caller);
     if (!session) return undefined;
     const runId = launchDetached(
       flow,
-      { input: run.input, ...(run.params ? { params: run.params } : {}) },
+      // On the turn's Concept branch, or the one it named (src/branches.ts).
+      { input: run.input, ...(run.params ? { params: run.params } : {}), ...(run.branch ? { branch: run.branch } : {}) },
       {
         ...(run.version ? { version: run.version } : {}),
         startedBy: { workflow: caller.workflow, runId: caller.runId, session },
@@ -6430,6 +8547,10 @@ export async function createStrut<TServices = unknown>(
       // What the run proposed (plans/proposals.md §6): from the records,
       // never from the model's output.
       const proposals = (await listProposals(proposalsRoot(dataDir), { runId: res.runId }).catch(() => [])).map(briefOf);
+      // A wake turn's own run holds none of the job's work: what the job
+      // run(s) it woke on delivered, as the conversation index shows it
+      // (plans/jamie-in-tribes.md §5.3).
+      const delivered = typeof wake === "object" ? await conversations.delivered(wake).catch(() => []) : [];
       await postCallback(
         url,
         {
@@ -6446,6 +8567,7 @@ export async function createStrut<TServices = unknown>(
           ...(res.error ? { error: { message: res.error.message } } : {}),
           ...(transcripts.length ? { transcripts } : {}),
           ...(artifacts ? { artifacts } : {}),
+          ...(delivered.length ? { delivered } : {}),
           ...(proposals.length ? { proposals } : {}),
           durationMs,
         },
@@ -6502,7 +8624,8 @@ export async function createStrut<TServices = unknown>(
   /** Is the person the run `runId` is for an ADMIN of this strut server
    *  (plans/member-rights.md), as its records say? Its root's `run.start`:
    *  a page's turn says (`app.admin`, the app door's), a peer's launch is not
-   *  one (a person token, or another strut), a job's run asks the turn that
+   *  one (a person token, or another strut), nor a host's (it vouches for
+   *  who spoke, never their role), a job's run asks the turn that
    *  started it (`startedBy`), a wake the job run it woke on. Undefined when
    *  nothing says — a host's launch with the key, an automation — and the
    *  decision decides (proposals.ts `acceptRefusal`). */
@@ -6512,7 +8635,8 @@ export async function createStrut<TServices = unknown>(
     for (let hop = 0; at && hop < 6; hop++) {
       const start = await store.getRunStart(at.workflow, at.runId).catch(() => null);
       if (!start) return undefined;
-      if (start.origin === "peer") return false;
+      // A host only vouches for who spoke (plans/jamie-in-tribes.md ruling 8).
+      if (start.origin === "peer" || start.origin === "host") return false;
       if (start.origin === "app") return start.app?.admin === true;
       if (start.startedBy) at = { workflow: start.startedBy.workflow, runId: start.startedBy.runId };
       else if (start.wake && !start.wake.peer) {
@@ -6541,6 +8665,9 @@ export async function createStrut<TServices = unknown>(
   }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
+      // A trial starts no job (src/trials.ts): job/start and job/continue
+      // answer that it was held before they get here; this is the backstop.
+      if (controllersByRunId.get(from)?.trial) throw new Error(`trial_held: run ${from} is a trial, and a trial starts no job`);
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
       // Which job-shaped workflow runs the turn (plans/builder-job.md §2):
@@ -6595,7 +8722,9 @@ export async function createStrut<TServices = unknown>(
       if (running) {
         throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then, or stop it first with job/stop when the person wants it stopped or changed`);
       }
-      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}) }, {
+      // The launching run's Concept branch: a job a run on a branch starts is on it (src/branches.ts).
+      const branch = controllersByRunId.get(from)?.branch;
+      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}), ...(branch ? { branch } : {}) }, {
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
         ...(startedBy ? { startedBy } : {}),
@@ -6622,13 +8751,22 @@ export async function createStrut<TServices = unknown>(
         if (c && c !== own) roots.add(c);
       };
       for (const c of controllers.values()) if (c.job?.id === job) add(c);
-      for (const r of (await readJobRecord(jobRoot(dataDir, job)))?.runs ?? []) add(controllers.get(`${r.workflow}/${r.runId}`));
+      const recorded = (await readJobRecord(jobRoot(dataDir, job)))?.runs ?? [];
+      for (const r of recorded) add(controllers.get(`${r.workflow}/${r.runId}`));
       const stopped: JobStop["stopped"] = [];
       for (const c of roots) {
         quietStops.add(c.runId);
         const out = await controlLiveRun(c.workflow, c.runId, "cancel");
         if (out.ok) stopped.push({ workflow: c.workflow, runId: c.runId, ...(c.job?.id === job ? { turn: true as const } : {}) });
         else quietStops.delete(c.runId);
+      }
+      // A run a turn left going that WAITS (parked, src/park.ts: on a
+      // person's answer) is in no process: cancelled where it waits, which
+      // closes what it opened.
+      for (const r of recorded) {
+        if (!r.parentRunId || controllers.has(`${r.workflow}/${r.runId}`)) continue;
+        if ((await store.getRunSummary(r.workflow, r.runId).catch(() => null))?.status !== "waiting") continue;
+        if ((await controlLiveRun(r.workflow, r.runId, "cancel")).ok) stopped.push({ workflow: r.workflow, runId: r.runId });
       }
       const going = () => stopped.filter((r) => controllers.has(`${r.workflow}/${r.runId}`));
       const deadline = Date.now() + (o.waitMs ?? JOB_STOP_WAIT_MS);
@@ -6689,20 +8827,37 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`conversation "${String(body.conversation)}" ${problem}`);
     return body.conversation;
   };
+  /** Why a run body's `branch` (src/branches.ts) is refused, or null: set
+   *  by whoever launches the root with the deployment's rights alone (a
+   *  peer's launch is refused it before this, `peerLaunchBody`), and only a
+   *  branch that exists. Absent or `null` = main. */
+  const runBranchRefusal = async (body: RunBody, scope: Scope): Promise<{ status: 400 | 403 | 404; error: string } | null> => {
+    if (body.branch == null) {
+      delete body.branch;
+      return null;
+    }
+    if (scope !== "full") return { status: 403, error: "forbidden: a launch on a Concept branch is the deployment's (its key, or an admin's session)" };
+    const problem = branchNameProblem(body.branch);
+    if (problem) return { status: 400, error: `branch: ${problem}` };
+    if (!branchesCap) return { status: 400, error: "branch: this strut server keeps no Concept branches (a graph workspace does)" };
+    if (!(await branchesCap.get(body.branch))) return { status: 404, error: `branch: no Concept branch "${body.branch}" — POST /branches makes one` };
+    return null;
+  };
   /** A run body's `wake`: `true` or absent (`false` / `null` = not asked). */
   const runWakeOf = (body: RunBody): void => {
     if (body.wake != null && typeof body.wake !== "boolean") throw new Error("wake must be true or false");
   };
   /** Whether strut wakes for a launch of `flow` (the 202's `wake: true`,
    *  plans/jamie-app.md §7): the host asked (`wake: true`) with the
-   *  deployment's rights — a peer's turn is a relay, never woken, and its
+   *  deployment's rights or a host's (plans/jamie-in-tribes.md §5.1: its
+   *  runs are not relays) — a peer's turn is a relay, never woken, and its
    *  `wake` is dropped before it launches — on a conversation turn (a
    *  workflow with `params.wake`, on a session: the jobs it starts wake it)
    *  or on a job turn it launched itself naming the `conversation`. */
   const announcesWake = (flow: Flow, body: RunBody, scope: Scope): boolean =>
     wakes.enabled &&
     body.wake === true &&
-    scope === "full" &&
+    (scope === "full" || scope === "host") &&
     ((typeof flow.params?.["wake"] === "string" && typeof (body.input as Record<string, unknown> | undefined)?.["session"] === "string") ||
       (typeof body.conversation === "string" && (JOB_WORKFLOWS as readonly string[]).includes(flow.name)));
 
@@ -6742,12 +8897,39 @@ export async function createStrut<TServices = unknown>(
    *  why not. Which workflows a peer may launch is their YAML's `peer:`
    *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
-    const set = (["params", "paramOverrides", "runId", "settings", "conversation"] as const).filter((k) => body[k] != null);
+    // A branch does not cross to another strut (src/branches.ts): it runs on its own tree.
+    const set = (["params", "paramOverrides", "runId", "settings", "conversation", "branch"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
     // A peer's turn is a relay, never woken here (src/wake.ts): its `wake`
     // is dropped, not refused, so a relay that passes one through works.
     const { wake: _wake, ...asPublished } = body;
     return typeof asPublished.job === "string" ? { ...asPublished, job: `${PEER_NAMESPACE}${asPublished.job}` } : asPublished;
+  };
+  /** The linked person a HOST key's request acts as (plans/jamie-in-tribes.md
+   *  §5.1), or why not: no account named (400), or one nobody linked (403
+   *  `not_linked`) — a host's turn needs a person here; the host falls back
+   *  to someone who is (a tribe's linker). */
+  const hostPerson = (c: Context): { host: string; actor: string } | Response => {
+    const call = hostCalls.get(c.req.raw)!;
+    if (!call.account) return c.json({ error: `${ACCOUNT_HEADER} is required: the account of the person this is for ("${call.host}:<key>")` }, 400);
+    if (!call.person?.linked) {
+      return c.json({ error: `not_linked: ${accountText(call.account)} is not linked to a person on this strut server — they link it in the Jamie app (Connect)` }, 403);
+    }
+    return { host: call.host, actor: call.person.actor };
+  };
+  /** A HOST's launch (plans/jamie-in-tribes.md §2, §5.1): a turn of one of
+   *  its own conversations — `input.session` under `host/<name>/` — with
+   *  `wake`, `callback` and `attachments` and nothing more: the workflow as
+   *  published, no job, branch or MCP servers. Why not, or null. */
+  const hostLaunchRefusal = (body: RunBody, host: string): string | null => {
+    const set = (["params", "paramOverrides", "runId", "settings", "conversation", "branch", "job", "title", "mcp", "jobCallback"] as const).filter((k) => body[k] != null);
+    if (set.length) return `forbidden: a host launches a turn of the workflow as published — drop ${set.join(", ")}`;
+    const session = (body.input as Record<string, unknown> | undefined)?.["session"];
+    const prefix = `${HOST_NAMESPACE}${host}/`;
+    if (typeof session !== "string" || !session.startsWith(prefix) || idProblem(session)) {
+      return `forbidden: a host's turn names its conversation as input.session, an id under "${prefix}"`;
+    }
+    return null;
   };
   /** May a peer request of `scope` launch a workflow whose YAML says
    *  `peer: <open>`? `true` takes any peer; `person` only a credential that
@@ -6849,12 +9031,13 @@ export async function createStrut<TServices = unknown>(
       null;
     if (!launched && stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "")) return true;
     // A first-party page also reads a turn of a conversation its viewer
-    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2),
-    // whoever took the turn — its files, its reply.
+    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2;
+    // shown to an admin, any one: §2.3), whoever took the turn — its files,
+    // its reply.
     const session = (stamp?.input as { session?: unknown } | undefined)?.session;
     if (!anyApp || !by?.actor || typeof session !== "string") return false;
     const rec = await conversations.record(session).catch(() => null);
-    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor)) && rec.turns.some((t) => t.runId === runId);
+    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor) || by.app?.admin === true) && rec.turns.some((t) => t.runId === runId);
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */
@@ -6966,6 +9149,8 @@ export async function createStrut<TServices = unknown>(
         if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
         const problem = idProblem(q.conversation);
         if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+        const hosted = hostOfSession(q.conversation);
+        if (hosted) throw new Error(hostedRefusal(q.conversation, hosted));
         const own = q.conversation === by.actor || q.conversation.startsWith(`${by.actor}/`);
         if (!own && (await conversations.mayContinue(q.conversation, by.actor)) !== true) {
           throw new Error(`conversation_not_yours: "${q.conversation}" is not a conversation you may continue — your own (${by.actor}/…), one you took a turn in, or a shared one`);
@@ -6993,6 +9178,8 @@ export async function createStrut<TServices = unknown>(
           // A first-party page's turn is the person's (plans/jamie-app.md
           // §3): strut is its host, so strut wakes it when its jobs end.
           ...(isFirstParty(by.app) ? { wake: true } : {}),
+          // Launched from a run on a Concept branch: on it (src/branches.ts).
+          ...(by.branch ? { branch: by.branch } : {}),
         },
         {
           ...(by.actor ? { actor: by.actor } : {}),
@@ -7001,6 +9188,8 @@ export async function createStrut<TServices = unknown>(
           ...(by.mcp?.length ? { mcp: by.mcp } : {}),
           ...(attachments.length ? { attachments } : {}),
           ...(cont.continues ? { continues: cont.continues } : {}),
+          // Launched from a trial: one too (src/trials.ts).
+          ...(by.trial ? { trial: by.trial } : {}),
         },
       );
       if (key) launchKeys.set(key, runId);
@@ -7069,15 +9258,60 @@ export async function createStrut<TServices = unknown>(
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
+  // Run retention (src/retention.ts): the fleet default, and the sweep that
+  // starts and stops beside the scheduler.
+  const fleetRetention = fleetRetentionFromEnv(bootEnv());
+  // The sweep waits for boot's auto-resume scan (`bootResumeRuns`, deferred to
+  // the end of construction): before it, a cut-off run about to be relaunched
+  // has no controller and no summary and would look crashed.
+  let settleResume: () => void = () => {};
+  const resumeSettled = new Promise<void>((resolve) => (settleResume = resolve));
+  // With an archive a log is uploaded before it goes, and a workflow with
+  // no policy keeps its logs here for `ARCHIVE_LOCAL_WINDOW`.
+  const retention = createRetention({
+    store,
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    resumeSettled,
+    workspace,
+    ...(fleetRetention ? { fallback: fleetRetention.retention } : archive ? { fallback: ARCHIVE_LOCAL_WINDOW } : {}),
+    ...(archive ? { archive: { check: () => checkArchive(archive) } } : {}),
+  });
+  if (archive) {
+    // Said once at boot, when the bucket has answered or refused.
+    void checkArchive(archive).then(
+      () => console.log(`[archive] on: finished runs' logs go to ${archive.label} before they are evicted`),
+      (err) => console.warn(`[archive] on, and ${archive.label} does not work: ${errorText(err)}. Nothing is evicted until it does`),
+    );
+  }
   const automations = createAutomations({
     workspace,
     store,
     secrets: automationCallbacks,
-    launch: (flow, input, automation, callback) =>
-      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
+    // `principal`: whom the fire runs as (`runsAs`, workspace.ts): its
+    // workflow's owner; absent only for a person's automation on an ownerless
+    // workflow where nobody need be billed, which `principalFor` leaves so.
+    launch: (flow, input, automation, callback, principal) =>
+      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}), ...(principal ? { principal } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     draining: () => drain.refusal(),
   });
+  // The schedules installed packages ship (src/packages/schedules.ts): made
+  // exactly, one each, at boot and after every package write (`oneAtATime`),
+  // so an install makes them, a release follows them and an uninstall drops
+  // them. A failure is said, never a failed boot or write.
+  const syncSchedules = async (): Promise<void> => {
+    try {
+      const { schedules, unread } = await installedSchedules({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      const r = await automations.syncPackageSchedules(schedules, unread);
+      for (const [what, list] of [["made", r.made], ["changed", r.changed], ["dropped", r.dropped]] as const) {
+        if (list.length) console.log(`[automations] package schedules ${what}: ${list.join(", ")}`);
+      }
+      for (const w of r.warnings) console.warn(`[automations] ${w}`);
+    } catch (err) {
+      console.warn("[automations] could not sync the packages' schedules:", err instanceof Error ? err.message : err);
+    }
+  };
+  await syncSchedules();
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
   // where that turn does.
@@ -7139,7 +9373,10 @@ export async function createStrut<TServices = unknown>(
     }
     return c.json({ actor, claimed, skipped });
   });
-  if (opts.scheduler === undefined ? bootEnv()["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
+  if (opts.scheduler === undefined ? bootEnv()["STRUT_SCHEDULER"] !== "0" : opts.scheduler) {
+    automations.start();
+    retention.start();
+  }
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -7177,9 +9414,24 @@ export async function createStrut<TServices = unknown>(
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
     if (scope === "peer:person") return actor ? { actor, person: true } : null;
+    // A host reads its own conversations whole, whoever spoke (the route
+    // holds it to `host/<name>/`): how it finds a turn's end it missed
+    // (plans/jamie-in-tribes.md §6.2).
+    if (scope === "host") return { all: true };
     if (scope !== "full") return null;
     return actor ? { actor } : { all: true };
   };
+  /** The viewer, with `everyone` when the request asks for it (`?everyone=1`,
+   *  a fork's `everyone: true`; plans/jamie-app.md §2.3): an ADMIN's read of
+   *  every conversation on file, as a reader. Full scope alone — an admin's
+   *  session, the key; a person token, a host and a peer are `"refused"` (a
+   *  member's session never reaches these routes). */
+  const viewerAsking = async (c: Context, asked: unknown): Promise<ConversationViewer | null | "refused"> => {
+    const by = await conversationViewer(c);
+    if (asked !== true && asked !== "1" && asked !== "true") return by;
+    return by && (await scopeOf(c)) === "full" ? { ...by, everyone: true } : "refused";
+  };
+  const everyoneRefused = (c: Context) => c.json({ error: "forbidden: every person's conversations are an admin's read (an admin's session, or the deployment key)" }, 403);
   const conversationError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, message.startsWith("No conversation") ? 404 : message.includes("already exists") ? 409 : 400);
@@ -7187,9 +9439,10 @@ export async function createStrut<TServices = unknown>(
   const intParam = (v: string | undefined) => (v !== undefined && /^\d+$/.test(v) ? Number(v) : undefined);
 
   app.get("/conversations", async (c) => {
-    const by = await conversationViewer(c);
-    if (!by) return c.json({ conversations: [] });
     const q = c.req.query();
+    const by = await viewerAsking(c, q["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
+    if (!by) return c.json({ conversations: [] });
     const limit = intParam(q["limit"]);
     return c.json(
       await conversations.list(
@@ -7205,11 +9458,14 @@ export async function createStrut<TServices = unknown>(
   });
 
   app.get("/conversations/item", async (c) => {
-    const by = await conversationViewer(c);
     const q = c.req.query();
+    const by = await viewerAsking(c, q["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
     const session = q["id"] ?? "";
     const problem = idProblem(session);
     if (problem) return c.json({ error: `conversation id "${session}" ${problem}` }, 400);
+    const call = hostCalls.get(c.req.raw);
+    if (call && hostOfSession(session) !== call.host) return c.json({ error: `No conversation "${session}" (or not yours to read)` }, 404);
     const [limit, before, wait, since] = [intParam(q["limit"]), intParam(q["before"]), intParam(q["wait"]), intParam(q["since"])];
     const view = by && (await conversations.get(
       { session, ...(limit ? { limit } : {}), ...(before !== undefined ? { before } : {}), ...(wait ? { wait } : {}), ...(since !== undefined ? { since } : {}) },
@@ -7246,17 +9502,92 @@ export async function createStrut<TServices = unknown>(
   });
 
   app.post("/conversations/fork", async (c) => {
-    const by = await conversationViewer(c);
-    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const by = await viewerAsking(c, body?.["everyone"]);
+    if (by === "refused") return everyoneRefused(c);
+    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
     if (!body || typeof body["session"] !== "string" || (body["id"] !== undefined && typeof body["id"] !== "string")) {
-      return c.json({ error: "body must be { session, id? }" }, 400);
+      return c.json({ error: "body must be { session, id?, everyone? }" }, 400);
     }
     try {
       return c.json(await conversations.fork({ session: body["session"], ...(typeof body["id"] === "string" ? { id: body["id"] } : {}) }, by), 201);
     } catch (err) {
       return conversationError(c, err);
     }
+  });
+
+  // ── Concept branches (src/branches.ts, plans/concept-evals.md item b) ──
+  // A person with the deployment's rights makes one (a copy of the live
+  // tree, or empty), lists them, and drops one; a launch's `branch` runs on it.
+  const branchRoute = async (c: Context): Promise<Response | null> => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: Concept branches are the deployment's (its key, or an admin's session)" }, 403);
+    if (!branchesCap) return c.json({ error: "this strut server keeps no Concept branches: they need a graph workspace" }, 404);
+    return null;
+  };
+  const branchError = (c: Context, err: unknown) =>
+    err instanceof BranchError ? c.json({ error: err.message }, err.status) : c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  app.get("/branches", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    return c.json({ branches: await branchesCap!.list() });
+  });
+  app.post("/branches", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body["name"] !== "string" || (body["from"] !== undefined && body["from"] !== "main" && body["from"] !== "empty")) {
+      return c.json({ error: 'body must be { name, from?: "main" | "empty" }' }, 400);
+    }
+    try {
+      const by = await resolveActor(c);
+      return c.json(await branchesCap!.create({ name: body["name"], ...(body["from"] ? { from: body["from"] as "main" | "empty" } : {}), ...(by ? { by } : {}) }), 201);
+    } catch (err) {
+      return branchError(c, err);
+    }
+  });
+  app.delete("/branches/:name", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    try {
+      return c.json(await branchesCap!.drop(c.req.param("name")));
+    } catch (err) {
+      return branchError(c, err);
+    }
+  });
+  // Merge (item e): what the branch changed since its fork lands on main —
+  // ordinary pages at once, pages from git as one proposal per checkout or
+  // skipped — and the branch is dropped. A person's act: made now. `dryRun`
+  // answers what it would do and keeps the branch. A page main changed too
+  // refuses it (409, `conflicts`).
+  app.post("/branches/:name/merge", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown> | null;
+    if (body && body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean") return c.json({ error: "body is { dryRun?: boolean }" }, 400);
+    try {
+      const by = await resolveActor(c);
+      return c.json(await branchesCap!.merge(c.req.param("name"), { ...(by ? { actor: by } : {}), ...(body?.["dryRun"] ? { dryRun: true } : {}) }));
+    } catch (err) {
+      if (err instanceof MergeConflict) return c.json({ error: err.message, conflicts: err.pages }, 409);
+      if (err instanceof MergeRefused) return c.json({ error: err.message }, err.status);
+      return branchError(c, err);
+    }
+  });
+  // Main against the branch over the same claims (item d): one page
+  // (`concept`), a tree (`tree`, its root's name) or every page with claims.
+  app.get("/branches/:name/compare", async (c) => {
+    const refused = await branchRoute(c);
+    if (refused) return refused;
+    const knowledge = (services as Record<string, unknown>)["knowledge"] as KnowledgeCapability | undefined;
+    if (!knowledge?.compare) return c.json({ error: "the claims layer is off on this strut server: there is nothing to compare" }, 409);
+    const name = c.req.param("name");
+    if (!(await branchesCap!.get(name))) return c.json({ error: `no Concept branch "${name}"` }, 404);
+    const works = c.req.query("works");
+    if (works !== undefined && !(Number.isInteger(Number(works)) && Number(works) >= 1 && Number(works) <= 50)) return c.json({ error: "works is a whole number from 1 to 50" }, 400);
+    const concept = c.req.query("concept");
+    const tree = c.req.query("tree");
+    const out = await knowledge.compare({ branch: name, ...(concept ? { concept } : {}), ...(tree ? { tree } : {}), ...(works ? { works: Number(works) } : {}) });
+    return "error" in out ? c.json(out, 400) : c.json(out);
   });
 
   // `callback: { url }` asks for the result to be POSTed there when the run
@@ -7274,6 +9605,16 @@ export async function createStrut<TServices = unknown>(
       if ("refused" in launch) return c.json({ error: launch.refused }, 403);
       body = launch;
     }
+    // A host's turn (plans/jamie-in-tribes.md §5.1): as a linked person, on
+    // its own conversation. Never an admin's: `run.start` says `origin: "host"`.
+    let hosted: { host: string; actor: string } | undefined;
+    if (scope === "host") {
+      const as = hostPerson(c);
+      if (as instanceof Response) return as;
+      const refused = hostLaunchRefusal(body, as.host);
+      if (refused) return c.json({ error: refused }, 403);
+      hosted = as;
+    }
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
@@ -7289,6 +9630,8 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    const branchRefused = await runBranchRefusal(body, scope);
+    if (branchRefused) return c.json({ error: branchRefused.error }, branchRefused.status);
     let flow;
     try {
       flow = await workspace.getWorkflow(name);
@@ -7296,6 +9639,9 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
+    if (hosted && !isConversationFlow(flow)) {
+      return c.json({ error: `forbidden: a host launches a conversation workflow (one with params.wake) — "${name}" is not one` }, 403);
+    }
     const disabled = await workflowDisabled(workspace, name);
     if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
@@ -7309,6 +9655,7 @@ export async function createStrut<TServices = unknown>(
       actor,
       ...(cont.continues ? { continues: cont.continues } : {}),
       ...(peer ? { origin: "peer" as const } : {}),
+      ...(hosted ? { origin: "host" as const, host: hosted.host } : {}),
       ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
@@ -7355,6 +9702,8 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    const branchRefused = await runBranchRefusal(body, scope);
+    if (branchRefused) return c.json({ error: branchRefused.error }, branchRefused.status);
     let flow;
     try {
       flow = await workspace.getWorkflowVersion(name, version);
@@ -8275,9 +10624,12 @@ export async function createStrut<TServices = unknown>(
       return c.json({ chatId: sent.chatId, turn: sent.turn, ...(hasCallback ? { callback: true } : {}) }, 202);
     });
 
-    // List chat sessions (newest first).
+    // List chat sessions (newest first): the newest `limit`, reading no other
+    // chat's meta.
     app.get("/chats", async (c) => {
-      const list = await chatStore.listChats();
+      const limit = pageLimit(c.req.query("limit"), CHAT_LIST_DEFAULT_LIMIT, CHAT_LIST_MAX_LIMIT);
+      // Sliced too: a host's own store may list them all.
+      const list = (await chatStore.listChats({ limit })).slice(0, limit);
       return c.json((await Promise.all(list.map((m) => reconcileStaleChat(m)))).map(publicMeta));
     });
 
@@ -8476,18 +10828,29 @@ export async function createStrut<TServices = unknown>(
   // with no credential.
 
   if (enableMcp) {
+    /** The shared bag, with the `account/*` steps' capability bound to
+     *  strut's address as this request reached it: the link challenge a
+     *  page shows names where Peel posts it (plans/people-and-hosts.md §2.1). */
+    const requestServices = (c: Context) => ({ ...services, accounts: accountsCapability(people, { base: baseOfRequest(c), host: boxHost(c) }) });
     /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
      *  doors — hidden from a model, callable by a page whose host relays
      *  its tools/call here. The viewer is the connection's actor, an ADMIN
      *  when the connection holds full scope (plans/member-rights.md). */
-    const appDoor = async (actor: string | undefined, scope: Scope) => {
+    const appDoor = async (c: Context, actor: string | undefined, scope: Scope) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const appTools = buildAppTools({
         apps,
         registry,
-        services,
+        services: requestServices(c),
         ...(actor ? { actor } : {}),
         admin: scope === "full",
+        // And the `sphinx` capability (plans/people-and-hosts.md §4): Support's
+        // sends from strut/staff's page.
+        ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor, sphinx } } : {}),
+        // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
+        // calls of the task store on that call's bag alone. A member's
+        // session carries no Sphinx address: nothing to withdraw to (§8.2).
+        ...workerServicesOf(undefined),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
       });
@@ -8513,36 +10876,33 @@ export async function createStrut<TServices = unknown>(
      *  (`x-strut-visit`, a secret it mints per page): the runs launched
      *  under it are the ones its page reads back. */
     app.post("/public/mcp", async (c) => {
-      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
+      const { buildAppTools, APP_TOOL_META, GRAPH_WRITES } = await import("./apps/tools.js");
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const bag = services as Record<string, unknown>;
-      const reader = publicSurface.reader();
       const who = visitorAddress(c);
       const visit = c.req.header(VISIT_HEADER);
       const visitor = visitorOfVisit(visit);
       const visitRefusal = visitProblem(visit);
-      const visitorBag = {
-        ...(bag["http"] ? { http: bag["http"] } : {}),
-        ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
-        ...(graph && reader
-          ? {
-              graph: {
-                kind: graph.kind,
-                namespace: graph.namespace,
-                cfg: graph.cfg,
-                schemas: graph.schemas,
-                reader,
-                query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
-              },
-            }
-          : {}),
-        ...(bag["runs"]
-          ? {
-              runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], {
-                surface: () => publicSurface.get(),
-                ...(visitor ? { visitor } : {}),
-                ...(visitRefusal ? { visitRefusal } : {}),
-                launch: (workflow, body) =>
+      // A SIGNED-IN visitor (plans/app-repos.md §5.1): this request carries
+      // its session — the cookie, or the token as a bearer — and the page
+      // calls as that actor, under §5.1's rules and its limits.
+      const session = visitorOf(c);
+      const signedIn = session?.actor;
+      /** Count a launch against the visitor's limits once it went. */
+      const counted = async <T,>(go: () => Promise<T>, went: (r: T) => boolean): Promise<T> => {
+        const r = await go();
+        if (signedIn && went(r)) visitorBudget.spend("launch", signedIn, who);
+        return r;
+      };
+      const inner = bag["runs"] as (Parameters<typeof visitorRuns>[0] & RunsCapability) | undefined;
+      const runs = inner
+        ? visitorRuns(inner, {
+            surface: () => publicSurface.get(),
+            ...(visitor ? { visitor } : {}),
+            ...(visitRefusal ? { visitRefusal } : {}),
+            launch: (workflow, body) =>
+              counted(
+                () =>
                   publicDoors.launch({
                     name: workflow,
                     who,
@@ -8551,28 +10911,122 @@ export async function createStrut<TServices = unknown>(
                     scope: visitor ? `visit:${visitor}` : who,
                     ...(visitor ? { visitor } : {}),
                   }),
-              }),
-            }
-          : {}),
+                (out) => out.status === 202,
+              ),
+            ...(signedIn
+              ? {
+                  own: {
+                    actor: signedIn,
+                    // As the visitor, from its app: `input` and `key` alone —
+                    // never a job, a conversation, files or params.
+                    launch: async (q, by) => {
+                      const extra = Object.keys(q).filter((k) => !["workflow", "input", "key"].includes(k) && q[k] !== undefined);
+                      if (extra.length) throw new Error(`a visitor's launch takes input and key alone, not ${extra.join(", ")}`);
+                      return counted(
+                        () => inner.launch({ workflow: q.workflow, ...(q["input"] !== undefined ? { input: q["input"] } : {}), ...(typeof q["key"] === "string" ? { key: q["key"] } : {}) }, by as RunLaunchBy),
+                        () => true,
+                      );
+                    },
+                  },
+                }
+              : {}),
+          })
+        : undefined;
+      const graphView = (reader: GraphReader) => ({
+        kind: graph!.kind,
+        namespace: graph!.namespace,
+        cfg: graph!.cfg,
+        schemas: graph!.schemas,
+        reader,
+        query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
+      });
+      const reader = publicSurface.reader();
+      // Its keys (and `signedInBag`'s) are `VISITOR_SERVICES` (step-lint.ts):
+      // an app build warns on a granted custom step that reaches past them.
+      const visitorBag = {
+        ...(bag["http"] ? { http: bag["http"] } : {}),
+        ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
+        ...(graph && reader ? { graph: graphView(reader) } : {}),
+        ...(runs ? { runs } : {}),
+        // A signed-in visitor reads their own name alone (people/names).
+        ...(signedIn ? { people: ownName(people, signedIn) } : {}),
+      };
+      /** A signed-in visitor's bag for one call: its own `app/state`, the
+       *  nodes of its app's declared types read whole, and the graph
+       *  writable — the declared-type check is the door's — for a write and
+       *  `graph/find` (on a declared type) alone. */
+      const signedInBag = (manifest: AppManifest, type: string) => {
+        const declared = Object.keys(manifest.data?.graph?.types ?? {});
+        const widened = publicSurface.reader(declared);
+        const writable = GRAPH_WRITES.has(type) || type === "graph/find";
+        return {
+          ...visitorBag,
+          dataDir,
+          ...(graph && widened ? { graph: writable ? Object.create(graph, { reader: { value: widened } }) : graphView(widened) } : {}),
+        };
       };
       const tools = buildAppTools({
         apps,
         registry,
         services: visitorBag,
+        ...(signedIn ? { actor: signedIn } : {}),
+        // A worker's step (plans/human-steps.md §5.2): a signed-in visitor's
+        // alone (the refusal below), the worker's calls on that call's bag,
+        // with the address their session carries (§8.2).
+        ...workerServicesOf(sessionAddress(session), async () => (await publicSurface.get()).apps.map((a) => a.name)),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
         visitor: {
           identity: publicAppOfIdentity,
           // The page names a workflow as its package does (package-first,
           // as the run steps resolve it): checked under the name it runs as.
-          refusal: async (at, type, config) =>
-            visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, await inAppPackage(at.name, config)),
-          viewer: `visitor ${who}`,
+          refusal: async (at, type, config, manifest) => {
+            const surface = await publicSurface.get();
+            // The live version off the record as remembered: asked on every call.
+            const live = (await apps.manifestOf(at.name).catch(() => null))?.version;
+            const cfg = await inAppPackage(at.name, config);
+            // A worker's step (plans/human-steps.md §5.2) is a signed-in
+            // person's: the worker is the session's actor.
+            const worker = registry[type]?.worker === true;
+            if (!signedIn) {
+              // Never an anonymous visitor's, whatever the public view's reads list.
+              const publicHere = surface.apps.some((a) => a.name === at.name) && live === at.version;
+              if (worker && publicHere) return `${type} is a worker's: sign in first — a worker is the page's signed-in visitor`;
+              return visitorRefusal(surface, live, at, type, cfg) ?? (worker ? `${type} is a worker's: sign in first` : null);
+            }
+            const no = await signedInRefusal(surface, live, at, type, cfg, {
+              declared: Object.keys(manifest.data?.graph?.types ?? {}),
+              spends: async (wf) => (await runnableCan({ kind: "workflow", name: wf }, runnableDeps).catch(() => null))?.spends ?? true,
+              worker: (t) => registry[t]?.worker === true,
+            });
+            if (no) return no;
+            const limits = visitorLimits(surface);
+            if (type === "run/launch") return visitorBudget.check("launch", signedIn, who, limits);
+            if (!visitorWrite(type, cfg)) return null;
+            const over = visitorBudget.check("write", signedIn, who, limits);
+            if (!over) visitorBudget.spend("write", signedIn, who);
+            return over;
+          },
+          viewer: signedIn ?? `visitor ${who}`,
+          ...(signedIn ? { keep: true, services: (_at: AppRef, manifest: AppManifest, type: string) => signedInBag(manifest, type) } : {}),
         },
       });
-      const instructions =
-        "A public app's one tool, step_run, for a visitor's page: reads held to this strut server's public view, and run/launch of a workflow anyone may run that the app grants — a priced one answers { payment_required } until its host pays.";
-      return createMcpDoor(() => toolsetServer({ tools, instructions, meta: APP_TOOL_META })).handle(c.req.raw);
+      // An AGENT with no account (plans/paid-runs.md §10, work item 8): the
+      // five tools beside the page's `step_run` — list_public, run_workflow,
+      // call_tool, get_run, get_credit — over the SAME doors as the HTTP
+      // routes (`publicDoors`): the address's budgets, the drain, the caps,
+      // the price and the key are one code path. A priced one with no
+      // credit answers `{ payment_required }` as its result; the agent pays
+      // and calls again with `payment`, or this request's own
+      // `Authorization: L402`.
+      const { buildPublicAgentTools, publicMcpInstructions } = await import("./public-agents.js");
+      const publicUrl = publicUrlOf(c);
+      const agentTools = buildPublicAgentTools({ doors: publicDoors, who, authorization: c.req.header("authorization"), publicUrl });
+      // A signed-in visitor's page may send files — a worker's photo with
+      // an answer, a launch's attachments — so its request may be as large as
+      // a public launch with files (plans/human-steps.md §5.6.7); an
+      // anonymous one stays at the SDK's 4 MB.
+      return createMcpDoor(() => toolsetServer({ tools: { ...agentTools, ...tools }, instructions: publicMcpInstructions(publicUrl), meta: APP_TOOL_META }), signedIn ? { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES } : {}).handle(c.req.raw);
     });
     /** The builder deps both doors spread: public links, and a run that
      *  outlives the wait window goes on detached, tracked like any launch —
@@ -8587,7 +11041,7 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c))) };
+      return { publicUrl, actor, deps, ...(await appDoor(c, actor, await scopeOf(c))) };
     };
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
@@ -8598,9 +11052,9 @@ export async function createStrut<TServices = unknown>(
      *  Neither is an admin here. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
-      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
+      const { appTools, appMeta } = await appDoor(c, await resolveActor(c), await scopeOf(c));
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
-      return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta })).handle(c.req.raw);
+      return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
     const builderHandler = async (c: Context) => {
       // The SDK loads on the first MCP request, never at boot.
@@ -8622,7 +11076,7 @@ export async function createStrut<TServices = unknown>(
           });
         return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
       };
-      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt, tools: appTools, meta: appMeta }).handle(c.req.raw);
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt, tools: appTools, meta: appMeta }, { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
     };
     const assistantHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer, assistantInstructions } = await import("./ai/mcp.js");
@@ -8642,12 +11096,53 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         packages: (services as Record<string, unknown>)["packages"] as PackagesCapability,
       });
-      return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta })).handle(c.req.raw);
+      return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta }), { maxBodyBytes: APP_DOOR_BODY_MAX_BYTES }).handle(c.req.raw);
+    };
+    /** A HOST key on `/mcp` (plans/people-and-hosts.md §3): `step_run`
+     *  alone, the app named by its name, as the account `x-strut-account`
+     *  names — its person, or the key's own actor where the app says
+     *  `unlinked: true` — under the app's `hosts:`, on the shared bag. It
+     *  is synchronous: one JSON answer once the step is done, 200 only when
+     *  every call in it finished — 403 refused, 500 the step failed, 400 a
+     *  call the tool could not take — so a host sends again until a 2xx,
+     *  and a 2xx means taken. Up to `HOST_CALL_BODY_MAX_BYTES`. */
+    const hostAppHandler = async (c: Context) => {
+      const call = hostCalls.get(c.req.raw)!;
+      if (!call.account) return c.json({ error: `${ACCOUNT_HEADER} is required: the account this call is made as ("${call.host}:<key>")` }, 400);
+      if (!call.person) return c.json({ error: `not_linked: ${accountText(call.account)} is not linked to a person on this strut server` }, 403);
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { buildAppTools } = await import("./apps/tools.js");
+      const outcomes: AppCallStatus[] = [];
+      const tools = buildAppTools({
+        apps,
+        registry,
+        services,
+        actor: call.person.actor,
+        host: { ref: { name: call.host, account: accountText(call.account), unlinked: !call.person.linked }, outcome: (s) => void outcomes.push(s) },
+        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+        monitor: appMonitor,
+      });
+      const instructions = "A host's door to an app's tools: step_run { app, type, config }, as the account x-strut-account names, under the app's hosts:. The answer comes once the step is done; a 2xx means it finished.";
+      const res = await createMcpDoor(() => toolsetServer({ tools, instructions }), { maxBodyBytes: HOST_CALL_BODY_MAX_BYTES, json: true }).handle(c.req.raw);
+      if (res.status !== 200) return res;
+      const text = await res.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined;
+      }
+      const answers = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ error?: unknown; result?: { isError?: boolean } } | undefined>;
+      const failed = answers.some((a) => a?.error !== undefined || a?.result?.isError === true);
+      const status = !failed ? 200 : outcomes.includes("error") ? 500 : outcomes.includes("refused") ? 403 : 400;
+      return new Response(text, { status, headers: res.headers });
     };
     app.post("/mcp/builder", builderHandler);
-    app.post("/mcp", async (c) =>
-      ["peer:person", "member"].includes(await scopeOf(c)) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
-    );
+    app.post("/mcp", async (c) => {
+      const scope = await scopeOf(c);
+      if (scope === "host") return hostAppHandler(c);
+      return ["peer:person", "member"].includes(scope) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c);
+    });
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     for (const path of ["/mcp", "/mcp/builder", "/public/mcp"]) {
@@ -8751,7 +11246,7 @@ export async function createStrut<TServices = unknown>(
     // arrives with no credential (`?store=1`, web/src/components/Store.tsx:
     // the page over the three open reads above). The operator's shell is
     // one `?key=` or a signed-in session away, as before.
-    if (index) {
+    if (index && !serveRef) {
       app.get("/", async (c, next) => {
         // A page meant alone (`?solo=1`: a visitor's public app, a file) is
         // served as asked: the store frames this server's own public apps.
@@ -8778,6 +11273,22 @@ export async function createStrut<TServices = unknown>(
       }
       try {
         const html = await readFile(join(webDist, "index.html"), "utf-8");
+        // On a served box every page is the app's (plans/app-repos.md §4.2):
+        // its meta, title, icon and link preview — `pickPage` reads the meta
+        // and draws the app alone. `?shell=1` with the key is strut's own UI.
+        if (serveRef && !(c.req.query("shell") === "1" && carriesApiKey(c))) return c.html(servedHtml(html, served?.page() ?? null, publicUrlOf(c)));
+        // A custom domain (plans/public-surface.md §9): a host a public app
+        // lists answers with that app alone, as a served box's `/` does. Its
+        // links name the domain, never STRUT_PUBLIC_URL; an app that cannot
+        // be read is "nothing served here", never strut's own UI.
+        const host = requestHost(c);
+        const domainApp = appOfDomain(await publicSurface.get(), host);
+        if (domainApp && !(c.req.query("shell") === "1" && carriesApiKey(c))) {
+          const info = await publicAppInfo(domainApp).catch(() => null);
+          const icon = info?.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
+          const page = info ? { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) } : null;
+          return c.html(servedHtml(html, page, `${requestProto(c)}://${host}`));
+        }
         return c.html(html);
       } catch {
         return c.text("UI not built. Run: cd web && npm run build", 404);
@@ -8818,6 +11329,8 @@ export async function createStrut<TServices = unknown>(
       runId,
       runOpts?.parentRunId,
       runOpts?.job ? { id: runOpts.job, ...(runOpts.title ? { title: runOpts.title } : {}) } : undefined,
+      runOpts?.branch,
+      runOpts?.trial,
     );
     try {
       const workflowHash =
@@ -8842,6 +11355,8 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.job ? { job: runOpts.job } : {}),
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
         ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
+        ...(controller.branch ? { branch: controller.branch } : {}),
+        ...(controller.trial ? { trial: controller.trial } : {}),
       });
     } finally {
       untrack();
@@ -8902,22 +11417,30 @@ export async function createStrut<TServices = unknown>(
    *  writing into its data dir (`boot.json`) after `close()`. */
   let bootTimer: ReturnType<typeof setTimeout> | undefined;
   let bootScan: Promise<unknown> | undefined;
+  /** The served ref's first deploy (src/packages/serve.ts). */
+  let serveBooted: Promise<unknown> = Promise.resolve();
   /** The ledger's daily sweep (plans/paid-runs.md §5, "Expiry"). */
   let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
 
   async function close(): Promise<void> {
+    parking.close();
+    await serveBooted;
+    await served?.close();
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    tasks.stop();
     publicTools.close();
     withdrawals.stop();
+    deposits.stop();
     await remote.stop();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
     await history?.close();
     automations.stop();
+    retention.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
     proposalChanges.close();
@@ -8935,6 +11458,12 @@ export async function createStrut<TServices = unknown>(
     // The ledger's WAL folded into its file, when it was opened.
     if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
     ledgerOpen = undefined;
+    // And the people store's.
+    await people.close();
+    // And the apps' own databases.
+    appDb.close();
+    // And the task store's.
+    await tasks.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -9001,10 +11530,14 @@ export async function createStrut<TServices = unknown>(
     if (registryWasInjected) console.warn(`[packages] not installing ${bootPackages.map((p) => p.ref).join(", ")} at boot: installing is disabled when the registry is provided at construction time`);
     else
       packages.booted = installBootPackages(bootPackages, {
-        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => p.package),
+        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => ({ package: p.package, ...(p.source ? { ref: p.source.ref } : {}) })),
         install: (ref, o) => packages.install(ref, o),
       });
   }
+  // The first deploy of the served ref (src/packages/serve.ts), in the
+  // background for the same reasons: a catalog that does not answer leaves
+  // the previous deploy serving. `close()` waits for it.
+  if (served) serveBooted = served.sync();
 
   // The public runs a dead process left uncharged (src/public-runs.ts):
   // after auto-resume relaunched what it will, the rest are charged from
@@ -9041,9 +11574,42 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // The task store is the `task` SOURCE of parked runs (plans/human-steps.md
+  // §2.3, §3): a `human` step parks on `task:<id>`; a task that leaves
+  // `open` — answered, expired, cancelled — wakes its run, whose step runs
+  // again and finds it; a cancel of a waiting run cancels its tasks.
+  // Registering asks the store about every run already waiting on a task,
+  // so a settle no process woke for (a restart in between) wakes now —
+  // registered here, at the end, since that wake resumes through what is
+  // defined above. Only when the bag's tasks are this store's: a host's
+  // own has no source here.
+  if (!hostTasks) {
+    const taskOf = (on: string) => on.slice(TASK_PARK_PREFIX.length + 1);
+    const taskWaker = parking.register(TASK_PARK_PREFIX, {
+      settled: (on) => tasks.settled(taskOf(on)),
+      cancelled: async (on) => {
+        await tasks.cancel(taskOf(on));
+      },
+    });
+    tasks.onSettle((settled) => {
+      for (const t of settled) taskWaker.wake(t.workflow, t.runId);
+    });
+  }
+  // The task store's sweep (plans/human-steps.md §4.3 rule 8): now and every
+  // minute, wherever a store is — dead leases let go, tasks past their time
+  // expired.
+  tasks.start();
+  // Support as it was first built kept its files in `<dataDir>/support/`
+  // (and its tables in the task store's file, which its first open drops,
+  // src/tasks/tasks.ts): it is strut/staff's own now, in the app's SQLite,
+  // and nothing of it was copied (plans/people-and-hosts.md §5, ruling 7).
+  if (!(store instanceof MemoryRunStore)) void rm(join(dataDir, "support"), { recursive: true, force: true }).catch((err) => console.warn(`[support] ${join(dataDir, "support")} could not be removed: ${err instanceof Error ? err.message : String(err)}`));
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
+  // Deposit invoices asked for (on file from a past process too) are read
+  // every minute until they settle or expire.
+  deposits.start();
   // Credit bought from another strut whose payment had not settled (on
   // file from a past process too) is claimed every minute until it does.
   remote.start();
@@ -9056,9 +11622,12 @@ export async function createStrut<TServices = unknown>(
         autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : reconcilePublic ? reconcilePublicRuns() : undefined,
         autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
       ]);
+      void bootScan.finally(settleResume);
     }, autoResumeOpts.delayMs ?? 3000);
     bootTimer.unref?.();
   }
+  // Nothing to resume: the sweep need not wait.
+  if (!(autoResumeRuns || autoResumeChats || reconcilePublic)) settleResume();
 
   return {
     app,
@@ -9081,18 +11650,23 @@ export async function createStrut<TServices = unknown>(
     upgrade,
     channels,
     automations,
+    retention,
     packages,
     subscriptions,
+    serve: served,
     history,
     index,
     indexes,
     payments,
     remote,
     ledger,
+    people,
+    tasks,
     claims,
     verifier,
     listen,
     close,
+    parking: { register: (prefix, source) => parking.register(prefix, source) },
   };
 }
 

@@ -1,4 +1,4 @@
-// A move sealed with its pairing code (AGENTS.md, "Moving strut to another
+// A move sealed with its pairing code (docs/moving.md, "Moving strut to another
 // host"): a 29-byte header, then AES-256-GCM chunks under a key derived from
 // the code by HKDF-SHA256. The construction is peel's first draft's
 // (home/README.md on its `home-bundle` branch); the constants are strut's,

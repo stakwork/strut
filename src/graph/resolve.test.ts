@@ -9,7 +9,8 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { LadybugBackend } from "./backend.js";
 import { GraphValidationError, type Embedder } from "./node-writer.js";
-import { ResolveError, resolveNode } from "./resolve.js";
+import { ResolveError, resolveAcross, resolveNode } from "./resolve.js";
+import { createNodeSchema } from "./schema-crud.js";
 import { GraphReadError } from "./search.js";
 import { setNodeProps, testBackends } from "./test-util.js";
 import graphResolve from "../steps/lib/graph/resolve.js";
@@ -166,6 +167,47 @@ describe("resolve on a ladybug file (plans/graph-memory-plan.md step 5)", { skip
     assert.equal(r["match"].matched_by, "identifier");
     assert.deepEqual(accessedNodesOf(r), [{ ref_id: ada, node_type: "Person", name: "Ada Lovelace" }]);
     assert.match(String(await graphResolve.run({ node_type: "Nope", name: "x" } as never, ctx)), /^graph\/resolve failed — UNKNOWN_TYPE: /);
+  });
+});
+
+describe("resolve across entity types (ladybug)", { skip: lb.skip }, () => {
+  let b: LadybugBackend;
+  before(async () => {
+    b = (await lb.open()) as LadybugBackend;
+    await createNodeSchema(b, b.schemas, { type: "Topic", attributes: {}, role: "entity" });
+    await createNodeSchema(b, b.schemas, { type: "Hobby", attributes: {}, role: "entity" });
+  });
+  after(() => lb.close(b));
+  beforeEach(() => lb.clear(b));
+
+  it("with no type, finds a thing by name whatever type it was filed under, and says which", async () => {
+    const football = (await b.nodes.write({ type: "Topic", data: { name: "5-a-side football" } })).ref_id;
+    await b.nodes.write({ type: "Concept", data: { name: "Jordan" } });
+    const r = await resolveAcross(b, { name: "5-A-Side Football" });
+    assert.equal(r.match?.ref_id, football);
+    assert.equal(r.match?.node_type, "Topic");
+    assert.equal((await resolveAcross(b, { name: "Jordan" })).match, null, "a Concept is not an entity type");
+    await assert.rejects(resolveAcross(b, {}), /give a name/);
+  });
+
+  it("the same name under two entity types is ambiguous, each candidate with its type", async () => {
+    await b.nodes.write({ type: "Topic", data: { name: "Padel" } });
+    await b.nodes.write({ type: "Hobby", data: { name: "padel" } });
+    const r = await resolveAcross(b, { name: "Padel" });
+    assert.equal(r.ambiguous, true);
+    assert.deepEqual(r.candidates.map((c) => c.node_type).sort(), ["Hobby", "Topic"]);
+  });
+
+  it("graph/resolve: a type left out looks across; a typed miss lists the name under other types; an unknown type says to leave it out", async () => {
+    const football = (await b.nodes.write({ type: "Topic", data: { name: "5-a-side football" } })).ref_id;
+    const ctx = { services: { graph: b } } as never;
+    const across = (await graphResolve.run(graphResolve.input.parse({ name: "5-a-side football" }) as never, ctx)) as Record<string, any>;
+    assert.equal(across["match"].ref_id, football);
+    assert.deepEqual(accessedNodesOf(across), [{ ref_id: football, node_type: "Topic", name: "5-a-side football" }]);
+    const typed = (await graphResolve.run({ node_type: "Hobby", name: "5-a-side football" } as never, ctx)) as Record<string, any>;
+    assert.equal(typed["match"], null);
+    assert.deepEqual(typed["elsewhere"].map((n: { ref_id: string; node_type: string }) => [n.ref_id, n.node_type]), [[football, "Topic"]]);
+    assert.match(String(await graphResolve.run({ node_type: "Activity", name: "5-a-side football" } as never, ctx)), /leave the type out to look across every entity type/);
   });
 });
 

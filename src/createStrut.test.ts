@@ -468,7 +468,7 @@ describe("createStrut", () => {
     );
     await ws.publishWorkflow("shouter", "v1", { steps: [{ id: "s", type: "clip/shout", config: { text: "{{ input.text }}" } }] });
     const store = new MemoryRunStore();
-    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false });
+    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
     const hash = (await ws.getActiveStepHashes())["clip/shout"]!;
     assert.equal(strut.claims, null, "a filesystem workspace has no claims layer");
 
@@ -1169,7 +1169,7 @@ describe("createStrut", () => {
     await ws.publishWorkflow("daily-digest", "v1", { steps }, "Summarize the day");
     await ws.publishWorkflow("slack-backfill", "v1", { steps });
     await ws.publishWorkflow("clip", "v1", { steps });
-    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, orchestrator: false, builder: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, orchestrator: false, builder: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
     const names = async (q: string) =>
       ((await (await strut.app.request(`/workflows?q=${encodeURIComponent(q)}`)).json()) as { name: string }[]).map((w) => w.name);
     assert.deepEqual(await names("slack"), ["slack-backfill"]);
@@ -1350,6 +1350,12 @@ describe("listen()", () => {
 
 // ── The gate: with a key configured, nothing is served without it ─────────
 
+/** The visitor's sign-in routes (plans/app-repos.md §5.2): open to anyone. */
+const VISITOR_SIGN_IN_ROUTES = ["GET /visitors", "GET /visitors/challenge", "GET /visitors/lnurl", "POST /visitors/session", "DELETE /visitors/session"];
+/** And Peel's link (plans/people-and-hosts.md §2.1): the challenge and the
+ *  key's signature are the credential (src/people-link.test.ts). */
+const SIGN_IN_ROUTES = [...VISITOR_SIGN_IN_ROUTES, "POST /people/link", "GET /people/challenge", "POST /people/token"];
+
 describe("the API key gate", () => {
   const KEY = "gate-key";
   const PEER = "peer-key";
@@ -1397,10 +1403,11 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
+    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r));
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
-    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
+    // So is `GET /llms.txt` (plans/paid-runs.md §10): the public view as a page.
+    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt");
     // A visitor's page calls its app here (plans/public-surface.md §5): open,
     // and with nothing in the public view it opens no app. And anyone's
     // launch and the launcher's cancel (plans/paid-runs.md §3): open, by
@@ -1421,12 +1428,14 @@ describe("the API key gate", () => {
     assert.ok(gated.includes("GET /public-view/runnable"), "what a runnable item costs here is behind the key");
     assert.ok(gated.includes("GET /earnings/wallet") && gated.includes("PUT /earnings/wallet"), "the wallet is behind the key");
     for (const r of ["GET /earnings", "GET /earnings/entries", "POST /earnings/withdraw"]) assert.ok(gated.includes(r), `${r} is behind the key`);
+    for (const r of ["GET /tasks", "PUT /tasks/types/x", "PUT /tasks/workers/x/grants/x"]) assert.ok(gated.includes(r), `${r} is behind the key`);
     for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];
       assert.equal((await strut.app.request(path, { method })).status, 401, route);
       assert.equal((await strut.app.request(path, { method, headers: { authorization: "Bearer nope" } })).status, 401, route);
     }
     assert.ok(publicReads.length >= 15, publicReads.join(", "));
+    assert.ok(publicReads.includes("GET /llms.txt"), "llms.txt is open");
     for (const route of publicReads) {
       const path = route.slice(4);
       const res = await strut.app.request(path);
@@ -1435,12 +1444,23 @@ describe("the API key gate", () => {
         continue;
       }
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
+      // A worker invite's page (plans/human-steps.md §5.8) is static: the
+      // invite rides after `#`, so it holds nothing but its own script.
+      if (path === "/public/join" || path === "/public/join/qrcode.js") {
+        assert.equal(res.status, 200, route);
+        continue;
+      }
       if (!["/public", "/public/workflows", "/public/steps", "/public/concepts", "/public/apps"].includes(path)) assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
     for (const route of publicPosts.filter((r) => r !== visitorDoor)) {
       const res = await strut.app.request(route.slice(5), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       assert.equal(res.status, 404, `${route} launches or sells nothing on an empty surface`);
     }
+    // The visitor's sign-in (plans/app-repos.md §5.2): open, and where the
+    // public view names no method it signs nobody in.
+    assert.deepEqual(await (await strut.app.request("/visitors")).json(), { methods: [], visitorKey: "root" });
+    assert.equal((await strut.app.request("/visitors/challenge")).status, 404);
+    assert.equal((await strut.app.request("/visitors/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ method: "key", challenge: "x" }) })).status, 401);
     // A POST under /public by any other name is behind the key.
     assert.equal((await strut.app.request("/public/workflows/x/runs/x/pause", { method: "POST" })).status, 401);
     // A path no route answers is not the UI either.
@@ -1456,14 +1476,27 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session"); // the login, open to anyone
+    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
     // A launch, a run's control, and the publisher's ping to sync subscriptions.
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
     // Earnings too (§8): the books are an admin's, like the wallet. And the
-    // credit this strut bought at other struts (§10).
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit"];
+    // credit this strut bought at other struts (§10), and a served box's
+    // state (plans/app-repos.md §4.4). And the task store's staff reads
+    // (plans/human-steps.md §6): types, workers, tasks, and the tests, which
+    // hold the expected answers (§7.1); the queue and a task's file (§9.4);
+    // the groups of tasks (task/reply's group).
+    // And the Concept branches (plans/concept-evals.md items b, d): a branch
+    // does not cross to another strut, nor does its compare with main. And
+    // the worker invites (plans/human-steps.md §5.8), each a link to money.
+    // And a round type's items and the workflows that can feed a type
+    // (Send a round, the type editor's When there is work): staff reads.
+    // And people's names (plans/people-and-hosts.md §1): an admin's read.
+    // And an app's database, every row of it (plans/apps.md §4.4).
+    // And a host's places (plans/jamie-in-tribes.md §5.4): its key's alone; and a
+    // person's, which need the token Peel holds for a box.
+    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/places", "GET /people/places", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
@@ -1728,11 +1761,46 @@ describe("the API key gate", () => {
     assert.equal(traded.status, 200);
     return { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, session: (await traded.json()) as { actor?: string; exp: number; role?: string } };
   };
+  /** Open to anyone, whoever is signed in. */
+  const openToAnyone = (r: string) =>
+    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || SIGN_IN_ROUTES.includes(r);
   const everyRoute = (strut: Awaited<ReturnType<typeof boot>>) => [...new Set(
     strut.app.routes
       .filter((r) => r.method !== "ALL" && r.path !== "*")
       .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
   )];
+
+  it("a host key (STRUT_HOST_KEYS) passes its seven routes, and every other route is 403 — reads included", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const saved = process.env["STRUT_HOST_KEYS"];
+    process.env["STRUT_HOST_KEYS"] = "sphinx:host-key, bad entry";
+    try {
+      const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
+      // plans/jamie-in-tribes.md §5.1: a turn of its own conversation, read
+      // back, a proposal there decided, and who it is and its places (§5.4); and an
+      // app's tools its hosts: lets it call (plans/people-and-hosts.md §3).
+      const allowed = ["POST /workflows/x/run", "GET /conversations/item", "POST /proposals/x/decide", "PUT /hosts/me", "GET /hosts/places", "DELETE /hosts/places/x", "POST /mcp"];
+      for (const r of allowed) assert.ok(routes.includes(r), r);
+      const host = { authorization: "Bearer host-key", "x-strut-account": `sphinx:02${"ab".repeat(32)}`, "content-type": "application/json" };
+      for (const route of routes) {
+        const [method, path] = route.split(" ") as [string, string];
+        const write = method !== "GET" && method !== "HEAD";
+        const res = await strut.app.request(path, { method, headers: host, ...(write ? { body: "{}" } : {}) });
+        const text = res.status === 403 ? await res.text() : (await res.body?.cancel(), "");
+        if (allowed.includes(route)) assert.ok(res.status !== 401 && !text.includes("forbidden: a host key"), `${route} → ${res.status} ${text}`);
+        else assert.equal(res.status, 403, route);
+      }
+      // Not the deployment key's equal, and not a host's without its entry.
+      assert.equal((await strut.app.request("/hosts/places", { headers: auth.headers })).status, 403, "a host's route: the key is no host");
+      assert.equal((await strut.app.request("/workflows", { headers: { authorization: "Bearer entry" } })).status, 401);
+      process.env["STRUT_HOST_KEYS"] = "";
+      assert.equal((await strut.app.request("/conversations/item?id=host/sphinx/x", { headers: host })).status, 401, "unset, it opens nothing");
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_HOST_KEYS"];
+      else process.env["STRUT_HOST_KEYS"] = saved;
+    }
+  });
 
   it("a member's session (a ticket with no role) passes the routes strut's page calls to show an app, and every other route is 403 — reads included", async () => {
     const strut = await boot();
@@ -1740,9 +1808,7 @@ describe("the API key gate", () => {
     const { cookie, session } = await signInAs(strut, "ada-1");
     assert.equal(session.role, "member", "no role is a member");
     // Open to anyone, a member included, as they are today.
-    const open = (r: string) =>
-      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r);
-    const routes = everyRoute(strut).filter((r) => !open(r));
+    const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
     // plans/member-rights.md "What a member's session opens", and the brand
     // the app is shown in.
     const allowed = [
@@ -1752,6 +1818,7 @@ describe("the API key gate", () => {
       "GET /apps/x/x/files",
       "GET /apps/x/x/files/x",
       "GET /brand",
+      "GET /rate",
       "POST /mcp",
       "GET /mcp", // 405: the page's MCP client asks for a stream once
       "DELETE /mcp",
@@ -1762,7 +1829,7 @@ describe("the API key gate", () => {
       "GET /jobs/x/files/x",
     ];
     for (const r of allowed) assert.ok(routes.includes(r), r);
-    assert.equal(routes.filter((r) => allowed.includes(r)).length, 14);
+    assert.equal(routes.filter((r) => allowed.includes(r)).length, 15);
     assert.ok(routes.length > 100, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /host/mounted"));
     for (const route of routes) {
@@ -1799,6 +1866,65 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { cookie, "x-strut-ui": "1", authorization: `Bearer ${PEER}`, "content-type": "application/json" }, body: "{}" })).status, 403);
   });
 
+  it("a visitor's session (plans/app-repos.md §5.1) passes its own routes and nothing else — 403 on every other, reads included, as cookie and as bearer", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    // A host vouches (`ticket`): the visitor's own cookie, and its token.
+    const json = { "content-type": "application/json" };
+    const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "guest-7", role: "visitor" }) });
+    const { ticket } = (await minted.json()) as { ticket: string };
+    const traded = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+    assert.equal(traded.status, 200);
+    const setCookie = traded.headers.get("set-cookie")!;
+    assert.match(setCookie, /^strut_visitor=/, "a cookie of its own: never the operator's session");
+    const cookie = setCookie.split(";")[0]!;
+    const got = (await traded.json()) as { actor: string; role: string; token: string; exp: number };
+    assert.equal(got.role, "visitor");
+    assert.equal(got.actor, "guest-7");
+    assert.ok(got.exp > Date.now() + 29 * 86_400_000, "a visitor's session lasts a month");
+    // The trap (auth.ts `fullSession`): a visitor's token in the operator's
+    // cookie is no session of the key's at all.
+    const asOperator = `strut_session=${got.token}`;
+    assert.equal(apiKeyMatches(undefined, undefined, asOperator), false);
+    assert.equal(apiKeyMatches(undefined, undefined, cookie), false);
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie: asOperator } })).status, 401);
+    assert.deepEqual(await (await strut.app.request("/health", { headers: { cookie } })).json(), { ok: true });
+
+    const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
+    const allowed = ["GET /auth/session", "POST /apps/x/channel-ticket"];
+    for (const r of allowed) assert.ok(routes.includes(r), r);
+    assert.ok(routes.length > 100, `swept ${routes.length} routes`);
+    assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /mcp") && routes.includes("GET /apps"), "Jamie's door and the apps list are swept");
+    for (const creds of [{ cookie, "x-strut-ui": "1" }, { authorization: `Bearer ${got.token}` }, { "x-strut-visitor": got.token }]) {
+      for (const route of routes) {
+        const [method, path] = route.split(" ") as [string, string];
+        const write = method !== "GET" && method !== "HEAD";
+        const res = await strut.app.request(path, {
+          method,
+          headers: { ...creds, "content-type": "application/json", accept: "application/json, text/event-stream" },
+          ...(write ? { body: "{}" } : {}),
+        });
+        await res.body?.cancel();
+        if (allowed.includes(route)) assert.ok(res.status !== 401 && res.status !== 403, `${route} → ${res.status}`);
+        else assert.equal(res.status, 403, `${route} (${Object.keys(creds).join(", ")})`);
+      }
+    }
+    // Who it is, as cookie and as bearer alike.
+    for (const headers of [{ cookie }, { authorization: `Bearer ${got.token}` }]) {
+      assert.deepEqual(await (await strut.app.request("/auth/session", { headers })).json(), { actor: "guest-7", exp: got.exp, role: "visitor" });
+    }
+    // A channel ticket: a public app's alone — nothing is public here.
+    assert.equal((await strut.app.request("/apps/x/channel-ticket", { method: "POST", headers: { authorization: `Bearer ${got.token}`, ...json }, body: JSON.stringify({ version: "v1" }) })).status, 403);
+    // The cookie keeps the CSRF rules: a write on it alone is no session.
+    assert.equal((await strut.app.request("/apps/x/channel-ticket", { method: "POST", headers: { cookie, ...json }, body: "{}" })).status, 401);
+    // Signing out clears the visitor's cookie, and only it.
+    const out = await strut.app.request("/visitors/session", { method: "DELETE", headers: { cookie } });
+    assert.equal(out.status, 204);
+    assert.match(out.headers.get("set-cookie") ?? "", /^strut_visitor=; .*Max-Age=0/);
+    // Beside a visitor's, the key is the key.
+    assert.equal((await strut.app.request("/workflows", { headers: { authorization: `Bearer ${KEY}`, cookie } })).status, 200);
+  });
+
   it("roles: an admin's session is the key's equal, a bad role is a 400, a member cannot mint a ticket, and /mcp gives a member step_run alone", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
@@ -1808,7 +1934,7 @@ describe("the API key gate", () => {
     for (const role of ["owner", "Admin", "", 7, true, ["admin"]]) {
       const res = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "ada-1", role }) });
       assert.equal(res.status, 400, JSON.stringify(role));
-      assert.match(((await res.json()) as { error: string }).error, /role must be "admin" or "member"/);
+      assert.match(((await res.json()) as { error: string }).error, /role must be "admin", "member" or "visitor"/);
     }
 
     // An admin: GET /auth/session says so, and every route the key opens it opens.
@@ -2077,7 +2203,7 @@ describe("actors and the principal rule", () => {
       job: false, // the suite is about the workflows IT publishes
       orchestrator: false, builder: false,
       systemWorkflows: false,
-      browserWorkflows: false, privacyWorkflows: false,
+      browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
       ...(o.resolveActor ? { resolveActor: o.resolveActor } : {}),
     });
     await strut.workspace.publishWorkflow("wf", "v1", { steps: STEPS });
@@ -2741,6 +2867,37 @@ steps:
     } finally {
       await client.close();
       await strut.close();
+    }
+  });
+});
+
+describe("GET /workflows/:name/versions", () => {
+  it("counts the newest RUN_LIST_SCAN_MAX runs, no further, and says so", async () => {
+    const dir = join(tmpdir(), `strut-versions-test-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    try {
+      const ws = new WorkspaceManager(dir);
+      await ws.publishWorkflow("busy", "v1", { steps: [{ id: "a", type: "log", config: { message: "one" } }] });
+      await ws.publishWorkflow("busy", "v2", { steps: [{ id: "a", type: "log", config: { message: "two" } }] });
+      const [h1, h2] = [await ws.getWorkflowHash("busy", "v1"), await ws.getWorkflowHash("busy", "v2")];
+      const store = new MemoryRunStore();
+      const at = Date.now();
+      // 200 old runs of v1, then 1,000 of v2.
+      for (let i = 0; i < 1_200; i++) {
+        const runId = String(at + i);
+        await store.finalize("busy", runId, { runId, workflow: "busy", startedAt: new Date(at + i).toISOString(), finishedAt: "", durationMs: 0, status: "success", input: {}, workflowHash: (i < 200 ? h1 : h2)! } as RunSummary);
+      }
+      let reads = 0;
+      const getRunSummary = store.getRunSummary.bind(store);
+      store.getRunSummary = (w, r) => (reads++, getRunSummary(w, r));
+      const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
+      reads = 0;
+      const body = (await (await strut.app.request("/workflows/busy/versions")).json()) as { versions: Array<{ version: string; runs: number }>; scanned: number; more?: boolean };
+      assert.equal(reads, 1_000, "the newest 1,000 summaries, not all 1,200");
+      assert.deepEqual(body.versions.map((v) => [v.version, v.runs]), [["v2", 1_000], ["v1", 0]]);
+      assert.deepEqual([body.scanned, body.more], [1_000, true]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

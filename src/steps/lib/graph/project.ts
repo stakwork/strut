@@ -10,7 +10,8 @@ export default defineStep({
     "Project this strut server's own run and chat history into the knowledge graph (StrutRun / StrutAgentSession / " +
     "StrutToolCall / StrutChat / StrutTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges — a builder " +
     "chat and an assistant conversation are both a StrutChat, its `kind` builder or assistant — plus " +
-    "ACCESSED edges from each tool call to the graph nodes it reported touching), " +
+    "ACCESSED edges from each tool call to the graph nodes it reported touching), and recounts each workflow's runs " +
+    "onto its StrutWorkflow (usage_count, usage_count_30d, success_count, error_count, last_run_at, last_run_status), " +
     "reading the raw logs under the server's data dir. Idempotent — re-run any time; settled runs are " +
     "skipped unless skipSettled is false. This is what makes 'which runs executed this version' and " +
     "'which chat launched this run' one-hop graph questions.",

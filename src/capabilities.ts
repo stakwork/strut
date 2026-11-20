@@ -4,11 +4,12 @@ import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
 import type { HistoryCapability } from "./history.js";
 import type { Channels } from "./channels.js";
+import type { AppDatabases } from "./apps/data.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
-import type { BrowserService } from "./browser/service.js";
-import type { ModelCatalog } from "./llm.js";
+import type { StrutBrowser } from "./browser/service.js";
+import type { LlmGrants, ModelCatalog } from "./llm.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -38,9 +39,18 @@ import {
 } from "node:path";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
+import { isValidSecretName } from "./secret-store.js";
 import type { LightningCapability } from "./payments/lightning.js";
+import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
+import type { HumanTasksCapability } from "./tasks/tasks.js";
+import type { TaskTypesCapability } from "./tasks/set-type.js";
+import type { PublicViewCapability } from "./public-view.js";
 import type { RemoteCapability } from "./remote.js";
+import type { KnowledgeCapability } from "./knowledge.js";
+import type { TrialsCapability } from "./trials.js";
+import type { BranchesCapability } from "./branches.js";
+import type { ConceptSources } from "./concept-sources.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -56,6 +66,35 @@ export interface SecretsCapability {
    *  principal, so a step never does — it just reads `secrets.get(NAME)`.
    *  Absent when the deployment has no actor secrets. */
   forPrincipal?(principal: string): SecretsCapability;
+  /** The run's PERSON's own values — their actor secrets
+   *  (src/actor-secrets.ts) — apart from the deployment's: what "connected
+   *  as" reads, what Disconnect deletes, what a person pastes. Only on a
+   *  PACKAGE's step, for the names its package provides (`provides.secrets`,
+   *  src/packages/fence.ts), in a run or call that has a principal — that
+   *  principal's alone: a package's step cannot re-bind its view. */
+  own?: SecretScope;
+  /** The DEPLOYMENT's values, apart from any person's: a read is what a run
+   *  with no value of its own reads (the store, then strut's environment);
+   *  a write is the store's. Only on a package's step called from that
+   *  package's own `admin: true` app shown to an admin (src/apps/tools.ts),
+   *  for the names it provides — never in a workflow run, an agent's tool
+   *  call or a member's call. */
+  deployment?: SecretScope;
+}
+
+/** One holder's secret values, apart from any other's
+ *  (`SecretsCapability.own`, `.deployment`): what `GET`, `PUT` and `DELETE`
+ *  of `/actors/:actor/secrets/:name` and `/secrets/:name` do, from a step.
+ *  A name is a secret's name (letters, digits and `_`) that some step may
+ *  read (`hiddenFromSteps`, env.ts), else `secret_name:`; a value is a
+ *  non-empty string, else `secret_empty:`. Nothing here logs or returns a
+ *  value: a step that reads one decides what its output says. */
+export interface SecretScope {
+  /** This holder's value, or undefined: never another holder's. */
+  get(name: string): Promise<string | undefined>;
+  set(name: string, value: string): Promise<void>;
+  /** Whether this holder had one. */
+  delete(name: string): Promise<boolean>;
 }
 
 /** The narrow read surface a secrets capability needs from a backing store —
@@ -67,6 +106,86 @@ export interface SecretReadable {
 /** The read surface of an actor-secret store (actor-secrets.ts). */
 export interface ActorSecretReadable {
   get(actor: string, name: string): Promise<string | undefined>;
+}
+
+/** A store the capability can also WRITE (a `SecretStore`): what makes
+ *  `deployment` possible. */
+interface SecretWritable extends SecretReadable {
+  set(name: string, value: string): Promise<void>;
+  delete(name: string): Promise<boolean>;
+}
+
+/** An actor-secret store the capability can also write: what makes `own`
+ *  possible. */
+interface ActorSecretWritable extends ActorSecretReadable {
+  set(actor: string, name: string, value: string): Promise<void>;
+  delete(actor: string, name: string): Promise<boolean>;
+}
+
+const writes = (store: unknown): boolean => {
+  const s = store as { set?: unknown; delete?: unknown } | undefined;
+  return typeof s?.set === "function" && typeof s.delete === "function";
+};
+
+/**
+ * What strut's own capability can WRITE, kept OFF the object a step sees, so
+ * no step reaches it by reading `ctx.services`: a package's step gets it
+ * through its fence alone (`secretScopesOf`, src/packages/fence.ts), as
+ * `own` and `deployment`, for the names its package provides. Neither
+ * function below is exported from strut's index, so a step's `import
+ * "strut"` reaches neither. Not isolation — a step has `shell` — but the
+ * door a step is given says what it may do.
+ */
+export interface SecretScopes {
+  /** The principal's own: set on a capability bound to one (`forPrincipal`). */
+  own?: SecretScope;
+  /** The deployment's: set where the capability's store writes. */
+  deployment?: SecretScope;
+  /** The package whose own `admin: true` app this call is, shown to an
+   *  admin (`adminSecrets`): the one package whose steps get `deployment`. */
+  admin?: string;
+}
+const SCOPES = new WeakMap<SecretsCapability, SecretScopes>();
+
+/** The scopes behind a capability strut built, for the fence. */
+export function secretScopesOf(cap: SecretsCapability | undefined): Readonly<SecretScopes> | undefined {
+  return cap ? SCOPES.get(cap) : undefined;
+}
+
+/** `cap` as one call holds it from a package's own `admin: true` app shown
+ *  to an admin (src/apps/tools.ts): that package's steps get `deployment`
+ *  through their fence, and binding it to the viewer keeps it. Only the app
+ *  door binds it, for one call's bag: never the shared one, so a run the
+ *  page launches, an agent or a member's page never holds it. */
+export function adminSecrets(cap: SecretsCapability, pkg: string): SecretsCapability {
+  const scopes = SCOPES.get(cap);
+  if (!scopes?.deployment) return cap;
+  const bind = cap.forPrincipal?.bind(cap);
+  const admin: SecretsCapability = {
+    get: (name: string) => cap.get(name),
+    ...(bind ? { forPrincipal: (principal: string) => adminSecrets(bind(principal), pkg) } : {}),
+  };
+  SCOPES.set(admin, { ...scopes, admin: pkg });
+  if ((cap as { [HIDDEN]?: true })[HIDDEN]) Object.defineProperty(admin, HIDDEN, { value: true });
+  return admin;
+}
+
+/** A scope over one holder's reads and writes, with the name and value rules. */
+function secretScope(read: (name: string) => Promise<string | undefined>, write: (name: string, value: string) => Promise<void>, drop: (name: string) => Promise<boolean>): SecretScope {
+  const named = (name: string): string => {
+    if (typeof name !== "string" || !isValidSecretName(name)) throw new Error(`secret_name: "${String(name).slice(0, 80)}" is not a secret name — letters, digits and _, not starting with a digit`);
+    if (hiddenFromSteps(name)) throw new Error(`secret_name: ${name} is read by the server alone, never by a step`);
+    return name;
+  };
+  return Object.freeze({
+    get: async (name: string) => read(named(name)),
+    set: async (name: string, value: string) => {
+      named(name);
+      if (typeof value !== "string" || !value) throw new Error(`secret_empty: no value for ${name}`);
+      await write(name, value);
+    },
+    delete: async (name: string) => drop(named(name)),
+  });
 }
 
 /**
@@ -100,6 +219,9 @@ export function hideSecrets(cap: SecretsCapability): SecretsCapability {
     ...(cap.forPrincipal ? { forPrincipal: (principal: string) => hideSecrets(cap.forPrincipal!(principal)) } : {}),
   };
   Object.defineProperty(hidden, HIDDEN, { value: true });
+  // A scope refuses a hidden name itself (`secretScope`).
+  const scopes = SCOPES.get(cap);
+  if (scopes) SCOPES.set(hidden, scopes);
   return hidden;
 }
 
@@ -118,6 +240,10 @@ function unhiddenSecrets(
         return fallback?.[name];
       },
     };
+    if (writes(store)) {
+      const w = store as SecretWritable;
+      SCOPES.set(base, { deployment: secretScope(base.get, (n, v) => w.set(n, v), (n) => w.delete(n)) });
+    }
   } else {
     const flat = source as Record<string, string | undefined>;
     base = {
@@ -139,9 +265,15 @@ function unhiddenSecrets(
         // Re-binding replaces the principal rather than stacking.
         forPrincipal: (p) => (p === principal ? bound : withActors.forPrincipal!(p)),
       };
+      if (writes(actors)) {
+        const w = actors as ActorSecretWritable;
+        const own = secretScope((n) => w.get(principal, n), (n, v) => w.set(principal, n, v), (n) => w.delete(principal, n));
+        SCOPES.set(bound, { ...SCOPES.get(base), own });
+      } else if (SCOPES.has(base)) SCOPES.set(bound, SCOPES.get(base)!);
       return bound;
     },
   };
+  if (SCOPES.has(base)) SCOPES.set(withActors, SCOPES.get(base)!);
   return withActors;
 }
 
@@ -412,6 +544,25 @@ export interface StrutCapabilities {
    *  strut runs when the job is deleted or swept. Present wherever the bag
    *  has a `dataDir`. */
   jobs?: JobsCapability;
+  /** The Knowledge door (src/knowledge.ts): what a workflow that tends the
+   *  Concept tree works through — a page as a tender reads it, the claims
+   *  on it, a claim written with the standard check, what a person said as
+   *  evidence. Set by the standard server wherever the claims layer is on;
+   *  the `knowledge/*` steps are thin over it. */
+  knowledge?: KnowledgeCapability;
+  /** Trials and tests (src/trials.ts, plans/claim-trials.md): a claim's
+   *  cases run as trials, two wordings of a page run against the same
+   *  checks, and what the Knowledge app's checks are read from. Set by the
+   *  standard server wherever the claims layer is on. */
+  trials?: TrialsCapability;
+  /** The Concept branches (src/branches.ts): set by the standard server on a
+   *  graph workspace. `knowledge/merge` merges one into main. */
+  branches?: BranchesCapability;
+  /** Which Concept pages' text comes from git, and the proposals that write
+   *  a change to one into its checkout (src/concept-sources.ts, plans/
+   *  concept-evals.md item e). Set by the standard server on a graph
+   *  workspace. */
+  conceptSources?: ConceptSources;
   /** The other struts this one may call (peers.ts; plans/federation.md
    *  §2.2): name a peer, make a request with its token injected — the
    *  token itself is readable by nothing. Set by the standard server; a
@@ -422,6 +573,11 @@ export interface StrutCapabilities {
    *  between the people on an app. What the `channel/*` steps reach, for code
    *  an app runs (`ctx.app`). Set by the standard server. */
   channels?: Channels;
+  /** Every APP's own SQLite database (src/apps/data.ts; plans/apps.md §4.4):
+   *  `<dataDir>/apps/<name>/data.db`, what the `sqlite/*` steps run on —
+   *  `ctx.app`'s, or the one a call with no app names. Set by the standard
+   *  server. */
+  appDb?: AppDatabases;
   /** The package STORE (src/packages/indexes.ts): the reads — `search`
    *  over the indexes this strut follows and the peers' installed packages,
    *  `get` a package's page, `concepts` / `concept` the Concept tree — what
@@ -436,12 +592,12 @@ export interface StrutCapabilities {
    *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
    *  file (plans/ladybug-backend.md). */
   graph?: GraphBackend;
-  /** The browser the `browser/*` steps drive (src/browser/service.ts): one
-   *  Playwright connection, a context per run, closed when the run ends.
-   *  Built by the standard server from `BROWSER_*`; a host's own wins.
-   *  Optional because a bare in-code bag may not carry one (the steps then
-   *  fail naming it). */
-  browser?: BrowserService;
+  /** The browser the `browser/*` steps drive (src/browser/service.ts): the
+   *  verbs in `StrutBrowser`. The standard server builds strut's own
+   *  `BrowserService` from `BROWSER_*` (one Playwright connection, a context
+   *  per run, closed when the run ends); a host's own wins. Optional because
+   *  a bare in-code bag may not carry one (the steps then fail naming it). */
+  browser?: StrutBrowser;
   /** The model catalog `GET /llm/models` serves (src/llm.ts
    *  `listModelOptions`): every model aieo knows, each with whether people
    *  may pick it (the host's `STRUT_MODELS`, else a key for its provider
@@ -449,12 +605,25 @@ export interface StrutCapabilities {
    *  the standard server; a bare bag falls back to the catalog with no boot
    *  default. */
   llmModels?: () => Promise<ModelCatalog>;
+  /** Model calls for a machine outside strut (src/llm.ts `LlmGrants`;
+   *  stakwork/pods PLAN.md §3.2): `grant({ name, hours })` → `{ id, env }`,
+   *  billed to the run's principal through the gateway, and `revoke(id)`.
+   *  Present only where the Mothership can grant (`STRUT_MOTHERSHIP_GRANTS_URL`);
+   *  absent, or a `grant` that answers null, means no grant. */
+  llm?: LlmGrants;
   /** The server's wallet, its RECEIVE side (plans/paid-runs.md §9,
    *  src/payments/lightning.ts): make an invoice, look one up, list what
    *  came in, read the balance. Nothing on it pays. Present only while a
    *  wallet is set (`LIGHTNING_*`, `PUT /earnings/wallet`); a host's own
    *  wins. */
   lightning?: LightningCapability;
+  /** SENDING AS SUPPORT through the treasury's Sphinx daemon
+   *  (plans/people-and-hosts.md §4, src/payments/sphinx-dm.ts): `send`,
+   *  `delete`, `setPhoto` over its message token. NEVER on the shared bag:
+   *  only on a first-party page's call shown to an admin, and on a run such
+   *  an app launched (`support-outbox`). Not on an agent's tools, not on a
+   *  host's call. */
+  sphinx?: SphinxCapability;
   /** What this server earned (plans/paid-runs.md §8, src/payments/earnings.ts):
    *  the read `GET /earnings` answers, what the `earnings/read` step is thin
    *  over. Reads only: nothing on it pays — the payer is never on the bag. */
@@ -464,6 +633,31 @@ export interface StrutCapabilities {
    *  holds — injected, never handed out — and the door an ACCEPTED
    *  `remote/buy-credit` proposal pays through. The payer is not on it. */
   remote?: RemoteCapability;
+  /** The TASK STORE (plans/human-steps.md §4, src/tasks/tasks.ts): people as
+   *  a step of a workflow. On the shared bag, `ensure` and `reply` alone —
+   *  the `human` step's and `task/reply`'s calls, each held to the run that
+   *  calls it (§9.2): no step, workflow or agent tool reaches the
+   *  worker's calls or the staff's. A `worker: true` step's own call on an
+   *  app door (`step_run`) gets the worker's calls in its place (§5.2,
+   *  `TasksService.worker`); the staff reach the store through the `/tasks`
+   *  routes alone. Set by the standard server; a host's own is kept as it
+   *  is. */
+  tasks?: HumanTasksCapability;
+  /** The TASK TYPES (plans/human-steps.md §9.2, §9.8, src/tasks/set-type.ts):
+   *  `list()` — each type with its open tasks, how many workers hold it and
+   *  its answers in the last week — the card's reads, and `save`, which
+   *  opens only for an ACCEPTED `task/set-type` proposal on disk (an admin's)
+   *  for that name and input. Nothing on it grants a worker, deletes a type
+   *  or changes a worker. Set by the standard server; a host's own wins. */
+  taskTypes?: TaskTypesCapability;
+  /** The PUBLIC VIEW's door for an agent's ask (src/public-view.ts;
+   *  plans/public-surface.md §2 "The door"): `plan` — what adding an app
+   *  brings into view, who can sign in, the card's reads — and `addApp`,
+   *  which opens only for an ACCEPTED `app/make-public` proposal on disk (an
+   *  admin's) for that app and version, and writes through `PUT
+   *  /public-view`'s own save. Nothing on it removes from the view. Set by
+   *  the standard server; a host's own wins. */
+  publicView?: PublicViewCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

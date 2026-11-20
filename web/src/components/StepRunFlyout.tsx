@@ -9,6 +9,7 @@ import { ValueFields } from "./ValueFields";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { ConfirmButton } from "./ConfirmButton";
 import { AccessedNodes } from "./AccessedNodes";
+import { WaitingOn } from "./WaitingOn";
 import type { TouchedNode } from "@strut/kit/folds";
 import yaml from "js-yaml";
 
@@ -17,6 +18,8 @@ export interface StepRunEvents {
   end?: api.RunEvent;
   error?: api.RunEvent;
   skipped?: api.RunEvent;
+  /** The step parked (src/park.ts): `on` is what it waits for. */
+  parked?: api.RunEvent;
   all: api.RunEvent[];
   /** Graph nodes the step read or wrote — an agent's, through its tool
    *  calls (`foldAccessedNodes`). */
@@ -39,6 +42,10 @@ export function StepRunFlyout(props: {
    *  step (RUN_CONTROL_SPEC §5.2). Only passed for non-live runs. Rejects
    *  with the server's reason, shown under the button. */
   onRerunFrom?: () => Promise<void>;
+  /** A parked step's task opens strut/staff on it, for a viewer the app is
+   *  listed to (plans/human-steps.md §9.1). */
+  onOpenApp?: (name: string, input?: string) => void;
+  staffListed?: boolean;
 }) {
   const { step } = props;
   const [rerunError, setRerunError] = useState<string | null>(null);
@@ -53,7 +60,7 @@ export function StepRunFlyout(props: {
   const disp = props.events;
   // LLM steps (agent, llm) report their dollar cost in the output.
   const cost = (disp.end?.output as { cost?: unknown } | null | undefined)?.cost;
-  const status = disp.error ? "error" : disp.skipped ? "skipped" : disp.end ? "success" : "running";
+  const status = disp.error ? "error" : disp.skipped ? "skipped" : disp.end ? "success" : disp.parked ? "waiting" : "running";
 
   return (
     <>
@@ -73,6 +80,14 @@ export function StepRunFlyout(props: {
               <span class="flyout-meta-label">Status</span>
               <span class={`badge badge-${statusTone(status)}`}>{status}</span>
             </div>
+            {disp.parked && (
+              <div class="flyout-meta-row">
+                <span class="flyout-meta-label">Waiting on</span>
+                <span class="flyout-meta-value">
+                  <WaitingOn on={disp.parked.on} staffListed={props.staffListed} onOpenApp={props.onOpenApp} />
+                </span>
+              </div>
+            )}
             {disp.end?.durationMs != null && (
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Duration</span>

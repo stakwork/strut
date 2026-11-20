@@ -15,7 +15,7 @@ Neither lands in strut's own `node_modules`, which carries no React: the
 kit's dependencies install into `kit/node_modules`. `vendor/` is built by
 strut's own `npm run build` (its `build:kit` step, `scripts/build-kit.mjs`:
 this directory's frozen install, then `build:vendor`), so `prepare`, the
-Docker image and the desktop package all carry it — AGENTS.md "Running" says
+Docker image and the desktop package all carry it — docs/running.md says
 where each finds it. The kit may later be published as a package strut pins
 exactly (open question 4); `src/apps/kit.ts` looks for `@strut/kit` first. Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
 stack and the bridge, nothing else**: strut's own components are `strut/views`,
@@ -93,12 +93,16 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost` (theme,
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useShareLink` (the
+  address to paste: the host's page, `strut/page` in its context, with
+  `?input=`; undefined with none), `useHost` (theme,
   display mode, `sendMessage`, `openLink`; in a strut server's public view
   `public: true`, `runnable` — the granted workflows a VISITOR may start —
   and `results`, what it reads of the runs it launched of each (`output`:
   `useRun` and the declared files; `run`: everything) — read off the
-  document's `strut-public-view` and `strut-public-runnable` metas. A priced
+  document's `strut-public-view` and `strut-public-runnable` metas; and
+  everywhere `name`, the server's name when a person gave it one (its
+  brand's, the `strut-name` meta: the employer a worker works for). A priced
   one's host pays before the launch returns (`plans/paid-runs.md` §10,
   specs/API.md §17.6), so `run/launch` waits up to `LAUNCH_TIMEOUT_MS` (15
   minutes); a host that cannot pay leaves a `{ payment_required }` result,
@@ -107,14 +111,44 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `useAppState(key, initial)` → `[value, set, { loaded, error }]` (`app/state`:
   what this viewer's page remembers across visits — the page has no browser
   storage; writes go out within `APP_STATE_WRITE_MS`, every key set meanwhile
-  in one call). The LIVE
+  in one call), `useSql(sql, params?, { maxRows?, refetchInterval? })` →
+  `{ columns, rows, truncated }` and `useSqlMutation()` → `{ exec(sql,
+  params?), batch(statements) }` (`sqlite/query`, `sqlite/exec`,
+  `sqlite/batch`: the app's own tables, made by its `db/*.sql` migrations,
+  with `grants: { sqlite: true }`; a write that lands refetches every
+  `useSql`). The LIVE
   FEEDS (`plans/live-feeds.md`), one call held on the server at a time and
   none while the page is hidden: `useJobUpdates(job)` → `{ updates,
   latest(kind) }` (`job/updates`: a job's shots, frames, holds, verdicts,
   status lines and graph writes as they happen) and `useGraphChanges(types)`
   → `{ rev, changes }` (`graph/changes` from now: put `rev` in the
   dependencies of the reads that show those types). Grant the step in
-  `grants.steps`. SQL and automation hooks are later work items.
+  `grants.steps`. A WORKER's page (`plans/human-steps.md` §5.3: a person
+  answering a workflow's `human` step), the worker always the page's
+  signed-in viewer: `useTask(type?)` → `{ task, submit(answer), skip(reason?),
+  status, error }` (`task/next { wait }` held on the server one at a time
+  and none while the page is hidden; `task` is `{ lease, type, show, files,
+  expires, answer, payMsat }`, `answer` the type's schema, `payMsat` what
+  the answer earns, locked when it was taken; dropped when its lease runs
+  out or the server says it is gone, and the next asked for; `submit` and
+  `skip` read `useWorker()` and `useTaskHistory()` again), `useWorker()`
+  (`task/me`: `status`, the `types` held in this app, each with its
+  `payMsat`, `standing` and `waiting` — how many wait that they could take —
+  `holding`, the task in their hand, and `balance` — `{ heldMsat,
+  withdrawableMsat, totalMsat, nextReleaseAt? }`, what the worker is owed
+  here, `WorkerBalance`; `useWorker({ all: true })` lists every app's types
+  the viewer can open here, each with its `app`), `useTaskHistory()`
+  (`task/history`, `{ all }` likewise: their own
+  newest tasks here, each with its `ask`, how it ended and what it earned,
+  the group the workflow put it in (`group`, `task/reply`'s) and staff's
+  verdict (`review { verdict, why?, at }`: a rejection's `why` is what to
+  fix), `WorkerHistoryItem`; `{ group }` every answer of theirs in one
+  group, `{ groups: true }` also their groups, `WorkerTaskGroup`, each with
+  its answers, `ok`, `rejected` and `unreviewed`; grant `task/history`) and
+  `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
+  `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
+  `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation
+  hooks are later work items.
 - **`src/channel-hooks.ts`** — `useChannel(name, { onMessage?, enabled? })`
   → `{ available, ready, client, members, states, events, error, send(data,
   { key? }) }`: live messages between the people on the app
@@ -158,6 +192,13 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   (`@strut/kit/wallet/vectors.json`), the page's client
   (`createBridgeWallet`, which the bootstrap builds, with `window.webln` over
   it), and the relay a native host's main frame runs (`relayNativeWallet`).
+  Beside the app's calls, the HOST's own purchase (specs/WALLET.md §1.2):
+  `CreditPurchase` and `creditPurchaseProblems`, `hostWalletCapabilityOf`,
+  `readCreditReply`, and the relay's `probeHostWallet`, `buyCreditNatively`
+  and `creditStatusNatively` — strut's UI asking a native wallet to pay, with
+  one tap, the credit a visitor's page needs on a strut server, and where a
+  payment it sent stands. No app identity, no connection, no budget; the
+  `host_capabilities`, `credit_purchases` and `credit_replies` vectors.
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.
@@ -203,7 +244,18 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `concept-diff.ts` (`foldConceptDiff`: two states of the Concept tree's
   pages — from the history, a proposal laid over a page, an unsaved edit —
   as the tree with each page added, removed, renamed, moved or edited;
-  `lineDiff` / `foldDiffLines`, the docs line by line), and
+  `lineDiff` / `foldDiffLines`, the docs line by line), `answer-form.ts`
+  (a FLAT FORM over a JSON Schema: `fieldsOf`, `initialContent`,
+  `missingRequired`, `contentToSubmit`, `answerOf` — the form's content as
+  the answer, numbers read and a pick mapped back to the schema's value —
+  and `formProblem`, why a schema is no form; strut's UI draws the
+  builder's questions with it, `strut/views`' TaskForm a task's answer),
+  `earnings.ts` (the words and figures of a server's earnings, which strut's
+  Earnings tab and `strut/earnings` both write with: dollars, sats, prices,
+  ranges, a withdrawal's refusal; and what workers are owed for accepted
+  answers — `showsWorkers`, none on a strut that never paid one,
+  `workersOwedSub`, `workersDayMsat`, `coverLine`, whether the wallet covers
+  it, and `shortOfWorkersWarning`, Withdraw's warning), and
   `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is

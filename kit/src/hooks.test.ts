@@ -1,20 +1,23 @@
 import { teardownDom, useActEnvironment } from "./test-dom.js";
-import { after, describe, it } from "node:test";
+import { after, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
-import { PUBLIC_RUNNABLE_META, PUBLIC_VIEW_META, StrutError, isPublicView, paymentRequiredOf, publicRunnable, type StrutClient } from "./client.js";
+import { PUBLIC_RUNNABLE_META, PUBLIC_VIEW_META, SERVER_NAME_META, StrutError, isPublicView, paymentRequiredOf, publicRunnable, serverName, type StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
   JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
-  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
+  useAppLink, useShareLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
+  useNames, PEOPLE_NAMES_STEP,
+  useSql, useSqlMutation, SQL_STEPS,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
+  useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
-import { appLink } from "./links.js";
+import { PAGE_CONTEXT, appLink, shareLink } from "./links.js";
 
 useActEnvironment();
 
@@ -201,6 +204,68 @@ describe("the run hooks name their step and pass what they were given", () => {
     await act(async () => { await sleep(30); });
     assert.deepEqual(none.calls, []);
     await n.unmount();
+  });
+
+  it("useNames → people/names once for the list, 200 actors a call, keeping only those with a name; nothing for none", async () => {
+    const { client, calls } = fakeClient({
+      [PEOPLE_NAMES_STEP]: (c) => ({ people: Object.fromEntries((c.config!.actors as string[]).map((a) => [a, a === "a-1" ? { name: "Ada" } : a === "x-249" ? { name: "X" } : {}])) }),
+    });
+    const actors = ["b-2", "a-1", "a-1", ...Array.from({ length: 250 }, (_, i) => `x-${i}`)];
+    const h = await renderHook(() => useNames(actors), { client });
+    await until(() => h.result().data !== undefined, "names");
+    assert.deepEqual(h.result().data, { "a-1": "Ada", "x-249": "X" });
+    assert.deepEqual(calls.map((c) => (c.config!.actors as string[]).length), [200, 52], "252 distinct actors, two calls");
+    await h.unmount();
+    const none = fakeClient();
+    const h2 = await renderHook(() => useNames([]), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    await h2.unmount();
+  });
+
+  it("useNames: a newer answer for a person reaches every list holding them, so two lists never disagree", async () => {
+    let wendy = "Wendy Worker";
+    const { client } = fakeClient({
+      [PEOPLE_NAMES_STEP]: (c) => ({ people: Object.fromEntries((c.config!.actors as string[]).map((a) => [a, a === "w-1" ? { name: wendy } : a === "a-1" ? { name: "Ada" } : {}])) }),
+    });
+    let second = false;
+    const h = await renderHook(() => ({ workers: useNames(["w-1", "a-1"]), support: useNames(["w-1", "b-2"], { enabled: second }) }), { client });
+    await until(() => h.result().workers.data !== undefined, "the first list");
+    assert.deepEqual(h.result().workers.data, { "w-1": "Wendy Worker", "a-1": "Ada" });
+    wendy = "Wendy W";
+    second = true;
+    await h.rerender();
+    await until(() => h.result().support.data !== undefined, "the second list");
+    assert.deepEqual(h.result().support.data, { "w-1": "Wendy W" });
+    await until(() => h.result().workers.data?.["w-1"] === "Wendy W", "the first list to take the newer name");
+    assert.equal(h.result().workers.data?.["a-1"], "Ada", "a person only the first list holds keeps their name");
+    await h.unmount();
+  });
+
+  it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {
+    let n = 0;
+    const { client, calls } = fakeClient({
+      [SQL_STEPS.query]: () => ({ columns: ["n"], rows: [{ n }], truncated: false }),
+      [SQL_STEPS.exec]: () => ({ changes: 1, lastInsertRowid: ++n }),
+      [SQL_STEPS.batch]: (c) => ({ results: (c.config!.statements as unknown[]).map(() => ({ changes: 1, lastInsertRowid: ++n })) }),
+    });
+    const h = await renderHook(() => ({ read: useSql<{ n: number }>("SELECT count(*) AS n FROM t WHERE k = ?", ["a"], { maxRows: 5 }), write: useSqlMutation() }), { client });
+    await until(() => h.result().read.data !== undefined, "rows");
+    assert.deepEqual(calls[0], { type: "sqlite/query", config: { sql: "SELECT count(*) AS n FROM t WHERE k = ?", params: ["a"], maxRows: 5 } });
+    assert.equal(h.result().read.data!.rows[0]!.n, 0);
+    await act(async () => { await h.result().write.exec("INSERT INTO t (k) VALUES (?)", ["a"]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 1, "refetched after the exec");
+    await act(async () => { await h.result().write.batch(["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }]); });
+    await until(() => h.result().read.data!.rows[0]!.n === 3, "refetched after the batch");
+    assert.deepEqual(calls.filter((c) => c.type !== "sqlite/query").map((c) => c.type), ["sqlite/exec", "sqlite/batch"]);
+    assert.deepEqual(calls.find((c) => c.type === "sqlite/batch")!.config, { statements: ["DELETE FROM t", { sql: "INSERT INTO t (k) VALUES (?)", params: ["b"] }] });
+    await h.unmount();
+    // No SQL: nothing asked.
+    const none = fakeClient();
+    const h2 = await renderHook(() => useSql(undefined), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    await h2.unmount();
   });
 
   it("useWorkflow → run/workflow", async () => {
@@ -461,6 +526,28 @@ describe("the host hooks", () => {
     }
   });
 
+  it("useHost().name: the server's name, off the document's meta; none without one", async () => {
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const none = await renderHook(() => useHost(), { client, host });
+    assert.equal(none.result().name, undefined);
+    await none.unmount();
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", SERVER_NAME_META);
+    meta.setAttribute("content", " Acme Labels ");
+    document.head.appendChild(meta);
+    try {
+      assert.equal(serverName(), "Acme Labels");
+      const h = await renderHook(() => useHost(), { client, host });
+      assert.equal(h.result().name, "Acme Labels");
+      await h.unmount();
+      meta.setAttribute("content", "  ");
+      assert.equal(serverName(), undefined, "blank is none");
+    } finally {
+      meta.remove();
+    }
+  });
+
   it("appLink names the app and carries its input as one param; useAppLink is this app's", async () => {
     assert.equal(appLink("bench"), "?app=bench");
     assert.equal(appLink("bench", {}), "?app=bench", "no input, a plain open");
@@ -477,6 +564,26 @@ describe("the host hooks", () => {
     const bare = await renderHook(() => useAppLink(), { client });
     assert.throws(() => bare.result()(), /no app identity/);
     await bare.unmount();
+  });
+
+  it("shareLink puts the input on the host's page; useShareLink reads the page off the host context, none without one", async () => {
+    assert.equal(shareLink("https://box.example/", { session: "ann/abc123" }), "https://box.example/?input=session%3Dann%252Fabc123");
+    assert.equal(
+      shareLink("https://strut.example/?app=strut%2Fjamie&input=session%3Dold", { session: "new" }),
+      "https://strut.example/?app=strut%2Fjamie&input=session%3Dnew",
+      "the page's own input is replaced",
+    );
+    assert.equal(shareLink("https://box.example/?input=x"), "https://box.example/", "no input: the page itself");
+
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const h = await renderHook(() => useShareLink(), { client, host });
+    assert.equal(h.result(), undefined, "a host with no page address: no link to paste");
+    await act(async () => { host.update({ context: { [PAGE_CONTEXT]: "https://box.example/" } }); });
+    assert.equal(h.result()?.({ session: "s1" }), "https://box.example/?input=session%3Ds1");
+    await act(async () => { host.update({ context: { [PAGE_CONTEXT]: "javascript:alert(1)" } }); });
+    assert.equal(h.result(), undefined, "only an http(s) page");
+    await h.unmount();
   });
 });
 
@@ -701,3 +808,213 @@ describe("the live helpers", () => {
 
 
 after(() => teardownDom());
+
+describe("a worker's page (plans/human-steps.md §5.3)", () => {
+  const TASK = { lease: "l1", type: "pet-match", show: { guess: "dog" }, files: ["found.jpg"], expires: Date.now() + 600_000, answer: { type: "object" } };
+  const setVisibility = (state: "hidden" | "visible") => {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  it("useTask holds one task/next at a time, none while the page is hidden; submit lets the task go and asks again", async () => {
+    const answers: unknown[] = [{ none: true }, TASK];
+    let inFlight = 0;
+    let most = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: async () => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        const a = answers.shift();
+        if (a === undefined) return new Promise(() => {}); // held, as the server would
+        await sleep(5);
+        inFlight--;
+        return a;
+      },
+      [TASK_STEPS.submit]: () => ({ ok: true }),
+    });
+    setVisibility("hidden");
+    try {
+      const h = await renderHook(() => useTask(), { client });
+      await act(async () => { await sleep(30); });
+      assert.equal(calls.length, 0, "nothing asked while hidden");
+      setVisibility("visible");
+      await until(() => h.result().task?.lease === "l1", "the task");
+      assert.equal(h.result().status, "working");
+      assert.deepEqual(calls.slice(0, 2), [{ type: "task/next", config: { wait: TASK_WAIT_S } }, { type: "task/next", config: { wait: TASK_WAIT_S } }]);
+      assert.equal(most, 1, "one held call at a time");
+      await act(async () => { await h.result().submit({ same: true }); });
+      assert.deepEqual(calls[2], { type: "task/submit", config: { lease: "l1", answer: { same: true } } });
+      assert.equal(h.result().task, null);
+      await until(() => calls.length === 4, "the next ask");
+      assert.equal(calls[3]!.type, "task/next");
+      assert.equal(h.result().status, "waiting");
+      await h.unmount();
+    } finally {
+      setVisibility("visible");
+    }
+  });
+
+  it("submit with files sends them as the answer's attachments, the chat's shape (plans/human-steps.md §5.6)", async () => {
+    let nexts = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? { ...TASK, attachments: { max: 1, min: 1, types: ["image/*"] } } : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => ({ ok: true }),
+    });
+    const h = await renderHook(() => useTask(), { client });
+    await until(() => h.result().task?.lease === "l1", "the task");
+    assert.deepEqual(h.result().task?.attachments, { max: 1, min: 1, types: ["image/*"] }, "what the type takes");
+    const photo = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2])], "page 1.jpg", { type: "image/jpeg" });
+    await act(async () => { await h.result().submit({ pages: 1 }, [photo]); });
+    assert.deepEqual(calls.find((c) => c.type === "task/submit"), {
+      type: "task/submit",
+      config: { lease: "l1", answer: { pages: 1 }, attachments: [{ name: "page 1.jpg", mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString("base64") }] },
+    });
+    await h.unmount();
+  });
+
+  it("a bad answer keeps the task; a lease that is gone drops it and asks again; a worker not active is `inactive`", async () => {
+    let answer: "bad" | "gone" = "bad";
+    let nexts = 0;
+    const { client } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? TASK : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => {
+        throw new Error(answer === "bad" ? "bad_answer: same is required" : "lease_expired: the time to answer this task ran out");
+      },
+    });
+    const h = await renderHook(() => useTask("pet-match"), { client });
+    await until(() => h.result().task !== null, "the task");
+    await act(async () => { await assert.rejects(h.result().submit({}), /bad_answer/); });
+    assert.equal(h.result().task?.lease, "l1", "kept: the worker fixes the answer");
+    assert.equal(taskErrorCode(h.result().error), "bad_answer");
+    answer = "gone";
+    await act(async () => { await assert.rejects(h.result().submit({ same: true }), /lease_expired/); });
+    assert.equal(h.result().task, null);
+    await until(() => nexts === 2, "asked again");
+    await h.unmount();
+
+    const { client: idle, calls } = fakeClient({ [TASK_STEPS.next]: () => { throw new Error("not_active: you have no task types yet; an admin decides who takes tasks here"); } });
+    const i = await renderHook(() => useTask(), { client: idle });
+    await until(() => i.result().status === "inactive", "inactive");
+    await act(async () => { await sleep(50); });
+    assert.equal(calls.length, 1, "it waits before asking again");
+    await i.unmount();
+  });
+
+  it("an answer reads useWorker again, so its balance moves as the answer goes in (plans/human-steps.md §8.1)", async () => {
+    let held = 0;
+    let nexts = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? { ...TASK, payMsat: 21_000 } : new Promise(() => {})),
+      [TASK_STEPS.submit]: () => {
+        held += 21_000;
+        return { ok: true };
+      },
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers", payMsat: 21_000 }], balance: { totalMsat: held, heldMsat: held, withdrawableMsat: 0 } }),
+    });
+    const h = await renderHook(() => ({ t: useTask(), me: useWorker() }), { client });
+    await until(() => h.result().t.task !== null && h.result().me.data !== undefined, "a task and the worker");
+    assert.equal(h.result().t.task!.payMsat, 21_000);
+    assert.equal(h.result().me.data!.balance.heldMsat, 0);
+    await act(async () => { await h.result().t.submit({ same: true }); });
+    await until(() => h.result().me.data?.balance.heldMsat === 21_000, "the balance read again");
+    assert.equal(calls.filter((c) => c.type === "task/me").length, 2);
+    await h.unmount();
+  });
+
+  it("useWithdraw asks task/withdraw for an amount, reads useWorker again, then every 5 s while a payout is on its way", async () => {
+    let out: Record<string, unknown> | undefined;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({
+        actor: "secp:ab", status: "active", types: [], balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 },
+        payout: { on: true, minMsat: 1_000_000, dayLeftMsat: 9e9, maxMsat: 5_000_000, ...(out ? { out } : {}) },
+      }),
+      [TASK_STEPS.withdraw]: (c) => {
+        if (c.config?.msat === 1) throw new Error("below_minimum: the least is 1000 sats");
+        out = { key: "k1", msat: c.config?.msat, maxFeeMsat: 25_000, at: 1, stale: false };
+        return { state: "pending", msat: c.config?.msat, feeMsat: 0, maxFeeMsat: 25_000 };
+      },
+    });
+    const h = await renderHook(() => ({ w: useWithdraw(), me: useWorker() }), { client });
+    await until(() => h.result().me.data?.payout?.on === true, "the worker's payout");
+    assert.equal(h.result().me.data!.payout!.out, undefined);
+    await assert.rejects(async () => { await act(async () => { await h.result().w.withdraw(1); }); }, /below_minimum/);
+    await until(() => h.result().w.status === "error", "the refusal");
+    assert.match(h.result().w.error!.message, /below_minimum/);
+    mock.timers.enable({ apis: ["setInterval"] });
+    try {
+      await act(async () => { await h.result().w.withdraw(2_000_000); });
+      assert.deepEqual(calls.filter((c) => c.type === TASK_STEPS.withdraw).at(-1)!.config, { msat: 2_000_000 });
+      assert.equal(h.result().w.status, "idle");
+      await until(() => h.result().me.data?.payout?.out !== undefined, "the payout on its way, read again");
+      const reads = calls.filter((c) => c.type === TASK_STEPS.me).length;
+      await act(async () => { mock.timers.tick(5_000); });
+      await until(() => calls.filter((c) => c.type === TASK_STEPS.me).length > reads, "read again after 5 s");
+      out = undefined;
+      await act(async () => { mock.timers.tick(5_000); });
+      await until(() => h.result().me.data?.payout?.out === undefined, "the payout settled");
+      const done = calls.filter((c) => c.type === TASK_STEPS.me).length;
+      await act(async () => { mock.timers.tick(20_000); });
+      await sleep(20);
+      assert.equal(calls.filter((c) => c.type === TASK_STEPS.me).length, done, "no more reads once nothing is on its way");
+    } finally {
+      mock.timers.reset();
+    }
+    await h.unmount();
+  });
+
+  it("an invite link's token (the page's tool input `invite`) goes with task/me and task/next, so its worker is given the work (plans/human-steps.md §5.8)", async () => {
+    const host = createStaticHost({});
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [] }),
+      // Held a moment before "none", as the server holds it (`wait`).
+      [TASK_STEPS.next]: () => new Promise((resolve) => setTimeout(() => resolve({ none: true }), 30)),
+    });
+    const h = await renderHook(() => ({ me: useWorker(), t: useTask() }), { client, host });
+    await until(() => calls.some((c) => c.type === "task/me") && calls.some((c) => c.type === "task/next"), "asked without one");
+    assert.deepEqual(calls.find((c) => c.type === "task/me")!.config, {}, "no invite: nothing sent");
+    assert.equal((calls.find((c) => c.type === "task/next")!.config as { invite?: string }).invite, undefined);
+    await act(async () => { host.setToolInput({ invite: "strut-invite.x.y" }); });
+    await until(() => calls.filter((c) => c.type === "task/me").length >= 2 && calls.some((c) => (c.config as { invite?: string } | undefined)?.invite && c.type === "task/next"), "asked with it");
+    assert.deepEqual(calls.filter((c) => c.type === "task/me").at(-1)!.config, { invite: "strut-invite.x.y" });
+    assert.equal((calls.filter((c) => c.type === "task/next").at(-1)!.config as { invite?: string }).invite, "strut-invite.x.y");
+    await h.unmount();
+  });
+
+  it("useWorker is task/me; useTaskFile reads one of the task's files through its lease, nothing without a task", async () => {
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers" }] }),
+      [TASK_STEPS.file]: (c) => ({ path: c.config?.path, mediaType: "text/plain", bytes: 2, text: "hi" }),
+    });
+    const h = await renderHook(() => ({ me: useWorker(), file: useTaskFile(TASK, "found.jpg"), none: useTaskFile(null, "found.jpg") }), { client });
+    await until(() => h.result().me.data !== undefined && h.result().file.data !== undefined, "both");
+    assert.equal(h.result().me.data!.status, "active");
+    assert.equal(h.result().file.data!.text, "hi");
+    assert.equal(h.result().none.fetchStatus, "idle");
+    assert.deepEqual(calls.map((c) => c.type).sort(), ["task/file", "task/me"]);
+    assert.deepEqual(calls.find((c) => c.type === "task/file")!.config, { lease: "l1", path: "found.jpg" });
+    await h.unmount();
+  });
+
+  it("useTaskHistory is task/history; a skip reads it and useWorker again, as an answer does", async () => {
+    let nexts = 0;
+    let skipped = 0;
+    const { client, calls } = fakeClient({
+      [TASK_STEPS.next]: () => (nexts++ === 0 ? TASK : new Promise(() => {})),
+      [TASK_STEPS.skip]: () => {
+        skipped++;
+        return { ok: true };
+      },
+      [TASK_STEPS.me]: () => ({ actor: "p256:ab", status: "active", types: [{ name: "pet-match", app: "workers", payMsat: 0, qualifying: false, standing: false, waiting: 1 - skipped }], balance: { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 } }),
+      [TASK_STEPS.history]: () => ({ items: skipped ? [{ lease: "l1", type: "pet-match", taken: 1, closed: 2, status: "skipped" }] : [] }),
+    });
+    const h = await renderHook(() => ({ t: useTask(), me: useWorker(), history: useTaskHistory() }), { client });
+    await until(() => h.result().t.task !== null && h.result().history.data !== undefined && h.result().me.data !== undefined, "a task, the worker and the history");
+    assert.deepEqual(h.result().history.data!.items, []);
+    await act(async () => { await h.result().t.skip(); });
+    await until(() => h.result().history.data?.items.length === 1, "the history read again");
+    await until(() => h.result().me.data?.types[0]?.waiting === 0, "the counts read again");
+    assert.equal(h.result().history.data!.items[0]!.status, "skipped");
+    assert.equal(calls.filter((c) => c.type === "task/history").length, 2);
+    await h.unmount();
+  });
+});

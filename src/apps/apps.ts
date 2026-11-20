@@ -9,8 +9,9 @@
  * written. Under the meta surface's rules (`surface: "ai"` — `app/publish`,
  * a model's door) a manifest may not grant a sealed workflow or step, nor
  * `llm`, `agent` or `exec` as direct step grants (§5.1, §9): the workflow
- * is the unit of spend. A person's `POST /apps` (`surface: "person"`) may
- * grant anything, the `peer: true` precedent — and a person may lift the
+ * is the unit of spend, nor name `hosts:` (plans/people-and-hosts.md §3). A
+ * person's `POST /apps` (`surface: "person"`) may grant anything, the
+ * `peer: true` precedent — and a person may lift the
  * seal for one app and one workflow (./grants.ts: `app/grant`, accepted as
  * a proposal), after which the meta surface's publishes may name it. Built
  * by `createStrut` into
@@ -21,11 +22,22 @@
  * recorded (./graph-types.ts), on Neo4j and on a LadybugDB file alike; on
  * the filesystem workspace, which has no graph, it does not build.
  *
+ * An app's own SQLite (./data.ts, plans/apps.md §4.4): a publish applies the
+ * directory's `db/*.sql` migrations to the app's database after the build
+ * and before the version is recorded, so a failing one publishes nothing; a
+ * preview applies them as a publish would; a build tries them on an empty
+ * database in memory and reports what fails.
+ *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version
  * and the newest few keep their directory, and an older one is restored
  * from its tree and rebuilt the first time it is read (`ensure`). Every
  * read of a version goes through `ensure`.
+ *
+ * One read goes nowhere near the directory: `manifestOf`, what the app
+ * door asks on EVERY call a page makes (./tools.ts). It is the version's
+ * manifest off the workspace's record, remembered in memory (`appManifests`)
+ * and forgotten when the app's record is written (`watchAppWrites`).
  */
 import { randomBytes } from "node:crypto";
 import { rename, rm, stat } from "node:fs/promises";
@@ -35,7 +47,9 @@ import type { AppRef, StepRegistry } from "../core.js";
 import { globToRegExp } from "../closure.js";
 import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
+import { servicesPastVisitor } from "../step-lint.js";
 import { treeHash } from "../version.js";
+import { packagePrefixOf } from "../package-lookup.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
@@ -43,6 +57,7 @@ import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, reservedAppName, 
 import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
 import { removeAppState } from "./state.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
+import type { AppDatabases } from "./data.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
@@ -55,7 +70,7 @@ export const DEFAULT_TEMPLATE = "default";
 
 /** Never a direct grant from a model-written manifest (§5.1): a paid or
  *  shell-shaped step runs inside a workflow the app launches. */
-export const PAID_OR_SHELL_STEPS: readonly string[] = ["llm", "agent", "exec", "remote/run-workflow", "remote/call", "remote/buy-credit"];
+export const PAID_OR_SHELL_STEPS: readonly string[] = ["llm", "agent", "image", "exec", "remote/run-workflow", "remote/call", "remote/buy-credit"];
 
 /** One app as `app/get` and `GET /apps/:name` read it: the record, the
  *  version's files and build, and what has moved since. */
@@ -134,6 +149,9 @@ export interface AppPublishOptions {
   /** `false`: record the version without making it active (a package update
    *  landing beside a fork, plans/marketplace.md §4). */
   activate?: boolean;
+  /** Known content: stamp the version that holds it with `source`, `actor`
+   *  and `upstream` (`PublishOptions.stamp`: a package door's apply). */
+  stamp?: boolean;
 }
 
 export type AppPublishResult =
@@ -154,6 +172,8 @@ export type AppPublishResult =
       note?: string;
       /** The graph types and edges the publish registered (`data.graph`). */
       graph?: RegisteredGraph;
+      /** The migrations (`db/*.sql`) the publish applied to the app's database. */
+      migrations?: string[];
     }
   | { ok: false; errors: string[]; warnings: string[] };
 
@@ -169,7 +189,7 @@ export interface AppPreview {
 }
 
 export type AppPreviewResult =
-  | { ok: true; name: string; version: string; hash: string; bytes: number; warnings: string[]; graph?: RegisteredGraph }
+  | { ok: true; name: string; version: string; hash: string; bytes: number; warnings: string[]; graph?: RegisteredGraph; migrations?: string[] }
   | { ok: false; errors: string[]; warnings: string[] };
 
 /** How long a preview is hosted, and how many at once. */
@@ -185,10 +205,98 @@ export interface AppReleases {
   behind: LockDrift[];
 }
 
+/** What the app door needs of a version (`manifestOf`). */
+export interface AppVersionManifest {
+  /** The version read: the one asked for, else the live one. */
+  version: string;
+  manifest: AppManifest;
+  /** Strut seeded the version (`source: "seed"`): what makes a `strut/` app's page first-party. */
+  seeded: boolean;
+  /** The package the version came from (its `upstream`, a fork's carried
+   *  forward), when the app is under that package's prefix: what makes an
+   *  `admin: true` app the package's own admin app (src/apps/tools.ts). */
+  package?: string;
+}
+
+/** The versions `manifestOf` has read, kept until their app's record is written. */
+export interface AppManifests {
+  /** The version's entry (no version: the live one's): remembered, else
+   *  `load`ed and remembered. A miss is never remembered. */
+  read(name: string, version: string | undefined, load: () => Promise<AppVersionManifest | null>): Promise<AppVersionManifest | null>;
+  /** The app's record was written: forget every version of it. */
+  forget(name: string): void;
+}
+
+/**
+ * A version's manifest never changes, so it is read once. What can make an
+ * entry wrong all goes through the app's record: which version is live (a
+ * publish, an activation, a release), a delete (the name's next publish is
+ * `v1` again, with another manifest) and a stamp (a version's `source`).
+ * So ANY write of the record forgets the app (`watchAppWrites`), and a load
+ * that began before a write is not kept. In this process's memory: a write
+ * made past the watched store (another process on the same workspace) is
+ * not seen until a restart.
+ */
+export function appManifests(): AppManifests {
+  // Per app, by version label; the live version's under "" (never a label).
+  const kept = new Map<string, Map<string, AppVersionManifest>>();
+  let writes = 0;
+  return {
+    async read(name, version = "", load) {
+      const hit = kept.get(name)?.get(version);
+      if (hit) return hit;
+      const before = writes;
+      const got = await load();
+      if (got && before === writes) {
+        const versions = kept.get(name) ?? new Map<string, AppVersionManifest>();
+        kept.set(name, versions.set(version, got));
+      }
+      return got;
+    },
+    forget(name) {
+      writes++;
+      kept.delete(name);
+    },
+  };
+}
+
+/** The store's methods that write an app's record; each takes the app's name first. */
+const APP_WRITES: ReadonlySet<string> = new Set(["publishApp", "setActiveAppVersion", "addAppRelease", "setAppLive", "deleteApp"]);
+
+/**
+ * The workspace store, telling `wrote(name)` once a write of an app's
+ * record returned or threw — whoever made it (this capability, a seed, a
+ * package install). Every other method, and `instanceof`, are the store's own.
+ */
+export function watchAppWrites(ws: WorkspaceStore, wrote: (name: string) => void): WorkspaceStore {
+  return new Proxy(ws, {
+    get(target, prop) {
+      // The store's own `this`: a getter or a method may read its private fields.
+      const v = Reflect.get(target, prop, target) as unknown;
+      if (typeof v !== "function") return v;
+      const fn = v as (...args: unknown[]) => unknown;
+      if (typeof prop !== "string" || !APP_WRITES.has(prop)) return fn.bind(target);
+      return async (...args: unknown[]) => {
+        try {
+          return await fn.apply(target, args);
+        } finally {
+          if (typeof args[0] === "string") wrote(args[0]);
+        }
+      };
+    },
+  });
+}
+
 export interface AppsCapability {
   /** Every app, each with its live version's warning count when it has any. */
   list(): Promise<AppListing[]>;
   get(name: string, version?: string): Promise<AppView | null>;
+  /** One version's manifest (the live one's by default), its label, and
+   *  whether strut seeded it — all the app door (`step_run`) needs, on
+   *  every call: off the workspace's record alone, remembered until the
+   *  app's record is next written. Never the files, the build, the errors
+   *  or the grants `get` reads. Null when there is no such app or version. */
+  manifestOf(name: string, version?: string): Promise<AppVersionManifest | null>;
   /** A version's directory (the active one by default), or null. */
   versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
   /** Build the directory in place (`dist/`), with the installed apps and the
@@ -270,6 +378,14 @@ export interface AppsDeps {
   grants?: AppGrantStore;
   /** Where the viewers' state lives (./state.ts), dropped with the app. */
   dataDir?: string;
+  /** The apps' own databases (./data.ts): a publish and a preview apply the
+   *  directory's migrations to the app's, a build tries them in memory.
+   *  Absent: migrations are neither applied nor tried. */
+  appDb?: AppDatabases;
+  /** What `manifestOf` remembers. Pass the one a host also hands
+   *  `watchAppWrites` when something writes app records past this
+   *  capability (createStrut: the seeds, a package install). Default: its own. */
+  manifests?: AppManifests;
 }
 
 
@@ -291,7 +407,9 @@ const exists = async (p: string) => {
 };
 
 export function createApps(deps: AppsDeps): AppsCapability {
-  const { workspace } = deps;
+  const manifests = deps.manifests ?? appManifests();
+  // Every write this capability makes of an app's record forgets the app.
+  const workspace = watchAppWrites(deps.workspace, manifests.forget);
   const grants = deps.grants ?? memoryAppGrants();
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
 
@@ -370,17 +488,54 @@ export function createApps(deps: AppsDeps): AppsCapability {
     ...(deps.now ? { now: deps.now } : {}),
   });
 
-  /** The graph check a build of `dir` runs (./graph-types.ts); nothing when
-   *  its manifest does not parse — the build reports that. */
-  const graphCheck = async (dir: string, name?: string) => {
+  /** A WARNING for each custom step the app grants that reaches a service a
+   *  visitor's call never carries (src/step-lint.ts `servicesPastVisitor`):
+   *  a member's page runs it, a public page's — every worker's — fails. */
+  const pastVisitor = async (manifest: AppManifest): Promise<string[]> => {
+    const registry = deps.getRegistry?.() ?? {};
+    const types = new Set<string>();
+    for (const g of manifest.grants.steps) {
+      const re = g.includes("*") ? globToRegExp(g) : null;
+      for (const t of re ? Object.keys(registry).filter((k) => re.test(k)) : [g]) types.add(t);
+    }
+    const out: string[] = [];
+    for (const type of types) {
+      const src = await workspace.getStepSource(type).catch(() => null);
+      const past = src?.origin === "custom" ? servicesPastVisitor(src.code) : [];
+      if (!past.length) continue;
+      out.push(
+        `grants.steps: "${type}" uses ${past.map((s) => `ctx.services.${s}`).join(", ")}, which a visitor's call never carries — ` +
+          `a member's page runs it, but on a public page it fails for every visitor, each worker who signs in through Peel included. ` +
+          `Keep what the page lists in rows of a type the app declares (data.graph) or in useAppState, and do shell, file or ` +
+          `app-database work in a workflow the app grants and launches (the App Concept, "Signed-in visitors")`,
+      );
+    }
+    return out;
+  };
+
+  /** What a build checks of the manifest: the graph types (./graph-types.ts)
+   *  and the granted steps a visitor cannot run (`pastVisitor`). */
+  const manifestCheck = async (manifest: AppManifest, name?: string) => {
+    const graph = await checkAppGraph(manifest, deps.graph, name);
+    return { errors: graph.errors, warnings: [...graph.warnings, ...(await pastVisitor(manifest))] };
+  };
+
+  /** The check a build of `dir` runs; nothing when its manifest does not
+   *  parse — the build reports that. */
+  const dirCheck = async (dir: string, name?: string) => {
     const read = await readManifest(dir);
-    return read.ok ? checkAppGraph(read.manifest, deps.graph, name) : { errors: [], warnings: [] };
+    return read.ok ? manifestCheck(read.manifest, name) : { errors: [], warnings: [] };
   };
 
   /** What a model-written manifest may not grant (§5.1, §9) — a sealed
    *  workflow a person granted `name` aside (./grants.ts). */
   const refusedGrants = async (manifest: AppManifest, name: string): Promise<string[]> => {
     const out: string[] = [];
+    // Which host may call the app's tools, as whom, is a person's call (as
+    // `peer:` on a workflow): plans/people-and-hosts.md §3.
+    if (manifest.hosts && Object.keys(manifest.hosts).length) {
+      out.push(`hosts: only a person lets a host call an app's tools (plans/people-and-hosts.md §3) — drop the key; over an app whose hosts: a person wrote, your version closes it to those hosts until a person publishes one with it again`);
+    }
     const registry = deps.getRegistry?.() ?? {};
     for (const g of manifest.grants.steps) {
       const glob = g.includes("*");
@@ -507,13 +662,31 @@ export function createApps(deps: AppsDeps): AppsCapability {
       };
     },
 
+    manifestOf: (name, version) =>
+      manifests.read(name, version, async () => {
+        const rec = await workspace.getApp(name, version);
+        if (!rec) return null;
+        const pkg = rec.upstream?.package;
+        return {
+          version: rec.version,
+          manifest: rec.manifest,
+          seeded: rec.versions[rec.version]?.source === "seed",
+          // An item is its package's only under its prefix (src/packages/installed.ts).
+          ...(pkg && packagePrefixOf(name) === pkg ? { package: pkg } : {}),
+        };
+      }),
+
     versionDir,
 
     async build(dir, opts) {
-      const graph = await graphCheck(dir, opts?.name);
-      if (graph.errors.length) return { ok: false, errors: graph.errors, warnings: graph.warnings };
+      const check = await dirCheck(dir, opts?.name);
+      if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
+      // The migrations on an empty database in memory: one that does not
+      // apply is the build's error, before the publish meets it.
+      const tried = deps.appDb ? await deps.appDb.check(dir) : null;
+      if (tried && !tried.ok) return { ok: false, errors: tried.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(opts?.name));
-      return graph.warnings.length ? { ...built, warnings: [...graph.warnings, ...built.warnings] } : built;
+      return check.warnings.length ? { ...built, warnings: [...check.warnings, ...built.warnings] } : built;
     },
 
     async getDir(dir) {
@@ -545,10 +718,14 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
-      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      const check = await manifestCheck(read.manifest, name);
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
+      // The tables before the version (§4.4): a migration that fails rolls
+      // back and publishes nothing; the ones before it stay applied.
+      const migrated = deps.appDb ? await deps.appDb.migrate(name, dir) : null;
+      if (migrated && !migrated.ok) return { ok: false, errors: migrated.errors, warnings: [...check.warnings, ...built.warnings, ...migrated.warnings] };
       // The types before the version: a version is never live without them.
       const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const publisher = opts.publisher ?? (opts.surface === "ai" ? "ai" : undefined);
@@ -559,6 +736,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         ...(opts.upstream !== undefined ? { upstream: opts.upstream } : {}),
         ...(opts.reactivateKnown !== undefined ? { reactivateKnown: opts.reactivateKnown } : {}),
         ...(opts.activate !== undefined ? { activate: opts.activate } : {}),
+        ...(opts.stamp ? { stamp: true } : {}),
       });
       const { path } = await workspace.materializeAppVersion(name, r.version);
       // The directory as built, `dist/` included — the same bytes on a
@@ -589,9 +767,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
         changed: r.changed,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: [...check.warnings, ...built.warnings],
+        warnings: [...check.warnings, ...built.warnings, ...(migrated?.warnings ?? [])],
         live: !held,
         ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+        ...(migrated?.applied.length ? { migrations: migrated.applied } : {}),
         ...(held
           ? {
               liveVersion: held.active,
@@ -612,11 +791,14 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
-      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      const check = await manifestCheck(read.manifest, name);
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
-      // As a publish does: the page's writes need the types it declares.
+      // As a publish does: the page's queries need its tables, and its
+      // writes the types it declares.
+      const migrated = deps.appDb ? await deps.appDb.migrate(name, dir) : null;
+      if (migrated && !migrated.ok) return { ok: false, errors: migrated.errors, warnings: [...check.warnings, ...built.warnings, ...migrated.warnings] };
       const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const now = nowMs();
       for (const [label, p] of previews) if (now - p.at > PREVIEW_TTL_MS) previews.delete(label);
@@ -629,8 +811,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
         version,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: [...check.warnings, ...built.warnings],
+        warnings: [...check.warnings, ...built.warnings, ...(migrated?.warnings ?? [])],
         ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+        ...(migrated?.applied.length ? { migrations: migrated.applied } : {}),
       };
     },
 

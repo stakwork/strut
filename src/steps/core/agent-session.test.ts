@@ -12,6 +12,7 @@ import { MemorySessionStore, sessionsCapability, type NewTurn, type SessionsCapa
 import { MemoryRunStore } from "../../store.js";
 import { createRegistry } from "../registry.js";
 import agent from "./agent.js";
+import { newSshKey, sshPublicKey } from "../../ssh-agent.js";
 
 // Agent sessions (plans/agent-sessions.md), OFFLINE: a stand-in Anthropic
 // endpoint records every request body, so what a turn SENDS is asserted on
@@ -155,6 +156,42 @@ describe("agent sessions", () => {
       record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "anthropic", model: "anthropic/x", routed: false, ...record },
     });
 
+  it("sshKeys: bash signs through strut's own agent and never holds the key; the agent goes with the run", async () => {
+    const pem = newSshKey();
+    const { publicKey } = sshPublicKey(pem);
+    const ends: (() => unknown)[] = [];
+    const s = await serve([
+      bash(
+        "toolu_1",
+        'test -S "$SSH_AUTH_SOCK" && echo "sock=$SSH_AUTH_SOCK"; echo "pem=$(env | grep -c \'PRIVATE KEY\')"; if command -v ssh-add >/dev/null; then ssh-add -L; else echo no-ssh-add; fi',
+      ),
+      answer("toolu_2", "done"),
+    ]);
+    try {
+      const out = await run(
+        { sshKeys: ["SSH_KEY"] },
+        {
+          services: { sessions, secrets: { get: async (n: string) => (n === "SSH_KEY" ? pem : undefined) } },
+          onRunEnd: (f: () => unknown) => ends.push(f),
+        },
+      );
+      assert.equal(out.result, "done");
+      const bashTool = (s.bodies[0].tools as any[]).find((t) => t.name === "bash");
+      assert.match(bashTool.description, /An SSH agent holds this shell's keys \(SSH_AUTH_SOCK is set\)/);
+      const result = JSON.stringify(s.bodies[1].messages.at(-1));
+      const socket = /sock=(\S+?)\\n/.exec(result)?.[1];
+      assert.ok(socket, `bash sees a socket: ${result}`);
+      assert.match(result, /pem=0/, "no key in the shell's environment");
+      if (!result.includes("no-ssh-add")) assert.ok(result.includes(publicKey), "ssh-add lists the key through the agent");
+      assert.ok(!result.includes("PRIVATE KEY"));
+      // The run's end closes it.
+      for (const end of ends) await end();
+      assert.equal(existsSync(socket), false);
+    } finally {
+      s.close();
+    }
+  });
+
   it("a second run continues the first: its system prompt, its messages byte for byte, then the new prompt", async () => {
     const s = await serve([
       bash("toolu_1", "echo one"),
@@ -171,7 +208,9 @@ describe("agent sessions", () => {
       // Turn 0 appended its prompt, the tool call, the tool result, the answer
       // and its result: that is where turn 1 starts.
       const thread = await store.load("abc");
-      assert.deepEqual(second.session, { id: "abc", turn: 1, offset: thread!.turns[0]!.count });
+      // `keptSystem`: the step was handed another prompt and ran on the thread's first (what a
+      // verify pass reads, so a page rendered into the unused one is not observed).
+      assert.deepEqual(second.session, { id: "abc", turn: 1, offset: thread!.turns[0]!.count, keptSystem: true });
       assert.equal(thread!.messages.length, thread!.turns[0]!.count + thread!.turns[1]!.count);
 
       // On the wire: the frozen system prompt, and turn 0's last request as

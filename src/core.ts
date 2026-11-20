@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { InputBlock } from "./input-block.js";
 import type { TokenUsage } from "./pricing.js";
+import type { Retention } from "./retention.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -66,16 +67,24 @@ export interface StepDef<
    *  typed that no log may hold — `secret/add`'s `value`. */
   redact?: readonly string[];
   /** For a step an agent's `approve:` gates (src/proposals.ts): a proposal
-   *  of it waits for every PENDING proposal this returns true for — accepting
-   *  it first is refused (409), so it applies after them. `meta/set-automation`
-   *  waits for the publish of the workflow it schedules. */
-  after?: (cfg: z.infer<TInput>, pending: { step: string; input: unknown }) => boolean;
+   *  of it waits for every proposal of the step `step` not yet applied
+   *  (pending, being applied, failed) whose input `when` returns true for —
+   *  accepting it first is refused (409), so it applies after them. Named by
+   *  step type so the check reads that step's proposals alone.
+   *  `meta/set-automation` waits for the publish of the workflow it schedules. */
+  after?: { step: string; when: (cfg: z.infer<TInput>, input: unknown) => boolean };
   /** For a gated step (plans/proposals.md §7): what the person's CARD says
    *  beyond the input — a title in their words and a summary read at
    *  proposal time (`package/install` reads the index's page of the
    *  package). Called by the gate once, best effort: a throw or nothing
    *  leaves the description's first sentence as the title. */
   describe?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<ProposalDescription | undefined>;
+  /** For a call an agent's `approve:` gates: the step's OWN answer in place
+   *  of the proposal, or undefined to propose it as usual. For a call there
+   *  is nothing for a person to decide on here: `knowledge/edit-page` answers
+   *  a page whose text comes from git itself (its own proposal into a
+   *  checkout, or skipped), whatever the review says. */
+  answerGated?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<unknown>;
   /** For a gated step: who may ACCEPT a proposal of it (src/proposals.ts).
    *  `admin`: only an ADMIN of this strut server (plans/member-rights.md) —
    *  the deployment key, an admin's session, a host's server holding the
@@ -84,10 +93,23 @@ export interface StepDef<
    *  the proposal itself (`admin_required:`), so none waits on nobody.
    *  `package/install` sets it. Absent: whoever may decide the proposal. */
   approver?: "admin";
+  /** A WORKER's step (plans/human-steps.md §5.1): one that decides from its
+   *  own caller — the page's viewer, `ctx.actor` in `ctx.app` — and is never
+   *  kept as a run. A signed-in visitor's page may call one its app grants
+   *  (`signedInRefusal`), and the app monitor counts its volume per viewer.
+   *  The `task/*` steps set it. */
+  worker?: boolean;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
+  /** Called when a durable resume REPLAYS this step's journaled output
+   *  instead of running it (RUN_CONTROL_SPEC §5): a wake, a restart, a
+   *  person's resume. It puts back what `run` held in this process's memory
+   *  and the park or the dead process let go — a job's hold (`job/dir`).
+   *  Its config is resolved as for `run`; a throw fails the step. Most
+   *  steps have none: a replay costs nothing. */
+  onReplay?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>, output: z.infer<TOutput>) => Promise<void>;
 }
 
 /** What a gated step says of itself on the person's card (`StepDef.describe`). */
@@ -102,6 +124,18 @@ export interface ProposalDescription {
   actions?: { accept: string; reject: string };
   /** False when `fields` leave part of what will run out. */
   full?: boolean;
+  /** The input to KEEP on the record in place of the one asked: the same
+   *  input with a default the step read now filled in (`app/make-public`
+   *  names the app's version live when asked), so the yes applies what the
+   *  card showed and not what is there by then. Parsed by the step's schema;
+   *  one that does not parse is ignored. */
+  input?: unknown;
+  /** A waiting proposal this one REPLACES (one `ProposalsCapability.waiting`
+   *  found): strut closes it when this one is made — rejected, "Replaced by
+   *  a newer card", its `replacedBy` this one — so the thread is left with
+   *  one card. Ignored unless that one is still pending, of the same step,
+   *  in the same thread. */
+  replaces?: string;
 }
 
 /** One line of a proposal's card (`ProposalCard.fields`). */
@@ -110,6 +144,10 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** A setting most people need not read: a host folds it under "Details"
+   *  (a host that does not know the flag shows it with the rest). A danger
+   *  is never one. */
+  detail?: boolean;
 }
 
 /** What running a step does outside the run (`StepDef.effect`). */
@@ -149,6 +187,25 @@ export interface RunAttachment {
    *  (`ctx.attachments`). Absent on what a run records. */
   runId?: string;
 }
+
+/**
+ * A TRIAL (src/trials.ts, plans/claim-trials.md §3): the run replays one
+ * case of a claim on a Concept, so that claim can judge it. A launch-level
+ * field shaped like `branch`: on `run.start` and the summary, `ctx.trial`,
+ * kept by a resume, inherited by every run the run starts. Nothing a trial
+ * does leaves it: the job launcher answers that the job was held, a gated
+ * call is not proposed, no wake and no callback follow its end, and a run on
+ * another strut is held (`TRIAL_HELD`).
+ */
+export interface RunTrial {
+  /** The claim whose case this is: its checks judge the run whatever their policy. */
+  claim: string;
+  /** Which of the claim's cases, by position, when it was one of them. */
+  case?: number;
+}
+
+/** What a step answers in a trial instead of doing what would leave it. */
+export const TRIAL_HELD = "held: this run is a trial, so nothing it starts leaves it";
 
 /** Context passed to every step's `run` function.
  *
@@ -227,12 +284,28 @@ export interface StepContext<TServices = unknown> {
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
    *  templates see it as `{{ $job }}`. Absent on a plain run. */
   job?: string;
+  /** The Concept BRANCH the run is on (src/branches.ts), a launch-level
+   *  field like `job`: set by whoever launched the root, inherited by every
+   *  run it starts, never in `input`. Its Concepts are the branch's (the
+   *  bag's view, `bindBranch`). Absent: main, the live tree. */
+  branch?: string;
+  /** The run is a TRIAL (`RunTrial`, src/trials.ts), a launch-level field
+   *  like `branch`: set by whoever launched the root, inherited by every run
+   *  it starts, never in `input`. A trial starts nothing outside itself: a
+   *  step that would start a job, record a proposal or reach another strut
+   *  answers that it was held. */
+  trial?: RunTrial;
   /** The APP this call or run works for (plans/apps.md §5), the twin of
    *  `job`: set by the app door (`step_run`) for a page's call, and carried
    *  by a run the app launched (`run/launch`) — never by a launch body. A
    *  step that keeps something per app (its SQLite file, its declared
    *  graph types, its schedules) finds the app here. Absent otherwise. */
   app?: AppRef;
+  /** The HOST this call came through (plans/people-and-hosts.md §3): set by
+   *  the host's door alone (`step_run` on `POST /mcp` with a host key), never
+   *  by a launch body, and not carried by a run the step launches. Absent
+   *  otherwise. */
+  host?: HostRef;
   /** The AUTOMATION whose fire this run is (plans/automations.md §6): set
    *  by the scheduler's launch alone, recorded on `run.start`, read back by
    *  a resume. Nothing a caller sends (`POST …/run`, `meta/run-workflow`)
@@ -265,6 +338,11 @@ export interface StepContext<TServices = unknown> {
    *  these, newest turn first, each with the `runId` that holds it. Absent on
    *  a run launched without. */
   attachments?: RunAttachment[];
+  /** The agent session whose turn this tool call is (`turn` 0-based): set
+   *  by an `agent` step with a `session` on the context its tools get, so
+   *  a fact a tool saves can say which conversation and turn it came from.
+   *  Absent outside such a turn. */
+  agentTurn?: { session: string; turn: number };
   /** The run's own cost cap in dollars, when it has one below its
    *  workflow's (a public run's, plans/paid-runs.md §7): `stepAuth` hands it
    *  to `llmAuth`, and the Mothership's run link carries the smaller of the
@@ -279,6 +357,22 @@ export interface StepContext<TServices = unknown> {
    *  run's list. Optional (absent outside the runner, like `registry`);
    *  a hard kill skips it like any in-process `finally`. */
   onRunEnd?: (fn: (info: RunEndInfo) => unknown) => void;
+  /** PARK the run on `on` (src/park.ts, plans/human-steps.md §2): never
+   *  returns. The step, and every step that depends on it, waits for `on`
+   *  (`<prefix>:<id>`, a source registered under the prefix); the run leaves
+   *  memory as `waiting` and is resumed from its journal when the source
+   *  wakes it, so the step runs AGAIN from the top and must find what it
+   *  started (keyed by `runId` and `path`) instead of starting it twice.
+   *  Fails the step instead — an ordinary error — where nothing could wake
+   *  the run: no source for the prefix, a single-step run, a public run, an
+   *  agent's tool call. Absent outside the runner. */
+  park?: (on: string) => never;
+  /** Why `ctx.park` would fail the step here for a target of `prefix` (a
+   *  single-step run, a public run, an agent's tool call, no source for the
+   *  prefix), or undefined when it would park. For a step that must not
+   *  START what it would wait on where nothing could wake the run: the
+   *  `human` step asks before it makes a task. Absent outside the runner. */
+  parkRefusal?: (prefix: string) => string | undefined;
 }
 
 /** What a run's teardown hooks (`ctx.onRunEnd`, `services.onRunEnd`) are told
@@ -287,6 +381,17 @@ export interface RunEndInfo {
   /** The flow's name — the run-store key the run was written under. */
   workflow: string;
   origin?: RunOrigin;
+  /** The run PARKED (src/park.ts): it is `waiting`, not ended. Per-run
+   *  resources go as at any end; what runs at a run's real end (the verify
+   *  pass, the projection) waits for it. */
+  parked?: true;
+  /** With `parked`: what it waits on. With `status: "cancelled"`: what the
+   *  branches it stopped had parked on — a cancel that came after their
+   *  last checkpoint. Each target's source is told, as for a cancel of a
+   *  waiting run. */
+  waitingOn?: string[];
+  /** How the run ended, when it did (not `parked`). */
+  status?: "success" | "error" | "cancelled";
 }
 
 /** Error handling options for a step. */
@@ -364,6 +469,9 @@ export interface Flow {
    *  (scope `peer:person`, plans/chained-orchestrators.md §2). Content like
    *  `sealed:`, so it rides in the version hash. */
   peer?: PeerOpen;
+  /** The YAML `retain:` — how long a finished run's log is kept
+   *  (`src/retention.ts`): a window, or the newest N runs. */
+  retain?: Retention;
 }
 
 /** Who another strut's request must be to launch a workflow: any peer
@@ -380,6 +488,11 @@ export type RunEventType =
   /** A completed step's journaled output was replayed on resume — zero cost,
    *  no side effects re-executed. Never a fake `step.end` (honest timings). */
   | "step.replayed"
+  /** The step PARKED (src/park.ts): `on` is what it waits for. Not an error
+   *  and not an end: a wake runs the step again, which starts a new attempt.
+   *  A container a parked step stopped (subflow, foreach, loop) parks too,
+   *  with everything below it in `on`. */
+  | "step.parked"
   | "run.start"
   | "run.end"
   | "run.error"
@@ -394,6 +507,10 @@ export type RunEventType =
    *  this marker is what tells boot-time auto-resume (§5.3) that the run
    *  was being cancelled, not cut off. */
   | "run.cancelling"
+  /** Not terminal: every branch of the run ended or parked, and some parked
+   *  (src/park.ts) — `on` is what it waits for. The summary says `waiting`;
+   *  a wake resumes the run from its journal (`run.resumed { woken: true }`). */
+  | "run.waiting"
   /** A piece of an agent's reply as the model writes it (`stream: true` on
    *  the agent step, plans/private-voice.md §3.4): `{ path, call, text,
    *  reset? }`, batched about every 50 ms. Kept in the log, never sent by the
@@ -403,7 +520,7 @@ export type RunEventType =
 /** Who launched a run, when it was not a person or an API call. `"app"`:
  *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
  *  — a person's click in the viewer's name, so the run carries `app` too. */
-export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public";
+export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public" | "host";
 
 /** The APP a run or a step works for (plans/apps.md §5): what `step_run`
  *  sets as `ctx.app` for the page's call, and what a run the app launches
@@ -447,6 +564,17 @@ export interface WorkspaceAppRef {
    *  every run the page launches, so a turn knows whether its person may
    *  accept what only an admin accepts (`StepDef.approver`). */
   admin?: true;
+}
+
+/** A HOST's call of an app's tool (plans/people-and-hosts.md §3), as a step
+ *  reads it on `ctx.host`. */
+export interface HostRef {
+  /** The host key's name (`STRUT_HOST_KEYS`). */
+  name: string;
+  /** The account that spoke, `<kind>:<key>` (`x-strut-account`). */
+  account: string;
+  /** Nobody linked the account: the call runs as the key's own actor. */
+  unlinked: boolean;
 }
 
 /** Is this a first-party page's call or run (`AppRef.firstParty`)? */
@@ -505,8 +633,14 @@ export interface RunEvent {
    *  request, plans/federation.md §3) — the only runs a peer may cancel,
    *  pause or resume. `"public"`: launched by anyone through `POST
    *  /public/workflows/:name/run` (plans/paid-runs.md §6) — no actor, the
-   *  workflow as published, its sessions under `public/<runId>/`. */
+   *  workflow as published, its sessions under `public/<runId>/`. `"host"`:
+   *  a turn a HOST launched with its key (plans/jamie-in-tribes.md §5.1) as
+   *  the person it named — never an admin's, its sessions under
+   *  `host/<host>/`, woken like a person's. */
   origin?: RunOrigin;
+  /** On a host run's `run.start` (`origin: "host"`): the host's name, as in
+   *  `STRUT_HOST_KEYS`. Read back by a resume. */
+  host?: string;
   /** On a peer run's `run.start`: launched by a PERSON's credential (scope
    *  `peer:person`), so `actor` is the credential's own and the run may
    *  open that actor's sessions (plans/chained-orchestrators.md §2). Read
@@ -530,6 +664,12 @@ export interface RunEvent {
   /** On `run.start`: the job the run was launched under (plans/jobs.md §1),
    *  read back by a resume like `principal`. */
   job?: string;
+  /** On `run.start`: the Concept branch the run is on (src/branches.ts),
+   *  read back by a resume like `job`. */
+  branch?: string;
+  /** On `run.start`: the run is a trial (`RunTrial`), read back by a resume
+   *  like `branch`. */
+  trial?: RunTrial;
   /** On `run.start`: the APP the run was launched for (`origin: "app"`,
    *  plans/apps.md §5) — read back by a resume like `job`. */
   app?: AppRef;
@@ -602,6 +742,13 @@ export interface RunEvent {
   wakeAsked?: true;
   /** On a WAKE turn's `run.start` (src/wake.ts): the job run it woke on. */
   wake?: WakeMark;
+  /** On `step.parked` and `run.waiting`: what the step or the run waits for
+   *  (`<prefix>:<id>`, src/park.ts). */
+  on?: string[];
+  /** On a `run.resumed` a WAKE launched (src/park.ts): a parked run going on
+   *  because what it waited for happened. Never counted as a restart by the
+   *  boot-time crash-loop guard. */
+  woken?: true;
   /** On a `run.resumed` that UNPAUSED a live run (RUN_CONTROL_SPEC §4) —
    *  not a durable resume after a crash or a failure, which the boot-time
    *  crash-loop guard counts (§5.3). */
@@ -656,6 +803,12 @@ export interface AccessedNode {
    *  ref locally: the projector writes no edge for it, the run flyout shows
    *  it under the peer. `strut/run-workflow` tags what a peer's run touched. */
   peer?: string;
+  /** A Concept whose PAGE was opened (`graph/graph-get`, so `context/concept`
+   *  too): the version that read returned (`graph/concept-version.ts`). It is
+   *  what makes the run an observation of that Concept for the claims about
+   *  it (`verify.ts`): recorded at the read, never looked up afterwards.
+   *  Absent on a write, a traversal, and a node a launched run touched. */
+  version?: string;
 }
 
 const ACCESSED_NAME_MAX = 200;
@@ -689,6 +842,7 @@ export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null
       ...(typeof n.node_type === "string" && n.node_type ? { node_type: n.node_type } : {}),
       ...(typeof n.name === "string" && n.name.trim() ? { name: n.name.trim().slice(0, ACCESSED_NAME_MAX) } : {}),
       ...(typeof n.peer === "string" && n.peer.trim() ? { peer: n.peer.trim() } : {}),
+      ...(typeof n.version === "string" && n.version ? { version: n.version } : {}),
     });
   }
   if (list.length === 0) return output;
@@ -857,19 +1011,85 @@ export function takeUsage(output: unknown): Partial<ModelUsage> {
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;
-  status: "success" | "error" | "cancelled";
+  /** `waiting`: the run PARKED (src/park.ts) — not an end; it goes on when
+   *  a wake resumes it. */
+  status: RunStatus;
   output?: unknown;
   error?: { message: string; stack?: string };
+  /** With `waiting`: what it waits for. */
+  waitingOn?: string[];
+}
+
+/** How a run stands once its runner returned. */
+export type RunStatus = "success" | "error" | "cancelled" | "waiting";
+
+/** One part of a record in the archive (`src/run-archive.ts`): a run's
+ *  event log today. */
+export interface ArchivedPart {
+  /** The object's key in the bucket, prefix included. */
+  key: string;
+  /** The part's size when it was uploaded. The object is this very log
+   *  while the local one is exactly this long (a log only grows). */
+  bytes: number;
+  /** The object's size (the part gzipped). */
+  size: number;
+  /** When it was uploaded. */
+  at: string;
+}
+
+/** Where one part of a record is (plans/retention.md). A part with no
+ *  state is on this disk and has never been uploaded. */
+export interface PartState {
+  /** The bucket holds it. A resume drops the summary, and this with it, so
+   *  a run that went on is uploaded again. */
+  archive?: ArchivedPart;
+  /** Retention took it off this disk then: to the bucket when `archive` is
+   *  set (the next read restores it), else deleted. */
+  evictedAt?: string;
+  /** When a read last brought it back from the bucket; the sweep leaves it
+   *  a day, then evicts it again. */
+  restoredAt?: string;
+}
+
+/** The parts of a run that retention moves (plans/retention.md). */
+export interface RunParts {
+  /** The event log (`events.jsonl`), with everything else in the run's
+   *  directory but `run.json`. */
+  log?: PartState;
+}
+
+/** True when the run's log is not on this disk: deleted by retention, or
+ *  in the bucket (`parts.log.archive`) until a read restores it. */
+export function logEvicted(s: { parts?: RunParts } | null | undefined): boolean {
+  return Boolean(s?.parts?.log?.evictedAt);
+}
+
+/** The summary with one part's state replaced. */
+export function withPart<S extends { parts?: RunParts }>(s: S, part: keyof RunParts, state: PartState): S {
+  return { ...s, parts: { ...s.parts, [part]: state } };
 }
 
 /** Run summary written to run.json. */
 export interface RunSummary {
+  /** Where the run's parts are once retention has moved them
+   *  (`src/retention.ts`, plans/retention.md): `log` today. Absent: all
+   *  here. */
+  parts?: RunParts;
+  /** The run died with its process and never wrote a summary; retention
+   *  wrote this one when it evicted the log (`src/retention.ts`). */
+  crashed?: boolean;
+  /** The run's parent, when it was a child run. */
+  parentRunId?: string;
   runId: string;
   workflow: string;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
-  status: "success" | "error" | "cancelled";
+  /** `waiting`: the run PARKED (src/park.ts) and is not over — `finishedAt`
+   *  is when it parked; a wake clears this summary and the run goes on. */
+  status: RunStatus;
+  /** With `waiting`: what it waits for (`<prefix>:<id>`). */
+  waitingOn?: string[];
   input: unknown;
   output?: unknown;
   error?: { message: string; stack?: string };
@@ -883,6 +1103,10 @@ export interface RunSummary {
   /** The job the run was launched under (plans/jobs.md §1) — on the summary
    *  so a job's deliverables resolve from it alone (`…/runs/:runId/artifacts`). */
   job?: string;
+  /** The Concept branch the run was on (src/branches.ts), as on `run.start`. */
+  branch?: string;
+  /** The run was a trial (`RunTrial`), as on `run.start`. */
+  trial?: RunTrial;
   /** Who launched the run, when it was not a person or an API call (as on
    *  `run.start`) — on the summary so a run list can badge a scheduled, a
    *  peer's or an app's run without reading its log. */
@@ -939,12 +1163,18 @@ export interface AnyStepDef {
   /** Config fields its run events never keep (see `StepDef.redact`). */
   redact?: readonly string[];
   /** Which pending proposals one of its own waits for (see `StepDef.after`). */
-  after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
+  after?: { step: string; when: (cfg: any, input: unknown) => boolean };
   /** The person's card's title and summary (see `StepDef.describe`). */
   describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
+  /** Its own answer to a gated call (see `StepDef.answerGated`). */
+  answerGated?: (cfg: any, ctx: StepContext<any>) => Promise<unknown>;
   /** Who may accept a proposal of it (see `StepDef.approver`). */
   approver?: "admin";
+  /** A worker's step (see `StepDef.worker`). */
+  worker?: boolean;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
+  /** What a replay puts back in memory (see `StepDef.onReplay`). */
+  onReplay?: (cfg: any, ctx: StepContext<any>, output: any) => Promise<void>;
 }
 
 /** Step registry — maps step type names to their definitions. */

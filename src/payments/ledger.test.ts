@@ -19,12 +19,15 @@ import {
   priceOf,
   reserveFor,
   usdToMicros,
+  DEFAULT_PAYOUT_SETTINGS,
+  payoutMaxMsat,
   type EarningsRow,
   type LedgerEntry,
   type LedgerStore,
   type Price,
 } from "./ledger.js";
 import { MemoryLedgerStore } from "./ledger-memory.js";
+import { defaultMaxFeeMsat } from "./fee.js";
 import { packagePrefixOf } from "../package-lookup.js";
 
 /**
@@ -464,6 +467,28 @@ for (const impl of impls) {
       ]);
     });
 
+    it("a deposit: sats an admin paid in, one per payment hash, by day; never credit, earnings or an entry", async () => {
+      const d = await store.deposit({ msat: 21_000_000, paymentHash: "in-1", actor: "evan", at: T0 });
+      assert.deepEqual(d, { at: T0, msat: 21_000_000, paymentHash: "in-1", actor: "evan" });
+      assert.deepEqual(await store.deposit({ msat: 99, paymentHash: "in-1", at: T0 + DAY }), d, "the same hash answers the first");
+      const second = await store.deposit({ msat: 1_000, paymentHash: "in-2", at: T0 + DAY });
+      assert.deepEqual(second, { at: T0 + DAY, msat: 1_000, paymentHash: "in-2" });
+      assert.deepEqual(await store.depositOf("in-1"), d);
+      assert.equal(await store.depositOf("in-3"), undefined);
+      assert.deepEqual(await store.deposited(), [
+        { day: dayOf(T0), count: 1, msat: 21_000_000 },
+        { day: dayOf(T0 + DAY), count: 1, msat: 1_000 },
+      ]);
+      assert.deepEqual(await store.deposited({ from: dayOf(T0 + DAY) }), [{ day: dayOf(T0 + DAY), count: 1, msat: 1_000 }]);
+      assert.deepEqual(await store.deposited({ to: dayOf(T0) }), [{ day: dayOf(T0), count: 1, msat: 21_000_000 }]);
+      assert.deepEqual(await store.received(), []);
+      assert.deepEqual(await store.list(), []);
+      assert.deepEqual((await store.earnings({ by: "total" }))[0], { key: "total", calls: 0, failed: 0, earned: 0, cost: 0 });
+      assert.deepEqual(await store.outstanding(), { tokens: 0, usd: 0, held: 0 });
+      await assert.rejects(store.deposit({ msat: 0, paymentHash: "in-4" }), RangeError);
+      await assert.rejects(store.deposit({ msat: 5, paymentHash: "" }), RangeError);
+    });
+
     it("earnings over a list of subjects: a package published here, its items by their bare names", async () => {
       await buy(store, 100, { id: "a", at: T0 });
       const price = { base: $(1), markup: 0 };
@@ -583,6 +608,358 @@ for (const impl of impls) {
       assert.deepEqual(await store.today("workflow:none", { now: T0 }), { key: "workflow:none", calls: 0, failed: 0, earned: 0, cost: 0 });
     });
 
+    // ── worker pay (plans/human-steps.md §8.1) ─────────────────────────
+
+    const HOUR = 60 * 60 * 1000;
+    /** An accepted answer's earning: `msat` for `worker`, held `hold` ms. */
+    const earn = (lease: string, o: { worker?: string; task?: string; type?: string; msat?: number; at?: number; hold?: number } = {}) => {
+      const at = o.at ?? T0;
+      return store.pay({
+        lease,
+        task: o.task ?? `task-${lease}`,
+        worker: o.worker ?? "ann",
+        type: o.type ?? "pet-match",
+        msat: o.msat ?? 21_000,
+        at,
+        releases: at + (o.hold ?? 72 * HOUR),
+        workflow: "pets",
+        runId: "r1",
+        path: `pets/${lease}`,
+      });
+    };
+
+    it("pay: one row per lease; the same lease again writes nothing and answers the first", async () => {
+      const first = await earn("l1", { msat: 21_000 });
+      assert.equal(first.existing, false);
+      assert.deepEqual(first.earning, {
+        lease: "l1", task: "task-l1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + 72 * HOUR, workflow: "pets", runId: "r1", path: "pets/l1",
+      });
+      const again = await earn("l1", { msat: 99_000, at: T0 + HOUR });
+      assert.equal(again.existing, true);
+      assert.deepEqual(again.earning, first.earning, "the first row, not the second call's");
+      assert.deepEqual(await store.payOf("l1"), first.earning);
+      assert.equal(await store.payOf("nope"), undefined);
+      assert.deepEqual((await store.payeeBalance("ann", { now: T0 })).totalMsat, 21_000, "counted once");
+      await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 0, at: T0, releases: T0 + 1 }), RangeError);
+      await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 1.5, at: T0, releases: T0 + 1 }), RangeError);
+      await assert.rejects(store.pay({ lease: "x", task: "t", worker: "ann", type: "t", msat: 1, at: T0, releases: T0 - 1 }), RangeError);
+      assert.equal(await store.payOf("x"), undefined, "nothing written by a refused call");
+    });
+
+    it("an earning is held one millisecond before it releases, and withdrawable at it", async () => {
+      await earn("l1", { msat: 10_000, hold: HOUR });
+      await earn("l2", { msat: 5_000, hold: 2 * HOUR });
+      const release = T0 + HOUR;
+      assert.deepEqual(await store.payeeBalance("ann", { now: release - 1 }), { totalMsat: 15_000, heldMsat: 15_000, withdrawableMsat: 0, nextReleaseAt: release });
+      assert.deepEqual(await store.payeeBalance("ann", { now: release }), { totalMsat: 15_000, heldMsat: 5_000, withdrawableMsat: 10_000, nextReleaseAt: T0 + 2 * HOUR });
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 2 * HOUR }), { totalMsat: 15_000, heldMsat: 0, withdrawableMsat: 15_000 });
+      assert.deepEqual(await store.payeeBalance("nobody", { now: T0 }), { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
+    });
+
+    it("no hold (a type's 0, the default): withdrawable as it is booked, and past taking back", async () => {
+      await earn("l0", { msat: 7_000, hold: 0 });
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 }), { totalMsat: 7_000, heldMsat: 0, withdrawableMsat: 7_000 });
+      assert.equal((await store.takeBack({ lease: "l0", why: "a wrong box", at: T0 })).result, "released");
+    });
+
+    it("a payee's total is what was accepted less what was taken back; a take-back inside the hold takes it from held and total", async () => {
+      await earn("l1", { msat: 10_000 });
+      await earn("l2", { msat: 7_000, at: T0 + 1 });
+      const at = T0 + HOUR;
+      const taken = await store.takeBack({ lease: "l1", why: "a wrong box", by: "admin-1", at });
+      assert.equal(taken.result, "taken");
+      assert.deepEqual([taken.earning!.takenBack, taken.earning!.takenBackWhy, taken.earning!.takenBackBy], [at, "a wrong box", "admin-1"]);
+      assert.deepEqual(await store.payeeBalance("ann", { now: at }), { totalMsat: 7_000, heldMsat: 7_000, withdrawableMsat: 0, nextReleaseAt: T0 + 1 + 72 * HOUR });
+      // A second take-back is `taken` and changes nothing.
+      const twice = await store.takeBack({ lease: "l1", why: "again", by: "admin-2", at: at + 1 });
+      assert.equal(twice.result, "taken");
+      assert.deepEqual([twice.earning!.takenBack, twice.earning!.takenBackWhy], [at, "a wrong box"], "the first take-back stands");
+      assert.equal((await store.payeeBalance("ann", { now: at })).totalMsat, 7_000);
+      // Past its hold an earning is the worker's.
+      const late = await store.takeBack({ lease: "l2", why: "too late", at: T0 + 1 + 72 * HOUR });
+      assert.equal(late.result, "released");
+      assert.equal(late.earning!.takenBack, undefined);
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 1 + 72 * HOUR }), { totalMsat: 7_000, heldMsat: 0, withdrawableMsat: 7_000 });
+      assert.deepEqual(await store.takeBack({ lease: "never", why: "x", at }), { lease: "never", result: "none" });
+      await assert.rejects(store.takeBack({ lease: "l2", why: "", at }), RangeError, "a take-back says why");
+    });
+
+    it("pay_daily sums by day and task type; a take-back counts on its answer's day", async () => {
+      const day = 24 * HOUR;
+      await earn("a", { type: "pet-match", msat: 1_000 });
+      await earn("b", { type: "pet-match", msat: 2_000, at: T0 + 1 });
+      await earn("c", { type: "ballot", msat: 4_000 });
+      await earn("d", { type: "pet-match", msat: 8_000, at: T0 + day });
+      await store.takeBack({ lease: "b", why: "bad", at: T0 + 2 * day });
+      const d0 = dayOf(T0);
+      const d1 = dayOf(T0 + day);
+      assert.deepEqual(await store.payDaily(), [
+        { day: d0, type: "ballot", answers: 1, msat: 4_000, takenBackAnswers: 0, takenBackMsat: 0 },
+        { day: d0, type: "pet-match", answers: 2, msat: 3_000, takenBackAnswers: 1, takenBackMsat: 2_000 },
+        { day: d1, type: "pet-match", answers: 1, msat: 8_000, takenBackAnswers: 0, takenBackMsat: 0 },
+      ]);
+      assert.deepEqual((await store.payDaily({ from: d1 })).map((r) => r.day), [d1]);
+      assert.deepEqual(await store.payDaily({ to: dayOf(T0 - day) }), []);
+    });
+
+    it("a restore undoes a take-back inside the hold, keeps what it cleared, and the earning can be taken back again (§9.6)", async () => {
+      const day = 24 * HOUR;
+      await earn("l1", { msat: 10_000 });
+      await earn("l2", { msat: 7_000 });
+      await store.takeBack({ lease: "l1", why: "review: a wrong box", by: "admin-1", at: T0 + HOUR });
+      const back = await store.restore({ lease: "l1", by: "admin-2", at: T0 + 2 * HOUR });
+      assert.equal(back.result, "restored");
+      assert.deepEqual([back.earning!.takenBack, back.earning!.takenBackWhy, back.earning!.takenBackBy], [undefined, undefined, undefined]);
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 2 * HOUR }), { totalMsat: 17_000, heldMsat: 17_000, withdrawableMsat: 0, nextReleaseAt: T0 + 72 * HOUR }, "held again");
+      assert.deepEqual(await store.restoresOf("l1"), [{ lease: "l1", takenBack: T0 + HOUR, takenBackWhy: "review: a wrong box", takenBackBy: "admin-1", restored: T0 + 2 * HOUR, restoredBy: "admin-2" }]);
+      assert.deepEqual((await store.payDaily()).map((r) => [r.answers, r.msat, r.takenBackAnswers, r.takenBackMsat]), [[2, 17_000, 0, 0]], "the answer's day back down");
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + 2 * HOUR }), { owedMsat: 17_000, heldMsat: 17_000, withdrawableMsat: 0, payees: 1 });
+      // Not taken back: nothing to restore. Nothing earned: none.
+      assert.equal((await store.restore({ lease: "l1", at: T0 + 3 * HOUR })).result, "none");
+      assert.deepEqual(await store.restore({ lease: "never", at: T0 }), { lease: "never", result: "none" });
+      // Taken back again, and restored again: each clearing kept.
+      assert.equal((await store.takeBack({ lease: "l1", why: "review: wrong after all", at: T0 + 4 * HOUR })).result, "taken");
+      assert.equal((await store.payeeBalance("ann", { now: T0 + 4 * HOUR })).totalMsat, 7_000);
+      assert.equal((await store.restore({ lease: "l1", at: T0 + 5 * HOUR })).result, "restored");
+      assert.deepEqual((await store.restoresOf("l1")).map((r) => [r.takenBackWhy, r.restored]), [["review: a wrong box", T0 + 2 * HOUR], ["review: wrong after all", T0 + 5 * HOUR]]);
+      // Past its hold a take-back is final: paid money never moves back.
+      await store.takeBack({ lease: "l2", why: "review: bad", at: T0 + HOUR });
+      const late = await store.restore({ lease: "l2", at: T0 + 3 * day });
+      assert.equal(late.result, "released");
+      assert.equal(late.earning!.takenBack, T0 + HOUR);
+      assert.deepEqual(await store.payeeBalance("ann", { now: T0 + 3 * day }), { totalMsat: 10_000, heldMsat: 0, withdrawableMsat: 10_000 });
+      assert.deepEqual(await store.restoresOf("l2"), []);
+    });
+
+    it("several workers' balances in one read; a task's earnings, one per answer", async () => {
+      await earn("a", { worker: "ann", task: "t1", msat: 1_000 });
+      await earn("b", { worker: "bob", task: "t1", msat: 2_000, hold: HOUR });
+      await earn("c", { worker: "bob", task: "t2", msat: 4_000 });
+      const all = await store.payeeBalances(["ann", "bob", "eve"], { now: T0 + HOUR });
+      assert.deepEqual(all, {
+        ann: { totalMsat: 1_000, heldMsat: 1_000, withdrawableMsat: 0, nextReleaseAt: T0 + 72 * HOUR },
+        bob: { totalMsat: 6_000, heldMsat: 4_000, withdrawableMsat: 2_000, nextReleaseAt: T0 + 72 * HOUR },
+      });
+      assert.deepEqual(await store.payeeBalances([]), {});
+      assert.deepEqual((await store.payFor(["t1"])).map((e) => [e.lease, e.worker]), [["a", "ann"], ["b", "bob"]]);
+      assert.deepEqual(await store.payFor([]), []);
+      await assert.rejects(earn("z", { worker: "ann", task: "t1" }), "one earning per task and worker");
+    });
+
+    it("what every worker is owed: the sum of their balances, held and withdrawable; a taken-back earning owes nothing", async () => {
+      assert.deepEqual(await store.owedToWorkers({ now: T0 }), { owedMsat: 0, heldMsat: 0, withdrawableMsat: 0, payees: 0 }, "nothing earned");
+      await earn("a", { worker: "ann", task: "t1", msat: 1_000, hold: HOUR });
+      await earn("b", { worker: "bob", task: "t1", msat: 2_000 });
+      await earn("c", { worker: "bob", task: "t2", msat: 4_000, hold: 2 * HOUR });
+      await earn("d", { worker: "eve", task: "t3", msat: 8_000 });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 }), { owedMsat: 15_000, heldMsat: 15_000, withdrawableMsat: 0, payees: 3 });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + HOUR }), { owedMsat: 15_000, heldMsat: 14_000, withdrawableMsat: 1_000, payees: 3 }, "ann's released at its hold");
+      await store.takeBack({ lease: "d", why: "bad", at: T0 + HOUR });
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + HOUR }), { owedMsat: 7_000, heldMsat: 6_000, withdrawableMsat: 1_000, payees: 2 }, "eve is owed nothing now");
+      assert.deepEqual(await store.owedToWorkers({ now: T0 + 72 * HOUR }), { owedMsat: 7_000, heldMsat: 0, withdrawableMsat: 7_000, payees: 2 });
+      // It agrees with the workers' own balances, one by one.
+      const each = await store.payeeBalances(["ann", "bob", "eve"], { now: T0 + 2 * HOUR });
+      const sum = (k: "totalMsat" | "heldMsat") => Object.values(each).reduce((n, b) => n + b[k], 0);
+      const all = await store.owedToWorkers({ now: T0 + 2 * HOUR });
+      assert.deepEqual([all.owedMsat, all.heldMsat], [sum("totalMsat"), sum("heldMsat")]);
+    });
+
+    // ── payouts (plans/human-steps.md §8.2) ────────────────────────────
+
+    const PKEY = (n: number) => n.toString(16).padStart(64, "0");
+    const ADDR = `02${"a".repeat(64)}_03${"b".repeat(64)}_1099511627776`;
+    const ON = { on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000 };
+    /** A payout reserved at `at` (past the default hold), its fee cap the LSP's. */
+    const reserve = (n: number, msat: number, o: { worker?: string; at?: number; fee?: number } = {}) =>
+      store.reservePayout({ key: PKEY(n), worker: o.worker ?? "ann", address: ADDR, msat, maxFeeMsat: o.fee ?? defaultMaxFeeMsat(msat), at: o.at ?? T0 + 72 * HOUR });
+    const refused = (r: Awaited<ReturnType<typeof reserve>>) => (r.ok ? "ok" : [r.reason, r.maxMsat]);
+
+    it("payout settings: off until an admin saves them, saved whole with who and when, refused with a cap under the minimum", async () => {
+      assert.deepEqual(await store.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
+      assert.deepEqual(DEFAULT_PAYOUT_SETTINGS, { on: false, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100 }, "ruled");
+      const saved = await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
+      // An invite's sats left out: the default (plans/human-steps.md §5.8).
+      assert.deepEqual(saved, { ...ON, inviteSats: 100, changedBy: "admin-1", changedAt: T0 });
+      assert.deepEqual(await store.payoutSettings(), saved);
+      assert.equal((await store.setPayoutSettings({ ...ON, inviteSats: 250 })).inviteSats, 250);
+      assert.equal((await store.payoutSettings()).inviteSats, 250);
+      await store.setPayoutSettings({ ...ON, by: "admin-1", at: T0 });
+      for (const bad of [{ minSats: 0 }, { minSats: 1.5 }, { workerDaySats: 999 }, { serverDaySats: 999 }, { on: "yes" as never }, { inviteSats: 0 }, { inviteSats: 100_001 }, { inviteSats: 2.5 }]) {
+        await assert.rejects(store.setPayoutSettings({ ...ON, ...bad }), RangeError, JSON.stringify(bad));
+      }
+      assert.deepEqual(await store.payoutSettings(), saved, "a refused save changes nothing");
+    });
+
+    it("the reserve takes only what is withdrawable: a held earning is not, one a millisecond past its release is", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("l1", { msat: 5_000_000, hold: HOUR });
+      const release = T0 + HOUR;
+      assert.deepEqual(refused(await reserve(1, 1_000_000, { at: release - 1 })), ["over_balance", 0]);
+      const r = await reserve(1, 1_000_000, { at: release });
+      assert.ok(r.ok);
+      assert.deepEqual(r.payout, { seq: 1, key: PKEY(1), worker: "ann", address: ADDR, msat: 1_000_000, maxFeeMsat: 5_000, state: "out", at: release, day: dayOf(release) });
+      // Out of the balance from the moment it is reserved: the amount and its fee cap.
+      assert.deepEqual(await store.payeeBalance("ann", { now: release }), { totalMsat: 3_995_000, heldMsat: 0, withdrawableMsat: 3_995_000 });
+      assert.deepEqual(await store.owedToWorkers({ now: release }), { owedMsat: 3_995_000, heldMsat: 0, withdrawableMsat: 3_995_000, payees: 1 });
+      assert.deepEqual(await store.payoutOf(PKEY(1)), r.payout);
+      assert.equal(await store.payoutOf(PKEY(9)), undefined);
+    });
+
+    it("each refusal, in order, with the most the worker could ask now", async () => {
+      await earn("l1", { msat: 1_500_000_000, hold: HOUR });
+      const at = T0 + HOUR;
+      assert.deepEqual(refused(await reserve(1, 1_000_000, { at })), ["payouts_off", 0], "the switch first, off by default");
+      await store.setPayoutSettings(ON);
+      assert.deepEqual(refused(await reserve(1, 999_999, { at })), ["below_minimum", 1_000_000_000]);
+      assert.deepEqual(refused(await reserve(1, 1_499_000_000, { at })), ["over_balance", 1_000_000_000], "the amount and its fee cap must fit; the day's cap is the least");
+      assert.deepEqual(refused(await reserve(1, 1_000_000_001, { at })), ["over_worker_day", 1_000_000_000]);
+      assert.equal((await reserve(1, 750_000_000, { at })).ok, true);
+      const twice = await reserve(2, 1_000_000, { at });
+      assert.ok(!twice.ok);
+      assert.deepEqual([twice.reason, twice.maxMsat, twice.out?.key], ["payout_out", 0, PKEY(1)], "one on its way, and it says which");
+      assert.deepEqual(refused(await reserve(2, 1, { at })), ["below_minimum", 0], "the minimum before the one on its way");
+      await store.payoutSettled({ key: PKEY(1), feeMsat: 1_000, at });
+      assert.deepEqual(refused(await reserve(2, 250_000_001, { at })), ["over_worker_day", 250_000_000], "the day's paid payouts count");
+      await store.setPayoutSettings({ ...ON, serverDaySats: 800_000 });
+      assert.deepEqual(refused(await reserve(2, 50_000_001, { at })), ["over_server_day", 50_000_000]);
+      assert.equal((await reserve(2, 50_000_000, { at })).ok, true);
+      // The next UTC day has caps of its own.
+      await store.payoutSettled({ key: PKEY(2), feeMsat: 0, at });
+      assert.equal((await reserve(3, 250_000_001, { at: at + DAY })).ok, true);
+    });
+
+    it("a switch turned off holds at once: no new payout, and one on its way goes on", async () => {
+      await earn("l1", { msat: 10_000_000, hold: HOUR });
+      await store.setPayoutSettings(ON);
+      assert.equal((await reserve(1, 2_000_000, { at: T0 + HOUR })).ok, true);
+      await store.setPayoutSettings({ ...ON, on: false });
+      await earn("b1", { worker: "bob", task: "t-b", msat: 10_000_000, hold: HOUR });
+      assert.deepEqual(refused(await reserve(2, 2_000_000, { worker: "bob", at: T0 + HOUR })), ["payouts_off", 0]);
+      assert.equal((await store.payoutSettled({ key: PKEY(1), feeMsat: 0, at: T0 + HOUR })).payout.state, "paid");
+    });
+
+    it("a settle writes one withdrawal entry and moves the reserve onto withdrawn, the fee capped; again, it answers as it stands", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("l1", { msat: 10_000_000, hold: HOUR });
+      const at = T0 + HOUR;
+      assert.ok((await reserve(1, 4_000_000, { at, fee: 20_000 })).ok);
+      const hash = "ab".repeat(32);
+      const s = await store.payoutSettled({ key: PKEY(1), feeMsat: 25_000, paymentHash: hash, usd: $(4), at: at + 1 });
+      assert.deepEqual(s.payout, { seq: 1, key: PKEY(1), worker: "ann", address: ADDR, msat: 4_000_000, maxFeeMsat: 20_000, state: "paid", at, day: dayOf(at), feeMsat: 25_000, paymentHash: hash, ended: at + 1 });
+      assert.deepEqual({ ...s.entry, seq: 0 }, { seq: 0, at: at + 1, kind: "withdrawal", msat: 4_000_000, feeMsat: 25_000, ref: PKEY(1), actor: "ann", usd: $(4), subject: "worker" }, "the wallet's fee in the books");
+      assert.deepEqual(await store.withdrawalOf(PKEY(1)), s.entry);
+      // The worker pays the fee, never more than its cap.
+      assert.deepEqual(await store.payeeBalance("ann", { now: at }), { totalMsat: 10_000_000 - 4_020_000, heldMsat: 0, withdrawableMsat: 5_980_000 });
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(at), purpose: "worker", count: 1, msat: 4_000_000, feeMsat: 25_000 }]);
+      const again = await store.payoutSettled({ key: PKEY(1), feeMsat: 1, at: at + 2 });
+      assert.deepEqual(again, s, "one entry, one charge");
+      assert.equal((await store.list({ kind: "withdrawal" })).length, 1);
+      // A fee under its cap is what the worker pays.
+      assert.ok((await reserve(2, 1_000_000, { at })).ok);
+      await store.payoutSettled({ key: PKEY(2), feeMsat: 0, at });
+      assert.equal((await store.payeeBalance("ann", { now: at })).totalMsat, 4_980_000);
+      assert.deepEqual(await store.payoutsToday({ now: at, worker: "ann" }), { day: dayOf(at), paidMsat: 5_000_000, outMsat: 0, count: 2, workerMsat: 5_000_000 }, "amounts, not fees");
+      // Only a payout's settle writes a worker's send.
+      await assert.rejects(store.withdrawal({ msat: 1_000, paymentHash: "x", purpose: "worker" }), (e: unknown) => e instanceof LedgerError && e.code === "worker_send");
+    });
+
+    it("a failure gives the reserve back, once; a failed payout is never paid, and counts for nothing in the day", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("l1", { msat: 10_000_000, hold: HOUR });
+      const at = T0 + HOUR;
+      assert.ok((await reserve(1, 4_000_000, { at })).ok);
+      assert.equal((await store.payoutsToday({ now: at })).outMsat, 4_000_000);
+      const f = await store.payoutFailed({ key: PKEY(1), why: "no route found", at: at + 1 });
+      assert.deepEqual([f.state, f.why, f.ended, f.by], ["failed", "no route found", at + 1, undefined]);
+      assert.equal((await store.payeeBalance("ann", { now: at })).totalMsat, 10_000_000, "the reserve is the worker's again");
+      assert.deepEqual(await store.payoutFailed({ key: PKEY(1), why: "again", by: "bo", at: at + 2 }), f, "failed once");
+      await assert.rejects(store.payoutSettled({ key: PKEY(1), feeMsat: 0 }), (e: unknown) => e instanceof LedgerError && e.code === "payout_failed");
+      await assert.rejects(store.payoutFailed({ key: PKEY(7), why: "x" }), (e: unknown) => e instanceof LedgerError && e.code === "unknown_payout");
+      await assert.rejects(store.payoutSettled({ key: PKEY(7), feeMsat: 0 }), (e: unknown) => e instanceof LedgerError && e.code === "unknown_payout");
+      assert.deepEqual(await store.payoutsToday({ now: at, worker: "ann" }), { day: dayOf(at), paidMsat: 0, outMsat: 0, count: 0, workerMsat: 0 });
+      assert.equal(await store.withdrawalOf(PKEY(1)), undefined, "no entry: nothing left the wallet");
+      // The worker may ask again at once.
+      assert.ok((await reserve(2, 9_000_000, { at })).ok);
+      // A paid one does not fail.
+      await store.payoutSettled({ key: PKEY(2), feeMsat: 0, at });
+      assert.equal((await store.payoutFailed({ key: PKEY(2), why: "late", at })).state, "paid");
+    });
+
+    it("what is owed and each balance leave out what is on its way", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("a", { worker: "ann", task: "t1", msat: 10_000_000, hold: HOUR });
+      await earn("b", { worker: "bob", task: "t2", msat: 6_000_000, hold: HOUR });
+      const at = T0 + HOUR;
+      assert.ok((await reserve(1, 4_000_000, { worker: "ann", at, fee: 20_000 })).ok);
+      assert.deepEqual(await store.owedToWorkers({ now: at }), { owedMsat: 11_980_000, heldMsat: 0, withdrawableMsat: 11_980_000, payees: 2 });
+      assert.deepEqual(await store.payeeBalances(["ann", "bob"], { now: at }), {
+        ann: { totalMsat: 5_980_000, heldMsat: 0, withdrawableMsat: 5_980_000 },
+        bob: { totalMsat: 6_000_000, heldMsat: 0, withdrawableMsat: 6_000_000 },
+      });
+      assert.deepEqual(await store.payoutsToday({ now: at, worker: "bob" }), { day: dayOf(at), paidMsat: 0, outMsat: 4_000_000, count: 1, workerMsat: 0 });
+    });
+
+    it("a take-back or a restore a millisecond before the release and a reserve a millisecond after never both count one earning", async () => {
+      await store.setPayoutSettings(ON);
+      const R = T0 + HOUR;
+      // A take-back first: taken while held; the reserve after finds nothing.
+      await earn("a", { worker: "ann", task: "t1", msat: 5_000_000, hold: HOUR });
+      assert.equal((await store.takeBack({ lease: "a", why: "bad", at: R - 1 })).result, "taken");
+      assert.deepEqual(refused(await reserve(1, 1_000_000, { worker: "ann", at: R })), ["over_balance", 0]);
+      // A reserve first: the earning is released and out; a take-back after it is too late.
+      await earn("b", { worker: "bob", task: "t2", msat: 5_000_000, hold: HOUR });
+      assert.ok((await reserve(2, 4_000_000, { worker: "bob", at: R })).ok);
+      assert.equal((await store.takeBack({ lease: "b", why: "bad", at: R })).result, "released");
+      assert.equal((await store.payeeBalance("bob", { now: R })).totalMsat, 5_000_000 - 4_020_000, "counted once");
+      // A restore just before the release: held again, then withdrawable — once.
+      await earn("c", { worker: "eve", task: "t3", msat: 5_000_000, hold: HOUR });
+      await store.takeBack({ lease: "c", why: "review: bad", at: R - 2 });
+      assert.equal((await store.restore({ lease: "c", at: R - 1 })).result, "restored");
+      assert.ok((await reserve(3, 4_000_000, { worker: "eve", at: R })).ok);
+      assert.equal((await store.restore({ lease: "c", at: R })).result, "none");
+      assert.equal((await store.takeBack({ lease: "c", why: "late", at: R })).result, "released");
+      assert.deepEqual(await store.owedToWorkers({ now: R }), { owedMsat: 2 * 980_000, heldMsat: 0, withdrawableMsat: 2 * 980_000, payees: 2 });
+    });
+
+    it("one payout on its way per worker: twenty reserves at once, one is out", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("l1", { msat: 100_000_000, hold: HOUR });
+      const results = await Promise.all(Array.from({ length: 20 }, (_, i) => reserve(i + 1, 1_000_000, { at: T0 + HOUR })));
+      assert.equal(results.filter((r) => r.ok).length, 1);
+      assert.ok(results.every((r) => r.ok || r.reason === "payout_out"));
+      assert.equal((await store.payouts({ state: "out" })).length, 1);
+    });
+
+    it("payouts newest first, by state and worker, a page at a time", async () => {
+      await store.setPayoutSettings(ON);
+      await earn("a", { worker: "ann", task: "t1", msat: 50_000_000, hold: HOUR });
+      await earn("b", { worker: "bob", task: "t2", msat: 50_000_000, hold: HOUR });
+      const at = T0 + HOUR;
+      for (let i = 1; i <= 3; i++) {
+        await reserve(i, 1_000_000, { worker: "ann", at });
+        await store.payoutSettled({ key: PKEY(i), feeMsat: 0, at });
+      }
+      await reserve(4, 1_000_000, { worker: "bob", at });
+      await store.payoutFailed({ key: PKEY(4), why: "no route", at });
+      await reserve(5, 2_000_000, { worker: "bob", at });
+      assert.deepEqual((await store.payouts()).map((p) => [p.seq, p.state]), [[5, "out"], [4, "failed"], [3, "paid"], [2, "paid"], [1, "paid"]]);
+      assert.deepEqual((await store.payouts({ worker: "bob" })).map((p) => p.seq), [5, 4]);
+      assert.deepEqual((await store.payouts({ state: "paid", limit: 2 })).map((p) => p.seq), [3, 2]);
+      assert.deepEqual((await store.payouts({ state: "paid", before: 2 })).map((p) => p.seq), [1]);
+      assert.deepEqual(await store.payoutsToday({ now: at }), { day: dayOf(at), paidMsat: 3_000_000, outMsat: 2_000_000, count: 4 });
+      assert.deepEqual(await store.payoutsToday({ now: at + DAY }), { day: dayOf(at + DAY), paidMsat: 0, outMsat: 0, count: 0 });
+    });
+
+    it("payoutMaxMsat: the largest amount whose fee cap fits, under both days' caps; 0 under the minimum", () => {
+      const max = payoutMaxMsat({ withdrawableMsat: 1_005_000, workerLeftMsat: 1e12, serverLeftMsat: 1e12, minMsat: 1_000_000 });
+      assert.equal(max, 1_000_000);
+      assert.ok(max + defaultMaxFeeMsat(max) <= 1_005_000 && max + 1 + defaultMaxFeeMsat(max + 1) > 1_005_000);
+      const big = payoutMaxMsat({ withdrawableMsat: 300_000_000, workerLeftMsat: 1e12, serverLeftMsat: 1e12, minMsat: 0 });
+      assert.ok(big + defaultMaxFeeMsat(big) <= 300_000_000 && big + 1 + defaultMaxFeeMsat(big + 1) > 300_000_000);
+      assert.equal(payoutMaxMsat({ withdrawableMsat: 300_000_000, workerLeftMsat: 7, serverLeftMsat: 9, minMsat: 0 }), 7);
+      assert.equal(payoutMaxMsat({ withdrawableMsat: 1_004_999, workerLeftMsat: 1e12, serverLeftMsat: 1e12, minMsat: 1_000_000 }), 0);
+    });
+
     it("open holds: every hold no charge has freed", async () => {
       await buy(store, 10, { id: "a" });
       await buy(store, 10, { id: "b" });
@@ -639,6 +1016,186 @@ describe("the ledger file", () => {
       assert.throws(() => db.exec("update entries set usd = 0"), /append-only/);
     } finally {
       db.close();
+    }
+  });
+
+  it("a deposit is kept in the file across a close and a reopen", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.deposit({ msat: 5_000, paymentHash: "in-1", actor: "evan", at: T0 });
+    await one.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.deepEqual(await two.depositOf("in-1"), { at: T0, msat: 5_000, paymentHash: "in-1", actor: "evan" });
+    } finally {
+      await two.close();
+    }
+  });
+
+  it("a pay row changes only by its take-back, or that take-back undone whole, and is never deleted; a restore is kept", async () => {
+    const store = await openLedger({ dataDir: dir });
+    await store.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
+    await store.takeBack({ lease: "l1", why: "review: bad", at: T0 + 1 });
+    await store.restore({ lease: "l1", at: T0 + 2 });
+    await store.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    const refused = /take-back, or that take-back undone/;
+    try {
+      assert.throws(() => db.exec("update pay set msat = 1 where lease = 'l1'"), refused);
+      assert.throws(() => db.exec("update pay set releases = 0 where lease = 'l1'"), refused);
+      assert.throws(() => db.exec("delete from pay where lease = 'l1'"), /kept/);
+      db.exec(`update pay set taken_back = ${T0}, taken_back_why = 'bad' where lease = 'l1'`);
+      assert.throws(() => db.exec(`update pay set taken_back = ${T0 + 1}, taken_back_why = 'again' where lease = 'l1'`), refused, "never rewritten");
+      assert.throws(() => db.exec("update pay set taken_back = null where lease = 'l1'"), refused, "undone whole or not at all");
+      assert.throws(() => db.exec(`update pay set taken_back = null, taken_back_why = null, msat = 1 where lease = 'l1'`), refused);
+      assert.throws(() => db.exec("update pay_restores set restored = 0"), /kept/);
+      assert.throws(() => db.exec("delete from pay_restores"), /kept/);
+      assert.equal((db.prepare("select count(*) n from pay_restores").get() as { n: number }).n, 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a file #664 made, with its one-way trigger, opens without it and restores (§9.6)", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 21_000, at: T0, releases: T0 + DAY });
+    await one.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec(`drop trigger pay_take_back_or_restore; drop trigger pay_restores_append_only; drop trigger pay_restores_kept; drop table pay_restores;
+      create trigger pay_take_back_once before update on pay
+        when old.taken_back is not null or new.taken_back is null
+        begin select raise(abort, 'a pay row changes only by its take-back, once'); end;`);
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      await two.takeBack({ lease: "l1", why: "review: bad", at: T0 + 1 });
+      assert.equal((await two.restore({ lease: "l1", at: T0 + 2 })).result, "restored");
+      assert.equal((await two.payeeBalance("ann", { now: T0 + 2 })).totalMsat, 21_000);
+    } finally {
+      await two.close();
+    }
+    const after = new DatabaseSync(ledgerPath(dir));
+    try {
+      const triggers = (after.prepare("select name from sqlite_master where type = 'trigger' and tbl_name = 'pay' order by name").all() as Array<{ name: string }>).map((t) => t.name);
+      assert.deepEqual(triggers, ["pay_kept", "pay_take_back_or_restore"]);
+    } finally {
+      after.close();
+    }
+  });
+
+  it("a ledger file from before worker pay opens unchanged and gains its tables", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await buy(one, 10, { id: "a" });
+    await one.close();
+    // What a file made before §8.1 holds: none of pay's tables.
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec("drop trigger pay_take_back_or_restore; drop trigger pay_kept; drop table pay; drop table payees; drop table pay_daily; drop table pay_restores");
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.equal((await two.token("a"))!.paid, $(10), "the tokens it held");
+      assert.deepEqual(await two.payeeBalance("ann"), { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
+      await two.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 1_000, at: T0, releases: T0 + DAY });
+      assert.equal((await two.payeeBalance("ann", { now: T0 })).totalMsat, 1_000);
+    } finally {
+      await two.close();
+    }
+  });
+
+  it("a payout row changes only from out to paid or failed, once, and is never deleted", async () => {
+    const store = await openLedger({ dataDir: dir });
+    await store.setPayoutSettings({ on: true, minSats: 1, workerDaySats: 1_000, serverDaySats: 1_000 });
+    await store.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 900_000, at: T0, releases: T0 + 1 });
+    const key = (n: number) => n.toString(16).padStart(64, "0");
+    const addr = `02${"a".repeat(64)}_03${"b".repeat(64)}_1`;
+    await store.reservePayout({ key: key(1), worker: "ann", address: addr, msat: 10_000, maxFeeMsat: 5_000, at: T0 + 1 });
+    await store.payoutSettled({ key: key(1), feeMsat: 0, at: T0 + 2 });
+    await store.reservePayout({ key: key(2), worker: "ann", address: addr, msat: 10_000, maxFeeMsat: 5_000, at: T0 + 1 });
+    await store.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    const refusedChange = /only from out to paid or failed, once/;
+    try {
+      assert.throws(() => db.exec(`update payouts set state = 'failed' where key = '${key(1)}'`), refusedChange, "paid is final");
+      assert.throws(() => db.exec(`update payouts set state = 'out' where key = '${key(1)}'`), refusedChange);
+      assert.throws(() => db.exec(`update payouts set msat = 1 where key = '${key(2)}'`), refusedChange);
+      assert.throws(() => db.exec(`update payouts set address = 'x', state = 'paid' where key = '${key(2)}'`), refusedChange);
+      assert.throws(() => db.exec(`update payouts set worker = 'eve', state = 'failed' where key = '${key(2)}'`), refusedChange);
+      assert.throws(() => db.exec(`delete from payouts where key = '${key(1)}'`), /kept/);
+      assert.throws(() => db.exec(`insert into payouts (key, worker, address, msat, max_fee_msat, state, at, day) values ('${key(3)}', 'ann', 'a', 1, 0, 'out', 0, 'd')`), /UNIQUE/, "one out per worker");
+      db.exec(`update payouts set state = 'failed', why = 'by hand' where key = '${key(2)}'`);
+      assert.throws(() => db.exec(`update payouts set state = 'paid' where key = '${key(2)}'`), refusedChange, "failed is final");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a ledger file from before payouts opens, gains the tables and payees.out, and keeps what it held", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await buy(one, 10, { id: "a" });
+    await one.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 2_000_000, at: T0, releases: T0 + 1 });
+    await one.close();
+    // What a file made before §8.2 holds: no payout tables, no payees.out.
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec("drop trigger payouts_end_once; drop trigger payouts_kept; drop table payouts; drop table payout_settings; alter table payees drop column out");
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.equal((await two.token("a"))!.paid, $(10));
+      assert.deepEqual(await two.payeeBalance("ann", { now: T0 + 1 }), { totalMsat: 2_000_000, heldMsat: 0, withdrawableMsat: 2_000_000 });
+      assert.deepEqual(await two.payoutSettings(), DEFAULT_PAYOUT_SETTINGS);
+      await two.setPayoutSettings({ on: true, minSats: 1_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, by: "bo", at: T0 });
+      const key = "e".repeat(64);
+      assert.ok((await two.reservePayout({ key, worker: "ann", address: "a_b_1", msat: 1_000_000, maxFeeMsat: 5_000, at: T0 + 1 })).ok);
+      assert.equal((await two.payeeBalance("ann", { now: T0 + 1 })).totalMsat, 995_000);
+    } finally {
+      await two.close();
+    }
+    // A restart keeps the settings and the payout on its way.
+    const three = await openLedger({ dataDir: dir });
+    try {
+      assert.equal((await three.payoutSettings()).changedBy, "bo");
+      assert.deepEqual((await three.payouts({ state: "out" })).map((p) => p.worker), ["ann"]);
+      assert.equal((await three.payeeBalance("ann", { now: T0 + 1 })).totalMsat, 995_000);
+    } finally {
+      await three.close();
+    }
+  });
+
+  it("a settings row saved before invites (plans/human-steps.md §5.8) gains invite_sats: the default until saved", async () => {
+    const one = await openLedger({ dataDir: dir });
+    await one.setPayoutSettings({ on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, by: "bo", at: T0 });
+    await one.close();
+    const db = new DatabaseSync(ledgerPath(dir));
+    db.exec("alter table payout_settings drop column invite_sats");
+    db.close();
+    const two = await openLedger({ dataDir: dir });
+    try {
+      assert.deepEqual(await two.payoutSettings(), { on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 100, changedBy: "bo", changedAt: T0 });
+      assert.equal((await two.setPayoutSettings({ on: true, minSats: 2_000, workerDaySats: 1_000_000, serverDaySats: 10_000_000, inviteSats: 300 })).inviteSats, 300);
+    } finally {
+      await two.close();
+    }
+    const three = await openLedger({ dataDir: dir });
+    try {
+      assert.equal((await three.payoutSettings()).inviteSats, 300);
+    } finally {
+      await three.close();
+    }
+  });
+
+  it("two connections to one file: one payout on its way per worker", async () => {
+    const one = await openLedger({ dataDir: dir });
+    const two = await openLedger({ dataDir: dir });
+    try {
+      await one.setPayoutSettings({ on: true, minSats: 1, workerDaySats: 1_000_000, serverDaySats: 1_000_000 });
+      await one.pay({ lease: "l1", task: "t1", worker: "ann", type: "pet-match", msat: 100_000_000, at: T0, releases: T0 + 1 });
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, i) => (i % 2 ? one : two).reservePayout({ key: (i + 1).toString(16).padStart(64, "0"), worker: "ann", address: "a_b_1", msat: 1_000_000, maxFeeMsat: 5_000, at: T0 + 1 })),
+      );
+      assert.equal(results.filter((r) => r.ok).length, 1);
+      assert.equal((await two.payeeBalance("ann", { now: T0 + 1 })).totalMsat, 100_000_000 - 1_005_000);
+    } finally {
+      await one.close();
+      await two.close();
     }
   });
 

@@ -229,6 +229,15 @@ function intToWords(n: number, len?: number): number[] {
 
 const fromHex = (s: string) => Uint8Array.from(s.match(/../g) ?? [], (x) => parseInt(x, 16));
 
+/** `bytes` as bech32 under `hrp`, with no length limit (an LNURL is
+ *  longer than BIP-173's 90): what LUD-01 encodes a URL with. Lowercase. */
+export function bech32Encode(hrp: string, bytes: Uint8Array): string {
+  const words = bytesToWords(bytes);
+  const mod = polymod([...hrpExpand(hrp), ...words, 0, 0, 0, 0, 0, 0]) ^ 1;
+  const checksum = Array.from({ length: 6 }, (_, i) => (mod >>> (5 * (5 - i))) & 31);
+  return `${hrp}1${[...words, ...checksum].map((w) => CHARSET[w]).join("")}`;
+}
+
 /**
  * An invoice in BOLT11's form with a zeroed signature, for tests and the
  * stand-in wallets: every reader here decodes it, no wallet pays it.

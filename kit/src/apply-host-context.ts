@@ -18,6 +18,8 @@ export function applyHostContext(ctx: HostContext | undefined, doc: Document = d
     root.style.colorScheme = ctx.theme;
   }
   if (ctx.displayMode) root.setAttribute("data-display-mode", ctx.displayMode);
+  // The page's language, for a screen reader and the browser's hyphens.
+  if (ctx.locale) root.lang = ctx.locale;
   const vars = ctx.styles?.variables;
   if (vars) {
     for (const [name, value] of Object.entries(vars)) {

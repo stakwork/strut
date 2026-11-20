@@ -1,4 +1,4 @@
-// `strut move …` (AGENTS.md, "Moving strut to another host"): run over a
+// `strut move …` (docs/moving.md, "Moving strut to another host"): run over a
 // STOPPED strut's folders, beside the server, never inside it. The desktop
 // package runs it as `node desktop.js move …`; anywhere else,
 // `node build/move/cli.js …`. Machine-readable results go to stdout as one

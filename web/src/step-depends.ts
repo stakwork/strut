@@ -2,7 +2,7 @@
  * What the step editor should SAVE as `depends`, given what the step had and
  * what the checkboxes now say.
  *
- * `depends` has three meanings (AGENTS.md "DAG execution via `depends`"):
+ * `depends` has three meanings (docs/engine.md "DAG execution via `depends`"):
  * omitted = implicitly depends on the previous step in the array, `[]` =
  * explicitly none (runs in parallel), a list = those steps. The checkbox UI
  * shows "none" for the first two, so the save must not collapse them:

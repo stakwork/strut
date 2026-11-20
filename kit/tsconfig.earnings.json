@@ -1,0 +1,15 @@
+{
+  "//": "Type-checks strut/earnings (src/apps/earnings, specs/API.md §14.14) against the kit: its own src first for @/, then the kit's; bare packages from the kit's install. `npx tsc -p kit/tsconfig.earnings.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "@/*": ["../src/apps/earnings/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/earnings/src/**/*"]
+}

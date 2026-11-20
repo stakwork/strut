@@ -52,10 +52,14 @@ export interface OverviewEvent {
   modelCalls?: number;
   usage?: TokenUsage;
   cost?: number;
+  /** On `step.parked` / `run.waiting`: what it waits for. */
+  on?: string[];
 }
 
 export type RowKind = "agent" | "subagent" | "llm" | "subflow" | "loop" | "run" | "peer" | "step";
-export type RowStatus = "running" | "success" | "error" | "skipped" | "replayed";
+/** `waiting`: the step's latest attempt parked (`step.parked`) — it runs
+ *  again when the run is woken. */
+export type RowStatus = "running" | "success" | "error" | "skipped" | "replayed" | "waiting";
 
 export interface OverviewRow {
   /** The event path with iteration marks removed (`wf/each#2/t` → `wf/each/t`). */
@@ -85,7 +89,10 @@ export interface OverviewRow {
 
 export interface RunOverview {
   workflow: string;
-  status: "running" | "paused" | "success" | "error" | "cancelled";
+  /** `waiting`: the run parked (`run.waiting`) and goes on when woken. */
+  status: "running" | "paused" | "success" | "error" | "cancelled" | "waiting";
+  /** With `waiting`: what the run waits for (`<prefix>:<id>`). */
+  waitingOn?: string[];
   startedAt?: string;
   /** Ms from the first event to the terminal one (or `now`). */
   durationMs: number;
@@ -205,6 +212,7 @@ export function foldRunOverview(allEvents: OverviewEvent[], now = Date.now(), op
   let status: RunOverview["status"] = "running";
   let terminalAt: number | undefined;
   let runError: string | undefined;
+  let waitingOn: string[] | undefined;
   // An agent goes on past a failed tool call: only steps' errors count.
   const stepErrors: Array<{ path: string; message: string }> = [];
   let cost = 0;
@@ -226,7 +234,8 @@ export function foldRunOverview(allEvents: OverviewEvent[], now = Date.now(), op
       case "run.error": status = "error"; terminalAt = at; runError = e.error?.message; continue;
       case "run.cancelled": status = "cancelled"; terminalAt = at; continue;
       case "run.paused": status = "paused"; continue;
-      case "run.resumed": status = "running"; terminalAt = undefined; continue;
+      case "run.waiting": status = "waiting"; terminalAt = at; waitingOn = e.on ?? []; continue;
+      case "run.resumed": status = "running"; terminalAt = undefined; waitingOn = undefined; continue;
     }
     if (!e.type.startsWith("step.") || !e.stepType || e.path === root) continue;
     const key = opts.split ? e.path : normalize(e.path);
@@ -288,6 +297,7 @@ export function foldRunOverview(allEvents: OverviewEvent[], now = Date.now(), op
     const rowStatus: RowStatus = open && (status === "running" || status === "paused")
       ? "running"
       : finals.includes("step.error") ? "error"
+      : finals.includes("step.parked") ? "waiting"
       : finals.length && finals.every((t) => t === "step.replayed") ? "replayed"
       : finals.length && finals.every((t) => t === "step.skipped") ? "skipped"
       : "success";
@@ -347,6 +357,7 @@ export function foldRunOverview(allEvents: OverviewEvent[], now = Date.now(), op
   return {
     workflow: root,
     status,
+    ...(status === "waiting" ? { waitingOn: waitingOn ?? [] } : {}),
     ...(runStart ? { startedAt: runStart.ts } : events[0] ? { startedAt: events[0].ts } : {}),
     durationMs: total,
     ...(runStart?.actor ? { actor: runStart.actor } : {}),

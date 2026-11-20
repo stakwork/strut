@@ -34,12 +34,31 @@
  * mid-turn through `meta/verify-job`, a person through `POST
  * /jobs/:id/verify`) APPENDS evidence at `job:<id>#<n>` instead of being a
  * no-op, and accepts a run still in flight.
+ *
+ * A CONCEPT is the fourth, and the one observed by a WORK, never by one run
+ * (src/work.ts, plans/concept-evals.md rulings 5 and 9): a root run and every
+ * run it caused — the jobs a turn started, the turns that reported on them,
+ * the child runs each waited on. When a run ends, the pass asks the stores
+ * whether that was the last of its work; once it was, the work observes
+ * every Concept whose page any of its runs opened, at the version that read
+ * returned — recorded on the run's log by the read itself
+ * (`AccessedNode.version`, graph/graph-get), so this pass never asks the
+ * graph what the Concept says now. A page the work's runs read at
+ * different versions is observed at none (no version made the work). Its
+ * checks read the ROOT run as a workflow's do, with the pages the work
+ * opened and the work itself beside it (`work`); the standard judge reads
+ * the work and its files through a capability on its bag
+ * (`ctx.services.work`), which nothing but this pass sets. Evidence is ABOUT
+ * the Concept, sourced to the root run. A work that never opened a page is
+ * no observation of it: a claim that a page gets opened belongs on the page
+ * that lists it. A work of one run is judged exactly as one run was before.
  */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closureIncludes, flowClosure } from "./closure.js";
-import type { RunEvent, StepRegistry } from "./core.js";
+import type { RunEvent, RunTrial, StepRegistry } from "./core.js";
 import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import type { GraphBackend } from "./graph/backend.js";
 import {
@@ -73,10 +92,13 @@ import { buildLedger, type Ledger, type LedgerClaim } from "./ledger.js";
 import { runRef } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
-import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
+import { checkRunKey, localRuns, stepTypeOfRunKey, type RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { bootEnv } from "./env.js";
 import { executedWorkflowHash } from "./journal.js";
+import { foldWork, membersOf, rootsOf, workCapability, workDone, workSubject, type RunRef, type WorkMember } from "./work.js";
+import type { ArtifactsCapability } from "./capabilities.js";
+import { addSpend, dropSpend, readSpend, spentOn, utcDay, writeSpend, type CheckSpend } from "./check-spend.js";
 
 // ── What a run observed ─────────────────────────────────────────────────────
 
@@ -97,14 +119,23 @@ export interface ObservedSubject {
    *  from the job index at verify time (`buildJobSubject`): a job's product
    *  is its live state, never its log (plans/job-claims.md §3). */
   check: Omit<RunCheckSubject, "artifactsDir">;
+  /** A CONCEPT subject: the node the run read. A subject is a name, and a
+   *  Concept of that name in another namespace is not this graph's own. */
+  ref?: string;
 }
 
 const CONTAINER_STEPS = new Set(["subflow", "loop", "foreach"]);
+/** The step that renders a Concept page into an agent's prompt (src/steps/lib/context/concept.ts). */
+const CONTEXT_CONCEPT = "context/concept";
 const isToolEvent = (e: RunEvent) => typeof e.stepType === "string" && e.stepType.startsWith("tool:");
 
 /** A job subject's event path — `job:<id>`; its evidence is written at
  *  `job:<id>#<n>` (plans/job-claims.md §2). */
 export const jobSubjectPath = (job: string) => `job:${job}`;
+
+/** A Concept subject's event path — `concept:<name>`: one per Concept a run
+ *  opened, apart from the run's own path (the workflow subject's). */
+export const conceptSubjectPath = (name: string) => `concept:${name}`;
 
 /**
  * Rebuild the subjects from a run's event log alone (run events carry full
@@ -121,7 +152,14 @@ export const jobSubjectPath = (job: string) => `job:${job}`;
  *   - the JOB a top-level run was a turn of (`run.start.job`, no
  *     `parentRunId`): one subject at the version that is this run, once the
  *     run ENDED — a cancelled or failed turn moves the version (its evidence
- *     goes stale) and nothing is verified for it (plans/job-claims.md §8).
+ *     goes stale) and nothing is verified for it (plans/job-claims.md §8);
+ *   - each CONCEPT whose page a workflow run opened (`step.end.nodes` with a
+ *     `version`: graph/graph-get, as a workflow's step — `context/concept` —
+ *     or an agent's tool call), at the version its last read returned. The
+ *     check reads the run as the workflow subject's does, plus `concept` and
+ *     `concepts` (every one opened, first opened first). A Concept the log
+ *     gives no version for — written, traversed, touched by a run this one
+ *     launched, another strut's — is not observed.
  */
 export function subjectsOfRun(key: string, events: readonly RunEvent[]): ObservedSubject[] {
   const out: ObservedSubject[] = [];
@@ -133,6 +171,13 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   let stepHashes: Record<string, string> = launch.stepHashes ?? {};
   // The hashes in force when each step STARTED (a resume reloads steps).
   const starts = new Map<string, { event: RunEvent; stepHashes: Record<string, string> }>();
+  // The Concepts whose page the run opened, by name, first opened first.
+  const opened = new Map<string, { ref: string; version: string; rendered: boolean }>();
+  // An agent's thread kept its first turn's system prompt, and this turn's
+  // was another (agent.ts `keptSystem`): the pages `context/concept` rendered
+  // into it were never read by the model. A page the agent opened itself
+  // (a tool call) it did read.
+  let keptSystem = false;
 
   const stepSubject = (start: { event: RunEvent; stepHashes: Record<string, string> }, end: RunEvent): ObservedSubject | null => {
     const type = end.stepType;
@@ -163,6 +208,16 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
 
   for (const e of events) {
     if (e.type === "run.resumed" && e.stepHashes) stepHashes = e.stepHashes;
+    if (e.type === "step.end" && Array.isArray(e.nodes)) {
+      for (const n of e.nodes) {
+        if (n.node_type !== "Concept" || !n.name || !n.version || n.peer) continue;
+        const rendered = e.stepType === CONTEXT_CONCEPT;
+        // A read the model made itself stands, whatever a later rendering of the same page says.
+        if (rendered && opened.get(n.name)?.rendered === false) continue;
+        opened.set(n.name, { ref: n.ref_id, version: n.version, rendered });
+      }
+    }
+    if (e.type === "step.end" && e.stepType === "agent" && (e.output as { session?: { keptSystem?: unknown } } | undefined)?.session?.keptSystem === true) keptSystem = true;
     if (isToolEvent(e)) continue;
     if (e.type === "step.start") starts.set(e.path, { event: e, stepHashes });
     else if (e.type === "step.end" || e.type === "step.error") {
@@ -184,20 +239,34 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
     const end = [...events].reverse().find((e) => e.type === "run.end" || e.type === "run.error");
     const finishedOn = executedWorkflowHash(events);
     if (end) {
+      const check = {
+        ...base,
+        input: launch.input,
+        ...(launch.params ? { params: launch.params } : {}),
+        path: launch.path,
+        ...(end.type === "run.error" ? { error: end.error ?? { message: "unknown error" } } : { output: end.output }),
+      };
       out.push({
         subject: { kind: "workflow", name: key },
         // The version that finished it: a resume may have moved it (§5.4).
         ...(finishedOn ? { version: finishedOn } : {}),
         path: launch.path,
         at: end.ts,
-        check: {
-          ...base,
-          input: launch.input,
-          ...(launch.params ? { params: launch.params } : {}),
-          path: launch.path,
-          ...(end.type === "run.error" ? { error: end.error ?? { message: "unknown error" } } : { output: end.output }),
-        },
+        check,
       });
+      // The Concepts it opened: each reads the same run.
+      if (keptSystem) for (const [name, read] of opened) if (read.rendered) opened.delete(name);
+      const concepts = [...opened.keys()];
+      for (const [name, read] of opened) {
+        out.push({
+          subject: { kind: "concept", name },
+          version: read.version,
+          ref: read.ref,
+          path: conceptSubjectPath(name),
+          at: end.ts,
+          check: { ...check, concept: name, concepts, ...(launch.job ? { job: launch.job } : {}) },
+        });
+      }
     }
   }
   // The job this run was a turn of.
@@ -209,6 +278,29 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
     }
   }
   return out;
+}
+
+/**
+ * The Concepts whose page a run opened, by name, first opened first — what
+ * `subjectsOfRun` observes, for a reader that wants the names alone (the
+ * dream telling "the page was not opened" from "it was opened and not
+ * followed"). Null when the log cannot say: no events, or it names Concepts
+ * and records a version for none of them — a run from before reads recorded
+ * one, which says nothing either way. Pure.
+ */
+export function conceptsOpenedIn(events: readonly RunEvent[]): string[] | null {
+  if (events.length === 0) return null;
+  const opened = new Set<string>();
+  let named = false;
+  for (const e of events) {
+    if (e.type !== "step.end" || !Array.isArray(e.nodes)) continue;
+    for (const n of e.nodes) {
+      if (n.node_type !== "Concept" || !n.name || n.peer) continue;
+      named = true;
+      if (n.version) opened.add(n.name);
+    }
+  }
+  return named && opened.size === 0 ? null : [...opened];
 }
 
 // ── The check contract ──────────────────────────────────────────────────────
@@ -351,6 +443,9 @@ export interface VerifyResult {
   slots: number;
   /** What this pass's checks reported spending. */
   costUsd: number;
+  /** The Concept branch the observed run (a work: its root) was on: where
+   *  its Concepts' status is read (`ledger`). Absent: main. */
+  branch?: string;
 }
 
 /** What `verifyJob` returns (plans/job-claims.md §5): the pass over the job
@@ -388,7 +483,7 @@ export interface VerifierDeps extends ClaimsReaderDeps {
   /** The job index the reader needs, and `notify`: evidence written about a
    *  job, and a job's pass ending, reach the job's host as they happen
    *  (plans/live-artifacts.md §3). */
-  jobs?: Pick<JobsCapability, "get" | "notify">;
+  jobs?: Pick<JobsCapability, "get" | "runs" | "notify">;
   graph: GraphBackend;
   store: RunStore;
   workspace: WorkspaceStore;
@@ -401,12 +496,17 @@ export interface VerifierDeps extends ClaimsReaderDeps {
   /** A DETACHED pass settled — always called, no-op passes included, so a
    *  listener waiting on that run can stop waiting. */
   onSettled?: (result: VerifyResult) => void;
+  /** Is the run still in flight in this process (createStrut's
+   *  controllers)? A work is not done while one of its runs is: a run's
+   *  summary is written before strut decides whether its end wakes a
+   *  conversation (src/work.ts `workDone`). */
+  isLive?: (workflow: string, runId: string) => boolean;
 }
 
 const DEFAULT_BUDGET_USD = 10;
 const DEFAULT_BUDGET_USD_PER_DAY = 100;
 const AI_STAMP = "ai";
-const PAID_STEP_TYPES = ["agent", "llm"];
+const PAID_STEP_TYPES = ["agent", "llm", "image"];
 
 const money = (raw: string | undefined, fallback: number) => {
   const n = raw === undefined || raw === "" ? NaN : Number(raw);
@@ -419,12 +519,66 @@ export type Verifier = ReturnType<typeof createVerifier>;
 
 export function createVerifier(deps: VerifierDeps) {
   const { graph, store, workspace } = deps;
-  const reader = new ClaimsReader(graph, { jobs: deps.jobs });
+  const reader = new ClaimsReader(graph, { jobs: deps.jobs, ...(deps.branches ? { branches: deps.branches } : {}) });
   const env = () => deps.env ?? bootEnv();
   const inflight = new Map<string, { explicit: boolean; promise: Promise<VerifyResult> }>();
   /** Explicit job passes in flight, by job: a second one joins the first. */
   const inflightJobs = new Map<string, Promise<JobVerifyResult>>();
+  /** Passes over a work in flight, by its root run: a second one joins. */
+  const inflightWorks = new Map<string, { explicit: boolean; promise: Promise<VerifyResult | null> }>();
   const dataDir = () => (deps.services() as { dataDir?: string } | undefined)?.dataDir ?? join(tmpdir(), "strut");
+
+  /** Each check's spend tally (src/check-spend.ts) is read and written one
+   *  thing at a time: a recount and a kept run's add never interleave. */
+  const spendQueue = new Map<string, Promise<unknown>>();
+  function withSpend<T>(checkId: string, fn: () => Promise<T>): Promise<T> {
+    const next = (spendQueue.get(checkId) ?? Promise.resolve()).then(fn, fn);
+    const tail = next.catch(() => {});
+    spendQueue.set(checkId, tail);
+    void tail.then(() => spendQueue.get(checkId) === tail && spendQueue.delete(checkId));
+    return next;
+  }
+  /** A check's tally, from its run bucket: each kept run's `reportedCost`,
+   *  by the subject its `run.start` names, on the day it ran. Read run by
+   *  run (restoring an archived log), once per check: its first tally. */
+  async function recountSpend(checkId: string): Promise<CheckSpend> {
+    const bucket = checkRunKey(checkId);
+    let spend: CheckSpend = {};
+    for (const id of await store.listRuns(bucket)) {
+      const events = await store.getRunEvents(bucket, id);
+      const start = events.find((e) => e.type === "run.start");
+      const cost = reportedCost(events);
+      if (start?.verify?.subject && cost > 0) spend = addSpend(spend, start.verify.subject, cost, Date.parse(start.ts) || Number(id));
+    }
+    return spend;
+  }
+  /** The check's tally; recounted and written where there is none. Call
+   *  inside `withSpend`. */
+  async function tallyOf(checkId: string): Promise<CheckSpend> {
+    const have = await readSpend(dataDir(), checkId);
+    if (have) return have;
+    const spend = await recountSpend(checkId);
+    await writeSpend(dataDir(), checkId, spend);
+    return spend;
+  }
+  /** Keep a paid check run, and add its cost to the check's tally. The tally
+   *  is made BEFORE the run is in the bucket, so a recount never counts it
+   *  twice. A tally that cannot be made or written is left absent (dropped),
+   *  and the next read recounts — the run itself is kept either way. */
+  function keepPaidRun(checkId: string, subject: string, run: RunStepResult, cost: number): Promise<void> {
+    return withSpend(checkId, async () => {
+      const spend = await tallyOf(checkId).catch((err) => {
+        console.error(`[verify] check ${checkId}: its spend could not be tallied:`, err);
+        return null;
+      });
+      await persistRunUnder(store, checkRunKey(checkId), run);
+      if (!spend) return;
+      await writeSpend(dataDir(), checkId, addSpend(spend, subject, cost, Date.now())).catch(async (err) => {
+        console.error(`[verify] check ${checkId}: its spend tally was not written, and is recounted next:`, err);
+        await dropSpend(dataDir(), checkId).catch(() => {});
+      });
+    });
+  }
 
   /** What the check would execute as right now: `exec`, `clip/judge@<hash>`,
    *  `fuzzy-match@<hash>` — recorded on the Evidence, and what `on_change`
@@ -465,8 +619,23 @@ export function createVerifier(deps: VerifierDeps) {
       // The source run's principal: its checks are billed to the same person
       // (plans/mothership-cost-control.md §2).
       principal: undefined as string | undefined,
+      /** The bag checks run with, when not the deployment's: a pass over a
+       *  work adds the work (`ctx.services.work`, src/work.ts). */
+      services: undefined as unknown,
+      /** Where a Concept is read on the run's branch: its page's ref_id and
+       *  when the branch was made (`reader.scopeOf`), by name. */
+      pages: new Map<string, string | null>(),
+      scope: undefined as { branch?: string; since?: number } | undefined,
+      /** The work's root is a TRIAL (`RunTrial`, src/trials.ts): the claim
+       *  it replays a case of judges it whatever its checks' policy, and
+       *  every evidence the work is the source of says so. */
+      trial: undefined as RunTrial | undefined,
     };
   }
+  /** The run's branch (a work: its root's), stamped on every evidence it is the source of. */
+  const setBranch = (pass: Pass, branch: string | undefined) => {
+    if (branch) pass.result.branch = branch;
+  };
   type Pass = ReturnType<typeof newPass>;
 
   /** Where the run's artifacts are — a step check's `cwd` of choice. */
@@ -497,9 +666,32 @@ export function createVerifier(deps: VerifierDeps) {
   }
 
   /** `HAS_SOURCE.context` for a subject: a step's path (and cassette); a
-   *  job's TURN — its path is unused (plans/job-claims.md §2). */
-  const contextOf = (o: ObservedSubject): SourceContext =>
-    o.subject.kind === "job" ? { turn: o.version! } : { path: o.path, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) };
+   *  job's TURN — its path is unused (plans/job-claims.md §2); a Concept's
+   *  VERSION, which no node holds. Every one carries the source run's
+   *  Concept BRANCH when it was on one (plans/concept-evals.md item d):
+   *  what a Concept's status per branch reads. */
+  const contextOf = (o: ObservedSubject, branch: string | undefined): SourceContext => ({
+    ...(o.subject.kind === "job"
+      ? { turn: o.version! }
+      : { path: o.path, ...(o.subject.kind === "concept" ? { version: o.version! } : {}), ...(o.check.cassette ? { cassette: o.check.cassette } : {}) }),
+    ...(branch ? { branch } : {}),
+  });
+
+  /** The page a run on `branch` (none: main) opens by a claim's Concept
+   *  name: main's own, or the branch's of that name. Once per pass. */
+  const pageOf = async (pass: Pass, name: string, branch: string | undefined): Promise<string | null> => {
+    const k = `${branch ?? ""}|${name}`;
+    if (!pass.pages.has(k)) pass.pages.set(k, branch ? await reader.pageOn(name, branch) : await reader.subjectRefId({ kind: "concept", name }));
+    return pass.pages.get(k)!;
+  };
+
+  /** Is the Concept a run opened the page a claim is about, where the run
+   *  was? Claims are about the Concept of that name in the backend's
+   *  namespace, and follow it onto a branch by name (item d): a run on main
+   *  must have read main's page, a run on a branch the branch's. A run may
+   *  have read one of the same name elsewhere. Every other subject: yes. */
+  const ours = async (pass: Pass, o: ObservedSubject, branch: string | undefined): Promise<boolean> =>
+    o.subject.kind !== "concept" || (!!o.ref && o.ref === (await pageOf(pass, subjectName(o.subject), branch)));
 
   const claimsOf = async (pass: Pass, s: SubjectRef) => {
     const k = subjectKey(s);
@@ -510,28 +702,34 @@ export function createVerifier(deps: VerifierDeps) {
     if (!pass.checks.has(claimId)) pass.checks.set(claimId, await reader.checksFor(claimId));
     return pass.checks.get(claimId)!;
   };
-  const evidenceOf = async (pass: Pass, claimId: string, s: SubjectRef, fresh = false) => {
+  /** What a pass reads of a claim's evidence about a subject: every open
+   *  slot and each check's newest measurement (`statusEvidence`), never the
+   *  history. A Concept's on the pass's side only — main's on main, a
+   *  branch's on it since it was made — so `on_change` asks about THIS
+   *  side's page, and a branch copy at main's version is still measured.
+   *  Once per pass, and again after a write (`wrote`). */
+  const evidenceOf = async (pass: Pass, claimId: string, s: SubjectRef) => {
     const k = `${claimId}|${subjectKey(s)}`;
-    if (fresh || !pass.evidence.has(k)) pass.evidence.set(k, await reader.evidenceFor(claimId, s));
+    if (!pass.evidence.has(k)) {
+      const checks = (await checksOf(pass, claimId)).map((c) => c.id);
+      const side = s.kind === "concept" ? (pass.scope ??= await reader.scopeOf(pass.result.branch)) : undefined;
+      pass.evidence.set(k, await reader.statusEvidence(claimId, s, { checks, activeVersion: null, ...(side ? { side } : {}) }));
+    }
     return pass.evidence.get(k)!;
   };
+  const wrote = (pass: Pass, claimId: string, s: SubjectRef) => pass.evidence.delete(`${claimId}|${subjectKey(s)}`);
 
-  /** A subject's verify spend so far today, from the store alone: today's
-   *  runs in the buckets of the checks on its claims, tagged with it. */
+  /** A subject's verify spend so far today (UTC): what the tallies of the
+   *  checks on its claims say it spent today. A pass is not a request: a
+   *  check with no tally yet is recounted here, once. */
   async function spentToday(pass: Pass, s: SubjectRef): Promise<number> {
     const k = subjectKey(s);
     if (pass.spentToday.has(k)) return pass.spentToday.get(k)!;
-    const midnight = new Date();
-    midnight.setUTCHours(0, 0, 0, 0);
+    const today = utcDay(Date.now());
     let total = 0;
     for (const claim of await claimsOf(pass, s)) {
       for (const check of await reader.checksFor(claim.id, { includeRetired: true })) {
-        const bucket = checkRunKey(check.id);
-        for (const id of await store.listRuns(bucket)) {
-          if (Number(id) < midnight.getTime()) break; // newest first
-          const events = await store.getRunEvents(bucket, id);
-          if (events.find((e) => e.type === "run.start")?.verify?.subject === k) total += reportedCost(events);
-        }
+        if (check.step_type) total += spentOn((await withSpend(check.id, () => tallyOf(check.id)))[k], today);
       }
     }
     pass.spentToday.set(k, total);
@@ -631,7 +829,7 @@ export function createVerifier(deps: VerifierDeps) {
 
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
     const checkVersion = await resolveCheckVersion(check, config, pass.activeStepHashes);
-    const run = await runSingleStep(type, pass.registry, deps.services(), {
+    const run = await runSingleStep(type, pass.registry, pass.services ?? deps.services(), {
       // A failed assertion is a result, not a crash: let `exec` return its exit code.
       config: type === "exec" && config["allowFailure"] === undefined ? { ...config, allowFailure: true } : config,
       input,
@@ -653,10 +851,9 @@ export function createVerifier(deps: VerifierDeps) {
     // can open when the screenshot looks wrong. Still never a turn.
     const leftFiles = subject.kind === "job" && mapped.kind === "evidence" && typeof mapped.locator?.path === "string";
     let checkRun: string | undefined;
-    if (cost > 0 || leftFiles) {
-      await persistRunUnder(store, checkRunKey(check.id), run);
-      checkRun = run.runId;
-    }
+    if (cost > 0) await keepPaidRun(check.id, subjectKey(subject), run, cost);
+    else if (leftFiles) await persistRunUnder(store, checkRunKey(check.id), run);
+    if (cost > 0 || leftFiles) checkRun = run.runId;
     if (cost > 0) {
       // On record exactly like any agent step — and counted against the caps,
       // which is how a presumed-free check that turns out to cost money is caught.
@@ -674,7 +871,8 @@ export function createVerifier(deps: VerifierDeps) {
     };
   }
 
-  /** Open (or keep) the ONE planned slot an external check may have per subject. */
+  /** Open (or keep) the ONE planned slot an external check may have per
+   *  subject; `mine` holds the check's open slots (`evidenceOf`). */
   async function openSlot(pass: Pass, o: ObservedSubject, claim: ClaimRow, check: CheckRow, id: string, mine: readonly EvidenceRow[]): Promise<LastVerify> {
     const runRef = await runRefOf(pass);
     if (!runRef) return { skipped: "cannot-launch", reason: "the run could not be projected" };
@@ -691,7 +889,7 @@ export function createVerifier(deps: VerifierDeps) {
         evidence_status: "planned",
         description: bound(`${check.description ?? check.name}\n\nLook at: ${where}. It produced: ${preview}`),
       },
-      context: contextOf(o),
+      context: contextOf(o, pass.result.branch),
     });
     if (written !== "written") return { skipped: "unknown-version" };
     // A slot about an older run is a question whose answer would be born
@@ -707,17 +905,17 @@ export function createVerifier(deps: VerifierDeps) {
     if (!o.version) return { skipped: "unknown-version" };
     const job = o.subject.kind === "job";
     const explicit = job ? pass.explicitJob : pass.explicit;
-    const all = await evidenceOf(pass, claim.id, o.subject);
-    const mine = all.filter((e) => e.check_id === check.id);
     // A job's evidence path is `job:<id>#<n>` (plans/job-claims.md §2): the
     // automatic pass writes #0 and is idempotent as every pass is; an
     // explicit verify of the same turn APPENDS — n counts this check's
     // evidence on the turn — so a pod that answered a 500 mid-restart and is
     // up now can be measured again, and `newestFirst` picks the new one.
-    const path = job ? `${o.path}#${explicit ? mine.filter((e) => e.about?.content_hash === o.version).length : 0}` : o.path;
+    const path = job ? `${o.path}#${explicit ? await reader.evidenceCount(claim.id, o.subject, { check: check.id, version: o.version }) : 0}` : o.path;
     const id = evidenceId(check.id, pass.runId, path);
-    const existing = mine.find((e) => e.id === id);
-    if (existing) return existing.evidence_status === "planned" ? { planned: id } : { ran: true };
+    const existing = await reader.evidenceStatus(claim.id, o.subject, id);
+    if (existing !== null) return existing === "planned" ? { planned: id } : { ran: true };
+    // What this check measured on this side: the policy reads its newest, a slot retires its open ones.
+    const seen = (await evidenceOf(pass, claim.id, o.subject)).filter((e) => e.check_id === check.id);
 
     const config = (() => {
       try {
@@ -727,9 +925,11 @@ export function createVerifier(deps: VerifierDeps) {
       }
     })();
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
-    const fires = policyFires({
+    // A trial is judged by the claim it replays a case of, every sample (src/trials.ts).
+    const forced = o.subject.kind === "concept" && pass.trial?.claim === claim.id;
+    const fires = forced || policyFires({
       check,
-      evidence: mine.filter((e) => e.evidence_status === "collected"),
+      evidence: seen.filter((e) => e.evidence_status === "collected"),
       version: o.version,
       checkVersion: isExternalCheck(check) ? "external" : await resolveCheckVersion(check, config, pass.activeStepHashes),
       runId: pass.runId,
@@ -739,8 +939,8 @@ export function createVerifier(deps: VerifierDeps) {
     });
     if (!fires) return { skipped: "policy" };
     if (isExternalCheck(check)) {
-      const slot = await openSlot(pass, o, claim, check, id, mine);
-      await evidenceOf(pass, claim.id, o.subject, true);
+      const slot = await openSlot(pass, o, claim, check, id, seen);
+      wrote(pass, claim.id, o.subject);
       return slot;
     }
 
@@ -758,7 +958,8 @@ export function createVerifier(deps: VerifierDeps) {
       node: { content: ran.mapped.content, evidence_mode: ran.mode, evidence_status: "collected", observed_at: o.at },
       strength: ran.mapped.supports ? 1 : -1,
       context: {
-        ...contextOf(o),
+        ...contextOf(o, pass.result.branch),
+        ...(pass.trial ? { trial: true as const, ...(pass.trial.claim === claim.id && pass.trial.case !== undefined ? { case: pass.trial.case } : {}) } : {}),
         checkVersion: ran.checkVersion,
         ...(ran.model ? { model: ran.model } : {}),
         ...(ran.checkRun ? { checkRun: ran.checkRun } : {}),
@@ -767,20 +968,22 @@ export function createVerifier(deps: VerifierDeps) {
     });
     if (written !== "written") return { skipped: "unknown-version" };
     pass.result.evidence++;
-    await evidenceOf(pass, claim.id, o.subject, true);
+    wrote(pass, claim.id, o.subject);
     return { ran: true };
   }
 
   /** Every active claim on one observed subject, every runnable check — the
    *  loop `runPass` and `verifyJob` share. `only` narrows to claim ids. */
-  async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[]): Promise<void> {
+  async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[], preset?: LastVerify): Promise<void> {
     const claims = (await claimsOf(pass, o.subject)).filter((c) => !only || only.includes(c.id));
-    if (claims.length === 0) return;
+    if (claims.length === 0 || !(await ours(pass, o, pass.result.branch))) return;
     if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
 
     let input: RunCheckSubject | JobCheckSubject | null = null;
-    let skip: LastVerify | undefined;
-    if (o.subject.kind === "job") {
+    let skip: LastVerify | undefined = preset;
+    if (skip) {
+      // Decided before any check runs (a work that read the page at more than one version).
+    } else if (o.subject.kind === "job") {
       // Only the newest turn is ever verified (plans/job-claims.md §2): a job
       // check reads the LIVE app, and would file what it sees under an older turn.
       const active = await activeTurn(pass, o.subject.id);
@@ -790,6 +993,12 @@ export function createVerifier(deps: VerifierDeps) {
         input = await jobInputOf(pass, o.subject.id, o.check.output);
         if (!input) skip = { skipped: "cannot-launch", reason: "the job could not be read from the index" };
       }
+    } else if (o.subject.kind === "concept") {
+      // The run's files: its job's directory when it had one, as job/dir
+      // hands a job's agent; else its artifacts.
+      const files = await artifactsDirOf(pass);
+      const dir = o.check.job ? jobRoot(dataDir(), o.check.job) : files.artifactsDir;
+      input = { ...o.check, ...files, ...(dir ? { dir } : {}) };
     } else {
       input = { ...o.check, ...(await artifactsDirOf(pass)) };
     }
@@ -809,16 +1018,152 @@ export function createVerifier(deps: VerifierDeps) {
     }
   }
 
+  /** The runs a pass reads. One someone asked for reads the store, which
+   *  restores an archived log (plans/run-archive.md); the pass strut makes
+   *  by itself when a run ends reads this disk only, so a work with old
+   *  members cannot page their logs back in at every turn's end. */
+  const runsFor = (explicit: boolean): RunStore => (explicit ? store : localRuns(store));
+
   async function runPass(key: string, runId: string, explicit: boolean): Promise<VerifyResult> {
     const pass = newPass(key, runId, explicit);
-    const events = await store.getRunEvents(key, runId);
+    const events = await runsFor(explicit).getRunEvents(key, runId);
     const launch = events.find((e) => e.type === "run.start");
     if (!launch) return { ...pass.result, skipped: "unknown-run" };
     if (launch.origin === "verify" || key.startsWith("check:")) return { ...pass.result, skipped: "verify-origin" };
     pass.principal = launch.principal;
+    setBranch(pass, launch.branch);
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
-    for (const o of subjectsOfRun(key, events)) await verifySubject(pass, o);
+    // A Concept is observed by the run's WORK, never by the run alone.
+    for (const o of subjectsOfRun(key, events)) if (o.subject.kind !== "concept") await verifySubject(pass, o);
+    for (const w of await workPasses(key, runId, explicit)) {
+      for (const s of w.subjects) if (!pass.result.subjects.some((x) => sameSubject(x, s))) pass.result.subjects.push(s);
+      pass.result.checks.push(...w.checks);
+      pass.result.evidence += w.evidence;
+      pass.result.slots += w.slots;
+      pass.result.costUsd += w.costUsd;
+    }
+    return pass.result;
+  }
+
+  // ── A work (src/work.ts): the Concepts it opened, judged once it is done ──
+
+  /** The passes over the work(s) the run belongs to, each run only when the
+   *  work is done: a run that was not the last of its work adds nothing. A
+   *  child run asks nothing (its parent's end does), nor does a single-step
+   *  or check run. No claim on any Concept: nothing is read. */
+  async function workPasses(key: string, runId: string, explicit: boolean): Promise<VerifyResult[]> {
+    if (key.includes(":")) return [];
+    if (!(await reader.claimedSubjects("concept")).length) return [];
+    const ended: RunRef = { workflow: key, runId };
+    const roots = await rootsOf(runsFor(explicit), ended);
+    if (!roots) return [];
+    const out: VerifyResult[] = [];
+    for (const root of roots) {
+      const r = await verifyWorkOnce(root, explicit, ended);
+      if (r) out.push(r);
+    }
+    return out;
+  }
+
+  /** One pass per work at a time; an explicit one after an automatic one
+   *  goes again, for its `manual` checks (as `verifyRun`). */
+  async function verifyWorkOnce(root: RunRef, explicit: boolean, ended: RunRef): Promise<VerifyResult | null> {
+    const running = inflightWorks.get(root.runId);
+    if (running) {
+      const first = await running.promise.catch(() => null);
+      if (!explicit || running.explicit) return first;
+    }
+    const promise = verifyWork(root, explicit, ended).finally(() => {
+      if (inflightWorks.get(root.runId)?.promise === promise) inflightWorks.delete(root.runId);
+    });
+    inflightWorks.set(root.runId, { explicit, promise });
+    return promise;
+  }
+
+  /** Where a run's files are: its job's directory, else its own artifacts
+   *  when it left any. */
+  async function filesDirOf(runId: string, job: string | undefined): Promise<string | undefined> {
+    if (job) {
+      const dir = jobRoot(dataDir(), job);
+      return existsSync(dir) ? dir : undefined;
+    }
+    const artifacts = (deps.services() as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+    if (!artifacts) return undefined;
+    const files = await artifacts.list(runId).catch(() => [] as string[]);
+    return files.length ? artifacts.dir(runId).catch(() => undefined) : undefined;
+  }
+
+  /**
+   * The pass over one WORK, null while it is not done. The work observes
+   * each Concept with claims that any of its runs opened, at the version
+   * their reads returned (each run's last read, as one run always did); a
+   * page the runs read at different versions is observed at none. Each
+   * check reads the root run (`input`, `params`, `output` or `error`), the
+   * pages the work opened (`concepts`), the root's job and files, and the
+   * work (`work`); its bag carries the work for the standard judge.
+   */
+  async function verifyWork(root: RunRef, explicit: boolean, ended: RunRef): Promise<VerifyResult | null> {
+    const members = await membersOf(dataDir(), root);
+    const runs = runsFor(explicit);
+    const state = await workDone({ store: runs, dataDir: dataDir(), ...(deps.isLive ? { isLive: deps.isLive } : {}) }, members, ended);
+    if (!state.done) return null;
+    const claimed = new Set(await reader.claimedSubjects("concept"));
+    const pass = newPass(root.workflow, root.runId, explicit);
+    const folded: WorkMember[] = [];
+    const reads = new Map<string, Array<{ ref?: string; version: string }>>();
+    let rootCheck: ObservedSubject["check"] | undefined;
+    let endedAt = "";
+    for (const m of members) {
+      const [events, summary] = await Promise.all([runs.getRunEvents(m.workflow, m.runId), runs.getRunSummary(m.workflow, m.runId)]);
+      const start = events.find((e) => e.type === "run.start");
+      // A child cut off by a crash and relaunched by its parent did nothing that finished.
+      if (!start || !summary || !["success", "error", "cancelled"].includes(summary.status)) continue;
+      const observed = subjectsOfRun(m.workflow, events);
+      const pages = observed.filter((o) => o.subject.kind === "concept");
+      for (const o of pages) {
+        const name = subjectName(o.subject);
+        reads.set(name, [...(reads.get(name) ?? []), { ...(o.ref ? { ref: o.ref } : {}), version: o.version! }]);
+      }
+      const end = [...events].reverse().find((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled");
+      if (end && end.ts > endedAt) endedAt = end.ts;
+      if (m.runId === root.runId) {
+        pass.principal = start.principal;
+        // The work is on its root's branch: every run it starts is (ruling 10).
+        setBranch(pass, start.branch);
+        if (start.trial) pass.trial = start.trial;
+        rootCheck = observed.find((o) => o.subject.kind === "workflow" && o.path === start.path)?.check ?? {
+          runId: root.runId,
+          input: start.input,
+          path: start.path,
+          error: { message: summary.status === "cancelled" ? "the run was cancelled" : (summary.error?.message ?? "unknown error") },
+        };
+      }
+      const dir = await filesDirOf(m.runId, start.job);
+      folded.push({ ref: m, start, summary, concepts: pages.map((o) => subjectName(o.subject)), ...(dir ? { dir } : {}) });
+    }
+    if (!rootCheck) return null;
+    const work = foldWork(root, folded);
+    pass.services = { ...(deps.services() as object), work: workCapability(work) };
+    const rootJob = work.runs[0]?.job;
+    const check = { ...rootCheck, concepts: work.concepts, ...(rootJob ? { job: rootJob } : {}), work: workSubject(work) };
+    for (const [name, rs] of reads) {
+      if (!claimed.has(name)) continue;
+      const subject: SubjectRef = { kind: "concept", name };
+      // The page the claims follow by name where the work ran: main's, or its
+      // branch's (item d). A read of a page of that name elsewhere (another
+      // namespace, another branch) is not it.
+      const ref = await pageOf(pass, name, pass.result.branch);
+      const versions = [...new Set(rs.filter((r) => r.ref === ref).map((r) => r.version))];
+      if (!ref || !versions.length) continue;
+      const o: ObservedSubject = { subject, version: versions[0]!, ref, path: conceptSubjectPath(name), at: endedAt, check: { ...check, concept: name } };
+      await verifySubject(
+        pass,
+        o,
+        undefined,
+        versions.length > 1 ? { skipped: "unknown-version", reason: `the work read this page at ${versions.length} versions: no one version made it` } : undefined,
+      );
+    }
     return pass.result;
   }
 
@@ -860,12 +1205,12 @@ export function createVerifier(deps: VerifierDeps) {
     const noop = (runId: string, key: string, skipped: VerifyResult["skipped"], claims: LedgerClaim[] = []): JobVerifyResult => ({
       key, runId, job, skipped, subjects: [], checks: [], evidence: 0, slots: 0, costUsd: 0, claims,
     });
-    const view = await deps.jobs?.get?.(job, { threads: false });
-    if (!view) return noop(opts.runId ?? "", "", "unknown-job");
+    const runs = await deps.jobs?.runs?.(job);
+    if (!runs) return noop(opts.runId ?? "", "", "unknown-job");
     let turn = opts.runId;
-    for (let line = turn ? view.runs.find((r) => r.runId === turn) : undefined; line?.parentRunId; line = view.runs.find((r) => r.runId === line!.parentRunId)) turn = line.parentRunId;
-    turn ??= activeTurnOf(view.runs) ?? undefined;
-    const line = turn ? view.runs.find((r) => r.runId === turn) : undefined;
+    for (let line = turn ? runs.find((r) => r.runId === turn) : undefined; line?.parentRunId; line = runs.find((r) => r.runId === line!.parentRunId)) turn = line.parentRunId;
+    turn ??= activeTurnOf(runs) ?? undefined;
+    const line = turn ? runs.find((r) => r.runId === turn) : undefined;
     if (!turn || !line) return noop(turn ?? "", "", "unknown-run", (await jobLedger(job, { known: true })) ?? []);
 
     const key = line.workflow;
@@ -877,7 +1222,9 @@ export function createVerifier(deps: VerifierDeps) {
       const pass = newPass(key, turn, true);
       pass.explicitJob = true;
       const events = await store.getRunEvents(key, turn);
-      pass.principal = events.find((e) => e.type === "run.start")?.principal;
+      const launch = events.find((e) => e.type === "run.start");
+      pass.principal = launch?.principal;
+      setBranch(pass, launch?.branch);
       const output = (await store.getRunSummary(key, turn))?.output ?? [...events].reverse().find((e) => e.type === "run.end")?.output;
       const path = jobSubjectPath(job);
       const o: ObservedSubject = { subject, version: turn, path, at: new Date().toISOString(), check: { runId: turn, input: undefined, path, ...(output !== undefined ? { output } : {}) } };
@@ -901,7 +1248,7 @@ export function createVerifier(deps: VerifierDeps) {
    *  /jobs/:id/claims`, `claims` on `GET /jobs/:id` and `job/get` carry.
    *  Null when the job is not on file (`known` skips that read). */
   async function jobLedger(job: string, opts: { result?: VerifyResult; known?: boolean } = {}): Promise<LedgerClaim[] | null> {
-    if (!opts.known && !(await deps.jobs?.get?.(job, { threads: false }))) return null;
+    if (!opts.known && !(await deps.jobs?.runs?.(job))) return null;
     return (await buildLedger(reader, [{ kind: "job", id: job }], opts.result ? { result: opts.result } : {}))[job] ?? [];
   }
 
@@ -939,7 +1286,7 @@ export function createVerifier(deps: VerifierDeps) {
         const id = evidenceId(check.id, pass.runId, "publish");
         let lastVerify: LastVerify;
         try {
-          if ((await evidenceOf(pass, claim.id, subject)).some((e) => e.id === id)) lastVerify = { ran: true };
+          if ((await reader.evidenceStatus(claim.id, subject, id)) !== null) lastVerify = { ran: true };
           else if (!versionRef) lastVerify = { skipped: "unknown-version" };
           else {
             input ??= subject.kind === "step"
@@ -991,7 +1338,7 @@ export function createVerifier(deps: VerifierDeps) {
     let name = input.name;
     let subject = input.subject;
     if (input.job) {
-      const line = (await deps.jobs?.get?.(input.job, { threads: false }))?.runs.find((r) => r.runId === input.runId);
+      const line = (await deps.jobs?.runs?.(input.job))?.find((r) => r.runId === input.runId);
       if (!line) return { error: `run ${input.runId} does not carry job "${input.job}" — cite one of the job's turns` };
       name ??= line.workflow;
       subject ??= { kind: "job", id: input.job };
@@ -1004,9 +1351,14 @@ export function createVerifier(deps: VerifierDeps) {
     if (input.job && launch?.job !== input.job) return { error: `run ${input.runId} does not carry job "${input.job}"` };
 
     const about = (await reader.subjectsOf(claim.id)).map((s) => s.subject);
-    const observed = subjectsOfRun(name, events).filter(
-      (o) => o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)),
-    );
+    // The run's branch: a person's word about a run on a branch is that
+    // branch's evidence, like every other (item d).
+    const pass = newPass(name, input.runId, true);
+    setBranch(pass, launch?.branch);
+    const observed: ObservedSubject[] = [];
+    for (const o of subjectsOfRun(name, events)) {
+      if (o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)) && (await ours(pass, o, pass.result.branch))) observed.push(o);
+    }
     const distinct = [...new Map(observed.map((o) => [subjectKey(o.subject), o])).values()];
     if (distinct.length === 0) {
       return { error: `run ${input.runId} did not execute a subject of this claim with a recorded version (${about.map(subjectKey).join(", ") || "no subjects"}) — evidence must be about a version that actually ran` };
@@ -1017,11 +1369,8 @@ export function createVerifier(deps: VerifierDeps) {
     const strength = input.supports ? 1 : -1;
     const now = new Date().toISOString();
 
-    const evidence = await reader.evidenceFor(claim.id, o.subject);
-    const slot = input.slot
-      ? evidence.find((e) => e.id === input.slot)
-      : evidence.find((e) => e.evidence_status === "planned" && e.source?.run_id === input.runId);
-    if (input.slot && (!slot || slot.evidence_status !== "planned")) return { error: `"${input.slot}" is not an open slot on this claim` };
+    const slot = await reader.openSlotOf(claim.id, o.subject, input.slot ? { id: input.slot } : { runId: input.runId });
+    if (input.slot && !slot) return { error: `"${input.slot}" is not an open slot on this claim` };
     if (slot) {
       await graph.nodes.update(slot.ref_id, { set: { content: bound(content), evidence_status: "collected", evidence_mode: mode, observed_at: now } });
       await graph.edges.update({ ref_id: slot.edge_ref_id! }, { set: { strength } });
@@ -1044,36 +1393,37 @@ export function createVerifier(deps: VerifierDeps) {
       sourceRef,
       node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
       strength,
-      context: { ...contextOf(o), by: input.by },
+      context: { ...contextOf(o, pass.result.branch), by: input.by },
     });
     if (written !== "written") return { error: `the version that run executed (${o.version}) is not in the graph` };
     return { ok: true, evidence: id, filled: false, subject: o.subject };
   }
 
   /**
-   * What keeping this subject's claims true has cost, all time — from the
-   * run store alone: every persisted (paid) check run in the buckets of the
-   * checks on its claims, retired ones included, tagged with this subject.
-   * Cost is a constraint, not telemetry (EVOLVE_SPEC §7): the builder, a
-   * person and the evolve loop all read the same number.
+   * What keeping this subject's claims true has cost, all time: every kept
+   * (paid) check run of the checks on its claims, retired ones included,
+   * that verified this subject — read off each check's tally
+   * (src/check-spend.ts), never its runs. Read on every `GET /claims`, so a
+   * check with no tally yet is recounted OFF the request, and counts from
+   * the next read on. Cost is a constraint, not telemetry (EVOLVE_SPEC §7):
+   * the builder, a person and the evolve loop all read the same number.
    */
   async function costOf(subject: SubjectRef): Promise<number> {
     const k = subjectKey(subject);
     let total = 0;
     for (const claim of await reader.claimsFor(subject, { includeRetired: true })) {
       for (const check of await reader.checksFor(claim.id, { includeRetired: true })) {
-        const bucket = checkRunKey(check.id);
-        for (const id of await store.listRuns(bucket)) {
-          const events = await store.getRunEvents(bucket, id);
-          if (events.find((e) => e.type === "run.start")?.verify?.subject === k) total += reportedCost(events);
-        }
+        if (!check.step_type) continue; // an external check runs nothing
+        const spend = await readSpend(dataDir(), check.id);
+        if (spend) total += spend[k]?.usd ?? 0;
+        else void withSpend(check.id, () => tallyOf(check.id)).catch((err) => console.error(`[verify] check ${check.id}: its spend could not be recounted:`, err));
       }
     }
     return total;
   }
 
   /** The ledger a settled pass produced: computed statuses + per-check lastVerify. */
-  const ledger = (result: VerifyResult): Promise<Ledger> => buildLedger(reader, result.subjects, { result });
+  const ledger = (result: VerifyResult): Promise<Ledger> => buildLedger(reader, result.subjects, { result, ...(result.branch ? { branch: result.branch } : {}) });
   /** The contract of what a launch can execute, every runnable check `pending`. */
   const pendingLedger = (subjects: readonly SubjectRef[]): Promise<Ledger> => buildLedger(reader, subjects, { pending: true });
 

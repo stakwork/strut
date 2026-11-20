@@ -120,11 +120,12 @@ function ConceptTreeDiff({ entries, from, to, path, proposal, parentsOf, hideUnc
   if (!diff) return <Skeleton className={cn("h-40", className)} />;
   const changed = diff.pages.filter((p) => p.status !== "unchanged").length;
   return (
-    <div className={cn("flex min-w-0 flex-col gap-3 text-sm", className)} data-testid="concept-diff">
+    // A container: the tree beside the page only where the box itself is wide, not the window (a card, a panel).
+    <div className={cn("@container/diff flex min-w-0 flex-col gap-3 text-sm", className)} data-testid="concept-diff">
       {proposalQ.data && <ProposalHead proposal={proposalQ.data.proposal} />}
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
         {changed === 0 ? (
-          <span className="text-muted-foreground">{proposal ? "This proposal changes no Concept page." : "No page changed."}</span>
+          <span className="text-muted-foreground">{proposal ? "This proposal changes no Concept." : "No concept changed."}</span>
         ) : (
           (Object.keys(CONCEPT_STATUS) as ConceptStatus[])
             .filter((s) => s !== "unchanged" && diff.counts[s])
@@ -135,11 +136,11 @@ function ConceptTreeDiff({ entries, from, to, path, proposal, parentsOf, hideUnc
               </span>
             ))
         )}
-        {diffQ.data?.more && <span className="text-muted-foreground">· more pages changed than are shown</span>}
+        {diffQ.data?.more && <span className="text-muted-foreground">· more concepts changed than are shown</span>}
       </div>
       {changed > 0 && (
-        <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
-          <nav className="min-w-0 rounded-md border py-1" aria-label="Changed pages" data-testid="concept-diff-tree">
+        <div className="grid min-w-0 gap-4 @xl/diff:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
+          <nav className="min-w-0 rounded-md border py-1" aria-label="Changed concepts" data-testid="concept-diff-tree">
             {diff.tree.map((n) => (
               <TreeRow key={n.key} node={n} depth={0} open={open?.path ?? null} onPick={pick} />
             ))}
@@ -231,7 +232,7 @@ export function PageDiff({ change, className }: { change: ConceptChange; classNa
         {(change.marks.length ? change.marks : [change.status]).map((m) => (
           <StatusBadge key={m} status={m} />
         ))}
-        {change.paired && <span className="text-[11px] text-muted-foreground" title="Git saw a page removed and another added; their parents and words match">paired by content</span>}
+        {change.paired && <span className="text-[11px] text-muted-foreground" title="Git saw a concept removed and another added; their parents and words match">paired by content</span>}
       </header>
 
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 text-xs">
@@ -361,10 +362,10 @@ function ConceptHistory({ page, limit = 20, onOpenRun, className }: ConceptDiffP
   });
   const change = useMemo(() => (entryQ.data ? foldConceptDiff([entryQ.data]).pages[0] : undefined), [entryQ.data]);
 
-  if (pathQ.isSuccess && !path) return <p className={cn("text-sm text-muted-foreground", className)}>This page's name has no file in the history.</p>;
+  if (pathQ.isSuccess && !path) return <p className={cn("text-sm text-muted-foreground", className)}>This concept has no file in the history.</p>;
   if (logQ.isError) return <Problem error={logQ.error} />;
   if (!logQ.data) return <Skeleton className={cn("h-32", className)} />;
-  if (!shownCommits.length) return <p className={cn("text-sm text-muted-foreground", className)}>No history for this page yet.</p>;
+  if (!shownCommits.length) return <p className={cn("text-sm text-muted-foreground", className)}>No history for this concept yet.</p>;
 
   const toggle = (i: number) =>
     setTicked((t) => {
@@ -441,13 +442,13 @@ function ConceptHistory({ page, limit = 20, onOpenRun, className }: ConceptDiffP
           {[false, true].map((t) => (
             <Button key={String(t)} size="xs" variant={then === t ? "secondary" : "ghost"} onClick={() => setThen(t)}>
               {t ? <FileText /> : <GitCompare />}
-              {t ? "The page then" : "What changed"}
+              {t ? "The concept then" : "What changed"}
             </Button>
           ))}
         </div>
       )}
       {then && ticked.length < 2 ? (
-        thenQ.data ? <PageView page={thenQ.data} /> : thenQ.isFetching ? <Skeleton className="h-24" /> : <p className="text-xs text-muted-foreground">The page was removed in this commit.</p>
+        thenQ.data ? <PageView page={thenQ.data} /> : thenQ.isFetching ? <Skeleton className="h-24" /> : <p className="text-xs text-muted-foreground">The concept was removed in this commit.</p>
       ) : entryQ.isError ? (
         <Problem error={entryQ.error} />
       ) : change ? (

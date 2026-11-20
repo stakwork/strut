@@ -43,6 +43,8 @@ import {
   SCHEMA_CORE_PROPERTIES,
   STRUT_DOMAIN,
   STRUT_SCHEMAS,
+  THING_REFUSED,
+  THING_TYPE,
   effectiveAttributes,
   getStrutSchema,
   isStrutType,
@@ -372,6 +374,8 @@ export class SchemaResolver {
         }
         const exists = await this.source.schemaRow(t, {}, tx);
         if (!exists || exists.type !== t) throw new Error(`schema ${t} does not exist`);
+        // The root's "any node" edges are strut's own, seeded apart (`ensureEdgeSchema`).
+        if (t === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", THING_TYPE, THING_REFUSED);
       }
       const held = edgeRuleOf((await this.source.edgeRule(edgeType, tx)) ?? {});
       const effective = wanted ?? held;

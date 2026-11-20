@@ -5,8 +5,9 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withPublicIdentity, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
+import { ACCOUNT_CORNERS, ACCOUNT_STYLES, APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, SCREENSHOT_MAX_BYTES, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { ACCOUNT_CORNERS as KIT_CORNERS, ACCOUNT_STYLES as KIT_STYLES } from "@strut/kit/visitor";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -68,6 +69,7 @@ describe("the app build", () => {
     assert.ok(html.includes("Hello, "), "a relative import (src/lib/greet.ts)");
     assert.ok(html.includes("hello-fixture-badge-override"), "the app's own @/components/ui/badge shadows the kit's");
     assert.ok(/\.inline-flex\s*\{/.test(html), "the kit's button is styled (its precomputed candidates)");
+    assert.match(html, /svg:not\(\[class\*=['"]?size-['"]?\]\)\{width:/, "the button's unsized icons are sized: a variant with a `'` in it is a candidate");
     assert.ok(/\.text-emerald-600\s*\{/.test(html), "a class the app's source uses is compiled");
     assert.ok(html.includes("data:image/svg+xml"), "public/logo.svg inlined as a data URL");
     assert.ok(html.includes(`content="${cspFor(["https://tile.openstreetmap.org"])}"`), "the §9 CSP with the manifest's resourceDomains");
@@ -279,6 +281,15 @@ describe("the app build", () => {
     assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
   });
 
+  it("build.json carries the account widget's default placement, defaults filled; an app without one says nothing", async () => {
+    const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Game\naccount:\n  corner: bottom-left\n" });
+    assert.ok((await build(dir)).ok);
+    assert.deepEqual((await readBuildInfo(dir))!.account, { corner: "bottom-left", style: "pill" });
+    const none = await writeApp(fresh(), minimal());
+    assert.ok((await build(none)).ok);
+    assert.equal((await readBuildInfo(none))!.account, undefined);
+  });
+
   it("build.json carries the permissions the version's frame is granted beyond every app's, for the host that frames it", async () => {
     const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Tilt maze\npermissions: [motion, fullscreen, motion, geolocation]\n" });
     const r = await build(dir);
@@ -289,6 +300,19 @@ describe("the app build", () => {
     assert.equal((await readBuildInfo(game))!.permissions, undefined, "and asks for nothing: every app has those");
     const bad = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Buzz\npermissions: [motion, rumble]\n" }));
     assert.match(errorsOf(bad).join("\n"), /app\.yaml: permissions\[1\]: "rumble" is not a permission an app can declare — one of motion, camera, geolocation \(/);
+  });
+
+  it("a screenshot is a file in the app within the size a store serves, or the build says which", async () => {
+    const ok = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Desk\nscreenshots: [public/board.png]\n", "public/board.png": "png" });
+    assert.ok((await build(ok)).ok);
+    const bad = await build(
+      await writeApp(fresh(), {
+        ...minimal(),
+        "app.yaml": "title: Desk\nscreenshots: [public/gone.png, { file: public/huge.png, caption: Too big }]\n",
+        "public/huge.png": "x".repeat(SCREENSHOT_MAX_BYTES + 1),
+      }),
+    );
+    assert.deepEqual(errorsOf(bad), ['screenshots[0]: "public/gone.png" is not a file in the app', 'screenshots[1]: "public/huge.png" is 2.1 MB — a screenshot is at most 2 MB']);
   });
 
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
@@ -378,6 +402,19 @@ wallet:
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  budget_renewal: weekly\n"), /wallet/);
   });
 
+  it("keeps an account placement (defaults top-right, pill), and refuses an unknown corner, style or key, naming the path", () => {
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    const manifest = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { manifest: { account?: unknown } }).manifest;
+    assert.equal(manifest("").account, undefined);
+    assert.deepEqual(manifest("account: {}\n").account, { corner: "top-right", style: "pill" });
+    for (const corner of ACCOUNT_CORNERS) for (const style of ACCOUNT_STYLES) {
+      assert.deepEqual(manifest(`account: { corner: ${corner}, style: ${style} }\n`).account, { corner, style });
+    }
+    assert.match(errors("account:\n  corner: middle\n"), /account\.corner/);
+    assert.match(errors("account:\n  style: banner\n"), /account\.style/);
+    assert.match(errors("account:\n  hidden: true\n"), /account/);
+  });
+
   it("keeps the declared frame permissions once each, drops every app's, and names the allowed set for any other", () => {
     const ok = parseManifest("title: Racer\npermissions: [fullscreen, pointer-lock, gamepad, geolocation, motion, wake-lock, camera, microphone, clipboard-write, motion]\n");
     assert.ok(ok.ok);
@@ -395,10 +432,24 @@ wallet:
     assert.match(errors("permissions: fullscreen\n"), /app\.yaml: permissions: .*expected array/);
   });
 
+  it("keeps screenshots as { file, caption }, inside the app and raster only", () => {
+    const ok = parseManifest("title: Desk\nscreenshots:\n  - public/a.png\n  - { file: shots/b.WEBP, caption: The thread }\n");
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.manifest.screenshots, [{ file: "public/a.png" }, { file: "shots/b.WEBP", caption: "The thread" }]);
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    assert.match(errors("screenshots: [../secret.png]\n"), /screenshots\[0\]: "\.\.\/secret\.png" is not a path inside the app/);
+    assert.match(errors("screenshots: [/etc/a.png]\n"), /not a path inside the app/);
+    assert.match(errors("screenshots: [public/logo.svg]\n"), /screenshots\[0\]: "public\/logo\.svg" is not a \.png, \.jpg, \.jpeg, \.webp, \.gif image/);
+    assert.match(errors(`screenshots: [${Array.from({ length: 9 }, (_, i) => `s${i}.png`).join(", ")}]\n`), /at most 8 screenshots/);
+    assert.match(errors("screenshots:\n  - { file: a.png, alt: x }\n"), /screenshots\[0\]/);
+  });
+
   it("names the wallet contract's own lists", () => {
     assert.deepEqual([...WALLET_REQUESTABLE_METHODS].sort(), [...REQUESTABLE_METHODS].sort());
     assert.deepEqual([...WALLET_NOTIFICATION_TYPES], [...NOTIFICATION_TYPES]);
     assert.deepEqual([...WALLET_RENEWAL_PERIODS], [...RENEWAL_PERIODS]);
+    assert.deepEqual([...ACCOUNT_CORNERS], [...KIT_CORNERS]);
+    assert.deepEqual([...ACCOUNT_STYLES], [...KIT_STYLES]);
   });
 });
 
@@ -407,6 +458,12 @@ describe("the document's token", () => {
     const html = `<head>${TOKEN_PLACEHOLDER}</head>`;
     assert.equal(withToken(html, 'a"b<c'), '<head><meta name="strut-app-token" content="a&quot;b&lt;c"></head>');
     assert.equal(withoutTokenMeta(html), "<head></head>");
+    // The server's name (its brand's), escaped, beside whichever identity the document is served with.
+    const named = '<meta name="strut-name" content="Acme &amp; Co &lt;Labels&gt;">';
+    assert.equal(withToken(html, "t", "Acme & Co <Labels>"), `<head>${named}<meta name="strut-app-token" content="t"></head>`);
+    assert.equal(withoutTokenMeta(html, "Acme & Co <Labels>"), `<head>${named}</head>`);
+    assert.equal(withPublicIdentity(html, "v", [], "Acme & Co <Labels>"), `<head><meta name="strut-public-view" content="1">${named}<meta name="strut-app-token" content="v"></head>`);
+    assert.equal(withPublicIdentity(html, "v"), '<head><meta name="strut-public-view" content="1"><meta name="strut-app-token" content="v"></head>', "no name, no meta");
     const lint = lintAppSource('// eval("x") in a comment\n/* fetch(\n) */ const a = 1;\nconst b = window.fetch("/x");\n', "f.ts");
     assert.deepEqual(lint.errors, []);
     assert.deepEqual(lint.warnings, [], "a member call is not the global");

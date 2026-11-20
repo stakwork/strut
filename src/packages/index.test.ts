@@ -22,7 +22,7 @@ import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { INDEX_DOMAIN, readCard, type IndexCatalog } from "./card.js";
 import { buildIndexTools, indexInstructions, llmsTxt } from "./index-tools.js";
-import { createPackageIndex, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
+import { createPackageIndex, withoutConceptDocs, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
 import { packArchive } from "./archive.js";
 import { PackageCache } from "./cache.js";
 import { canonicalJson, keyFromSeed, sealCard, type Catalog } from "./card.js";
@@ -46,7 +46,7 @@ const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -171,8 +171,9 @@ describe("the package index", () => {
       // The MCP door is the role's too: without it the gate answers, and with the key there is no route.
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" })).status, 404);
-      // So is llms.txt: the role's page, nothing without it.
-      assert.equal((await plain.app.request("/llms.txt")).status, 401);
+      // llms.txt is the role's page, or the public view's (plans/paid-runs.md
+      // §10): open to anyone, and with neither there is nothing to read.
+      assert.equal((await plain.app.request("/llms.txt")).status, 404);
       assert.equal((await plain.app.request("/llms.txt", { headers: auth })).status, 404);
     } finally {
       await plain.close();
@@ -231,6 +232,7 @@ describe("the package index", () => {
     assert.equal((await search("linear acme")).length, 1, "every word, in the name or the publisher");
     assert.equal((await fetch(`${indexUrl}/index/packages/acme/notion`)).status, 404);
     const page = (await (await fetch(`${indexUrl}/index/packages/acme/linear`)).json()) as IndexPackage;
+    assert.deepEqual(await (await fetch(`${indexUrl}/index/packages/acme/linear?docs=0`)).json(), page, "docs=0 leaves out only Concept pages' text, and this package has none");
     assert.equal(page.package, "acme/linear");
     assert.deepEqual(page.releases.map((r) => r.version), ["1.0.0"]);
     assert.deepEqual(page.channels, { public: linear.digest });
@@ -247,8 +249,8 @@ describe("the package index", () => {
     await agent.connect(new StreamableHTTPClientTransport(new URL(`${indexUrl}/index/mcp`)));
     try {
       const { tools } = await agent.listTools();
-      assert.deepEqual(tools.map((t) => t.name).sort(), ["get_concept", "get_package", "search_packages"]);
-      for (const t of tools) assert.match(t.description!, /Installing is a PERSON's decision/, t.name);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ["get_concept", "get_package", "search_live", "search_packages"]);
+      for (const t of tools) assert.match(t.description!, t.name === "search_live" ? /A live item is NOT a package: nothing installs and nothing runs here/ : /Installing is a PERSON's decision/, t.name);
       const instructions = agent.getInstructions()!;
       for (const said of ["PACKAGE INDEX", "DERIVED", "re-verifies the package against its publisher", "Packages tab"]) assert.ok(instructions.includes(said), said);
       assert.ok(!instructions.includes("?store=1"), "no UI served here, so no store link");
@@ -262,6 +264,7 @@ describe("the package index", () => {
       assert.ok((await agent.callTool({ name: "get_package", arguments: { package: "acme/notion" } })).isError, "the private package: not here");
       assert.deepEqual(mcpJson(await agent.callTool({ name: "get_concept", arguments: {} })), { concepts: [], total: 0 });
       assert.ok((await agent.callTool({ name: "get_concept", arguments: { name: "Nope" } })).isError);
+      assert.deepEqual(mcpJson(await agent.callTool({ name: "search_live", arguments: {} })).items, [], "no live row here");
     } finally {
       await agent.close().catch(() => {});
     }
@@ -286,6 +289,10 @@ describe("the package index", () => {
       "Installing is a PERSON's decision",
       "## Concepts",
       "No listed package carries a Concept page yet.",
+      "## Live",
+      "No server's public view is listed yet.",
+      `- [What the servers show live](${indexUrl}/index/live?q=)`,
+      "search_packages, get_package, get_concept and search_live",
     ])
       assert.ok(md.includes(said), said);
     assert.ok(!md.includes("acme/notion"), "the private package is not on the page");
@@ -354,7 +361,7 @@ describe("the package index", () => {
       const txt = await ui.app.request("/llms.txt");
       assert.equal(txt.status, 200);
       assert.ok((await txt.text()).includes("- [The store page](http://localhost/?store=1)"), "the store page, for a person");
-      assert.equal((await plain.app.request("/llms.txt")).status, 401);
+      assert.equal((await plain.app.request("/llms.txt")).status, 404, "nothing public there: no page");
     } finally {
       await ui.close();
       await plain.close();
@@ -413,6 +420,114 @@ describe("a live row's Concept trees, and a read that fails", () => {
     assert.equal(kept.apps, 1, "the view read before is kept");
     assert.equal((await index.live()).length, 2);
   });
+
+  it("carries what anyone may RUN there with its price (plans/paid-runs.md §10): beside a public item, an item of its own when only runnable, a stranger's fields checked", async () => {
+    const served: Record<string, unknown> = {
+      "https://pub.example/public": {
+        workflows: [{ name: "cve/scan", description: "Scan a package", runs: true }],
+        steps: [],
+        types: [],
+        apps: [],
+        concepts: [],
+        runnable: [
+          { kind: "workflow", name: "cve/scan", base: 0, markup: 0, capUsd: null, reserve: 0, results: "output", input: { pkg: { type: "string" } }, recent: { days: 30, runs: 12, average: 0 } },
+          { kind: "workflow", name: "voxel/character", description: "A rigged character", base: 0.1, markup: 1.5, capUsd: 5, reserve: 7.6, results: "run", recent: { days: 30, runs: 3, average: 2.25 } },
+          { kind: "step", name: "cve/lookup", base: 0.02, markup: 0, capUsd: null, reserve: 0.02, results: "output" },
+          // A stranger's answer: what the index cannot show is left out.
+          { kind: "workflow", name: "bad", base: "free", markup: 0, reserve: 0 },
+          { kind: "workflow", name: "negative", base: -1, markup: 0, reserve: 0 },
+          { kind: "app", name: "not-runnable", base: 0, markup: 0, reserve: 0 },
+          "not an item",
+        ],
+      },
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const body = served[String(input)];
+      return body === undefined ? new Response("missing", { status: 404 }) : new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setLive("acme", { url: "https://pub.example" });
+    assert.equal(info.liveCrawled[0]!.error, undefined);
+    assert.equal(info.liveCrawled[0]!.runnable, 3);
+    const items = await index.live();
+    const byName = Object.fromEntries(items.map((i) => [`${i.kind}:${i.name}`, i]));
+    assert.deepEqual(Object.keys(byName).sort(), ["step:cve/lookup", "workflow:cve/scan", "workflow:voxel/character"]);
+    // Public AND runnable: one item, its price beside it.
+    assert.deepEqual(byName["workflow:cve/scan"]!.run, { base: 0, markup: 0, capUsd: null, reserve: 0, results: "output", recent: { days: 30, runs: 12, average: 0 } });
+    assert.equal(byName["workflow:cve/scan"]!.definition, undefined);
+    assert.equal(byName["workflow:cve/scan"]!.runs, true);
+    // Runnable alone: an item of its own, its definition not public, no input kept (the store reads it from the publisher).
+    const voxel = byName["workflow:voxel/character"]!;
+    assert.equal(voxel.definition, false);
+    assert.equal(voxel.description, "A rigged character");
+    assert.deepEqual(voxel.run, { base: 0.1, markup: 1.5, capUsd: 5, reserve: 7.6, results: "run", recent: { days: 30, runs: 3, average: 2.25 } });
+    assert.equal((voxel.run as Record<string, unknown>)["input"], undefined);
+    assert.deepEqual(byName["step:cve/lookup"]!.run, { base: 0.02, markup: 0, capUsd: null, reserve: 0.02, results: "output" });
+    // Searchable by its words like any live item.
+    assert.deepEqual((await index.live("rigged")).map((i) => i.name), ["voxel/character"]);
+  });
+
+  it("tells an agent what the live servers show and what anyone may run there (plans/public-view-listing.md, work item 2): ## Live in llms.txt, and search_live", async () => {
+    const served: Record<string, unknown> = {
+      "https://swarm1.example:3355/lab/public": {
+        workflows: [{ name: "public-echo", description: "Echoes what you send", runs: false }],
+        steps: [],
+        types: [],
+        apps: [{ name: "bench", version: "v2", title: "Bench" }],
+        concepts: [],
+        runnable: [
+          { kind: "workflow", name: "public-echo", base: 0, markup: 0, capUsd: null, reserve: 0, results: "output", recent: { days: 30, runs: 4, average: 0 } },
+          { kind: "workflow", name: "voxel/character", description: "A rigged character", base: 0.1, markup: 1.5, capUsd: 5, reserve: 7.6, results: "run" },
+          { kind: "step", name: "cve/lookup", base: 0.02, markup: 0, capUsd: null, reserve: 0.02, results: "output" },
+        ],
+      },
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const body = served[String(input)];
+      return body === undefined ? new Response("missing", { status: 404 }) : new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    await index.setLive("openlaw", { url: "https://swarm1.example:3355/lab/", description: "Legal research, live" });
+    await index.setLive("down", { url: "https://down.example" });
+
+    const md = await llmsTxt(index, { publicUrl: "https://index.example" });
+    const live = md.slice(md.indexOf("## Live"), md.indexOf("## Optional"));
+    for (const said of [
+      "runs ON that server, with no account",
+      "- [openlaw](https://swarm1.example:3355/lab/llms.txt): Legal research, live — served at https://swarm1.example:3355/lab — shows 1 app, 1 workflow, 3 things anyone may run — MCP at https://swarm1.example:3355/lab/public/mcp",
+      "- [public-echo](https://swarm1.example:3355/lab/public/workflows/public-echo/run): Echoes what you send — a workflow to run on openlaw — free; 4 in the last 30 days, $0.00 charged on average",
+      "- [voxel/character](https://swarm1.example:3355/lab/public/workflows/voxel%2Fcharacter/run): A rigged character — a workflow to run on openlaw — $0.10 + 1.5× what a run costs, at most $5.00 of cost; needs $7.60 of credit to start — its definition is not public",
+      "- [cve/lookup](https://swarm1.example:3355/lab/public/steps/cve/lookup/run): a step to call on openlaw — $0.02 a call; needs $0.02 of credit to start — its definition is not public",
+      "- [down](https://down.example/llms.txt): served at https://down.example — not read: /public: 404 — MCP at https://down.example/public/mcp",
+    ])
+      assert.ok(live.includes(said), `${said}\n---\n${live}`);
+    assert.ok(!live.includes("[bench]"), "an app is the server's to describe, in its own llms.txt");
+
+    const server = await toolsetServer({ tools: buildIndexTools(index, {}), instructions: indexInstructions({ publicUrl: "https://index.example" }) });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const mcp = new Client({ name: "test", version: "0" });
+    await mcp.connect(clientSide);
+    try {
+      assert.match(mcp.getInstructions()!, /search_live finds what the listed servers show LIVE/);
+      const all = mcpJson(await mcp.callTool({ name: "search_live", arguments: {} }));
+      assert.equal(all.total, 4);
+      assert.match(all.how, /runs ON its server with no account/);
+      const echo = all.items.find((i: { name: string }) => i.name === "public-echo");
+      assert.deepEqual(
+        { url: echo.url, llms: echo.llms, mcp: echo.mcp, run_at: echo.run_at, price: echo.price },
+        { url: "https://swarm1.example:3355/lab", llms: "https://swarm1.example:3355/lab/llms.txt", mcp: "https://swarm1.example:3355/lab/public/mcp", run_at: "https://swarm1.example:3355/lab/public/workflows/public-echo/run", price: "free; 4 in the last 30 days, $0.00 charged on average" },
+      );
+      const bench = all.items.find((i: { name: string }) => i.name === "bench");
+      assert.equal(bench.run_at, undefined);
+      assert.equal(bench.price, undefined);
+      const runnable = mcpJson(await mcp.callTool({ name: "search_live", arguments: { runnable: true } }));
+      assert.deepEqual(runnable.items.map((i: { name: string }) => i.name).sort(), ["cve/lookup", "public-echo", "voxel/character"]);
+      assert.deepEqual(mcpJson(await mcp.callTool({ name: "search_live", arguments: { query: "rigged" } })).items.map((i: { name: string }) => i.name), ["voxel/character"]);
+    } finally {
+      await mcp.close().catch(() => {});
+    }
+  });
 });
 
 describe("the concept tree across the crawled packages", () => {
@@ -434,6 +549,49 @@ describe("the concept tree across the crawled packages", () => {
     const info = await new PackageCache(join(root, "scratch-cache")).putDir(dir);
     return { gz: await packArchive(dir, info.files), digest: info.digest };
   };
+
+  it("serves an app's screenshots from the cache: only a path the derived page lists, at its current release", async () => {
+    const { privateKey, key } = keyFromSeed(Buffer.alloc(32, 9));
+    const desk = await archive("openlaw/desk", {
+      "strut.yaml": "package: openlaw/desk\nversion: 1.0.0\n",
+      "apps/desk/app.yaml": "title: Legal Desk\nscreenshots:\n  - { file: public/board.png, caption: The board }\n  - public/missing.png\n  - public/thread.jpg\n",
+      "apps/desk/src/App.tsx": "export default () => null;\n",
+      "apps/desk/public/board.png": "PNG board",
+      "apps/desk/public/thread.jpg": "JPG thread",
+    });
+    const card = sealCard(
+      { v: 1, key, seq: 1, packages: { "openlaw/desk": { releases: [{ version: "1.0.0", digest: desk.digest }] } }, channels: { public: { "openlaw/desk": desk.digest } } },
+      privateKey,
+    ) as Catalog;
+    const served: Record<string, Buffer | string> = {
+      "https://pub.example/packages/catalog": canonicalJson(card),
+      "https://pub.example/packages/openlaw/desk/archive": desk.gz,
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      const body = served[url] ?? served[url.split("?")[0]!];
+      return body === undefined ? new Response("no", { status: 404 }) : new Response(body, { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setRow("openlaw", { key, urls: ["https://pub.example/packages/catalog?public=1"] });
+    assert.equal(info.crawled[0]!.derived, 1, JSON.stringify(info.crawled));
+
+    // The derived page and the search hit list the files the archive holds, in the manifest's order.
+    const shots = [{ path: "apps/desk/public/board.png", caption: "The board" }, { path: "apps/desk/public/thread.jpg" }];
+    assert.deepEqual((await index.package("openlaw/desk"))!.detail!.apps[0]!.screenshots, shots);
+    assert.deepEqual((await index.search(""))[0]!.detail!.apps[0]!.screenshots, shots, "the Browse card's square is the first");
+
+    const board = (await index.screenshot("openlaw/desk", "apps/desk/public/board.png"))!;
+    assert.equal(board.bytes.toString(), "PNG board");
+    assert.equal(board.type, "image/png");
+    assert.equal(board.digest, desk.digest);
+    assert.equal((await index.screenshot("openlaw/desk", "apps/desk/public/thread.jpg", desk.digest))!.type, "image/jpeg");
+    // Nothing the page does not list: another file of the package, a listed one not in the archive, another release.
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/app.yaml"), undefined);
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/public/missing.png"), undefined);
+    assert.equal(await index.screenshot("openlaw/desk", "apps/desk/public/board.png", `sha256:${"0".repeat(64)}`), undefined);
+    assert.equal(await index.screenshot("openlaw/nope", "apps/desk/public/board.png"), undefined);
+  });
 
   it("folds every package's Concept pages into one tree, with the docs, children and parents of each", async () => {
     const seed = Buffer.alloc(32, 7);
@@ -461,8 +619,8 @@ describe("the concept tree across the crawled packages", () => {
     ) as Catalog;
     const served: Record<string, Buffer | string> = {
       "https://pub.example/packages/catalog": canonicalJson(card),
-      [`https://pub.example/packages/openlaw/civil/archive?digest=${encodeURIComponent(law.digest)}&public=1`]: law.gz,
-      [`https://pub.example/packages/openlaw/limits/archive?digest=${encodeURIComponent(forked.digest)}&public=1`]: forked.gz,
+      [`https://pub.example/packages/openlaw/civil/archive?digest=${encodeURIComponent(law.digest)}&format=tar&public=1`]: law.gz,
+      [`https://pub.example/packages/openlaw/limits/archive?digest=${encodeURIComponent(forked.digest)}&format=tar&public=1`]: forked.gz,
     };
     const fetched: string[] = [];
     const fakeFetch = (async (input: string | URL | Request) => {
@@ -516,6 +674,13 @@ describe("the concept tree across the crawled packages", () => {
     await writeFile(stored, before.replace('"parents":["Law"]', '"parent":"Law"'));
     assert.deepEqual((await index.concepts("civil")).map((c) => [c.name, c.parents]), [["Civil procedure", ["Law"]]]);
     assert.deepEqual((await index.package("openlaw/civil"))!.detail!.concepts.find((c) => c.name === "Civil procedure")!.parents, ["Law"]);
+
+    // The store's read of a package (`?docs=0`): the tree's names and parents, no page's text.
+    const whole = (await index.package("openlaw/civil"))!;
+    assert.match(whole.detail!.concepts.find((c) => c.name === "Statute of limitations")!.docs!, /How long you have/);
+    const slim = withoutConceptDocs(whole);
+    assert.deepEqual(slim.detail!.concepts.map((c) => [c.name, c.parents, "docs" in c]), whole.detail!.concepts.map((c) => [c.name, c.parents, false]));
+    assert.deepEqual({ ...slim, detail: undefined }, { ...whole, detail: undefined }, "nothing else of the page changes");
 
     // The index's tools (./index-tools.ts) over the same functions: the page a model reads (Concept docs left out), the tree, one page — each linking its store page when a store is served.
     const server = await toolsetServer({ tools: buildIndexTools(index, { store: "https://store.example" }), instructions: indexInstructions({ publicUrl: "https://store.example", store: "https://store.example" }) });
@@ -635,5 +800,57 @@ describe("self-serve listing over HTTP (plans/index-listing.md)", () => {
     assert.ok(!((await (await index.app.request("/index", { headers: auth })).json()) as IndexInfo).publishers["acme"]);
     assert.equal((await lines())[0]!.listed, false);
     assert.equal((await fetch(`${publisherUrl}/publisher/listings`)).status, 401, "the publisher's routes are behind its key");
+  });
+
+  it("a server with no public package lists its public view: the ask mints the public key and an empty catalog, and a later package joins the same row (plans/public-view-listing.md)", async () => {
+    assert.equal((await publisher.app.request("/publisher", json({ name: "acme" }, "PUT"))).status, 200);
+    const seeded = await index.app.request("/index/seed", json({ key: "y".repeat(52), urls: ["http://127.0.0.1:1/packages/catalog?public=1"] }, "PUT"));
+    const indexKey = ((await seeded.json()) as IndexInfo).key;
+    assert.equal((await publisher.app.request("/packages/indexes/stakwork", json({ key: indexKey, urls: [`${indexUrl}/index/catalog`], label: "Stakwork" }, "PUT"))).status, 200);
+    const publicKey = async () => ((await (await publisher.app.request("/publisher", { headers: auth })).json()) as { public?: string }).public;
+
+    // Nothing public, and the view not asked for: refused here, and nothing is minted.
+    const nothing = await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: publisherUrl }));
+    assert.equal(nothing.status, 409);
+    assert.match(((await nothing.json()) as { error: string }).error, /^listing_nothing_public:/);
+    assert.equal(await publicKey(), undefined);
+    assert.equal((await fetch(`${publisherUrl}/packages/catalog?public=1`)).status, 404);
+
+    // The view shows a workflow; the ask mints the public key and an empty public catalog sealed by it.
+    assert.equal((await publisher.app.request("/public-view", json({ workflows: [{ name: "acme/linear/sync" }] }, "PUT"))).status, 200);
+    const asked = await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: publisherUrl, description: "Acme, live", live: true }));
+    assert.equal(asked.status, 202, await asked.clone().text());
+    const key = await publicKey();
+    assert.ok(key, "the ask minted the public key");
+    const empty = await fetch(`${publisherUrl}/packages/catalog?public=1`);
+    assert.equal(empty.status, 200, "served to anyone");
+    assert.deepEqual(readCard(Buffer.from(await empty.arrayBuffer()), { key: key! }).card.packages, {});
+
+    // The operator sees a view-only request, and approves it.
+    const waiting = ((await (await index.app.request("/index/requests", { headers: auth })).json()) as { pending: Array<{ id: string; reason: string; catalog: { packages: string[] }; view?: Record<string, number> }> }).pending;
+    assert.deepEqual(waiting.map((p) => [p.reason, p.catalog.packages, p.view]), [["host", [], { apps: 0, workflows: 1, steps: 0, concepts: 0, runnable: 0 }]]);
+    assert.equal((await index.app.request(`/index/requests/${waiting[0]!.id}/approve`, json({}))).status, 200);
+    const card = (await (await index.app.request("/index", { headers: auth })).json()) as IndexInfo;
+    assert.deepEqual([card.publishers["acme"]!.key, card.live["acme"]!.url], [key, publisherUrl], "a keyed row and the live row at the base");
+    const line = (await (await publisher.app.request("/publisher/listings", { headers: auth })).json()) as { listings: Array<{ listed: boolean; live?: { url: string } }> };
+    assert.deepEqual([line.listings[0]!.listed, line.listings[0]!.live?.url], [true, publisherUrl]);
+
+    // The store shows the view; a change to it pings the index, which reads it again.
+    const liveNames = async () => ((await (await fetch(`${indexUrl}/index/live`)).json()) as { items: Array<{ kind: string; name: string }> }).items.map((i) => `${i.kind} ${i.name}`).sort();
+    for (let i = 0; i < 100 && !(await liveNames()).length; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await liveNames(), ["workflow acme/linear/sync"]);
+    assert.equal((await publisher.app.request("/public-view", json({ workflows: [{ name: "acme/linear/sync" }, { name: "acme/notion/sync" }] }, "PUT"))).status, 200);
+    for (let i = 0; i < 100 && (await liveNames()).length < 2; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await liveNames(), ["workflow acme/linear/sync", "workflow acme/notion/sync"]);
+
+    // A package made public later: the same key, the same row — no second request. (Its
+    // ping, inside the minute of the view's, is folded into one more read at the minute's
+    // end; the operator's crawl reads it now.)
+    await publishPublic("acme/linear", "acme/linear/sync");
+    assert.equal(await publicKey(), key);
+    assert.equal((await index.app.request("/index/crawl", json({}))).status, 200);
+    const search = async (q: string) => ((await (await fetch(`${indexUrl}/index/packages?q=${q}`)).json()) as { packages: IndexHit[] }).packages.map((h) => h.package);
+    assert.deepEqual(await search("linear"), ["acme/linear"]);
+    assert.equal(((await (await index.app.request("/index/requests", { headers: auth })).json()) as { pending: unknown[] }).pending.length, 0);
   });
 });

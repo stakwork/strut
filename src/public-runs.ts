@@ -57,6 +57,11 @@ import type { PublicRunnable } from "./public-surface.js";
 
 /** The most a launch body may be (§3 step 2). */
 export const PUBLIC_RUN_BODY_MAX_BYTES = 256 * 1024;
+/** The most a launch body may be when its item takes files (`attachments:
+ *  true`): the body's own 256 KB, plus the chat's attachment total
+ *  (src/ai/attachments.ts, 15 MB) as base64, plus room for its JSON. The
+ *  files themselves are held to the chat's caps once read. */
+export const PUBLIC_RUN_FILES_BODY_MAX_BYTES = PUBLIC_RUN_BODY_MAX_BYTES + Math.ceil((15 * 1024 * 1024 * 4) / 3) + 64 * 1024;
 /** Launches one visitor address may make in a minute: a smaller allowance
  *  than the reads' (`PUBLIC_REQUESTS_PER_MINUTE`, 1200). */
 export const PUBLIC_LAUNCHES_PER_MINUTE = 60;
@@ -351,7 +356,9 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
    *  Null when it never wrote `run.start`: nothing ran. */
   const outcomeOf = async (workflow: string, runId: string): Promise<{ outcome: RunOutcome; cost: number } | null> => {
     const summary = await o.store.getRunSummary(workflow, runId);
-    if (summary) return { outcome: summary.status, cost: summary.totals?.cost ?? 0 };
+    // A public run never parks (runner.ts `parkFor`): a `waiting` summary
+    // is not one this door made, and is charged as the run it would be.
+    if (summary) return { outcome: summary.status === "waiting" ? "error" : summary.status, cost: summary.totals?.cost ?? 0 };
     const events = await o.store.getRunEvents(workflow, runId);
     if (!events.some((e) => e.type === "run.start")) return null;
     const last = events[events.length - 1]!;

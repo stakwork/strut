@@ -2,8 +2,9 @@
 // plans/public-surface.md §2): the link a visitor opens, how the
 // cascade's checked lines merge into the record, and a workflow or step
 // row's three boxes — show its definition, show its runs, anyone can run
-// it — with the price the third opens (plans/paid-runs.md §2).
-import type { PublicRunInfo, PublicRunnable, PublicViewNeeds, PublicViewRecord } from "./api";
+// it — with the price the third opens (plans/paid-runs.md §2) — and who may
+// sign in to the public apps (plans/app-repos.md §5).
+import type { PublicRunInfo, PublicRunnable, PublicViewNeeds, PublicViewRecord, PublicVisitors } from "./api";
 
 /** A visitor's link to a public app: the page alone, no credential. */
 export function visitorAppLink(name: string, here: string): string {
@@ -19,7 +20,9 @@ export function visitorAppLink(name: string, here: string): string {
 export const sameRecord = (a: PublicViewRecord, b: PublicViewRecord) => JSON.stringify(a) === JSON.stringify(b);
 export const emptyRecord = (): PublicViewRecord => ({ concepts: [], workflows: [], steps: [], types: [], apps: [], runnable: [] });
 
-/** The record with the cascade's checked lines merged in. */
+/** The record with the cascade's checked lines merged in. With nothing
+ *  unticked it is what an admin's yes to `app/make-public` adds: the
+ *  server's `withNeeds` (src/public-view.ts), held equal by the test. */
 export function mergeNeeds(rec: PublicViewRecord, needs: PublicViewNeeds, checked: Set<string>): PublicViewRecord {
   const next: PublicViewRecord = JSON.parse(JSON.stringify(rec));
   const on = (key: string) => checked.has(key);
@@ -152,10 +155,26 @@ export function setPrice(rec: PublicViewRecord, row: Row, field: PriceField, tex
   next.runnable = next.runnable.map((r) => {
     if (!isRow(row)(r)) return r;
     const { [field]: _old, ...rest } = r;
-    const n = text.trim() === "" ? undefined : Number(text);
-    return n === undefined || !Number.isFinite(n) ? rest : { ...rest, [field]: n };
+    const n = typedNumber(text);
+    return n === undefined ? rest : { ...rest, [field]: n };
   });
   return next;
+}
+
+/** A number as typed in a price or limit box: blank, or not a number yet
+ *  ("."), is none. */
+export function typedNumber(text: string): number | undefined {
+  if (text.trim() === "") return undefined;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** What a number box shows: the text as typed while it still reads as the
+ *  value the record holds, so "0." and "1.50" stay as typed; else the value
+ *  (a reload, a save). Shown from the record alone, the box turned "0." into
+ *  "0" on the keystroke that typed the dot, and no decimal could be typed. */
+export function shownNumber(text: string, value: number | undefined): string {
+  return typedNumber(text) === value ? text : value === undefined ? "" : String(value);
 }
 
 /** What a workflow's launcher reads: its output (the default), or the whole run. */
@@ -166,6 +185,19 @@ export function setResults(rec: PublicViewRecord, row: Row, results: "output" | 
     if (!isRow(row)(r)) return r;
     const { results: _old, ...rest } = r;
     return results === "run" ? { ...rest, results } : rest;
+  });
+  return next;
+}
+
+/** Whether a runnable workflow's launch takes files (`attachments: true`);
+ *  off is absent. */
+export function setAttachments(rec: PublicViewRecord, row: Row, on: boolean): PublicViewRecord {
+  const next = copyOf(rec);
+  if (row.kind !== "workflow") return next;
+  next.runnable = next.runnable.map((r) => {
+    if (!isRow(row)(r)) return r;
+    const { attachments: _old, ...rest } = r;
+    return on ? { ...rest, attachments: true } : rest;
   });
   return next;
 }
@@ -229,3 +261,71 @@ export function needsTick(row: Row, info: PublicRunInfo | undefined, saved: Publ
   return !saved.runnable.some(isRow(row));
 }
 
+
+// ── Sign-in (plans/app-repos.md §5) ────────────────────────────────────────
+
+export type SignInMethod = PublicVisitors["signIn"][number];
+
+/** The sign-ins a server may offer, in the order the record keeps them,
+ *  as the tab says them. */
+export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: string; short: string; note: string }> = [
+  { method: "sphinx", label: "Their Sphinx account", short: "Sphinx", note: "the wallet that holds it signs in — Peel today — as one visitor on every app, or a new identity for this one" },
+  { method: "key", label: "This browser's key", short: "browser key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
+  { method: "lnurl", label: "A Lightning wallet", short: "Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
+  { method: "nostr", label: "A Nostr extension", short: "Nostr", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
+  { method: "ticket", label: "A host's ticket", short: "host ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
+];
+
+/** What a visitor may do in a day when the record says nothing: the
+ *  server's `DEFAULT_VISITOR_LIMITS` (src/visitors.ts), held equal by
+ *  public-view.test.ts. */
+export const VISITOR_DEFAULT_LIMITS = { writesPerDay: 1000, launchesPerDay: 100 } as const;
+export type VisitorLimitField = keyof typeof VISITOR_DEFAULT_LIMITS;
+
+/** What a record that names no sign-in offers: the server's
+ *  `DEFAULT_SIGN_IN` (src/public-surface.ts), held equal by
+ *  public-view.test.ts. */
+export const DEFAULT_SIGN_IN: ReadonlyArray<SignInMethod> = ["sphinx"];
+
+/** What the record says about visitors, the default filled in. */
+export function visitorsOf(rec: PublicViewRecord): PublicVisitors {
+  return rec.visitors ?? { signIn: [...DEFAULT_SIGN_IN] };
+}
+
+/** The record with `visitors` as given, kept as the server keeps it: no
+ *  method is `{ signIn: [] }` (absent is the default now), and the default
+ *  itself is absent — so a record compares equal to the saved one. */
+function withVisitors(rec: PublicViewRecord, v: PublicVisitors): PublicViewRecord {
+  const { visitors: _old, ...rest } = copyOf(rec);
+  const signIn = SIGN_IN_METHODS.map((m) => m.method).filter((m) => v.signIn.includes(m));
+  if (!signIn.length) return { ...rest, visitors: { signIn } };
+  const domain = v.visitorKey === "domain";
+  const limits = v.limits && Object.keys(v.limits).length ? v.limits : undefined;
+  if (!domain && !limits && signIn.length === DEFAULT_SIGN_IN.length && DEFAULT_SIGN_IN.every((m) => signIn.includes(m))) return rest;
+  return { ...rest, visitors: { signIn, ...(domain ? { visitorKey: "domain" as const } : {}), ...(limits ? { limits } : {}) } };
+}
+
+/** The record with one sign-in offered or not. The last one off takes the
+ *  key per domain and the limits with it: no sign-in, nothing to say. */
+export function setSignIn(rec: PublicViewRecord, method: SignInMethod, on: boolean): PublicViewRecord {
+  const v = visitorsOf(rec);
+  const signIn = on ? [...new Set([...v.signIn, method])] : v.signIn.filter((m) => m !== method);
+  return withVisitors(rec, { ...v, signIn });
+}
+
+/** The record with a key per domain (`visitorKey: domain`) or the root key. */
+export function setVisitorKey(rec: PublicViewRecord, domain: boolean): PublicViewRecord {
+  const { visitorKey: _k, ...v } = visitorsOf(rec);
+  return withVisitors(rec, domain ? { ...v, visitorKey: "domain" } : v);
+}
+
+/** The record with one daily limit typed: a whole number, or the server's
+ *  default when the box is empty (the server checks the rest). */
+export function setVisitorLimit(rec: PublicViewRecord, field: VisitorLimitField, text: string): PublicViewRecord {
+  const v = visitorsOf(rec);
+  const limits = { ...(v.limits ?? {}) };
+  const n = typedNumber(text);
+  if (n === undefined) delete limits[field];
+  else limits[field] = n;
+  return withVisitors(rec, { ...v, limits });
+}

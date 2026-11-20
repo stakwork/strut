@@ -1,0 +1,71 @@
+name: photo-remix
+description: A worker snaps a photo (standing task type photo-remix); an image model reimagines it in the style the params name, and the worker is told what came of it — the picture and their photo, or a plain line when it could not be made.
+params:
+  # The theme: change it here, never in the app (the app reads it off the task).
+  style: "Turn the picture into a futuristic sci-fi steampunk highly intricate version of itself"
+  # An edit proven through the LLM gateway. Medium quality as a 1024x1536 JPEG
+  # (the size follows the photo's shape) answers in about 15 s for about $0.016.
+  model: openai/gpt-image-1-mini
+  quality: medium
+steps:
+  # The worker answers with the photo: saved in this run, named in shot.attachments.
+  - id: shot
+    type: human
+    config:
+      task: photo-remix
+      show:
+        ask: "Take a picture of anything"
+        style: "{{ params.style }}"
+  # A provider error or a refusal becomes this step's output, { error }: the
+  # run goes on, so the worker is told rather than left waiting.
+  - id: remix
+    type: image
+    config:
+      prompt: "{{ params.style }}"
+      model: "{{ params.model }}"
+      images: "{{ shot.attachments }}"
+      providerOptions:
+        openai: { quality: "{{ params.quality }}", outputFormat: jpeg, outputCompression: 85 }
+    options:
+      onError:
+        id: failed
+        type: pack
+        config: { error: "{{ $error.message }}" }
+  - id: made
+    type: if
+    config: { cond: "{{ !remix.error }}" }
+  # The reply lists the result first, then their photo: after the answer a
+  # worker's page reads only what the reply lists.
+  - id: tell
+    type: task/reply
+    depends: made
+    when: true
+    config:
+      task: "{{ shot.task }}"
+      show: { title: "Your picture, reimagined", style: "{{ params.style }}" }
+      files: ["{{ remix.path }}", "{{ shot.attachments[0].path }}"]
+  - id: sorry
+    type: task/reply
+    depends: made
+    when: false
+    config:
+      task: "{{ shot.task }}"
+      show: { title: "This one could not be transformed. Try another picture.", failed: true }
+      files: ["{{ shot.attachments[0].path }}"]
+  - id: done
+    type: pack
+    depends: [tell, sorry]
+    config:
+      by: "{{ shot.by }}"
+      image: "{{ remix.path }}"
+      photo: "{{ shot.attachments[0].path }}"
+      cost: "{{ remix.cost }}"
+      error: "{{ remix.error }}"
+      artifacts:
+        - id: remix
+          title: "{{ remix.error ? 'Not transformed' : 'Reimagined' }}"
+          path: "{{ remix.path }}"
+          content: "{{ remix.error }}"
+        - id: photo
+          title: The photo
+          path: "{{ shot.attachments[0].path }}"

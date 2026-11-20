@@ -45,11 +45,15 @@ is hand-rolled; ids, timeouts and errors are the SDK's.
   `strut/wallet/notification { notification_type, notification }` to the page
   (§4.4).
 - **A native host** (Peel) is reached through its web view's main frame, which
-  is strut's UI relaying what the app's frame sent it (§1.1).
+  is strut's UI relaying what the app's frame sent it (§1.1). strut's UI also
+  asks it, on its OWN account, to pay for a visitor's credit and to sign a
+  visitor in (§1.2).
 
 ### 1.1 The native bridge
 
-A host whose wallet is native shows strut's UI in a web view (`?app=…&solo=1`).
+A host whose wallet is native shows strut's UI in a web view (`?app=…&solo=1`,
+or a visitor's page: `?app=…&public=1`, `&from=<seller>` for another strut
+server's).
 Inside it, the app's sandboxed frame talks to strut's UI over the MCP Apps
 bridge, as everywhere. strut's UI then relays to the native host
 (`kit/src/wallet/relay.ts`, wired in `web/src/app-host.ts`). Nothing is decided
@@ -73,9 +77,28 @@ rejected promise means the native host did not answer, and the page reads it as
 { v: 1, op: "capability", app }                     → { result: WalletCapability }  (what this app is offered)
 { v: 1, op: "call", method, params, app }           → { result: <MethodResults[method]> } | { error }
 
-app: { name, version, peer?, title, request }       // NativeWalletApp: the version hosted, its title,
-                                                    // and its app.yaml `wallet:` request (null: none)
+app: { name, version, peer?, seller, title, request }   // NativeWalletApp: the version hosted, the server
+                                                        // whose app it is, its title, and its app.yaml
+                                                        // `wallet:` request (null: none)
 ```
+
+**The app's identity** (`NativeWalletApp`, checked by `nativeWalletAppProblems`;
+the `native_apps` vectors, §7):
+
+| Field | |
+|---|---|
+| `name`, `version` | the app and the version on screen |
+| `peer?` | the peer (org) the app lives on, reached through `seller`'s read-through; absent for `seller`'s own app |
+| `seller` | the strut server whose app it is, as its base URL (`isSellerUrl`, as a purchase's and a sign-in's, §1.2): this server's own for its apps and its peers' (the page's own address under strut's mount); another server's, `from`, for a visitor's page of that server. ALWAYS present |
+| `title` | the manifest's title, for the sheets |
+| `request` | the version's `wallet:` request, or `null` |
+
+The native host keys an app's connection by **(seller, peer, name)**, as it
+knows them: a stranger's app named like a trusted one never holds that one's
+connection or budget. strut's UI never sends an identity with problems: that
+page is offered no wallet. `seller` was added after the first version of this
+message; a native host that does not read it ignores it, so the contract's
+version did not change.
 
 - **Capability first.** strut's UI sends `capability` once per frame, before the
   bridge exists, because the offer rides in `ui/initialize`. An answer that is
@@ -85,6 +108,17 @@ app: { name, version, peer?, title, request }       // NativeWalletApp: the vers
   requests one. It reads the request from the version's `dist/build.json`
   (`wallet`, beside `title`), with the version's file token, here and through a
   peer's read-through.
+- **A visitor's page too.** A public app's page (this server's, or another
+  server's through `from`) is offered the wallet as a member's is
+  (plans/app-payments.md §11 R8). Its request comes from the public read,
+  `GET /public/apps/:name` (specs/API.md §17.2), which carries the build's
+  `wallet` and nothing else of the build; another server's is checked
+  (`connectionRequestProblems`) before it is sent. A stranger's page still gets
+  nothing else its version declares (specs/API.md §17.9): what it may spend is
+  the person's to grant, on the native host's sheet, which names the seller.
+- **No node key.** strut's UI drops `pubkey` from `get_info`'s answer, whatever
+  the native host sent: an app learns who signed in from `useVisitor()`, never
+  from the wallet (plans/app-payments.md §4.4).
 - **`call` params are already through `checkParams`.** The native host checks
   them again. On the iPhone the main frame is the org's code, not Peel's, so
   nothing from the page is trusted there.
@@ -121,10 +155,302 @@ included, so the check is what keeps the app from talking to the native host
 directly.
 
 **What the native host trusts.** On the Mac the main frame is strut's UI as Peel
-ships it, so its `app` is the app hosted. On the iPhone it is the org's strut
-UI, which can name any app of that org. There Peel keys connections by org
-(§5.2), and the sheet names the org from Peel's own record of the page it
-opened.
+ships it, so its `app` is the app hosted, and its `seller` is the server Peel
+opened it from: its own strut, or the `from` of a stranger's public app (#625's
+remote mode). Peel holds both to its own record of the address it opened and
+refuses an `app` that is not that one. On the iPhone it is the org's strut UI,
+or a stranger's box opened directly, which can name anything. There Peel keys
+connections by the org or the origin it loaded (plans/app-payments.md §5.3),
+ignores the page's `seller`, and the sheet names the org or the origin from
+Peel's own record of the page it opened.
+
+### 1.2 The host's own purchase: a visitor's credit, one tap
+
+A VISITOR's page is a public app: this strut server's, or another strut
+server's that strut's UI hosts (specs/API.md §17.6, §17.9). It may launch a
+priced workflow. The HOST pays for the credit that launch needs, never the
+page. In a native host's web view, strut's UI asks the native wallet to pay
+before it shows the invoice as a QR code: one tap on the native host's own
+sheet.
+
+This is not an app's call:
+- it carries no app connection;
+- no app budget counts it;
+- it is no `strut/wallet/*` method.
+
+The page never sees it. Each purchase is the person's tap.
+
+```
+app frame ──step_run run/launch──▶ strut's UI ──POST /public/mcp──▶ the seller (a strut server)
+                                        │◀── { payment_required: { macaroon, invoice, usd, sats, … } }
+                                        │ checks the challenge (below)
+                                        ├──{ op: "host_capability" }──▶ native host
+                                        ├──{ op: "buy_credit", purchase }──▶ native host ── its sheet, the person taps, it pays
+                                        │◀── { result: Payment } with the preimage
+                                        │ sha256(preimage) == payment_hash → credential <macaroon>:<preimage>
+                                        └──POST /public/mcp again, Authorization: L402 <credential> ──▶ the seller
+```
+
+**The messages.** They go through the same handler as §1.1
+(`window.webkit.messageHandlers.strutWallet`), with the same reply rule:
+always resolved, `{ result }` or `{ error }`. They are `HostWalletMessage`
+in `protocol.ts`:
+
+```
+{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_status", "buy_credit_cancel", "sign_in"], wallet?: "Peel" } }
+{ v: 1, op: "buy_credit", purchase: CreditPurchase }    → { result: Payment } | { error }   (a pay method's answer, §3, §4.1)
+{ v: 1, op: "buy_credit_status", payment_hash }         → { result: Payment } | { error }   (where that purchase stands now)
+{ v: 1, op: "buy_credit_cancel", payment_hash }         → { result: {} }
+{ v: 1, op: "sign_in", seller, app, challenge }         → { result: { key, sig, address?, alias? } } | { error }   (below, "Signing a visitor in")
+```
+
+**`host_capability`** is asked ONCE per page, as a visitor's page connects,
+so no sheet waits on it.
+- `ops` names what the native host takes: `buy_credit`, and optionally
+  `buy_credit_status` and `buy_credit_cancel`; `sign_in` when its wallet
+  signs a visitor in. strut's UI leaves out an op it does not know (a newer
+  native host's), never reading the whole answer as none
+  (`hostWalletCapabilityOf`; the `host_capabilities` vectors, §7).
+- `wallet` is its name for a person ("Peel", at most 40 characters): what
+  strut's sheet calls it ("Confirm in Peel", "Pay with Peel").
+- Any other answer, or none within 5 s (`WALLET_PROBE_MS`), means no
+  one-tap purchase, only the QR code. An older native host is read this way.
+
+**`buy_credit`'s purchase** (`CreditPurchase`, checked by
+`creditPurchaseProblems`):
+
+| Field | |
+|---|---|
+| `invoice` | BOLT11, lower case, naming its amount |
+| `payment_hash` | hex 64: the invoice's |
+| `amount` | msat: the invoice's amount, `sats × 1000`. **This is the price.** |
+| `sats` | the same in sats |
+| `usd` | the CREDIT the seller says the payment buys, in dollars: the seller's own figure, never the price |
+| `rate?` | `{ usd_per_btc, at, source }`, the rate the seller says it quoted at: the seller's too |
+| `description` | the seller's words for what it sells. The sheet quotes them as the seller's |
+| `expires_at` | unix seconds: when the invoice ends |
+| `seller` | the strut server the credit is bought on, as its base URL: `https://…`, or `http://` on loopback. It has no credentials, query or fragment (`isSellerUrl`) |
+| `app` | `{ name, version, title }`: the public app whose page asked, as the seller serves it |
+| `workflow` | the workflow the launch is for |
+| `credit` | `{ carries, reason?, remaining_usd? }`: the new token inherits the credit held (`carries`); why the held credit did not do (`short`, `expired`, `replaced`); what it still has |
+
+It never carries the macaroon or a credential. The native host pays an
+invoice; strut's UI keeps the credit.
+
+**What strut's UI checked before asking** (`web/src/challenge.ts`), so a
+seller's junk is never shown nor paid:
+- the invoice is BOLT11 and asks for an amount;
+- it has not ended;
+- the macaroon is an L402 one whose identifier names the SAME payment hash;
+- its `strut_sats` is the challenge's `sats`, which is the invoice's amount;
+- its `strut_credit` is the challenge's `usd`.
+
+The seller writes both of the last two, so they agree with each other, not
+with the world: a seller may ask 200 000 sats "for $0.02 of credit". The
+price is therefore the sats, everywhere. strut's own sheet headlines the
+sats. It shows dollars only at the hosting strut's own rate (`GET /rate`,
+specs/API.md §17.9), and the seller's dollars only as the credit, flagged
+when that credit is worth under nine tenths of what is paid.
+
+**What the native host does:**
+1. Answers only the main frame it trusts (§1.1's rule).
+2. Runs `creditPurchaseProblems`, and decodes the invoice ITSELF. The amount
+   must be `amount`, the payment hash `payment_hash`, and it must not have
+   ended. Anything else is `BAD_REQUEST`.
+3. Applies §5.4's gesture rule: `RESTRICTED` unless the person tapped in the
+   web view within the last few seconds. strut's UI asks as soon as the page
+   launches, so a launch with no tap behind it is refused. Then strut's own
+   sheet shows **Pay with ⟨wallet⟩**, whose press is a fresh tap, and sends
+   `buy_credit` again.
+4. Shows its own sheet:
+   - the seller by its host;
+   - the app's title, "on <seller>";
+   - the workflow;
+   - **the price: the decoded amount in sats**, and in dollars only at the
+     native host's OWN rate;
+   - the seller's `usd` only as what the seller says the payment buys
+     ("buys $0.50 of credit, by the server's own figure"), never as the
+     price. A figure worth far less than the sats paid (more than 10% under,
+     at the native host's rate) is flagged;
+   - the description, quoted as the seller's;
+   - that this buys CREDIT on that server, which later runs in this page
+     spend: what a run does not use stays.
+
+   No budget pays it silently: every purchase asks.
+5. **Answers as soon as the person acts**, never only when the payment
+   ends:
+   - on a tap, as soon as the payment is SENT: `pending`, or `settled` with
+     the preimage if it settled at once;
+   - on a decline, `USER_REJECTED`;
+   - `failed` only for a payment that can no longer settle (no route, the
+     HTLC failed back).
+
+   strut's UI then shows the invoice NO MORE. A seller holding the first
+   payment knows its preimage, and could settle a second one paid from
+   another wallet.
+6. Answers `buy_credit_status` with where that payment stands now: `pending`,
+   `settled` with the preimage, or `failed` (then the payment can no longer
+   settle, and strut's sheet offers the invoice again). It answers
+   `NOT_FOUND` for a hash it never paid. strut's sheet asks every 3 s while a
+   payment is pending.
+7. **Never pays one payment hash twice.** A second `buy_credit` for a hash it
+   paid, or is paying, answers that payment's state with no sheet.
+8. Answers before `expires_at`. A sheet still up when the invoice ends is
+   taken down and answered `RESTRICTED`.
+9. On `buy_credit_cancel` for a sheet still up (no tap yet): takes it down
+   and answers the purchase `USER_REJECTED`. For a payment already sent, it
+   does nothing: that purchase's answer stands. The host sends the cancel
+   when it stopped waiting: the person chose the QR code, the page went
+   away, or the invoice ended.
+10. Recommended, for a stranger's page (specs/API.md §17.9): refuse any
+   navigation of a subframe away from `about:srcdoc` or `about:blank`. strut's
+   UI holds the stranger's frame to a CSP that sends nothing anywhere, but a
+   frame may still navigate itself, which only the web view can stop.
+
+**What strut's UI does with the answer** (`readCreditReply`; the
+`credit_replies` vectors, §7):
+
+| Answer | Outcome |
+|---|---|
+| a payment of this invoice, `settled`, and `sha256(preimage) == payment_hash` | **paid**: the credential is `<macaroon>:<preimage>`, kept by strut's UI; the page's call is sent again with it |
+| a payment of this invoice, `pending`, or `settled` without a preimage that proves it | **pending**: the person tapped and the payment was sent. The sheet shows no invoice from here on; it waits on the claim and on `buy_credit_status`. After 60 s it says the server may be holding the payment, and Close leaves the credit to be claimed |
+| an error (a decline, a refusal), a payment of this invoice that `failed`, anything that is not a payment of this invoice, no answer before the invoice ends | **fallback**: nothing was sent. The QR code, with why, and **Pay with ⟨wallet⟩** |
+
+If the person chose the QR code while the native host had not answered,
+and its answer then says the payment was sent, the sheet takes the QR code
+down and waits on that payment.
+
+The claim runs whatever the outcome. From the moment the challenge is
+shown, strut's UI claims the invoice (`POST <seller>/public/credit/claim`)
+until the invoice's DECODED end, and a reload resumes it. So a payment the
+native host made, whose answer was lost or came late, still buys the credit.
+
+A call pays at most once: a seller that answers `payment_required` again
+after a payment is not paid again. The page is told its payment is kept as
+credit.
+
+#### Signing a visitor in: `sign_in`
+
+A visitor's page may ask its host to sign the visitor in
+(`useVisitor().signIn()`, plans/app-repos.md §5). When the seller offers the
+`sphinx` method and the native host's wallet holds the person's Sphinx
+account, strut's UI asks the native host to sign the SELLER's visitor
+challenge (plans/app-payments.md §4.4). The person is then the same visitor
+on every app: `secp:<their key>`. Like `buy_credit`, it is the host's own
+op: no app connection carries it, and the page never sees the request, the
+challenge or a key.
+
+```
+app frame ──strut/visitor/sign-in──▶ strut's UI ──GET <seller>/visitors/challenge──▶ the seller
+                                        │◀── { challenge, methods: [… "sphinx" …], visitorKey }
+                                        │ checks the request (below)
+                                        ├──{ v: 1, op: "sign_in", seller, app, challenge }──▶ native host ── its sheet, the person signs in
+                                        │◀── { result: { key, sig, address?, alias? } }
+                                        └──POST <seller>/visitors/session { challenge, method: "sphinx", key, sig, address?, name? } ──▶ the seller
+                                        │◀── { actor: "secp:…", token, exp }   kept by strut's UI, per seller
+```
+
+**The request** (`SignInRequest`, checked by `signInRequestProblems`; the
+`sign_in_requests` vectors, §7):
+
+| Field | |
+|---|---|
+| `seller` | the strut server the visitor signs in to, as its base URL (`isSellerUrl`, as a purchase's) |
+| `app` | `{ name, version, title }`: the public app whose page asked, as the seller serves it |
+| `challenge` | the seller's `GET /visitors/challenge`: `strut-visitor.<claims>.<hmac>`, claims `{ host, visitorKey, nonce, exp }` as base64url JSON (`visitorChallengeClaims`), `exp` in unix MILLISECONDS. The HMAC is the seller's to check |
+
+**The answer** (`SignInAnswer`, read by `readSignInReply`; the
+`sign_in_replies` vectors, §7): `{ result: { key, sig, address?, alias? } }` —
+- `key`: the compressed secp256k1 key that signed, 33 bytes;
+- `sig`: a Lightning signed message over the challenge's UTF-8 bytes, 65
+  bytes `[31 + recovery id] ‖ r ‖ s`, a recoverable ECDSA signature over
+  `sha256(sha256("Lightning Signed Message:" ‖ challenge))`. That is what
+  sphinx-rs's `sign_bytes` answers (`Sphinxrs.signBytes`), and the
+  `sign_in_signatures` vectors (§7) are its real output;
+- `address` (optional): the account's own Sphinx address,
+  `<pubkey>_<lsp_pubkey>_<scid>`, from `myContactInfo`. Peel sends it only
+  when it signs with the ROOT key; with a domain's child key (LUD-05) it
+  sends none. The seller keeps it to keysend the person a payout
+  (plans/human-steps.md §8.2). Its pubkey is the root sign-in key: Sphinx's
+  `get_my_contact_info` builds the address from
+  `make_signer(seed, Some(0), …).get_node_pubkey()`, and the root sign-in
+  key is `pubkey_from_seed(idx: 0)`, which reads the same key (the
+  `sign_in_addresses` vectors, §7, pin it). `readSignInReply` keeps the
+  address only when it parses (`parseSphinxAddress`) and its pubkey is
+  `key`, and drops it otherwise; strut's UI posts it as `address`, and the
+  seller checks the same again. Peel still signs nothing new;
+- `alias` (optional): the account's Sphinx alias, the name the person goes
+  by. `readSignInReply` keeps it trimmed when it is text and drops it
+  otherwise; strut's UI posts it as `name`, and the seller keeps it as the
+  name the person gave themself (plans/people-and-hosts.md §1; specs/API.md
+  §13.3): one line, at most 80 characters, never over a name a host gave.
+  It is shown, never checked, and the sign-in holds without it.
+
+Or `{ error }` (§4.1): `USER_REJECTED` when the person declined,
+`RESTRICTED` for no tap (below) or a sheet still up when the challenge
+ended, `BAD_REQUEST` for a request the native host refused.
+
+**What strut's UI checked before asking** (`web/src/native-pay.ts`
+`signInAsk`), so a seller's junk is never put to the wallet:
+`signInRequestProblems` — above all, that the challenge is a strut visitor
+challenge minted for the seller's host and has not ended.
+
+**What the native host does:**
+1. Answers only the main frame it trusts (§1.1's rule): on the Mac, its own
+   strut UI hosting a stranger's app (specs/API.md §17.9); on the iPhone, a
+   served box it opened directly, at the origin it loaded
+   (plans/app-payments.md §5.3, R7).
+2. Runs `signInRequestProblems`, and holds the challenge's `host` to the
+   seller — on the iPhone, to the host name of the ORIGIN IT LOADED,
+   whatever `seller` and `app` say. The seller's host name is the URL's,
+   lower case, with no port and no IPv6 brackets (`sellerHost`). A challenge
+   for any other host is `BAD_REQUEST` and is never signed: one box never
+   gets a signature that logs in to another.
+3. Signs ONLY a strut visitor challenge: never a message a page chose.
+   There is no `sign_message` method (§2), and an app's
+   `window.webln.signMessage` throws `UnsupportedMethodError`.
+4. Applies §5.4's gesture rule: `RESTRICTED` unless the person tapped in the
+   web view within the last few seconds. strut's UI asks as soon as the page
+   calls `signIn()`, which a page does on a press; otherwise strut's own
+   sheet shows **Sign in with ⟨wallet⟩**, whose press is a fresh tap, and
+   sends `sign_in` again. A page may also ask SILENTLY as it loads
+   (`signIn({ silent: true })`, @strut/kit/visitor; strut/worker's Tasks
+   does): strut's UI sends `sign_in` once and takes only a signature — a
+   refusal draws no sheet of strut's and tries no other method
+   (web/src/visitor-signin.ts `signInSilently`). Untapped, only a grant
+   (step 5) signs.
+5. Shows its own sheet, unless the person's connection with this page
+   already grants sign-in for this seller (then a toast; no tap needed):
+   - the seller by its host;
+   - the app's title, "on <seller>";
+   - the key the challenge's `visitorKey` names, with no choice between
+     keys (Peel Android since 2026-11-19; it offered both for `root`
+     before):
+     - `root`, strut's default: **Sign in as you**, the person's root
+       Sphinx key (account 0: the key `Sphinxrs.pubkeyFromSeed(idx: 0)`
+       names), the same visitor on every app. A worker must sign in so:
+       only the root key carries the payout `address` (below), so a worker
+       signed in as a new identity could never withdraw;
+     - `domain`: **as a new identity for this app**, the domain's child key
+       for the challenge's `host` (LUD-05's derivation), unlinkable across
+       apps.
+   Which key it is, is the native host's; strut only checks the signature.
+   The page Peel Android opens from the invite its account signed up with
+   (a worker invite link's `a=`, docs/tasks.md "Inviting a worker") is
+   granted sign-in as you as it opens, at that page's origin alone, so a
+   new worker's first sign-in — Tasks' silent one — is a toast.
+6. Answers as soon as the person acts: `{ key, sig }`, or `USER_REJECTED`.
+7. Answers before the challenge's `exp`. A sheet still up then is taken
+   down and answered `RESTRICTED`: the seller refuses a challenge past its
+   minute, and strut's UI stops waiting there.
+
+**What strut's UI does with the answer:**
+
+| Answer | Outcome |
+|---|---|
+| `{ key, sig }` | **signed**: `POST <seller>/visitors/session { challenge, method: "sphinx", key, sig }`; the seller's `ln-message` verifier recovers the key from the signature and holds it to `key`. The session (`{ actor, token, exp }`) is kept by strut's UI under the seller, and its token rides on every later call of that seller's page (`x-strut-visitor` on `/public/mcp`) |
+| `USER_REJECTED` | not signed in; strut's sheet offers the seller's other methods, if any |
+| anything else | strut's sheet, with why, and **Sign in with ⟨wallet⟩** |
 
 ## 2. Methods
 
@@ -382,7 +708,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds six lists. Every implementation runs all of them in its own
+`vectors.json` holds fourteen lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -391,7 +717,15 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `results` | `{ name, method, result, valid }` | an answer of this shape is (or is not) one the contract allows (`resultProblems`) |
 | `notifications` | `{ name, notification, valid }` | the same (`notificationProblems`) |
 | `connection_requests` | `{ name, request, valid }` | an `app.yaml` `wallet:` block is (or is not) accepted |
+| `native_apps` | `{ name, app, valid }` | an app identity strut's UI sends a native host (§1.1 `NativeWalletApp`) is (or is not) one (`nativeWalletAppProblems`): above all, it names its `seller`. A native host refuses every invalid one |
 | `preimages` | `{ preimage, payment_hash, valid }` | `sha256(preimage) == payment_hash` |
+| `host_capabilities` | `{ name, capability, expect }` | `hostWalletCapabilityOf` reads a native host's `host_capability` answer as `expect`: an op it does not know left out, `null` for no capability (§1.2) |
+| `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
+| `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` (or `buy_credit_status`) as `outcome`: `paid` with `preimage`; `pending`, a payment sent, after which the invoice is not shown again; or `fallback` with `code`, nothing sent (`readCreditReply`). A native host checks that its own answers come to what it means |
+| `sign_in_requests` | `{ name, now, request, valid }` | a `sign_in` request is (or is not) one the native host may sign at `now` (ms) (`signInRequestProblems`, §1.2): above all, the challenge is a strut visitor challenge for the SELLER's host. A native host refuses every invalid one |
+| `sign_in_replies` | `{ name, reply, outcome, key?, sig?, address?, alias?, code? }` | strut's UI reads the native host's answer to `sign_in` as `outcome`: `signed` with `key` and `sig` (lower-case hex), `address` only when the answer's address parses and its pubkey is `key` (one whose pubkey is another's is dropped), and `alias` trimmed when it is text (else dropped), or `refused` with `code` (`readSignInReply`). A native host checks that its own answers come to what it means |
+| `sign_in_signatures` | `{ name, signer?, message, key, sig, actor }` | Lightning signed messages over strut challenges, made by Sphinx's own signer (sphinx-rs `sign_bytes` / `pubkey_from_seed`, `scripts/ln-message-fixtures`): with `signer` (`{ seed, idx, network }`), `sig` is exactly what that signer makes of `message` and `key` its key — a native host's signing reproduces both; strut's `ln-message` verifier (src/visitors.ts) names `actor`, or refuses (`null`): a tampered message, another key, a changed recovery byte, no recovery byte, an uncompressed key |
+| `sign_in_addresses` | `{ name, signer, key, address }` | one seed's Sphinx address (sphinx `get_my_contact_info`) and its root sign-in key (`pubkey_from_seed`, `idx: 0`, as in `sign_in_signatures`) agree: `address`'s pubkey is `key`. Every implementation that makes the answer checks its own address against it. `source` says how it was made: Sphinx's core, the way an account registers (`initial_setup`'s register topic for the seed, then the server's register answer through `handle`, whose `my_contact_info` is the address; Peel's `VisitorSignInTests` reproduces it), its pubkey `pubkey_from_seed(idx: 0)` of the seed (as in `sign_in_signatures`, `scripts/ln-message-fixtures`). The route hint `<lsp_pubkey>_<scid>` is the register answer's: the server names it, no seed makes it |
 | `scenarios` | a host's behaviour, below | the host does what each step says |
 
 **A scenario** starts from:

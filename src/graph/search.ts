@@ -55,6 +55,17 @@ export const LADYBUG_VECTOR_ALONE_MIN_SIM = 0.55;
 export const USAGE_TIEBREAK_EPSILON = 0.02;
 export const SEARCH_CANDIDATE_CAP = 5000;
 export const DEFAULT_NAMESPACE = "default";
+/** What a Concept BRANCH's namespace starts with (src/branches.ts): a
+ *  read that names no namespace, where it would read every one (a Ladybug
+ *  file's search), never reads a branch's — main does not see a branch. */
+export const BRANCH_NAMESPACE_PREFIX = "branch-";
+export const isBranchNamespace = (ns: unknown): boolean => typeof ns === "string" && ns.startsWith(BRANCH_NAMESPACE_PREFIX);
+/** Whether the graph holds a Concept branch now (`GraphBackendBase.branches`):
+ *  kept by the branches service, read where a read that names no namespace
+ *  must leave `branch-*` out — and only while one is there. */
+export interface BranchesHeld {
+  held: boolean;
+}
 
 /** `node_visibility_helper.BLOCKED_NODE_STATUSES`. */
 export const BLOCKED_NODE_STATUSES = ["halted", "paused", "stopped", "stopping", "error", "failed", "stuck"];
@@ -136,6 +147,21 @@ export interface ReadScope {
   namespaces?: string[];
   /** Lowercase domain names (`strut`). */
   exclude_domains?: string[];
+  /** A run on a Concept BRANCH (src/branches.ts): the branch's namespace.
+   *  A `Concept` is read there alone, and that namespace holds nothing
+   *  else — a node is seen when it is a Concept exactly when it is in it.
+   *  A keyed read of a Concept in the backend's own namespace reads the
+   *  branch's (`branchedNamespace`); every other type reads as before. */
+  concepts?: string;
+}
+
+/** The namespace a read of ONE type asks for, under a scope whose Concepts
+ *  are on a branch (`ReadScope.concepts`): a Concept asked in the backend's
+ *  own namespace, `default` or none is the branch's; anything else as asked. */
+export function branchedNamespace(scope: ReadScope | undefined, type: string, asked: string | undefined, own: string): string | undefined {
+  if (!scope?.concepts || type.trim().toLowerCase() !== "concept") return asked;
+  const ns = asked?.trim().toLowerCase();
+  return !ns || ns === own || ns === DEFAULT_NAMESPACE ? scope.concepts : asked;
 }
 
 export interface SearchParams {
@@ -815,7 +841,8 @@ export class Neo4jReader implements GraphReader {
   private sc(alias: string): string {
     if (!this.scope) return "";
     const domains = this.scope.exclude_domains?.length ? ` AND NONE(lbl IN labels(${alias}) WHERE lbl IN $scope_domain_labels)` : "";
-    return `${this.scope.namespaces ? ` AND coalesce(${alias}.namespace, $default_ns) IN $scope_ns` : ""}${domains}`;
+    const concepts = this.scope.concepts ? ` AND (${alias}:Concept) = (coalesce(${alias}.namespace, $default_ns) = $scope_concepts)` : "";
+    return `${this.scope.namespaces ? ` AND coalesce(${alias}.namespace, $default_ns) IN $scope_ns` : ""}${domains}${concepts}`;
   }
 
   private get scParams(): Record<string, unknown> {
@@ -823,6 +850,7 @@ export class Neo4jReader implements GraphReader {
     return {
       scope_ns: this.scope.namespaces ?? [],
       scope_domain_labels: (this.scope.exclude_domains ?? []).map((d) => `Domain_${d.toLowerCase()}`),
+      ...(this.scope.concepts ? { scope_concepts: this.scope.concepts } : {}),
       default_ns: DEFAULT_NAMESPACE,
     };
   }
@@ -905,7 +933,7 @@ export class Neo4jReader implements GraphReader {
       `MATCH (n:Data_Bank {node_key: $node_key})
        WHERE $type IN labels(n) AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}${this.sc("n")}
        RETURN n LIMIT 1`,
-      { node_key: key, type, ns: namespace ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
+      { node_key: key, type, ns: branchedNamespace(this.scope, type, namespace, this.bolt.namespace) ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
@@ -929,7 +957,7 @@ export class Neo4jReader implements GraphReader {
        RETURN n.ref_id AS ref_id, toString(n.name) AS name, n.description AS description
        ORDER BY CASE WHEN toLower(toString(n.name)) STARTS WITH $frag THEN 0 ELSE 1 END, toLower(toString(n.name))
        LIMIT ${cap}`,
-      { type: type.trim(), frag, ns: namespace ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
+      { type: type.trim(), frag, ns: branchedNamespace(this.scope, type, namespace, this.bolt.namespace) ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     return rows.map((r) => ({
       ref_id: String(r["ref_id"]),
@@ -1121,7 +1149,9 @@ export class Neo4jReader implements GraphReader {
 
       // Filter: namespace + visibility + optional type list; untyped search
       // also excludes types whose domain is hidden.
-      const clauses = [`n.namespace = $namespace`, visibility("n") + this.sc("n")];
+      // On a branch its Concepts are in the branch's namespace (`sc` keeps
+      // only those, and only Concepts there).
+      const clauses = [this.scope?.concepts ? `n.namespace IN [$namespace, $scope_concepts]` : `n.namespace = $namespace`, visibility("n") + this.sc("n")];
       const base: Record<string, unknown> = { namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams };
       if (types?.length) {
         clauses.push(`ANY(t IN $node_types WHERE t IN labels(n))`);

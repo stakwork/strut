@@ -1,9 +1,9 @@
 import { join } from "node:path";
-import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
+import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type RunTrial, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
-import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
+import { countUsage, generateRunId, localRuns, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
@@ -255,6 +255,9 @@ export async function searchRunEvents(
   const runIds = opts.runIds?.length
     ? opts.runIds
     : (await store.listRuns(name)).slice(0, runLimit);
+  // Named runs are read whole, an archived log restored. The default, the
+  // newest `runLimit`, is a scan: it reads this disk only.
+  const runs = opts.runIds?.length ? store : localRuns(store);
 
   const matches: RunSearchMatch[] = [];
   const perRun: { runId: string; matchingEvents: number }[] = [];
@@ -263,7 +266,7 @@ export async function searchRunEvents(
 
   for (const runId of runIds) {
     if (truncated) break;
-    const events = await store.getRunEvents(name, runId);
+    const events = await runs.getRunEvents(name, runId);
     runsScanned++;
     let matchingEvents = 0;
     for (const e of events) {
@@ -472,6 +475,11 @@ export interface RunStepArgs {
   cassetteName?: string;
   /** Persist the run under `step:<type>` even when the step has no claims. */
   keep?: boolean;
+  /** The calling run's Concept branch (`ctx.branch`, src/branches.ts): the
+   *  step runs on it. */
+  branch?: string;
+  /** The calling run is a trial (`ctx.trial`, src/trials.ts): so is the step's run. */
+  trial?: RunTrial;
 }
 
 /**
@@ -548,7 +556,7 @@ export interface AuthoringCapability {
      *  `job/dir` and `workdir` resolve to the directory the parent holds,
      *  which it shares (`holdJob`). `mcp`: the launching run's caller's MCP
      *  servers (`ctx.mcp`), so the child's agents reach the same caller. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[]; caller?: RunCaller },
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[]; branch?: string; caller?: RunCaller },
   ): Promise<RunResult | DetachedRun | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -647,6 +655,9 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     parentRunId?: string,
     job?: { id: string; title?: string },
+    /** The Concept branch the run is on (src/branches.ts): the parent's,
+     *  when there is one, and no other. */
+    branch?: string,
   ) => { controller?: import("./run-control.js").RunController; untrack: () => void };
   /** The claims layer (plans/claims.md), built once by `createStrut` where
    *  it is on (a graph workspace, `StrutOptions.claims` not false). Null /
@@ -675,7 +686,7 @@ export interface AuthoringDeps extends StepPublishDeps {
   runDetached?: (
     caller: RunCaller,
     flow: Flow,
-    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[] },
+    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[]; branch?: string },
   ) => Promise<RunResult | DetachedRun | undefined>;
   /** createStrut's run control (the cancel / pause routes' core). Optional:
    *  without it `controlRun` answers that this host cannot. */
@@ -848,6 +859,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
           workspace,
           keep: args.keep === true,
+          ...(args.branch ? { branch: args.branch } : {}),
+          ...(args.trial ? { trial: args.trial } : {}),
           ...(deps.reach ? { aiAuthored: true } : {}),
           ...(args.cassette
             ? {
@@ -938,6 +951,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           AI_PUBLISHER,
           { source: "agent", ...(by ? { actor: by } : {}) },
         );
+        // A workflow with no owner is adopted by the first actor who
+        // publishes it, as the HTTP routes and the chat builder do: its runs
+        // (a standing type's, an automation's) then have someone to bill.
+        if (by) {
+          const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+          if (meta && !meta.owner) await workspace.setWorkflowOwner(name, by).catch(() => {});
+        }
         return {
           ok: true,
           name,
@@ -1008,6 +1028,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
             ...(opts.actor ? { actor: opts.actor } : {}),
             ...(opts.principal ? { principal: opts.principal } : {}),
             ...(opts.mcp?.length ? { mcp: opts.mcp } : {}),
+            ...(opts.branch ? { branch: opts.branch } : {}),
           });
           if (own) return "detached" in own ? own : await finished(own);
         } catch (err) {
@@ -1022,7 +1043,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // (src/drain.ts); a child of a run in flight still starts.
       let tracked: ReturnType<NonNullable<typeof deps.trackRun>> | undefined;
       try {
-        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined, opts?.branch);
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
@@ -1041,6 +1062,10 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.principal ? { principal: opts.principal } : {}),
           ...(opts?.job ? { job: opts.job } : {}),
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
+          // The parent's Concept branch, or the one it named from main (trackRun).
+          ...((tracked?.controller?.branch ?? opts?.branch) ? { branch: (tracked?.controller?.branch ?? opts?.branch)! } : {}),
+          // A trial's child is a trial (src/trials.ts): the parent's, from trackRun.
+          ...(tracked?.controller?.trial ? { trial: tracked.controller.trial } : {}),
         });
         return await finished(result);
       } finally {

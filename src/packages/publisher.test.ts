@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,8 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { readCard, type Catalog } from "./card.js";
-import { PUBLISHER_FILE } from "./publisher.js";
+import { MemorySecretStore } from "../secret-store.js";
+import { CatalogStore, PUBLISHER_FILE, ensurePublicCatalog, publishRelease, publisherStore } from "./publisher.js";
 
 const STEP = (type: string, out: string) =>
   `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
@@ -37,7 +39,7 @@ const boot = () =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -94,14 +96,24 @@ describe("publishing packages from this strut", () => {
     assert.equal(res.headers.get("cache-control"), "private, no-cache");
     const read = readCard(text, { key: publisher.key });
     assert.equal(read.digest, first.body.catalog.digest);
+    const tarRelease = read.card.packages["acme/linear"]!.releases[0]!.tar!;
+    assert.match(tarRelease.sha256, /^[0-9a-f]{64}$/);
+    assert.match(tarRelease.infohash, /^[0-9a-f]{40}$/);
     assert.deepEqual(read.card.packages, {
-      "acme/linear": { releases: [{ version: "1.0.0", digest: first.body.digest, license: "MIT" }] },
+      "acme/linear": { releases: [{ version: "1.0.0", digest: first.body.digest, license: "MIT", tar: tarRelease }] },
     });
     assert.deepEqual(read.card.channels, { stable: { "acme/linear": first.body.digest } });
     assert.equal((await req("/packages/catalog", { headers: { "if-none-match": res.headers.get("etag")! } })).status, 304);
 
     // Each release's bytes are served beside the catalog, by digest.
     assert.equal((await req(`/packages/acme/linear/archive?digest=${first.body.digest}`)).status, 200);
+    // `format=tar`: the plain tar the release names, by its sha256 (§13).
+    const plain = await req(`/packages/acme/linear/archive?digest=${first.body.digest}&format=tar`);
+    assert.equal(plain.status, 200);
+    assert.equal(plain.headers.get("content-type"), "application/x-tar");
+    assert.equal(plain.headers.get("etag"), `"${first.body.digest}.tar"`);
+    assert.equal(createHash("sha256").update(Buffer.from(await plain.arrayBuffer())).digest("hex"), tarRelease.sha256);
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${first.body.digest}&format=zip`)).status, 400);
 
     // The key is in its own encrypted file, never in plain text.
     const file = await readFile(join(root, "workspace", PUBLISHER_FILE), "utf8");
@@ -200,7 +212,9 @@ describe("publishing packages from this strut", () => {
     const pub1 = await publicCatalog();
     assert.equal(pub1.res.status, 200);
     const pubCard1 = readCard(pub1.text, { key: info.public! });
-    assert.deepEqual(pubCard1.card.packages, { "acme/linear": { releases: [{ version: "1.0.0", digest: v1.body.digest }] } });
+    const pubTar = pubCard1.card.packages["acme/linear"]!.releases[0]!.tar;
+    assert.match(pubTar?.infohash ?? "", /^[0-9a-f]{40}$/, "the public card names the plain tar too");
+    assert.deepEqual(pubCard1.card.packages, { "acme/linear": { releases: [{ version: "1.0.0", digest: v1.body.digest, tar: pubTar }] } });
     assert.deepEqual(pubCard1.card.channels, { public: { "acme/linear": v1.body.digest } });
     assert.equal(pubCard1.card.public, undefined);
     assert.ok(!pub1.text.includes(fleetKey), "the public card never names the fleet key");
@@ -284,6 +298,30 @@ describe("publishing packages from this strut", () => {
     assert.equal(linear2.status, 409, JSON.stringify(linear2.body));
     assert.match(linear2.body.error!, /^catalog_private_requirement: acme\/linear 2\.1\.0 requires acme\/util/);
     assert.equal(util2.status, 201);
+  });
+
+  it("mints the public key with no package, seals an empty public catalog with it, and keeps both when a package is made public (plans/public-view-listing.md §1)", async () => {
+    let now = Date.parse("2026-11-11T12:00:00Z");
+    const deps = { publisher: publisherStore(new MemorySecretStore(), { now: () => now }), catalogs: new CatalogStore(join(root, "fleet")), publicCatalogs: new CatalogStore(join(root, "public")), now: () => now };
+    // A fleet-only release first: it never reaches the public catalog.
+    await publishRelease(deps, { manifest: { package: "acme/private", version: "1.0.0" }, digest: `sha256:${"aa".repeat(32)}`, channel: "stable" });
+    assert.equal((await deps.publisher.get())!.public, undefined);
+    const first = await ensurePublicCatalog(deps);
+    const info = (await deps.publisher.get())!;
+    assert.ok(info.public);
+    assert.deepEqual(info.publicChannels, [], "no channel was made public");
+    assert.deepEqual(readCard(first.bytes, { key: info.public! }).card.packages, {});
+    assert.equal((await ensurePublicCatalog(deps)).digest, first.digest, "asked again: the same catalog");
+    assert.equal((await deps.catalogs.current())!.card.public, undefined, "the fleet catalog sealed before the key does not name it");
+
+    // Make public later: the same key, the next public catalog after the empty one.
+    now += 60_000;
+    await publishRelease(deps, { manifest: { package: "acme/linear", version: "1.0.0" }, digest: `sha256:${"bb".repeat(32)}`, channel: "public", public: true });
+    const after = (await deps.publisher.get())!;
+    assert.equal(after.public, info.public);
+    const pub = readCard((await deps.publicCatalogs.current())!.bytes, { key: info.public!, last: { seq: first.card.seq, digest: first.digest } }).card;
+    assert.deepEqual(Object.keys(pub.packages), ["acme/linear"], "the private release stays private");
+    assert.equal((await deps.catalogs.current())!.card.public, info.public);
   });
 
   it("refuses to mint a key or publish while the secret store runs on the dev default key", async () => {

@@ -12,12 +12,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphBackend, LadybugBackend } from "./backend.js";
 import type { Embedder } from "./node-writer.js";
-import { graphFor, graphView, parseGraphReaders, readerKindOf, type GraphReaders } from "./scope.js";
+import { PAGE_CALL, graphFor, graphView, parseGraphReaders, readerKindOf, type GraphReaders } from "./scope.js";
+import { RUN_STEP_FLOW } from "../run-step.js";
 import { readQuery } from "./query.js";
 import { setNamespace } from "./set-namespace.js";
 import { assertEdge } from "./temporal.js";
 import { seedConceptSchema, testBackends } from "./test-util.js";
 import { seedStrutDomain } from "./schema-seed.js";
+import { readConceptVersion } from "./concept-version.js";
+import { accessedNodesOf } from "../core.js";
 import { createStrut } from "../createStrut.js";
 import { hostConfigFromEnv } from "../server.js";
 import { MemoryRunStore } from "../store.js";
@@ -108,6 +111,22 @@ describe("reader lists on a ladybug file (plans/graph-memory-plan.md step 6)", {
     assert.equal(((await run(graphGet, { ref_id: mine.ref_id }, job)) as { ref_id: string }).ref_id, mine.ref_id);
     assert.equal(typeof (await run(graphGet, { ref_id: runRef }, job)), "string");
     assert.match(String(await run(graphFind, { node_type: "StrutRun", namespace: "shared" }, job)), /unknown node type/);
+  });
+
+  it("a Concept's page opened through a reader's list reports the version the claims reader computes: one hash, over the graph as it is", async () => {
+    // Harbour (shared) lists a shared page and a private one; an app reads shared alone, and may not query raw.
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: ours.ref_id, target_ref_id: pier.ref_id, namespace: "shared" });
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: ours.ref_id, target_ref_id: mine.ref_id, namespace: "shared" });
+    const app = appCtx(services);
+    await assert.rejects(run(graphQuery, { cypher: "MATCH (n:Node) RETURN count(n) AS c" }, app) as Promise<unknown>, /raw graph queries are off/);
+    const versionOf = (out: unknown) => accessedNodesOf(out)?.map((n) => [n.ref_id, n.node_type, n.version]);
+    const whole = await readConceptVersion(b, ours.ref_id);
+    assert.match(whole!, /^[a-f0-9]{12}$/);
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: ours.ref_id, children: "PARENT_OF" }, app)), [[ours.ref_id, "Concept", whole]]);
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: ours.ref_id }, jobCtx(services))), [[ours.ref_id, "Concept", whole]], "with or without its children listed, whoever reads");
+    // A node that is no Concept carries none.
+    const person = await b.nodes.write({ type: "Person", data: { name: "Ada" } }, "create", { namespace: "shared" });
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: person.ref_id }, jobCtx(services))), [[person.ref_id, "Person", undefined]]);
   });
 
   it("an app reads only shared, with no Strut records, through every read step", async () => {
@@ -203,6 +222,18 @@ describe("reader lists on a ladybug file (plans/graph-memory-plan.md step 6)", {
     assert.equal(readerKindOf({ ...base, workflow: "nightly" } as never, READERS), "jobs", "another run's workflow");
     assert.equal(readerKindOf({ ...base, frame: { workflow: "helper", sealed: true } } as never, READERS), "jobs", "an unlisted frame");
     assert.equal(readerKindOf({ ...base, app: { name: "notes" } } as never, READERS), "apps");
+  });
+
+  it("the own call of a page strut ships reads as its viewer; any other app call, and a run that page launched, as an app", async () => {
+    assert.equal(PAGE_CALL, RUN_STEP_FLOW);
+    const page = { name: "strut/knowledge", version: "v1", firstParty: true };
+    const own = appCtx(services, { app: page, workflow: RUN_STEP_FLOW, path: RUN_STEP_FLOW });
+    assert.equal(readerKindOf(own as never, READERS), "ui");
+    assert.equal(readerKindOf(appCtx(services, { workflow: RUN_STEP_FLOW, path: RUN_STEP_FLOW }) as never, READERS), "apps", "an app strut did not ship");
+    assert.equal(readerKindOf(appCtx(services, { app: page, workflow: "orchestrator", path: "orchestrator/agent" }) as never, READERS), "apps", "a run the page launched");
+    // What that is in a read: the page finds the person's private node, an ordinary app's page does not.
+    assert.ok((ids(await run(graphSearch, { q: "lighthouse" }, own)) as string[]).includes(mine.ref_id));
+    assert.ok(!(ids(await run(graphSearch, { q: "lighthouse" }, appCtx(services, { workflow: RUN_STEP_FLOW }))) as string[]).includes(mine.ref_id));
   });
 
   it("a reader the host hasn't given a list reads nothing", async () => {

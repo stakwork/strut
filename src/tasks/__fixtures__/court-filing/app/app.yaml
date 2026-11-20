@@ -1,0 +1,10 @@
+title: Court Filing
+description: "Earn sats photographing court documents: snap one, we read it, you're paid for it."
+icon: scale
+entry: src/App.tsx
+permissions: [camera]
+# Strut's account widget: who is signed in, what they earned, and Withdraw.
+account:
+  corner: top-right
+grants:
+  steps: [task/next, task/submit, task/skip, task/me, task/withdraw]

@@ -6,7 +6,7 @@ import yaml from "js-yaml";
 import * as api from "./api";
 import { foldAccessedNodes, isServedFilePath } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
-import { pushUrl, replaceUrl } from "./embed";
+import { pushUrl, replaceUrl, reportReady } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
@@ -25,7 +25,7 @@ import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PublishDialog, type PublishTab } from "./components/PublishDialog";
 import { ArrowLeftIcon, ClockIcon, GearIcon, UserIcon } from "./icons";
-import { displayActor } from "./actor";
+import { useActorLabel } from "./components/Who";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -50,8 +50,9 @@ import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
-import { appKey, appMessage, appToolInput } from "./app-links";
-import { pickPage, type PageSession } from "./page";
+import { appKey, appMessage, appPageAddress, appToolInput } from "./app-links";
+import { STAFF_APP } from "./waiting";
+import { pickPage, type PageSession, type ServedBox } from "./page";
 import { MemberApps } from "./components/MemberApps";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
@@ -115,7 +116,9 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   //    run behind it. Beside `?app=`: the app's page, here or a peer's
   //    (plans/apps.md §7.4); `&theme=light` hands it a light theme
   //    (`soloTheme`); `&public=1` makes it a VISITOR's page, the app as this
-  //    server's public view serves it, with no credential (SoloApp). Beside
+  //    server's public view serves it, with no credential (SoloApp), and
+  //    `&from=<base>` ANOTHER strut server's public app with this UI as its
+  //    host (./remote-app, solo implied). Beside
   //    `?artifact=<path>`: one served file — a job's file or a run's
   //    artifact, here or a peer's through the read-through — for a
   //    deliverable. Only a path of that shape (`isServedFilePath`).
@@ -125,9 +128,15 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   //  - A MEMBER (plans/member-rights.md): the apps here, or the one app or
   //    file a link names, alone — never the shell, whose every read the
   //    server refuses a member.
-  const [page] = useState(() => pickPage(location.search, session));
+  //  - On a SERVED box (plans/app-repos.md §4.2), whose `/` the server
+  //    marks with `<meta name="strut-serve">`: its app alone, as a visitor's
+  //    page, whatever the address — `?shell=1` with the key or a session is
+  //    the shell.
+  const [page] = useState(() => pickPage(location.search, session, servedBox()));
   if (page.kind === "store") return <Store />;
-  if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.theme ? { theme: page.theme } : {})} />;
+  if (page.kind === "unserved") return <Unserved />;
+  if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.from ? { from: page.from } : {})} {...(page.theme ? { theme: page.theme } : {})} />;
+  if (page.kind === "refused") return <Refused message={page.message} />;
   if (page.kind === "artifact") {
     return isServedFilePath(page.artifact)
       ? <ArtifactViewer path={page.artifact} solo />
@@ -135,6 +144,32 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   }
   if (page.kind === "member-apps") return <MemberApps {...(session?.actor ? { actor: session.actor } : {})} />;
   return <Shell />;
+}
+
+/** The served box's marker, when this page is one's (./page `ServedBox`). */
+function servedBox(): ServedBox | null {
+  const app = document.querySelector('meta[name="strut-serve"]')?.getAttribute("content");
+  return app == null ? null : { app, key: !!api.getApiKey() };
+}
+
+/** A link this UI does not open (./page `refused`): why, alone. */
+function Refused(props: { message: string }) {
+  useEffect(reportReady, []);
+  return (
+    <div class="app-solo">
+      <div class="empty">{props.message}</div>
+    </div>
+  );
+}
+
+/** A served box before its first deploy. */
+function Unserved() {
+  useEffect(reportReady, []);
+  return (
+    <div class="app-solo">
+      <div class="empty">Nothing is served here yet.</div>
+    </div>
+  );
 }
 
 function Shell() {
@@ -163,6 +198,9 @@ function Shell() {
   // `tool-input`, §7.1). The frame reloads when the builder publishes a new
   // version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
+  // strut/staff is an admin's (plans/human-steps.md §9.1): listed here, a
+  // waiting run's task links to it.
+  const staffListed = apps.some((a) => a.name === STAFF_APP && !a.peer);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
   const [appInput, setAppInput] = useState<string | null>(initialUrl.get("input"));
   const [appQuery, setAppQuery] = useState("");
@@ -190,6 +228,7 @@ function Shell() {
   // says who "me" is (`actor` on the listing); without one the icon hides.
   const [jobsMine, setJobsMine] = useState<boolean>(() => loadPref("jobsMine", false));
   const [jobsActor, setJobsActor] = useState<string | null>(null);
+  const actorLabel = useActorLabel(jobsActor ?? undefined);
   // The history panel: one slot, Runs or Jobs, remembered across sessions.
   const [historyMode, setHistoryMode] = useState<"runs" | "jobs">(() => loadPref("historyMode", "runs"));
   // A thread's transcript, open in the flyout.
@@ -198,6 +237,12 @@ function Shell() {
   // has its steps and events (`openJobRun`).
   const [pendingFlyout, setPendingFlyout] = useState<string | null>(null);
   const [events, setEvents] = useState<api.RunEvent[]>([]);
+  /** The selected run's log read: still out (an archived log is being
+   *  restored), or why it could not be read. */
+  const [runLogLoading, setRunLogLoading] = useState(false);
+  const [runLogError, setRunLogError] = useState<string | null>(null);
+  /** The selected run's summary as last rendered, for the read below. */
+  const selectedSummaryRef = useRef<api.RunSummary | undefined>(undefined);
   const [running, setRunning] = useState(false);
   // Bumped after a durable resume so the run-view effect re-tails the log
   // (the prior tail closed at the old terminal event).
@@ -575,7 +620,8 @@ function Shell() {
     const end = stepEvts.find((e) => e.type === "step.end");
     const error = stepEvts.find((e) => e.type === "step.error");
     const skipped = stepEvts.find((e) => e.type === "step.skipped");
-    return { start, end, error, skipped, all: stepEvts, nodes: foldAccessedNodes(viewEvents, path) };
+    const parked = stepEvts.find((e) => e.type === "step.parked");
+    return { start, end, error, skipped, parked, all: stepEvts, nodes: foldAccessedNodes(viewEvents, path) };
   }, [flyoutStepId, viewWorkflow, viewEvents]);
 
   const refreshWorkflows = useCallback(async () => {
@@ -827,10 +873,28 @@ function Shell() {
     // Aborted on run-switch/unmount so pollers don't leak.
     const ctrl = new AbortController();
     setEvents([]);
+    setRunLogError(null);
+    setRunLogLoading(true);
     (async () => {
-      const accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
+      let accumulated: api.RunEvent[];
+      try {
+        accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
+      } catch (e) {
+        if ((e as Error)?.name !== "AbortError" && !ctrl.signal.aborted) {
+          // What the server said (an archived log the bucket could not give back).
+          setRunLogError((e as Error)?.message?.replace(/^\S+: /, "") || "The run's log could not be read");
+          setRunLogLoading(false);
+        }
+        throw e;
+      }
       if (ctrl.signal.aborted) return;
       setEvents([...accumulated]);
+      setRunLogLoading(false);
+      // The read may have restored an archived log: the list is read again,
+      // so its "archived" badge goes. Also when the summary is not in yet
+      // (a deep link): the list may have been read before the restore.
+      const listed = selectedSummaryRef.current;
+      if (!listed || listed.parts?.log?.evictedAt) refreshRuns();
       const result = await api.streamRun(selectedWf, selectedRun, (event) => {
         if (ctrl.signal.aborted) return;
         accumulated.push(event);
@@ -1075,6 +1139,7 @@ function Shell() {
   const selectedRunSummary = selectedRun
     ? runs.find((r) => r.runId === selectedRun) ?? (olderRun?.runId === selectedRun && olderRun.workflow === selectedWf ? olderRun : undefined)
     : undefined;
+  selectedSummaryRef.current = selectedRunSummary;
   const runControlStatus = selectedRunSummary?.status;
   // Live states come from the server's controller map; "stale"/"error"/
   // "cancelled" are dead-but-resumable (journal replay).
@@ -1084,6 +1149,9 @@ function Shell() {
   const runIsPaused = runControlStatus === "paused" || runControlStatus === "pausing";
   const runIsResumable =
     runControlStatus === "stale" || runControlStatus === "error" || runControlStatus === "cancelled";
+  // A PARKED run (src/park.ts): out of memory, waiting to be woken. It can
+  // be cancelled where it waits, or resumed by hand.
+  const runIsWaiting = runControlStatus === "waiting";
 
   // A failed cancel / pause / resume shows in a popover under the buttons
   // until dismissed or the next attempt. Stored with its run, so it drops
@@ -1114,7 +1182,8 @@ function Shell() {
   const handleResumeRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
     setRunFailure(null);
-    const live = runControlStatus === "paused" || runControlStatus === "pausing";
+    // A waiting run is woken on the version it runs, like a source's wake.
+    const live = runControlStatus === "paused" || runControlStatus === "pausing" || runControlStatus === "waiting";
     try { await api.resumeRun(selectedWf, selectedRun, live ? {} : { version: "active" }); } catch (e) { setRunFailure({ run: selectedRun, msg: `Resume failed: ${errorMessage(e)}` }); return; }
     await refreshRuns(selectedWf);
     setRunEpoch((n) => n + 1); // re-tail: the log continues past its old terminal
@@ -1221,6 +1290,17 @@ function Shell() {
     setWfPeer(readPeer(flow));
     setLocalPeer(readPeer(flow));
   }, [selectedWf, selectedEntry, localSteps, localParams, localInput, localPeer, activeVersion, viewVersion, refreshWorkflows]);
+
+  // Retention (`retain:`) is versioned content: setting it publishes the
+  // active version's YAML with that one key changed (null removes it).
+  const handleSetRetain = useCallback(async (retain: string | { runs: number } | null) => {
+    if (!selectedWf || !activeVersion) return;
+    const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
+    const prev = (yaml.load(await api.getWorkflowYaml(selectedWf, activeVersion)) ?? {}) as Record<string, unknown>;
+    if (retain == null) delete prev["retain"]; else prev["retain"] = retain;
+    await api.publishWorkflowYaml(selectedWf, `v${Math.max(0, ...nums) + 1}`, yaml.dump(prev, { lineWidth: 120, noRefs: true }));
+    await refreshWorkflows();
+  }, [selectedWf, selectedEntry, activeVersion, refreshWorkflows]);
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
@@ -1412,6 +1492,10 @@ function Shell() {
   // serves or an app on that peer opens here (AppHost): the rest are the
   // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appToolArgs = appToolInput(appInput);
+  // Where a person opens this page: strut's own address, `?app=<key>` — the
+  // app builds its links to paste on it. Framed by a host (Hive's lab), the
+  // host's address is the one to paste, and the full UI is given none.
+  const appPage = appEntry && window.parent === window ? appPageAddress(location.href, appKey(appEntry)) : undefined;
   const appHost = appEntry && appShown
     ? <AppWithPanel
         key={`${appKey(appEntry)}@${appShown}`}
@@ -1419,6 +1503,7 @@ function Shell() {
         reload={appReload}
         onNavigate={navigateFromApp}
         {...(appToolArgs ? { toolInput: appToolArgs } : {})}
+        {...(appPage ? { page: appPage } : {})}
         {...(appEntry.peer ? {} : {
           onMessage: (text: string) => {
             setShowChat(true);
@@ -1560,7 +1645,7 @@ function Shell() {
               : selectedWf && <span class="section-scope" title={selectedWf}>{selectedWf}</span>}
             {historyMode === "jobs" && jobsActor && (
               <button type="button" class={`mine-toggle${jobsMine ? " is-on" : ""}`} aria-pressed={jobsMine}
-                title={jobsMine ? `Only your jobs (${displayActor(jobsActor)}) — click for everyone's` : "Only your jobs"}
+                title={jobsMine ? `Only your jobs (${actorLabel(jobsActor)}) — click for everyone's` : "Only your jobs"}
                 onClick={() => { const v = !jobsMine; setJobsMine(v); savePref("jobsMine", v); }}>
                 <UserIcon />
               </button>
@@ -1600,6 +1685,10 @@ function Shell() {
                         <div class="run-row-main">
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                          {run.crashed && <span class="badge badge-danger" title="The run died with its process">crashed</span>}
+                          {run.parts?.log?.evictedAt && (run.parts.log.archive
+                            ? <span class="badge" title={`Log archived at ${run.parts.log.archive.at}: opening the run restores it`}>archived</span>
+                            : <span class="badge" title={`Log evicted by retention at ${run.parts.log.evictedAt}`}>log evicted</span>)}
                           <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
@@ -1913,6 +2002,11 @@ function Shell() {
                   note="Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled)."
                   cancelLabel="Keep running" confirmLabel="Cancel run" onConfirm={() => handleCancelRun()} />
               )}
+              {runIsWaiting && (
+                <ConfirmButton popover label="Cancel"
+                  note="Cancel this waiting run? It ends as cancelled, and what it waits on is closed."
+                  cancelLabel="Keep waiting" confirmLabel="Cancel run" onConfirm={() => handleCancelRun()} />
+              )}
               {/* Cancel is cooperative: a step that never returns holds the run
                   `cancelling`. Force abandons it (RUN_CONTROL_SPEC / API §6.1). */}
               {runIsLive && runControlStatus === "cancelling" && (
@@ -1925,6 +2019,9 @@ function Shell() {
               )}
               {(runIsPaused || runIsResumable) && (
                 <button class="btn btn-primary" onClick={handleResumeRun}>Resume</button>
+              )}
+              {runIsWaiting && (
+                <button class="btn" title="Wake it now: its parked steps run again, and wait again if nothing they wait on has happened" onClick={handleResumeRun}>Wake now</button>
               )}
               {runControlError && (
                 <div class="anchored-popover" role="alert" ref={runErrorRef}>
@@ -2050,7 +2147,13 @@ function Shell() {
               />
             : <div class="empty">Loading job…</div>
         ) : canvas
-          ? <SystemCanvas
+          ? <>
+            {selectedRun && !isRunView && runLogError
+              ? <button type="button" class="run-evicted-note is-error" title="Read the log again" onClick={() => setRunEpoch((n) => n + 1)}>{runLogError} Click to try again.</button>
+              : selectedRunSummary?.parts?.log?.evictedAt && !isRunView && (selectedRunSummary.parts.log.archive
+                ? runLogLoading && <div class="run-evicted-note">Restoring this run's log from the archive…</div>
+                : <div class="run-evicted-note">This run's log was evicted by retention ({selectedRunSummary.parts.log.evictedAt}); only its summary is kept.</div>)}
+            <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's
               // `autoFit="canvas-change"` only fires on sub-canvas
@@ -2077,6 +2180,7 @@ function Shell() {
               )}
               themes={{ strut: strutTheme }}
             />
+          </>
           : <div class="empty">{workflows.length === 0 ? "Create a workflow to get started" : "Select a workflow to view its flow graph"}</div>}
       </div>
 
@@ -2095,6 +2199,7 @@ function Shell() {
               onOpenStep={openRunStep}
               onOpenJob={selectJob}
               onOpenApp={selectApp}
+              staffListed={staffListed}
             />
           }
         />
@@ -2179,6 +2284,7 @@ function Shell() {
           apps={apps.filter((a) => a.grants.workflows.includes(selectedWf) || a.grants.automations.includes(selectedWf)).map((a) => ({ name: a.name, title: a.title }))}
           onOpenApp={selectApp}
           onTab={setWfTab}
+          onSetRetain={handleSetRetain}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}
           disabled={!!selectedEntry?.disabled}
@@ -2212,6 +2318,7 @@ function Shell() {
           viewing={appShown !== appEntry.activeVersion ? appShown ?? null : null}
           onView={setAppPreview}
           onSetLive={setAppLive}
+          onPublished={async () => { await refreshApps(); setAppReload((n) => n + 1); }}
           onClose={() => setPanel(null)}
         />
       )}
@@ -2262,6 +2369,8 @@ function Shell() {
               step={step}
               events={flyoutEvents}
               onClose={closeFlyout}
+              onOpenApp={selectApp}
+              staffListed={staffListed}
               {...(!runIsLive && (runIsResumable || runControlStatus === "success")
                 ? { onRerunFrom: () => handleRerunFrom(truePath) }
                 : {})}

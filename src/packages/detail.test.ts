@@ -75,8 +75,9 @@ export default defineStep({
   "steps/_client.ts": "export const client = () => 1;\n",
   "concepts/Linear.md": "---\ndescription: The Linear tracker\n---\n\n# Linear\n\nWhere issues live.\n",
   "concepts/Issues.md": "---\ndescription: One unit of work\nparent: Linear\n---\n\nAn issue has a team.\n",
-  "apps/issues/app.yaml": "title: Linear Issues\ndescription: The board\nicon: list-checks\ngrants:\n  workflows: [sync, triage]\n  steps: [update-issue]\n",
+  "apps/issues/app.yaml": "title: Linear Issues\ndescription: The board\nicon: list-checks\ngrants:\n  workflows: [sync, triage]\n  steps: [update-issue]\nscreenshots:\n  - { file: public/board.png, caption: The board }\n  - public/gone.png\n",
   "apps/issues/src/App.tsx": "export default () => null;\n",
+  "apps/issues/public/board.png": "not really a png",
   "apps/bare/app.yaml": "title: Bare\n",
   "apps/bare/src/App.tsx": "export default () => null;\n",
 };
@@ -108,7 +109,9 @@ describe("a package's detail", () => {
       assert.deepEqual(issues.grants, { workflows: ["sync", "triage"], steps: ["update-issue"] });
       assert.deepEqual(issues.can, { spends: true, acts: true, code: true }, "triage spends (an agent) and runs the package's steps; update-issue acts");
       assert.deepEqual(d.apps[0]!.can, { spends: false, acts: false, code: false });
-      assert.equal(issues.files, 2);
+      assert.equal(issues.files, 3);
+      assert.deepEqual(issues.screenshots, [{ path: "apps/issues/public/board.png", caption: "The board" }], "a listed file the archive lacks is left out");
+      assert.equal(d.apps[0]!.screenshots, undefined);
 
       // Workflows: inputs, the closure's types, grants, flags, secrets.
       const by = Object.fromEntries(d.workflows.map((w) => [w.name, w]));
@@ -151,7 +154,28 @@ describe("a package's detail", () => {
 
       const s = summarizeDetail(d);
       assert.deepEqual(s.apps.map((a) => a.title), ["Bare", "Linear Issues"]);
+      assert.deepEqual(s.apps[1]!.screenshots, issues.screenshots);
       assert.deepEqual([s.workflows, s.steps, s.concepts, s.readme], [4, 2, 2, true]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("says which steps strut.yaml's job: gives the job agent, by their names inside the package, and which ask first; the summary carries it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "strut-detail-job-"));
+    try {
+      const files: Record<string, string> = {
+        ...FILES,
+        "strut.yaml": "package: acme/linear\nversion: 1.4.0\njob:\n  tools: ['*']\n  approve: [update-issue]\n",
+      };
+      for (const [rel, body] of Object.entries(files)) {
+        await mkdir(dirname(join(root, rel)), { recursive: true });
+        await writeFile(join(root, rel), body);
+      }
+      const d = await derivePackageDetail({ ...(await readPackage(root)), dir: root });
+      assert.deepEqual(d.job, { tools: ["list-issues", "update-issue"], approve: ["update-issue"] });
+      assert.deepEqual(summarizeDetail(d).job, d.job);
+      assert.equal((await derivePackageDetail({ ...(await readPackage(root)), job: undefined, dir: root })).job, undefined, "no job: key, no line");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -38,6 +38,7 @@ import type { RunStore } from "./store.js";
 import { summarizeFromEvents } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { ArtifactsCapability } from "./capabilities.js";
+import type { BuildInfo } from "./apps/build.js";
 import type { PublicSurfaceService } from "./public-surface.js";
 import type { ListedRunnable } from "./public-runnable.js";
 import { declaredPaths, outputOnlySummary as outputOnly, publicEvent, publicSummary, relativeFile, stepHelpers } from "./public-surface.js";
@@ -50,8 +51,11 @@ import { isPriced, runnableReserve } from "./public-runnable.js";
 import { parseAuthorization, tokenRefusal, type VerifiedToken } from "./l402.js";
 import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type CreditRefusal } from "./public-credit.js";
 import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
-import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
+import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_FILES_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
+import { parseAttachments, type Attachment } from "./ai/attachments.js";
 import type { PublicTools } from "./public-tools.js";
+import { defaultVisitorAddress } from "./visitor-address.js";
+import { JOIN_HEADERS, joinLang, joinPage, joinQrScript } from "./public-join.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -69,6 +73,19 @@ export interface PublicRouteDeps {
   liveStatus: (workflow: string, runId: string) => string;
   /** Requests per visitor address per minute (`PUBLIC_REQUESTS_PER_MINUTE`). */
   ratePerMinute?: number;
+  /** Whose budget a request counts against when it is not its address's:
+   *  a key and that key's limit a minute. createStrut's counts a request
+   *  carrying an ACTIVE worker's visitor session under that worker
+   *  (plans/human-steps.md §5.2, `TASK_REQUESTS_PER_MINUTE`), so a room of
+   *  workers behind one address is not one budget. Undefined: the address's. */
+  budgetKey?: (c: Context) => { key: string; limit: number } | undefined;
+  /** Who a request is from (src/visitor-address.ts): the socket's peer, or
+   *  `x-forwarded-for` read through the TRUSTED proxies createStrut was
+   *  booted with. Absent: the default set. */
+  visitorAddress?: (c: Context) => string;
+  /** This server's base as the request reached it (an origin plus any
+   *  mount path), for the apps' share links. Absent: the request's origin. */
+  baseOf?: (c: Context) => string;
   /** The apps in the public view, each at the version it serves: what a
    *  visitor's host lists and frames (plans/public-surface.md §5). */
   apps?: {
@@ -78,6 +95,8 @@ export interface PublicRouteDeps {
   };
   /** The headers an app's document is served with (it runs: it is the app). */
   documentHeaders?: (path: string) => Record<string, string>;
+  /** The server's name (its brand's, src/brand.ts), for the invite page. */
+  serverName?: () => Promise<string | undefined>;
   /** What anyone may run, and for how much (plans/paid-runs.md §2,
    *  `listRunnable`): `GET /public`'s `runnable`. */
   runnable?: () => Promise<ListedRunnable[]>;
@@ -104,8 +123,9 @@ export interface PublicLaunchDeps {
   workflowCap(name: string): Promise<number | undefined>;
   /** Launch the run detached, as published, `origin: "public"`, under the
    *  id the caps minted, with its cap (`RunOptions.maxCostUsd`) and, when
-   *  priced, the credit token's id (`run.start.credit`). */
-  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string; visitor?: string }): void;
+   *  priced, the credit token's id (`run.start.credit`), and the files the
+   *  launch carried (an item with `attachments: true`). */
+  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string; visitor?: string; attachments?: Attachment[] }): void;
   /** Cancel a live run's tree: 202, or why not (404, 409). */
   cancel(name: string, runId: string): Promise<{ status: 202 | 404 | 409; body: Record<string, unknown> }>;
   /** Launches one visitor address may make a minute (`PUBLIC_LAUNCHES_PER_MINUTE`). */
@@ -121,6 +141,8 @@ export interface PublicLaunchOutcome {
   status: 202 | 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 503;
   body: Record<string, unknown>;
   headers?: Record<string, string>;
+  /** The key the launch went under when `defaultKey` made it. */
+  key?: string;
 }
 
 /** One public launch (§3's order): who, what, and the credential. */
@@ -131,27 +153,107 @@ export interface PublicLaunchRequest {
   who: string;
   /** `Authorization` as sent: a credit token as `L402 <macaroon>:<preimage>`. */
   authorization?: string | undefined;
-  /** The body (`{ input?, key? }` and nothing else), read only once the
-   *  budget, the item and the drain have answered; or the refusal reading
-   *  it came to (too big, not JSON). */
-  readBody: () => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
+  /** The body (`{ input?, key? }`, and `attachments` for an item that takes
+   *  files), read only once the budget, the item and the drain have
+   *  answered — at most `max` bytes, which the item decides; or the refusal
+   *  reading it came to (too big, not JSON). */
+  readBody: (max: number) => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
   /** What scopes a `key` when no credit token does (the visit, for a
    *  visitor's page). Default: the address. */
   scope?: string;
   /** A visitor's page's launch: the visit's hash, on the run's `run.start`
    *  (plans/paid-runs.md §10) — what lets that visit read it back. */
   visitor?: string;
+  /** The key a PRICED launch is sent under when its body names none, made
+   *  from the input as the workflow's `input:` block parsed it (an agent's
+   *  door, src/public-agents.ts): a retry with the same input — fields in
+   *  any order — joins the run in flight. Scoped by the credit token, so
+   *  never applied to a free launch, whose callers share an address. */
+  defaultKey?: (input: unknown) => string;
 }
 
-/** What `publicRoutes` hands back to the server: the launch, for the
- *  visitor's door. */
+/** One public tool call (§3's order), whichever door it came through. */
+export interface PublicCallRequest {
+  type: string;
+  /** The caller's address: the calls' budget, its share of calls in flight. */
+  who: string;
+  /** `Authorization` as sent: a credit token as `L402 <macaroon>:<preimage>`. */
+  authorization?: string | undefined;
+  /** The body (`{ config }` and nothing else), read only once the budget,
+   *  the door and the drain have answered; or the refusal reading it came to. */
+  readBody: () => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
+}
+
+/** An answer of the doors below, as data: the route's status, body and
+ *  headers. */
+export interface PublicAnswer {
+  status: number;
+  body: Record<string, unknown>;
+  headers?: Record<string, string>;
+}
+
+/** What `publicRoutes` hands back to the server: the doors a second front
+ *  door shares — a visitor's page's `run/launch` and an agent's tools on
+ *  `POST /public/mcp` (plans/paid-runs.md §10) — so admission, budgets,
+ *  caps, price, keys and drain are ONE code path whichever way a caller
+ *  came. */
 export interface PublicDoors {
   launch(r: PublicLaunchRequest): Promise<PublicLaunchOutcome>;
+  /** A tool's call: the calls' per-address budget, the drain, the body, then
+   *  src/public-tools.ts `call`. */
+  call(r: PublicCallRequest): Promise<PublicAnswer>;
+  /** The launcher's view of a public run, with its RUN TOKEN (§3): 404 for a
+   *  token that is not that run's. `wait` holds while it is in flight (s,
+   *  at most `PUBLIC_RUN_WAIT_MAX_S`). */
+  run(r: { name: string; runId: string; token: string | undefined; wait?: number }): Promise<PublicAnswer>;
+  /** A credit token's balance (`GET /public/credit`). */
+  credit(r: { authorization: string | undefined }): Promise<PublicAnswer>;
+  /** A payer with no preimage (`POST /public/credit/claim`): the macaroon alone. */
+  claim(r: { macaroon: string; who: string }): Promise<PublicAnswer>;
+  /** What anyone may run here, and for how much (`GET /public`'s `runnable`). */
+  runnable(): Promise<ListedRunnable[]>;
+  /** `GET /public` itself: everything the public view shows. */
+  listing(): Promise<PublicListing>;
+  /** Count one request against `who`'s `/public` budget (1200 a minute):
+   *  true when it is over — for a read served outside the prefix
+   *  (`GET /llms.txt`). */
+  overBudget(who: string): boolean;
+}
+
+/** `GET /public`: what the public view shows, and what anyone may run. */
+/** What this server's public view lets another strut UI do with it
+ *  (specs/API.md §17.9): `remote` — its public apps may be hosted by any
+ *  strut UI, `?app=<name>&public=1&from=<this server>`, its `POST
+ *  /public/mcp` answering such a page across origins. A version, raised when
+ *  what such a host may rely on changes; absent on a strut from before it. */
+export const PUBLIC_HOST = { remote: 1 } as const;
+
+export interface PublicListing {
+  /** What another strut UI may do with this server's public view. */
+  host: typeof PUBLIC_HOST;
+  workflows: Array<{ name: string; activeVersion: string; versions: string[]; description?: string; category?: string; runs: boolean }>;
+  steps: Array<{ type: string; source: string; description?: string; effect?: string }>;
+  concepts: Array<{ name: string; description?: string; pages: number }>;
+  types: string[];
+  apps: PublicAppInfo[];
+  runnable: ListedRunnable[];
+}
+
+/** A public app's share links on `base` (this server as the person reaches
+ *  it, with any mount path such as `/lab`): `link` the visitor's page
+ *  (web/src/page.ts `pickPage`: `?app=&solo=1&public=1`), `peelLink` the
+ *  same opened in Peel (its `PublicAppLink`). Never built by hand. */
+export function publicAppLinks(base: string, name: string): { link: string; peelLink: string } {
+  const link = `${base.replace(/\/+$/, "")}/?app=${encodeURIComponent(name)}&solo=1&public=1`;
+  return { link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
 }
 
 /** A public app as a visitor's host reads it. */
 export interface PublicAppInfo {
   name: string;
+  /** Its share links (`publicAppLinks`), from the request's base. */
+  link?: string;
+  peelLink?: string;
   /** The version the public view serves: the held release's. */
   version: string;
   title: string;
@@ -160,6 +262,13 @@ export interface PublicAppInfo {
   /** The browser features the version's frame is granted (`app.yaml`'s
    *  `permissions:`), which a visitor's host sets before the document loads. */
   permissions?: string[];
+  /** The wallet connection the version REQUESTS (its `dist/build.json`'s
+   *  `wallet`, as a member's host reads it, specs/WALLET.md §1.1): what a
+   *  native host's connect sheet asks the visitor for. Nothing else of the
+   *  build is shown. */
+  wallet?: BuildInfo["wallet"];
+  /** Where the visitor's account widget sits by default (`app.yaml`'s `account:`). */
+  account?: BuildInfo["account"];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its
@@ -172,6 +281,9 @@ export const PUBLIC_PATH = /^\/public(?:\/|$)/;
  *  these. */
 export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel)|steps\/.+\/run)$/;
 
+/** How long the launcher's view waits, once the run ended, for its charge
+ *  before it answers `charge_pending`. */
+const LAUNCHER_CHARGE_WAIT_MS = 2000;
 /** Requests one visitor address may make to `/public` in a minute. */
 export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
 /** Tool calls one visitor address may make in a minute (beside launches'
@@ -185,16 +297,6 @@ function creditRefusal(c: Context, r: Pick<CreditRefusal, "status" | "code" | "e
   if (r.retryAfter !== undefined) headers["retry-after"] = String(r.retryAfter);
   if (r.status === 401) headers["www-authenticate"] = `L402 error="${r.code}"`;
   return c.json({ error: r.error, code: r.code }, r.status, headers);
-}
-
-/** The visitor's address: the first `x-forwarded-for` hop when a proxy in
- *  front set one, else the socket's. A budget, not a boundary — a client
- *  can name any address in the header. */
-export function visitorAddress(c: Context): string {
-  const fwd = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-  if (fwd) return fwd;
-  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming;
-  return incoming?.socket?.remoteAddress ?? "unknown";
 }
 
 const enc = encodeURIComponent;
@@ -230,6 +332,7 @@ function launcherArtifacts(name: string, runId: string, output: unknown): Array<
 
 export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors {
   const { surface, workspace, store } = deps;
+  const visitorAddress = deps.visitorAddress ?? defaultVisitorAddress;
   const notPublic = (c: Context, what: string) => c.json({ error: `${what} is not public on this strut server` }, 404);
 
   // Before every route below: a browser on another origin may read these
@@ -238,6 +341,17 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // minute. Reads and the visitor door only: a write elsewhere under the prefix gets no CORS.
   const limit = deps.ratePerMinute ?? PUBLIC_REQUESTS_PER_MINUTE;
   const counts = new Map<string, { minute: number; n: number }>();
+  /** Count one request of `who`'s: over this minute's budget (`max`)? */
+  const overRequestBudget = (who: string, max = limit): boolean => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const at = counts.get(who);
+    if (!at || at.minute !== minute) {
+      if (counts.size > 10_000) for (const [k, v] of counts) if (v.minute !== minute) counts.delete(k);
+      counts.set(who, { minute, n: 1 });
+      return false;
+    }
+    return ++at.n > max;
+  };
   const publicMiddleware = async (c: Context, next: () => Promise<void>) => {
     const method = c.req.method;
     if (method === "OPTIONS") {
@@ -245,30 +359,52 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET, HEAD, POST",
         // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
-        // `x-strut-visit`: a visitor's page's host names the visit (§10).
-        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, x-strut-visit",
+        // `x-strut-visit`: a visitor's page's host names the visit (§10);
+        // `x-strut-visitor`: a signed-in visitor's token beside a credit
+        // token (plans/app-repos.md §5.2). `mcp-method` / `mcp-name`: what
+        // an MCP client may send beside a request whose envelope names a
+        // newer protocol version.
+        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, x-strut-visit, x-strut-visitor",
         "access-control-max-age": "600",
       });
     }
     // Reads, a visitor's page calling its app (`POST /public/mcp`), and a
     // launch and its cancel (plans/paid-runs.md §3).
     if (method !== "GET" && method !== "HEAD" && !(method === "POST" && PUBLIC_POST.test(c.req.path))) return next();
-    const minute = Math.floor(Date.now() / 60_000);
-    const who = visitorAddress(c);
-    const at = counts.get(who);
-    if (!at || at.minute !== minute) {
-      if (counts.size > 10_000) for (const [k, v] of counts) if (v.minute !== minute) counts.delete(k);
-      counts.set(who, { minute, n: 1 });
-    } else if (++at.n > limit) {
-      return c.json({ error: `too many requests: ${limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
+    // An active worker's own budget (a key no address can be), else the address's.
+    const own = deps.budgetKey?.(c);
+    if (own ? overRequestBudget(`\0${own.key}`, own.limit) : overRequestBudget(visitorAddress(c))) {
+      return c.json({ error: `too many requests: ${own?.limit ?? limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
     }
     c.header("access-control-allow-origin", "*");
     // A browser's L402 client reads the challenge's header.
     c.header("access-control-expose-headers", "www-authenticate, retry-after");
     await next();
+    // A handler that answers with a Response of its own — `POST /public/mcp`,
+    // the MCP door's — never carries what `c.header` set: without this a
+    // visitor's page hosted by ANOTHER strut UI (specs/API.md §17.9) passes
+    // the preflight and then cannot read the answer.
+    if (!c.res.headers.get("access-control-allow-origin")) {
+      const res = new Response(c.res.body, c.res);
+      res.headers.set("access-control-allow-origin", "*");
+      res.headers.set("access-control-expose-headers", "www-authenticate, retry-after");
+      c.res = res;
+    }
   };
   // One registration: Hono's `/public/*` matches `/public` too.
   app.use("/public/*", publicMiddleware);
+
+  // A worker invite's page (plans/human-steps.md §5.8, src/public-join.ts):
+  // static but for the server's name ("Acme invites you") and the worker's
+  // language (`?lang=`, else the `join_lang` cookie, else the browser's), the invite after `#` read by its
+  // own script and never sent.
+  app.get("/public/join", async (c) => {
+    const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"), c.req.header("cookie"));
+    return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
+  });
+  app.get("/public/join/qrcode.js", async (c) =>
+    c.body(await joinQrScript(), 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }),
+  );
 
   /** The workflow when it is public, else the 404 to answer. */
   const publicWorkflow = async (c: Context) => {
@@ -353,11 +489,12 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
 
   // ── The surface ─────────────────────────────────────────────────────────
 
-  app.get("/public", async (c) => {
+  const listing: PublicDoors["listing"] = async () => {
     const s = await surface.get();
     const tree = s.concepts.length ? await surface.conceptTree() : undefined;
     const roots = tree ? tree.concepts.filter((x) => !x.parent) : [];
-    return c.json({
+    return {
+      host: PUBLIC_HOST,
       workflows: await listedWorkflows(),
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),
@@ -365,22 +502,27 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       apps: await listedApps(),
       // Listed whether or not its definition is public (decision 11).
       runnable: (await deps.runnable?.()) ?? [],
-    });
-  });
+    };
+  };
+  app.get("/public", async (c) => c.json(await listing()));
 
   // ── Apps ────────────────────────────────────────────────────────────────
 
-  const listedApps = async (): Promise<PublicAppInfo[]> => {
+  /** The base a share link is built on: the host's, else the request's origin. */
+  const baseOf = (c: Context): string => deps.baseOf?.(c) ?? new URL(c.req.url).origin;
+  const withLinks = (info: PublicAppInfo, c?: Context): PublicAppInfo => (c ? { ...info, ...publicAppLinks(baseOf(c), info.name) } : info);
+
+  const listedApps = async (c?: Context): Promise<PublicAppInfo[]> => {
     if (!deps.apps) return [];
     const out: PublicAppInfo[] = [];
     for (const a of (await surface.get()).apps) {
       const info = await deps.apps.info(a.name).catch(() => null);
-      if (info) out.push(info);
+      if (info) out.push(withLinks(info, c));
     }
     return out;
   };
 
-  app.get("/public/apps", async (c) => c.json(await listedApps()));
+  app.get("/public/apps", async (c) => c.json(await listedApps(c)));
 
   // The page itself: the document of the version the public view serves,
   // carrying the PUBLIC identity (it opens `POST /public/mcp` for this app
@@ -398,7 +540,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const name = c.req.param("name");
     if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
     const info = await deps.apps.info(name).catch(() => null);
-    return info ? c.json(info) : notPublic(c, `app "${name}"`);
+    return info ? c.json(withLinks(info, c)) : notPublic(c, `app "${name}"`);
   });
 
   // ── Workflows ───────────────────────────────────────────────────────────
@@ -484,34 +626,52 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
    *  output, error, what it spent and its declared artifacts with links
    *  here — and, once it ended and was charged, `charged`, in dollars, as
    *  the ledger recorded it. A free run is charged nothing: `charged: 0`,
-   *  its cost (`totals.cost`) the seller's. `?wait=<s>` holds while it is in flight (at most 55 s). With
-   *  `results: "run"`, the summary as a public run shows it. */
-  const launcherView = async (c: Context, got: OpenRun) => {
+   *  its cost (`totals.cost`) the seller's. `waitS` holds while it is in
+   *  flight (at most 55 s). With `results: "run"`, the summary as a public
+   *  run shows it. */
+  const launcherBody = async (name: string, runId: string, open: OpenRun["open"], waitS: number): Promise<Record<string, unknown>> => {
     const runs = deps.launches!.runs;
-    const waitS = Number(c.req.query("wait") ?? 0);
     const deadline = Date.now() + 1000 * Math.min(PUBLIC_RUN_WAIT_MAX_S, Number.isFinite(waitS) && waitS > 0 ? waitS : 0);
-    let summary = await store.getRunSummary(got.name, got.runId);
-    while ((!summary || runs.pending(got.name, got.runId)) && Date.now() < deadline) {
+    let summary = await store.getRunSummary(name, runId);
+    while (!summary && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250));
-      summary = await store.getRunSummary(got.name, got.runId);
+      summary = await store.getRunSummary(name, runId);
     }
-    const ended = !!summary && !runs.pending(got.name, got.runId);
-    const charged = ended ? await runs.charged(got.name, got.runId).catch(() => undefined) : undefined;
+    // Ended: its charge follows at once, unless the ledger refuses it for a
+    // while (it is tried again) — then the run reads as ended with its charge
+    // pending, never as a run still going.
+    const chargeBy = Math.min(deadline, Date.now() + LAUNCHER_CHARGE_WAIT_MS);
+    while (summary && runs.pending(name, runId) && Date.now() < chargeBy) await new Promise((r) => setTimeout(r, 100));
+    const ended = !!summary && !runs.pending(name, runId);
+    const chargePending = !!summary && !ended;
+    const charged = ended ? await runs.charged(name, runId).catch(() => undefined) : undefined;
     let base: Record<string, unknown>;
     if (summary) base = { ...summary };
     else {
-      const events = await store.getRunEvents(got.name, got.runId);
-      const partial = summarizeFromEvents(got.name, got.runId, events, deps.liveStatus(got.name, got.runId));
-      base = partial ? { ...(partial as unknown as Record<string, unknown>) } : { runId: got.runId, workflow: got.name, status: deps.liveStatus(got.name, got.runId) };
+      const events = await store.getRunEvents(name, runId);
+      const partial = summarizeFromEvents(name, runId, events, deps.liveStatus(name, runId));
+      base = partial ? { ...(partial as unknown as Record<string, unknown>) } : { runId, workflow: name, status: deps.liveStatus(name, runId) };
     }
-    const shown = got.open === "all" ? publicSummary(base) : outputOnly(base);
-    const artifacts = launcherArtifacts(got.name, got.runId, summary?.output);
-    return c.json({
+    const shown = open === "all" ? publicSummary(base) : outputOnly(base);
+    const artifacts = launcherArtifacts(name, runId, summary?.output);
+    return {
       ...shown,
       ...(artifacts ? { artifacts } : {}),
       // What the run was charged, from the ledger: a free run nothing.
       ...(ended ? { charged: microsToUsd(charged ?? 0) } : {}),
-    });
+      ...(chargePending ? { charge_pending: true } : {}),
+    };
+  };
+  const launcherView = async (c: Context, got: OpenRun) => c.json(await launcherBody(got.name, got.runId, got.open, Number(c.req.query("wait") ?? 0)));
+
+  /** A launcher's run, read by its token alone (an agent's `get_run`). */
+  const runByToken: PublicDoors["run"] = async ({ name, runId, token, wait }) => {
+    const missing = { status: 404, body: { error: `no run "${runId}" of "${name}" for that token` } };
+    if (!deps.launches || !runId || /[/\\]|\.\./.test(runId) || !isPublicRunToken(name, runId, token)) return missing;
+    const start = (await store.getRunEvents(name, runId)).find((e) => e.type === "run.start");
+    if (start ? start.origin !== "public" : !deps.launches.runs.pending(name, runId)) return missing;
+    const all = (await surface.workflow(name))?.runs || (await surface.runnable("workflow", name))?.results === "run";
+    return { status: 200, body: await launcherBody(name, runId, all ? "all" : "output", wait ?? 0) };
   };
 
   app.get("/public/workflows/:name/runs/:runId/events", async (c) => {
@@ -591,7 +751,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return { status: r.status, body: { error: r.error, code: r.code }, headers };
   };
 
+  /** One launch; the key a `defaultKey` made rides back on the outcome. */
   const launch = async (r: PublicLaunchRequest): Promise<PublicLaunchOutcome> => {
+    let made: string | undefined;
+    const out = await launchOnce(r.defaultKey ? { ...r, defaultKey: (input) => (made = r.defaultKey!(input)) } : r);
+    return made ? { ...out, key: made.slice(0, PUBLIC_RUN_KEY_MAX) } : out;
+  };
+  const launchOnce = async (r: PublicLaunchRequest): Promise<PublicLaunchOutcome> => {
     const launches = deps.launches;
     const { name, who } = r;
     const refuse = (status: PublicLaunchOutcome["status"], error: string, headers?: Record<string, string>): PublicLaunchOutcome => ({ status, body: { error }, ...(headers ? { headers } : {}) });
@@ -602,21 +768,37 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const draining = launches.draining();
     if (draining) return refuse(503, draining, { "retry-after": "60" });
 
-    // The body: `input` and `key` alone, validated against the `input:`
-    // block. Nothing a stranger sends picks the version, the knobs, a job,
-    // a callback or files.
-    const read = await r.readBody();
+    // The body: `input` and `key`, validated against the `input:` block, and
+    // files only where the item takes them (`attachments: true`, the chat's
+    // caps). Nothing a stranger sends picks the version, the knobs, a job or
+    // a callback.
+    const takesFiles = item.kind === "workflow" && item.attachments === true;
+    const read = await r.readBody(takesFiles ? PUBLIC_RUN_FILES_BODY_MAX_BYTES : PUBLIC_RUN_BODY_MAX_BYTES);
     if ("refused" in read) return read.refused;
     const body = read.body as Record<string, unknown>;
     if (!body || typeof body !== "object" || Array.isArray(body)) return refuse(400, "the body is a JSON object: { input?, key? }");
-    if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
-    const extra = Object.keys(body).filter((k) => k !== "input" && k !== "key");
-    if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key } alone — drop ${extra.join(", ")}`);
-    const key = body["key"];
-    if (key !== undefined && (typeof key !== "string" || !key || key.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
+    const { attachments: sentFiles, ...fields } = body;
+    if (Buffer.byteLength(JSON.stringify(fields)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
+    if (sentFiles !== undefined && !takesFiles) return refuse(400, `workflow "${name}" takes no files from a public launch — drop attachments (its owner turns them on with attachments: true on its runnable entry)`);
+    const extra = Object.keys(fields).filter((k) => k !== "input" && k !== "key");
+    if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key${takesFiles ? ", attachments" : ""} } alone — drop ${extra.join(", ")}`);
+    let files: Attachment[] = [];
+    try {
+      files = parseAttachments(sentFiles);
+    } catch (err) {
+      return refuse(400, `attachments: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const sentKey = body["key"];
+    if (sentKey !== undefined && (typeof sentKey !== "string" || !sentKey || sentKey.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
     if (flow.inputBlock == null) return refuse(409, `workflow "${name}" no longer declares an input: block, so a stranger's input cannot be checked`);
     const parsed = flow.input.safeParse(body["input"] ?? {});
     if (!parsed.success) return refuse(400, `input: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
+    // A priced launch with no key of its own gets the caller's default, made
+    // from the parsed input: the credit token scopes it. A free one never:
+    // its callers share an address (a hosted agent's vendor), and two of them
+    // must not join each other's run.
+    const defaulted = sentKey === undefined && r.defaultKey && isPriced(item) ? r.defaultKey(parsed.data).slice(0, PUBLIC_RUN_KEY_MAX) : undefined;
+    const key: unknown = sentKey ?? defaulted;
     const disabled = await launches.disabled(name);
     if (disabled) return refuse(409, disabled);
 
@@ -701,6 +883,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
         ...(presented ? { credit: presented.tokenId } : {}),
         ...(r.visitor ? { visitor: r.visitor } : {}),
+        ...(files.length ? { attachments: files } : {}),
       });
     } catch (err) {
       admitted.release();
@@ -725,18 +908,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       who: visitorAddress(c),
       authorization: c.req.header("authorization"),
       // Read only once the cheaper refusals have answered.
-      readBody: async () => {
-        const length = Number(c.req.header("content-length") ?? 0);
-        const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } } };
-        if (length > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
-        const raw = await c.req.text();
-        if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
-        try {
-          return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
-        } catch {
-          return { refused: { status: 400 as const, body: { error: "the body is not JSON" } } };
-        }
-      },
+      readBody: (max) => readJsonBody(c, max),
     });
     return c.json(out.body, out.status, out.headers);
   });
@@ -772,30 +944,41 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     }
     return ++at.n > callLimit;
   };
-  app.post("/public/steps/:type{.+}/run", async (c) => {
-    const tools = deps.tools;
-    const type = c.req.param("type");
-    const who = visitorAddress(c);
-    if (overCallBudget(who)) return c.json({ error: `too many calls: ${callLimit} a minute` }, 429, { "retry-after": "60" });
-    if (!tools) return c.json({ error: `step "${type}" is not open to anyone to call on this strut server` }, 404);
-    const draining = tools.draining();
-    if (draining) return c.json({ error: draining }, 503, { "retry-after": "60" });
+  /** A JSON body of at most `max` bytes (256 KB unless a launch's item
+   *  takes files), read from the request, or the refusal. */
+  const readJsonBody = async (c: Context, max = PUBLIC_RUN_BODY_MAX_BYTES): Promise<{ body: unknown } | { refused: PublicLaunchOutcome }> => {
     const length = Number(c.req.header("content-length") ?? 0);
-    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
+    const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${Math.floor(max / 1024)} KB` } } };
+    if (length > max) return tooBig;
     const raw = await c.req.text();
-    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
-    let body: Record<string, unknown>;
+    if (Buffer.byteLength(raw) > max) return tooBig;
     try {
-      body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
     } catch {
-      return c.json({ error: "the body is not JSON" }, 400);
+      return { refused: { status: 400 as const, body: { error: "the body is not JSON" } } };
     }
-    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is a JSON object: { config }" }, 400);
+  };
+  const callTool: PublicDoors["call"] = async (r) => {
+    const tools = deps.tools;
+    const { type, who } = r;
+    if (overCallBudget(who)) return { status: 429, body: { error: `too many calls: ${callLimit} a minute` }, headers: { "retry-after": "60" } };
+    if (!tools) return { status: 404, body: { error: `step "${type}" is not open to anyone to call on this strut server` } };
+    const draining = tools.draining();
+    if (draining) return { status: 503, body: { error: draining }, headers: { "retry-after": "60" } };
+    const read = await r.readBody();
+    if ("refused" in read) return read.refused;
+    const body = read.body as Record<string, unknown>;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { status: 400, body: { error: "the body is a JSON object: { config }" } };
+    if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return { status: 413, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } };
     const extra = Object.keys(body).filter((k) => k !== "config");
-    if (extra.length) return c.json({ error: `a public call takes { config } alone — drop ${extra.join(", ")}` }, 400);
-    const presented = parseAuthorization(c.req.header("authorization"));
+    if (extra.length) return { status: 400, body: { error: `a public call takes { config } alone — drop ${extra.join(", ")}` } };
+    const presented = parseAuthorization(r.authorization);
     const a = await tools.call({ type, config: body["config"], ...(presented ? { presented } : {}), address: who });
-    return c.json(a.body, a.status, a.headers);
+    return { status: a.status, body: a.body as unknown as Record<string, unknown>, ...(a.headers ? { headers: a.headers } : {}) };
+  };
+  app.post("/public/steps/:type{.+}/run", async (c) => {
+    const a = await callTool({ type: c.req.param("type"), who: visitorAddress(c), authorization: c.req.header("authorization"), readBody: () => readJsonBody(c) });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   // ── Credit (plans/paid-runs.md §3's table, §4) ──────────────────────────
@@ -804,14 +987,64 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
    *  and in sats at its own rate, its end, the newest 50 entries. The token
    *  as `Authorization: L402 <macaroon>:<preimage>`; a token never used
    *  before is used here (the wallet asked once). */
-  app.get("/public/credit", async (c) => {
-    if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
-    const auth = parseAuthorization(c.req.header("authorization"));
-    if (!auth) return creditRefusal(c, { status: 401, code: "invalid_token", error: "invalid_token: present the token as Authorization: L402 <macaroon>:<preimage>" });
+  /** A credit refusal as an answer: `creditRefusal`, as data. */
+  const refusalAnswer = (r: Pick<CreditRefusal, "status" | "code" | "error" | "retryAfter">): PublicAnswer => {
+    const headers: Record<string, string> = {};
+    if (r.retryAfter !== undefined) headers["retry-after"] = String(r.retryAfter);
+    if (r.status === 401) headers["www-authenticate"] = `L402 error="${r.code}"`;
+    return { status: r.status, body: { error: r.error, code: r.code }, headers };
+  };
+  const creditView: PublicDoors["credit"] = async ({ authorization }) => {
+    if (!deps.credit || !(await deps.credit.selling())) return { status: 404, body: { error: "this strut server has sold no credit" } };
+    const auth = parseAuthorization(authorization);
+    if (!auth) return refusalAnswer({ status: 401, code: "invalid_token", error: "invalid_token: present the token as Authorization: L402 <macaroon>:<preimage>" });
     const used = await deps.credit.check(auth);
-    if (!used.ok) return creditRefusal(c, used);
+    if (!used.ok) return refusalAnswer(used);
     const view = await deps.credit.view(used.token.tokenId);
-    return view ? c.json(view) : c.json({ error: "no such token" }, 404);
+    if (!view) return { status: 404, body: { error: "no such token" } };
+    return { status: 200, body: { ...(view as unknown as Record<string, unknown>), runs: await creditRuns(view.entries) } };
+  };
+  /** The runs and calls a token paid for, from its newest entries — what a
+   *  caller whose answer was lost reads to find the run it launched (and its
+   *  run token) before it launches again (plans/paid-runs.md §10). */
+  const creditRuns = async (entries: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> => {
+    const byRun = new Map<string, Record<string, unknown>>();
+    for (const e of [...entries].reverse()) {
+      const subject = typeof e["subject"] === "string" ? e["subject"] : "";
+      const runId = typeof e["runId"] === "string" ? e["runId"] : "";
+      const m = /^(workflow|step):(.+)$/.exec(subject);
+      if (!m || !runId || (e["kind"] !== "hold" && e["kind"] !== "charge")) continue;
+      const cur = byRun.get(runId) ?? { kind: m[1], name: m[2], runId, at: e["at"] };
+      if (e["kind"] === "hold") cur["held_usd"] = Math.abs(Number(e["usd"] ?? 0));
+      else {
+        cur["charged_usd"] = Math.abs(Number(e["usd"] ?? 0));
+        if (e["outcome"]) cur["outcome"] = e["outcome"];
+      }
+      byRun.set(runId, cur);
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const r of [...byRun.values()].reverse()) {
+      const name = String(r["name"]);
+      const runId = String(r["runId"]);
+      if (r["kind"] === "workflow") {
+        const summary = await store.getRunSummary(name, runId).catch(() => null);
+        const charged = r["charged_usd"] !== undefined;
+        out.push({
+          ...r,
+          status: summary?.status ?? deps.liveStatus(name, runId),
+          ...(summary && !charged ? { charge_pending: true } : {}),
+          token: publicRunToken(name, runId),
+          url: `/public/workflows/${enc(name)}/runs/${enc(runId)}`,
+        });
+      } else {
+        out.push({ ...r, status: r["charged_usd"] !== undefined ? String(r["outcome"] ?? "answered") : "running, or answered and not yet charged" });
+      }
+    }
+    return out;
+  };
+  app.get("/public/credit", async (c) => {
+    const a = await creditView({ authorization: c.req.header("authorization") });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   /** A challenge for more credit than one run's reserve: `{ usd }` or
@@ -863,6 +1096,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   /** A payer with no preimage (§4.4): the macaroon alone, as `{ macaroon }`
    *  or `Authorization: L402 <macaroon>`. `pending`, `expired`, or
    *  `settled` with the preimage and the whole credential. */
+  const claimCredit: PublicDoors["claim"] = async ({ macaroon, who }) => {
+    if (!deps.credit || !(await deps.credit.selling())) return { status: 404, body: { error: "this strut server has sold no credit" } };
+    const got = await deps.credit.claim({ macaroon }, who);
+    if (!got.ok) return refusalAnswer(got);
+    const { ok: _ok, ...out } = got;
+    return { status: 200, body: out };
+  };
   app.post("/public/credit/claim", async (c) => {
     if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
     let macaroon = parseAuthorization(c.req.header("authorization"))?.macaroon;
@@ -877,10 +1117,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       }
     }
     if (!macaroon) return c.json({ error: "the body is { macaroon }" }, 400);
-    const got = await deps.credit.claim({ macaroon }, visitorAddress(c));
-    if (!got.ok) return creditRefusal(c, got);
-    const { ok: _ok, ...out } = got;
-    return c.json(out);
+    const a = await claimCredit({ macaroon, who: visitorAddress(c) });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   // After the run routes: a version's YAML, the catch-all.
@@ -994,5 +1232,5 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
 
-  return { launch };
+  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing, overBudget: (who) => overRequestBudget(who) };
 }

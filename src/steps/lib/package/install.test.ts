@@ -38,7 +38,7 @@ const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -213,5 +213,23 @@ describe("package/install — an agent asks, a person accepts", () => {
     const again = (await gated(ctx()).execute({ package: "acme/linear" }, { strutToolPath: "orchestrator/turn/004-package_install" })) as Record<string, unknown>;
     assert.equal((await decide(again["proposal"] as string, "reject")).status, "rejected");
     assert.deepEqual((await (await strut.app.request("/packages", { headers: auth })).json()) as unknown, { packages: [] });
+  });
+});
+
+describe("package/install's card — the job agent's tools", () => {
+  it("lists the steps the package gives the job agent, and which ask first", async () => {
+    const def = (await import("./install.js")).default;
+    const hit = {
+      package: "stadeum/pods",
+      publisher: "stadeum",
+      key: "k".repeat(52),
+      index: "idx",
+      version: "0.1.0",
+      digest: `sha256:${"a".repeat(64)}`,
+      detail: { apps: [], workflows: 0, steps: 2, concepts: 1, secrets: ["PODS_TOKEN"], job: { tools: ["claim", "workspace"], approve: ["workspace"] }, can: { spends: false, acts: true, code: true }, readme: false },
+    };
+    const card = await def.describe!({ package: "stadeum/pods" }, { services: { packages: { search: async () => ({ packages: [hit], peers: [] }) } } } as unknown as StepContext);
+    assert.match(card.summary!, /It gives the job agent 2 steps: claim, workspace \(workspace asks you first\)\./);
+    assert.deepEqual(card.fields!.find((f) => f.label === "Job agent's tools")?.value, "2 steps: claim, workspace (workspace asks you first)");
   });
 });

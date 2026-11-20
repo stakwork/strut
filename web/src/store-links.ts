@@ -126,14 +126,15 @@ export interface HitApp {
   title: string;
   description?: string;
   icon?: string;
+  screenshots?: Array<{ path: string; caption?: string }>;
   can: { spends: boolean; acts: boolean; code: boolean };
 }
 
 /** The apps a search's hits carry, each with its package — the Browse
  *  page's first row. Sorted by title, then package. */
-export function appsOf<A extends HitApp>(hits: ReadonlyArray<{ package: string; version: string; detail?: { apps: A[] } }>): Array<{ pkg: string; version: string; app: A }> {
-  const out: Array<{ pkg: string; version: string; app: A }> = [];
-  for (const h of hits) for (const app of h.detail?.apps ?? []) out.push({ pkg: h.package, version: h.version, app });
+export function appsOf<A extends HitApp>(hits: ReadonlyArray<{ package: string; version: string; digest: string; detail?: { apps: A[] } }>): Array<{ pkg: string; version: string; digest: string; app: A }> {
+  const out: Array<{ pkg: string; version: string; digest: string; app: A }> = [];
+  for (const h of hits) for (const app of h.detail?.apps ?? []) out.push({ pkg: h.package, version: h.version, digest: h.digest, app });
   return out.sort((a, b) => a.app.title.localeCompare(b.app.title) || a.pkg.localeCompare(b.pkg));
 }
 
@@ -162,6 +163,25 @@ export function conceptRoots<C extends { name: string; parents?: readonly string
     .filter((c) => !up(c))
     .map((root) => ({ root, pages: counts.get(root.name) ?? 0 }))
     .sort((a, b) => b.pages - a.pages || a.root.name.localeCompare(b.root.name));
+}
+
+/** The Concept tree's branches: the pages under each page, by the parent's
+ *  name, sorted by name. A page with several parents is under each; a parent
+ *  the list lacks holds nothing. What the store's tree opens level by level,
+ *  so a package's 750 pages are never one flat list. */
+export function conceptChildren<C extends { name: string; parents?: readonly string[] }>(concepts: readonly C[]): Map<string, C[]> {
+  const names = new Set(concepts.map((c) => c.name));
+  const out = new Map<string, C[]>();
+  for (const c of concepts) {
+    for (const p of new Set(c.parents ?? [])) {
+      if (!names.has(p) || p === c.name) continue;
+      const list = out.get(p);
+      if (list) list.push(c);
+      else out.set(p, [c]);
+    }
+  }
+  for (const list of out.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 /** "spends · acts · code", or "reads" when a thing does none of them. */

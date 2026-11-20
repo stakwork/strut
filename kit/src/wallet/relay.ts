@@ -9,10 +9,11 @@
  *  No dependency: the bridge is anything with ext-apps' `AppBridge`'s
  *  `setRequestHandler` and `notification`. */
 import {
-  NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, isWalletCapability,
-  isWalletErrorCode, nativeAppKey, notificationProblems, walletErrorBody, walletRequestMethod,
-  type NativeWalletApp, type NativeWalletMessage, type NativeWalletReply, type WalletCapability, type WalletErrorBody,
-  type WalletMethod, type WalletNotification,
+  NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, hostWalletCapabilityOf,
+  isWalletCapability, isWalletErrorCode, nativeAppKey, nativeWalletAppProblems, notificationProblems, readCreditReply, readSignInReply, walletErrorBody, walletRequestMethod,
+  type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWalletApp, type NativeWalletMessage,
+  type NativeWalletReply, type SignInReplyOutcome, type SignInRequest, type WalletCapability, type WalletErrorBody, type WalletMethod,
+  type WalletNotification,
 } from "./protocol.js";
 
 /** A StandardSchemaV1 that takes any value: the SDK wants one for a custom
@@ -44,8 +45,10 @@ export function nativeWalletOf(win: unknown = globalThis): NativeWallet | undefi
 
 /** Ask the native host what it offers this app. Undefined when it offers
  *  nothing, answers with something else, or not within `timeoutMs`: then
- *  the page simply has no wallet. */
+ *  the page simply has no wallet. An identity that is not one (no seller,
+ *  a request that is not one: `nativeWalletAppProblems`) is never sent. */
 export async function probeNativeWallet(native: NativeWallet, app: NativeWalletApp, timeoutMs = 5_000): Promise<WalletCapability | undefined> {
+  if (nativeWalletAppProblems(app).length) return undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reply = await Promise.race([
@@ -102,7 +105,16 @@ export function relayNativeWallet(opts: {
       if (r && typeof r === "object" && "error" in r) {
         throw rpcError(errorBodyOf(r.error) ?? walletErrorBody("OTHER", "the wallet refused"));
       }
-      if (r && typeof r === "object" && "result" in r) return r.result as Record<string, unknown>;
+      if (r && typeof r === "object" && "result" in r) {
+        // An app learns who signed in from `useVisitor()`, never from the
+        // wallet (plans/app-payments.md §4.4): no node key reaches a page,
+        // whatever the native host answered.
+        if (method === "get_info" && r.result && typeof r.result === "object" && "pubkey" in r.result) {
+          const { pubkey: _pubkey, ...info } = r.result as Record<string, unknown>;
+          return info;
+        }
+        return r.result as Record<string, unknown>;
+      }
       throw rpcError(walletErrorBody("INTERNAL", "the wallet answered with neither a result nor an error"));
     });
   }
@@ -160,4 +172,110 @@ export function nativeWalletNotifications(win: unknown = globalThis): { register
       };
     },
   };
+}
+
+// ── The host's own purchase (specs/WALLET.md §1.2) ─────────────────────────
+
+/** Ask the native host which of the host's own ops it takes. Undefined when
+ *  it answers anything else, refuses, or says nothing within `timeoutMs` (an
+ *  older native host): then there is no one-tap purchase, only the QR code. */
+export async function probeHostWallet(native: NativeWallet, timeoutMs = 5_000): Promise<HostWalletCapability | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reply = await Promise.race([
+      native.postMessage({ v: 1, op: "host_capability" }),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+    ]);
+    return hostWalletCapabilityOf((reply as { result?: unknown } | undefined)?.result);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Buy credit through the native wallet: one `buy_credit`, read with
+ *  `readCreditReply`. The wait ends at `timeoutMs` (the invoice's end, at the
+ *  latest) or when `signal` aborts (the person chose the QR code, the page
+ *  went): both a `fallback`, and the native host is asked to take its sheet
+ *  down (`buy_credit_cancel`) when it said it can. Its answer, should it
+ *  still come, goes to `onLate`: a payment it sent after all is no QR code's
+ *  to pay again. A rejected message is a `fallback` too. Never throws. */
+export async function buyCreditNatively(
+  native: NativeWallet,
+  purchase: CreditPurchase,
+  o: { timeoutMs: number; signal?: AbortSignal; cancel?: boolean; onLate?: (outcome: CreditReplyOutcome) => void },
+): Promise<CreditReplyOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  /** The page stopped waiting before the native host answered. */
+  let gaveUp = false;
+  const stop = (message: string): CreditReplyOutcome => ({ outcome: "fallback", code: "RESTRICTED", message });
+  try {
+    if (o.signal?.aborted) return stop("the page stopped waiting for the wallet");
+    if (!(o.timeoutMs > 0)) return stop("the invoice has ended");
+    const ended = new Promise<CreditReplyOutcome>((resolve) => {
+      timer = setTimeout(() => { gaveUp = true; resolve(stop("the wallet did not answer before the invoice ended")); }, o.timeoutMs);
+      onAbort = () => { gaveUp = true; resolve(stop("the page stopped waiting for the wallet")); };
+      o.signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    const answered = native.postMessage({ v: 1, op: "buy_credit", purchase }).then(
+      (reply) => readCreditReply(reply, purchase.payment_hash),
+      (err): CreditReplyOutcome => ({ outcome: "fallback", code: "INTERNAL", message: `the wallet did not answer: ${err instanceof Error ? err.message : String(err)}` }),
+    );
+    const outcome = await Promise.race([answered, ended]);
+    if (gaveUp && o.onLate) void answered.then((late) => o.onLate?.(late));
+    if (gaveUp && o.cancel) {
+      // Its sheet may still be up: a yes now would pay for a page that has
+      // moved on to the QR code (the claim would still credit it).
+      native.postMessage({ v: 1, op: "buy_credit_cancel", payment_hash: purchase.payment_hash }).catch(() => undefined);
+    }
+    return outcome;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) o.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Where a purchase the native host answered `pending` stands now
+ *  (`buy_credit_status`), read as its first answer was. A host that does
+ *  not answer within `timeoutMs`, or answers nothing a payment of this
+ *  invoice, is `pending` still: the person tapped, so never the QR code on
+ *  silence. Never throws. */
+export async function creditStatusNatively(native: NativeWallet, paymentHash: string, timeoutMs = 5_000): Promise<CreditReplyOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reply = await Promise.race([
+      native.postMessage({ v: 1, op: "buy_credit_status", payment_hash: paymentHash }),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+    ]);
+    const r = await readCreditReply(reply, paymentHash);
+    // Only a payment of this invoice that failed, or one proven, moves on.
+    return r.outcome === "fallback" && r.code !== "PAYMENT_FAILED" ? { outcome: "pending" } : r;
+  } catch {
+    return { outcome: "pending" };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Sign a visitor in through the native wallet (specs/WALLET.md §1.2
+ *  "sign_in"): one request, read with `readSignInReply`. The wait ends at
+ *  `timeoutMs` — the challenge's end: the seller refuses it after — as a
+ *  `RESTRICTED` refusal. A rejected message is `INTERNAL`. Never throws. */
+export async function signInNatively(native: NativeWallet, request: SignInRequest, o: { timeoutMs: number }): Promise<SignInReplyOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (!(o.timeoutMs > 0)) return { outcome: "refused", code: "RESTRICTED", message: "the sign-in challenge has ended" };
+    const ended = new Promise<SignInReplyOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ outcome: "refused", code: "RESTRICTED", message: "the wallet did not answer before the sign-in challenge ended" }), o.timeoutMs);
+    });
+    const answered = native.postMessage(request).then(
+      (reply) => readSignInReply(reply),
+      (err): SignInReplyOutcome => ({ outcome: "refused", code: "INTERNAL", message: `the wallet did not answer: ${err instanceof Error ? err.message : String(err)}` }),
+    );
+    return await Promise.race([answered, ended]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

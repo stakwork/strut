@@ -24,6 +24,7 @@ import { createNodeSchema } from "../../../graph/schema-crud.js";
 import { boundsOf } from "../../../graph/scope.js";
 import { SCHEMA_EDGE, edgeAliases, edgeRule, edgeSchemaRows, schemaRows } from "../../../graph/ladybug/ontology.js";
 import { SCHEMA_TYPE } from "../../../graph/ladybug/registry.js";
+import { THING_TYPE } from "../../../graph/strut-schemas.js";
 
 /** Bumped when the shape below changes: a copy refuses a format it does not know. */
 export const MEMORY_FORMAT = 1;
@@ -157,6 +158,8 @@ export async function ensureTypes(b: LadybugBackend, memory: Memory): Promise<vo
     todo = next;
   }
   for (const r of memory.edge_rules) {
+    // A rule against the root came from before it was refused: it is not carried.
+    if (r.source === THING_TYPE || r.target === THING_TYPE) continue;
     await b.schemas.createEdgeSchema(r.source, r.edge, r.target, {
       ...(r.temporal !== undefined ? { temporal: r.temporal } : {}),
       ...(r.cardinality !== undefined ? { cardinality: r.cardinality as "one" | "many" } : {}),

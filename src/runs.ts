@@ -16,7 +16,7 @@
  * `useWorkflow` name these steps (kit/src/hooks.ts). A sealed workflow (a
  * grading harness) is still refused by name: the steps are a model's door.
  */
-import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary } from "./core.js";
+import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary, RunTrial } from "./core.js";
 import type { ArtifactRef } from "./artifact-refs.js";
 import type { AttachmentInput } from "./ai/attachments.js";
 import { slimEvent } from "./run-step.js";
@@ -43,6 +43,9 @@ export interface RunListQuery {
    *  hash. Set by the visitor's door alone (src/public-surface.ts
    *  `visitorRuns`), never from a step's config. */
   visitor?: string;
+  /** Runs one actor launched: a signed-in visitor's own (plans/app-repos.md
+   *  §5.1). Set by the visitor's door alone, never from a step's config. */
+  actor?: string;
 }
 
 /** One row of `run/list`: the summary without its payloads (`input`,
@@ -92,6 +95,11 @@ export interface RunLaunchBy extends RunCaller {
   principal?: string;
   /** The caller's MCP servers, handed on (`ctx.mcp`). */
   mcp?: McpServer[];
+  /** The launching run's Concept branch (`ctx.branch`): the run it
+   *  launches is on it too (src/branches.ts). */
+  branch?: string;
+  /** The launching run is a trial (`ctx.trial`): so is the run it launches. */
+  trial?: RunTrial;
 }
 
 export interface RunLaunchResult {
@@ -241,6 +249,7 @@ export function matchesRunFilter(run: Partial<RunSummary> & { runId: string; sta
   if (q.automation && run.automation?.id !== q.automation) return false;
   if (q.job && run.job !== q.job) return false;
   if (q.visitor && run.visitor !== q.visitor) return false;
+  if (q.actor && run.actor !== q.actor) return false;
   const from = sinceMs(q.since);
   if (from !== undefined) {
     const launched = launchedAt(run);

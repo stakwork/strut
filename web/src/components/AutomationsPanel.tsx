@@ -133,7 +133,7 @@ export function AutomationsPanel(props: {
           {list?.map((a) => (
             <div class={`auto-card${a.enabled ? "" : " is-paused"}`} key={a.id}>
               <div class="auto-card-head">
-                <button class="auto-name" onClick={() => setEditing(a)} title="Edit">{a.name}</button>
+                {a.package ? <span class="auto-name">{a.name}</span> : <button class="auto-name" onClick={() => setEditing(a)} title="Edit">{a.name}</button>}
                 <label class="auto-toggle" title={a.enabled ? "Pause" : "Resume"}>
                   <input
                     type="checkbox"
@@ -144,24 +144,29 @@ export function AutomationsPanel(props: {
                 </label>
               </div>
               <div class="auto-summary"><ClockIcon size={12} /> {a.summary}</div>
+              {a.package && <div class="auto-hint">From the package {a.package}: it sets when this runs and with what, at each release. Pause it here.</div>}
               <div class="auto-meta">
                 {a.enabled && props.workflowDisabled && <span>Held: the workflow is disabled</span>}
                 {a.enabled && !props.workflowDisabled && a.nextRunAt && <span title={when(a.nextRunAt)}>Next run {relativeTime(a.nextRunAt)}</span>}
                 {a.enabled && !props.workflowDisabled && !a.nextRunAt && <span>No more runs scheduled</span>}
+                {a.runsAs && <span title="Its runs act as this person, with their own secrets, and are billed to them">Runs as {a.runsAs}</span>}
                 {a.lastRun && (
                   <button class="auto-link" onClick={() => props.onOpenRun(props.workflow, a.lastRun!.runId)}>
                     Last run <span class={`badge badge-${a.lastRun.status === "success" ? "ok" : a.lastRun.status === "running" ? "accent" : a.lastRun.status === "error" ? "danger" : "warning"}`}>{a.lastRun.status}</span>
                   </button>
                 )}
               </div>
-              {a.lastFireError && <div class="auto-error">The last scheduled run could not start: {a.lastFireError}</div>}
+              {a.nobodyToRunAs && <div class="auto-error">It cannot run yet: {a.nobodyToRunAs}</div>}
+              {a.lastFireError && a.lastFireError !== a.nobodyToRunAs && <div class="auto-error">The last scheduled run could not start: {a.lastFireError}</div>}
               <div class="auto-card-actions">
                 <button class="btn" disabled={a.running || props.workflowDisabled}
                   title={props.workflowDisabled ? "The workflow is disabled" : a.running ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
-                <button class="btn" onClick={() => setEditing(a)}>Edit</button>
-                <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
-                  onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
+                {!a.package && <button class="btn" onClick={() => setEditing(a)}>Edit</button>}
+                {!a.package && (
+                  <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
+                    onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
+                )}
               </div>
             </div>
           ))}

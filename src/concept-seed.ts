@@ -9,6 +9,7 @@ import type { NodeSchema } from "./graph/schema-resolver.js";
 import { composeNodeKey } from "./graph/node-writer.js";
 import { GENERIC_NODE_PROPERTIES } from "./graph/strut-schemas.js";
 import { dumpYaml } from "./yaml.js";
+import { readPageClaims, type PageClaim } from "./claims-schemas.js";
 
 /**
  * Concept files → `Concept` nodes: graph DATA shipped in git, on either
@@ -32,7 +33,7 @@ import { dumpYaml } from "./yaml.js";
  * page of any set in the same call, or a node already in the graph. Strut
  * seeds its own set (`STRUT_CONCEPTS`: the `Workflow Builder` page the
  * builder's prompt reads, the `Job` page the job workflow puts in its
- * agent's prompt) at boot; a host seeds its own sets with the same call once
+ * agent's prompt, the `Dream` pages the dream's rules are) at boot; a host seeds its own sets with the same call once
  * `createStrut` returned, so a page of its own can hang under one of
  * strut's. An attribute the graph's `Concept` does not declare is left out,
  * one log line naming it.
@@ -99,6 +100,10 @@ export interface ConceptSet {
    *  overwritten — and a deleted node under a page's name is taken whoever
    *  stamped it, since the install checked every live name first. */
   keepEdited?: boolean;
+  /** A REPO's set (app-repos.md §3.1): a live node under a page's name that
+   *  no seeder stamped — a page made here — is taken as that page and
+   *  stamped, so a page put in a repo by Create repo stays the same node. */
+  adopt?: boolean;
 }
 
 export interface ConceptFile {
@@ -115,6 +120,11 @@ export interface ConceptFile {
   docs?: string;
   /** What `unique_source_id` carries: `<prefix><file>@<hash>`. */
   stamp: string;
+  /** The front matter's `claims:` block (plans/claim-trials.md §3): the
+   *  rules the page's readers are held to and the cases that test each.
+   *  Never an attribute, and not part of the page's version: whoever seeds
+   *  the page records them (`ConceptSeedOutcome.claims`). */
+  claims?: PageClaim[];
 }
 
 /** create / update write the node; keep is ours and unchanged; skip is not ours to touch. */
@@ -139,10 +149,16 @@ export interface ConceptSeedOutcome {
   error?: string;
   /** Kept although its text is not the file's (`keepEdited`). */
   edited?: true;
+  /** The page's `claims:` block, on a page that is the seed's (created,
+   *  updated or kept): what the caller records as claims on the Concept
+   *  (`Trials.seed`, src/trials.ts). */
+  claims?: PageClaim[];
 }
 
-/** The pages strut ships (`src/concepts/`). Before strut shipped them the
- *  stakgraph lab seeded the same two files, under its own prefixes.
+/** The pages strut ships (`src/concepts/`): a root per agent — `Workflow
+ *  Builder`, `Job`, and `Dream`, the dream's own rules with a page per kind
+ *  of source under it — and the pages under them. Before strut shipped them
+ *  the stakgraph lab seeded the first two files, under its own prefixes.
  *  `Workflow Build` was the builder's entry under `Job`, there only because
  *  the orchestrator read `Job` alone; it reads both roots now, and the job
  *  agent's way to the builder is in `Job`'s own docs. `Job App` (an app a
@@ -180,7 +196,7 @@ export function stampOf(file: string, text: string, prefix: string): string {
  *  seeder stamps or derives (`GENERIC_NODE_PROPERTIES`: the ref_id, the key,
  *  the namespace, search text, vectors, times; the title; the source stamp;
  *  the delete markers). */
-export const NOT_ATTRIBUTES: ReadonlySet<string> = new Set(["name", "parents", "docs", "title", "unique_source_id", "deleted_at", "node_type", ...GENERIC_NODE_PROPERTIES]);
+export const NOT_ATTRIBUTES: ReadonlySet<string> = new Set(["name", "parents", "docs", "title", "claims", "unique_source_id", "deleted_at", "node_type", ...GENERIC_NODE_PROPERTIES]);
 
 /** Pure: one page, in either form (optional YAML front matter, body =
  *  docs) → its Concept. Throws on a new-form page whose `name` or `parents`
@@ -197,6 +213,13 @@ export function parseConceptFile(file: string, text: string, prefix: string): Co
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
   const docs = body.trim() || undefined;
   const stamp = stampOf(file, text, prefix);
+  // The page's claims and their cases: read here, recorded by the seeder's caller.
+  let claims: PageClaim[] | undefined;
+  if (meta["claims"] !== undefined && meta["claims"] !== null) {
+    const read = readPageClaims(meta["claims"]);
+    if (read) claims = read;
+    else console.warn(`[concepts] ${file}: its claims block is not a list of { text, workflow?, cases? } — left out`);
+  }
   if (!("name" in meta)) {
     // The old form: the file names the page; a description and one parent.
     const description = str(meta["description"]);
@@ -208,6 +231,7 @@ export function parseConceptFile(file: string, text: string, prefix: string): Co
       parents: parent ? [parent] : [],
       ...(docs ? { docs } : {}),
       stamp,
+      ...(claims?.length ? { claims } : {}),
     };
   }
   const name = meta["name"];
@@ -224,6 +248,7 @@ export function parseConceptFile(file: string, text: string, prefix: string): Co
     parents: [...new Set(listed as string[])],
     ...(docs ? { docs } : {}),
     stamp,
+    ...(claims?.length ? { claims } : {}),
   };
 }
 
@@ -272,12 +297,13 @@ export function planConceptSeed(
   file?: Pick<ConceptFile, "attributes" | "docs">,
   keepEdited = false,
   anyFileOf?: string,
+  adopt = false,
 ): SeedAction {
   if (!existing) return "create";
-  const usid = typeof existing.unique_source_id === "string" ? existing.unique_source_id : undefined;
+  const usid = typeof existing.unique_source_id === "string" && existing.unique_source_id ? existing.unique_source_id : undefined;
   const at = stamp.lastIndexOf("@") + 1;
   const samePath = usid !== undefined && [stamp.slice(0, at), ...legacy].some((path) => usid.startsWith(path));
-  const ours = samePath || (usid !== undefined && anyFileOf !== undefined && usid.startsWith(anyFileOf));
+  const ours = samePath || (usid !== undefined && anyFileOf !== undefined && usid.startsWith(anyFileOf)) || (adopt && usid === undefined);
   if (existing.deleted) return ours || keepEdited ? "update" : "skip"; // an upsert restores a deleted node
   if (!ours) return "skip";
   if (!samePath || usid!.slice(usid!.lastIndexOf("@") + 1) !== stamp.slice(at)) return "update";
@@ -382,7 +408,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
   /** The rule for one page against what the graph holds under its name. */
   const plan = (page: SeedPage, existing: ExistingConcept | null): SeedAction => {
     const set = page.set;
-    return planConceptSeed(existing, page.c!.stamp, pathsOf(set, page.file).slice(1), page.c!, set.keepEdited, set.keepEdited ? set.prefix : undefined);
+    return planConceptSeed(existing, page.c!.stamp, pathsOf(set, page.file).slice(1), page.c!, set.keepEdited, set.keepEdited ? set.prefix : undefined, set.adopt);
   };
   /** A page kept or skipped: nothing written. */
   const leave = (page: SeedPage, existing: ExistingConcept, action: "keep" | "skip") => {
@@ -464,7 +490,8 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
     }
     if (again.length) tell();
   }
-  const outcomes = pages.map((p) => p.outcome!);
+  // A page that is the seed's carries its claims out: the caller records them.
+  const outcomes = pages.map((p) => (p.c?.claims && p.outcome!.action !== "error" && p.outcome!.action !== "skip" ? { ...p.outcome!, claims: p.c.claims } : p.outcome!));
   for (const set of sets) await retireConcepts(graph, schema, set);
 
   // The tree: each owned page under each of its parents.

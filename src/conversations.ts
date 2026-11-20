@@ -14,7 +14,10 @@
  * who took a turn in it (the launch's actor, else its principal), for the
  * actor its id is under (`<actor>/…`), and for whoever opened it while it was
  * SHARED — a flag that makes it readable to any actor on this strut. Taking a
- * turn makes you a participant.
+ * turn makes you a participant. An ADMIN reads every one (ruled 2026-11-19,
+ * plans/jamie-app.md §2.3: `everyone` on the viewer): listed from every
+ * person's list, read as it is — never made theirs, nobody's seen, unread or
+ * archived moved. Reading is not a turn: who may continue one is unchanged.
  *
  * Kept as files under `<dataDir>/conversations/`, on every backend:
  *
@@ -23,9 +26,16 @@
  *   viewers/<encoded actor>.json — one person's list: a row per conversation
  *                                 (the record's facts, copied) and their own
  *                                 archived + seen
- *   shared.json                 — the ids of the shared ones: every viewer's
- *                                 list shows them (`team`) until they open one
+ *   shared.json                 — the shared ones, each row the record's facts:
+ *                                 every viewer's list shows them (`team`) until
+ *                                 they open one
+ *   changes/<YYYY-MM-DD>.log    — the ids of the conversations whose record was
+ *                                 written with an `updatedAt` on that day, one a
+ *                                 line, appended at each write: what `changed`
+ *                                 reads, so the dream reads what changed since
+ *                                 its mark and never every record
  *   built.json                  — the stamp of the one-off build below
+ *   changes.json                — the stamp of the change log's one-off fill
  *
  * Written when a turn LAUNCHES and when it ENDS (createStrut's launcher), so
  * a turn that failed — which commits nothing to the session — still shows,
@@ -38,15 +48,15 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ArtifactRef } from "./artifact-refs.js";
 import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
-import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
-import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
-import type { RunStore } from "./store.js";
+import { briefOf, listProposals, proposalsRoot, type Proposal, type ProposalBrief } from "./proposals.js";
+import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, hostOfSession, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
+import { localRuns, type RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
 
 /** A title, at most. */
@@ -200,7 +210,8 @@ export interface ConversationEntry {
   seenAt?: string;
   /** The record's job ids, as it keeps them. */
   jobs?: string[];
-  /** Who took its first turn. */
+  /** Who took its first turn. In an admin's Everyone, for a row from before
+   *  it was kept, the actor its id is under. */
   startedBy?: string;
 }
 
@@ -217,6 +228,10 @@ export interface ConversationListItem extends Omit<ConversationEntry, "jobs"> {
   /** Listed because it is SHARED, not the viewer's yet: opening it makes it
    *  theirs. Never unread. */
   team?: true;
+  /** A HOST's conversation (`host/<name>/…`, plans/jamie-in-tribes.md §5.1):
+   *  the host's name. Only that host takes a turn in it; a person forks it
+   *  to continue. */
+  host?: string;
 }
 
 /** A job as a list row shows it. */
@@ -335,12 +350,20 @@ export interface ConversationViewer {
   /** A person's token (`peer:person`): proposals as it sees them in a list
    *  (`visibleTo`), and a fork's id must be its own. */
   person?: true;
+  /** An ADMIN's read of every conversation on this strut (plans/jamie-app.md
+   *  §2.3; the caller checks the role): `list` lists every one on file,
+   *  whoever's; `get` and `fork` read any. A reader, never a viewer: what
+   *  they read is not made theirs, its row is the record's (never unread),
+   *  and every proposal made in it shows. `update` refuses it. */
+  everyone?: true;
 }
 
 export interface ConversationListQuery {
-  /** Every word in the title. */
+  /** Every word in the title — in an admin's Everyone, in the title, who
+   *  started it or its host. */
   q?: string;
-  /** The archived ones alone (default: the rest). */
+  /** The archived ones alone (default: the rest). A person's own: an
+   *  admin's Everyone lists every one, archived or not. */
   archived?: boolean;
   limit?: number;
   /** The `next` of the page before. */
@@ -377,6 +400,13 @@ export interface ConversationsCapability {
   update(q: ConversationUpdate, by: ConversationViewer): Promise<ConversationListItem>;
   /** A new session with the source's messages, so the agent remembers. */
   fork(q: { session: string; id?: string }, by: ConversationViewer): Promise<ConversationListItem>;
+  /** The conversations whose record changed at or after `since` (ISO 8601),
+   *  whoever's list they are in, newest first: for strut's own work over
+   *  them (the dream, `dream/turns`), never a person's list. Read off the
+   *  day logs from `since`'s day on, so only what changed is opened.
+   *  Without `since`, every conversation on file (a dream from before its
+   *  mark kept one, once). */
+  changed(since?: string): Promise<ConversationEntry[]>;
 }
 
 export interface Conversations extends ConversationsCapability {
@@ -387,6 +417,9 @@ export interface Conversations extends ConversationsCapability {
   /** The record on file, or null: never built here, so a session that is
    *  no conversation costs a file read (the graph projection's reader). */
   record(id: string): Promise<ConversationRecord | null>;
+  /** What the job run(s) a wake woke on delivered: a wake turn's
+   *  `delivered`, on the index and on its `run.end` alike. */
+  delivered(mark: WakeMark): Promise<Delivery[]>;
   /** May `actor` take a turn in `id`, a session that is not under their own
    *  id (plans/jamie-app.md §2.2)? `true` when it is a conversation they
    *  took a turn in, or a shared one; `false` when it is a conversation
@@ -426,11 +459,16 @@ async function writeJson(file: string, value: unknown): Promise<void> {
 }
 
 const keyOf = (by: ConversationViewer) => by.actor ?? "";
-const isOwn = (id: string, actor: string | undefined) => !!actor && (id === actor || id.startsWith(`${actor}/`));
-/** The actor an id is under (`<actor>/…`): listed for them. */
-const ownerOf = (id: string) => (id.includes("/") ? id.slice(0, id.indexOf("/")) : undefined);
+/** A host's conversation (`host/<name>/…`) is nobody's own: the host opened
+ *  it, and it is listed for each person who took a turn in it. */
+const isOwn = (id: string, actor: string | undefined) => !!actor && !hostOfSession(id) && (id === actor || id.startsWith(`${actor}/`));
+/** The actor an id is under (`<actor>/…`): listed for them. None for a host's. */
+const ownerOf = (id: string) => (id.includes("/") && !hostOfSession(id) ? id.slice(0, id.indexOf("/")) : undefined);
 
-function factsOf(rec: ConversationRecord): Omit<ConversationEntry, "archived" | "seenAt"> {
+/** A record's facts, as a list row copies them. */
+type Facts = Omit<ConversationEntry, "archived" | "seenAt">;
+
+function factsOf(rec: ConversationRecord): Facts {
   const last = rec.turns[rec.turns.length - 1];
   return {
     id: rec.id,
@@ -464,14 +502,34 @@ export function createConversations(deps: ConversationsDeps): Conversations {
   const viewerFile = (key: string) => join(root, "viewers", `${key ? encodeId(key) : NO_ACTOR_FILE}.json`);
   const builtFile = join(root, "built.json");
   const sharedFile = join(root, "shared.json");
-  const readShared = async () => (await readJson<{ ids: string[] }>(sharedFile))?.ids ?? [];
-  /** A conversation in or out of the shared index. */
-  const markShared = (id: string, on: boolean) =>
+  const changesDir = join(root, "changes");
+  const loggedFile = join(root, "changes.json");
+  /** The shared ones' rows, by id: one file, so a list never opens their
+   *  records. A file from before the rows holds `ids` alone, each record
+   *  read until its next write. */
+  const readShared = async (): Promise<Record<string, Facts>> => {
+    const f = (await readJson<{ ids?: string[]; conversations?: Record<string, Facts> }>(sharedFile)) ?? {};
+    const rows = { ...(f.conversations ?? {}) };
+    for (const id of f.ids ?? []) {
+      const rec = rows[id] ? null : await readRecord(id);
+      if (rec?.shared) rows[id] = factsOf(rec);
+    }
+    return rows;
+  };
+  /** A shared conversation's row put in (its facts now), an unshared one's taken out. */
+  const putShared = (rec: ConversationRecord) =>
     withLock(sharedFile, async () => {
-      const ids = await readShared();
-      const next = on ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((x) => x !== id);
-      if (next !== ids) await writeJson(sharedFile, { ids: next });
+      const rows = await readShared();
+      if (rec.shared) rows[rec.id] = factsOf(rec);
+      else if (rows[rec.id]) delete rows[rec.id];
+      else return;
+      await writeJson(sharedFile, { conversations: rows });
     });
+  /** The day log of `updatedAt`'s day gets the ids, one a line. */
+  const logChanges = async (day: string, ids: readonly string[]) => {
+    await mkdir(changesDir, { recursive: true, mode: 0o700 });
+    await appendFile(join(changesDir, `${day}.log`), ids.map((id) => `${encodeId(id)}\n`).join(""), { mode: 0o600 });
+  };
   /** The rev of each record written in this process: `wait` polls it. */
   const revs = new Map<string, number>();
   /** Settled turns, read once: a settled run never changes. Proposals are
@@ -525,6 +583,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     };
   };
 
+  /** After a record is written: its rev, its viewers' rows, the shared
+   *  row (when it is or was shared), the day log of its `updatedAt`. */
+  const written = async (rec: ConversationRecord, seen: readonly string[] = [], wasShared = false) => {
+    revs.set(rec.id, rec.rev);
+    await logChanges(rec.updatedAt.slice(0, 10), [rec.id]);
+    await refreshViewers(rec, seen);
+    if (rec.shared || wasShared) await putShared(rec);
+  };
+
   /** Copy the record's facts onto each viewer's row; `seen` marks the
    *  given viewers as having read it now (a turn they launched, a build of
    *  history they had). */
@@ -558,8 +625,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       if (rec === false || rec === null) return prev;
       rec.rev = (prev?.rev ?? 0) + 1;
       await writeJson(recordFile(id), rec);
-      revs.set(id, rec.rev);
-      await refreshViewers(rec, seen(rec));
+      await written(rec, seen(rec), !!prev?.shared);
       return rec;
     });
 
@@ -573,8 +639,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const built = await buildRecord(id, cache);
       if (!built) return null;
       await writeJson(recordFile(id), built);
-      revs.set(id, built.rev);
-      await refreshViewers(built, built.viewers);
+      await written(built, built.viewers);
       return built;
     });
 
@@ -598,12 +663,59 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       throw err;
     }));
 
+  /** The day logs from before they were kept: every record put in the log
+   *  of its `updatedAt`'s day, once (`changes.json`). Every write since
+   *  logs itself. */
+  let logging: Promise<void> | undefined;
+  const ensureLogged = () =>
+    (logging ??= (async () => {
+      if (await readJson(loggedFile)) return;
+      const byDay = new Map<string, string[]>();
+      for (const n of await readdir(join(root, "sessions")).catch(() => [] as string[])) {
+        const rec = n.endsWith(".json") ? await readRecord(decodeURIComponent(n.slice(0, -".json".length))) : null;
+        if (rec) byDay.set(rec.updatedAt.slice(0, 10), [...(byDay.get(rec.updatedAt.slice(0, 10)) ?? []), rec.id]);
+      }
+      for (const [day, ids] of byDay) await logChanges(day, ids);
+      await writeJson(loggedFile, { at: new Date().toISOString() });
+    })().catch((err) => {
+      logging = undefined;
+      throw err;
+    }));
+
   const canRead = (rec: ConversationRecord, by: ConversationViewer) =>
-    !!by.all || rec.viewers.includes(keyOf(by)) || !!rec.shared || isOwn(rec.id, by.actor);
+    !!by.all || !!by.everyone || rec.viewers.includes(keyOf(by)) || !!rec.shared || isOwn(rec.id, by.actor);
+
+  /** A row as an admin's Everyone shows it: the record's facts, who
+   *  started it (a row from before that was kept: whose id it is under),
+   *  never unread — nobody's seen is theirs to read. */
+  const everyoneItem = (e: Facts): ConversationListItem => {
+    const owner = e.startedBy ?? ownerOf(e.id);
+    return { ...itemOf({ ...e, ...(owner ? { startedBy: owner } : {}) }), unread: false };
+  };
+
+  /** Every conversation on file, once, for an admin's Everyone: the rows of
+   *  every person's list merged (each a copy of its record's facts, written
+   *  at every write), so a list opens one file per person, never the
+   *  records. Their own archived and seen are left out. */
+  const everyRow = async (): Promise<Facts[]> => {
+    const dir = join(root, "viewers");
+    const rows = new Map<string, Facts>();
+    for (const n of await readdir(dir).catch(() => [] as string[])) {
+      if (!n.endsWith(".json")) continue;
+      const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(join(dir, n));
+      for (const { archived: _archived, seenAt: _seen, ...e } of Object.values(idx?.conversations ?? {})) {
+        const had = rows.get(e.id);
+        if (!had || had.updatedAt < e.updatedAt) rows.set(e.id, e);
+      }
+    }
+    return [...rows.values()];
+  };
 
   /** The viewer's row; adds them as a viewer first when they are not one
-   *  (a shared conversation they opened, their own id). */
+   *  (a shared conversation they opened, their own id). An admin's
+   *  Everyone reads it as it is: never added, nothing of theirs on it. */
   const entryOf = async (rec: ConversationRecord, by: ConversationViewer): Promise<ConversationListItem> => {
+    if (by.everyone) return everyoneItem(factsOf(rec));
     const key = keyOf(by);
     if (!rec.viewers.includes(key) && !by.all) {
       rec = (await mutate(rec.id, (r) => (r && !r.viewers.includes(key) ? { ...r, viewers: [...r.viewers, key] } : false))) ?? rec;
@@ -612,16 +724,23 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     return itemOf(idx?.conversations[rec.id] ?? factsOf(rec));
   };
 
-  const itemOf = ({ jobs: _jobs, ...e }: ConversationEntry): ConversationListItem => ({
-    ...e,
-    unread: !e.seenAt || e.seenAt < e.updatedAt,
-    ...(deps.running(e.id) ? { running: true as const } : {}),
-  });
+  const itemOf = ({ jobs: _jobs, ...e }: ConversationEntry): ConversationListItem => {
+    const host = hostOfSession(e.id);
+    return {
+      ...e,
+      unread: !e.seenAt || e.seenAt < e.updatedAt,
+      ...(deps.running(e.id) ? { running: true as const } : {}),
+      ...(host ? { host } : {}),
+    };
+  };
 
-  /** The jobs a conversation's turns started or continued, in turn order. */
+  /** The jobs a conversation's turns started or continued, in turn order.
+   *  Read from this disk only: it runs for every listed record with none
+   *  kept, and must not restore each old turn from the run archive. */
   const jobsOfTurns = async (turns: readonly ConversationRun[]): Promise<TurnJob[]> => {
     const out: TurnJob[] = [];
-    for (const t of turns) out.push(...turnJobs(await deps.store.getRunEvents(t.workflow, t.runId).catch(() => [] as RunEvent[])));
+    const runs = localRuns(deps.store);
+    for (const t of turns) out.push(...turnJobs(await runs.getRunEvents(t.workflow, t.runId).catch(() => [] as RunEvent[])));
     return out;
   };
 
@@ -642,8 +761,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         r.jobs = withJobs([], [jobs]);
         r.rev += 1;
         await writeJson(recordFile(id), r);
-        revs.set(id, r.rev);
-        await refreshViewers(r);
+        await written(r, [], r.shared);
       });
     })()
       .catch((err) => console.error(`[conversations] ${id}: its jobs:`, err))
@@ -795,32 +913,56 @@ export function createConversations(deps: ConversationsDeps): Conversations {
 
     record: conversationRecords(deps.dataDir).record,
 
+    delivered: deliveredBy,
+
+    async changed(since) {
+      const from = since === undefined ? undefined : new Date(since).toISOString();
+      await ensureBuilt();
+      await ensureLogged();
+      const days = (await readdir(changesDir).catch(() => [] as string[])).filter((n) => n.endsWith(".log") && (!from || n.slice(0, 10) >= from.slice(0, 10)));
+      const ids = new Set<string>();
+      for (const n of days) {
+        // The last piece is an append still being written, or nothing.
+        for (const line of (await readFile(join(changesDir, n), "utf-8").catch(() => "")).split("\n").slice(0, -1)) if (line) ids.add(decodeURIComponent(line));
+      }
+      const records = await Promise.all([...ids].map(readRecord));
+      return records
+        .filter((r): r is ConversationRecord => !!r && (!from || r.updatedAt >= from))
+        .map(factsOf)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    },
+
     async list(q, by) {
       await ensureBuilt();
-      const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
       const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
       const cursor = (e: ConversationEntry) => `${e.updatedAt}|${e.id}`;
-      // The shared ones that are not the viewer's yet: listed for everyone.
-      const mine = idx?.conversations ?? {};
-      const team: ConversationEntry[] = [];
-      if (!q.archived) {
-        for (const id of await readShared()) {
-          if (mine[id]) continue;
-          const rec = await readRecord(id);
-          if (rec?.shared) team.push(factsOf(rec));
-        }
+      let found: ConversationEntry[];
+      let isTeam = new Set<string>();
+      if (by.everyone) {
+        // An admin's Everyone: each conversation once, whoever's, archived
+        // or not; the words may also name who started it, or its host.
+        found = (await everyRow()).filter((e) => {
+          const text = `${e.title} ${e.startedBy ?? ownerOf(e.id) ?? ""} ${hostOfSession(e.id) ?? ""}`.toLowerCase();
+          return words.every((w) => text.includes(w));
+        });
+      } else {
+        const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
+        // The shared ones that are not the viewer's yet: listed for everyone.
+        const mine = idx?.conversations ?? {};
+        const team: ConversationEntry[] = q.archived ? [] : Object.values(await readShared()).filter((e) => !mine[e.id]);
+        isTeam = new Set(team.map((e) => e.id));
+        found = [...Object.values(mine), ...team]
+          .filter((e) => (q.archived ? e.archived : !e.archived))
+          .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)));
       }
-      const isTeam = new Set(team.map((e) => e.id));
-      const rows = [...Object.values(mine), ...team]
-        .filter((e) => (q.archived ? e.archived : !e.archived))
-        .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)))
-        .sort((a, b) => cursor(b).localeCompare(cursor(a)))
-        .filter((e) => !q.before || cursor(e) < q.before);
+      const rows = found.sort((a, b) => cursor(b).localeCompare(cursor(a))).filter((e) => !q.before || cursor(e) < q.before);
       const limit = Math.min(CONVERSATION_LIST_MAX, Math.max(1, q.limit ?? CONVERSATION_LIST_DEFAULT));
       const page = rows.slice(0, limit);
       for (const e of page) if (!e.jobs) backfillJobs(e.id);
       const conversations = await Promise.all(
-        page.map(async (e) => withJobBriefs(isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs)),
+        page.map(async (e) =>
+          withJobBriefs(by.everyone ? everyoneItem(e) : isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs),
+        ),
       );
       return { conversations, ...(rows.length > limit ? { next: cursor(page[page.length - 1]!) } : {}) };
     },
@@ -839,18 +981,44 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const end = Math.max(0, Math.min(rec.turns.length, q.before ?? rec.turns.length));
       const start = Math.max(0, end - limit);
       const page = rec.turns.slice(start, end);
+      const reads: Array<Omit<ConversationTurn, "turn" | "proposals">> = [];
+      for (let i = page.length - 1; i >= 0; i--) reads.unshift(await readTurn(page[i]!));
       const runIds = new Set(page.map((t) => t.runId));
-      // Only this page's runs, and only what the reader may see: decided on
-      // the index, so a read never opens another conversation's records.
-      const proposals = await listProposals(proposalsRoot(deps.dataDir), {
-        runId: [...runIds],
-        viewer: { scope: (by.person ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) },
-      }).catch(() => []);
+      const jobs = [...new Set(reads.flatMap((r) => r.jobs.map((j) => j.job)))];
+      // This page's runs' proposals, and those of the jobs its turns started
+      // (a `builder` job's): only what the reader may see, decided on the
+      // index, so a read never opens another conversation's records. An
+      // admin's Everyone sees every one, as their session does at /proposals.
+      const root = proposalsRoot(deps.dataDir);
+      const viewer = { scope: (by.person && !by.everyone ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) };
+      const [own, ofJobs] = await Promise.all([
+        listProposals(root, { runId: [...runIds], viewer }).catch(() => []),
+        jobs.length ? listProposals(root, { job: jobs, viewer }).catch(() => []) : Promise.resolve([]),
+      ]);
+      // Each on the turn whose run made it, else on the turn that started
+      // (or continued) the job run that made it, under that job's card. A
+      // proposal shows only where it was made (ruled 11-02): a job's other
+      // run counts as here only when its thread is this conversation.
+      const turnOf = (p: Proposal): number | undefined => {
+        const mine = page.findIndex((t) => t.runId === p.by.runId);
+        if (mine >= 0) return mine;
+        const started = reads.findIndex((r) => r.jobs.some((j) => j.runId === p.by.runId));
+        if (started >= 0) return started;
+        if (!p.by.job || p.by.conversation !== rec!.id) return undefined;
+        const holding = reads.flatMap((r, i) => (r.jobs.some((j) => j.job === p.by.job) ? [i] : []));
+        return holding.filter((i) => page[i]!.at <= p.createdAt).pop() ?? holding[0];
+      };
+      const byTurn = new Map<number, Proposal[]>();
+      const seen = new Set<string>();
+      for (const p of [...own, ...ofJobs].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        const i = turnOf(p);
+        if (i !== undefined) byTurn.set(i, [...(byTurn.get(i) ?? []), p]);
+      }
       const turns: ConversationTurn[] = [];
       for (let i = page.length - 1; i >= 0; i--) {
-        const t = page[i]!;
-        const read = await readTurn(t);
-        turns.push({ turn: start + i, ...read, proposals: proposals.filter((p) => p.by.runId === t.runId).reverse().map(briefOf) });
+        turns.push({ turn: start + i, ...reads[i]!, proposals: (byTurn.get(i) ?? []).map(briefOf) });
       }
       return {
         conversation,
@@ -862,6 +1030,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     async update(q, by) {
+      if (by.everyone) throw new Error("an admin's read of every conversation changes none: a title, a share, archived and seen are its people's");
       let rec = await recordOf(q.session);
       if (!rec || !canRead(rec, by)) throw notFound(q.session);
       if (q.title !== undefined || q.shared !== undefined) {
@@ -880,7 +1049,6 @@ export function createConversations(deps: ConversationsDeps): Conversations {
             if (q.shared === false) delete r.shared;
             return r;
           })) ?? rec;
-        if (q.shared !== undefined) await markShared(rec.id, q.shared);
       }
       const item = await entryOf(rec, by);
       if (q.archived === undefined && q.seen === undefined) return item;
@@ -934,7 +1102,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         }),
         () => [key],
       );
-      return entryOf(rec!, by);
+      // The copy is the forker's own (an admin's from Everyone too): their row.
+      const { everyone: _everyone, ...own } = by;
+      return entryOf(rec!, own);
     },
   };
 }

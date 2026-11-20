@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StoredMessage } from "./chat-store.js";
+import { newestWritten } from "./store.js";
 import type { RunAttachment } from "./core.js";
 
 // ── ids ────────────────────────────────────────────────────────────────────
@@ -92,6 +93,24 @@ export function publicSessionId(id: string, scope: string): string {
   return id.startsWith(prefix) ? id : `${prefix}${id}`;
 }
 
+/** Where a HOST's conversations live (plans/jamie-in-tribes.md §5.1):
+ *  `host/<name>/…`, opened by the host, not by a person — a tribe's thread
+ *  has several speakers. A conversation (src/conversations.ts), listed for
+ *  each person who took a turn in it, continued by its host alone. */
+export const HOST_NAMESPACE = "host/";
+
+/** The host a session id is under (`host/<name>/…`), or undefined. */
+export function hostOfSession(id: string): string | undefined {
+  return /^host\/([^/]+)\/./.exec(id)?.[1];
+}
+
+/** Where a host run's session `id` opens: under `host/<host>/`, left as it
+ *  is when it already is there — a host's run opens no other thread. */
+export function hostSessionId(id: string, host: string): string {
+  const prefix = `${HOST_NAMESPACE}${host}/`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
 /** Where an APP's ids live (plans/apps.md §12): a job id a page names is
  *  kept under `app/<name>/`, as a peer's is kept under `peer/`. */
 export const APP_NAMESPACE = "app/";
@@ -147,6 +166,9 @@ export interface NewTurn {
    *  turn was made under, so a thread is found from its job whatever its
    *  id (plans/job-index.md §4). Records, ties nothing. */
   job?: string;
+  /** The Concept branch the run was on (src/branches.ts): a conversation
+   *  stays on its first turn's (`bindBranch`). Absent: main. */
+  branch?: string;
   /** The files this turn's prompt carried (`ctx.attachments`), saved under
    *  `runId`'s artifacts: what a later turn's tools may hand on (job/start).
    *  Absent when it carried none. */
@@ -229,6 +251,11 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
 
 // ── interface ──────────────────────────────────────────────────────────────
 
+/** `GET /sessions`: the newest this many sessions when no `limit` is asked,
+ *  and at most `SESSION_LIST_MAX_LIMIT` — each is a read of its turn lines. */
+export const SESSION_LIST_DEFAULT_LIMIT = 100;
+export const SESSION_LIST_MAX_LIMIT = 500;
+
 export interface SessionStore {
   /** The thread, or `null` when no turn was ever committed under `id`. */
   load(id: string): Promise<Session | null>;
@@ -237,8 +264,9 @@ export interface SessionStore {
   turns(id: string): Promise<SessionTurn[]>;
   /** Commit one turn. `system` is stored by turn 0 and ignored after. */
   appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn>;
-  /** Newest first. */
-  list(): Promise<SessionInfo[]>;
+  /** Newest first; with `limit`, the newest that many, reading no other
+   *  session's turn lines. */
+  list(opts?: { limit?: number }): Promise<SessionInfo[]>;
   delete(id: string): Promise<void>;
 }
 
@@ -321,7 +349,7 @@ export class FileSessionStore implements SessionStore {
     return line;
   }
 
-  async list(): Promise<SessionInfo[]> {
+  async list(opts: { limit?: number } = {}): Promise<SessionInfo[]> {
     let names: string[];
     try {
       names = await readdir(join(this.root, "sessions"));
@@ -329,7 +357,10 @@ export class FileSessionStore implements SessionStore {
       return [];
     }
     const out: SessionInfo[] = [];
-    for (const name of names) {
+    // A page reads its own turn lines alone: the newest written first.
+    const limit = opts.limit;
+    for (const name of limit === undefined ? names : await newestWritten(names, (n) => join(this.root, "sessions", n, "turns.jsonl"))) {
+      if (limit !== undefined && out.length >= limit) break;
       let id: string;
       try {
         id = decodeURIComponent(name);
@@ -374,13 +405,13 @@ export class MemorySessionStore implements SessionStore {
     return line;
   }
 
-  async list(): Promise<SessionInfo[]> {
+  async list(opts: { limit?: number } = {}): Promise<SessionInfo[]> {
     const out: SessionInfo[] = [];
     for (const s of this.sessions.values()) {
       const info = sessionInfo(s.id, s.turns);
       if (info) out.push(info);
     }
-    return out.sort(newestFirst);
+    return out.sort(newestFirst).slice(0, opts.limit);
   }
 
   async delete(id: string): Promise<void> {

@@ -1,4 +1,4 @@
-// `strut move serve` (AGENTS.md, "Moving strut to another host"): the
+// `strut move serve` (docs/moving.md, "Moving strut to another host"): the
 // receiving end of a move on an empty host, and the sending end of a move
 // back. Plain HTTP, meant for a home network only while a move is under way:
 // everything that crosses it is sealed with the code.
@@ -263,7 +263,7 @@ async function peerRecord(cfg: ServeOptions["peer"], actor: string, req: Incomin
   const env = bootEnv();
   const moved = (JSON.parse(await readFile(envFile, "utf-8").catch(() => "{}")) as Partial<MoveEnv>).strut ?? {};
   const secret = env["STRUT_API_KEY"] || env["STRUT_SECRET_KEY"] || moved["STRUT_SECRET_KEY"];
-  const minted = secret ? personToken(actor, (cfg.days ?? 365) * 86_400_000, secret) : undefined;
+  const minted = secret ? personToken(actor, (cfg.days ?? 365) * 86_400_000, { secret }) : undefined;
   if (!minted) return { error: "nothing to sign a person token with: give serve the strut's STRUT_API_KEY" };
   const host = new URL(`http://${req.headers.host ?? "localhost"}`).hostname;
   const ca = cfg.ca ? await readFile(cfg.ca, "utf-8").catch(() => undefined) : undefined;

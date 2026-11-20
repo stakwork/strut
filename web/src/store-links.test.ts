@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appsOf, canWords, conceptRoots, indexIdOf, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
+import { appsOf, canWords, conceptChildren, conceptRoots, indexIdOf, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
 
 const KEY = "y".repeat(52);
 
@@ -63,11 +63,12 @@ test("an index followed from a link is filed under its host", () => {
 test("the apps across the hits come first, by title; the concept roots by how much sits under them", () => {
   const can = { spends: false, acts: false, code: false };
   const hits = [
-    { package: "acme/linear", version: "1.4.0", detail: { apps: [{ name: "issues", title: "Linear Issues", can }, { name: "cycles", title: "Cycle Report", can }] } },
-    { package: "acme/bare", version: "0.1.0" },
-    { package: "openlaw/civil", version: "12", detail: { apps: [{ name: "deadlines", title: "Deadline Calculator", can }] } },
+    { package: "acme/linear", version: "1.4.0", digest: "sha256:a", detail: { apps: [{ name: "issues", title: "Linear Issues", can }, { name: "cycles", title: "Cycle Report", can }] } },
+    { package: "acme/bare", version: "0.1.0", digest: "sha256:b" },
+    { package: "openlaw/civil", version: "12", digest: "sha256:c", detail: { apps: [{ name: "deadlines", title: "Deadline Calculator", can }] } },
   ];
   assert.deepEqual(appsOf(hits).map((a) => `${a.app.title} (${a.pkg})`), ["Cycle Report (acme/linear)", "Deadline Calculator (openlaw/civil)", "Linear Issues (acme/linear)"]);
+  assert.equal(appsOf(hits)[1]!.digest, "sha256:c", "each with its release, for the screenshot's link");
   const roots = conceptRoots([
     { name: "Law" },
     { name: "Civil procedure", parents: ["Law"] },
@@ -78,6 +79,14 @@ test("the apps across the hits come first, by title; the concept roots by how mu
     { name: "Orphan", parents: ["Nowhere"] },
   ]);
   assert.deepEqual(roots.map((r) => [r.root.name, r.pages]), [["Law", 3], ["Accounting", 1], ["Orphan", 0]], "a page with a parent in the list is no root, whichever of its parents it is");
+  const kids = conceptChildren([
+    { name: "Law" },
+    { name: "Tax", parents: ["Law"] },
+    { name: "Contracts", parents: ["Law"] },
+    { name: "Indemnity", parents: ["Contracts", "Tax", "Tax", "Nowhere"] },
+    { name: "Loop", parents: ["Loop"] },
+  ]);
+  assert.deepEqual([...kids].map(([p, list]) => [p, list.map((c) => c.name)]), [["Law", ["Contracts", "Tax"]], ["Contracts", ["Indemnity"]], ["Tax", ["Indemnity"]]], "sorted by name, under each parent once, never under a parent the list lacks or itself");
   assert.deepEqual(canWords(can), ["reads"]);
   assert.deepEqual(canWords({ spends: true, acts: true, code: false }), ["spends", "acts"]);
 });

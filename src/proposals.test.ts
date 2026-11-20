@@ -13,8 +13,10 @@ import { buildRegistryTools } from "./steps/core/agent.js";
 import {
   GATE_NOTE,
   PROPOSAL_RESULT_PREFIX,
+  briefOf,
   decideProposal,
   listProposals,
+  pageSees,
   proposalResultLines,
   proposalsCapability,
   proposalsRoot,
@@ -58,6 +60,24 @@ describe("proposals", () => {
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
   const cap = () => proposalsCapability(dir, { notify: (job, update) => updates.push({ job, update }) });
+
+  it("strut's own page shows its viewer their own, and an admin what no conversation made (the dream's); a workflow filter lists one workflow's", async () => {
+    const theirs = { workflow: "orchestrator", runId: "1", path: "o/a", actor: "alice", session: "alice/c1" };
+    const dreams = { workflow: "dream", runId: "2", path: "dream/tend" };
+    const hers = { by: theirs };
+    const unthreaded = { by: dreams };
+    assert.deepEqual([pageSees(hers, { actor: "alice" }), pageSees(hers, { actor: "bob" }), pageSees(hers, { actor: "bob", admin: true })], [true, false, false], "another person's conversation, admin or not");
+    assert.deepEqual([pageSees(unthreaded, { actor: "bob" }), pageSees(unthreaded, { actor: "bob", admin: true }), pageSees(unthreaded, { admin: true })], [false, true, true]);
+    // A run a person launched outside any conversation is no one's thread: an admin's to see.
+    assert.equal(pageSees({ by: { ...dreams, actor: "alice" } }, { actor: "bob", admin: true }), true);
+
+    const c = cap();
+    const a = await c.propose({ step: "dev/write", input: { name: "a", n: 1 }, title: "A", by: theirs });
+    const b = await c.propose({ step: "dev/write", input: { name: "b", n: 1 }, title: "B", by: dreams });
+    assert.deepEqual((await c.list({ workflow: "dream" })).map((p) => p.id), [b.id]);
+    assert.deepEqual((await c.list({ workflow: "orchestrator", status: "pending" })).map((p) => p.id), [a.id]);
+    assert.deepEqual(await c.list({ workflow: "nope" }), []);
+  });
   const root = () => proposalsRoot(dir);
 
   /** The agent's tool ctx: the run, the job, the journal slice. */
@@ -77,6 +97,36 @@ describe("proposals", () => {
   type Tool = { description: string; inputSchema: z.ZodTypeAny; execute: (input: unknown, o?: { strutToolPath?: string }) => Promise<unknown> };
   const gated = (c: StepContext) =>
     buildRegistryTools(["dev/write"], registry, c, (d: unknown) => d, { approve: new Set(["dev/write"]), session: "s1" })["dev_write"] as Tool;
+
+  it("a newer card REPLACES a waiting one of the same step in the same thread: strut closes it, and the thread is left with one", async () => {
+    const c = proposalsCapability(dir, { notify: (job, update) => updates.push({ job, update }), conversationOf: async (runId) => (runId === "r9" ? undefined : "ann/c1") });
+    const by = (runId: string, extra: Record<string, string> = {}) => ({ workflow: "builder", runId, path: "builder/turn", job: "j1", ...extra });
+    const first = await c.propose({ step: "dev/write", input: { name: "a" }, title: "A", by: by("r1") });
+    assert.deepEqual((await c.waiting!("dev/write", { runId: "r2" })).map((p) => p.id), [first.id], "what a step may build on: this thread's waiting cards of the step");
+    assert.deepEqual(await c.waiting!("dev/other", { runId: "r2" }), []);
+    updates = [];
+    const second = await c.propose({ step: "dev/write", input: { name: "b" }, title: "B", by: by("r2"), replaces: first.id });
+    const old = (await c.get(first.id))!;
+    assert.deepEqual([old.status, old.replacedBy, old.decision?.by, old.decision?.reason], ["rejected", second.id, "strut", "Replaced by a newer card"]);
+    assert.ok(old.reportedAt, "the proposer is not told of the replacement it made");
+    assert.equal(briefOf(old).replacedBy, second.id, "a host reads it off the brief, and leaves the card out");
+    assert.equal((await c.get(second.id))!.replaces, first.id);
+    assert.deepEqual(updates.map((u) => [u.update.state, u.update.url]), [["pending", `/proposals/${second.id}`], ["rejected", `/proposals/${first.id}`]], "the job is told of both");
+    assert.deepEqual((await c.waiting!("dev/write", { runId: "r2" })).map((p) => p.id), [second.id]);
+    // Only a PENDING one, of the SAME step, in the SAME thread.
+    const theirs = await c.propose({ step: "dev/write", input: {}, title: "C", by: by("r3", { conversation: "bob/c2" }) });
+    const d = await c.propose({ step: "dev/write", input: {}, title: "D", by: by("r4"), replaces: theirs.id });
+    assert.equal((await c.get(theirs.id))!.status, "pending", "another thread's card is not this one's to close");
+    assert.equal(d.replaces, undefined, "`replaces` only when a card was in fact closed");
+    const other = await c.propose({ step: "dev/other", input: {}, title: "E", by: by("r5") });
+    await c.propose({ step: "dev/write", input: {}, title: "F", by: by("r6"), replaces: other.id });
+    assert.equal((await c.get(other.id))!.status, "pending", "another step's card is not replaced");
+    await c.propose({ step: "dev/write", input: {}, title: "G", by: by("r7"), replaces: first.id });
+    assert.equal((await c.get(first.id))!.replacedBy, second.id, "a closed card stays as it was closed");
+    // No thread known: the run's job's (a job is one thread's); neither, none.
+    assert.ok((await c.waiting!("dev/write", { runId: "r9", job: "j1" })).length > 0);
+    assert.deepEqual(await c.waiting!("dev/write", { runId: "r9" }), []);
+  });
 
   it("a gated tool records a proposal instead of running the step, journals the call, tells the job", async () => {
     const events: RunEvent[] = [];

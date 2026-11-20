@@ -236,6 +236,13 @@ export type PackagesCapability = Pick<PackageIndexes, "search" | "get" | "concep
    *  code without a person's yes. `ref` is a name through the followed
    *  indexes, or a `pk:` ref with its `url`. */
   install?(ref: string, opts: { proposal: string; index?: string; digest?: string; url?: string; actor?: string }): Promise<unknown>;
+  /** A package opened here as a git repo (src/packages/repos.ts): where it
+   *  is, the commit installed, and what the workspace changed since. */
+  repo?(pkg: string): Promise<{ url: string; branch: string; path?: string; commit: string; forked: Array<{ kind: string; name: string }> } | undefined>;
+  /** `package/commit`'s door (plans/app-repos.md §3.3): commits and pushes
+   *  ONLY as the apply of an ACCEPTED proposal of that step for this very
+   *  package and message, checked against the record on disk. */
+  commit?(pkg: string, opts: { proposal: string; message: string; branch?: string; pr?: boolean; actor?: string }): Promise<unknown>;
 };
 
 /** Where an index strut serves search, from its card's URL; nothing for a card that is a static file. */

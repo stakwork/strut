@@ -103,8 +103,10 @@ export const KEEP_ENV: readonly string[] = [
  *  other struts (plans/paid-runs.md §10), a bearer credential the
  *  `remote/*` steps present through `ctx.services.remote` and no step
  *  reads — a value of such a name set anywhere else is never a step's
- *  either. */
-export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_", "ENTITLEMENT_"];
+ *  either. And `STRUT_ARCHIVE_S3_`: the run archive's bucket and key pair
+ *  (plans/run-archive.md), which the server's object store alone uses; a
+ *  step that read them could read every archived run log. */
+export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_", "ENTITLEMENT_", "STRUT_ARCHIVE_S3_"];
 
 /** Exact names hidden the same way. `STRUT_SECRET_KEY` decrypts every
  *  encrypted file under the data dir, `payments.json` among them: a step

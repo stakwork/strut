@@ -18,7 +18,7 @@ import type { TtsService } from "./audio/tts.js";
 const KEY = "voice-api-key";
 const PEER_KEY = "voice-peer-key";
 const SHARED = "voice-shared-token";
-const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false, job: false, orchestrator: false, builder: false, privacyWorkflows: false } as const;
+const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false, job: false, orchestrator: false, builder: false, privacyWorkflows: false, mediaWorkflows: false } as const;
 
 describe("POST /voice/calls", () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-voice-"));

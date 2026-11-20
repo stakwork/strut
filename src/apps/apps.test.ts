@@ -14,7 +14,7 @@ import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { treeFiles } from "../version.js";
 import { kitForTests } from "../test-util/app-kit.js";
-import { createApps, type AppsCapability } from "./apps.js";
+import { appManifests, createApps, type AppsCapability, type AppVersionManifest } from "./apps.js";
 import type { KitLocation } from "./kit.js";
 import { readBuildInfo } from "./build.js";
 import appList from "../steps/lib/app/list.js";
@@ -366,6 +366,72 @@ describe("the apps capability", () => {
     const rec = (await ws.getApp("ok"))!;
     assert.deepEqual([rec.publisher, rec.owner, rec.versions["v1"]?.source], ["ai", "bot", "agent"]);
   });
+
+  it("a granted custom step that reaches a service a visitor's call never carries (the shell) is a warning on the build, the preview and the publish", async () => {
+    // book-scanner, 2026-11-19: a worker app's page loads its ledger through
+    // its own step, which reads a file with the shell. Tom, a member, sees it;
+    // every worker who signs in through Peel is a visitor, and it fails.
+    const { ws, apps } = setup();
+    const ledger = `import { z } from "zod";
+export default {
+  type: "book/ledger",
+  input: z.object({}),
+  output: z.object({ rows: z.array(z.unknown()) }),
+  async run(_cfg, ctx) {
+    const out = await ctx.services.shell("cat /data/workspace/book-scanning/ledger.jsonl");
+    return { rows: out.stdout.split("\\n").filter(Boolean).map((l) => JSON.parse(l)) };
+  },
+};
+`;
+    await ws.publishStep("book/ledger", ledger);
+    await ws.publishStep("book/price", 'export default { type: "book/price", async run(cfg, ctx) { return (await ctx.services.http(cfg.url)).json(); } };\n');
+    const dir = await writeApp(fresh(), app("title: Book scanner\ngrants:\n  steps: [book/ledger, book/price, graph/graph-get, task/next]\n"));
+    const flagged = (warnings: string[]) => warnings.filter((w) => w.includes("visitor"));
+    const built = await apps.build(dir, { name: "book-scanner" });
+    assert.ok(built.ok, built.ok ? "" : built.errors.join("\n"));
+    assert.deepEqual(flagged(built.warnings).length, 1, built.warnings.join("\n"));
+    assert.match(flagged(built.warnings)[0]!, /grants\.steps: "book\/ledger" uses ctx\.services\.shell, which a visitor's call never carries — .*Peel/);
+    const preview = await apps.preview(dir, "book-scanner", { surface: "ai" });
+    assert.ok(preview.ok);
+    assert.equal(flagged(preview.warnings).length, 1);
+    const published = await apps.publish(dir, "book-scanner", { surface: "ai", actor: "jamie" });
+    assert.ok(published.ok, "a warning: a member's page still runs it");
+    assert.deepEqual(flagged(published.warnings).map((w) => w.split(" uses ")[0]), ['grants.steps: "book/ledger"']);
+  });
+});
+
+describe("what the app door remembers (appManifests)", () => {
+  const entry = (title: string, version = "v1"): AppVersionManifest => ({ version, manifest: { title } as AppVersionManifest["manifest"], seeded: false });
+
+  it("a version is loaded once; a miss is never remembered; a write forgets every version of that app alone", async () => {
+    const memo = appManifests();
+    let loads = 0;
+    const read = (name: string, version: string | undefined, got: AppVersionManifest | null) => memo.read(name, version, async () => (loads++, got));
+    assert.equal(await read("a", "v1", null), null);
+    assert.equal((await read("a", "v1", entry("one")))?.manifest.title, "one", "the miss was not kept");
+    assert.equal((await read("a", "v1", entry("other")))?.manifest.title, "one");
+    assert.equal((await read("a", undefined, entry("live", "v2")))?.version, "v2", "the live version, apart from any label");
+    assert.equal((await read("a", undefined, entry("later", "v3")))?.version, "v2");
+    assert.equal((await read("b", "v1", entry("b")))?.manifest.title, "b");
+    assert.equal(loads, 4);
+    memo.forget("a");
+    assert.equal((await read("a", "v1", entry("two")))?.manifest.title, "two");
+    assert.equal((await read("a", undefined, entry("live", "v3")))?.version, "v3");
+    assert.equal((await read("b", "v1", entry("other")))?.manifest.title, "b", "another app's stay");
+  });
+
+  it("a load that began before a write is handed back and not kept", async () => {
+    const memo = appManifests();
+    let release!: () => void;
+    const slow = memo.read("a", "v1", async () => {
+      await new Promise<void>((r) => (release = r));
+      return entry("before the write");
+    });
+    memo.forget("a");
+    release();
+    assert.equal((await slow)?.manifest.title, "before the write");
+    assert.equal((await memo.read("a", "v1", async () => entry("after")))?.manifest.title, "after");
+  });
 });
 
 describe("a person's grant of a sealed workflow (src/apps/grants.ts)", () => {
@@ -478,7 +544,7 @@ describe("the /apps routes", () => {
 
   it("publish from a files map, read back, serve the document with its token, roll back, delete", async () => {
     const dataDir = fresh("http");
-    const strut = await createStrut({ workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit, scheduler: false, enableChat: false, serveUi: false, views: false });
+    const strut = await createStrut({ workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit, scheduler: false, enableChat: false, serveUi: false, views: false, earnings: false });
     const savedKey = process.env["STRUT_API_KEY"];
     try {
       const files: Record<string, string | { base64: string }> = {};

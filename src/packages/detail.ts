@@ -4,7 +4,9 @@
  * each workflow with its inputs and what it can do, the steps with the
  * secrets they read and what the lint says, the Concept pages, the README.
  * The index derives it at the crawl and the store's package page draws it,
- * so a person sees an app before the package under it.
+ * so a person sees an app before the package under it. It also says which
+ * of the package's steps the manifest's `job:` gives the job agent, and
+ * which of those ask first (plans/followed-repos.md §3.3).
  *
  * A READING, never a check: nothing here is loaded or run — a step's facts
  * are regexes over its source, a workflow's over its YAML — and an install
@@ -12,7 +14,7 @@
  *
  * | Flag     | When |
  * | -------- | ---- |
- * | `spends` | the closure holds an `agent`, `llm` or `acp/prompt` step |
+ * | `spends` | the closure holds an `agent`, `llm`, `image` or `acp/prompt` step |
  * | `acts`   | a step this strut knows declares `effect: "write"`, or the package's own step says so in its source |
  * | `code`   | an `exec` step, or one of the package's own steps (TypeScript in the installing process) |
  *
@@ -22,7 +24,8 @@
  */
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { parseManifest as parseAppManifest } from "../apps/manifest.js";
+import { parseManifest as parseAppManifest, SCREENSHOT_MAX_BYTES } from "../apps/manifest.js";
+import { describeTrigger, normalizeTrigger } from "../automations.js";
 import { walkSteps } from "../closure.js";
 import { parseConceptFile } from "../concept-seed.js";
 import type { Step, StepEffect } from "../core.js";
@@ -47,9 +50,18 @@ export interface AppDetail {
   description?: string;
   /** A lucide icon name, as the manifest says. */
   icon?: string;
+  /** The manifest's `screenshots` that are files in the archive within the
+   *  size limit, in its order — the store serves them by `path`. */
+  screenshots?: AppScreenshotDetail[];
   grants: { workflows: string[]; steps: string[] };
   can: PackageCan;
   files: number;
+}
+
+export interface AppScreenshotDetail {
+  /** The file's path in the PACKAGE (`apps/<name>/public/shot.png`). */
+  path: string;
+  caption?: string;
 }
 
 export interface WorkflowInputDetail {
@@ -78,6 +90,10 @@ export interface WorkflowDetail {
   sealed?: true;
   /** How many claims the `claims:` block declares. */
   claims?: number;
+  /** When strut runs it on its own: each schedule strut.yaml ships on it
+   *  (`schedules:`), as a sentence — in the server's own zone unless it
+   *  names one. */
+  schedules?: string[];
   /** The YAML could not be read as a workflow. */
   error?: string;
 }
@@ -115,6 +131,12 @@ export interface PackageDetail {
   /** Every secret the package needs: the manifest's `requires.secrets` and
    *  what the workflows and steps name. */
   secrets: string[];
+  /** The manifest's `requires.optional`: secrets its steps may read, but a
+   *  strut without them still installs it. Not in `secrets`. */
+  optional?: string[];
+  /** The steps the manifest's `job:` gives the job agent, by their names
+   *  inside the package, and the ones among them that ask first. */
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   files: number;
   bytes: number;
@@ -137,7 +159,7 @@ const DOCS_MAX_CHARS = 32_000;
 /** The steps that spend: on a model (`graph/walk` asks a decision model at
  *  every hop, its `evaluate` grader), or the credit this strut bought at
  *  another strut's public door (src/remote.ts) — the `spends` flag. */
-export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "acp/prompt", "graph/walk", "remote/run-workflow", "remote/call", "remote/buy-credit"]);
+export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "image", "acp/prompt", "graph/walk", "remote/run-workflow", "remote/call", "remote/buy-credit"]);
 
 /** Regexes over a step's SOURCE — a reading of `defineStep({ … })` without
  *  loading it: its description, `effect`, declared `secrets`, and every
@@ -335,6 +357,12 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   };
   const workflows = [...readings.keys()].sort().map((n) => fold(n, []));
   const workflowByName = new Map(workflows.map((w) => [w.name, w]));
+  for (const sc of info.schedules ?? []) {
+    const w = workflowByName.get(inside(sc.workflow));
+    // The zone a schedule names; with none, the installing server's, which no catalog knows.
+    const said = describeTrigger(normalizeTrigger(sc.trigger, new Date(0), sc.trigger.tz ?? "UTC"));
+    if (w) (w.schedules ??= []).push(sc.trigger.tz ? said : said.replace(/ \([^)]*\)$/, ""));
+  }
 
   // The apps: the manifest's face, the flags of what they may launch.
   const apps: AppDetail[] = [];
@@ -368,11 +396,21 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
       if (s === "exec" || ownStep(s)) can.code = true;
       if (factsOf(s)?.effect === "write") can.acts = true;
     }
+    // Screenshots the archive holds, within the size the store serves; a
+    // missing or oversized one is left out (an install's build refuses it).
+    const screenshots: AppScreenshotDetail[] = [];
+    for (const shot of m.screenshots ?? []) {
+      const path = `${item.path}/${shot.file}`;
+      if (!info.files.includes(path)) continue;
+      if ((await stat(join(info.dir, path))).size > SCREENSHOT_MAX_BYTES) continue;
+      screenshots.push({ path, ...(shot.caption ? { caption: shot.caption } : {}) });
+    }
     apps.push({
       name,
       title: m.title,
       ...(m.description ? { description: m.description } : {}),
       ...(m.icon ? { icon: m.icon } : {}),
+      ...(screenshots.length ? { screenshots } : {}),
       grants: { workflows: [...m.grants.workflows], steps: [...m.grants.steps] },
       can,
       files,
@@ -405,6 +443,8 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   const secrets = new Set<string>(info.manifest.requires?.secrets ?? []);
   for (const w of workflows) for (const s of w.secrets) secrets.add(s);
   for (const s of steps) for (const sec of s.secrets) secrets.add(sec);
+  const optional = [...new Set(info.manifest.requires?.optional ?? [])].sort();
+  for (const name of optional) secrets.delete(name);
   const can: PackageCan = {
     spends: workflows.some((w) => w.can.spends) || apps.some((a) => a.can.spends),
     acts: workflows.some((w) => w.can.acts) || apps.some((a) => a.can.acts),
@@ -420,6 +460,8 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     steps: steps.sort((a, b) => a.name.localeCompare(b.name)),
     concepts: concepts.sort((a, b) => a.name.localeCompare(b.name)),
     secrets: [...secrets].sort(),
+    ...(optional.length ? { optional } : {}),
+    ...(info.job ? { job: { tools: info.job.tools.map(inside), approve: info.job.approve.map(inside) } } : {}),
     can,
     files: info.files.length,
     bytes,
@@ -428,22 +470,24 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
 
 /** The short form a search hit carries: the apps' faces and the counts. */
 export interface DetailSummary {
-  apps: Array<{ name: string; title: string; description?: string; icon?: string; can: PackageCan }>;
+  apps: Array<{ name: string; title: string; description?: string; icon?: string; screenshots?: AppScreenshotDetail[]; can: PackageCan }>;
   workflows: number;
   steps: number;
   concepts: number;
   secrets: string[];
+  job?: { tools: string[]; approve: string[] };
   can: PackageCan;
   readme: boolean;
 }
 
 export function summarizeDetail(d: PackageDetail): DetailSummary {
   return {
-    apps: d.apps.map((a) => ({ name: a.name, title: a.title, ...(a.description ? { description: a.description } : {}), ...(a.icon ? { icon: a.icon } : {}), can: a.can })),
+    apps: d.apps.map((a) => ({ name: a.name, title: a.title, ...(a.description ? { description: a.description } : {}), ...(a.icon ? { icon: a.icon } : {}), ...(a.screenshots ? { screenshots: a.screenshots } : {}), can: a.can })),
     workflows: d.workflows.length,
     steps: d.steps.filter((s) => !s.helper).length,
     concepts: d.concepts.length,
     secrets: d.secrets,
+    ...(d.job ? { job: d.job } : {}),
     can: d.can,
     readme: d.readme !== undefined,
   };

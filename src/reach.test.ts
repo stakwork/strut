@@ -83,6 +83,8 @@ describe("builder.reach", () => {
       /the secret "PEEL_BRIDGE_TOKEN"/,
     );
     await refused("r-templated", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [web_search]\n      secretsEnv: [\"{{ input.k }}\"]\n"), /a secret named by a template/);
+    // An SSH key the agent signs with is a secret its config names too.
+    await refused("r-ssh-keys", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [web_search]\n      sshKeys: [SSH_KEY]\n"), /the secret "SSH_KEY"/);
     await refused("r-all-builtins", stepYaml("a", "agent", "      prompt: hi\n"), /every built-in/);
     await refused("r-bash", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [bash]\n"), /the built-in "bash"/);
     await refused("r-grant", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [none]\n      agentTools: [slack/*]\n"), /the grant "slack\/\*" \(reaches "slack\/post-message"\)/);

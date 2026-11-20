@@ -24,7 +24,7 @@ import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { requireApiKey } from "./auth.js";
 import { toSubjectRef, type ClaimActor, type ClaimsAuthoring } from "./claims-authoring.js";
-import { CLAIMS_OFF, checkSpecSchema, claimSpecSchema, subjectSchema } from "./claims-schemas.js";
+import { CLAIMS_OFF, checkSpecSchema, claimSpecSchema, personSubjectSchema } from "./claims-schemas.js";
 import type { Verifier } from "./verify.js";
 
 export interface ClaimsRoutesDeps {
@@ -34,8 +34,9 @@ export interface ClaimsRoutesDeps {
 }
 
 /** The HTTP door's actor — a PERSON: unscoped, and stamped as one. Shared
- *  with the publish routes, which apply a YAML `claims:` block the same way. */
-export const PERSON: ClaimActor = { publisher: "person", scoped: false };
+ *  with the publish routes, which apply a YAML `claims:` block the same way.
+ *  A door that keeps the Concept tree, so it may write claims about Concepts. */
+export const PERSON: ClaimActor = { publisher: "person", scoped: false, concepts: true };
 
 export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   const claims = deps.claims;
@@ -51,16 +52,20 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   const id = (c: Context) => c.req.param("id") ?? "";
 
   // A subject's contract: claims with computed status, latest evidence, their
-  // checks, and open slots (questions an external check is waiting on).
+  // checks, and open slots (questions an external check is waiting on). A
+  // Concept's status is main's, or a Concept branch's with `branch`
+  // (plans/concept-evals.md item d).
   app.get("/claims", async (c) => {
     if (!claims) return c.json({ enabled: false, claims: [] });
-    const subject = subjectSchema.safeParse({ kind: c.req.query("kind"), name: c.req.query("name") });
-    if (!subject.success) return c.json({ error: "kind (step | workflow) and name are required" }, 400);
-    const listing = await claims.listClaims(subject.data);
+    const subject = personSubjectSchema.safeParse({ kind: c.req.query("kind"), name: c.req.query("name") });
+    if (!subject.success) return c.json({ error: "kind (step | workflow | job | concept) and name are required" }, 400);
+    const branch = c.req.query("branch") || undefined;
+    if (branch && subject.data.kind !== "concept") return c.json({ error: "branch reads a Concept's claims: a step's, workflow's or job's status is one across branches" }, 400);
+    const listing = await claims.listClaims(subject.data, branch ? { branch } : {});
     // A built-in step has no node in the workspace: it simply has no contract.
     if (!("ok" in listing)) return c.json({ enabled: true, subject: subject.data, claims: [], note: listing.error });
     const verifyCostUsd = deps.verifier ? await deps.verifier.costOf(toSubjectRef(subject.data)).catch(() => 0) : 0;
-    return c.json({ enabled: true, subject: listing.subject, claims: listing.claims, ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}) });
+    return c.json({ enabled: true, subject: listing.subject, ...(listing.branch ? { branch: listing.branch } : {}), claims: listing.claims, ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}) });
   });
 
   // What the checks said about a workflow's runs, newest run first: each
@@ -81,7 +86,7 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
 
   app.post("/claims", requireApiKey, async (c) => {
     if (!claims) return off(c);
-    const body = await bodyOf(c, claimSpecSchema.extend({ subjects: z.array(subjectSchema).min(1) }));
+    const body = await bodyOf(c, claimSpecSchema.extend({ subjects: z.array(personSubjectSchema).min(1) }));
     if ("error" in body) return c.json(body, 400);
     return reply(c, await claims.addClaim(body.data, PERSON));
   });
@@ -98,7 +103,7 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   for (const verb of ["attach", "detach"] as const) {
     app.post(`/claims/:id/${verb}`, requireApiKey, async (c) => {
       if (!claims) return off(c);
-      const body = await bodyOf(c, z.object({ subject: subjectSchema }));
+      const body = await bodyOf(c, z.object({ subject: personSubjectSchema }));
       if ("error" in body) return c.json(body, 400);
       return reply(c, verb === "attach" ? await claims.attachClaim(id(c), body.data.subject, PERSON) : await claims.detachClaim(id(c), body.data.subject, PERSON));
     });
@@ -134,7 +139,7 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
         supports: z.boolean(),
         content: z.string(),
         slot: z.string().optional(),
-        subject: subjectSchema.optional(),
+        subject: personSubjectSchema.optional(),
       }),
     );
     if ("error" in body) return c.json(body, 400);

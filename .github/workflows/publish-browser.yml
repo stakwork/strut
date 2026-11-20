@@ -2,8 +2,8 @@ name: publish browser image
 
 # Builds images/browser (a Playwright server, see its Dockerfile) and pushes it
 # to ghcr.io/stakwork/strut-browser when that directory changes on main. The
-# tag is the Playwright version the Dockerfile pins (`1.63.0`, plus the moving
-# `1.63` and `latest`), because whoever runs the image pins it to the
+# tag is the Playwright version the Dockerfile pins (`1.64.1`, plus the moving
+# `1.64` and `latest`), because whoever runs the image pins it to the
 # `playwright-core` of the host that connects to it.
 
 on:
@@ -70,6 +70,9 @@ jobs:
           context: images/browser
           platforms: linux/amd64,linux/arm64
           push: true
+          # fresh base + no stale layers: a CVE fix must not be masked by cache
+          pull: true
+          no-cache: true
           tags: |
             ghcr.io/stakwork/strut-browser:${{ steps.version.outputs.full }}
             ghcr.io/stakwork/strut-browser:${{ steps.version.outputs.minor }}

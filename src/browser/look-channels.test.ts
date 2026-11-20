@@ -103,7 +103,7 @@ describe("app/look's channel socket, answered by a strut", () => {
       store: new MemoryRunStore(),
       kit: await kitForTests(),
       services: { browser },
-      scheduler: false, enableChat: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, views: false, concepts: false,
+      scheduler: false, enableChat: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false, views: false, concepts: false,
     });
     const src = join(root, "src", "chess");
     for (const [rel, text] of Object.entries({ "app.yaml": "title: Chess\n", "src/App.tsx": "export default function App() { return <p>chess</p>; }\n" })) {

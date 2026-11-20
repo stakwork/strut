@@ -8,6 +8,7 @@ import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { bindGraph } from "./graph-writes.js";
+import { bindBranch, type BranchesCapability } from "./branches.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
 
@@ -66,11 +67,16 @@ export interface Proposal {
    *  which decides where the proposal shows (`visibleTo`): the session the
    *  root run's launch named, or, for a job's run, the session of the turn
    *  that started it (`startedBy`). Records from before it have none. */
-  by: { workflow: string; runId: string; path: string; job?: string; session?: string; conversation?: string; actor?: string; principal?: string };
+  by: { workflow: string; runId: string; path: string; job?: string; session?: string; conversation?: string; actor?: string; principal?: string; branch?: string };
   decision?: { action: ProposalAction; by?: string; at: string; input?: unknown; reason?: string };
   result?: { output?: unknown; error?: string; cost?: number; nodes?: unknown[]; at: string };
   /** When the proposing session was told of the decision (§5). */
   reportedAt?: string;
+  /** The waiting proposal this one replaced (`ProposalDescription.replaces`). */
+  replaces?: string;
+  /** The newer proposal that replaced this one while it waited: strut
+   *  rejected it then, so a host may leave it out of the thread. */
+  replacedBy?: string;
 }
 
 /** The slim form a host reads: `run.end { proposals }`, the steps' results. */
@@ -86,26 +92,41 @@ export interface ProposalBrief {
   rationale?: string;
   createdAt: string;
   decidedAt?: string;
+  /** Replaced by a newer proposal while it waited: a host may leave it out. */
+  replacedBy?: string;
 }
 
-export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by">;
+export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by" | "replaces">;
 
 export interface ProposalFilter {
-  job?: string;
+  /** One job's, or any of several (the jobs a conversation page's turns started). */
+  job?: string | string[];
   session?: string;
+  /** The thread it shows in: its `by.conversation`, else its `by.session`. */
+  thread?: string;
+  /** Only proposals of this step type. */
+  step?: string;
+  /** Only those a run of this workflow made (`by.workflow`): the dream's, for the Knowledge app. */
+  workflow?: string;
   /** One run's, or any of several (a conversation page's turns). */
   runId?: string | string[];
   status?: ProposalStatus | ProposalStatus[];
   /** Whether the proposing session has been told of it (`reportedAt`). */
   reported?: boolean;
   /** Only what this request may see in a list (`visibleTo`), applied on
-   *  the index before `limit` and before any file is read. */
-  viewer?: { scope: Scope; actor?: string };
-  /** At most this many, newest first; unlimited by default. */
+   *  the index before `limit` and before any file is read. `admin`: strut's
+   *  own page's viewer is an admin here, so they also see what no
+   *  conversation made (`pageSees`). */
+  viewer?: { scope: Scope; actor?: string; admin?: boolean };
+  /** At most this many, newest first. Every match by default: a caller
+   *  without a narrow filter (a job, a run, a thread) passes one, since
+   *  each proposal returned is a file read. */
   limit?: number;
 }
 
 export const PROPOSAL_RESULT_PREFIX = "[proposal-result]";
+/** `GET /proposals` with no `limit`: the newest this many. */
+export const PROPOSAL_LIST_DEFAULT = 200;
 const DECIDED: ReadonlySet<ProposalStatus> = new Set(["rejected", "applied", "failed"]);
 
 export function proposalsRoot(dataDir: string): string {
@@ -136,6 +157,27 @@ export function visibleTo(scope: Scope, actor: string | undefined, p: Pick<Propo
   return !!actor && p.by.actor === actor && !!thread && (thread === actor || thread.startsWith(`${actor}/`));
 }
 
+/** What strut's OWN page shows and lets its viewer decide (`proposal/list`,
+ *  `proposal/decide`, a first-party page's own call): their own, as their
+ *  person token sees them (`visibleTo`), and, when the viewer is an ADMIN
+ *  here, a proposal made in NO conversation — an automation's, such as the
+ *  dream's changes to the Concept tree. One of those belongs to no thread, so
+ *  it shows where the people who run this strut keep what it changes; an
+ *  admin's session already lists and decides it at `/proposals`. A member
+ *  sees what they did before. */
+export function pageSees(p: Pick<Proposal, "by">, viewer: { actor?: string; admin?: boolean }): boolean {
+  return seesInList({ scope: "peer:person", ...viewer }, p);
+}
+
+/** A list's viewer check (`ProposalFilter.viewer`): `visibleTo`, and for an
+ *  admin on strut's own page what no conversation made. */
+function seesInList(viewer: NonNullable<ProposalFilter["viewer"]>, p: Pick<Proposal, "by">): boolean {
+  return visibleTo(viewer.scope, viewer.actor, p) || (viewer.admin === true && !threadOf(p));
+}
+
+/** The thread a proposal shows in (`visibleTo`): its conversation, else its session. */
+const threadOf = (p: Pick<Proposal, "by">) => p.by.conversation ?? p.by.session;
+
 export function briefOf(p: Proposal): ProposalBrief {
   return {
     id: p.id,
@@ -149,6 +191,7 @@ export function briefOf(p: Proposal): ProposalBrief {
     ...(p.rationale ? { rationale: p.rationale } : {}),
     createdAt: p.createdAt,
     ...(p.decision ? { decidedAt: p.decision.at } : {}),
+    ...(p.replacedBy ? { replacedBy: p.replacedBy } : {}),
   };
 }
 
@@ -181,10 +224,13 @@ async function readFileProposal(file: string): Promise<Proposal | null> {
   }
 }
 
-/** The live file, else the archive's (a decided proposal is moved there). */
-export async function readProposal(root: string, id: string): Promise<Proposal | null> {
+/** The live file, else the archive's (a decided proposal is moved there);
+ *  the archive's first when the caller knows it is `decided`. */
+export async function readProposal(root: string, id: string, decided = false): Promise<Proposal | null> {
   if (!ID_RE.test(id)) return null;
-  return (await readFileProposal(join(root, `${id}.json`))) ?? (await readFileProposal(join(root, ARCHIVE, `${id}.json`)));
+  const files = [join(root, `${id}.json`), join(root, ARCHIVE, `${id}.json`)];
+  if (decided) files.reverse();
+  return (await readFileProposal(files[0]!)) ?? (await readFileProposal(files[1]!));
 }
 
 /** Run `fn` over `items`, at most `READ_CONCURRENCY` at a time, in order. */
@@ -207,6 +253,7 @@ async function mapLimited<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R
  *  `summary`, `result`). `by` whole, so `visibleTo` runs on the index. */
 interface IndexEntry {
   id: string;
+  step: string;
   status: ProposalStatus;
   createdAt: string;
   by: Proposal["by"];
@@ -222,6 +269,7 @@ const inflight = new Map<string, Promise<Proposal[]>>();
 
 const entryOf = (p: Proposal): IndexEntry => ({
   id: p.id,
+  step: p.step,
   status: p.status,
   createdAt: p.createdAt,
   by: p.by ?? ({} as Proposal["by"]),
@@ -274,6 +322,27 @@ async function writeProposal(root: string, p: Proposal): Promise<void> {
   for (const k of [...inflight.keys()]) if (k.startsWith(`${root}\0`)) inflight.delete(k);
 }
 
+/** Close the waiting proposal `id` that `rec` replaces: rejected by strut,
+ *  "Replaced by a newer card", `replacedBy` the new one, and reported at
+ *  once (the proposer made the replacement itself). Only a PENDING one of
+ *  the same step in the same thread; null when there is nothing to close. */
+async function replaceProposal(root: string, id: string, rec: Proposal): Promise<Proposal | null> {
+  const fits = (q: Proposal) => q.id !== rec.id && q.status === "pending" && q.step === rec.step && !!threadOf(q) && threadOf(q) === threadOf(rec);
+  const was = await readProposal(root, id);
+  if (!was || !fits(was)) return null;
+  let closed = false;
+  const p = await updateProposal(root, id, (q) => {
+    if (!fits(q)) return;
+    const at = new Date().toISOString();
+    q.status = "rejected";
+    q.decision = { action: "reject", by: "strut", at, reason: "Replaced by a newer card" };
+    q.replacedBy = rec.id;
+    q.reportedAt = at;
+    closed = true;
+  });
+  return closed ? p : null;
+}
+
 async function updateProposal(root: string, id: string, edit: (p: Proposal) => void): Promise<Proposal | null> {
   return withLock(join(root, `${id}.json`), async () => {
     const p = await readProposal(root, id);
@@ -285,7 +354,8 @@ async function updateProposal(root: string, id: string, edit: (p: Proposal) => v
 }
 
 export function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.reported, filter.viewer?.scope, filter.viewer?.actor, filter.limit])}`;
+  const { viewer } = filter;
+  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.thread, filter.step, filter.workflow, filter.runId, filter.status, filter.reported, viewer?.scope, viewer?.actor, viewer?.admin, filter.limit])}`;
   let p = inflight.get(key);
   if (!p) {
     p = runList(root, filter).finally(() => {
@@ -300,19 +370,23 @@ async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]
   await loadIndex(root);
   const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
   const runIds = filter.runId === undefined ? undefined : new Set(Array.isArray(filter.runId) ? filter.runId : [filter.runId]);
+  const jobs = filter.job === undefined ? undefined : new Set(Array.isArray(filter.job) ? filter.job : [filter.job]);
   const { viewer } = filter;
   let hits = [...indexOf(root).entries.values()].filter(
     (e) =>
-      (filter.job === undefined || e.by.job === filter.job) &&
+      (!jobs || (e.by.job !== undefined && jobs.has(e.by.job))) &&
       (filter.session === undefined || e.by.session === filter.session) &&
+      (filter.thread === undefined || threadOf(e) === filter.thread) &&
+      (filter.step === undefined || e.step === filter.step) &&
+      (filter.workflow === undefined || e.by.workflow === filter.workflow) &&
       (!runIds || runIds.has(e.by.runId)) &&
       (!statuses || statuses.has(e.status)) &&
       (filter.reported === undefined || !!e.reportedAt === filter.reported) &&
-      (!viewer || visibleTo(viewer.scope, viewer.actor, e)),
+      (!viewer || seesInList(viewer, e)),
   );
   hits.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   if (filter.limit !== undefined) hits = hits.slice(0, filter.limit);
-  const read = await mapLimited(hits, (e) => readProposal(root, e.id));
+  const read = await mapLimited(hits, (e) => readProposal(root, e.id, DECIDED.has(e.status)));
   return read.filter((p): p is Proposal => p !== null);
 }
 
@@ -350,6 +424,11 @@ export interface ProposalsCapability {
   /** Is the person the run `runId` is for an ADMIN here, as its records
    *  say (`adminStanding`)? Undefined when they do not say. */
   personIsAdmin?(runId: string): Promise<boolean | undefined>;
+  /** The proposals of `step` still WAITING in the thread the run belongs
+   *  to (else, when no thread is known, its job's: a job is one thread's),
+   *  newest first: what a step's `describe` may build a new ask on and
+   *  replace (`ProposalDescription.replaces`). None with neither. */
+  waiting?(step: string, run: { runId: string; job?: string }): Promise<Proposal[]>;
 }
 
 export function proposalsCapability(
@@ -374,10 +453,20 @@ export function proposalsCapability(
   };
   return {
     async propose(p) {
-      const conversation = p.by.conversation ?? (await deps.conversationOf?.(p.by.runId).catch(() => undefined));
-      const rec = await createProposal(root, conversation ? { ...p, by: { ...p.by, conversation } } : p);
+      const { replaces, ...ask } = p;
+      const conversation = ask.by.conversation ?? (await deps.conversationOf?.(ask.by.runId).catch(() => undefined));
+      let rec = await createProposal(root, conversation ? { ...ask, by: { ...ask.by, conversation } } : ask);
+      // `replaces` is recorded only when the waiting one was in fact closed.
+      const old = replaces ? await replaceProposal(root, replaces, rec) : null;
+      if (old) rec = (await updateProposal(root, rec.id, (q) => void (q.replaces = old.id))) ?? rec;
       tell(rec);
+      if (old) tell(old);
       return rec;
+    },
+    async waiting(step, run) {
+      const thread = await deps.conversationOf?.(run.runId).catch(() => undefined);
+      if (!thread && !run.job) return [];
+      return listProposals(root, { status: "pending", step, ...(thread ? { thread } : { job: run.job! }) });
     },
     get: (id) => readProposal(root, id),
     list: (filter) => listProposals(root, filter),
@@ -453,7 +542,10 @@ export async function proposeCall(
   rationale: string | undefined,
   ctx: StepContext,
   opts: ProposeCallOptions = {},
-): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string }> {
+): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string; held?: true }> {
+  // A trial proposes nothing (src/trials.ts): no card reaches a person, and
+  // the model reads the answer a recorded proposal would have given it.
+  if (ctx.trial) return { proposal: "", status: "pending", step: stepType, title: titleOf(stepType, def.description), url: "", held: true };
   const cap = proposalsOf(ctx.services);
   if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut server has no proposals capability (ctx.services.proposals).`);
   const key = journalKeyOf(ctx);
@@ -483,25 +575,32 @@ export async function proposeCall(
   }
   const title = described?.title?.trim() || titleOf(stepType, def.description);
   const summary = described?.summary?.trim() || undefined;
+  // A default the step read now, kept on the record (`ProposalDescription.input`):
+  // the yes applies what the card showed.
+  const pinned = described?.input !== undefined ? def.input.safeParse(described.input) : undefined;
+  const input: unknown = pinned?.success ? pinned.data : parsed;
   let card: ProposalCard | undefined;
   try {
-    card = buildCard({ input: parsed, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
+    card = buildCard({ input, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
   } catch {
     card = undefined;
   }
   const rec = await cap.propose({
     step: stepType,
-    input: parsed,
+    input,
     ...(rationale ? { rationale } : {}),
     title,
     ...(summary ? { summary } : {}),
     ...(card ? { card } : {}),
     ...(def.approver ? { approver: def.approver } : {}),
+    ...(described?.replaces ? { replaces: described.replaces } : {}),
     by: {
       workflow: workflowOf(ctx),
       runId: ctx.runId,
       path: ctx.path,
       ...(ctx.job ? { job: ctx.job } : {}),
+      // A proposal made on a Concept branch applies on it (src/branches.ts).
+      ...(ctx.branch ? { branch: ctx.branch } : {}),
       ...(opts.session ? { session: opts.session } : {}),
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
@@ -514,7 +613,9 @@ export async function proposeCall(
   return result(rec);
 }
 
-const result = (p: Proposal) => ({ proposal: p.id, status: p.status, step: p.step, title: p.title, url: proposalUrl(p.id) });
+/** What the proposing agent reads back; `replaced`, the waiting card this
+ *  one closed and stands in for, so its reply never sends the person to it. */
+const result = (p: Proposal) => ({ proposal: p.id, status: p.status, step: p.step, title: p.title, url: proposalUrl(p.id), ...(p.replaces ? { replaced: p.replaces } : {}) });
 
 /** Is the person the turn `ctx` is for an ADMIN of this strut server
  *  (plans/member-rights.md)? A page's turn says (`ctx.app.admin`, the app
@@ -544,9 +645,9 @@ export interface Decision {
   reason?: string;
   /** Who decided (the request's actor). */
   by?: string;
-  /** The request's scope. A person token (`peer:person`) decides only a
-   *  proposal its actor made; a plain `peer` decides none. Absent or `full`:
-   *  unchanged. */
+  /** The request's scope. A person token (`peer:person`) and a host
+   *  (`host`, as the person it names) decide only a proposal their actor
+   *  made; a plain `peer` decides none. Absent or `full`: unchanged. */
   scope?: Scope;
   /** Is the decider an ADMIN of this strut server (plans/member-rights.md)?
    *  Only an admin accepts a proposal of a step with `approver: "admin"`.
@@ -594,7 +695,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   const rec = await readProposal(root, id);
   if (!rec) return { status: 404, body: { error: `No proposal "${id}"` } };
   if (decision.scope === "peer") return { status: 403, body: { error: "forbidden: a peer without a person cannot decide a proposal" } };
-  if (decision.scope === "peer:person" && (!rec.by.actor || rec.by.actor !== decision.by)) {
+  if ((decision.scope === "peer:person" || decision.scope === "host") && (!rec.by.actor || rec.by.actor !== decision.by)) {
     return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
   }
   const tell = (p: Proposal) => {
@@ -630,10 +731,12 @@ export async function decideProposal(root: string, id: string, decision: Decisio
     return { status: 400, body: { error: `invalid input for "${rec.step}": ${(e as Error).message}`, proposal: rec } };
   }
   // A step may apply only after others (`StepDef.after`): a schedule after
-  // the publish of its workflow. Accepting it first changes nothing.
+  // the publish of its workflow. Accepting it first changes nothing. Only
+  // the proposals of the step it names are read.
   if (def.after) {
+    const { step, when } = def.after;
     // Not yet applied: pending, being applied, or failed (it may be accepted again).
-    const first = (await listProposals(root, { status: ["pending", "accepted", "failed"] })).find((q) => q.id !== rec.id && def.after!(input, q));
+    const first = (await listProposals(root, { step, status: ["pending", "accepted", "failed"] })).find((q) => q.id !== rec.id && when(input, q.input));
     if (first) {
       return { status: 409, body: { error: `Proposal "${rec.id}" applies after "${first.id}" (${first.step}), which is ${first.status}: decide that one first.`, proposal: rec } };
     }
@@ -669,7 +772,12 @@ export async function decideProposal(root: string, id: string, decision: Decisio
 /** The step run once, outside any run: the bag (secrets bound to the
  *  proposing run's principal), the registry, the job, the decider as actor. */
 async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: string | undefined, deps: DecideDeps): Promise<unknown> {
-  const bag = (deps.services ?? {}) as Record<string, unknown>;
+  const all = (deps.services ?? {}) as Record<string, unknown>;
+  // Made on a Concept branch: applied on it, while it exists (src/branches.ts).
+  if (p.by.branch && !(await (all["branches"] as BranchesCapability | undefined)?.get(p.by.branch))) {
+    throw new Error(`no_branch: this proposal was made on Concept branch "${p.by.branch}", which is gone — nothing applied`);
+  }
+  const bag = p.by.branch ? bindBranch(all, p.by.branch) : all;
   const secrets = bag["secrets"] as { forPrincipal?: (principal: string) => unknown } | undefined;
   // Its graph writes are heard like a run's (plans/live-feeds.md §2): the
   // proposing job's host reads the canvas again when a person's yes lands.
@@ -687,6 +795,7 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
     services: bound,
     registry: deps.registry,
     ...(p.by.job ? { job: p.by.job } : {}),
+    ...(p.by.branch ? { branch: p.by.branch } : {}),
     ...(by ? { actor: by } : {}),
     ...(p.by.principal ? { principal: p.by.principal } : {}),
     ...(mcp?.length ? { mcp } : {}),

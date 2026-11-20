@@ -129,7 +129,7 @@ if (ladybug && !env["STRUT_LADYBUG_EXTENSION_DIR"]) {
   }
 }
 
-// `strut move …` (AGENTS.md, "Moving strut to another host"): over the
+// `strut move …` (docs/moving.md, "Moving strut to another host"): over the
 // stopped strut's folders, with the defaults above (STRUT_WORKSPACE), and
 // no server.
 if (args[0] === "move") {

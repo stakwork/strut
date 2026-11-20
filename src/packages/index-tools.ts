@@ -11,12 +11,17 @@
  *   get_package      one package's page: apps, workflows with their inputs,
  *                    steps, Concept pages, the README, the secrets, `can`
  *   get_concept      the Concept tree the packages carry, or one page
+ *   search_live      what the listed servers SHOW LIVE — their public views,
+ *                    and what anyone may run there, free or for sats
+ *                    (plans/public-view-listing.md, work item 2)
  *
  * And `GET /llms.txt` at the index's root (`llmsTxt`, llmstxt.org): the
  * same store as ONE markdown page for an agent that fetches URLs rather
  * than speaks MCP — what the index is, the door above, the open JSON
- * reads, every listed package with what it holds, every Concept page —
- * each a link to its JSON page, so the agent reads on without a browser.
+ * reads, every listed package with what it holds, every Concept page,
+ * every live server and what anyone may run on it — each a link to its
+ * JSON page here or to the server itself, so the agent reads on without a
+ * browser.
  *
  * Nothing installs: the index holds no strut to install into, and an
  * install is a person's act on their own strut (§8). The tools say so, and
@@ -31,6 +36,8 @@ import { tool, type ToolSet } from "ai";
 import { capToolResults } from "../ai/tools.js";
 import type { PackageIndex } from "./index.js";
 import { INSTALL_IS_A_PERSONS_ACT, README_BRIEF_CHARS, briefPackagePage } from "./indexes.js";
+import type { IndexLiveItem } from "./index.js";
+import { priceWords } from "../public-agents.js";
 
 export interface IndexToolsOptions {
   /** The store front's base URL (the index strut's, when it serves the UI):
@@ -47,6 +54,25 @@ const storeLinks = (store: string | undefined) => ({
 
 const CAN =
   "`can: { spends, acts, code }` says whether running it reaches a model call (spends money), a step that acts on the world (effect: write), or code (exec, or the package's own TypeScript) — a READING off the files, never a check: an install re-reads everything through the real parsers and re-verifies the package against its publisher's signed catalog.";
+
+/** What an agent does with a live item: it lives on its SERVER, not here. */
+const LIVE_IS_ON_ITS_SERVER =
+  "A live item is NOT a package: nothing installs and nothing runs here. It is what its server shows now, as this index last read it — the server's own answer is the truth. A runnable item runs ON its server with no account: connect to that server's MCP door (`mcp`: list_public, run_workflow, call_tool, get_run, get_credit) or read its `llms.txt`, which says how to run it over plain HTTP and how a priced one is paid (an L402 invoice, sats over Lightning).";
+
+/** Where a live item is reached on its server: its llms.txt, its MCP door,
+ *  and — for an item anyone may run — the route that runs it. */
+export function liveLinks(item: Pick<IndexLiveItem, "url" | "kind" | "name" | "run">): { llms: string; mcp: string; run_at?: string } {
+  const base = item.url.replace(/\/+$/, "");
+  const enc = (s: string) => s.split("/").map(encodeURIComponent).join("/");
+  const run_at = !item.run ? undefined : item.kind === "workflow" ? `${base}/public/workflows/${encodeURIComponent(item.name)}/run` : item.kind === "step" ? `${base}/public/steps/${enc(item.name)}/run` : undefined;
+  return { llms: `${base}/llms.txt`, mcp: `${base}/public/mcp`, ...(run_at ? { run_at } : {}) };
+}
+
+/** A live item's price in words (public-agents.ts `priceWords`, the server's own). */
+export function livePriceWords(item: Pick<IndexLiveItem, "kind" | "run">): string | undefined {
+  if (!item.run || (item.kind !== "workflow" && item.kind !== "step")) return undefined;
+  return priceWords({ ...item.run, kind: item.kind, recent: item.run.recent ?? { days: 30, runs: 0, average: 0 } });
+}
 
 export function buildIndexTools(index: PackageIndex, opts: IndexToolsOptions = {}): ToolSet {
   const links = storeLinks(opts.store);
@@ -106,6 +132,26 @@ export function buildIndexTools(index: PackageIndex, opts: IndexToolsOptions = {
         return { concepts, total: concepts.length };
       },
     }),
+
+    search_live: tool({
+      description:
+        "Search what the servers listed in this index SHOW LIVE — each one's PUBLIC VIEW, read from the server itself: apps, workflows, steps and Concept roots, and what anyone may RUN there, free or for sats. Every word of `query` must match an item's name, title, description or publisher; empty lists everything (up to `limit`). " +
+        "Each item: { publisher, url (the server), kind: app | workflow | step | concept, name, title?, description?, version?, runs?, pages?, run?, definition?, llms, mcp, run_at?, price? } — `run` is there when anyone may run it: { base, markup, capUsd, reserve, results, recent? } in dollars, and `price` says it in words; `definition: false` when only running it is public, not its definition; `run_at` is the route that runs it. " +
+        LIVE_IS_ON_ITS_SERVER,
+      inputSchema: z.object({
+        query: z.string().default("").describe("Words to match, e.g. \"echo\" or a publisher's name; empty lists everything."),
+        runnable: z.boolean().default(false).describe("true: only what anyone may run."),
+        limit: z.number().int().min(1).max(200).default(50),
+      }),
+      execute: async ({ query, runnable, limit }) => {
+        const found = (await index.live(query)).filter((i) => !runnable || !!i.run);
+        const items = found.slice(0, limit).map((i) => {
+          const price = livePriceWords(i);
+          return { ...i, ...liveLinks(i), ...(price ? { price } : {}) };
+        });
+        return { items, total: found.length, ...links.browse(query), how: LIVE_IS_ON_ITS_SERVER };
+      },
+    }),
   };
   return capToolResults(tools);
 }
@@ -120,7 +166,10 @@ const canWords = (can: { spends: boolean; acts: boolean; code: boolean }) =>
  *  saying what this is, how an agent reaches it (the MCP door, the open
  *  reads), then `## Reads`, `## Packages` (every listed package at its
  *  newest release, with what its archive holds), `## Concepts` (every page
- *  the packages carry) and `## Optional` (the store page for a person) —
+ *  the packages carry), `## Live` (every server whose public view this
+ *  index lists, and each thing anyone may run there with its price — a
+ *  link to the server, never a page here) and `## Optional` (the store page
+ *  for a person) —
  *  each entry `- [name](url): notes`, the url its JSON page here. Derived
  *  like everything on the index; nothing on it installs. */
 export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; store?: string }): Promise<string> {
@@ -132,13 +181,13 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
       return base;
     }
   })();
-  const [info, packages, concepts] = await Promise.all([index.info(), index.search("", 500), index.concepts("")]);
+  const [info, packages, concepts, live] = await Promise.all([index.info(), index.search("", 500), index.concepts(""), index.live("")]);
   const out: string[] = [
     `# strut package index at ${host}`,
     "",
     `> The store of PACKAGES people published for strut, the workflow engine: workflows (automations), steps, apps (front ends over workflows) and Concept pages (knowledge), each pinned by its digest. This index is the phone book — it lists publishers by the public key that signs each one's catalog and follows every listed catalog. Everything here is DERIVED and unsigned past the index card: a reading of the publishers' catalogs and archives as this index crawled them, never a check — an install re-verifies the package against its publisher's own signed catalog and re-reads its files through the real parsers.`,
     "",
-    `For an agent: this index is an MCP server — \`claude mcp add --transport http strut-store ${base}/index/mcp\` gives you search_packages, get_package and get_concept with no credential. The same reads are plain JSON, open to anyone, under Reads below; every package and Concept link on this page is one of them.`,
+    `For an agent: this index is an MCP server — \`claude mcp add --transport http strut-store ${base}/index/mcp\` gives you search_packages, get_package, get_concept and search_live with no credential. The same reads are plain JSON, open to anyone, under Reads below; every package and Concept link on this page is one of them.`,
     "",
     INSTALL_IS_A_PERSONS_ACT,
     "",
@@ -148,7 +197,8 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
     `- [A package's page](${base}/index/packages/{publisher}/{name}): its releases and channels, and \`detail\` — apps (title, grants, \`can\`), workflows (inputs, the step types they run, grants, secrets, claims), steps (effect, the secrets they read, lint findings), Concept pages, the README, the secrets the whole package needs, and \`can: { spends, acts, code }\`: whether running it reaches a model call, a step that acts on the world, or code`,
     `- [The Concept tree](${base}/index/concepts?q=): the knowledge pages the packages carry, folded into one tree, \`{ concepts: [{ name, description?, parents?, packages }] }\`; one page with its docs, children and parents at ${base}/index/concepts/{name}`,
     `- [The index card](${base}/index/catalog): the signed list of publishers (Ed25519 over RFC 8785 JSON, \`strut-index\`), what a strut follows${info ? ` — key ${info.key}` : ""}`,
-    `- [MCP](${base}/index/mcp): POST, JSON-RPC over HTTP, stateless, no credential — the three tools above`,
+    `- [What the servers show live](${base}/index/live?q=): every listed server's public view as last read, \`{ items: [{ publisher, url, kind, name, title?, description?, run?, definition? }] }\` — \`url\` the server, \`run\` the price when anyone may run it there (dollars); every word of \`q\` must match`,
+    `- [MCP](${base}/index/mcp): POST, JSON-RPC over HTTP, stateless, no credential — the four tools above`,
     "",
     "## Packages",
     "",
@@ -172,6 +222,30 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
     const notes = [c.description && oneLine(c.description), c.parents?.length ? `under ${c.parents.join(", ")}` : "a root", `in ${c.packages.map((p) => p.package).join(", ")}`].filter(Boolean).join(" — ");
     out.push(`- [${c.name}](${base}/index/concepts/${encodeURIComponent(c.name)}): ${notes}`);
   }
+  // The live servers (plans/public-view-listing.md, work item 2): each one a
+  // line to its own llms.txt, then what anyone may run there, priced — run ON
+  // the server, never here.
+  out.push("", "## Live", "");
+  const rows = Object.entries(info?.live ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (rows.length === 0) out.push("No server's public view is listed yet.");
+  else {
+    out.push(
+      "Servers whose PUBLIC VIEW this index lists, read live from each one as last crawled. What anyone may run there runs ON that server, with no account: its own llms.txt says how, over its MCP door (`<server>/public/mcp`) or plain HTTP, and how a priced run is paid (an L402 invoice, sats over Lightning).",
+      "",
+    );
+  }
+  for (const [prefix, row] of rows) {
+    const base = row.url.replace(/\/+$/, "");
+    const brief = info!.liveCrawled.find((c) => c.prefix === prefix);
+    const shows = brief ? [plural(brief.apps ?? 0, "app"), plural(brief.workflows ?? 0, "workflow"), plural(brief.steps ?? 0, "step"), plural(brief.concepts ?? 0, "Concept page"), brief.runnable ? `${brief.runnable} ${brief.runnable === 1 ? "thing" : "things"} anyone may run` : ""].filter(Boolean).join(", ") : "";
+    const notes = [row.description && oneLine(row.description), `served at ${base}`, shows ? `shows ${shows}` : brief?.error ? `not read: ${oneLine(brief.error)}` : "not read yet", `MCP at ${base}/public/mcp`].filter(Boolean).join(" — ");
+    out.push(`- [${prefix}](${base}/llms.txt): ${notes}`);
+    for (const item of live.filter((i) => i.publisher === prefix && i.run)) {
+      const at = liveLinks(item).run_at!;
+      const what = [item.description && oneLine(item.description), `${item.kind === "step" ? "a step to call" : "a workflow to run"} on ${prefix}`, livePriceWords(item), item.definition === false ? "its definition is not public" : ""].filter(Boolean).join(" — ");
+      out.push(`- [${item.name}](${at}): ${what}`);
+    }
+  }
   out.push("", "## Optional", "");
   if (opts.store) out.push(`- [The store page](${opts.store}/?store=1): the same, for a person — a package's Install link there opens their strut's Publish dialog on its Packages tab, on the name`);
   out.push(`- [strut](https://github.com/stakwork/strut): the workflow engine these packages install into`);
@@ -185,7 +259,7 @@ export function indexInstructions(opts: { publicUrl: string; store?: string }): 
   const link = opts.store ? ` (${opts.store}/?store=1&pkg=<publisher/name>)` : "";
   return (
     `This is a strut PACKAGE INDEX at ${opts.publicUrl} — the phone book of a package store: it lists publishers, each by the public key that signs its catalog, and follows every listed publisher's public catalog. Here you find what people have published for strut, the workflow engine — PACKAGES of workflows (automations), steps, apps (front ends over workflows) and Concept pages (knowledge), each pinned by its digest. ` +
-    `search_packages finds packages by words (each hit says what the release holds, read off its archive); get_package reads one package's page — its apps, each workflow's inputs and what it runs, its steps and the secrets they read, its Concept pages, its README, and \`can\`: whether running it spends (a model call), acts (a step that writes to the world) or runs code; get_concept browses the Concept tree the packages carry, or reads one page. ` +
+    `search_packages finds packages by words (each hit says what the release holds, read off its archive); get_package reads one package's page — its apps, each workflow's inputs and what it runs, its steps and the secrets they read, its Concept pages, its README, and \`can\`: whether running it spends (a model call), acts (a step that writes to the world) or runs code; get_concept browses the Concept tree the packages carry, or reads one page; search_live finds what the listed servers show LIVE — their public views, and what anyone may run there, free or for sats, ON that server (its \`mcp\` door or its \`llms.txt\`), never here. ` +
     `Everything here is DERIVED and unsigned past the index card: a reading of the publishers' catalogs and archives as this index crawled them, never a check — an install re-verifies the package against its publisher's own signed catalog and re-reads its files through the real parsers. ` +
     `Nothing here installs, and you cannot: a package is installed on a PERSON's own strut, on their yes — from its UI's Publish dialog, Packages tab (Find the name, then Install), from this store's Install link${link}, which opens that tab on the name, or proposed by an agent that holds strut's package/install tool there (a card the person approves). Tell them the name, publisher/name, and what the page says it needs and can do.`
   );

@@ -12,8 +12,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { withLock } from "../../../jobs.js";
 import { shellCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
@@ -167,6 +169,89 @@ export async function gitOk(shell: ShellCapability, args: string[], o: GitOpts):
   }
   return r.stdout;
 }
+
+// ── the bare cache ────────────────────────────────────────────────────────
+
+/** Where the cache keeps the remote's branches: `origin/<name>`, as any
+ *  clone does. Its own `refs/heads/*` are the branches agents make in its
+ *  working copies, which a fetch never touches. */
+export const TRACKING = "+refs/heads/*:refs/remotes/origin/*";
+
+/**
+ * A cache from before TRACKING mirrored the remote into `refs/heads/*`
+ * (`clone --bare`) and fetched with `--prune` into them — so a branch an
+ * agent made in a kept working copy was deleted by the next run's fetch,
+ * whoever ran it, and that copy's next commit was a root commit holding
+ * every file. Moved over once: the mirrored heads go, except one a working
+ * copy has checked out, and the fetch tracks the remote from then on.
+ */
+async function trackRemoteBranches(shell: ShellCapability, cacheDir: string, url: string, o: Omit<GitOpts, "cwd">): Promise<void> {
+  const at = { cwd: cacheDir, ...o };
+  const spec = await git(shell, ["config", "--get", "remote.origin.fetch"], at);
+  if (spec.code === 0 && spec.stdout.trim() === TRACKING) return;
+  if ((await git(shell, ["config", "--get", "remote.origin.url"], at)).code !== 0) {
+    await gitOk(shell, ["config", "remote.origin.url", url], at); // a cache cut off before its remote was added
+  }
+  const heads = (await gitOk(shell, ["for-each-ref", "--format=%(refname)", "refs/heads/"], at)).split("\n").filter(Boolean);
+  const checkedOut = new Set(
+    (await gitOk(shell, ["worktree", "list", "--porcelain"], at))
+      .split("\n")
+      .filter((l) => l.startsWith("branch "))
+      .map((l) => l.slice("branch ".length)),
+  );
+  const mirrored = heads.filter((h) => !checkedOut.has(h));
+  if (mirrored.length) {
+    const del = await shell({
+      cmd: "git",
+      args: ["update-ref", "--stdin"],
+      cwd: cacheDir,
+      stdin: mirrored.map((h) => `delete ${h}\n`).join(""),
+      timeoutMs: o.timeoutMs ?? 60_000,
+      ...(o.signal ? { signal: o.signal } : {}),
+    });
+    if (del.code !== 0) throw new Error(`git update-ref failed: ${(del.stderr || del.stdout).trim().slice(-2000)}`);
+  }
+  await gitOk(shell, ["config", "remote.origin.fetch", TRACKING], at);
+}
+
+/** Make the credential-free bare cache for `url` when it is not there (or
+ *  move an old one over), then fetch the remote's branches into `origin/*`
+ *  and its tags. `--prune` drops what the remote deleted — under origin/,
+ *  never a branch an agent made. Run it under the cache's lock. */
+export async function fetchCache(shell: ShellCapability, cacheDir: string, url: string, o: Omit<GitOpts, "cwd">): Promise<void> {
+  await mkdir(dirname(cacheDir), { recursive: true });
+  if (!existsSync(join(cacheDir, "HEAD"))) {
+    await rm(cacheDir, { recursive: true, force: true }); // a half-made cache
+    await gitOk(shell, ["init", "--bare", "--quiet", cacheDir], { cwd: dirname(cacheDir), ...o });
+    await gitOk(shell, ["remote", "add", "origin", url], { cwd: cacheDir, ...o }); // fetches into TRACKING
+  } else {
+    await trackRemoteBranches(shell, cacheDir, url, o);
+  }
+  await gitOk(shell, ["fetch", "--quiet", "--prune", "origin", TRACKING, "+refs/tags/*:refs/tags/*"], { cwd: cacheDir, ...o });
+}
+
+/** The remote's default branch — asked of the remote, so a change on
+ *  GitHub is seen; the clone-time HEAD is the fallback. */
+export async function remoteDefaultBranch(shell: ShellCapability, cacheDir: string, o: Omit<GitOpts, "cwd">): Promise<string | undefined> {
+  const symref = await gitOk(shell, ["ls-remote", "--symref", "origin", "HEAD"], { cwd: cacheDir, ...o });
+  const branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
+  if (branch) return branch;
+  const head = await git(shell, ["symbolic-ref", "--short", "HEAD"], { cwd: cacheDir, ...o });
+  return head.code === 0 && head.stdout.trim() ? head.stdout.trim() : undefined;
+}
+
+/** The commit the first of `names` that is one points at, or "". A name
+ *  never starts with `-`: the caller's to check, since it is an argument. */
+export async function commitOf(shell: ShellCapability, cacheDir: string, names: readonly string[], o: Omit<GitOpts, "cwd">): Promise<string> {
+  for (const name of names) {
+    const rp = await git(shell, ["rev-parse", "--verify", "--quiet", `${name}^{commit}`], { cwd: cacheDir, ...o });
+    if (rp.code === 0) return rp.stdout.trim();
+  }
+  return "";
+}
+
+/** A commit sha, full or abbreviated: what a ref may be besides a branch or tag. */
+export const SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 export function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");

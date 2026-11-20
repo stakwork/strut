@@ -28,6 +28,7 @@ import {
   publicReader,
   readSurface,
   relativeImports,
+  signInOf,
   stepHelpers,
   surfaceProblem,
 } from "./public-surface.js";
@@ -64,6 +65,19 @@ describe("the surface record", () => {
       apps: [],
       runnable: [],
     });
+  });
+
+  it("sign-in: Sphinx by default once an app is public; `signIn: []` is none, and the default is left unwritten", () => {
+    const empty = normalizeSurface({});
+    const withApp = normalizeSurface({ apps: [{ name: "game" }] });
+    assert.deepEqual(signInOf(empty), [], "nothing public, nothing to sign in to");
+    assert.deepEqual(signInOf(withApp), ["sphinx"]);
+    const none = normalizeSurface({ apps: [{ name: "game" }], visitors: { signIn: [], visitorKey: "domain", limits: { writesPerDay: 5 } } });
+    assert.deepEqual(none.visitors, { signIn: [] }, "no method: the key per domain and the limits go");
+    assert.deepEqual(signInOf(none), []);
+    assert.equal(normalizeSurface({ apps: [{ name: "game" }], visitors: { signIn: ["sphinx", "sphinx"] } }).visitors, undefined, "the default is absent");
+    assert.deepEqual(normalizeSurface({ visitors: { signIn: ["sphinx"], visitorKey: "domain" } }).visitors, { signIn: ["sphinx"], visitorKey: "domain" });
+    assert.deepEqual(signInOf(normalizeSurface({ visitors: { signIn: ["key"] } })), ["key"], "a record's own methods, app or not");
   });
 
   it("an absent file is the empty surface; a broken one throws", async () => {
@@ -206,7 +220,7 @@ describe("the /public routes", () => {
     const { strut } = await boot();
     const res = await strut.app.request("/public");
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] });
+    assert.deepEqual(await res.json(), { host: { remote: 1 }, workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] });
     assert.equal((await strut.app.request("/public/workflows/demo")).status, 404);
     assert.equal((await strut.app.request("/public/workflows/demo/flow")).status, 404);
     assert.equal((await strut.app.request("/public/graph/nodes/x")).status, 404);
@@ -305,13 +319,20 @@ describe("the /public routes", () => {
       liveStatus: () => "stale",
       ratePerMinute: 2,
     });
-    const from = (ip: string) => app.request("/public", { headers: { "x-forwarded-for": ip } });
+    // Through a proxy on loopback (trusted by default): its header names the visitor.
+    const from = (ip: string, peer = "127.0.0.1") =>
+      app.request("/public", { headers: { "x-forwarded-for": ip } }, { incoming: { socket: { remoteAddress: peer } } });
     assert.equal((await from("1.1.1.1")).status, 200);
     assert.equal((await from("1.1.1.1")).status, 200);
     const third = await from("1.1.1.1");
     assert.equal(third.status, 429);
     assert.equal(third.headers.get("access-control-allow-origin"), "*");
     assert.equal((await from("2.2.2.2")).status, 200);
+    // A client reaching strut directly names nothing: a fresh header each
+    // time is still its one budget.
+    assert.equal((await from("3.3.3.3", "203.0.113.7")).status, 200);
+    assert.equal((await from("4.4.4.4", "203.0.113.7")).status, 200);
+    assert.equal((await from("5.5.5.5", "203.0.113.7")).status, 429);
   });
 });
 
@@ -454,7 +475,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     const workspace = new WorkspaceManager(join(root, "ws"));
     strut = await createStrut({
       workspace, store, registry, kit, scheduler: false, serveUi: false, views: false,
-      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
     await workspace.publishWorkflowByContent("score-wf", `name: score-wf\ninput:\n  value: { type: number }\nsteps:\n  - id: s\n    type: score\n    config: { value: "{{ input.value }}" }\n`);
     await workspace.publishWorkflowByContent("other-wf", `name: other-wf\nsteps:\n  - id: s\n    type: score\n    config: { value: 1 }\n`);
@@ -467,7 +488,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     runId = res.runId;
     const dir = join(root, "apps", "bench");
     await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\npermissions: [fullscreen, geolocation]\n");
+    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\npermissions: [fullscreen, geolocation]\nwallet:\n  request_methods: [pay_keysend, get_budget]\n  max_amount: 5000000\n  renewal_period: weekly\naccount:\n  corner: bottom-left\n");
     await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">hi</p>; }\n');
     const r = await strut.apps.publish(dir, "bench", { surface: "person" });
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -503,7 +524,19 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     const put = (await (await putView({ apps: [{ name: "bench", reads: ["demo/read", "demo/shell"] }], workflows: [{ name: "score-wf", runs: true }] })).json()) as { held?: Array<{ app: string; version?: string; release?: string }> };
     assert.equal(put.held?.[0]?.app, "bench");
     assert.equal(put.held?.[0]?.version, "v1");
-    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ name: "bench", version: "v1", title: "Bench", permissions: ["geolocation"] }], "with what its frame is granted beyond every app's, for the visitor's host");
+    // What its frame is granted beyond every app's, and the wallet its
+    // version requests (from its build), for the visitor's host: nothing
+    // else of the build.
+    const bench = { name: "bench", version: "v1", title: "Bench", permissions: ["geolocation"], wallet: { request_methods: ["pay_keysend", "get_budget"], max_amount: 5000000, renewal_period: "weekly" }, account: { corner: "bottom-left", style: "pill" } };
+    // Its share links: the visitor's page on this server's base, and the same opened in Peel.
+    const link = "http://localhost/?app=bench&solo=1&public=1";
+    const links = { link, peelLink: `peel://open?url=${encodeURIComponent(link)}` };
+    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ ...bench, ...links }]);
+    assert.deepEqual(await (await strut.app.request("/public/apps/bench")).json(), { ...bench, ...links }, "the one app's read, which a visitor's host frames it by");
+    // Behind a proxy that mounts it under a path (mcp's /lab): the proxy's host and prefix.
+    const prefixed = (await (await strut.app.request("/public/apps/bench", { headers: { "x-forwarded-prefix": "/lab", "x-forwarded-host": "box.example", "x-forwarded-proto": "https" } })).json()) as { link: string; peelLink: string };
+    assert.equal(prefixed.link, "https://box.example/lab/?app=bench&solo=1&public=1");
+    assert.equal(prefixed.peelLink, "peel://open?url=https%3A%2F%2Fbox.example%2Flab%2F%3Fapp%3Dbench%26solo%3D1%26public%3D1");
 
     const doc = await strut.app.request("/public/apps/bench/document");
     assert.equal(doc.status, 200);
@@ -591,6 +624,23 @@ describe("the visible-refs index", () => {
     surface.noteEvent("w", ev("r1", "step.end", ["x"]));
     assert.equal(await surface.visible("x", undefined), true);
     assert.equal(c.reads, reads);
+  });
+
+  it("the index over a workflow's runs reads no evicted log (an archived one would be restored); a read of that run alone still does", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    await store.finalize("w", "r1", { status: "success" } as never);
+    // r2's log is not on this disk; reading it is what would bring it back.
+    await store.append("w", "r2", ev("r2", "step.end", ["b"]));
+    await store.finalize("w", "r2", { status: "success", parts: { log: { evictedAt: "2026-11-15T00:00:00.000Z" } } } as never);
+    const { c, store: s } = counting(store);
+    const surface = createPublicSurface({ dataDir: dir, store: s });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("a", undefined), true);
+    assert.equal(await surface.visible("b", undefined), false);
+    assert.equal(c.reads, 1, "r1's log alone");
+    assert.deepEqual([...(await surface.runNodes("w", "r2"))], ["b"]);
+    assert.equal(c.reads, 2);
   });
 
   it("built while a run is going: what it reported before keeps visible after it ends, and after a restart", async () => {

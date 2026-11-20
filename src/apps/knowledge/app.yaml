@@ -3,9 +3,16 @@ description: >-
   The organisation's knowledge (plans/knowledge-app.md): the ontology, every
   type's nodes (Concepts as the tree), one search over all of them, and the
   graph round whatever is picked, filtered by type; a Concept's history and
-  the tree between two moments, from the history (plans/concept-history.md).
-  Read-only. Strut ships it and seeds it on every server; it acts as its
-  viewer.
+  the tree between two moments, from the history (plans/concept-history.md);
+  a Concept's checks (plans/claim-trials.md): what its readers are held to,
+  each with the messages that test it and a dot per verdict, and the changes
+  tested against it, each a diff with the Concept's verdicts and the
+  change's — an admin runs a check, adds one, tests a change and puts the
+  wording that did better on the Concept; the changes to a Concept the dream
+  proposed where its tree is reviewed, which a person accepts or rejects
+  here; and, for an admin, what the dream learned, cycle by cycle: what
+  people said, the claims, and what each cycle's run changed. Strut ships
+  it and seeds it on every server; it acts as its viewer.
 icon: network
 grants:
   workflows: []
@@ -17,3 +24,15 @@ grants:
     - graph/graph-neighbors
     - graph/graph-search
     - history/read
+    - knowledge/claims
+    - knowledge/checks
+    - knowledge/add-check
+    - knowledge/cases
+    - knowledge/trial
+    - knowledge/test
+    - knowledge/use
+    - knowledge/sample
+    - knowledge/cycles
+    - proposal/list
+    - proposal/get
+    - proposal/decide

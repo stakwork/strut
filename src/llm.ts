@@ -16,7 +16,7 @@
 // from it, aieo/). It stays lazy-imported through `loadAieo()`: its index
 // pulls every provider SDK at load.
 
-import type { Provider, TokenPricing } from "./aieo/index.js";
+import type { MediaKind, Provider, TokenPricing } from "./aieo/index.js";
 import type { SecretsCapability } from "./capabilities.js";
 import { workflowOf, type StepContext } from "./core.js";
 import { bootEnv } from "./env.js";
@@ -106,6 +106,39 @@ export function gatewayLacksProvider(err: unknown): boolean {
 }
 
 export type LlmAuth = (ctx: LlmAuthContext) => Promise<LlmAuthResult | undefined>;
+
+// ── Grants: model calls for a machine outside strut ────────────────────────
+//
+// `ctx.services.llm` (stakwork/pods PLAN.md §3.2): a step gives a machine
+// strut does not run (a pod) model calls of its own, through the same gateway
+// and billed to the run's principal. A host with a gateway builds it
+// (src/mothership.ts); core only binds it to the run's principal
+// (runner.ts `bindPrincipal`). No `llm` on the bag, or a `grant` that answers
+// null, is a strut with no gateway for this person: the machine gets no
+// variables.
+
+/** A grant: model calls for a machine outside strut. */
+export interface LlmGrant {
+  /** What a step keeps (a job's hold) and `revoke` takes. Never the key. */
+  id: string;
+  /** The standard variables an SDK reads: `OPENAI_BASE_URL`,
+   *  `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`. */
+  env: Record<string, string>;
+  /** When the grant ends: `hours` from now, or sooner when the person's
+   *  authorization ends sooner. */
+  expiresAt: string;
+}
+
+export interface LlmGrants {
+  /** A grant named `name` (what the gateway bills it as) for `hours`. Null
+   *  when nobody can be billed through the gateway here (no principal, or
+   *  none of theirs on file), unless every call must be (then an error). */
+  grant(req: { name: string; hours: number }): Promise<LlmGrant | null>;
+  /** Ends a grant now. One already gone is not an error. */
+  revoke(id: string): Promise<void>;
+  /** The same, billed to `principal`: the runner's call. */
+  forPrincipal?(principal: string): LlmGrants;
+}
 
 export interface ResolveModelOptions {
   /** alias | id | "provider/id" | "openrouter/org/id". Omit for the provider's default. */
@@ -207,6 +240,69 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
     routed: !!grant?.baseUrl,
   };
+}
+
+// ── media models (images today, video next) ────────────────────────────────
+
+export interface ResolvedMediaModel {
+  provider: string;
+  modelId: string;
+  /** Canonical "<provider>/<modelId>". */
+  name: string;
+  /** The AI SDK model of the kind asked for (an ImageModel for "image").
+   *  Typed loosely so `ai` and aieo stay lazy. */
+  model: any;
+  /** True when an `llmAuth` grant sent the call through a gateway. */
+  routed: boolean;
+}
+
+/**
+ * Name → a media model of `kind`, as `resolveModel` resolves a language
+ * model: the same names (`provider/id`), keys and `llmAuth` grant. A grant
+ * sends the call through its gateway when the gateway can route that kind
+ * for the provider — for an `edit` (source images), edit it — (aieo's
+ * `mediaProviders`); when it cannot, the call goes
+ * to the provider directly only if the grant allows that (`direct`), else it
+ * is refused before anything is sent. Throws for a provider that makes no such
+ * media (anthropic, maple, …).
+ */
+export async function resolveMediaModel(kind: MediaKind, opts: ResolveModelOptions & { edit?: boolean }): Promise<ResolvedMediaModel> {
+  const aieo = await loadAieo();
+  const secrets = opts.secrets;
+  const ref = aieo.canonicalModelName(opts.model, opts.provider);
+  let grant: LlmAuthResult | undefined;
+  if (opts.llmAuth && opts.auth) grant = await opts.llmAuth({ ...opts.auth, provider: ref.provider });
+  const viaGateway = !!grant?.baseUrl && (aieo.mediaProviders(kind, opts.edit).routed.includes(ref.provider) || !grant.direct);
+  const r = await aieo.resolveMediaModel(kind, {
+    model: opts.model,
+    provider: opts.provider,
+    edit: opts.edit,
+    getSecret: secrets ? (name) => secrets.get(name) : undefined,
+    ...(viaGateway && grant?.apiKey ? { apiKey: grant.apiKey } : {}),
+    ...(viaGateway ? { baseUrl: grant!.baseUrl, headers: grant!.headers } : {}),
+  });
+  let model: any = r.model;
+  if (viaGateway && grant?.explainError) model = await explainingImage(model, grant.explainError);
+  return { provider: r.provider, modelId: r.modelId, name: r.name, model, routed: viaGateway };
+}
+
+/** `explaining`, for an image model. */
+async function explainingImage(model: any, explain: (err: unknown) => string | undefined): Promise<any> {
+  const { wrapImageModel } = await import("ai");
+  return wrapImageModel({
+    model,
+    middleware: {
+      specificationVersion: "v4",
+      wrapGenerate: async ({ doGenerate }) => {
+        try {
+          return await doGenerate();
+        } catch (err) {
+          const message = explain(err);
+          throw message ? new Error(message, { cause: err }) : err;
+        }
+      },
+    },
+  });
 }
 
 // ── evaluation models (for `experimental_evaluate`) ─────────────────────────

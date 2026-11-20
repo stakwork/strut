@@ -37,10 +37,11 @@ import { z } from "zod";
 import { tool, type Tool, type ToolSet } from "ai";
 import type { WorkspaceStore } from "../workspace.js";
 import type { RunStore } from "../store.js";
-import type { ChatMeta, ChatStore } from "../chat-store.js";
+import { CHAT_LIST_MAX_LIMIT, type ChatMeta, type ChatStore } from "../chat-store.js";
 import type { ArtifactRef } from "../artifact-refs.js";
 import type { Automations } from "../scheduler.js";
 import { listWorkflowEntries, DEFAULT_WORKFLOW_LIST_LIMIT } from "../authoring.js";
+import { RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX } from "../runs.js";
 import { buildChatView, DEFAULT_CHAT_VIEW_LIMIT, type ChatView } from "../chat-view.js";
 import { fileScopeOf, fileToken } from "../auth.js";
 import { jobFileUrl } from "../artifact-refs.js";
@@ -298,14 +299,15 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
 
     list_workflow_builder_chats: tool({
       description:
-        "The workflow builder chats on this strut server, newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
+        "The workflow builder chats on this strut server (the newest 500), newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
       inputSchema: z.object({
         q: z.string().optional().describe("Words that must all appear in the title (case-insensitive)."),
         limit: z.number().int().positive().default(20).describe("At most this many (default 20)."),
         mine: z.boolean().default(true).describe("Only chats started by this connection's actor (default true; nothing is filtered when the connection carries no actor)."),
       }),
       execute: async ({ q, limit, mine }) => {
-        const all = await Promise.all((await deps.chatStore.listChats()).map((m) => deps.chat.reconcile(m)));
+        // The newest CHAT_LIST_MAX_LIMIT are looked through, as GET /chats pages them.
+        const all = await Promise.all((await deps.chatStore.listChats({ limit: CHAT_LIST_MAX_LIMIT })).map((m) => deps.chat.reconcile(m)));
         const words = (q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
         const matched = all
           .filter((m) => !mine || !deps.actor || m.createdBy === deps.actor || m.actor === deps.actor)
@@ -360,17 +362,21 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         "A workflow's runs, newest first: id, status (running | success | error | cancelled), when it started, how long it took, what its model calls cost, who or what launched it, the error if any, and `artifacts` — the deliverables the run declared, as absolute links you can share (the usual way to hand a report or a file on). `since` (ISO time) and `status` filter. get_run reads one run's output.",
       inputSchema: z.object({
         workflow: z.string().describe("The workflow name."),
-        limit: z.number().int().positive().default(20).describe("Max runs (default 20)."),
-        status: z.enum(["running", "success", "error", "cancelled"]).optional().describe("Only runs with this status."),
+        limit: z.number().int().positive().default(20).describe(`Max runs (default 20, at most ${RUN_LIST_MAX_LIMIT}).`),
+        status: z.enum(["running", "success", "error", "cancelled"]).optional().describe(`Only runs with this status — among the newest ${RUN_LIST_SCAN_MAX} runs.`),
         since: z.string().optional().describe("Only runs started at or after this ISO time (e.g. your last check)."),
       }),
       execute: async ({ workflow, limit, status, since }) => {
         const ids = await deps.store.listRuns(workflow);
         const sinceMs = since ? Date.parse(since) : NaN;
         const runs: Array<Record<string, unknown>> = [];
+        // A status few runs have would otherwise read every summary the
+        // workflow ever wrote: the newest RUN_LIST_SCAN_MAX are looked through, as run/list does.
+        let read = 0;
         for (const runId of ids) {
-          if (runs.length >= limit) break;
+          if (runs.length >= Math.min(limit, RUN_LIST_MAX_LIMIT) || read >= RUN_LIST_SCAN_MAX) break;
           if (!Number.isNaN(sinceMs) && Number(runId) < sinceMs) break; // ids are ms timestamps, newest first
+          read++;
           const s = await deps.store.getRunSummary(workflow, runId);
           const st = s?.status ?? "running";
           if (status && st !== status) continue;
@@ -387,7 +393,8 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
             ui: ui.workflow(workflow, runId),
           });
         }
-        return { workflow, runs, total: ids.length };
+        const cut = read >= RUN_LIST_SCAN_MAX && ids.length > read && runs.length < Math.min(limit, RUN_LIST_MAX_LIMIT);
+        return { workflow, runs, total: ids.length, ...(cut ? { note: `Only the newest ${RUN_LIST_SCAN_MAX} runs were looked through.` } : {}) };
       },
     }),
 

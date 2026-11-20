@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
-import { displayActor } from "../actor";
+import { Who } from "./Who";
 import * as storage from "../storage";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon, PaperclipIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
@@ -48,6 +48,9 @@ const CUSTOM_MODEL = "__custom__";
 // While the flyout is open and idle, poll for server-initiated turns (a
 // detached run finishing starts a turn no client action triggered).
 const TURN_POLL_MS = 4000;
+/** The history's page, and the most `GET /chats` lists (CHAT_LIST_MAX_LIMIT). */
+const HISTORY_PAGE = 100;
+const HISTORY_MAX = 500;
 
 
 
@@ -176,6 +179,8 @@ export function ChatFlyout(props: {
     storage.load<string | null>(CHAT_ID_KEY, null),
   );
   const [showHistory, setShowHistory] = useState(false);
+  /** How many chats the history asks for: the newest 100, then 100 more a click. */
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE);
   const [chats, setChats] = useState<api.ChatMeta[]>([]);
   const [copied, setCopied] = useState(false);
   // The builder's open question (plans/elicitation.md): what `meta.elicitation`
@@ -523,12 +528,19 @@ export function ChatFlyout(props: {
       return;
     }
     setShowHistory(true);
+    setHistoryLimit(HISTORY_PAGE);
     try {
-      setChats(await api.listChats());
+      setChats(await api.listChats(HISTORY_PAGE));
     } catch {
       setChats([]);
     }
   }, [showHistory]);
+
+  const showOlder = useCallback(async () => {
+    const limit = historyLimit + HISTORY_PAGE;
+    setHistoryLimit(limit);
+    setChats(await api.listChats(limit).catch(() => chats));
+  }, [historyLimit, chats]);
 
   const sendText = useCallback(async (text: string, sent: PendingAttachment[]) => {
     if ((!text && !sent.length) || loading) return;
@@ -689,8 +701,8 @@ export function ChatFlyout(props: {
                 )}
                 <span class="chat-history-title">{ch.title || "Untitled chat"}</span>
                 {ch.createdBy && (
-                  <span class="chat-history-user" title={`Started by ${ch.createdBy}`}>
-                    {displayActor(ch.createdBy)}
+                  <span class="chat-history-user">
+                    <Who actor={ch.createdBy} />
                   </span>
                 )}
                 {ch.model && (
@@ -701,6 +713,9 @@ export function ChatFlyout(props: {
                 <span class="chat-history-time">{relativeTime(ch.updatedAt)}</span>
               </button>
             ))
+          )}
+          {chats.length >= historyLimit && historyLimit < HISTORY_MAX && (
+            <button type="button" class="btn chat-history-more" onClick={() => void showOlder()}>Show older</button>
           )}
         </div>
       ) : (

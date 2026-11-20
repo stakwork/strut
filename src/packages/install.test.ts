@@ -69,7 +69,7 @@ const boot = (workspace: WorkspaceStore, extra: Record<string, unknown> = {}) =>
     enableChat: false,
     systemWorkflows: false,
     browserWorkflows: false,
-    privacyWorkflows: false,
+    privacyWorkflows: false, mediaWorkflows: false,
     job: false,
     orchestrator: false,
     builder: false,
@@ -177,11 +177,13 @@ describe("installing a package on a filesystem workspace", () => {
 
     const upstream = { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"] };
     const wf = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
-    assert.deepEqual(wf.versions["v1"]?.upstream, upstream);
+    const at = wf.versions["v1"]?.upstream?.at;
+    assert.match(at ?? "", /^\d{4}-\d\d-\d\dT[\d:.]+Z$/, "when the release went in");
+    assert.deepEqual(wf.versions["v1"]?.upstream, { ...upstream, at });
     assert.equal(wf.versions["v1"]?.source, "install");
     assert.equal(wf.versions["v1"]?.description, "Sync the issues");
     const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
-    assert.deepEqual(step.versions["v1"]?.upstream, upstream);
+    assert.deepEqual(step.versions["v1"]?.upstream, { ...upstream, at }, "one time for the whole release");
     assert.equal(step.versions["v1"]?.source, "install");
     assert.ok(await ws.getStepMetadata("acme/linear/_shared"), "the helper rides with its namespace");
 
@@ -223,6 +225,22 @@ describe("installing a package on a filesystem workspace", () => {
     assert.match((await strut.run("pinned", { secret: "GITHUB_TOKEN" })).error!.message, /secret_fenced/);
   });
 
+  it("lets a step read an optional secret, which the install does not ask for", async () => {
+    const r = await api.install(
+      `file:${await writeTree({
+        ...PACKAGE,
+        "strut.yaml": "package: acme/linear\nversion: '1'\nrequires:\n  secrets: [LINEAR_API_KEY]\n  optional: [GITHUB_TOKEN, NOTION_KEY]\n",
+        "steps/create-issue.ts": STEP("acme/linear/create-issue", "hello"),
+      })}`,
+    );
+    assert.equal(r.status, 201);
+    assert.deepEqual(r.body.missing, { secrets: [], binaries: [], runtimes: [] }, "NOTION_KEY is unset, and optional");
+    assert.deepEqual((await strut.run("acme/linear/sync", { secret: "GITHUB_TOKEN" })).output, { greeting: "hello", GITHUB_TOKEN: "ghp_456" });
+    assert.deepEqual((await strut.run("acme/linear/sync", { secret: "NOTION_KEY" })).output, { greeting: "hello", NOTION_KEY: null });
+    const fenced = await strut.run("acme/linear/sync", { secret: "OPENAI_API_KEY" });
+    assert.match(fenced.error!.message, /secret_fenced: .* declares only LINEAR_API_KEY, GITHUB_TOKEN, NOTION_KEY — it may not read OPENAI_API_KEY/);
+  });
+
   it("refuses the whole install, writing nothing, over a local item under the prefix or a file it cannot install", async () => {
     const nothing = async () => {
       assert.deepEqual(await api.list(), []);
@@ -259,7 +277,7 @@ describe("installing a package on a filesystem workspace", () => {
       assert.match(r.body.error!, re);
       await nothing();
     }
-    assert.equal((await api.install("git+https://example.com/acme/linear@v1")).status, 400);
+    assert.equal((await api.install("git+ssh://example.com/acme/linear@v1")).status, 400);
     assert.equal((await api.install(`file:${join(root, "missing")}`)).status, 400);
     assert.equal((await api.req("/packages/install", json({}))).status, 400);
   });
@@ -330,6 +348,10 @@ describe("installing a package on a filesystem workspace", () => {
     );
     assert.equal(r.status, 201);
     assert.deepEqual(r.body.missing, { secrets: ["NOTION_KEY"], binaries: ["no-such-binary-strut"], runtimes: ["kali"] });
+    // A person's install is not gated (only a subscription's is): it is all here.
+    assert.equal(r.body.packages[0]!.status, "installed");
+    assert.ok(await ws.getWorkflowMetadata("acme/linear/sync"));
+    assert.ok(await ws.getStepMetadata("acme/linear/create-issue"));
   });
 
   it("uninstalls what is still the package's own, keeps the forks, and frees the prefix once nothing of it is left", async () => {
@@ -361,7 +383,8 @@ describe("installing a package on a filesystem workspace", () => {
       "workflows/old.yaml": WORKFLOW("acme/linear/old"),
     };
     // 1.1 changes a step, its helper and a workflow, leaves a workflow as it
-    // was, drops a step and a workflow, and adds a workflow.
+    // was (stamped the release's), drops a step and a workflow, and adds a
+    // workflow.
     const RELEASE_2: Record<string, string> = {
       "strut.yaml": RELEASE_1["strut.yaml"]!.replace("1.0.0", "1.1.0"),
       "steps/create-issue.ts": `${STEP("acme/linear/create-issue")}// 1.1\n`,
@@ -391,9 +414,11 @@ describe("installing a package on a filesystem workspace", () => {
         ["step", "acme/linear/create-issue", "updated", undefined],
         ["workflow", "acme/linear/old", "kept", "modified here (a fork)"],
         ["workflow", "acme/linear/report", "diverged", undefined],
-        ["workflow", "acme/linear/sync", "present", undefined],
+        ["workflow", "acme/linear/sync", "stamped", undefined],
         ["workflow", "acme/linear/triage", "installed", undefined],
       ]);
+      const sync = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
+      assert.deepEqual([sync.active, Object.keys(sync.versions), sync.versions["v1"]?.upstream?.digest], ["v1", ["v1"], digest2], "as the release has it: stamped the release's in place, no new version");
 
       const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
       assert.equal(step.active, "v2");
@@ -430,6 +455,38 @@ describe("installing a package on a filesystem workspace", () => {
       const third = await strut.packages.install(`file:${d3}`, distro);
       assert.equal(third.packages[0]!.items.find((i) => i.name === "acme/linear/report")?.status, "updated");
       assert.equal((await ws.getWorkflowMetadata("acme/linear/report"))?.active, "v4");
+    });
+
+    it("reads as the release moved back to once a fork is active, and as the release waiting beside a fork once the fork is edited again", async () => {
+      const type = "acme/linear/create-issue";
+      const release = (v: string) => writeTree({ ...RELEASE_1, "strut.yaml": RELEASE_1["strut.yaml"]!.replace("1.0.0", v), "steps/create-issue.ts": `${STEP(type)}// ${v}\n` }, v);
+      const [d1, d2, d3] = await Promise.all(["1.0.0", "1.1.0", "1.2.0"].map(release));
+      const [{ digest: digest1 }, { digest: digest3 }] = await Promise.all([readPackage(d1!), readPackage(d3!)]);
+      const installedStep = async () => (await api.list())[0]!.items.find((i) => i.name === type);
+      await strut.packages.install(`file:${d1}`, distro);
+      await strut.packages.install(`file:${d2}`, distro);
+
+      // Moved back: the older release's version made active again, none written.
+      assert.equal((await strut.packages.install(`file:${d1}`, distro)).packages[0]!.from?.version, "1.1.0");
+      const step = (await ws.getStepMetadata(type))!;
+      assert.deepEqual([step.active, Object.keys(step.versions)], ["v1", ["v1", "v2"]]);
+      assert.ok(step.versions["v1"]!.upstream!.at! > step.versions["v2"]!.upstream!.at!, "stamped when it went in again");
+
+      // Edited here: still at the release it was moved back to.
+      await ws.publishStep(type, `${STEP(type)}// mine\n`);
+      let [listed] = await api.list();
+      assert.deepEqual([listed!.version, listed!.digest], ["1.0.0", digest1]);
+      assert.deepEqual(await installedStep(), { kind: "step", name: type, installed: "v1", active: "v3", modified: true });
+
+      // A release waits beside the fork; the fork edited again (it carries
+      // 1.0.0's upstream forward) leaves that release the one here.
+      const next = (await strut.packages.install(`file:${d3}`, distro)).packages[0]!;
+      assert.deepEqual(next.from, { version: "1.0.0", digest: digest1 });
+      assert.equal(next.items.find((i) => i.name === type)?.status, "diverged");
+      await ws.publishStep(type, `${STEP(type)}// mine, again\n`);
+      [listed] = await api.list();
+      assert.deepEqual([listed!.version, listed!.digest], ["1.2.0", digest3]);
+      assert.deepEqual(await installedStep(), { kind: "step", name: type, installed: "v4", active: "v5", modified: true });
     });
 
     it("refuses a release whose step does not load, before it writes anything", async () => {
@@ -525,6 +582,20 @@ for (const tb of testBackends()) {
       (await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns", name: "$name" })} WHERE ${backend.dialect.live("c")} RETURN ${backend.dialect.project("c", ["ref_id", "unique_source_id", "docs"])} AS p`, { ns: backend.namespace, name }))[0]?.["p"] as
         | { ref_id: string; unique_source_id: string; docs: string }
         | undefined;
+
+    it("the repo door: a first Open refuses a page made here under a page's name; Create repo's open takes it over, the same node", async () => {
+      const made = await backend.nodes.write({ type: "Concept", data: { name: "Linear", docs: "Written here." } }, "create");
+      const tree = `file:${await writeTree({ ...PACKAGE, ...CONCEPTS })}`;
+      await assert.rejects(strut.packages.install(tree, { door: "repo" }), /package_conflict: .*the Concept Linear is in the graph already, made here/);
+      assert.equal((await conceptNode("Linear"))!.unique_source_id ?? undefined, undefined, "untouched");
+      assert.equal((await conceptNode("Issues")), undefined, "nothing installed");
+      const r = await strut.packages.install(tree, { door: "repo", adoptPages: true });
+      assert.equal(r.packages[0]!.status, "installed");
+      const linear = (await conceptNode("Linear"))!;
+      assert.equal(linear.ref_id, made.ref_id, "the same page");
+      assert.match(linear.unique_source_id, /^pkg\/acme\/linear\/Linear\.md@/);
+      assert.equal(linear.docs, "How Linear works here.");
+    });
 
     it("writes the Concepts stamped by the package, records the claims as its own, and retires untouched pages on uninstall", async () => {
       const files = {

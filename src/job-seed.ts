@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
+import type { JobGrant } from "./packages/format.js";
+import { holdsItsOwn, listInstalledPackages, type InstalledDeps } from "./packages/installed.js";
 import type { WorkspaceStore } from "./workspace.js";
 
 /**
@@ -31,6 +33,14 @@ import type { WorkspaceStore } from "./workspace.js";
  * lacks is skipped with a warning at run time, a glob matching nothing
  * warns, so the same YAML runs where a grant's steps are absent — the agent
  * simply lacks those tools.
+ *
+ * An installed PACKAGE adds to the same delta (plans/followed-repos.md §3):
+ * what its manifest's `job:` names, resolved over its own steps when it was
+ * read (src/packages/format.ts) — the types into `params.tools`, the
+ * `approve` ones into `params.approve` too — after the host's, deduplicated
+ * and sorted, so the text and its version do not depend on install order.
+ * createStrut seeds again after every package write, so an install grants
+ * and an uninstall takes the grant away without a reboot.
  */
 export interface JobSeedOptions {
   /** Registry step types, or globs (`pod/*`), granted to the job agent ON
@@ -81,7 +91,9 @@ export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fi
   const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean | "person"; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
   if (fill) doc.params.system = fill(doc.params.system);
   if (opts?.peer === false) delete doc.peer;
-  if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
+  // A tool the template already grants is not listed twice (a host that
+  // granted graph/graph-get before the orchestrator did).
+  if (opts?.tools?.length) doc.params.tools.push(...opts.tools.filter((t) => !doc.params.tools.includes(t)));
   if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);
   if (opts?.model === null) delete doc.params.model;
   else if (opts?.model) doc.params.model = opts.model;
@@ -92,6 +104,44 @@ export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fi
 /** The `job` template with the host's delta applied. */
 export async function jobWorkflowYaml(opts?: JobSeedOptions): Promise<string> {
   return templateWithDelta(JOB_YAML, opts);
+}
+
+/**
+ * What the installed packages give the job agent: each one's `job:`, read
+ * from the package cache by the digest installed (nothing prunes it). A
+ * package grants while something of it is still its own here — a
+ * workflow, step or app whose active version it wrote: an uninstall that
+ * keeps a fork leaves only forks (and the helpers they import), which are
+ * this box's own work and grant nothing. A package the cache lacks, or
+ * cannot read, grants nothing, with a warning.
+ */
+export async function packageJobGrants(deps: InstalledDeps): Promise<JobGrant> {
+  const tools = new Set<string>();
+  const approve = new Set<string>();
+  for (const p of await listInstalledPackages(deps)) {
+    if (!holdsItsOwn(p)) continue;
+    let job: JobGrant | undefined;
+    try {
+      const info = await deps.cache.get(p.digest!);
+      if (!info) throw new Error(`the package cache holds no ${p.digest}`);
+      job = info.job;
+    } catch (err) {
+      console.warn(`[job] ${p.package}: what it gives the job agent is not granted —`, err instanceof Error ? err.message : err);
+    }
+    for (const t of job?.tools ?? []) tools.add(t);
+    for (const t of job?.approve ?? []) approve.add(t);
+  }
+  return { tools: [...tools].sort(), approve: [...approve].sort() };
+}
+
+/** The host's delta with the packages' grants after its own. */
+export function withJobGrants(opts: JobSeedOptions | undefined, grants: JobGrant): JobSeedOptions {
+  if (!grants.tools.length) return { ...opts };
+  return {
+    ...opts,
+    tools: [...new Set([...(opts?.tools ?? []), ...grants.tools])],
+    ...(opts?.approve?.length || grants.approve.length ? { approve: [...new Set([...(opts?.approve ?? []), ...grants.approve])] } : {}),
+  };
 }
 
 /** Seed `job` into the workspace: the boot step `createStrut` runs. */

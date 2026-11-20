@@ -11,6 +11,7 @@ import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, stepRunKey } from "./store.js";
 import { defineStep, flow, step, type RunEvent, type RunSummary } from "./core.js";
 import { createRegistry } from "./steps/registry.js";
+import { RUN_LIST_SCAN_MAX } from "./runs.js";
 import { runWorkflow } from "./runner.js";
 import { buildJournal } from "./journal.js";
 
@@ -81,7 +82,31 @@ describe("stepStats", () => {
 
   it("reports nothing for an unused step", async () => {
     const s = await stepStats(ws, store, "wait");
-    assert.deepEqual(s, { type: "wait", workflows: [], runs: { total: 0, success: 0, error: 0, lastAt: null } });
+    assert.deepEqual(s, { type: "wait", workflows: [], runs: { total: 0, success: 0, error: 0, lastAt: null }, scanned: 0 });
+  });
+
+  it("reads the newest RUN_LIST_SCAN_MAX runs across its workflows and its own, no further", async () => {
+    const busy = new MemoryRunStore();
+    const at = 1_790_000_000_000;
+    const done = (key: string, i: number, ok: boolean) =>
+      busy.finalize(key, String(at + i), {
+        runId: String(at + i), workflow: key, startedAt: "", finishedAt: "", durationMs: 0, status: ok ? "success" : "error", input: {},
+        stepCounts: { http: { success: ok ? 1 : 0, error: ok ? 0 : 1, lastAt: new Date(at + i).toISOString() } },
+      });
+    // Interleaved: every 3rd run is the step's own, the rest the workflow's; the oldest 200 failed.
+    for (let i = 0; i < RUN_LIST_SCAN_MAX + 200; i++) await done(i % 3 ? "child" : stepRunKey("http"), i, i >= 200);
+    let reads = 0;
+    const counted = {
+      listRuns: (k: string) => busy.listRuns(k),
+      getRunEvents: (k: string, r: string) => busy.getRunEvents(k, r),
+      finalize: (k: string, r: string, s: RunSummary) => busy.finalize(k, r, s),
+      getRunSummary: (k: string, r: string) => (reads++, busy.getRunSummary(k, r)),
+    };
+    const s = await stepStats(ws, counted, "http");
+    assert.equal(reads, RUN_LIST_SCAN_MAX);
+    const lastAt = new Date(at + RUN_LIST_SCAN_MAX + 199).toISOString();
+    assert.deepEqual(s.runs, { total: RUN_LIST_SCAN_MAX, success: RUN_LIST_SCAN_MAX, error: 0, lastAt }, "the newest across both keys: none of the 200 oldest");
+    assert.deepEqual([s.scanned, s.more], [RUN_LIST_SCAN_MAX, true]);
   });
 });
 

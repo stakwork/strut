@@ -59,7 +59,7 @@ export default defineStep({
     const { Octokit } = await import("@octokit/rest");
     // Credentials flow through the secrets capability (UI-managed store → env
     // fallback) so they're cassette-scrubbed; explicit config always wins.
-    // See AGENTS.md "Lib step credentials".
+    // See docs/steps.md "Lib step credentials".
     const auth =
       cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
     const octokit = new Octokit(auth ? { auth } : {});

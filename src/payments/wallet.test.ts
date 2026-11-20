@@ -19,6 +19,7 @@ import type { StrutCapabilities } from "../capabilities.js";
 import { FakeWallet } from "./fake-wallet.js";
 import { lightningCapability } from "./lightning.js";
 import { PAYMENTS_FILE, WALLET_ENV } from "./settings.js";
+import { ENV_WALLET_NOTE } from "./wallet-routes.js";
 import type { ExchangeRate } from "./rate.js";
 
 const KEY = "wallet-key";
@@ -97,8 +98,17 @@ describe("the wallet on a server", () => {
         url: "http://127.0.0.1:1",
         from: "env",
         setAt: onFile!.setAt,
-        note: "LIGHTNING_* in the environment sets the wallet again at the next boot",
+        env: true,
+        note: ENV_WALLET_NOTE,
       });
+      // The deployment owns it: a change here would come undone at the next boot.
+      for (const body of [{ provider: null }, { provider: "sphinx", url: "http://127.0.0.1:2", token: "other-receive" }]) {
+        const put = await strut.app.request("/earnings/wallet", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+        assert.equal(put.status, 409);
+        assert.match(((await put.json()) as { error: string }).error, /^wallet_from_env: .*LIGHTNING_\*/);
+      }
+      assert.deepEqual(await strut.payments.settings.wallet(), onFile, "the record on file is untouched");
+      assert.equal(strut.payments.lightning(), lightning, "the bag keeps the environment's wallet");
       // Nothing on the bag carries a wallet credential.
       for (const [name, value] of Object.entries(bag(strut))) {
         let text = "";

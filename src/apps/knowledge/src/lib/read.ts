@@ -4,10 +4,13 @@
 // `graph/graph-edges` reads the edges among them, 1,000 at a time with
 // every Concept as `among`. The same steps on a Neo4j and a Ladybug file.
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useStrutClient, type StrutClient } from "@strut/kit";
-import { getEdges, getNeighbors, type GraphHit } from "strut/views";
+import { conceptPagePath, useStrutClient, type StrutClient } from "@strut/kit";
+import { getEdges, getNeighbors, readLog, type GraphHit } from "strut/views";
 import { buildTree, conceptOf, TREE_TYPE, type Concept, type ConceptTree } from "./tree";
 import { groupLinks, isSystemType, orderTypes, typeDescription, type OntologyType } from "./ontology";
+import { DREAM, type ClaimedConcept, type PendingChange } from "./learning";
+import { CYCLES_STEP, cycleSpan, runsOf, type DreamCycle } from "./cycles";
+import type { ChecksView } from "./checks";
 
 export const FIND = "graph/find";
 /** A page of Concepts: docs run to ~6k chars, so 200 stays far under step_run's 5 MB. */
@@ -133,5 +136,101 @@ export function useLinks(refId: string | null) {
     enabled: !!refId,
     staleTime: 60_000,
     queryFn: async () => groupLinks(await getNeighbors(client, refId!)),
+  });
+}
+
+/** How often the checks are read again while samples are being judged. */
+const CHECKS_LIVE_MS = 1_500;
+
+/** A Concept's checks, their verdicts and the tests of its page (`knowledge/checks`), read again while any sample
+ *  is still being judged. Null when there is no Concept of that name. Refused where the page may not read the
+ *  tree's namespace, or with no claims layer: the error says so at once. */
+export function useChecks(name: string | undefined) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "checks", name],
+    enabled: !!name,
+    staleTime: 10_000,
+    retry: false,
+    refetchInterval: (q) => ((q.state.data as ChecksView | null | undefined)?.running.length ? CHECKS_LIVE_MS : false),
+    queryFn: async () => {
+      const r = await client.run("knowledge/checks", { concept: name });
+      return typeof r === "string" ? null : (r as ChecksView);
+    },
+  });
+}
+
+/** Every Concept that carries claims (`knowledge/claims`): what the page scans for the refuted ones. */
+export function useClaimed() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "claimed"],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => answer<{ concepts?: ClaimedConcept[] }>("knowledge/claims", await client.run("knowledge/claims", {})).concepts ?? [],
+  });
+}
+
+/** The changes to the tree the dream proposed that wait on a person — pending, or accepted and failed (accepted
+ *  again once the cause is fixed) — each with what it would run with. An admin sees them; anyone else only their
+ *  own (proposal/list). */
+export function useChanges() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "changes"],
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    queryFn: async () => {
+      const read = (status: string) => client.run("proposal/list", { workflow: DREAM, status, input: true, limit: 200 });
+      const lists = await Promise.all(["pending", "failed"].map(async (s) => answer<{ proposals?: PendingChange[] }>("proposal/list", await read(s)).proposals ?? []));
+      return lists.flat();
+    },
+  });
+}
+
+/** The dream's recent cycles, newest first (`knowledge/cycles`): refused to anyone but an admin, since its lessons
+ *  quote what people said. */
+export function useCycles() {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "cycles"],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => answer<{ cycles?: DreamCycle[] }>(CYCLES_STEP, await client.run(CYCLES_STEP, { limit: 30 })).cycles ?? [],
+  });
+}
+
+/** What one cycle changed in the tree: the commits carrying its run (`history/read log { run }`) and the two moments
+ *  that draw them (`cycleSpan`, null when nothing changed under it). Throws where the history is off, saying so. */
+export function useCycleChange(run: string | null) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "cycle-change", run],
+    enabled: !!run,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => {
+      const { commits } = await readLog(client, { path: "concepts", run: run!, limit: 10 });
+      const oldest = commits[commits.length - 1];
+      // The commit before the first: the next older one that touched a page (readLog reads one past `limit`).
+      const before = oldest ? (await readLog(client, { path: "concepts", to: oldest.id, limit: 1 })).commits[1] : undefined;
+      return { commits, span: cycleSpan(commits, before) };
+    },
+  });
+}
+
+/** The runs that changed one Concept's page: the `runs` on its own history. Empty where there is no history. */
+export function usePageRuns(name: string | undefined) {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: ["knowledge", "page-runs", name],
+    enabled: !!name,
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => {
+      const path = await conceptPagePath(name!);
+      if (!path) return new Set<string>();
+      return runsOf((await readLog(client, { path, limit: 50 }).catch(() => ({ commits: [] }))).commits);
+    },
   });
 }

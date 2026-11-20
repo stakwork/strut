@@ -15,6 +15,7 @@
  * agent step's tool loop, evolve-loop's generations) opt in via
  * `ctx.control`.
  */
+import type { RunTrial } from "./core.js";
 
 export type ControlState = "running" | "pausing" | "paused" | "cancelling";
 
@@ -59,6 +60,12 @@ export class RunController implements RunControl {
    *  (`POST …/run { job, title }`) — what a listing shows of a run that has
    *  no summary yet. Set by `trackRun`; control never reads it. */
   job?: { id: string; title?: string };
+  /** The Concept branch the run is on (src/branches.ts): set when it is
+   *  tracked; what a branch's drop and the runs it starts read. */
+  branch?: string;
+  /** The run is a trial (`RunTrial`, src/core.ts): set when it is tracked;
+   *  what the runs it starts inherit, and what the job launcher reads. */
+  trial?: RunTrial;
 
   /** OWN state — the effective state additionally inherits the strictest
    *  ancestor (any ancestor cancelling → cancelling; else any ancestor

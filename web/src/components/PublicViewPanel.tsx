@@ -3,7 +3,9 @@ import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { EarningsLine, useEarnings } from "./EarningsLine";
+import { ListingLines } from "./ListingLines";
 import { canWords } from "../store-links";
+import { ChevronRightIcon } from "../icons";
 import {
   boxesOf,
   checkedOf,
@@ -18,13 +20,23 @@ import {
   runHints,
   capNote,
   sameRecord,
+  setAttachments,
   setBox,
   setPrice,
   setResults,
+  setSignIn,
+  setVisitorKey,
+  setVisitorLimit,
+  shownNumber,
+  SIGN_IN_METHODS,
+  typedNumber,
+  visitorsOf,
   usd,
   visitorAppLink,
+  VISITOR_DEFAULT_LIMITS,
   type PriceField,
   type Row,
+  type VisitorLimitField,
 } from "../public-view";
 
 // ── Public view (the Publish dialog's Public view tab; plans/public-surface.md
@@ -37,6 +49,9 @@ import {
 // and pre-checks it, every line saying what it shows anyone; a person
 // unticks what they do not mean, and Save writes the whole list — so the
 // record stays explicit, and a later release never widens it by itself.
+// Below the items, who may SIGN IN to the public apps (plans/app-repos.md
+// §5): the methods, a key per domain, and each visitor's daily limits — the
+// record's `visitors`, which a served box's serve.yaml writes instead.
 
 type Kind = "app" | "workflow" | "step" | "concept";
 const KINDS: Array<{ kind: Kind; label: string }> = [
@@ -94,6 +109,31 @@ function Cascade(props: { needs: api.PublicViewNeeds; onAdd: (checked: Set<strin
         <button class="btn" onClick={props.onCancel}>Cancel</button>
       </div>
     </div>
+  );
+}
+
+/** A number box over a value the draft holds. It keeps the text typed
+ *  ("0.", "1.50") while that reads as the value; shown from the value alone,
+ *  the dot was gone the moment it was typed. */
+function NumberBox(props: { value: number | undefined; step: string; placeholder: string; onText: (text: string) => void }) {
+  const [text, setText] = useState(props.value === undefined ? "" : String(props.value));
+  // A value changed from outside (a reload, a save) is what the box types on from.
+  useEffect(() => {
+    if (typedNumber(text) !== props.value) setText(props.value === undefined ? "" : String(props.value));
+  }, [props.value]);
+  return (
+    <input
+      type="number"
+      min="0"
+      step={props.step}
+      value={shownNumber(text, props.value)}
+      placeholder={props.placeholder}
+      onInput={(e) => {
+        const typed = (e.target as HTMLInputElement).value;
+        setText(typed);
+        props.onText(typed);
+      }}
+    />
   );
 }
 
@@ -164,13 +204,11 @@ function ItemRow(props: {
             {PRICE_FIELDS.map((f) => (
               <label key={f.field} title={f.title}>
                 <span>{f.label} <span class="auto-hint">{f.unit}</span></span>
-                <input
-                  type="number"
-                  min="0"
+                <NumberBox
                   step={f.step}
-                  value={item[f.field] ?? ""}
+                  value={item[f.field]}
                   placeholder={f.field === "base" || f.field === "markup" ? "0" : "none"}
-                  onInput={(e) => props.edit((r) => setPrice(r, row, f.field, (e.target as HTMLInputElement).value))}
+                  onText={(text) => props.edit((r) => setPrice(r, row, f.field, text))}
                 />
               </label>
             ))}
@@ -181,6 +219,12 @@ function ItemRow(props: {
                   <option value="output">its output</option>
                   <option value="run">the whole run</option>
                 </select>
+              </label>
+            )}
+            {row.kind === "workflow" && (
+              <label class="public-files" title="A launch may carry files (10 at most, 15 MB together), saved with the run and shown to its agents">
+                <input type="checkbox" checked={item.attachments === true} onChange={(e) => props.edit((r) => setAttachments(r, row, (e.target as HTMLInputElement).checked))} />
+                <span>Takes files</span>
               </label>
             )}
           </div>
@@ -207,6 +251,71 @@ function ItemRow(props: {
   );
 }
 
+const LIMIT_FIELDS: Array<{ field: VisitorLimitField; label: string; title: string }> = [
+  { field: "writesPerDay", label: "Writes", title: "Saved state, graph rows and error reports, per visitor per UTC day" },
+  { field: "launchesPerDay", label: "Launches", title: "Runs started, per visitor per UTC day" },
+];
+
+/** Who may sign in to the public apps, and what one visitor may do in a
+ *  day: folded to one line that says what is offered, since it is set once. */
+function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.PublicViewRecord) => void }) {
+  const { draft, setDraft } = props;
+  const v = visitorsOf(draft);
+  const offered = new Set(v.signIn);
+  const domain = v.visitorKey === "domain";
+  const shown = SIGN_IN_METHODS.filter((m) => offered.has(m.method)).map((m) => m.short);
+  return (
+    <details class="flyout-section public-sign-in">
+      <summary>
+        <ChevronRightIcon size={12} class="public-sign-in-chev" />
+        <span class="flyout-section-title">Sign-in</span>
+        <span class="auto-hint">{shown.length ? shown.join(", ") : "off: every visitor is anonymous"}</span>
+      </summary>
+      <div class="auto-hint">
+        Visitors of the public apps may sign in with a key they hold, and are then that key here: their own saved state, channels and rows.
+        Nothing about them is kept but the key. With none ticked, every visitor is anonymous.
+      </div>
+      {SIGN_IN_METHODS.map((m) => (
+        <label class="public-need" key={m.method}>
+          <input type="checkbox" checked={offered.has(m.method)} onChange={() => setDraft(setSignIn(draft, m.method, !offered.has(m.method)))} />
+          <span class="public-need-text">
+            <span class="package-name">{m.label}</span>
+            <span class="auto-hint">{m.note}</span>
+          </span>
+        </label>
+      ))}
+      {offered.size > 0 && (
+        <>
+          <label class="public-need">
+            <input type="checkbox" checked={domain} onChange={() => setDraft(setVisitorKey(draft, !domain))} />
+            <span class="public-need-text">
+              <span class="package-name">A key per domain</span>
+              <span class="auto-hint">
+                a visitor is someone else on each domain this server answers on, and no domain can tie them to another
+                {offered.has("nostr") ? " — a Nostr extension then is not offered" : ""}
+              </span>
+            </span>
+          </label>
+          <div class="public-price">
+            {LIMIT_FIELDS.map((f) => (
+              <label key={f.field} title={f.title}>
+                <span>{f.label} <span class="auto-hint">a visitor a day</span></span>
+                <NumberBox
+                  step="1"
+                  value={v.limits?.[f.field]}
+                  placeholder={String(VISITOR_DEFAULT_LIMITS[f.field])}
+                  onText={(text) => setDraft(setVisitorLimit(draft, f.field, text))}
+                />
+              </label>
+            ))}
+          </div>
+          {draft.apps.length === 0 && <div class="auto-hint">No app is in the public view yet: a visitor signs in to one.</div>}
+        </>
+      )}
+    </details>
+  );
+}
+
 /** `onDirty` hears whether the draft differs from what is saved, so the tab
  *  can say so while the other tab is open. */
 export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
@@ -229,10 +338,13 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   // What each runnable item earned here (`GET /earnings`), read again after a save.
   const [savedAt, setSavedAt] = useState(0);
   const earnings = useEarnings({ by: "item" }, savedAt);
+  // This server as the publisher an index lists (plans/public-view-listing.md §5).
+  const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const earnedOf = (r: Row) => earnings?.rows.find((e) => e.key === `${r.kind}:${r.name}`);
 
   useEffect(() => {
     api.getPublicView().then((v) => { setSaved(v); setDraft(v.surface); setRows(rowsOf(v.surface)); }, (e) => setError(errorMessage(e)));
+    api.getPublisher().then(setPublisher, () => setPublisher(null));
     void Promise.all([
       api.listApps().catch(() => []),
       api.listWorkflows().catch(() => []),
@@ -318,6 +430,8 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   }, [saved]);
   const gone = (key: string) => missing.has(key) && <span class="badge badge-warning" title="Not on this server: skipped by every read">not here</span>;
   const nothing = draft.apps.length + rows.length + draft.concepts.length + draft.types.length === 0;
+  // What an index lists: something the store would show (node types alone do not count).
+  const shows = !!saved && saved.surface.apps.length + saved.surface.workflows.length + saved.surface.steps.length + saved.surface.concepts.length + saved.surface.runnable.length > 0;
 
   return (
     <div class="public-view-panel">
@@ -327,6 +441,12 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
       </div>
       {error && <div class="auto-error">{error.split("; ").map((line) => <div key={line}>{line}</div>)}</div>}
       {saved === null && !error && <div class="auto-hint">Loading…</div>}
+      {saved && publisher !== undefined && (
+        <div class="flyout-section">
+          <div class="flyout-section-title">In the store</div>
+          <ListingLines mode="view" publisher={publisher} viewShows={shows} onPublisher={setPublisher} />
+        </div>
+      )}
 
       {saved && (
         <>
@@ -400,6 +520,8 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
               </div>
             ))}
           </div>
+
+          <SignInSection draft={draft} setDraft={setDraft} />
 
           {needs ? (
             <Cascade

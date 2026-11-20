@@ -131,7 +131,7 @@ const quiet = {
   enableChat: false,
   systemWorkflows: false,
   browserWorkflows: false,
-  privacyWorkflows: false,
+  privacyWorkflows: false, mediaWorkflows: false,
   job: false,
   orchestrator: false,
   builder: false,

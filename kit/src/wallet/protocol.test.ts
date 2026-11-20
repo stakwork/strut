@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ERROR_CODES, NOTIFICATION_TYPES, PAY_METHODS, REQUESTABLE_METHODS, WALLET_METHODS, WalletError,
-  checkParams, connectionRequestProblems, isWalletErrorCode, isWalletMethod, msatToSats, notificationProblems,
-  parseSphinxAddress, resultProblems, satsToMsat, sphinxRouteHint, verifyPreimage, walletErrorBody,
-  walletErrorCodeOf, walletMethodOf, walletRequestMethod, type WalletMethod,
+  checkParams, connectionRequestProblems, creditPurchaseProblems, hostWalletCapabilityOf, isSellerUrl, isWalletErrorCode,
+  isWalletMethod, msatToSats, nativeWalletAppProblems, notificationProblems, parseSphinxAddress, readCreditReply, readSignInReply, resultProblems, satsToMsat,
+  sellerHost, signInRequestProblems, sphinxRouteHint, verifyPreimage, visitorChallengeClaims, walletErrorBody, walletErrorCodeOf,
+  walletMethodOf, walletRequestMethod, type WalletMethod,
 } from "./protocol.js";
 
 type Vectors = {
@@ -14,7 +15,15 @@ type Vectors = {
   results: Array<{ name: string; method: WalletMethod; result: unknown; valid: boolean }>;
   notifications: Array<{ name: string; notification: unknown; valid: boolean }>;
   connection_requests: Array<{ name: string; request: unknown; valid: boolean }>;
+  native_apps: Array<{ name: string; app: unknown; valid: boolean }>;
   preimages: Array<{ preimage: string; payment_hash: string; valid: boolean }>;
+  host_capabilities: Array<{ name: string; capability: unknown; expect: unknown }>;
+  credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
+  credit_replies: Array<{ name: string; payment_hash: string; reply: unknown; outcome: "paid" | "pending" | "fallback"; preimage?: string; code?: string }>;
+  sign_in_requests: Array<{ name: string; now: number; request: unknown; valid: boolean }>;
+  sign_in_replies: Array<{ name: string; reply: unknown; outcome: "signed" | "refused"; key?: string; sig?: string; address?: string; alias?: string; code?: string }>;
+  sign_in_addresses: Array<{ name: string; signer: { seed: string; idx: number; network: string }; key: string; address: string }>;
+  sign_in_signatures: Array<{ name: string; signer?: { seed: string; idx: number; network: string }; message: string; key: string; sig: string; actor: string | null }>;
   scenarios: Array<{
     name: string;
     request?: unknown;
@@ -71,10 +80,115 @@ describe("wallet vectors: connection requests", () => {
   }
 });
 
+describe("wallet vectors: native apps (the identity a native host keys a connection by, §1.1)", () => {
+  for (const v of vectors.native_apps) {
+    it(v.name, () => {
+      const problems = nativeWalletAppProblems(v.app);
+      assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
+    });
+  }
+  it("names the seller when it is missing", () => {
+    const none = vectors.native_apps.find((v) => v.name === "no seller")!;
+    assert.match(nativeWalletAppProblems(none.app).join("; "), /^seller must be/);
+  });
+});
+
 describe("wallet vectors: preimages", () => {
   for (const v of vectors.preimages) {
     it(`${v.preimage.slice(0, 8)}… → ${v.payment_hash.slice(0, 8)}… is ${v.valid ? "" : "not "}proof`, async () => {
       assert.equal(await verifyPreimage(v.preimage, v.payment_hash), v.valid);
+    });
+  }
+});
+
+describe("wallet vectors: a native host's capability for the host's own ops (§1.2)", () => {
+  for (const v of vectors.host_capabilities) {
+    it(v.name, () => {
+      assert.deepEqual(hostWalletCapabilityOf(v.capability) ?? null, v.expect);
+    });
+  }
+});
+
+describe("wallet vectors: credit purchases (the host's own, §1.2)", () => {
+  for (const v of vectors.credit_purchases) {
+    it(v.name, () => {
+      const problems = creditPurchaseProblems(v.purchase);
+      assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
+    });
+  }
+});
+
+describe("wallet vectors: credit replies (what the host does with buy_credit's answer)", () => {
+  for (const v of vectors.credit_replies) {
+    it(v.name, async () => {
+      const r = await readCreditReply(v.reply, v.payment_hash);
+      assert.equal(r.outcome, v.outcome);
+      if (r.outcome === "paid") assert.equal(r.preimage, v.preimage);
+      if (r.outcome === "fallback") {
+        assert.equal(r.code, v.code);
+        assert.ok(r.message.length > 0);
+      }
+    });
+  }
+});
+
+describe("wallet vectors: sign-in requests (the host's own, §1.2 sign_in)", () => {
+  for (const v of vectors.sign_in_requests) {
+    it(v.name, () => {
+      const problems = signInRequestProblems(v.request, v.now);
+      assert.equal(problems.length === 0, v.valid, problems.join("; ") || "expected problems");
+    });
+  }
+  it("a challenge for another host than the seller is named as such", () => {
+    const evil = vectors.sign_in_requests.find((v) => v.name.startsWith("a challenge for ANOTHER host"))!;
+    assert.match(signInRequestProblems(evil.request, evil.now).join("; "), /is for evil\.example\.net, not the seller shop\.example\.com/);
+  });
+  it("reads a challenge's claims, and nothing that is not one", () => {
+    const good = vectors.sign_in_requests[0]!.request as { challenge: string };
+    assert.deepEqual(visitorChallengeClaims(good.challenge), { host: "shop.example.com", visitorKey: "root", nonce: "6f0c3a9d2b7e41c58a1f0e9d3c2b7a64", exp: 1793800060000 });
+    for (const bad of [undefined, 7, "", "strut-visitor.", "strut-visitor.a.b.c", "hello", `strut-visitor.${"A".repeat(3000)}.x`]) assert.equal(visitorChallengeClaims(bad), undefined, String(bad));
+  });
+  it("a seller's host is its host name: lower case, no port, no brackets", () => {
+    assert.equal(sellerHost("https://Shop.Example.com:8443/lab"), "shop.example.com");
+    assert.equal(sellerHost("http://[::1]:3000"), "::1");
+    assert.equal(sellerHost("not a url"), undefined);
+  });
+});
+
+describe("wallet vectors: sign-in replies (what the host does with sign_in's answer)", () => {
+  for (const v of vectors.sign_in_replies) {
+    it(v.name, () => {
+      const r = readSignInReply(v.reply);
+      assert.equal(r.outcome, v.outcome);
+      if (r.outcome === "signed") assert.deepEqual({ key: r.key, sig: r.sig, address: r.address, alias: r.alias }, { key: v.key, sig: v.sig, address: v.address, alias: v.alias });
+      else {
+        assert.equal(r.code, v.code);
+        assert.ok(r.message.length > 0);
+      }
+    });
+  }
+});
+
+describe("wallet vectors: a seed's Sphinx address and its sign-in key agree", () => {
+  for (const v of vectors.sign_in_addresses) {
+    it(v.name, () => {
+      assert.equal(parseSphinxAddress(v.address)?.pubkey, v.key);
+      const signed = vectors.sign_in_signatures.find((s) => s.signer && s.signer.seed === v.signer.seed && s.signer.idx === v.signer.idx);
+      assert.equal(signed?.key, v.key);
+    });
+  }
+});
+
+describe("wallet vectors: sign-in signatures are well formed", () => {
+  // strut's `ln-message` verifier runs them (src/visitors.test.ts); here, the shapes.
+  for (const v of vectors.sign_in_signatures) {
+    it(v.name, () => {
+      if (v.actor === null) return;
+      assert.ok(v.signer, "a signature that holds names its signer");
+      assert.match(v.key, /^0[23][0-9a-f]{64}$/);
+      assert.match(v.sig, /^(1f|20|21|22)[0-9a-f]{128}$/);
+      assert.equal(v.actor, `secp:${v.key.slice(2)}`);
+      assert.ok(visitorChallengeClaims(v.message), "the real signer signed a strut challenge");
     });
   }
 });
@@ -181,4 +295,14 @@ describe("wallet contract", () => {
     const r = checkParams("make_invoice", { amount: 1000, metadata: { comment: "x".repeat(5000) } });
     assert.equal(r.ok, false);
   });
+
+  it("knows a seller's URL: https, or http on this machine, and nothing that carries a secret", () => {
+    for (const ok of ["https://acme.example", "https://acme.example/lab", "http://localhost:3001", "http://127.0.0.1:8080", "http://[::1]:3000", "http://peel.localhost"]) {
+      assert.ok(isSellerUrl(ok), ok);
+    }
+    for (const bad of ["http://acme.example", "http://192.168.1.2:3000", "https://u:p@acme.example", "https://acme.example/?k=1", "https://acme.example/#x", "ftp://acme.example", "acme.example", 42]) {
+      assert.ok(!isSellerUrl(bad), String(bad));
+    }
+  });
+
 });

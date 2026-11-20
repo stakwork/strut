@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CONCEPT_PROPOSAL_STEPS,
   conceptPagePath, editEntry, foldConceptDiff, foldDiffLines, historyEntries, isConceptPagePath, lineDiff, proposalEntry, proposalRefs, textSimilarity,
   type ConceptDiffNode, type ConceptPage, type HistoryDiffEntry,
 } from "./concept-diff.js";
@@ -181,6 +182,15 @@ describe("concept diff — source two: a pending proposal over the page now", ()
     assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", node_data: {} } }, null), null);
   });
 
+  it("an edit by `edits`: each quoted text replaced over the page; one that does not apply draws nothing", () => {
+    const e = proposalEntry({ step: "knowledge/edit-page", input: { ref_id: "ref-nda", edits: [{ old: "line two", new: "line 2\nline three" }, { property: "description", old: "Old", new: "Older" }] } }, current)!;
+    assert.equal(e.after!.docs, "line one\nline 2\nline three");
+    assert.equal(e.after!.attributes["description"], "Older.");
+    assert.equal(foldConceptDiff([e]).pages[0]!.status, "edited");
+    assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", edits: [{ old: "not there", new: "x" }] } }, current), null);
+    assert.equal(proposalEntry({ step: "graph/edit-node", input: { ref_id: "ref-nda", edits: [{ old: "line", new: "x" }] } }, current), null, "occurs twice");
+  });
+
   it("a move along PARENT_OF: the parent it names swapped, or its only one", () => {
     const named = proposalEntry({ step: "graph/move-node", input: { ref_id: "ref-nda", edge_type: "PARENT_OF", direction: "reverse", from_ref_id: "ref-contracts", to_ref_id: "ref-privacy" } }, current, nameOf)!;
     assert.deepEqual(named.after!.parents, ["Privacy"]);
@@ -203,6 +213,31 @@ describe("concept diff — source two: a pending proposal over the page now", ()
     assert.equal(foldConceptDiff([deleted]).pages[0]!.status, "removed");
     assert.equal(proposalEntry({ step: "graph/create-node", input: { node_type: "Person", node_data: { name: "Ada" } } }, null), null);
     assert.equal(proposalEntry({ step: "graph/create-triplet", input: {} }, current), null);
+  });
+
+  it("a new page under another (the dream's create-triplet): an added page with its parent named; another edge or type is no page", () => {
+    const triplet = (over: Record<string, unknown> = {}) => ({
+      step: "graph/create-triplet",
+      input: { source_ref_id: "ref-contracts", edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Leases", description: "Renting.", docs: "Term and rent." }, ...over },
+    });
+    assert.deepEqual(proposalRefs(triplet()), ["ref-contracts"]);
+    const added = proposalEntry(triplet(), null, nameOf)!;
+    assert.deepEqual(added, { path: "concepts/concept-leases.md", after: { name: "Leases", attributes: { description: "Renting." }, parents: ["Contracts"], docs: "Term and rent." } });
+    const d = foldConceptDiff([added]);
+    assert.equal(d.pages[0]!.status, "added");
+    assert.deepEqual(draw(d.tree), ["Contracts [context]", "  Leases [added]"], "drawn under its parent");
+    assert.deepEqual(proposalEntry(triplet(), null)!.after!.parents, [], "a parent nobody can name is left out");
+    assert.equal(proposalEntry(triplet({ edge_type: "RELATES_TO" }), null, nameOf), null);
+    assert.equal(proposalEntry(triplet({ target_type: "Person" }), null, nameOf), null);
+    assert.equal(proposalEntry(triplet({ target_data: { description: "no name" } }), null, nameOf), null);
+  });
+
+  it("the dream's own steps (knowledge/edit-page, knowledge/add-page) read as graph/edit-node and graph/create-triplet", () => {
+    const edit = { input: { ref_id: "ref-nda", node_data: { description: "New." } } };
+    assert.deepEqual(proposalEntry({ step: "knowledge/edit-page", ...edit }, current, nameOf), proposalEntry({ step: "graph/edit-node", ...edit }, current, nameOf));
+    const add = { input: { source_ref_id: "ref-contracts", edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Leases", docs: "Term." } } };
+    assert.deepEqual(proposalEntry({ step: "knowledge/add-page", ...add }, null, nameOf), proposalEntry({ step: "graph/create-triplet", ...add }, null, nameOf));
+    assert.ok(CONCEPT_PROPOSAL_STEPS.includes("knowledge/edit-page") && CONCEPT_PROPOSAL_STEPS.includes("knowledge/add-page"));
   });
 });
 

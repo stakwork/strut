@@ -4,7 +4,10 @@
 // to. Opened wide, its docs as markdown (strut/views' DocumentView) and
 // where it came from. A Concept's HISTORY: every commit that changed its
 // page, and what each did (strut/views' ConceptDiff over `history/read`).
-// Read-only.
+// A Concept's CHECKS — what its readers are held to, each run and judged
+// here, and the changes tested against the page (./Checks) — and the changes
+// to it waiting on a person, decided here (./Learning); and, for an admin,
+// what the dream learned about it, cycle by cycle (./Cycles).
 import { useState } from "react";
 import { ArrowLeft, History, Maximize2, Minimize2, X } from "lucide-react";
 import { ConceptDiff, DocumentView, useNode } from "strut/views";
@@ -13,7 +16,11 @@ import { cn } from "@/lib/utils";
 import { useLinks } from "../lib/read";
 import { textOf } from "../lib/ontology";
 import { TREE_TYPE, type ConceptTree } from "../lib/tree";
+import type { PendingChange } from "../lib/learning";
 import { Chip, Dot, SectionLabel, type Picked } from "./bits";
+import { ChangesSection } from "./Learning";
+import { ChecksSection } from "./Checks";
+import { ConceptCycles } from "./Cycles";
 
 export interface NodeDetailProps {
   id: string;
@@ -27,9 +34,13 @@ export interface NodeDetailProps {
   onWide: (wide: boolean) => void;
   /** Narrow: the card has the page, so it goes Back to the graph and is always wide. */
   narrow?: boolean;
+  /** The changes to this node waiting on a person (the dream's proposals). */
+  changes?: readonly PendingChange[];
+  /** The viewer is an admin of this server: they run a page's checks and test changes to it. */
+  admin?: boolean;
 }
 
-export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, narrow }: NodeDetailProps) {
+export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, narrow, changes = [], admin = false }: NodeDetailProps) {
   const q = useNode(id);
   const links = useLinks(id);
   const [history, setHistory] = useState(false);
@@ -80,7 +91,7 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
           </>
         )}
       </div>
-      <div className={cn("flex flex-col gap-4 p-4", wide && "gap-6 px-5")}>
+      <div className={cn("flex flex-col gap-4 p-4", wide && "mx-auto w-full max-w-4xl gap-6 px-5")}>
         <header className="space-y-1">
           {above && <p className="truncate text-xs text-muted-foreground">{above}</p>}
           <h1 className={cn("break-words font-semibold tracking-tight", wide ? "text-xl" : "text-base")}>{n.name}</h1>
@@ -88,6 +99,12 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
         </header>
 
         {history && <ConceptDiff page={{ name: n.name }} />}
+
+        {!history && <ChangesSection changes={changes} wide={wide} onWide={onWide} />}
+
+        {!history && n.node_type === TREE_TYPE && n.name && <ChecksSection id={id} name={n.name} admin={admin} wide={wide} onWide={onWide} />}
+
+        {!history && n.node_type === TREE_TYPE && n.name && <ConceptCycles name={n.name} tree={tree} />}
 
         {wide && !history && (
           <section className="space-y-2">

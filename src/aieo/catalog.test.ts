@@ -30,7 +30,7 @@ const SHEET = {
     max_output_tokens: 128_000,
   },
   "claude-haiku-4-5": { input_cost_per_token: 1e-6, output_cost_per_token: 5e-6, max_input_tokens: 200_000, max_output_tokens: 32_000 },
-  "gemini/gemini-3.8-flash": { input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, max_input_tokens: 777_777, max_output_tokens: 65_536 },
+  "gemini/gemini-4-argon": { input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, max_input_tokens: 777_777, max_output_tokens: 65_536 },
   "gpt-5.6-luna": { input_cost_per_token: 2e-7, output_cost_per_token: 1.2e-6, max_input_tokens: 1_050_000, max_output_tokens: 16_000 },
   "xai/grok-4.7": { input_cost_per_token: 2e-6, output_cost_per_token: 6e-6, max_input_tokens: 500_000, max_output_tokens: 500_000 },
   "openrouter/moonshotai/kimi-k3": { input_cost_per_token: 1.9e-7, output_cost_per_token: 1.6e-5 },
@@ -69,7 +69,7 @@ describe("the lookup: the gateway's key rule", () => {
     setModelCatalog(parseModelCatalog(RAW));
     assert.equal(getCatalogEntry("anthropic", "claude-sonnet-5-5")?.pricing?.inputTokenPrice, 2);
     assert.equal(getCatalogEntry("xai", "grok-4.7")?.pricing?.outputTokenPrice, 6);
-    assert.equal(getCatalogEntry("google", "gemini-3.8-flash")?.maxInputTokens, 777_777);
+    assert.equal(getCatalogEntry("google", "gemini-4-argon")?.maxInputTokens, 777_777);
     assert.equal(getCatalogEntry("openrouter", "moonshotai/kimi-k3")?.pricing?.outputTokenPrice, 16);
     assert.equal(getCatalogEntry("anthropic", "claude-unknown-9"), undefined);
   });
@@ -103,12 +103,12 @@ describe("where a cost comes from", () => {
 
 describe("windows and output caps", () => {
   it("the sheet's window, else aieo's table", () => {
-    const before = getContextLimit("gemini-3.8-flash", "google");
+    const before = getContextLimit("gemini-4-argon", "google");
     setModelCatalog(parseModelCatalog(RAW));
-    assert.equal(getContextLimit("gemini-3.8-flash", "google"), 777_777);
+    assert.equal(getContextLimit("gemini-4-argon", "google"), 777_777);
     assert.equal(getContextLimit("claude-unknown-9", "anthropic"), 1_000_000, "the provider's default");
     setModelCatalog(undefined);
-    assert.equal(getContextLimit("gemini-3.8-flash", "google"), before);
+    assert.equal(getContextLimit("gemini-4-argon", "google"), before);
   });
 
   it("the sheet's output limit lowers a cap, never raises it", () => {

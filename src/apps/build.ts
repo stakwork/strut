@@ -29,7 +29,7 @@ import type { Message, OnResolveResult } from "esbuild";
 import { treeFiles, treeHash } from "../version.js";
 import { packagePrefixOf } from "../package-lookup.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
-import { readManifest, type AppManifest } from "./manifest.js";
+import { readManifest, SCREENSHOT_MAX_BYTES, type AppManifest } from "./manifest.js";
 
 export const DOCUMENT_FILE = "dist/index.html";
 export const BUILD_FILE = "dist/build.json";
@@ -88,6 +88,9 @@ export interface BuildInfo {
    *  specs/WALLET.md §5.1), for the host that shows the connect sheet: read
    *  with the version's file token, here and through a peer's read-through. */
   wallet?: AppManifest["wallet"];
+  /** Where the visitor's account widget sits by default (`app.yaml`'s
+   *  `account:`), read by a visitor's host like `wallet`. */
+  account?: AppManifest["account"];
   /** The browser features the version's frame is granted beyond every
    *  app's (`app.yaml`'s `permissions:`, manifest.ts `DECLARED_PERMISSIONS`:
    *  motion, camera, geolocation): a host reads them, with the version's
@@ -219,10 +222,17 @@ export function cspFor(resourceDomains: readonly string[] = []): string {
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/** The `<meta name>` carrying this server's NAME (the brand's `name`,
+ *  src/brand.ts) into a document as it is served: the kit's
+ *  `useHost().name`, and the title strut's host signs a visitor in under. */
+export const SERVER_NAME_META = "strut-name";
+
+const nameMeta = (name: string | undefined): string => (name ? `<meta name="${SERVER_NAME_META}" content="${escapeHtml(name)}">` : "");
+
 /** The served document: the placeholder meta filled with the app's file
- *  token, HTML-escaped. */
-export function withToken(html: string, token: string): string {
-  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${TOKEN_META}" content="${escapeHtml(token)}">`);
+ *  token, HTML-escaped, and the server's name when it has one. */
+export function withToken(html: string, token: string, name?: string): string {
+  return html.replace(TOKEN_PLACEHOLDER, `${nameMeta(name)}<meta name="${TOKEN_META}" content="${escapeHtml(token)}">`);
 }
 
 /** The `<meta name>` a PUBLIC VIEW document carries (plans/public-surface.md
@@ -239,14 +249,15 @@ export const PUBLIC_RUNNABLE_META = "strut-public-runnable";
 /** The document as the public view serves it: the visitor's identity in the
  *  token meta, the public view's mark beside it, and the granted workflows
  *  a visitor may run, when there are any. */
-export function withPublicIdentity(html: string, identity: string, runnable: ReadonlyArray<{ name: string; results: "output" | "run" }> = []): string {
+export function withPublicIdentity(html: string, identity: string, runnable: ReadonlyArray<{ name: string; results: "output" | "run" }> = [], name?: string): string {
   const run = runnable.length ? `<meta name="${PUBLIC_RUNNABLE_META}" content="${escapeHtml(JSON.stringify(runnable))}">` : "";
-  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1">${run}<meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
+  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1">${run}${nameMeta(name)}<meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
 }
 
-/** The document read with the key instead of a token: no meta at all. */
-export function withoutTokenMeta(html: string): string {
-  return html.replace(TOKEN_PLACEHOLDER, "");
+/** The document read with the key instead of a token: no token meta, the
+ *  server's name when it has one. */
+export function withoutTokenMeta(html: string, name?: string): string {
+  return html.replace(TOKEN_PLACEHOLDER, nameMeta(name));
 }
 
 function document(title: string, csp: string, css: string, js: string): string {
@@ -313,12 +324,16 @@ function tailwindOptions(base: string) {
   };
 }
 
+const TOKEN_SPLITS = [/[\s"'`]+/, /[\s"`]+/];
+
 /** Tailwind class candidates in source texts — every whitespace- or
  *  quote-separated token Tailwind itself accepts (`candidatesToCss`) under
  *  the stylesheet being compiled, so an app's own `@theme` tokens count. */
 async function scanCandidates(tw: Tailwind, kit: Kit, css: string, sources: Iterable<string>): Promise<string[]> {
   const tokens = new Set<string>();
-  for (const text of sources) for (const t of text.split(/[\s"'`]+/)) if (t && t.length < 200) tokens.add(t);
+  // Split at quotes, then again keeping `'`: an arbitrary variant may hold one
+  // (the kit Button's `[&_svg:not([class*='size-'])]:size-4`, which sizes its icons).
+  for (const text of sources) for (const re of TOKEN_SPLITS) for (const t of text.split(re)) if (t && t.length < 200) tokens.add(t);
   const design = await tw.__unstable__loadDesignSystem(css, tailwindOptions(dirname(kit.baseCssPath)));
   const list = [...tokens].sort();
   const compiled = design.candidatesToCss(list);
@@ -407,6 +422,12 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     for (const key of ["workflows", "automations"] as const) {
       for (const wf of manifest.grants[key]) if (!(await exists(wf))) errors.push(`grants.${key}: no workflow "${wf}" — publish it first, or drop the grant`);
     }
+  }
+  // Screenshots are files here, within the size a store serves.
+  for (const [i, shot] of (manifest.screenshots ?? []).entries()) {
+    const size = await stat(join(root, shot.file)).then((s) => (s.isFile() ? s.size : undefined), () => undefined);
+    if (size === undefined) errors.push(`screenshots[${i}]: "${shot.file}" is not a file in the app`);
+    else if (size > SCREENSHOT_MAX_BYTES) errors.push(`screenshots[${i}]: "${shot.file}" is ${(size / 1e6).toFixed(1)} MB — a screenshot is at most ${SCREENSHOT_MAX_BYTES / 1024 / 1024} MB`);
   }
   const entryAbs = await resolveFile(resolve(root, manifest.entry));
   if (!entryAbs || !inside(root, entryAbs)) errors.push(`entry: "${manifest.entry}" is not a file in the app (its default export is the root component)`);
@@ -660,6 +681,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     warnings,
     title: manifest.title,
     ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
+    ...(manifest.account ? { account: manifest.account } : {}),
     ...(manifest.permissions?.length ? { permissions: manifest.permissions } : {}),
   };
   await mkdir(join(root, "dist"), { recursive: true });

@@ -222,6 +222,8 @@ describe("agent sessions over HTTP", () => {
     // The record.
     const list = (await json("/sessions")).body.sessions as any[];
     assert.deepEqual(list.map((s) => [s.id, s.turns]).sort(), [["abc", 2], ["abc/review", 2]]);
+    const page = (await json("/sessions?limit=1")).body;
+    assert.deepEqual([page.sessions.length, page.more], [1, true], "a page, and that there is more");
     const one = (await json("/sessions?id=abc/review")).body;
     assert.equal(one.turns, 2);
     assert.deepEqual(
@@ -499,7 +501,8 @@ describe("a peel-agent-shaped workflow: two turns in one session", () => {
       assert.equal(second.end.status, "success", JSON.stringify(second.end));
       assert.deepEqual(second.end.output.object, { text: "You missed 3 messages from Sam.", artifacts: [] });
       assert.ok(!("stopped" in second.end.output));
-      assert.deepEqual(second.end.output.session, { id: "peel/agent-1/dm", turn: 1, offset: (await strut.sessionStore.load("peel/agent-1/dm"))!.turns[0]!.count });
+      // `keptSystem`: this turn was handed another prompt and ran on the thread's first.
+      assert.deepEqual(second.end.output.session, { id: "peel/agent-1/dm", turn: 1, offset: (await strut.sessionStore.load("peel/agent-1/dm"))!.turns[0]!.count, keptSystem: true });
 
       // On the wire: no built-ins, the thread's prompt, the context line,
       // and turn 1 replayed as the unchanged prefix of turn 2.

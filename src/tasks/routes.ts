@@ -1,0 +1,745 @@
+/**
+ * The STAFF's routes for the task store (plans/human-steps.md §6): task
+ * types, workers, grants, and the tasks with their leases. Full scope only,
+ * reads included — the deployment key or an admin's session — like the
+ * earnings: a peer's read, a member's session and a visitor are refused.
+ * Names with a `/` (a task type `acme/pet-match`) travel as one encoded
+ * segment (`acme%2Fpet-match`), as a workflow's do.
+ *
+ * - `GET /tasks/types` → `{ types }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round?, check? }`
+ *   → `{ type }`: the whole type (a PUT: what is left out is the default;
+ *   open, `tests`, `copies`, `attachments`, `standing`, `round` and `check` off). Whether a
+ *   paid open type qualifies newcomers is the admin's (ruling 12)
+ * - `DELETE /tasks/types/:name` → `{ name, revoked }`: refused (409) while
+ *   a task of the type is open; its live grants are revoked
+ * - `GET /tasks/workers[?status=]` → `{ workers }`, each with its `balance`
+ *   and its `standing` per type with tests
+ * - `GET /tasks/workers/:actor` → `{ worker, holding?, week, recent }`: the
+ *   same for one, with their live lease, the last 7 days by type and their
+ *   newest 50 leases (plans/human-steps.md §9.4)
+ * - `PUT /tasks/workers/:actor { status?, note? }` → `{ worker }`
+ * - `PUT /tasks/workers/:actor/grants/:type [{ qualify?: false }]` →
+ *   `{ worker, notice? }`: a grant of a type with tests records its K
+ * - `DELETE /tasks/workers/:actor/grants/:type[?why=]` → `{ worker }`
+ * - `GET /tasks/stats[?type=]` → the queue (plans/human-steps.md §9.4): per
+ *   type waiting, working, the oldest waiting, due within a day, workers
+ *   granted, holding and asking, what is wrong with its app
+ *   (`appProblem`), and per hour, day and week what was answered,
+ *   expired, cancelled, disputed, skipped and lost, with time to answer
+ *   and work time (p50, p90); across types the workers by status, holding
+ *   and asking. Computed on read
+ * - `GET /tasks[?type=&status=&workflow=&runId=&group=&by=&review=&test=&before=&limit=]` → `{ tasks }`,
+ *   newest first, each with its leases (an answer's `earning` and its
+ *   verdict, `review`, with it; a copies task's answers and whether each
+ *   agreed on its leases);
+ *   `by` the tasks an actor answered (any of a copies task's answers);
+ *   `review=none|ok|rejected` the real tasks with an answer not reviewed,
+ *   or marked so (that actor's, with `by`): the review queue;
+ *   `test=true` the test instances alone, `false` the real tasks;
+ *   `status=disputed` the copies tasks whose answers did not agree;
+ *   `group` the tasks of one group (`task/reply`'s `group`)
+ * - `GET /tasks/groups[?type=&limit=]` → `{ groups }`: the groups the runs
+ *   named, the one with the newest task first, each with its tasks,
+ *   answers, verdicts (`ok`, `rejected`, `unreviewed`) and `workers`
+ * - `POST /tasks/groups/review { group, type?, verdict, why? }` →
+ *   `{ reviewed, more }`: the same verdict on every answer in the group
+ *   with none yet (§9.6), one review each; a verdict given stays
+ * - `GET /tasks/:id` → `{ task, run }`: `run` the run's status now and what
+ *   it waits on (`{ status, waitingOn? }`), null for a test instance or a
+ *   run not on file
+ * - `GET /tasks/:id/files/<path>` → one of the task's files, as `run/files`
+ *   answers one; `404 not_listed` for a path not on its list
+ * - `POST /tasks/:id/take-back { worker?, why }` → `{ task, earnings }`: the
+ *   earnings the task's answers made (or `worker`'s) taken back while held
+ *   (plans/human-steps.md §8.1); `409 released` when every one asked for is
+ *   past its hold
+ * - `PUT /tasks/:id/review { worker?, verdict, why? }` → `{ task, worker,
+ *   lease, review, earning? }`: a person's verdict on one answer, `ok` or
+ *   `rejected` (which says why) (plans/human-steps.md §9.6). `worker` only
+ *   when the task has several answers. A mark: the run is not touched. It
+ *   can change until the answer's hold ends, then `409 final`
+ *
+ * The TEST routes (plans/human-steps.md §7.1) — the only answers that hold
+ * a test's expected answer, or what its grader said:
+ *
+ * - `GET /tasks/tests[?type=&retired=]` → `{ tests }`, each with how often
+ *   it was served, passed, failed and graded `error`
+ * - `GET /tasks/tests/:id` → `{ test, instances }`
+ * - `POST /tasks/tests { type, show?, files?, expected, grade? }` → `{ test }`
+ * - `PUT /tasks/tests/:id/files/<path>` (the raw bytes) → `{ test }`
+ * - `POST /tasks/:id/test { expected?, grade? }` → `{ test }`: made from a
+ *   real task
+ * - `PUT /tasks/tests/:id { show?, expected?, grade? }` → `{ test }`; `409
+ *   in_use` once it was served
+ * - `DELETE /tasks/tests/:id` → `{ test }`, retired
+ *
+ * The PAYOUT routes (plans/human-steps.md §8.2): a worker's withdrawals and
+ * the settings that let them happen with nobody's yes per payment. Nothing
+ * else reaches the settings — no step on the shared bag, no proposal, no
+ * YAML, not `task/set-type`.
+ *
+ * - `GET /tasks/payouts[?state=out|stale|paid|failed&worker=&before=&limit=]`
+ *   → `{ settings, today: { day, paidMsat, outMsat, count, serverLeftMsat },
+ *   payouts }`, newest first, each with `stale` (still out a day after it
+ *   was sent: it waits for a person). With no ledger: the defaults and none
+ * - `PUT /tasks/payouts/settings { on, minSats, workerDaySats, serverDaySats, inviteSats? }`
+ *   → `{ settings }` with `changedBy` and `changedAt`: the whole row;
+ *   `minSats` at least 1, each cap at least `minSats`; `inviteSats` (an
+ *   invite's default starting sats, §5.8) 1 to 100,000, 100 when left out
+ * - `POST /tasks/payouts/:key/read` → `{ payout, state, msat, feeMsat, … }`:
+ *   read it now through the payer it went out through
+ * - `POST /tasks/payouts/:key/resolve { action: "paid" | "drop", feeMsat? }`
+ *   → `{ payout, action }`: a person settles one by hand — `paid` with the
+ *   fee they give (else 0), `drop` fails it and gives its reserve back
+ *
+ * The INVITE routes (plans/human-steps.md §5.8): a worker's one link, made
+ * through the payer (the daemon pays the mixer for an invite), opening
+ * TASKS (`strut/worker`), the server's one work page.
+ *
+ * - `POST /tasks/invites { sats?, type? }` → `{ code, link, sats, status,
+ *   type? }`: `link` is `https://<public view>/public/join#<the invite>&a=<
+ *   Tasks' URL>`, which opens `type` when given (and gives it, when it is
+ *   invite-only); `sats` the worker's starting balance (the payout
+ *   settings' `inviteSats` when left out). Tasks not in the public view:
+ *   `409 no_worker_app`; the app that draws `type` not in it: `409
+ *   not_online`; no such type: `400`
+ * - `GET /tasks/invites` → `{ invites, sats, why? }`: the daemon's invites
+ *   newest first, each with the link it was sent with and its `type`;
+ *   `why` says the server cannot invite (`no_pay_credential`, `no_invites`)
+ * - `POST /tasks/invites/:code/cancel` → `{ code, status }`
+ * - `POST /tasks/online` → `{ app, public: true }`: puts Tasks in the public
+ *   view, as the Public view tab does with nothing unticked — the one app a
+ *   staff page puts online itself, since strut ships it and it calls only
+ *   the worker's `task/*` steps
+ */
+import type { Context, Hono } from "hono";
+import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
+import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
+import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
+import { TEST_FILE_MAX_BYTES } from "./test-files.js";
+import { PAYOUT_STATES, type PayoutState } from "../payments/ledger.js";
+import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/payouts.js";
+import { WithdrawError } from "../payments/withdrawals.js";
+import { entryView } from "../payments/earnings-routes.js";
+import { InviteError, type Invites } from "../payments/invites.js";
+import type { RoundItems } from "./round.js";
+
+export interface TaskRoutesDeps {
+  isFull: (c: Context) => Promise<boolean>;
+  /** Who made a change: the type's `changedBy`, a grant's `by`. */
+  actorOf: (c: Context) => Promise<string | undefined>;
+  tasks: TasksCapability;
+  /** A person's take-back (§8.1): the service's, never on a capability.
+   *  Absent (a host's own store): the route answers 501. */
+  takeBack?: TasksService["takeBack"];
+  /** A person's verdict on an answer (§9.6): the service's, never on a
+   *  capability. Absent (a host's own store): the route answers 501. */
+  review?: TasksService["review"];
+  /** §9.6 over a group of tasks: the service's, as `review`. */
+  reviewGroup?: TasksService["reviewGroup"];
+  /** The staff's tests (§7.1): the service's, never on a capability.
+   *  Absent (a host's own store): the test routes answer 501. */
+  tests?: TasksService["tests"];
+  /** §9.4: what is wrong with the app a type names (`taskAppProblem`), for
+   *  the queue. Absent: not checked. */
+  appProblem?: (app: string) => Promise<string | undefined>;
+  /** §9.4: a task's run now — its status and what it waits on — or null
+   *  when there is none on file. Absent: every task's `run` is null. */
+  runOf?: (workflow: string, runId: string) => Promise<{ status: string; waitingOn?: string[] } | null>;
+  /** §8.2: a worker's withdrawals and their settings (src/payments/payouts.ts).
+   *  Absent: the payout routes answer 501. */
+  payouts?: Pick<Payouts, "list" | "saveSettings" | "read" | "resolve">;
+  /** §5.8: worker invites (src/payments/invites.ts), and the base their
+   *  links are on: the share links' (createStrut: `lastBase` for a staff
+   *  page's in-process request). Absent: the invite routes answer 501. */
+  invites?: Invites;
+  /** `POST /tasks/online`: Tasks put in the public view in `actor`'s name.
+   *  Absent: the route refuses. */
+  tasksOnline?: (actor: string | undefined) => Promise<{ app: string; public: true }>;
+  publicUrl?: (c: Context) => string;
+  /** A ROUND type's workflow (Workers' Send a round): the items a
+   *  round sends by default, read off it, and a round sent — the workflow
+   *  launched as the admin, with `input` (a subset of the items) or its
+   *  defaults; answers the run id. Absent: the round routes refuse. */
+  rounds?: {
+    items(workflow: string): Promise<RoundItems>;
+    send(workflow: string, input: Record<string, unknown> | undefined, actor: string | undefined): Promise<string>;
+    /** The workflows that can make tasks of `type` — a `human` step of it at
+     *  any depth — each with whether it can be its STANDING workflow (its
+     *  first step that step): the type editor's picker. */
+    workflowsFor(type: string): Promise<Array<{ name: string; standing: boolean }>>;
+  };
+}
+
+const PAYOUT_STATUS: Partial<Record<PayoutErrorCode, 400 | 404 | 409>> = { bad_request: 400, unknown_payout: 404 };
+const PAYOUT_KEY = /^[0-9a-f]{64}$/;
+
+/** A grant's worker `@me`: the person granting, to try the work themself. */
+export const ME = "@me";
+
+const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
+  bad_request: 400,
+  bad_schema: 400,
+  unknown_type: 404,
+  unknown_worker: 404,
+  unknown_task: 404,
+  unknown_test: 404,
+  not_listed: 404,
+  no_file: 404,
+  no_answer: 404,
+  in_use: 409,
+  final: 409,
+};
+
+export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
+  const { tasks } = deps;
+  const refuse = async (c: Context) =>
+    (await deps.isFull(c)) ? null : c.json({ error: "forbidden: task types and workers are an admin's: the deployment key or an admin's session" }, 403);
+  /** The route's answer, or its refusal as the task store said it. */
+  const answer = async (c: Context, fn: () => Promise<Record<string, unknown>>) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    try {
+      return c.json(await fn());
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  };
+  const body = async (c: Context): Promise<Record<string, unknown>> => {
+    const v = (await c.req.json().catch(() => undefined)) as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new TaskError("bad_request", "the body is a JSON object");
+    return v as Record<string, unknown>;
+  };
+  const by = async (c: Context) => {
+    const actor = await deps.actorOf(c);
+    return actor === undefined ? {} : { by: actor };
+  };
+
+  // ── payouts (§8.2): before `/tasks/:id`, which would take `payouts` for an id ──
+  const payoutAnswer = async (c: Context, fn: (p: NonNullable<TaskRoutesDeps["payouts"]>) => Promise<Record<string, unknown>>) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.payouts) return c.json({ error: "this server pays no worker", code: "not_available" }, 501);
+    try {
+      return c.json(await fn(deps.payouts));
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      if (err instanceof PayoutError) return c.json({ error: err.message, code: err.code }, PAYOUT_STATUS[err.code] ?? 409);
+      if (err instanceof WithdrawError) return c.json({ error: err.message, code: err.code, ...(err.walletCode ? { walletCode: err.walletCode } : {}) }, err.status);
+      if (err instanceof RangeError) return c.json({ error: `bad_request: ${err.message}`, code: "bad_request" }, 400);
+      throw err;
+    }
+  };
+  const payoutKey = (c: Context) => {
+    const key = c.req.param("key") ?? "";
+    if (!PAYOUT_KEY.test(key)) throw new TaskError("bad_request", "a payout's key is 64 lowercase hex characters");
+    return key;
+  };
+
+  app.get("/tasks/payouts", (c) =>
+    payoutAnswer(c, async (p) => {
+      const state = c.req.query("state") || undefined;
+      if (state !== undefined && state !== "stale" && !PAYOUT_STATES.includes(state as PayoutState)) throw new TaskError("bad_request", `state is one of ${[...PAYOUT_STATES, "stale"].join(", ")}`);
+      const num = (k: string) => {
+        const v = c.req.query(k);
+        if (v === undefined || v === "") return undefined;
+        const n = Number(v);
+        if (!Number.isSafeInteger(n) || n <= 0) throw new TaskError("bad_request", `${k} must be a whole number above 0`);
+        return n;
+      };
+      const before = num("before");
+      const limit = num("limit");
+      const worker = c.req.query("worker") || undefined;
+      return { ...(await p.list({ ...(state ? { state: state as PayoutState | "stale" } : {}), ...(worker ? { worker } : {}), ...(before ? { before } : {}), ...(limit ? { limit } : {}) })) };
+    }),
+  );
+
+  app.put("/tasks/payouts/settings", (c) =>
+    payoutAnswer(c, async (p) => {
+      const b = await body(c);
+      const extra = Object.keys(b).filter((k) => !["on", "minSats", "workerDaySats", "serverDaySats", "inviteSats"].includes(k));
+      if (extra.length) throw new TaskError("bad_request", `the settings are on, minSats, workerDaySats, serverDaySats and inviteSats; not ${extra.join(", ")}`);
+      if (typeof b["on"] !== "boolean") throw new TaskError("bad_request", "on is true or false");
+      for (const k of ["minSats", "workerDaySats", "serverDaySats"]) if (typeof b[k] !== "number") throw new TaskError("bad_request", `${k} is a whole number of sats`);
+      if (b["inviteSats"] !== undefined && typeof b["inviteSats"] !== "number") throw new TaskError("bad_request", "inviteSats is a whole number of sats");
+      const settings = await p.saveSettings(
+        {
+          on: b["on"],
+          minSats: b["minSats"] as number,
+          workerDaySats: b["workerDaySats"] as number,
+          serverDaySats: b["serverDaySats"] as number,
+          ...(b["inviteSats"] !== undefined ? { inviteSats: b["inviteSats"] as number } : {}),
+        },
+        (await by(c)).by,
+      );
+      return { settings };
+    }),
+  );
+
+  app.post("/tasks/payouts/:key/read", (c) =>
+    payoutAnswer(c, async (p) => {
+      const { payout, answer: a } = await p.read(payoutKey(c));
+      const { entry, ...rest } = a;
+      return { payout, ...rest, ...(entry ? { entry: entryView(entry) } : {}) };
+    }),
+  );
+
+  app.post("/tasks/payouts/:key/resolve", (c) =>
+    payoutAnswer(c, async (p) => {
+      const key = payoutKey(c);
+      const b = await body(c);
+      const action = b["action"];
+      if (action !== "paid" && action !== "drop") throw new TaskError("bad_request", 'action is "paid" (it reached the worker: record it) or "drop" (it did not: give the reserve back)');
+      if (b["feeMsat"] !== undefined && (action !== "paid" || typeof b["feeMsat"] !== "number")) throw new TaskError("bad_request", "feeMsat is a number of msat, with action paid");
+      return { ...(await p.resolve(key, { action, ...(b["feeMsat"] !== undefined ? { feeMsat: b["feeMsat"] as number } : {}) }, (await by(c)).by)) };
+    }),
+  );
+
+  // ── invites (§5.8): before `/tasks/:id`, which would take `invites` for an id ──
+  const inviteAnswer = async (c: Context, fn: (i: Invites, base: string) => Promise<Record<string, unknown>>) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.invites || !deps.publicUrl) return c.json({ error: "this server makes no worker invites", code: "not_available" }, 501);
+    try {
+      return c.json(await fn(deps.invites, deps.publicUrl(c)));
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      if (err instanceof InviteError) return c.json({ error: err.message, code: err.code }, err.status);
+      throw err;
+    }
+  };
+
+  app.post("/tasks/invites", (c) =>
+    inviteAnswer(c, async (i, base) => {
+      const b = await body(c);
+      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "type");
+      if (extra.length) throw new TaskError("bad_request", `an invite takes sats and type; not ${extra.join(", ")}`);
+      if (b["sats"] !== undefined && typeof b["sats"] !== "number") throw new TaskError("bad_request", "sats is a whole number of sats");
+      if (b["type"] !== undefined && (typeof b["type"] !== "string" || !b["type"])) throw new TaskError("bad_request", "type is a task type's name");
+      return { ...(await i.create({ base, ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
+    }),
+  );
+
+  app.get("/tasks/invites", (c) => inviteAnswer(c, async (i, base) => ({ ...(await i.list({ base })) })));
+
+  app.post("/tasks/invites/:code/cancel", (c) => inviteAnswer(c, async (i) => ({ ...(await i.cancel(c.req.param("code") ?? "")) })));
+
+  // Tasks online (§5.8): before `/tasks/:id`.
+  app.post("/tasks/online", (c) =>
+    answer(c, async () => {
+      if (!deps.tasksOnline) throw new TaskError("refused", "this server puts no page online from here: use the Public view");
+      return { ...(await deps.tasksOnline((await by(c)).by)) };
+    }),
+  );
+
+  app.get("/tasks/types", (c) => answer(c, async () => ({ types: await tasks.types() })));
+
+  app.put("/tasks/types/:name", (c) =>
+    answer(c, async () => {
+      const b = await body(c);
+      const input = {
+        app: b["app"] as string,
+        answer: b["answer"],
+        ...(b["title"] !== undefined ? { title: b["title"] as string | null } : {}),
+        ...(b["leaseSeconds"] !== undefined ? { leaseSeconds: b["leaseSeconds"] as number } : {}),
+        ...(b["withinHours"] !== undefined ? { withinHours: b["withinHours"] as number } : {}),
+        ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),
+        ...(b["open"] !== undefined ? { open: b["open"] as boolean } : {}),
+        ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
+        ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
+        ...(b["limits"] !== undefined ? { limits: b["limits"] as { budgetSats?: number; perWorkerDay?: number } | null } : {}),
+        ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
+        ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),
+        ...(b["attachments"] !== undefined ? { attachments: b["attachments"] as Record<string, unknown> | null } : {}),
+        ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
+        ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
+        ...(b["check"] !== undefined ? { check: b["check"] as { step: string; config?: Record<string, unknown> } | null } : {}),
+      };
+      // The admin saving a new invite-only type holds it, to try it.
+      const who = (await by(c)).by;
+      return { type: await tasks.setType(c.req.param("name"), input, who, { holders: [who] }) };
+    }),
+  );
+
+  app.delete("/tasks/types/:name", (c) => answer(c, async () => tasks.deleteType(c.req.param("name"), (await by(c)).by)));
+
+  // ── rounds: a round type's items, and Send a round ──
+  /** The round type named, and the routes' rounds: refused for any other. */
+  const roundOf = async (name: string) => {
+    if (!deps.rounds) throw new TaskError("refused", "this server sends no rounds");
+    const kind = (await tasks.types()).find((t) => t.name === name);
+    if (!kind) throw new TaskError("unknown_type", `no task type ${name} here`);
+    if (!kind.round) throw new TaskError("bad_request", `task type ${name} is not sent in rounds: save it with round: { workflow }`);
+    return { kind, round: kind.round, rounds: deps.rounds };
+  };
+  // The type editor's "When there is work": which workflows can feed a type.
+  app.get("/tasks/workflows", (c) =>
+    answer(c, async () => {
+      if (!deps.rounds) throw new TaskError("refused", "this server starts no workflow from a task type");
+      const type = c.req.query("type") ?? "";
+      if (!type) throw new TaskError("bad_request", "type is the task type's name");
+      return { type, workflows: await deps.rounds.workflowsFor(type) };
+    }),
+  );
+  app.get("/tasks/types/:name/round", (c) =>
+    answer(c, async () => {
+      const { kind, round, rounds } = await roundOf(c.req.param("name"));
+      const read = await rounds.items(round.workflow);
+      // The last round: the newest task of the type, and how many its run made.
+      const [newest] = await tasks.list({ type: kind.name, test: false, limit: 1 });
+      const last = newest ? { runId: newest.runId, at: newest.created, tasks: (await tasks.list({ type: kind.name, runId: newest.runId, limit: 500 })).length } : undefined;
+      return { type: kind.name, workflow: round.workflow, ...read, ...(last ? { last } : {}) };
+    }),
+  );
+  app.post("/tasks/types/:name/round", (c) =>
+    answer(c, async () => {
+      const { round, rounds } = await roundOf(c.req.param("name"));
+      const b = await body(c);
+      const input = b["input"];
+      if (input !== undefined && (!input || typeof input !== "object" || Array.isArray(input))) throw new TaskError("bad_request", "input is an object: the round's items under the input's name, or left out for all of them");
+      const runId = await rounds.send(round.workflow, input as Record<string, unknown> | undefined, await deps.actorOf(c));
+      return { runId, workflow: round.workflow };
+    }),
+  );
+
+  app.get("/tasks/workers", (c) =>
+    answer(c, async () => {
+      const status = c.req.query("status") || undefined;
+      if (status !== undefined && !WORKER_STATUSES.includes(status as WorkerStatus)) throw new TaskError("bad_request", `status is one of ${WORKER_STATUSES.join(", ")}`);
+      return { workers: await tasks.workers(status ? { status: status as WorkerStatus } : {}) };
+    }),
+  );
+
+  /** A route a host's own store may predate: 501 when it lacks `method`. */
+  const lacks = async (c: Context, method: keyof TasksCapability, what: string) =>
+    typeof tasks[method] === "function" ? null : ((await refuse(c)) ?? c.json({ error: `this server's task store is its host's: it has no ${what}`, code: "not_available" }, 501));
+
+  app.get("/tasks/workers/:actor", async (c) => {
+    const missing = await lacks(c, "worker", "one-worker read");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const actor = c.req.param("actor");
+      const worker = await tasks.worker(actor);
+      if (!worker) throw new TaskError("unknown_worker", `no worker ${actor} here`);
+      // What they hold and did (§9.4), where the store answers it.
+      const activity = typeof tasks.activity === "function" ? await tasks.activity(actor) : undefined;
+      return { worker, ...(activity ?? {}) };
+    });
+  });
+
+  // The queue (§9.4), before `/tasks/:id`.
+  // Each type's spend against its limits, and what each worker did of it
+  // in the last `days` (the staff's numbers; `task/report` reads the same).
+  app.get("/tasks/numbers", async (c) => {
+    const missing = await lacks(c, "numbers", "numbers");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const type = c.req.query("type") || undefined;
+      const days = c.req.query("days");
+      return { types: await tasks.numbers({ ...(type ? { type } : {}), ...(days ? { days: Number(days) } : {}) }) };
+    });
+  });
+
+  app.get("/tasks/stats", async (c) => {
+    const missing = await lacks(c, "stats", "queue counts");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const type = c.req.query("type") || undefined;
+      const stats = await tasks.stats(type ? { type } : {});
+      if (deps.appProblem) {
+        const problems = new Map<string, string | undefined>();
+        for (const app of new Set(stats.types.map((t) => t.app))) problems.set(app, await deps.appProblem(app));
+        for (const t of stats.types) {
+          const problem = problems.get(t.app);
+          if (problem) t.appProblem = problem;
+        }
+      }
+      return stats as unknown as Record<string, unknown>;
+    });
+  });
+
+  app.put("/tasks/workers/:actor", (c) =>
+    answer(c, async () => {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (k !== "status" && k !== "note") throw new TaskError("bad_request", `a worker's change is status and note, not ${k}`);
+      const change = {
+        ...(b["status"] !== undefined ? { status: b["status"] as WorkerStatus } : {}),
+        ...(b["note"] !== undefined ? { note: b["note"] as string | null } : {}),
+      };
+      return { worker: await tasks.setWorker(c.req.param("actor"), change, (await by(c)).by) };
+    }),
+  );
+
+  app.put("/tasks/workers/:actor/grants/:type", (c) =>
+    answer(c, async () => {
+      // An empty body is a grant as it always was; `{ qualify: false }`
+      // starts it with no qualifying, for a worker staff know (§7.5).
+      const text = (await c.req.text()).trim();
+      let parsed: unknown = {};
+      if (text) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = undefined;
+        }
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TaskError("bad_request", "a grant's body is empty, or { qualify: false }");
+      for (const k of Object.keys(parsed)) if (k !== "qualify") throw new TaskError("bad_request", `a grant's body is { qualify }, not ${k}`);
+      const q = (parsed as { qualify?: unknown }).qualify;
+      if (q !== undefined && typeof q !== "boolean") throw new TaskError("bad_request", "qualify is true or false");
+      // `@me`: the admin granting it to themself, to try the work as they are signed in.
+      const named = c.req.param("actor");
+      const actor = named === ME ? await deps.actorOf(c) : named;
+      if (!actor) throw new TaskError("bad_request", "@me needs a signed-in person");
+      const { notice, ...worker } = await tasks.grant(actor, c.req.param("type"), (await by(c)).by, q === undefined ? {} : { qualify: q });
+      return { worker, ...(notice ? { notice } : {}) };
+    }),
+  );
+
+  app.delete("/tasks/workers/:actor/grants/:type", (c) =>
+    answer(c, async () => {
+      const why = c.req.query("why") || undefined;
+      return { worker: await tasks.revoke(c.req.param("actor"), c.req.param("type"), { ...(await by(c)), ...(why !== undefined ? { why } : {}) }) };
+    }),
+  );
+
+  app.get("/tasks", (c) =>
+    answer(c, async () => {
+      const q = c.req.query();
+      if (q["status"] && !TASK_STATUSES.includes(q["status"] as TaskStatus)) throw new TaskError("bad_request", `status is one of ${TASK_STATUSES.join(", ")}`);
+      const num = (k: string) => {
+        const v = q[k];
+        if (v === undefined || v === "") return undefined;
+        const n = Number(v);
+        if (!Number.isSafeInteger(n) || n <= 0) throw new TaskError("bad_request", `${k} is a whole number above 0`);
+        return n;
+      };
+      const before = num("before");
+      const limit = num("limit");
+      if (q["test"] && q["test"] !== "true" && q["test"] !== "false") throw new TaskError("bad_request", "test is true or false");
+      const review = q["review"] || undefined;
+      if (review !== undefined && review !== "none" && !VERDICTS.includes(review as Verdict)) throw new TaskError("bad_request", `review is none, ${VERDICTS.join(" or ")}`);
+      return {
+        tasks: await tasks.list({
+          ...(q["test"] ? { test: q["test"] === "true" } : {}),
+          ...(q["type"] ? { type: q["type"] } : {}),
+          ...(q["status"] ? { status: q["status"] as TaskStatus } : {}),
+          ...(q["workflow"] ? { workflow: q["workflow"] } : {}),
+          ...(q["runId"] ? { runId: q["runId"] } : {}),
+          ...(q["group"] ? { group: q["group"] } : {}),
+          ...(q["by"] ? { by: q["by"] } : {}),
+          ...(review !== undefined ? { review: review as "none" | Verdict } : {}),
+          ...(before !== undefined ? { before } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        }),
+      };
+    }),
+  );
+
+  // ── groups (`task/reply`'s `group`): before `/tasks/:id` ─────────────
+  app.get("/tasks/groups", async (c) => {
+    if (!tasks.groups) return (await refuse(c)) ?? c.json({ error: "this server's task store is its host's: groups are not available here", code: "not_available" }, 501);
+    return answer(c, async () => {
+      const limit = c.req.query("limit");
+      const n = limit ? Number(limit) : undefined;
+      if (n !== undefined && (!Number.isSafeInteger(n) || n <= 0)) throw new TaskError("bad_request", "limit is a whole number above 0");
+      return { groups: await tasks.groups!({ ...(c.req.query("type") ? { type: c.req.query("type")! } : {}), ...(n !== undefined ? { limit: n } : {}) }) };
+    });
+  });
+
+  app.post("/tasks/groups/review", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.reviewGroup) return c.json({ error: "this server's task store is its host's: review is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (!["group", "type", "verdict", "why"].includes(k)) throw new TaskError("bad_request", `a group's review is group, type, verdict and why, not ${k}`);
+      if (b["why"] !== undefined && typeof b["why"] !== "string") throw new TaskError("bad_request", "why is a sentence");
+      const out = await deps.reviewGroup({
+        group: b["group"] as string,
+        ...(b["type"] !== undefined ? { type: b["type"] as string } : {}),
+        verdict: b["verdict"] as Verdict,
+        ...(b["why"] !== undefined ? { why: b["why"] as string } : {}),
+        ...(await by(c)),
+      });
+      return c.json(out);
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
+
+  // ── tests (§7.1): the service's, before `/tasks/:id` ────────────────
+  /** A test route's answer: 501 where the store is a host's. */
+  const testAnswer = (c: Context, fn: (t: NonNullable<TaskRoutesDeps["tests"]>) => Promise<Record<string, unknown>>) =>
+    deps.tests ? answer(c, () => fn(deps.tests!)) : refuse(c).then((r) => r ?? c.json({ error: "this server's task store is its host's: tests are not available here", code: "not_available" }, 501));
+  const only = (b: Record<string, unknown>, keys: string[], what: string) => {
+    for (const k of Object.keys(b)) if (!keys.includes(k)) throw new TaskError("bad_request", `${what} is ${keys.join(", ")}, not ${k}`);
+  };
+
+  app.get("/tasks/tests", (c) =>
+    testAnswer(c, async (t) => {
+      const retired = c.req.query("retired");
+      if (retired && retired !== "true" && retired !== "false") throw new TaskError("bad_request", "retired is true or false");
+      const type = c.req.query("type") || undefined;
+      return { tests: await t.list({ ...(type ? { type } : {}), ...(retired ? { retired: retired === "true" } : {}) }) };
+    }),
+  );
+
+  app.post("/tasks/tests", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["type", "show", "files", "expected", "grade"], "a test");
+      return {
+        test: await t.create(
+          {
+            type: b["type"] as string,
+            expected: b["expected"],
+            ...(b["show"] !== undefined ? { show: b["show"] } : {}),
+            ...(b["files"] !== undefined ? { files: b["files"] as string[] } : {}),
+            ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}),
+          },
+          (await by(c)).by,
+        ),
+      };
+    }),
+  );
+
+  app.get("/tasks/tests/:id", (c) =>
+    testAnswer(c, async (t) => {
+      const got = await t.get(c.req.param("id"));
+      if (!got) throw new TaskError("unknown_test", `no test ${c.req.param("id")}`);
+      return got;
+    }),
+  );
+
+  app.put("/tasks/tests/:id/files/*", (c) =>
+    testAnswer(c, async (t) => {
+      const id = c.req.param("id");
+      const marker = `/tasks/tests/${id}/files/`;
+      const at = c.req.path.indexOf(marker);
+      let path: string;
+      try {
+        path = c.req.path.slice(at + marker.length).split("/").map(decodeURIComponent).join("/");
+      } catch {
+        throw new TaskError("bad_request", "the file's path is not well encoded");
+      }
+      const length = Number(c.req.header("content-length") ?? "0");
+      if (length > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `a test's file is at most ${TEST_FILE_MAX_BYTES} bytes`);
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      return { test: await t.putFile(id, path, bytes) };
+    }),
+  );
+
+  app.put("/tasks/tests/:id", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["show", "expected", "grade"], "a test's change");
+      return {
+        test: await t.update(c.req.param("id"), {
+          ...(b["show"] !== undefined ? { show: b["show"] } : {}),
+          ...(b["expected"] !== undefined ? { expected: b["expected"] } : {}),
+          ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}),
+        }),
+      };
+    }),
+  );
+
+  app.delete("/tasks/tests/:id", (c) => testAnswer(c, async (t) => ({ test: await t.retire(c.req.param("id"), (await by(c)).by) })));
+
+  app.post("/tasks/:id/test", (c) =>
+    testAnswer(c, async (t) => {
+      const b = await body(c);
+      only(b, ["expected", "grade"], "a test from a task");
+      return {
+        test: await t.fromTask(
+          c.req.param("id"),
+          { ...(b["expected"] !== undefined ? { expected: b["expected"] } : {}), ...(b["grade"] !== undefined ? { grade: b["grade"] as never } : {}) },
+          (await by(c)).by,
+        ),
+      };
+    }),
+  );
+
+  // A person takes back what an answer earned while it is held (§8.1):
+  // until item 4 grades tests, an admin is who catches a bad answer.
+  app.post("/tasks/:id/take-back", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.takeBack) return c.json({ error: "this server's task store is its host's: take-back is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (k !== "worker" && k !== "why") throw new TaskError("bad_request", `a take-back is worker and why, not ${k}`);
+      if (b["worker"] !== undefined && typeof b["worker"] !== "string") throw new TaskError("bad_request", "worker is an actor");
+      const task = c.req.param("id");
+      const earnings = await deps.takeBack({
+        task,
+        why: b["why"] as string,
+        ...(b["worker"] !== undefined ? { worker: b["worker"] as string } : {}),
+        ...(await by(c)),
+      });
+      // Past its hold an earning is the worker's: nothing was taken.
+      if (earnings.some((e) => e.result === "released") && !earnings.some((e) => e.result === "taken")) {
+        return c.json({ error: "released: past its hold, this answer's earning is the worker's", code: "released", task, earnings }, 409);
+      }
+      return c.json({ task, earnings });
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
+
+  // A person's verdict on one answer (§9.6): a mark, never an undo of the
+  // run, which has gone on.
+  app.put("/tasks/:id/review", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.review) return c.json({ error: "this server's task store is its host's: review is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (k !== "worker" && k !== "verdict" && k !== "why") throw new TaskError("bad_request", `a review is worker, verdict and why, not ${k}`);
+      if (b["worker"] !== undefined && typeof b["worker"] !== "string") throw new TaskError("bad_request", "worker is an actor");
+      if (b["why"] !== undefined && typeof b["why"] !== "string") throw new TaskError("bad_request", "why is a sentence");
+      const out = await deps.review({
+        task: c.req.param("id"),
+        verdict: b["verdict"] as Verdict,
+        ...(b["why"] !== undefined ? { why: b["why"] as string } : {}),
+        ...(b["worker"] !== undefined ? { worker: b["worker"] as string } : {}),
+        ...(await by(c)),
+      });
+      return c.json(out);
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
+
+  // One of a task's files, read by staff without a lease (§9.4).
+  app.get("/tasks/:id/files/*", async (c) => {
+    const missing = await lacks(c, "taskFile", "file read for staff");
+    if (missing) return missing;
+    return answer(c, async () => {
+      const id = c.req.param("id");
+      const marker = `/tasks/${id}/files/`;
+      let path: string;
+      try {
+        path = c.req.path.slice(c.req.path.indexOf(marker) + marker.length).split("/").map(decodeURIComponent).join("/");
+      } catch {
+        throw new TaskError("bad_request", "the file's path is not well encoded");
+      }
+      return (await tasks.taskFile(id, path)) as unknown as Record<string, unknown>;
+    });
+  });
+
+  app.get("/tasks/:id", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    const task = await tasks.task(c.req.param("id"));
+    if (!task) return c.json({ error: `no task ${c.req.param("id")}`, code: "unknown_task" }, 404);
+    // The run as it stands now (§9.4); a test instance has none.
+    const run = task.workflow && deps.runOf ? await deps.runOf(task.workflow, task.runId).catch(() => null) : null;
+    return c.json({ task, run });
+  });
+}

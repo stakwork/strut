@@ -1,9 +1,11 @@
 import { useEffect, useState } from "preact/hooks";
+import { nativeWalletOf } from "@strut/kit/wallet";
 import * as api from "../api";
-import { appToolInput, namesApp } from "../app-links";
-import { replaceUrl, reportReady } from "../embed";
+import { appPageAddress, appToolInput, namesApp, publicAppHop } from "../app-links";
+import { embedPage, replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
+import { words } from "../words";
 
 // ── An app's page alone (plans/apps.md §7.4) ───────────────────────────────
 //
@@ -26,26 +28,77 @@ import { AppWithPanel } from "./AppWithPanel";
 // What the store frames from a publisher's server, and what a person with
 // no account opens.
 //
+// `&public=1&from=<base>`: a visitor's page of ANOTHER strut server
+// (../remote-app, specs/API.md §17.9) — read from that server, its calls
+// relayed there, a priced launch paid HERE (Peel's wallet with one tap,
+// else a QR code), with this page as the trusted host: the stranger's
+// server runs nothing here but its sandboxed frame. Always alone (`solo` is
+// implied). A `from` this host does not open says so, and never falls back
+// to an app of the same name here.
+//
+// On a visitor's page, a link to ANOTHER app of this server's public view
+// opens that app here, in place (`publicAppHop`): the same page, `solo` and
+// `public` kept, the address the browser's — or Peel's web view's — history
+// goes Back through, and `&back=<the app it came from>`, for which this page
+// draws a Back bar over the app — except in Peel's web view, whose own bar
+// has Back. A worker's dashboard (strut/worker) lists every app's task
+// types and opens a type of another app this way.
+//
+// `&embed_page=<the host's page>` (../embed `embedPage`, with
+// `embed_origin`): where a person opens this app on the host that frames
+// it. The app is handed it (`strut/page`), so it can give a link to paste —
+// the same address the host's bar shows as the page moves. A member's page
+// at strut's own address hands that address; alone in a native host's web
+// view (`solo=1`, Peel's), there is no address to give.
+//
 // `&theme=light` (or `dark`): the theme the app is handed, for a host whose
 // own page is light; strut's UI is dark, the default. The page around it
 // matches while the app loads; what strut draws in the side panel's bar and
 // its file viewer stays strut's own.
 
-export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; theme?: "light" | "dark" }) {
-  const listed = useListedApp(props.visitor ? null : props.app);
+export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; from?: string; theme?: "light" | "dark" }) {
+  const from = props.from;
+  const visitor = !!props.visitor || !!from;
+  const listed = useListedApp(visitor ? null : props.app);
   // undefined: the public view has not answered; null: the app is not in it.
   const [visitorApp, setVisitorApp] = useState<api.PublicAppInfo | null | undefined>(undefined);
-  const shown = props.visitor
-    ? visitorApp ? { name: visitorApp.name, version: visitorApp.version } : null
+  /** Why another server's app could not be read (it did not answer). */
+  const [readError, setReadError] = useState<string | null>(null);
+  const shown = visitor
+    ? visitorApp ? { name: visitorApp.name, version: visitorApp.version, title: visitorApp.title, ...(from ? { from } : {}) } : null
     : listed.app;
   const [input, setInput] = useState(props.input ?? null);
+  /** Where a person opens this app, which it builds its links to paste on:
+   *  framed, the host's own page (`embed_page`); a member's page at strut's
+   *  own address (picked by the session, no `solo=1`), that address; alone
+   *  in a native host's web view (`solo=1`) or a visitor's, none. */
+  const [page] = useState(() => {
+    if (from) return undefined;
+    if (window.parent !== window) return embedPage();
+    if (visitor || new URLSearchParams(location.search).has("solo")) return undefined;
+    return appPageAddress(location.href, props.app);
+  });
+  /** The app this page was opened from (`&back=`), on a visitor's page: Back returns there.
+   *  None in a native host's web view (Peel's, which has the native wallet
+   *  from the document's start) with somewhere to go back to: Peel draws
+   *  its own Back whenever its web view can go back, and a second one
+   *  under it says the same thing twice. */
+  const [back] = useState(() =>
+    visitor && !from && !(nativeWalletOf(window) && history.length > 1) ? new URLSearchParams(location.search).get("back") : null,
+  );
   /** A link to this same app (the kit's `appLink`): its input, in place,
    *  with the address bar following (replaced, as the full UI does) — so a
    *  host that reads it has the link to what is on screen. A file or
    *  another app never gets here (the panel took it); anything else opens
    *  in a new tab. */
   const onNavigate = (params: Record<string, string>) => {
-    if (!shown || !namesApp(params["app"], shown)) return false;
+    if (!shown) return false;
+    if (!namesApp(params["app"], shown)) {
+      const hop = visitor && !from ? publicAppHop(params, shown.name, location.href) : null;
+      if (!hop) return false;
+      location.assign(hop);
+      return;
+    }
     const next = params["input"] ?? null;
     const url = new URL(location.href);
     if (next) url.searchParams.set("input", next);
@@ -55,36 +108,63 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   };
   const toolInput = appToolInput(input);
   useEffect(() => {
-    if (!props.visitor) return;
+    if (!visitor) return;
     let on = true;
-    api.getPublicApp(props.app).catch(() => null).then((info) => {
-      if (on) setVisitorApp(info);
-    });
+    setReadError(null);
+    (from ? api.getRemotePublicApp(from, props.app) : api.getPublicApp(props.app).catch(() => null)).then(
+      (info) => {
+        if (on) setVisitorApp(info);
+      },
+      (err) => {
+        if (!on) return;
+        setReadError(err instanceof Error ? err.message : String(err));
+        setVisitorApp(null);
+      },
+    );
     return () => {
       on = false;
     };
-  }, [props.app, props.visitor]);
+  }, [props.app, visitor, from]);
   // Nothing to wait for: the page says why there is no app.
-  const missing = props.visitor ? visitorApp === null : listed.entry === null;
+  const missing = visitor ? visitorApp === null : listed.entry === null;
+  const server = from ? hostOf(from) : words.thisServer;
   useEffect(() => {
     if (missing) reportReady();
   }, [missing]);
+  const goBack = () => {
+    if (history.length > 1) history.back();
+    else if (back) location.replace(publicAppHop({ app: back }, shown?.name ?? props.app, location.href, { back: false }) ?? location.href);
+  };
   return (
-    <div class="app-solo">
+    <div class={`app-solo${back && shown ? " has-back" : ""}`}>
+      {back && shown && (
+        <button type="button" class="app-solo-back" onClick={goBack}>
+          <span aria-hidden="true">←</span> {words.back}
+        </button>
+      )}
       {shown
         ? <AppWithPanel
             app={shown}
             onNavigate={onNavigate}
             {...(toolInput ? { toolInput } : {})}
-            {...(props.visitor ? { visitor: true } : {})}
+            {...(visitor ? { visitor: true } : {})}
             {...(props.theme ? { theme: props.theme } : {})}
+            {...(page ? { page } : {})}
             onReady={reportReady}
           />
         : <div class="empty">
-            {props.visitor
-              ? visitorApp === null ? `"${props.app}" is not in this server's public view` : "Loading the app…"
-              : listed.entry === null ? `No app "${props.app}"` : "Loading apps…"}
+            {visitor
+              ? visitorApp === null ? readError ?? words.notPublic(props.app, server) : words.loadingApp
+              : listed.entry === null ? words.noApp(props.app) : words.loadingApps}
           </div>}
     </div>
   );
 }
+
+const hostOf = (base: string) => {
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+};

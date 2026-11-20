@@ -119,15 +119,21 @@ export interface SeedEdgeDef {
 }
 
 /** Every (source, edge, target) the claim layer and the Concept tree
- *  write: a claim is about a workflow, a step or a job; its evidence about
- *  the version or the run it observed, with that as its source; checks
- *  test claims; claims and checks supersede their own kind. */
+ *  write: a claim is about a workflow, a step, a job or a Concept; its
+ *  evidence about the version, the run or the Concept it observed, with the
+ *  run or version as its source; checks test claims; claims and checks
+ *  supersede their own kind. */
 export const SEED_EDGES: readonly SeedEdgeDef[] = [
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutWorkflow" },
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutStep" },
   // A job's claim hangs off the job; its evidence is about the TURN — the
   // run (plans/job-claims.md §1–§2).
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutJob" },
+  // A claim about a Concept is checked against every run that opened its
+  // page; its evidence is about the Concept, at the version the run read
+  // (claims.ts, concept-version.ts).
+  { edge: "ABOUT", source: CLAIM_TYPE, target: CONCEPT_TYPE },
+  { edge: "ABOUT", source: EVIDENCE_TYPE, target: CONCEPT_TYPE },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },

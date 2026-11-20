@@ -3,11 +3,11 @@
 // builder, can see each one as it draws against a strut, with no grant.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
+import { LANGS, StrutProvider, useStrutClient, useStrutHost, type HostState, type Lang, type StrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
@@ -374,7 +374,7 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "ConceptDiff",
-    what: "Two states of the Concept tree drawn as one: the tree with each page marked added, removed, renamed, moved or edited, a parent that did not change drawn faint for where the change sits, and a page opening to what changed — its name, its parents, its attributes, its docs line by line. The states come from the history (two commits or two times — “a day ago” and `main`), from a pending proposal laid over the page as it is now, or from a person's unsaved edit, and are drawn the same way. A page renamed and rewritten, which git sees as one removed and one added, is paired by its parents and its words. Given a page, its history instead: every commit that changed it, followed through renames, with who and which run; a click draws what that commit did, two ticked are compared, and “The page then” shows it as it was.",
+    what: "Two states of the Concept tree drawn as one: the tree with each page marked added, removed, renamed, moved or edited, a parent that did not change drawn faint for where the change sits, and a page opening to what changed — its name, its parents, its attributes, its docs line by line. The states come from the history (two commits or two times — “a day ago” and `main`), from a pending proposal laid over the page as it is now, or from a person's unsaved edit, and are drawn the same way. A page renamed and rewritten, which git sees as one removed and one added, is paired by its parents and its words. Given a page, its history instead: every commit that changed it, followed through renames, with who and which run; a click draws what that commit did, two ticked are compared, and “The concept then” shows it as it was.",
     grants: "grants.steps: history/read · a proposal: proposal/get, graph/graph-get-batched · entries you pass: none",
     usage: `<ConceptDiff from={dayAgo} to="main" parentsOf={(name) => liveParents[name]} />\n<ConceptDiff page={{ name: "NDA" }} onOpenRun={(runId) => …} />\n<ConceptDiff proposal={id} />  <ConceptDiff entries={[editEntry(path, shown, edited)]} />`,
     demo: () => <ConceptDiffDemo />,
@@ -413,6 +413,20 @@ const ENTRIES: Entry[] = [
     grants: "grants.workflows: the workflow",
     usage: `<LaunchForm workflow="research" onLaunched={({ runId }) => …} />`,
     demo: () => <LaunchForm workflow={WORKFLOW} initial={{ question: "What drives AF in hypertension?" }} />,
+  },
+  {
+    name: "TaskForm",
+    what: "A task's answer as a form, for a task type that needs no UI of its own (plans/human-steps.md §5.3): the type's answer schema — text, numbers, yes or no, one of a list, several of a list — drawn in order and checked before it is sent. A schema it cannot draw (a box on a photo) says the type needs its own UI. The page shows what the task shows; this is only the answer.",
+    grants: "grants.steps: task/next, task/submit, task/skip (useTask)",
+    usage: `const { task, submit, skip } = useTask();  task && <TaskForm task={task} onSubmit={submit} onSkip={skip} />`,
+    demo: () => <TaskFormDemo />,
+  },
+  {
+    name: "WorkerTask",
+    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own, phone first — what it pays, what it asks (show.ask and show's other plain fields, its image files), then for a type that takes photos the camera's stage (TaskPhotos: Take a photo in the host's camera, or Choose one), then the answer's fields (TaskForm: yes or no, a short list and a 1–5 range as buttons to tap), with Skip and Send in a bar at the bottom. WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/worker is that page.",
+    grants: "grants.steps: task/next, task/submit, task/skip (task/file for a task's files) · permissions: camera",
+    usage: `export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />  // or: const { task, submit, skip } = useTask();  task && <WorkerTask task={task} submit={submit} skip={skip} />`,
+    demo: () => <WorkerTaskDemo />,
   },
   {
     name: "RunList",
@@ -473,8 +487,33 @@ const ENTRIES: Entry[] = [
   },
 ];
 
+/** The host as it is, but for its locale: the gallery's language switch
+ *  (plans/i18n.md). Its state is one object until the host's changes, as
+ *  `useSyncExternalStore` needs. */
+function withLocale(host: StrutHost, locale: string): StrutHost {
+  let seen: HostState | undefined;
+  let made: HostState | undefined;
+  return {
+    getState: () => {
+      const s = host.getState();
+      if (s !== seen) {
+        seen = s;
+        made = { ...s, locale };
+      }
+      return made!;
+    },
+    subscribe: (listener) => host.subscribe(listener),
+    sendMessage: (text) => host.sendMessage(text),
+    openLink: (url) => host.openLink(url),
+    requestDisplayMode: (mode) => host.requestDisplayMode(mode),
+  };
+}
+
 export default function App() {
-  const host = useStrutHost();
+  const outer = useStrutHost();
+  /** The gallery's language: the host's, or one picked here. */
+  const [lang, setLang] = useState<Lang | null>(null);
+  const host = useMemo(() => (lang ? withLocale(outer, lang) : outer), [outer, lang]);
   const client = useMemo(() => createFixtureClient(), []);
   const [shown, setShown] = useState(ENTRIES[0]!.name);
   const entry = ENTRIES.find((e) => e.name === shown) ?? ENTRIES[0]!;
@@ -485,6 +524,19 @@ export default function App() {
           <div className="px-2 pb-2">
             <div className="font-semibold">strut/views</div>
             <div className="text-xs text-muted-foreground">import {"{ … }"} from "strut/views"</div>
+            <div className="mt-2 flex gap-1" role="group" aria-label="Language">
+              {LANGS.map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  aria-pressed={lang === l}
+                  onClick={() => setLang(lang === l ? null : l)}
+                  className={cn("rounded-md border px-2 py-0.5 text-xs uppercase", lang === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
           </div>
           {ENTRIES.map((e) => (
             <button
@@ -511,5 +563,106 @@ export default function App() {
         </main>
       </div>
     </StrutProvider>
+  );
+}
+
+/** A pet-match review's answer, and a box on a photo, which needs its own UI. */
+const TASK_ANSWER = {
+  type: "object",
+  properties: {
+    same: { type: "boolean", title: "Same pet?" },
+    confidence: { type: "string", title: "How sure", enum: ["low", "medium", "high"] },
+    marks: { type: "array", title: "What matches", items: { type: "string", enum: ["coat", "ears", "collar", "markings"] } },
+    note: { type: "string", title: "Note", maxLength: 2000 },
+  },
+  required: ["same", "confidence"],
+};
+const BOX_ANSWER = { type: "object", properties: { box: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 } }, required: ["box"] };
+
+/** Tasks as WorkerTask draws them: a photo type camera first, the rest form
+ *  first (plans/human-steps.md §5.7). */
+const WORKER_TASKS = {
+  photo: {
+    lease: "demo-photo",
+    type: "label-photo",
+    show: { ask: "Photograph a nutrition label: the whole panel, flat, in good light.", where: "Any packaged food" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { product: { type: "string", title: "Product", maxLength: 120 } } },
+    payMsat: 50_000,
+    attachments: { max: 2, min: 1, types: ["image/*"] },
+  },
+  "yes or no": {
+    lease: "demo-spam",
+    type: "spam-check",
+    show: { ask: "Is this post spam?", post: "FREE BTC giveaway!! Send 0.01 to the address in my bio and get 0.1 back, today only", posted_by: "@crypto_lucky_drop" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { spam: { type: "boolean", title: "Spam?" } }, required: ["spam"] },
+    payMsat: 5_000,
+  },
+  pick: {
+    lease: "demo-category",
+    type: "categorize",
+    show: { ask: "Pick the category this product belongs in.", product: "Stainless steel French press, 1 litre" },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: {
+      type: "object",
+      properties: { category: { type: "string", title: "Category", oneOf: [{ const: "kitchen", title: "Kitchen & dining" }, { const: "electronics", title: "Electronics" }, { const: "garden", title: "Home & garden" }, { const: "other", title: "None of these" }] } },
+      required: ["category"],
+    },
+    payMsat: 8_000,
+  },
+  rate: {
+    lease: "demo-rate",
+    type: "rate-reply",
+    show: { ask: "How helpful is this reply?", reply: "Unplug it for 30 seconds, plug it back in, and wait for the lights to settle." },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { score: { type: "integer", title: "Helpfulness", minimum: 1, maximum: 5 } }, required: ["score"] },
+    payMsat: 10_000,
+  },
+  write: {
+    lease: "demo-summary",
+    type: "summarize",
+    show: { ask: "Write a one-line summary of this notice.", notice: "The Main Street branch closes for renovation from March 3 to April 18; returns go to Elm Park." },
+    files: [],
+    expires: Date.now() + 600_000,
+    answer: { type: "object", properties: { summary: { type: "string", title: "Summary" } }, required: ["summary"] },
+    payMsat: 20_000,
+  },
+};
+
+function WorkerTaskDemo() {
+  const [kind, setKind] = useState<keyof typeof WORKER_TASKS>("photo");
+  const [sent, setSent] = useState<unknown>(null);
+  return (
+    <div className="grid max-w-md gap-3">
+      <div className="flex flex-wrap gap-1">
+        {(Object.keys(WORKER_TASKS) as Array<keyof typeof WORKER_TASKS>).map((k) => (
+          <button key={k} type="button" onClick={() => (setKind(k), setSent(null))} className={cn("rounded-md border px-2.5 py-1 text-xs", kind === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {k}
+          </button>
+        ))}
+      </div>
+      <div className="flex min-h-[640px] flex-col rounded-3xl border p-4">
+        <WorkerTask key={kind} task={WORKER_TASKS[kind]} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+      </div>
+      {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
+    </div>
+  );
+}
+
+function TaskFormDemo() {
+  const [sent, setSent] = useState<unknown>(null);
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-2">
+        <TaskForm task={{ lease: "demo", answer: TASK_ANSWER }} onSubmit={(answer) => setSent(answer)} onSkip={() => setSent("skipped")} />
+        {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
+      </div>
+      <TaskForm task={{ lease: "demo-box", answer: BOX_ANSWER }} onSubmit={() => {}} />
+    </div>
   );
 }

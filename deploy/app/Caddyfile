@@ -1,0 +1,11 @@
+# TLS for the served app (docker-compose.yml). Caddy fetches and renews the
+# host's certificate itself; a `*.localhost` host gets one from Caddy's own
+# CA instead.
+
+{$STRUT_APP_HOST} {
+	reverse_proxy strut:3000 {
+		# Run tails are SSE: pass every chunk on at once. Channel sockets
+		# (WebSockets) pass through as they are.
+		flush_interval -1
+	}
+}

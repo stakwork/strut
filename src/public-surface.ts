@@ -25,7 +25,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { RunEvent, RunSummary } from "./core.js";
+import { logEvicted, type RunEvent, type RunSummary } from "./core.js";
 import type { RunStore } from "./store.js";
 import type { PublicLaunchOutcome } from "./public-routes.js";
 import type { EdgeEnvelope, GraphReader, NodeEnvelope, SearchParams, SearchResult } from "./graph/search.js";
@@ -69,6 +69,54 @@ export interface PublicRunnable {
   /** What a workflow's launcher reads: its output (the default), or the
    *  whole run. A workflow's only. */
   results?: "output" | "run";
+  /** A workflow's only: its launch may carry FILES (`attachments`, the
+   *  chat's shape and caps, src/ai/attachments.ts), saved under the run's
+   *  artifacts and on each agent step's prompt. Off unless set: a stranger's
+   *  bytes are stored only where the person said so. */
+  attachments?: boolean;
+}
+
+/** The sign-ins a box may name (plans/app-repos.md §5.3; src/visitors.ts). */
+export const VISITOR_METHOD_NAMES = ["key", "ticket", "lnurl", "nostr", "sphinx"] as const;
+
+/** Who may SIGN IN to the public apps here (plans/app-repos.md §5): the
+ *  methods this server accepts, whose key signs, and the per-visitor
+ *  limits over strut's defaults. A served box writes it from `serve.yaml`
+ *  (`signIn`, `visitorKey`, `limits`); elsewhere a person's
+ *  `PUT /public-view`. Absent: `DEFAULT_SIGN_IN` with the root key and
+ *  strut's limits, once an app is public (`signInOf`). `signIn: []`: no
+ *  sign-in, every visitor anonymous. */
+export interface PublicVisitors {
+  signIn: Array<(typeof VISITOR_METHOD_NAMES)[number]>;
+  /** A child key per domain (LUD-05); absent: the root key. */
+  visitorKey?: "domain";
+  limits?: { writesPerDay?: number; launchesPerDay?: number };
+}
+
+/** What a public view offers when its record names no sign-in: a
+ *  visitor's Sphinx account, through the wallet that holds it (Peel). A
+ *  browser with no such wallet is offered nothing by it, so the page there
+ *  stays anonymous. */
+export const DEFAULT_SIGN_IN: PublicVisitors["signIn"] = ["sphinx"];
+
+/** The sign-ins a public view offers: its record's, else the default once
+ *  an app is public (before one, there is nothing to sign in to). An empty
+ *  list is none. */
+export function signInOf(surface: Pick<PublicSurface, "visitors" | "apps">): PublicVisitors["signIn"] {
+  if (surface.visitors) return surface.visitors.signIn;
+  return surface.apps.length ? DEFAULT_SIGN_IN : [];
+}
+
+/** `visitors` as kept: no duplicate method, an empty list kept (no sign-in,
+ *  which absent no longer says), and the default left out (absent says it). */
+function normalizeVisitors(v: PublicVisitors): PublicVisitors | undefined {
+  const signIn = unique([...v.signIn], (m) => m);
+  if (!signIn.length) return { signIn };
+  const domain = (v.visitorKey as string | undefined) === "domain";
+  const limits = v.limits && Object.keys(v.limits).length ? { ...v.limits } : undefined;
+  const isDefault = !domain && !limits && signIn.length === DEFAULT_SIGN_IN.length && DEFAULT_SIGN_IN.every((m) => signIn.includes(m));
+  if (isDefault) return undefined;
+  return { signIn, ...(domain ? { visitorKey: "domain" as const } : {}), ...(limits ? { limits } : {}) };
 }
 
 export interface PublicSurface {
@@ -82,6 +130,8 @@ export interface PublicSurface {
   apps: PublicApp[];
   /** What anyone may run, and for how much. An older record has none. */
   runnable: PublicRunnable[];
+  /** Signed-in visitors; absent, none. */
+  visitors?: PublicVisitors;
 }
 
 /** `<dataDir>/public.json`. */
@@ -95,10 +145,33 @@ const NAME_MAX = 200;
 const okName = (v: unknown): v is string => typeof v === "string" && v.trim() === v && v.length > 0 && v.length <= NAME_MAX && !/[\u0000-\u001f]/.test(v);
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
-const SURFACE_FIELDS = ["concepts", "workflows", "steps", "types", "apps", "runnable"];
-const SURFACE_SHAPE = "the surface is { concepts?, workflows?, steps?, types?, apps?, runnable? }";
-const RUNNABLE_FIELDS = ["kind", "name", "base", "markup", "capUsd", "dailyCapUsd", "results"];
-const RUNNABLE_SHAPE = "runnable is a list of { kind: workflow | step, name, base?, markup?, capUsd?, dailyCapUsd?, results? }";
+const SURFACE_FIELDS = ["concepts", "workflows", "steps", "types", "apps", "runnable", "visitors"];
+const SURFACE_SHAPE = "the surface is { concepts?, workflows?, steps?, types?, apps?, runnable?, visitors? }";
+const VISITORS_SHAPE = `visitors is { signIn: [${VISITOR_METHOD_NAMES.join(" | ")}], visitorKey?: root | domain, limits?: { writesPerDay?, launchesPerDay? } }`;
+
+/** Why `visitors` is not well formed, or undefined. */
+export function visitorsProblem(v: unknown): string | undefined {
+  const o = v as Record<string, unknown> | null;
+  if (!o || typeof o !== "object" || Array.isArray(o)) return VISITORS_SHAPE;
+  const extra = Object.keys(o).find((k) => !["signIn", "visitorKey", "limits"].includes(k));
+  if (extra) return `visitors: unknown field "${extra}" — ${VISITORS_SHAPE}`;
+  const methods = o["signIn"];
+  if (!Array.isArray(methods)) return `visitors.signIn is a list of methods (${VISITOR_METHOD_NAMES.join(", ")})`;
+  const bad = methods.find((m) => !(VISITOR_METHOD_NAMES as readonly unknown[]).includes(m));
+  if (bad !== undefined) return `visitors.signIn: "${String(bad)}" is not a sign-in strut knows — ${VISITOR_METHOD_NAMES.join(", ")}`;
+  if (o["visitorKey"] !== undefined && o["visitorKey"] !== "root" && o["visitorKey"] !== "domain") return "visitors.visitorKey is root or domain";
+  const limits = o["limits"];
+  if (limits !== undefined) {
+    if (!limits || typeof limits !== "object" || Array.isArray(limits)) return "visitors.limits is { writesPerDay?, launchesPerDay? }";
+    for (const [k, n] of Object.entries(limits)) {
+      if (k !== "writesPerDay" && k !== "launchesPerDay") return `visitors.limits: unknown field "${k}" — { writesPerDay?, launchesPerDay? }`;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 0) return `visitors.limits.${k} is a whole number, 0 or more`;
+    }
+  }
+  return undefined;
+}
+const RUNNABLE_FIELDS = ["kind", "name", "base", "markup", "capUsd", "dailyCapUsd", "results", "attachments"];
+const RUNNABLE_SHAPE = "runnable is a list of { kind: workflow | step, name, base?, markup?, capUsd?, dailyCapUsd?, results?, attachments? }";
 
 /** The label a refusal names an item by: `workflow "acme/x"`. */
 export const runnableLabel = (r: { kind: string; name: string }) => `${r.kind} "${r.name}"`;
@@ -124,6 +197,10 @@ export function runnableShapeProblem(v: unknown): string | undefined {
   if (o["results"] !== undefined) {
     if (o["kind"] === "step") return `${label}: results is a workflow's (a step's call answers its output)`;
     if (o["results"] !== "output" && o["results"] !== "run") return `${label}: results is "output" or "run"`;
+  }
+  if (o["attachments"] !== undefined) {
+    if (o["kind"] === "step") return `${label}: attachments is a workflow's (a step's call takes its config alone)`;
+    if (typeof o["attachments"] !== "boolean") return `${label}: attachments is true or false`;
   }
   return undefined;
 }
@@ -174,6 +251,7 @@ export function surfaceProblem(v: unknown): string | undefined {
       if (bad) return bad;
     }
   }
+  if (r["visitors"] !== undefined) return visitorsProblem(r["visitors"]);
   return undefined;
 }
 
@@ -181,6 +259,12 @@ const unique = <T>(list: T[], key: (t: T) => string): T[] => {
   const seen = new Set<string>();
   return list.filter((t) => (seen.has(key(t)) ? false : (seen.add(key(t)), true)));
 };
+
+/** The public app a request host belongs to (plans/public-surface.md §9): the
+ *  first app whose `domains` lists it. `host` as `hostOfRequest` writes it. */
+export function appOfDomain(surface: PublicSurface, host: string): string | undefined {
+  return host ? surface.apps.find((a) => a.domains?.includes(host))?.name : undefined;
+}
 
 /** A valid record with every list present, each name once (the first wins). */
 export function normalizeSurface(v: unknown): PublicSurface {
@@ -207,9 +291,11 @@ export function normalizeSurface(v: unknown): PublicSurface {
         ...(x.capUsd !== undefined ? { capUsd: x.capUsd } : {}),
         ...(x.dailyCapUsd !== undefined ? { dailyCapUsd: x.dailyCapUsd } : {}),
         ...(x.kind === "workflow" && x.results === "run" ? { results: "run" as const } : {}),
+        ...(x.kind === "workflow" && x.attachments === true ? { attachments: true } : {}),
       })),
       (x) => `${x.kind}:${x.name}`,
     ),
+    ...(r.visitors && normalizeVisitors(r.visitors) ? { visitors: normalizeVisitors(r.visitors) } : {}),
   };
 }
 
@@ -367,8 +453,10 @@ export interface PublicSurfaceService {
   /** Is this node visible to a visitor (§4)? */
   visible(ref_id: string, node_type: string | undefined): Promise<boolean>;
   /** The graph as a visitor reads it: only visible nodes, only edges
-   *  between two of them. Undefined without a graph. */
-  reader(): GraphReader | undefined;
+   *  between two of them. Undefined without a graph. `types`: node types
+   *  visible whole besides — a signed-in visitor's app's own
+   *  (plans/app-repos.md §5.1). */
+  reader(types?: readonly string[]): GraphReader | undefined;
 }
 
 const TREE_CAP = 5000;
@@ -398,7 +486,7 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
       const refs = new Set<string>();
       const entry = { refs, ready: Promise.resolve() };
       entry.ready = (async () => {
-        for (const runId of await deps.store.listRuns(name)) for (const r of await runNodes(name, runId)) refs.add(r);
+        for (const runId of await deps.store.listRuns(name)) for (const r of await runNodes(name, runId, true)) refs.add(r);
       })().catch((err) => {
         if (index.get(name) === entry) index.delete(name);
         throw err;
@@ -461,11 +549,16 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     return saving;
   };
 
-  const runNodes = async (workflow: string, runId: string): Promise<Set<string>> => {
+  /** `scan`: asked by the index over EVERY run of the workflow, which reads
+   *  no evicted log: with a run archive (plans/run-archive.md) each read
+   *  restores one, and the scan would bring the whole archive back. Such a
+   *  run's set is not kept, so a read of that run alone still finds it. */
+  const runNodes = async (workflow: string, runId: string, scan = false): Promise<Set<string>> => {
     await loadRunSets(workflow);
     const sets = runSets.get(workflow)!;
     const kept = sets.get(runId);
     if (kept) return kept;
+    if (scan && logEvicted(await deps.store.getRunSummary(workflow, runId))) return new Set();
     const refs = new Set<string>();
     for (const e of await deps.store.getRunEvents(workflow, runId)) {
       for (const n of e.nodes ?? []) if (!n.peer && typeof n.ref_id === "string") refs.add(n.ref_id);
@@ -562,7 +655,11 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     return false;
   };
 
-  const reader = (): GraphReader | undefined => (deps.graph ? publicReader(deps.graph.reader, visible) : undefined);
+  const reader = (types?: readonly string[]): GraphReader | undefined => {
+    if (!deps.graph) return undefined;
+    const own = new Set((types ?? []).map((t) => t.toLowerCase()));
+    return publicReader(deps.graph.reader, own.size ? async (ref, t) => (!!t && own.has(t.toLowerCase())) || visible(ref, t) : visible);
+  };
 
   return {
     get,
@@ -723,6 +820,8 @@ export function visitorRefusal(
   if (type === "app/state" || type === "app/report-error") return "nothing is kept for a visitor: the page keeps its state for the visit";
   if (type.startsWith("graph/")) return `"${type}" is not available in the public view (the graph reads are ${[...VISITOR_GRAPH_READS].join(", ")})`;
   if (type.startsWith("job/") || type.startsWith("app/")) return `"${type}" is not available in the public view`;
+  // An app's own database (plans/apps.md §4.4) is its people's, not its visitors'.
+  if (type.startsWith("sqlite/")) return `"${type}" is not available in the public view: an app's own database is not open to its visitors`;
   if (entry.reads?.includes(type)) return null;
   return `"${type}" is not one of this app's public reads — a person adds it in the Publish dialog's Public view tab`;
 }
@@ -855,6 +954,12 @@ export interface VisitorRunsOptions {
    *  src/public-routes.ts): the address's budget, the drain, the body, the
    *  caps, the price. Absent: nothing launches. */
   launch?: (workflow: string, body: Record<string, unknown>) => Promise<PublicLaunchOutcome>;
+  /** A SIGNED-IN visitor (plans/app-repos.md §5.1): a granted workflow that
+   *  is neither public nor runnable — one that spends nothing, the refusal
+   *  (src/visitors.ts `signedInRefusal`) has decided — launches as the
+   *  visitor (`launch`, the runs capability's own) and reads back the runs
+   *  this actor launched from an app, whole. */
+  own?: { actor: string; launch: (q: Record<string, unknown> & { workflow: string }, by?: unknown) => Promise<unknown> };
 }
 
 /** The runs capability as a visitor's page reads it: every record without
@@ -870,12 +975,19 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
   const closed = (what: string) => () => Promise.reject(new Error(`${what} is not available in the public view`));
   /** How a visitor reads this workflow's runs: `all` (public), `own` (a
    *  runnable one's: the visit's, as far as `results` goes), else none. */
-  const access = async (workflow: string): Promise<{ runs: "all" } | { runs: "own"; results: "output" | "run" } | { runs: "none" }> => {
+  const access = async (workflow: string): Promise<{ runs: "all" } | { runs: "own"; results: "output" | "run" } | { runs: "mine" } | { runs: "none" }> => {
     if (!o) return { runs: "all" };
     const surface = await o.surface();
     if (surface.workflows.find((w) => w.name === workflow)?.runs) return { runs: "all" };
     const item = runnableWorkflow(surface, workflow);
-    return item ? { runs: "own", results: item.results === "run" ? "run" : "output" } : { runs: "none" };
+    if (item) return { runs: "own", results: item.results === "run" ? "run" : "output" };
+    return o.own ? { runs: "mine" } : { runs: "none" };
+  };
+  /** A run this signed-in visitor launched from an app: its record. */
+  const mineRecord = async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
+    if (!o?.own) return null;
+    const r = await inner.get(q, by);
+    return r && r["origin"] === "app" && r["actor"] === o.own.actor ? r : null;
   };
   const notPublic = (workflow: string) => new Error(`the runs of "${workflow}" are not in the public view`);
   /** A run this visit launched: its record, whatever its status. */
@@ -891,7 +1003,7 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
       const a = await access(q.workflow);
       if (a.runs === "none") throw notPublic(q.workflow);
       if (a.runs === "own" && !o?.visitor) return [];
-      const rows = await inner.list(a.runs === "own" ? { ...q, visitor: o!.visitor } : q, by);
+      const rows = await inner.list(a.runs === "own" ? { ...q, visitor: o!.visitor } : a.runs === "mine" ? { ...q, actor: o!.own!.actor } : q, by);
       return rows.map((r) => {
         const rec = visitorRunRecord(q.workflow, String(r["runId"] ?? ""), r);
         return a.runs === "own" && a.results === "output" ? outputOnlySummary(rec as Record<string, unknown>) : rec;
@@ -900,10 +1012,10 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
     get: async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
       const a = await access(q.workflow);
       if (a.runs === "none") throw notPublic(q.workflow);
-      const r = a.runs === "all" ? await inner.get(q, by) : await ownRecord(q, by);
+      const r = a.runs === "all" ? await inner.get(q, by) : a.runs === "mine" ? await mineRecord(q, by) : await ownRecord(q, by);
       if (!r) return r;
       const rec = visitorRunRecord(q.workflow, q.runId, r);
-      if (a.runs === "all" || a.results === "run") return rec;
+      if (a.runs !== "own" || a.results === "run") return rec;
       const out = outputOnlySummary(rec as Record<string, unknown>);
       if (rec["artifacts"] !== undefined) out["artifacts"] = rec["artifacts"];
       if (rec["partial"] !== undefined) out["partial"] = rec["partial"];
@@ -912,6 +1024,7 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
     events: async (q: { workflow: string; runId: string; skip?: number }, by?: unknown) => {
       const a = await access(q.workflow);
       if (a.runs === "none") throw notPublic(q.workflow);
+      if (a.runs === "mine" && !(await mineRecord(q, by))) return [];
       if (a.runs === "own") {
         if (a.results === "output") throw onlyOutput(q.workflow);
         if (!(await ownRecord(q, by))) return [];
@@ -921,6 +1034,7 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
     transcript: async (q: { workflow: string; runId: string; path: string; full?: boolean }, by?: unknown) => {
       const a = await access(q.workflow);
       if (a.runs === "none") throw notPublic(q.workflow);
+      if (a.runs === "mine" && !(await mineRecord(q, by))) throw new Error(`no run "${q.runId}" of "${q.workflow}"`);
       if (a.runs === "own") {
         if (a.results === "output") throw onlyOutput(q.workflow);
         if (!(await ownRecord(q, by))) throw new Error(`no run "${q.runId}" of "${q.workflow}"`);
@@ -930,8 +1044,8 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
     files: async (q: { workflow: string; runId: string; path: string }, by?: unknown) => {
       const a = await access(q.workflow);
       if (a.runs === "none") throw notPublic(q.workflow);
-      const r = a.runs === "all" ? await inner.get({ workflow: q.workflow, runId: q.runId }, by) : await ownRecord(q, by);
-      if (a.runs === "own" && !r) return null;
+      const r = a.runs === "all" ? await inner.get({ workflow: q.workflow, runId: q.runId }, by) : a.runs === "mine" ? await mineRecord(q, by) : await ownRecord(q, by);
+      if (a.runs !== "all" && !r) return null;
       if (r && r["job"]) throw new Error("a job's files are not in the public view");
       if (a.runs === "own" && a.results === "output") {
         const path = relativeFile(q.path);
@@ -956,6 +1070,7 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
           provenance: async (q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown) => {
             const a = await access(q.workflow);
             if (a.runs === "none") throw notPublic(q.workflow);
+            if (a.runs === "mine" && !(await mineRecord(q, by))) return null;
             if (a.runs === "own") {
               if (a.results === "output") throw onlyOutput(q.workflow);
               if (!(await ownRecord(q, by))) return null;
@@ -965,7 +1080,9 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
         }
       : {}),
     launch: o?.launch
-      ? async (q: Record<string, unknown> & { workflow: string }) => {
+      ? async (q: Record<string, unknown> & { workflow: string }, by?: unknown) => {
+          // A signed-in visitor's launch of one no one may run: as itself.
+          if (o.own && !runnableWorkflow(await o.surface(), q.workflow)) return o.own.launch(q, by);
           // The body as the public route takes it: `input` and `key`, and
           // anything else the page sent, which the launcher refuses by name.
           if (o.visitRefusal) throw new Error(o.visitRefusal);

@@ -189,7 +189,9 @@ params:
     - job/read
     # Apps are a builder job's kind of work (plans/apps.md §8): scaffold,
     # build and publish a front-end project over workflows — the editor
-    # writes its files in the job's directory.
+    # writes its files in the job's directory. app/make-public among them
+    # ASKS to put an app in the public view — an admin's yes (a proposal,
+    # below).
     - app/*
     # Code to learn from — a UI to port, a client to copy: a repository
     # checked out INTO the job's directory (`workdir` = the job id, which
@@ -204,6 +206,9 @@ params:
     - package/get
     - package/concepts
     - package/install
+    # A package opened here as a git repo (plans/app-repos.md §3.3):
+    # committed and pushed only on an admin's yes — the call is a proposal.
+    - package/commit
     # Another strut server's public door (plans/paid-runs.md §10): what it
     # sells, and a run or a tool call there spending the credit this strut
     # already holds — no ask (decision 16). Buying credit is an admin's yes:
@@ -212,16 +217,32 @@ params:
     - remote/run-workflow
     - remote/call
     - remote/buy-credit
+    # Task types (plans/human-steps.md §9.8): a workflow with a `human` step
+    # names one, and the builder writes that workflow and its worker app, so
+    # it reads the types here and ASKS for a new one or a change — an
+    # admin's yes (task/set-type is a proposal, below). The builder's alone:
+    # a task type comes with a workflow. It grants no worker: a person does.
+    - task/types
+    - task/set-type
+    # How the work is going (spend, limits, each worker's numbers): read it,
+    # never rebuild it in an app or a workflow.
+    - task/report
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
-  # (someone's code into this strut) and remote/buy-credit (this server's
-  # sats to another strut). A deployment that wants a hand on
+  # (someone's code into this strut), package/commit (this workspace pushed
+  # to a repo with a person's credential), remote/buy-credit (this server's
+  # sats to another strut), task/set-type (a task type: what workers are
+  # shown and paid) and app/make-public (an app in the public view: what
+  # anyone sees). A deployment that wants a hand on
   # every publish names meta/publish-workflow, meta/create-step and
   # meta/edit-step here through its delta.
   approve:
     - package/install
+    - package/commit
     - remote/buy-credit
+    - task/set-type
+    - app/make-public
   # The prompt of the turn strut runs when a run this job left going ends
   # (src/wake.ts). A test run is a run of its own: meta/run-workflow looks
   # at it for about a minute, then hands it back `running`, the turn ends

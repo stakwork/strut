@@ -153,11 +153,16 @@ describe("public tools", () => {
     assert.equal(put.status, 200, await put.clone().text());
     let addr = 0;
     const call = (type: string, body: unknown = {}, credential?: string, o2: { address?: string } = {}) =>
-      strut.app.request(`/public/steps/${type}/run`, {
-        method: "POST",
-        headers: { ...json, "x-forwarded-for": o2.address ?? `10.0.0.${++addr % 250}`, ...(credential ? { authorization: `L402 ${credential}` } : {}) },
-        body: JSON.stringify(body),
-      });
+      strut.app.request(
+        `/public/steps/${type}/run`,
+        {
+          method: "POST",
+          headers: { ...json, "x-forwarded-for": o2.address ?? `198.51.100.${++addr % 250}`, ...(credential ? { authorization: `L402 ${credential}` } : {}) },
+          body: JSON.stringify(body),
+        },
+        // Through a proxy on loopback, which names each caller.
+        { incoming: { socket: { remoteAddress: "127.0.0.1" } } },
+      );
     const ok = async (res: Response) => {
       assert.equal(res.status, 200, await res.clone().text());
       return (await res.json()) as { output: Record<string, unknown>; credit?: Record<string, number | string> };

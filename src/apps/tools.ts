@@ -15,24 +15,48 @@
  * §5.1); a graph WRITE refused on a type the manifest's `data.graph` does
  * not declare — the type from the config for a create, the node read first
  * for an edit or delete by `ref_id` (so a page can never rewrite a Concept
- * or a `StrutWorkflow` node); `sqlite/*` and `automation/*` not available
- * until their work items land. A job id the page names is the APP's — kept
+ * or a `StrutWorkflow` node); `sqlite/*` only with `grants.sqlite`, on the
+ * app's own database (`ctx.app`'s, src/apps/data.ts); `automation/*` not
+ * available until its work item lands. A job id the page names is the APP's — kept
  * under `app/<name>/` (`scopeAppJobs`, plans/apps.md §12), where its
  * uploads (`job/upload`) and the runs it launches under the job meet. The
  * call runs through `runStep` with the
  * viewer as actor and `ctx.app` set, so a run `run/launch` starts carries
- * the app too. A write — a graph write, an error report — is KEPT under
+ * the app too. A write — a graph write, `sqlite/exec` or `sqlite/batch`, an
+ * error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
- * not. Results are whole data, never trimmed for a model; past 5 MB they
+ * not, and a WORKER's step (`worker: true`, the `task/*` steps of
+ * plans/human-steps.md §5) never is: its lease and answer are the record.
+ * A worker's step is also the only call whose bag carries the worker's
+ * calls of the task store (`workerServices`, §9.2): the shared bag holds
+ * the `human` step's `ensure` alone.
+ * A PACKAGE's own `admin: true` app shown to an admin (`packageAdminOf`:
+ * the connection holds full scope, and the version is the package's) gets
+ * the admin's scope for that package's steps: the call's `secrets` is bound
+ * to it (`adminSecrets`, src/capabilities.ts), so those steps' fence hands
+ * them `secrets.deployment` for the names the package provides
+ * (src/packages/fence.ts). No other step, call or run holds it.
+ * Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap. Every call of a known app — refused, failed
  * or run — is counted by the monitor (./monitor.ts): what an app costs the
  * server, and the warnings when it costs too much.
+ *
+ * A HOST's door (`AppToolDeps.host`, plans/people-and-hosts.md §3) serves
+ * the same tool to a program that brings people to strut — the Sphinx
+ * daemon — on `POST /mcp` with its host key. It has no page, so `app` is
+ * the app's NAME and the call runs at the live version. It is checked
+ * against the app's `hosts:` in place of its grants (`hostRefusal`), as the
+ * account the host named (its person, or with `unlinked: true` the key's own
+ * actor); the step reads `ctx.host`. The bag is the shared one alone — no
+ * admin door, no worker's calls, nothing that pays or sends — the call is
+ * never first-party, and the door keeps nothing (a step's own claim may).
  */
 import { z } from "zod";
 import { tool, type ToolSet } from "ai";
 import { appOfIdentity } from "../auth.js";
 import { globToRegExp } from "../closure.js";
-import type { AppRef, StepRegistry } from "../core.js";
+import { adminSecrets, type SecretsCapability } from "../capabilities.js";
+import type { AppRef, HostRef, StepRegistry } from "../core.js";
 import type { GraphReader } from "../graph/search.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { pinnedTo } from "../graph/scope.js";
@@ -61,7 +85,7 @@ export const STEP_RUN_RESULT_MAX_CHARS = 5 * 1024 * 1024;
  *  shell-shaped step runs inside a workflow the app launches. `remote/*`
  *  spend (or buy) the credit this strut holds at another strut
  *  (plans/paid-runs.md §10); `remote/list` only reads. */
-export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "exec", "acp/prompt", "remote/run-workflow", "remote/call", "remote/buy-credit"];
+export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "image", "exec", "acp/prompt", "remote/run-workflow", "remote/call", "remote/buy-credit"];
 
 /** The graph writes (§4.3): checked against the declared types. */
 export const GRAPH_WRITES: ReadonlySet<string> = new Set([
@@ -99,10 +123,10 @@ const NOT_A_PAGES: Record<string, string> = {
 };
 
 /** Families this strut does not serve to an app yet, by work item. */
-const NOT_YET: Array<[prefix: string, what: string]> = [
-  ["sqlite/", "an app's own SQLite file is plans/apps.md work item 3"],
-  ["automation/", "schedules from an app are plans/apps.md work item 7"],
-];
+const NOT_YET: Array<[prefix: string, what: string]> = [["automation/", "schedules from an app are plans/apps.md work item 7"]];
+
+/** SQL on the app's own database (plans/apps.md §4.4). */
+const SQLITE_PREFIX = "sqlite/";
 
 /** Where an app's jobs live (plans/apps.md §12): a job id a page names is
  *  kept under `app/<name>/`, as a peer's is kept under `peer/` — so a
@@ -147,7 +171,14 @@ export function granted(list: readonly string[], type: string): boolean {
  * the bare type. The graph-write TYPE check is `graphWriteRefusal` (it
  * reads nodes).
  */
-export function grantRefusal(type: string, config: Record<string, unknown>, manifest: AppManifest, registry: StepRegistry): string | null {
+export function grantRefusal(
+  type: string,
+  config: Record<string, unknown>,
+  manifest: AppManifest,
+  registry: StepRegistry,
+  /** The step types granted: the page's (`grants.steps`), or a host's (`hosts.<name>.steps`). */
+  steps: readonly string[] = manifest.grants.steps,
+): string | null {
   if (ALWAYS_GRANTED.has(type)) return null;
   if (PAID_OR_SHELL.includes(type) || PAID_OR_SHELL.some((p) => p.endsWith("/*") && type.startsWith(p.slice(0, -1)))) {
     return `"${type}" is a paid or shell-shaped step: a page never calls it, whatever the manifest grants — put it in a workflow and launch that (run/launch), the workflow is the unit of spend (plans/apps.md §5.1)`;
@@ -158,6 +189,10 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
   if (never) return `"${type}" is not a thing a page does: ${never}`;
   const job = config["job"];
   if (job !== undefined && (typeof job !== "string" || hasTemplate(job))) return `${type}: \`job\` must be a literal job id, not a template`;
+  // `grants.sqlite` is the grant; the step reaches `ctx.app`'s file alone.
+  if (type.startsWith(SQLITE_PREFIX)) {
+    return manifest.grants.sqlite ? null : `"${type}" runs on the app's own database, and this app does not grant it — app.yaml grants: { sqlite: true } (plans/apps.md §4.4)`;
+  }
   if (type.startsWith("run/")) {
     const wf = config["workflow"];
     if (typeof wf !== "string" || !wf) return `${type} needs \`workflow\``;
@@ -167,10 +202,28 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
     }
     return null;
   }
-  if (!granted(manifest.grants.steps, type)) {
-    return `step "${type}" is not granted to this app — its grants.steps: ${manifest.grants.steps.length ? manifest.grants.steps.join(", ") : "(none)"}`;
+  if (!granted(steps, type)) {
+    return `step "${type}" is not granted to this app — its grants.steps: ${steps.length ? steps.join(", ") : "(none)"}`;
   }
   return null;
+}
+
+/**
+ * A HOST's call (plans/people-and-hosts.md §3), pure: the reason it is
+ * refused, or null. The app's `hosts:` names this host and the step type
+ * (globs as `grants.steps` takes them); an account nobody linked calls only
+ * where it says `unlinked: true`; and what no caller of an app's tools does
+ * holds as for a page (`grantRefusal` over the host's list: no paid or shell
+ * step, nothing sealed, `run/*` on `grants.workflows` alone).
+ */
+export function hostRefusal(type: string, config: Record<string, unknown>, manifest: AppManifest, host: HostRef, registry: StepRegistry): string | null {
+  const entry = manifest.hosts?.[host.name];
+  if (!entry) return `this app's hosts: does not name "${host.name}" — a person lets a host call an app's tools in its app.yaml (hosts: { ${host.name}: { steps: [...] } })`;
+  if (!granted(entry.steps, type)) return `step "${type}" is not one this app lets ${host.name} call — its hosts.${host.name}.steps: ${entry.steps.join(", ")}`;
+  if (host.unlinked && !entry.unlinked) {
+    return `not_linked: ${host.account} is not linked to a person on this strut server, and this app's hosts.${host.name} does not say unlinked: true`;
+  }
+  return grantRefusal(type, config, manifest, registry, entry.steps);
 }
 
 /** The node types a graph write touches, read from its config and — for a
@@ -267,9 +320,15 @@ export async function graphWriteRefusal(
   return null;
 }
 
-/** Is this a write the door KEEPS as a step run (§9)? */
-export function keptFromApp(type: string): boolean {
-  return GRAPH_WRITES.has(type) || type === "app/report-error";
+/** The writes on an app's own database (§4.4): kept, as a graph write is. */
+export const SQLITE_WRITES: ReadonlySet<string> = new Set(["sqlite/exec", "sqlite/batch"]);
+
+/** Is this a write the door KEEPS as a step run (§9)? A worker's step
+ *  (`worker: true`) never is (plans/human-steps.md §5.2), whatever claims
+ *  it carries: the door hands its run no claims reader either. */
+export function keptFromApp(type: string, registry?: StepRegistry): boolean {
+  if (registry?.[type]?.worker) return false;
+  return GRAPH_WRITES.has(type) || SQLITE_WRITES.has(type) || type === "app/report-error";
 }
 
 export interface AppToolDeps {
@@ -284,6 +343,19 @@ export interface AppToolDeps {
    *  member's session or a person token (plans/member-rights.md). Stamped
    *  on every call's `AppRef.admin`, and so on every run the page launches. */
   admin?: boolean;
+  /** Services added to the bag for a FIRST-PARTY page's call shown to an
+   *  ADMIN (`AppRef.firstParty` and `AppRef.admin`) and no other: the admin
+   *  door the `earnings/*` steps go through (src/steps/lib/earnings/_door.ts),
+   *  which pays out of the wallet. Never on the shared bag, so no workflow,
+   *  agent or other page's step reaches it. */
+  adminServices?: Record<string, unknown>;
+  /** Services added to the bag for a WORKER's step (`worker: true`, the
+   *  `task/*` steps) and no other: the worker's calls of the task store
+   *  (plans/human-steps.md §5.2, §9.2), `{ tasks }`. Never on the shared
+   *  bag, so no workflow step, agent tool, proposal or other page's step
+   *  reaches them; the step itself takes the worker from the call's
+   *  viewer. */
+  workerServices?: Record<string, unknown>;
   /** The graph's reader, for the node reads a write check needs. Default:
    *  the bag's `graph`, when the server wired one. */
   reader?: Pick<GraphReader, "getNode">;
@@ -291,26 +363,43 @@ export interface AppToolDeps {
   runStepDeps: RunStepDeps;
   /** Where every call is counted (./monitor.ts): what an app costs the server. */
   monitor?: Pick<AppMonitor, "record">;
+  /** A HOST's door (`POST /mcp` with a host key, plans/people-and-hosts.md
+   *  §3): `app` names the app, every call is checked against its `hosts:`
+   *  (`hostRefusal`), the step runs against `services` alone with `ctx.host`
+   *  set, and the door keeps nothing. `actor` is the account's person, or
+   *  its key's own actor when nobody linked it. `outcome` hears how each
+   *  call ended: the door's HTTP status says it. */
+  host?: { ref: HostRef; outcome?: (status: AppCallStatus) => void };
   /** A VISITOR's door (`POST /public/mcp`, plans/public-surface.md §5): the
    *  identity is the public view's (`publicAppOfIdentity`), every call is
    *  checked against the public view after the grants, nothing is kept,
    *  and `viewer` names the visitor for the monitor. */
   visitor?: {
     identity: (identity: unknown) => AppRef | undefined;
-    refusal: (app: AppRef, type: string, config: Record<string, unknown>) => Promise<string | null>;
+    refusal: (app: AppRef, type: string, config: Record<string, unknown>, manifest: AppManifest) => Promise<string | null>;
     viewer?: string;
+    /** A SIGNED-IN visitor (plans/app-repos.md §5.1): its writes are KEPT
+     *  as runs with its actor, so a row it wrote says who. */
+    keep?: boolean;
+    /** The bag one call runs against, when it depends on the call (a
+     *  signed-in visitor's graph is writable for a write alone). Default:
+     *  `services`. */
+    services?: (app: AppRef, manifest: AppManifest, type: string) => unknown;
   };
 }
 
 /** The app a call names, with its manifest and whether the version is
- *  strut's seed — or why there is none. */
-async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean } | { error: string }> {
+ *  strut's seed — or why there is none. Asked on every call, so it is the
+ *  record's manifest as the capability remembers it (`manifestOf`), never
+ *  `get`: that one lists and hashes the version's files and scans the
+ *  error reports. */
+async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean; package?: string } | { error: string }> {
   if (isPreviewLabel(app.version)) {
     const preview = deps.apps.previewOf(app.name, app.version);
     return preview ? { manifest: preview.manifest, seeded: false } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
   }
-  const view = await deps.apps.get(app.name, app.version).catch(() => null);
-  return view ? { manifest: view.manifest, seeded: view.versions[app.version]?.source === "seed" } : { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
+  const found = await deps.apps.manifestOf(app.name, app.version).catch(() => null);
+  return found ?? { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
 }
 
 /**
@@ -327,6 +416,46 @@ export function firstPartyApp(app: AppRef, seeded: boolean, actor: string | unde
   return !visitor && !!actor && seeded && isFirstPartyName(app.name);
 }
 
+/** The package whose OWN admin app this call is, shown to an admin: an
+ *  `admin: true` app the package installed (its version's `upstream`, under
+ *  its prefix), on a connection with full scope (`AppRef.admin` — the one
+ *  way strut knows an admin: a member's session never gets the app's files,
+ *  and its call never has `admin`). Never a host's or a visitor's call, a
+ *  preview, or a run the page launches (that one runs on the shared bag).
+ *  Its steps, and that package's alone, get `secrets.deployment` for the
+ *  names it provides (src/packages/fence.ts). */
+export function packageAdminOf(app: AppRef, manifest: AppManifest, pkg: string | undefined): string | undefined {
+  return app.admin === true && manifest.admin === true && pkg && !isPreviewLabel(app.version) ? pkg : undefined;
+}
+
+/** `services` with its `secrets` bound to `pkg`'s admin call (`adminSecrets`). */
+export function packageAdminBag(services: unknown, pkg: string): unknown {
+  const bag = (services ?? {}) as Record<string, unknown>;
+  const secrets = bag["secrets"] as SecretsCapability | undefined;
+  return secrets ? { ...bag, secrets: adminSecrets(secrets, pkg) } : services;
+}
+
+/** The bag of a first-party page's call shown to an admin: the admin doors
+ *  beside the shared bag, WITHOUT the deployment's `onRunEvent`. What such a
+ *  call reads is its routes' alone — a test's expected answer, a grader's
+ *  note (plans/human-steps.md §7.9), the wallet — and its run's events carry
+ *  it, so no listener of every run's events (a host's own, the events sink)
+ *  is handed them, as a grader's run is handed none (src/tasks/grade-step.ts). */
+export function adminBag(services: unknown, adminServices: Record<string, unknown>): Record<string, unknown> {
+  const { onRunEvent: _events, ...rest } = (services ?? {}) as Record<string, unknown>;
+  return { ...rest, ...adminServices };
+}
+
+/** A call's config with the fields its step lists in `redact` as
+ *  `"[redacted]"`, as a run's events keep them (src/runner.ts). */
+export function redactedConfig(registry: StepRegistry, type: string, config: unknown): unknown {
+  const fields = registry[type]?.redact;
+  if (!fields?.length || !isRecord(config)) return config;
+  const out: Record<string, unknown> = { ...config };
+  for (const f of fields) if (f in out) out[f] = "[redacted]";
+  return out;
+}
+
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
 export function buildAppTools(deps: AppToolDeps): ToolSet {
   // As the `apps` reader where the host set `graphReaders` (src/graph/scope.ts).
@@ -340,34 +469,71 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     type: string,
     config: unknown,
     input: unknown,
+    pkg?: string,
   ): Promise<{ out: { error: string } | { result: unknown }; status: AppCallStatus; bytes: number }> => {
     const refuse = (error: string) => ({ out: { error }, status: "refused" as const, bytes: 0 });
     const fail = (error: string) => ({ out: { error }, status: "error" as const, bytes: 0 });
     const cfg = isRecord(config) ? config : {};
     const base = baseType(type);
-    const refused = grantRefusal(base, cfg, manifest, deps.registry);
+    const refused = deps.host ? hostRefusal(base, cfg, manifest, deps.host.ref, deps.registry) : grantRefusal(base, cfg, manifest, deps.registry);
     if (refused) return refuse(`step_run refused: ${refused}`);
-    const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg) : null;
+    const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg, manifest) : null;
     if (closed) return refuse(`step_run refused: ${closed}`);
+    // A host's call: the shared bag, and nothing beside it. A package's own
+    // admin app shown to an admin: the shared bag, its `secrets` bound to
+    // that package's admin call.
+    const packageAdmin = deps.host || deps.visitor ? undefined : packageAdminOf(app, manifest, pkg);
+    const shared = deps.host
+      ? deps.services
+      : deps.visitor?.services
+        ? deps.visitor.services(app, manifest, base)
+        : app.firstParty && app.admin && deps.adminServices
+          ? adminBag(deps.services, deps.adminServices)
+          : packageAdmin
+            ? packageAdminBag(deps.services, packageAdmin)
+            : deps.services;
+    // A worker's call leaves nothing behind but its lease and answer: no
+    // claims read, so nothing makes it a kept run. Its bag alone carries
+    // the worker's calls of the task store.
+    const worker = deps.registry[base]?.worker === true;
+    const bag = worker && deps.workerServices && !deps.host ? { ...(shared as Record<string, unknown>), ...deps.workerServices } : shared;
     if (GRAPH_WRITES.has(base)) {
-      const bad = await graphWriteRefusal(base, cfg, manifest, reader);
+      // A per-call bag's own reader: what this caller may see of the graph.
+      const own = deps.visitor?.services ? (bag as { graph?: GraphBackend } | undefined)?.graph?.reader : undefined;
+      const bad = await graphWriteRefusal(base, cfg, manifest, own ?? reader);
       if (bad) return refuse(`step_run refused: ${bad}`);
     }
-    if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    const resolved = await resolveStep(deps.registry, type).catch(() => null);
+    if (!resolved) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    // A host's config the step cannot take is the host's mistake, not the
+    // step failing: checked before it runs, so the door answers 400 and not
+    // 500 (a host sends a 5xx again forever). With `input`, templates in the
+    // config resolve first, so the runner checks it.
+    if (deps.host && input === undefined) {
+      const checked = resolved.def.input.safeParse(cfg);
+      if (!checked.success) {
+        const why = checked.error.issues.map((i) => `${i.path.join(".") || "config"}: ${i.message}`).join("; ");
+        return { out: { error: `step_run: ${type} cannot take this config: ${why}` }, status: "invalid", bytes: 0 };
+      }
+    }
     const result = await runStep(
       type,
       deps.registry,
-      deps.services,
+      bag,
       {
         // A first-party page's jobs are its viewer's own: never moved.
         config: app.firstParty ? cfg : scopeAppJobs(app.name, base, cfg),
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app,
-        keep: !deps.visitor && keptFromApp(base),
+        ...(deps.host ? { host: deps.host.ref } : {}),
+        // A host's call is kept only as a step's own claim keeps it.
+        keep: !deps.host && (!deps.visitor || !!deps.visitor.keep) && keptFromApp(base, deps.registry),
+        // The page gets the output alone.
+        events: false,
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
-      deps.runStepDeps,
+      worker ? { ...deps.runStepDeps, claims: null } : deps.runStepDeps,
     );
     if (result.status !== "success") {
       return fail(result.error?.message ?? (result.status === "cancelled" ? `${type} was cancelled` : `${type} failed`));
@@ -382,37 +548,61 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     return { out: { result: JSON.parse(text) as unknown }, status: "ok", bytes: text.length };
   };
 
+  /** The app a call names and its manifest, or why there is none: a page's
+   *  identity (its token, at its version), or for a host the app's name at
+   *  its live version (never first-party, never an admin's). */
+  const appOfCall = async (identity: string): Promise<{ app: AppRef; manifest: AppManifest; package?: string } | { error: string }> => {
+    if (deps.host) {
+      const live = await deps.apps.manifestOf(identity).catch(() => null);
+      if (!live) return { error: `step_run: no app "${identity}" on this strut server — a host names the app by its name, such as strut/staff` };
+      return { app: { name: identity, version: live.version }, manifest: live.manifest };
+    }
+    const named = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
+    if (!named) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
+    const found = await appOf(named, deps);
+    if ("error" in found) return found;
+    const app: AppRef = {
+      name: named.name,
+      version: named.version,
+      ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}),
+      ...(deps.admin && !deps.visitor ? { admin: true as const } : {}),
+    };
+    return { app, manifest: found.manifest, ...(found.package ? { package: found.package } : {}) };
+  };
+
   return {
     [STEP_RUN_TOOL]: tool({
-      description:
-        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files, run/provenance on a granted workflow; graph/* and any step grants.steps names; app/report-error and app/state always), " +
-        "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
-        "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
+      description: deps.host
+        ? "A HOST's door to an app's tools (plans/people-and-hosts.md §3): run one step the app's hosts: lets this host call, as the account x-strut-account names. `app` is the app's name (its live version runs), `type` the step, `config` its fields. " +
+          "A refused call is an error naming why; a step's own failure is an error with its message. The result is the step's whole output, and the call returns once the step finished."
+        : "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files, run/provenance on a granted workflow; graph/* and any step grants.steps names; sqlite/query, sqlite/exec, sqlite/batch on the app's own database when grants.sqlite; app/report-error and app/state always), " +
+          "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
+          "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
       inputSchema: z.object({
         type: z.string().describe("The step type."),
         config: z.record(z.string(), z.any()).optional().describe("The step's config (its fields)."),
         input: z.any().optional().describe("The scope the config's {{ input.* }} templates read."),
-        app: z.string().describe("The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
+        app: z.string().describe(deps.host ? "The app's name, such as strut/staff." : "The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
       }),
       execute: async ({ type, config, input, app: identity }) => {
-        const named = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
-        if (!named) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
-        const found = await appOf(named, deps);
-        if ("error" in found) return found;
-        const app: AppRef = {
-          name: named.name,
-          version: named.version,
-          ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}),
-          ...(deps.admin && !deps.visitor ? { admin: true as const } : {}),
-        };
+        const found = await appOfCall(identity);
+        if ("error" in found) {
+          deps.host?.outcome?.("refused");
+          return found;
+        }
+        const { app, manifest } = found;
         const started = Date.now();
-        const call = await dispatch(app, found.manifest, type, config, input);
+        const call = await dispatch(app, manifest, type, config, input, found.package);
+        deps.host?.outcome?.(call.status);
         // A preview is the builder looking: not what the app costs people.
         if (!isPreviewLabel(app.version)) deps.monitor?.record({
           app: app.name,
           version: app.version,
           type: baseType(type),
-          config,
+          // What the monitor keeps of a call (a failing or fanning-out
+          // call's example) never holds a field its step redacts: a test's
+          // expected answer (plans/human-steps.md §7.9), a typed secret.
+          config: redactedConfig(deps.registry, baseType(type), config),
           ...(deps.visitor?.viewer ?? deps.actor ? { viewer: (deps.visitor?.viewer ?? deps.actor)! } : {}),
           status: call.status,
           ms: Date.now() - started,

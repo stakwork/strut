@@ -21,6 +21,7 @@
 > Item 6, priced tools, is built (`POST /public/steps/:type/run`, its allowlist bag with the whole graph's reader, the reserve and the charge around one call, a dead call's hold freed at boot; `src/public-tools.ts`, specs/API.md §17.7).
 > Item 10, a visitor's app page, is built (a public app's `run/launch` on a runnable workflow it grants through the public launcher, `{ payment_required }` as the tool result, the host's sheet that pays and retries with the credential on the request, the visit that reads its own runs back; `src/public-surface.ts`, `web/src/visitor-pay.ts`, specs/API.md §17.6).
 > Item 7, earnings, is built (the payer for the daemon's `POST /pay` and NWC's `pay_invoice`, `POST /earnings/withdraw` and its Withdraw dialog, `GET /earnings` and `/earnings/entries`, `earnings/read`, the Earnings tab and the earnings shown on a run, a runnable row, the Workflow flyout and a package's page; `src/payments/payer.ts`, `withdrawals.ts`, `earnings.ts`, specs/API.md §19).
+> Item 8, agents and the store, is built (`POST /public/mcp`'s `list_public`, `run_workflow`, `call_tool`, `get_run`, `get_credit` over the same doors as the HTTP routes, `payment_required` as a result and `payment` or the connection's L402 header to pay; `GET /llms.txt` for a public view; the index's live items carrying `runnable` with prices; the store's Run form paying through the visitor's sheet and claim keeper; `src/public-agents.ts`, `web/src/store-run.ts`, specs/API.md §17.8).
 > Item 9, a strut that buys, is built (`remote/list`, `remote/run-workflow`, `remote/call` spending the credit held at a seller, `entitlements.json`, the admin's `remote/buy-credit` proposal paid through the withdrawals service and claimed until it settles, `GET /remote/credit`; `src/remote.ts`, `src/guarded-http.ts`, specs/API.md §20).
 >
 > **Revised the same day, three times.**
@@ -245,6 +246,19 @@ A launch, in order. Each step answers before the next costs anything:
 
 The charge is made when the run ends (§5). `key` makes a retry safe: the
 same token and `key` return the same run and set nothing more aside.
+
+**The visitor address.** Every per-address budget here (the reads, the
+launches, the tool calls, the invoices and claims of §4.1) counts under
+`visitorAddress` (`src/visitor-address.ts`): the socket's peer, unless that
+peer is a trusted proxy. Then `x-forwarded-for` is walked from the right,
+trusted hops skipped, and the first untrusted hop is the visitor (every hop
+trusted: the leftmost). A client that reaches strut with no trusted proxy
+in between cannot name its own address. Trusted by default: loopback,
+link-local and private addresses, where a proxy on the same box or
+container network connects from. `STRUT_TRUSTED_PROXIES` (IPs and CIDRs,
+comma-separated, or `none`) replaces that set, and a server that untrusted
+clients reach from a private address should set it. The address is a
+budget, never auth: a priced item still needs paid credit.
 
 **The run token.** The 202's `token` is an HMAC over `public-run:<workflow>/<runId>`,
 signed like `publicAppIdentity`, so it opens that run's `/public` reads
@@ -632,10 +646,13 @@ connection is harmless there; one file for both is simpler, and is what a
 pay credential needs.
 
 **The payer.** Paying is not on the capability. createStrut holds one
-payer, built from the PAY credential when there is one, and exactly two
-doors call it: `POST /earnings/withdraw` (§8) and an accepted
-`remote/buy-credit` proposal (§10). With no pay credential both say so,
-and nothing else changes: a server can sell without being able to pay.
+payer, built from the PAY credential when there is one, and exactly three
+doors call it: `POST /earnings/withdraw` (§8), an accepted
+`remote/buy-credit` proposal (§10), and a worker's own `task/withdraw`
+inside the payout settings (`plans/human-steps.md` §8.2: a keysend to the
+worker's Sphinx address, with nobody's yes per payment). With no pay
+credential each says so, and nothing else changes: a server can sell
+without being able to pay.
 
 **The treasury daemon** (decisions 9 and 10; work in the sphinx repo, not
 this one). A second container of `ghcr.io/stakwork/sphinx-daemon` with its

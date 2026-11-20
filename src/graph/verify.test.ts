@@ -17,17 +17,20 @@ import { defineStep, type RunEvent, type StepRegistry } from "../core.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { coreRegistry } from "../steps/registry.js";
 import jobDir from "../steps/lib/job/dir.js";
+import contextConcept from "../steps/lib/context/concept.js";
+import graphGet from "../steps/lib/graph/graph-get.js";
 import jobGet from "../steps/lib/job/get.js";
 import verifyJobStep from "../steps/lib/meta/verify-job.js";
-import { MemoryRunStore } from "../store.js";
+import { FileRunStore, MemoryRunStore } from "../store.js";
+import { MemoryObjectStore } from "../object-store.js";
 import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
-import { CLAIMS_OFF } from "../claims-schemas.js";
+import { CLAIMS_OFF, personSubjectSchema, subjectSchema } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import { jobRoot, setJobCallback, type JobsCapability } from "../jobs.js";
 import type { LedgerClaim } from "../ledger.js";
-import type { VerifyResult, Verifier } from "../verify.js";
+import { createVerifier, type VerifyResult, type Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
 import type { GraphBackend } from "./backend.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
@@ -120,6 +123,9 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       // evidence at the shot, refutes while a `fail` marker is in the job.
       "job/dir": jobDir,
       "job/get": jobGet,
+      // What opens a Concept's page: the step behind an agent's graph_graph_get, and the one a workflow puts it in a prompt with.
+      "context/concept": contextConcept,
+      "graph/graph-get": graphGet,
       "meta/verify-job": verifyJobStep,
       "probe/shot": defineStep({
         type: "probe/shot",
@@ -377,6 +383,43 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     assert.equal(await verifier.costOf({ kind: "workflow", name: "clipper" }), 0);
   });
 
+  it("spend: costOf and the daily cap read each check's tally, never its runs; a check from before the tally is recounted once, off the request", async () => {
+    const c = await addClaim(STEP, "the answer is concise", [{ type: "llm", name: "judge", config: { prompt: "concise? {{ input.output.end }}" }, policy: "always" }]);
+    const subject = { kind: "step" as const, type: "clip/compute-times" };
+    const bucket = `check:${c.checks[0]}`;
+    for (const start of [5, 6]) await verifier.verifyRun("clipper", (await strut.run("clipper", { start, len: 19 })).runId);
+    assert.equal((await store.listRuns(bucket)).length, 2);
+    /** Every read of a check's runs from here on. */
+    const reads: string[] = [];
+    const real = { listRuns: store.listRuns.bind(store), getRunEvents: store.getRunEvents.bind(store), getRunSummary: store.getRunSummary.bind(store) };
+    store.listRuns = (key) => (key.startsWith("check:") && reads.push(`list ${key}`), real.listRuns(key));
+    store.getRunEvents = (key, id) => (key.startsWith("check:") && reads.push(`events ${id}`), real.getRunEvents(key, id));
+    store.getRunSummary = (key, id) => (key.startsWith("check:") && reads.push(`summary ${id}`), real.getRunSummary(key, id));
+
+    assert.ok(Math.abs((await verifier.costOf(subject)) - 0.8) < 1e-9);
+    assert.deepEqual(reads, [], "costOf reads the tally, not the check's runs");
+
+    // Today's 0.8 is at the cap: the next pass skips, reading no check run to know it.
+    process.env["STRUT_VERIFY_BUDGET_USD_PER_DAY"] = "0.8";
+    const capped = await verifier.verifyRun("clipper", (await strut.run("clipper", { start: 7, len: 19 })).runId);
+    assert.deepEqual(capped.checks.map((k) => k.lastVerify), [{ skipped: "budget", reason: "today's verify budget for this subject ($0.8) is spent" }]);
+    assert.deepEqual(reads, []);
+
+    // A check from before the tally: no file. THIS read does not wait for the
+    // recount; it runs once, off the request, and the next read has it.
+    await rm(join(dir, "checks", c.checks[0]!, "spend.json"));
+    assert.equal(await verifier.costOf(subject), 0);
+    let cost = 0;
+    for (let i = 0; i < 200 && !cost; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      cost = await verifier.costOf(subject);
+    }
+    assert.ok(Math.abs(cost - 0.8) < 1e-9);
+    const kept = await real.listRuns(bucket);
+    assert.deepEqual(reads.sort(), [`list ${bucket}`, ...kept.map((id) => `events ${id}`)].sort(), "every kept run read once, by the recount alone");
+    Object.assign(store, real);
+  });
+
   it("external checks: a planned slot (no strength, no content), filled in place by add_evidence; a newer version replaces the question", async () => {
     const c = await addClaim(STEP, "the cut sounds natural", [{ description: "listen to the clip at the cut — code cannot hear a click" }]);
     const run = await strut.run("clipper", { start: 5, len: 19 });
@@ -425,6 +468,70 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["stale", true, 1, true], "at most one open slot per external check");
     const refused = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: r4.runId, supports: true, content: "x", slot: slotId });
     assert.match(String(refused["error"]), /not an open slot/);
+  });
+
+  it("a pass and add_evidence read what they decide from, never the claim's history: the rows read do not grow with the passes before", async () => {
+    // What a pass reads: whether `always` already ran here, the newest
+    // `on_change` measured, the external check's open slot (each pass
+    // retires the last one's).
+    const c = await addClaim(STEP, "end is after start", [
+      compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "always" }),
+      compare("{{ input.output.end }}", "-lt", "1000", { name: "on change", policy: "on_change" }),
+      { description: "a person looks at the clip", policy: "always" },
+    ]);
+    const hash = (await ws.getActiveStepHashes())["clip/compute-times"]!;
+    // A verifier of its own over the same graph, counting the rows its
+    // statements return (and nothing else running on the graph meanwhile).
+    let read = 0;
+    const query: GraphBackend["query"] = async (cypher, params) => {
+      const got = await backend.query(cypher, params);
+      read += got.length;
+      return got;
+    };
+    const graph = new Proxy(backend, { get: (target, key) => (key === "query" ? query : Reflect.get(target, key)) });
+    const own = createVerifier({ graph, store, workspace: ws, services: () => strut.services, getRegistry: async () => registry });
+    /** What `fn` returns, and the rows the verifier's statements returned while it ran. */
+    const reading = async <T,>(fn: () => Promise<T>): Promise<[T, number]> => {
+      read = 0;
+      return [await fn(), read];
+    };
+    // Runs recorded by hand, each in a second of its own an hour ago: every
+    // newest measurement is one run's, however fast the passes go.
+    let second = Math.floor(Date.now() / 1000) - 3600;
+    const pass = async () => {
+      const runId = String(++second * 1000);
+      const ts = new Date(second * 1000).toISOString();
+      const events: RunEvent[] = [
+        { ts, runId, path: "clipper", type: "run.start", input: { start: 1 }, stepHashes: { "clip/compute-times": hash } },
+        { ts, runId, path: "clipper/times", type: "step.start", stepType: "clip/compute-times", input: { start: 1, len: 19 } },
+        { ts, runId, path: "clipper/times", type: "step.end", stepType: "clip/compute-times", output: { start: 1, end: 20 } },
+        { ts, runId, path: "clipper", type: "run.end", output: { start: 1, end: 20 } },
+      ];
+      for (const e of events) await store.append("clipper", runId, e);
+      return { runId, result: await own.verifyRun("clipper", runId) };
+    };
+    const passes = async (count: number) => {
+      for (let i = 0; i < count; i++) await pass();
+    };
+
+    await passes(2);
+    const [early, before] = await reading(pass);
+    assert.deepEqual(early.result.checks.map((k) => Object.keys(k.lastVerify)[0]), ["ran", "skipped", "planned"], "on_change measured this version already");
+    await passes(12);
+    const [late, after] = await reading(pass);
+    assert.deepEqual(late.result.checks.map((k) => Object.keys(k.lastVerify)[0]), ["ran", "skipped", "planned"]);
+    assert.equal(after, before, "the 16th pass reads the rows the 3rd did");
+    assert.equal((await own.reader.evidenceFor(c.id, { kind: "step", type: STEP.name })).length, 16 + 1 + 1, "while the history grew: every `always`, the first `on_change`, the open slot");
+
+    // A person's word fills the slot of the run they cite, reading that slot alone.
+    const say = (runId: string) => own.addEvidence({ claim: c.id, name: "clipper", runId, supports: true, content: "looked: it reads well", by: "person" });
+    const [first, readFirst] = await reading(() => say(late.runId));
+    assert.ok("ok" in first && first.filled);
+    await passes(5);
+    const newest = await pass();
+    const [again, readSecond] = await reading(() => say(newest.runId));
+    assert.ok("ok" in again && again.filled);
+    assert.equal(readSecond, readFirst, "add_evidence reads the same rows however many passes came before");
   });
 
   it("add_evidence without a slot is asserted, check-less evidence; only a seeded harness STEP records observed (fixed point 3)", async () => {
@@ -675,6 +782,35 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const executed = await rows(`MATCH ${n("run", "StrutRun", { run_id: "$r" })}-[:EXECUTED]->${n("v", "StrutStepVersion")} RETURN run.workflow_name AS wf, v.content_hash AS h`, { r: r.runId });
     assert.deepEqual(executed, [{ wf: "step:clip/compute-times", h: (await ws.getActiveStepHashes())["clip/compute-times"] }]);
     assert.ok(!(await ws.listWorkflows()).some((w) => w.name.startsWith("step:")));
+  });
+
+  it("a run whose log was archived and evicted is verified again, not skipped as unknown (plans/run-archive.md)", async () => {
+    await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "bounds" })]);
+    const runs = new FileRunStore(await mkdtemp(join(dir, "archived-runs-")));
+    const archive = { objects: new MemoryObjectStore(), prefix: "box", label: "memory" };
+    const booted = await createStrut({ workspace: ws, store: runs, archive, registry, dataDir: dir, serveUi: false, enableChat: false, stt: false, scheduler: false });
+    const post = (runId: string) => booted.app.request(`/workflows/clipper/runs/${runId}/verify`, { method: "POST" });
+    try {
+      const run = await booted.run("clipper", { start: 5, len: 19 });
+      assert.equal((await post(run.runId)).status, 200); // joins the detached pass
+      assert.ok(await runs.archiveRun("clipper", run.runId, new Date().toISOString()));
+      assert.equal(await runs.evictRun("clipper", run.runId, new Date().toISOString()), true);
+      assert.equal(await runs.logWrittenAt("clipper", run.runId), null, "the log is in the bucket, not here");
+
+      // The pass strut makes by itself reads this disk only: nothing is restored for it.
+      assert.equal((await booted.verifier!.verifyRun("clipper", run.runId)).skipped, "unknown-run");
+      assert.equal(await runs.logWrittenAt("clipper", run.runId), null);
+
+      // Asked for, the run is restored and verified.
+      const again = await post(run.runId);
+      assert.equal(again.status, 200, "an evicted run with no archive is a 404 here (`unknown-run`)");
+      const result = (await again.json()) as VerifyResult;
+      assert.equal(result.skipped, undefined);
+      assert.deepEqual(result.checks.map((k) => k.path), ["clipper/times"]);
+      assert.notEqual(await runs.logWrittenAt("clipper", run.runId), null, "the pass restored it");
+    } finally {
+      await booted.close();
+    }
   });
 
   it("a `claims:` block in the YAML is recorded at boot (the seeder's path) and applied by the HTTP publish door, stamped `person`", async () => {
@@ -952,5 +1088,202 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const tools = buildTools(bare) as Record<string, { inputSchema: z.ZodObject }>;
     assert.ok(!tools["add_claim"] && !tools["verify_run"] && !("claims" in tools["create_step"]!.inputSchema.shape));
     assert.ok(!(await buildSystem(bare)).includes(CLAIMS_SECTION));
+  });
+  // ── A Concept as a subject ─────────────────────────────────────────────────
+  // A run observes every Concept whose page it opened, at the version that
+  // read returned; the claims about it are checked against the run.
+
+  describe("a CONCEPT subject", () => {
+    const PLANNING = { kind: "concept" as const, name: "Planning" };
+    const JOB_ROOT = { kind: "concept" as const, name: "Job" };
+    const ref: Record<string, string> = {};
+    /** The plan must mention a rollout: a regex over the file the run wrote, in the run's own directory. */
+    const hasRollout: CheckSpecInput = { type: "exec", name: "rollout", config: { cmd: "grep", args: ["-qi", "rollout", "plan.md"], cwd: "{{ input.dir }}" } };
+    /** A request of a kind opens that kind's page. No kind asked for: no verdict, so nothing is recorded. */
+    const opensItsPage: CheckSpecInput = {
+      type: "pack",
+      name: "opened",
+      config: { supports: "{{ input.input.kind ? input.concepts.includes(input.input.kind) : null }}", content: "opened: {{ input.concepts.join(', ') }}" },
+    };
+    /** A door that keeps the Concept tree: what the person's routes are, and what a workflow tending the tree will be. */
+    const keeper: ClaimActor = { publisher: "evan", scoped: false, concepts: true };
+    const conceptStatus = async (subject: { kind: "concept"; name: string }) => {
+      const r = await claims.listClaims(subject);
+      assert.ok("ok" in r, (r as { error?: string }).error);
+      return (r as Extract<typeof r, { ok: true }>).claims.map((c) => [c.text, c.status, c.latest?.content, c.latest?.about] as const);
+    };
+    const plan = async (input: Record<string, unknown>) => {
+      const run = await strut.run("planner", input);
+      assert.equal(run.status, "success");
+      return { run, result: await verify("planner", run.runId) };
+    };
+
+    beforeEach(async () => {
+      const [job, planning, research] = await backend.nodes.writeMany([
+        { type: "Concept", data: { name: "Job", description: "What a job agent does", docs: "Open the page of the kind of work asked for." } },
+        { type: "Concept", data: { name: "Planning", description: "writing a plan", docs: "A plan ends with a rollout section." } },
+        { type: "Concept", data: { name: "Research", description: "finding things out", docs: "Cite sources." } },
+      ]);
+      Object.assign(ref, { job: job!.ref_id, planning: planning!.ref_id, research: research!.ref_id });
+      await backend.edges.writeMany([
+        { edge: "PARENT_OF", source_ref_id: job!.ref_id, target_ref_id: planning!.ref_id },
+        { edge: "PARENT_OF", source_ref_id: job!.ref_id, target_ref_id: research!.ref_id },
+      ]);
+      // The job workflow in small: the root page in front of the agent, the kind's page opened when one is asked for, a file written.
+      await ws.publishWorkflowByContent(
+        "planner",
+        WF(
+          "planner",
+          [
+            `  - id: kinds\n    type: context/concept\n    config: { name: Job }\n`,
+            `  - id: page\n    type: graph/graph-get\n    config: { node_type: Concept, name: "{{ input.open }}" }\n`,
+            `  - id: write\n    type: exec\n    config: { cmd: sh, args: ["-c", 'printf "%s" "$1" > plan.md', "_", "{{ input.plan }}"] }\n`,
+            `  - id: result\n    type: pack\n    config: { text: "{{ input.plan }}" }\n`,
+          ].join(""),
+        ),
+      );
+    });
+
+    it("a run that opened the page is checked against the claims about it: a regex on the file it wrote, evidence ABOUT the Concept at the version it read", async () => {
+      const onPlanning = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout], keeper);
+      const onJob = await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage], keeper);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "unknown", undefined, undefined]]);
+      const reader = verifier.reader;
+      const v1 = await reader.activeVersion(PLANNING);
+
+      const good = await plan({ kind: "Planning", open: "Planning", plan: "1. Build it.\n2. Rollout: staged, 10% first." });
+      assert.deepEqual(outcomes(good.result), [["concept:Job", { ran: true }], ["concept:Planning", { ran: true }]]);
+      assert.deepEqual(good.result.subjects, [JOB_ROOT, PLANNING]);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "supported", "exit 0", v1]]);
+      assert.deepEqual(await conceptStatus(JOB_ROOT), [["a request of a kind opens that kind's page", "supported", "opened: Job, Planning", await reader.activeVersion(JOB_ROOT)]]);
+
+      // The graph: ABOUT the Concept itself, sourced to the run, the version on the source.
+      const written = await rows(
+        `MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:PRODUCED_BY]->${n("k", "Check", { id: "$k" })}, (e)-[:ABOUT]->${n("p", "Concept")}, (e)-[hs:HAS_SOURCE]->${n("r", "StrutRun")}
+         RETURN eb.strength AS strength, e.evidence_mode AS mode, p.name AS about, r.run_id AS run, hs.context AS context`,
+        { c: onPlanning.id, k: onPlanning.checks[0] },
+      );
+      assert.deepEqual(
+        written.map((w) => ({ ...w, context: JSON.parse(w["context"] as string) })),
+        [{ strength: 1, mode: "observed", about: "Planning", run: good.run.runId, context: { path: "concept:Planning", version: v1, checkVersion: "exec" } }],
+      );
+      // The run view carries it beside the workflow's own.
+      const view = (await (await strut.app.request(`/workflows/planner/evidence?runId=${good.run.runId}`)).json()) as { evidence: Array<{ claim: { text: string }; subject?: { kind: string; name: string; version: string }; verdict: string }> };
+      assert.deepEqual(
+        view.evidence.map((e) => [e.subject, e.verdict]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+        [[{ kind: "concept", name: "Job", version: await reader.activeVersion(JOB_ROOT) }, "supports"], [{ kind: "concept", name: "Planning", version: v1 }, "supports"]],
+      );
+      // Idempotent, like every pass.
+      const again = await verify("planner", good.run.runId);
+      assert.equal(again.evidence, 0);
+
+      // A plan with no rollout refutes; a refutation on the page as it is always wins.
+      const bad = await plan({ kind: "Planning", open: "Planning", plan: "1. Build it." });
+      assert.deepEqual((await conceptStatus(PLANNING))[0]!.slice(0, 2), ["a plan has a rollout section", "refuted"]);
+      assert.equal(bad.result.evidence, 2);
+
+      // The page is rewritten: what was observed is about an older page, so the claim reads stale, never refuted.
+      await backend.nodes.update(ref["planning"]!, { set: { docs: "A plan ALWAYS ends with a section titled Rollout." } });
+      const v2 = await reader.activeVersion(PLANNING);
+      assert.notEqual(v2, v1);
+      assert.equal((await conceptStatus(PLANNING))[0]![1], "stale");
+      // The root's version is the lines its children show in it: their docs do not move it…
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+      // …and the next run that opens the new page is evidence about it.
+      const fixed = await plan({ kind: "Planning", open: "Planning", plan: "Rollout: all at once." });
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "supported", "exit 0", v2]]);
+      assert.equal(fixed.result.evidence, 2);
+      void onJob;
+    });
+
+    it("a run that skipped the page is no observation of it: the claim that it gets opened sits on the page that lists it, and a check that does not apply records nothing", async () => {
+      await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout], keeper);
+      await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage], keeper);
+
+      // Asked for a plan, never opened Planning: only the root was read, and its claim catches it.
+      const skipped = await plan({ kind: "Planning", plan: "1. Build it." });
+      assert.deepEqual(outcomes(skipped.result), [["concept:Job", { ran: true }]]);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "unknown", undefined, undefined]]);
+      assert.deepEqual((await conceptStatus(JOB_ROOT))[0]!.slice(0, 3), ["a request of a kind opens that kind's page", "refuted", "opened: Job"]);
+
+      // The fix is the line the child shows in the root: the root's version moves, and its claim reads stale until a run answers.
+      await backend.nodes.update(ref["planning"]!, { set: { description: "ANY request for a plan: open this first" } });
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "stale");
+      await plan({ kind: "Planning", open: "Planning", plan: "Rollout: staged." });
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+
+      // A run the claim does not apply to (no kind asked for): the check gives no verdict, nothing is written.
+      const before = await nodeCount(backend, "Evidence");
+      const chat = await plan({ plan: "hello" });
+      assert.deepEqual(outcomes(chat.result), [["concept:Job", { skipped: "cannot-launch", reason: "the check returned no { supports, content }" }]]);
+      assert.equal(await nodeCount(backend, "Evidence"), before);
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+    });
+
+    it("authoring: a claim about a Concept, by its name, is written through a door that keeps the tree, whoever the author; never at publish, never from the doors of ordinary work; a person's word is evidence about the page the run read", async () => {
+      const made = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout, { description: "Read the plan: is the rollout staged?" }], keeper);
+      // Defaults are a template's: a code check fires on every run, an external one paces its question.
+      const listed = await claims.listClaims(PLANNING);
+      assert.ok("ok" in listed);
+      assert.deepEqual((listed as Extract<typeof listed, { ok: true }>).claims[0]!.checks.map((k) => [k.name, k.policy]), [["rollout", "always"], ["Read the plan: is the rollout staged?", "on_change"]]);
+
+      const missing = await claims.addClaim({ subjects: [{ kind: "concept", name: "Nope" }], text: "x", checks: [hasRollout] }, keeper);
+      assert.match((missing as { error: string }).error, /concept "Nope" is not in the graph/);
+      const atPublish = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [{ ...hasRollout, when: "publish" }] }, keeper);
+      assert.match((atPublish as { error: string }).error, /a Concept is never published/);
+      // The DOOR decides, not the author. The doors of ordinary work write nothing on one: the builder chat
+      // (unscoped), the meta surface (scoped), and a person's stamp alone opens nothing either…
+      const NOT_HERE = /claims about a Concept, and their checks, are not written from here/;
+      for (const actor of [ai, { publisher: "ai", scoped: true }, human]) {
+        const refused = [
+          await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [hasRollout] }, actor),
+          await claims.addClaim({ subjects: [{ kind: "workflow", name: "planner" }, PLANNING], text: "x", checks: [hasRollout] }, actor),
+          await claims.addCheck(made.id, hasRollout, actor),
+          await claims.editClaim(made.id, "a plan has two rollout sections", actor),
+          await claims.retireClaim(made.id, actor),
+          await claims.attachClaim(made.id, { kind: "workflow", name: "planner" }, actor),
+          await claims.detachClaim(made.id, PLANNING, actor),
+          await claims.editCheck(made.checks[0]!, { name: "renamed" }, actor),
+          await claims.retireCheck(made.checks[0]!, actor),
+        ];
+        for (const r of refused) assert.match((r as { error: string }).error, NOT_HERE);
+      }
+      // …and those doors are not offered the kind: the tools' subject is a step, a workflow or a job.
+      assert.equal(subjectSchema.safeParse(PLANNING).success, false);
+      assert.equal(personSubjectSchema.safeParse(PLANNING).success, true);
+      assert.deepEqual((await conceptStatus(PLANNING)).map((c) => c[0]), ["a plan has a rollout section"], "nothing above changed it");
+      // A door that keeps the tree may, with an AI as the author: its claim is stamped `ai` like any other,
+      // so a check of its own still may not reach a grader (fixed point 2).
+      const tending: ClaimActor = { publisher: "ai", scoped: false, concepts: true };
+      const byAi = await claims.addClaim({ subjects: [PLANNING], text: "a plan names an owner", checks: [{ ...hasRollout, name: "owner", config: { cmd: "grep", args: ["-qi", "owner", "plan.md"], cwd: "{{ input.dir }}" } }] }, tending);
+      assert.ok("ok" in byAi, (byAi as { error?: string }).error);
+      const listedAfter = await claims.listClaims(PLANNING);
+      assert.deepEqual((listedAfter as Extract<typeof listedAfter, { ok: true }>).claims.map((c) => [c.text, c.speaker]), [["a plan has a rollout section", "evan"], ["a plan names an owner", "ai"]]);
+      const grader = await claims.addCheck((byAi as { id: string }).id, { type: "meta/verify-job", config: { job: "j" } }, tending);
+      assert.match((grader as { error: string }).error, /may not reach a sealed/);
+      const renamed = await claims.editCheck(made.checks[0]!, { name: "has a rollout" }, keeper);
+      assert.ok("ok" in renamed, (renamed as { error?: string }).error);
+      const retired = await claims.retireClaim((byAi as { id: string }).id, tending);
+      assert.ok("ok" in retired, (retired as { error?: string }).error);
+      const unknown = await claims.listClaims({ kind: "concept", name: "Nope" });
+      assert.match((unknown as { error: string }).error, /concept "Nope" is not in the graph/);
+
+      // The route a page reads.
+      const res = await strut.app.request(`/claims?kind=concept&name=Planning`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(((await res.json()) as { claims: Array<{ text: string }> }).claims.map((c) => c.text), ["a plan has a rollout section"]);
+
+      // The external check opens a slot on the run; a person fills it: asserted, about the version the run read.
+      const { run, result } = await plan({ kind: "Planning", open: "Planning", plan: "Rollout: staged." });
+      assert.equal(result.slots, 1);
+      const answered = await verifier.addEvidence({ claim: made.id, name: "planner", runId: run.runId, supports: true, content: "staged, 10% first", by: "evan" });
+      assert.deepEqual([("ok" in answered && answered.filled), ("ok" in answered && answered.subject)], [true, PLANNING]);
+      // A run that never opened the page cannot be cited for it.
+      const other = await plan({ plan: "hello" });
+      const refused = await verifier.addEvidence({ claim: made.id, name: "planner", runId: other.run.runId, supports: true, content: "looks fine", by: "evan" });
+      assert.match((refused as { error: string }).error, /did not execute a subject of this claim/);
+      // The ledger a settled pass hands a model names the page.
+      assert.deepEqual(Object.keys(await verifier.ledger(result)), ["Planning"]);
+    });
   });
 });

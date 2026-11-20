@@ -15,7 +15,7 @@ export const DRIVE_READONLY_SCOPE =
 /** Build an authenticated Drive v3 client. Credentials flow through the secrets
  *  capability (UI store → env fallback), explicit `accessToken` config wins.
  *  Returns `haveAuth` so error messages can distinguish "no creds at all" from
- *  "creds present but rejected". See AGENTS.md "Lib step credentials". */
+ *  "creds present but rejected". See docs/steps.md "Lib step credentials". */
 export async function buildDriveClient(
   accessToken: string | undefined,
   ctx: StepContext<StrutCapabilities>,

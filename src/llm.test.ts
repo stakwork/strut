@@ -85,7 +85,7 @@ describe("llm: model resolution through the secrets boundary", () => {
 
   it("no key anywhere → the error names the secret to set", async () => {
     const secrets = await withStore({});
-    await assert.rejects(() => resolveModel({ model: "gemini", secrets }), /GOOGLE_API_KEY/);
+    await assert.rejects(() => resolveModel({ model: "argon", secrets }), /GOOGLE_API_KEY/);
   });
 
   it("an explicit provider wins, and an unknown one is the agent-step error", async () => {

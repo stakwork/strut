@@ -23,6 +23,10 @@
  * and under tsx alike; a later strut refuses to load there. Comments are
  * ignored. A determined author can get around a regex; that refusal, and
  * one day a worker or a container, is the enforcement.
+ *
+ * `servicesPastVisitor` is the other question, asked of a custom step an
+ * APP grants (src/apps/apps.ts, a build's warning): does it reach a service
+ * a visitor's call never carries — the shell, files, the app's own tables?
  */
 
 /** Module → what to use instead. Matched with or without the `node:` prefix. */
@@ -89,6 +93,34 @@ export function lintStepSource(source: string): StepLintFinding[] {
       }
     });
   return out;
+}
+
+/**
+ * What a VISITOR's call of a step carries on `ctx.services`: the public
+ * view's door (`POST /public/mcp`, createStrut's `visitorBag` and
+ * `signedInBag`) — keep the two in step. Reads of this server and of the
+ * outside, the runs it may start and read, and nothing that runs a shell,
+ * writes a file or opens the app's own tables (`appDb`).
+ */
+export const VISITOR_SERVICES: readonly string[] = ["http", "secrets", "graph", "runs", "people", "dataDir"];
+
+const SERVICE_RE = /\bservices!?\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)|\bservices!?\s*(?:\?\.)?\[\s*["']([\w$]+)["']\s*\]/g;
+const DESTRUCTURE_RE = /\{([^{}]*)\}\s*=\s*(?:[\w$]+\s*\??\.\s*)?services\b/g;
+
+/** The `ctx.services.<name>` a step's source reaches that a visitor's call
+ *  never carries (`VISITOR_SERVICES`): a member's page runs the step, a
+ *  visitor's — every worker who signs in through Peel — fails. Sorted. */
+export function servicesPastVisitor(source: string): string[] {
+  const text = stripComments(source);
+  const used = new Set<string>();
+  for (const m of text.matchAll(SERVICE_RE)) used.add((m[1] ?? m[2])!);
+  for (const m of text.matchAll(DESTRUCTURE_RE)) {
+    for (const part of m[1]!.split(",")) {
+      const name = part.split(/[:=]/)[0]!.trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) used.add(name); // never `...rest`
+    }
+  }
+  return [...used].filter((s) => !VISITOR_SERVICES.includes(s)).sort();
 }
 
 /** The findings as one message, a line each. */

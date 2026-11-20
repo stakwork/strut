@@ -11,6 +11,7 @@
  * An automation is workflow-level METADATA (beside `category`), never part
  * of the versioned YAML: editing or pausing one publishes no version.
  */
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseCallback } from "./callback.js";
 import { exprRoots, resolveConfig, templateExprs } from "./expr.js";
@@ -173,6 +174,18 @@ export interface Automation {
   /** Each fire's `run.end` goes to a callback (`automationCallbackSchema`):
    *  its origin here, its URL in the secret store. */
   callback?: { origin: string };
+  /** The package that ships it (`schedules:` in its strut.yaml,
+   *  src/packages/format.ts). Set by the packages' sync alone, never by a
+   *  door: when it runs, its name and its input are the package's, and on
+   *  or off is the admin's (`syncPackageSchedules`, scheduler.ts). */
+  package?: string;
+}
+
+/** A package's schedule's id: the same for the same package and schedule
+ *  name on every box and every sync, so a restart, a restore or a reinstall
+ *  finds the one it made instead of making another. In strut's id format. */
+export function packageAutomationId(pkg: string, name: string): string {
+  return `a-${createHash("sha256").update(`${pkg}\n${name}`).digest("hex").slice(0, 8)}`;
 }
 
 /** The file an automation's callback URLs are kept in: a fifth encrypted

@@ -21,8 +21,34 @@ export interface ConversationListItem {
   moreJobs?: number;
   /** Shared, and not the viewer's yet: opening it makes it theirs. */
   team?: true;
-  /** Who took its first turn. */
+  /** Who took its first turn (in an admin's Everyone: else whose id it is under). */
   startedBy?: string;
+  /** A host's conversation (a Sphinx tribe's, `host/sphinx/…`): the host's
+   *  name. Read-only here: continued where the host is, or forked. */
+  host?: string;
+}
+
+/** An account on another medium linked to the viewer (`account/links`). */
+export interface AccountLink {
+  /** `<kind>:<key>`. */
+  account: string;
+  kind: string;
+  key: string;
+  address?: string;
+  name?: string;
+  host?: string;
+  at: number;
+}
+
+/** A link challenge naming the viewer, for Peel to sign (`account/link`). */
+export interface LinkOffer {
+  challenge: string;
+  /** When it stops working (the server's clock). */
+  exp: number;
+  /** Open in Peel: `peel://strut/link?url=…&challenge=…`. */
+  link: string;
+  /** The link as a QR code, an SVG data URI. */
+  qr: string;
 }
 
 /** A job as a list row shows it. */
@@ -50,6 +76,9 @@ export interface ConversationList {
   next?: string;
   /** The actor the list is for: a new conversation is `<viewer>/<id>`. */
   viewer?: string;
+  /** The viewer is an admin here: they may list and read everyone's
+   *  conversations (`everyone`, plans/jamie-app.md §2.3). */
+  admin?: true;
 }
 
 export interface TurnJob {
@@ -70,6 +99,8 @@ export interface CardField {
   value: string;
   kind?: "text" | "code" | "markdown" | "ref";
   danger?: boolean;
+  /** Folded under "Details": a setting most people need not read. */
+  detail?: boolean;
 }
 
 export interface ProposalCard {
@@ -97,6 +128,8 @@ export interface ProposalBrief {
   rationale?: string;
   createdAt: string;
   decidedAt?: string;
+  /** A newer card replaced it while it waited (strut closed it): left out of the thread. */
+  replacedBy?: string;
 }
 
 /** `proposal/get`: the whole record. */

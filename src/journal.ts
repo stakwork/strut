@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { AppRef, Flow, RunAttachment, RunEvent, StartedBy, Step, WakeMark } from "./core.js";
+import type { AppRef, Flow, RunAttachment, RunEvent, RunTrial, StartedBy, Step, WakeMark } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -40,12 +40,19 @@ export function readRunStart(
   principal?: string;
   /** The job the run was launched under (plans/jobs.md §1) — kept by a resume. */
   job?: string;
+  /** The Concept branch the run is on (src/branches.ts) — kept by a resume. */
+  branch?: string;
+  /** The run is a trial (`RunTrial`) — kept by a resume, so it still holds what it starts. */
+  trial?: RunTrial;
   /** Who launched it, when not a person or an API call — a peer's run stays
    *  the peer's to control after a resume (plans/federation.md §3). */
   origin?: RunEvent["origin"];
   /** A peer's run a person's credential launched — a resume keeps it, so
    *  the run opens the same person's sessions (plans/chained-orchestrators.md §2). */
   peerPerson?: true;
+  /** A host's turn (`origin: "host"`) — a resume keeps the host, so the run
+   *  stays never an admin's and its sessions under `host/<host>/`. */
+  host?: string;
   /** The conversation a person's turn continues — a resume opens it again
    *  (plans/jamie-app.md §2.2). */
   continues?: string;
@@ -87,8 +94,11 @@ export function readRunStart(
     actor: start.actor,
     principal: start.principal,
     job: start.job,
+    ...(start.branch ? { branch: start.branch } : {}),
+    ...(start.trial ? { trial: start.trial } : {}),
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
+    ...(start.host ? { host: start.host } : {}),
     ...(start.continues ? { continues: start.continues } : {}),
     attachments: start.attachments,
     ...(typeof start.maxCostUsd === "number" ? { maxCostUsd: start.maxCostUsd } : {}),

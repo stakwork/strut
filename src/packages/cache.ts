@@ -17,8 +17,10 @@ import { randomBytes } from "node:crypto";
 import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ShellCapability } from "../capabilities.js";
 import { unpackArchive } from "./archive.js";
 import { PACKAGE_DIGEST, type PackageInfo, readPackage } from "./format.js";
+import { DEFAULT_TOKEN_SECRET, exportGitTree, fetchGitRef } from "./git-source.js";
 import { resolvePk } from "./pk.js";
 
 export type CachedPackage = PackageInfo & { dir: string };
@@ -61,10 +63,10 @@ export class PackageCache {
   }
 
   /** Unpack an archive in, refusing it unless its tree is `expected`. */
-  async putArchive(gz: Buffer, expected: string): Promise<CachedPackage> {
+  async putArchive(archive: Buffer, expected: string): Promise<CachedPackage> {
     const have = await this.get(expected);
     if (have) return have;
-    return this.commit(expected, (scratch) => unpackArchive(gz, scratch));
+    return this.commit(expected, (scratch) => unpackArchive(archive, scratch));
   }
 
   private async commit(expected: string, fill: (scratch: string) => Promise<void>): Promise<CachedPackage> {
@@ -112,6 +114,9 @@ export interface ResolvedPackage extends CachedPackage {
   source: { ref: string; url?: string };
   /** The publisher key a `pk:` ref resolved: pinned on the install (§3). */
   key?: string;
+  /** The commit a `git+` ref resolved: recorded on the install, while an
+   *  update re-resolves the ref itself (a branch moves, a tag does not). */
+  commit?: string;
 }
 
 export interface ResolveOptions {
@@ -124,13 +129,28 @@ export interface ResolveOptions {
   /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
   url?: string;
   fetch?: typeof fetch;
+  /** A `git+` ref's token: the NAME of the secret it is read from
+   *  (default GITHUB_TOKEN), and the read. A public repo needs neither. */
+  tokenSecret?: string;
+  secret?(name: string): Promise<string | undefined>;
+  /** What a `git+` ref runs git with (default: a local shell). */
+  shell?: ShellCapability;
+  /** Where a `git+` ref's bare cache lives (`<dataDir>/repos/`); default
+   *  the cache's own parent, the data directory. */
+  dataDir?: string;
+  /** A `git+` ref's last resolve: when the ref still points at `commit`,
+   *  the cached `digest` is the answer and nothing is read out of git. */
+  known?: { commit: string; digest: string };
+  /** A `git+` ref must name a branch: a tag or a commit is refused. */
+  branch?: boolean;
 }
 
 /**
  * A package REF → its directory in the cache (§5's `resolve`). `file:<path>`
  * (or `file:///…`) copies a directory in; `pk:<key>/<pkg>` reads the key's
- * catalog at `url` and fetches the release by hash (pk.ts); `git+` is a
- * later work item and refuses by name.
+ * catalog at `url` and fetches the release by hash (pk.ts);
+ * `git+<repo>[@<ref>][#<path>]` fetches the repository into git/checkout's
+ * bare cache and reads the tree at the ref's commit (git-source.ts).
  */
 export async function resolvePackage(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
   if (ref.startsWith("file:")) {
@@ -144,8 +164,34 @@ export async function resolvePackage(ref: string, opts: ResolveOptions): Promise
     const { key, url, release: _release, catalog: _catalog, ...info } = got;
     return { ...info, source: { ref, url }, key };
   }
-  if (ref.startsWith("git+")) throw new Error(`package_source_unsupported: ${ref}: git+ sources are not built yet — file: and pk: are`);
+  if (ref.startsWith("git+")) return resolveGit(ref, opts);
   throw new Error(`package_source_invalid: ${ref}: a package ref starts with file:, git+ or pk:`);
+}
+
+/** A `git+` ref: fetched, its tree at the resolved commit written out
+ *  beside the cache, then put in by digest (a pin refuses anything else). */
+async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
+  const tokenSecret = opts.tokenSecret ?? DEFAULT_TOKEN_SECRET;
+  const token = (await opts.secret?.(tokenSecret)) || undefined;
+  const git = { dataDir: opts.dataDir ?? dirname(opts.cache.root), tokenSecret, ...(token ? { token } : {}), ...(opts.shell ? { shell: opts.shell } : {}), ...(opts.branch ? { branch: true } : {}) };
+  return fetchGitRef(ref, git, async (got) => {
+    if (opts.known?.commit === got.commit && (!opts.digest || opts.digest === opts.known.digest)) {
+      const have = await opts.cache.get(opts.known.digest);
+      if (have) return { ...have, source: { ref }, commit: got.commit };
+    }
+    const out = join(opts.cache.root, ".scratch", `git-${randomBytes(8).toString("hex")}`);
+    try {
+      await exportGitTree(got, out, git);
+      try {
+        return { ...(await opts.cache.putDir(out, opts.digest)), source: { ref }, commit: got.commit };
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("package_digest_mismatch:")) err.message += ` (${ref} at ${got.commit})`;
+        throw err;
+      }
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
 }
 
 /** The directory a `file:` ref names: an absolute path, or one relative to

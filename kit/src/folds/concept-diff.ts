@@ -184,14 +184,14 @@ export function proposalTarget(p: ConceptProposal): string | undefined {
   return typeof input["ref_id"] === "string" ? input["ref_id"] : undefined;
 }
 
-/** The nodes whose NAMES a proposal's entry needs: its target, and a move's ends. */
+/** The nodes whose NAMES a proposal's entry needs: its target, a move's ends, a new page's parent. */
 export function proposalRefs(p: ConceptProposal): string[] {
   const input = { ...p.input, ...(p.decision?.input ?? {}) };
-  return ["ref_id", "from_ref_id", "to_ref_id"].map((k) => input[k]).filter((v): v is string => typeof v === "string");
+  return ["ref_id", "from_ref_id", "to_ref_id", "source_ref_id"].map((k) => input[k]).filter((v): v is string => typeof v === "string");
 }
 
 /** The steps a proposal can change a Concept page with. */
-export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "graph/create-node", "graph/delete-node"] as const;
+export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "graph/create-node", "graph/delete-node", "graph/create-triplet", "knowledge/edit-page", "knowledge/add-page"] as const;
 
 /**
  * SOURCE TWO: a pending proposal laid over the page as it is now (`current`,
@@ -199,11 +199,16 @@ export const CONCEPT_PROPOSAL_STEPS = ["graph/edit-node", "graph/move-node", "gr
  * names a node a move points at. Null when the proposal changes no page:
  * another step, another type, a move along another edge than the tree's.
  *
- *   graph/edit-node    node_data over the page (its name, its docs, its
+ *   graph/edit-node    `edits` (exact-match changes of its text), then
+ *                      node_data over the page (its name, its docs, its
  *                      attributes), properties_to_be_deleted taken out
  *   graph/move-node    PARENT_OF, reverse: the page's parent `from` → `to`
  *   graph/create-node  a Concept: an added page, no parents yet
  *   graph/delete-node  a removed page
+ *   graph/create-triplet  a new Concept under an existing one (PARENT_OF,
+ *                      source_ref_id → target_data): an added page, its parent named
+ *   knowledge/edit-page, knowledge/add-page  the dream's: graph/edit-node's
+ *                      and graph/create-triplet's inputs, read the same way
  */
 export function proposalEntry(
   p: ConceptProposal,
@@ -220,13 +225,24 @@ export function proposalEntry(
     }
     case "graph/delete-node":
       return current ? { path: current.path, before: current.page } : null;
-    case "graph/edit-node": {
+    case "graph/create-triplet":
+    case "knowledge/add-page": {
+      const target = (input["target_data"] && typeof input["target_data"] === "object" ? input["target_data"] : {}) as Record<string, unknown>;
+      if (String(input["edge_type"] ?? "").toUpperCase() !== "PARENT_OF" || String(input["target_type"] ?? "").toLowerCase() !== "concept" || typeof target["name"] !== "string") return null;
+      const parent = typeof input["source_ref_id"] === "string" ? nameOf(input["source_ref_id"]) : undefined;
+      const page = pageFromData(target);
+      return { path: keylessPath(page.name), after: { ...page, parents: parent ? [parent] : [] } };
+    }
+    case "graph/edit-node":
+    case "knowledge/edit-page": {
       if (!current || input["node_type"] !== undefined) return null;
       const before = current.page;
       const attributes = { ...before.attributes };
       let name = before.name;
       let docs = before.docs;
-      for (const [k, v] of Object.entries(data)) {
+      const edited = applyEdits({ ...before.attributes, ...(docs !== undefined ? { docs } : {}) }, input["edits"]);
+      if (!edited) return null;
+      for (const [k, v] of Object.entries({ ...edited, ...data })) {
         if (k === "name") name = typeof v === "string" && v.trim() ? v : name;
         else if (k === "docs") docs = typeof v === "string" && v.trim() ? v.trim() : undefined;
         else if (v === null || v === undefined || v === "") delete attributes[k];
@@ -535,4 +551,21 @@ export function attributeText(v: unknown): string {
   if (v === undefined || v === null) return "";
   if (typeof v === "string") return v;
   return JSON.stringify(v);
+}
+
+/** `graph/edit-node`'s `edits` over a page's text (src/graph/text-edits.ts):
+ *  each `old` replaced where it occurs once, in order. Null when one does
+ *  not apply to the page as it is now, so no diff is drawn for it. */
+function applyEdits(props: Record<string, unknown>, edits: unknown): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  for (const e of Array.isArray(edits) ? edits : []) {
+    const { property, old, new: next } = (e ?? {}) as { property?: unknown; old?: unknown; new?: unknown };
+    const prop = typeof property === "string" && property ? property : "docs";
+    const now = prop in out ? out[prop] : props[prop];
+    if (typeof now !== "string" || typeof old !== "string" || !old || typeof next !== "string") return null;
+    const at = now.indexOf(old);
+    if (at < 0 || now.indexOf(old, at + 1) >= 0) return null;
+    out[prop] = now.slice(0, at) + next + now.slice(at + old.length);
+  }
+  return out;
 }
