@@ -345,8 +345,8 @@ export interface WorkerPageProps {
   intro?: ReactNode;
   /** The dashboard lists the task types of EVERY app the worker can open
    *  here (`task/me { all }`), not this app's alone: a type another app
-   *  draws opens that app on it (`appLink(app, { type })`), whose Back
-   *  returns here. strut/worker's, the server's one work link. */
+   *  draws opens that app on it when tapped (`appLink(app, { type })`),
+   *  whose Back returns here. strut/worker's, the server's one work link. */
   everyApp?: boolean;
   className?: string;
 }
@@ -412,13 +412,15 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
   const [working, setWorking] = useState<string | null | undefined>(undefined);
   // Opened on one kind of work (`appLink(app, { type })`, as another app's
-  // dashboard opens it, or an invite's link): straight to it, once.
+  // dashboard opens it, or an invite's link): straight to it, once, when this
+  // app draws it; a kind another app draws goes first on the dashboard, one
+  // tap away (below).
   const input = useToolInput<Record<string, unknown>>();
   const opened = typeof input?.["type"] === "string" ? input["type"] : undefined;
   const openedOnce = useRef(false);
   /** Opened on a kind and not yet past it: the page waits (One moment)
-   *  rather than drawing the dashboard for the instant before it opens the
-   *  app that draws that kind — the dashboard flashed before the app. */
+   *  rather than drawing the dashboard for the instant before it starts
+   *  that kind here. */
   const [handingOff, setHandingOff] = useState(!!opened);
   /** From the moment an answer goes until Next task: no next task is
    *  leased meanwhile, so a worker who stops here holds nothing. */
@@ -437,38 +439,17 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   };
   // Once `task/me` has answered — an invite's grant made by then — and only
   // when the worker may do it: else the dashboard, which says what they can.
-  // A kind another app draws opens that app, and first this page's own link
-  // loses its `type`: Back from that app comes back to this page, which must
-  // be the dashboard then, not this link again, which would open the app
-  // again (Back bounced forward, 2026-11-19).
+  // A kind another app draws is NOT opened from here: it goes first on the
+  // dashboard, and the worker's tap opens that app. A page that opens another
+  // by itself, untapped, is one a phone's Back skips: Android's web view then
+  // says there is nothing to go back to, so Peel drew no Back, and Peel opens
+  // the invite's link at every start, so it jumped there every time
+  // (2026-11-20).
   useEffect(() => {
     if (!signedIn || !opened || openedOnce.current || !me.data) return;
     openedOnce.current = true;
-    if (!me.data.types.some((t) => t.name === opened)) {
-      setHandingOff(false);
-      return;
-    }
-    const app = drawnElsewhere(opened);
-    if (!app || !here) {
-      setWorking(opened);
-      setHandingOff(false);
-      return;
-    }
-    const { type: _opened, ...rest } = input ?? {};
-    const own = Object.fromEntries(Object.entries(rest).filter(([, v]) => typeof v === "string")) as Record<string, string>;
-    void host
-      .openLink(appLink(here, own))
-      .catch(() => undefined)
-      .then(() => host.openLink(appLink(app, { type: opened })))
-      // A visitor's host (Peel) loads that app in this same web view, so the
-      // wait stays until it does; strut's own UI opens it beside this page,
-      // which is the dashboard again.
-      .then(
-        () => {
-          if (known) setHandingOff(false);
-        },
-        () => setHandingOff(false),
-      );
+    if (me.data.types.some((t) => t.name === opened) && !drawnElsewhere(opened)) setWorking(opened);
+    setHandingOff(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `drawnElsewhere` reads me.data, which is a dependency
   }, [signedIn, opened, me.data]);
   const [sent, setSent] = useState<Sent | null>(null);
@@ -521,7 +502,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   } else if (handingOff && working === undefined && !me.isError) {
     body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
   } else if (working === undefined) {
-    body = <WorkHome only={type} all={everyApp} onStart={start} />;
+    body = <WorkHome only={type} all={everyApp} onStart={start} {...(opened ? { first: opened } : {})} />;
   } else if (sent) {
     body = <SentScreen sent={sent} next={more} onNext={next} onHome={home} />;
   } else if (work.task) {
@@ -609,8 +590,9 @@ const HOME_POLL_MS = 15_000;
  * kind starts it (`onStart(type)`); Start working takes any kind this app
  * draws (`null`). With `all`, every app's kinds the worker can open here; one
  * another app draws says so, and `onStart` is for the page to open that app.
+ * `first`: the kind the page was opened on, listed first.
  */
-export function WorkHome({ only, all = false, onStart }: { only?: string; all?: boolean; onStart: (type: string | null) => void }) {
+export function WorkHome({ only, all = false, first, onStart }: { only?: string; all?: boolean; first?: string; onStart: (type: string | null) => void }) {
   const w = useWorkerWords();
   const fmt = useFormats();
   const here = useApp()?.name;
@@ -635,7 +617,7 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
     );
   }
   const info: WorkerInfo = me.data;
-  const types = info.types.filter((t) => only === undefined || t.name === only);
+  const types = info.types.filter((t) => only === undefined || t.name === only).sort((a, b) => Number(b.name === first) - Number(a.name === first));
   if (info.status === "suspended" || info.status === "banned") {
     return <Screen icon={<Clock className="size-10" />} heading={w.paused} text={w.pausedText} />;
   }

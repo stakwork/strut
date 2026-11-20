@@ -350,8 +350,9 @@ index. A change in this area updates this file, not AGENTS.md.
   `WORKER_APP`), the server's one work page, so Peel keeps one page per
   employer (it records each app a link opens, docs on peel-android's phase
   41); an invite made for one kind of work (`type`) carries `type=<type>`,
-  and Tasks opens it once `task/me` has answered — in the app that draws it,
-  with Back to Tasks (`WorkerPage`, docs/apps.md). The same link works for
+  and Tasks starts it once `task/me` has answered when Tasks draws it; a kind
+  another app draws goes first on the dashboard, and the worker's tap opens
+  that app, with Back to Tasks (`WorkerPage`, docs/apps.md). The same link works for
   someone who has Peel already (Peel ignores the invite part and opens
   `a=`), so staff never ask; the grant link that was for them is gone
   (`link_…` codes already sent still hold, `GRANT_LINK_PREFIX`). Tasks must
