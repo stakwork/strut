@@ -30,6 +30,12 @@
  * A worker's step is also the only call whose bag carries the worker's
  * calls of the task store (`workerServices`, §9.2): the shared bag holds
  * the `human` step's `ensure` alone.
+ * A PACKAGE's own `admin: true` app shown to an admin (`packageAdminOf`:
+ * the connection holds full scope, and the version is the package's) gets
+ * the admin's scope for that package's steps: the call's `secrets` is bound
+ * to it (`adminSecrets`, src/capabilities.ts), so those steps' fence hands
+ * them `secrets.deployment` for the names the package provides
+ * (src/packages/fence.ts). No other step, call or run holds it.
  * Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap. Every call of a known app — refused, failed
  * or run — is counted by the monitor (./monitor.ts): what an app costs the
@@ -49,6 +55,7 @@ import { z } from "zod";
 import { tool, type ToolSet } from "ai";
 import { appOfIdentity } from "../auth.js";
 import { globToRegExp } from "../closure.js";
+import { adminSecrets, type SecretsCapability } from "../capabilities.js";
 import type { AppRef, HostRef, StepRegistry } from "../core.js";
 import type { GraphReader } from "../graph/search.js";
 import type { GraphBackend } from "../graph/backend.js";
@@ -385,7 +392,7 @@ export interface AppToolDeps {
  *  record's manifest as the capability remembers it (`manifestOf`), never
  *  `get`: that one lists and hashes the version's files and scans the
  *  error reports. */
-async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean } | { error: string }> {
+async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean; package?: string } | { error: string }> {
   if (isPreviewLabel(app.version)) {
     const preview = deps.apps.previewOf(app.name, app.version);
     return preview ? { manifest: preview.manifest, seeded: false } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
@@ -406,6 +413,25 @@ async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppMan
  */
 export function firstPartyApp(app: AppRef, seeded: boolean, actor: string | undefined, visitor: boolean): boolean {
   return !visitor && !!actor && seeded && isFirstPartyName(app.name);
+}
+
+/** The package whose OWN admin app this call is, shown to an admin: an
+ *  `admin: true` app the package installed (its version's `upstream`, under
+ *  its prefix), on a connection with full scope (`AppRef.admin` — the one
+ *  way strut knows an admin: a member's session never gets the app's files,
+ *  and its call never has `admin`). Never a host's or a visitor's call, a
+ *  preview, or a run the page launches (that one runs on the shared bag).
+ *  Its steps, and that package's alone, get `secrets.deployment` for the
+ *  names it provides (src/packages/fence.ts). */
+export function packageAdminOf(app: AppRef, manifest: AppManifest, pkg: string | undefined): string | undefined {
+  return app.admin === true && manifest.admin === true && pkg && !isPreviewLabel(app.version) ? pkg : undefined;
+}
+
+/** `services` with its `secrets` bound to `pkg`'s admin call (`adminSecrets`). */
+export function packageAdminBag(services: unknown, pkg: string): unknown {
+  const bag = (services ?? {}) as Record<string, unknown>;
+  const secrets = bag["secrets"] as SecretsCapability | undefined;
+  return secrets ? { ...bag, secrets: adminSecrets(secrets, pkg) } : services;
 }
 
 /** The bag of a first-party page's call shown to an admin: the admin doors
@@ -442,6 +468,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     type: string,
     config: unknown,
     input: unknown,
+    pkg?: string,
   ): Promise<{ out: { error: string } | { result: unknown }; status: AppCallStatus; bytes: number }> => {
     const refuse = (error: string) => ({ out: { error }, status: "refused" as const, bytes: 0 });
     const fail = (error: string) => ({ out: { error }, status: "error" as const, bytes: 0 });
@@ -451,14 +478,19 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     if (refused) return refuse(`step_run refused: ${refused}`);
     const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg, manifest) : null;
     if (closed) return refuse(`step_run refused: ${closed}`);
-    // A host's call: the shared bag, and nothing beside it.
+    // A host's call: the shared bag, and nothing beside it. A package's own
+    // admin app shown to an admin: the shared bag, its `secrets` bound to
+    // that package's admin call.
+    const packageAdmin = deps.host || deps.visitor ? undefined : packageAdminOf(app, manifest, pkg);
     const shared = deps.host
       ? deps.services
       : deps.visitor?.services
         ? deps.visitor.services(app, manifest, base)
         : app.firstParty && app.admin && deps.adminServices
           ? adminBag(deps.services, deps.adminServices)
-          : deps.services;
+          : packageAdmin
+            ? packageAdminBag(deps.services, packageAdmin)
+            : deps.services;
     // A worker's call leaves nothing behind but its lease and answer: no
     // claims read, so nothing makes it a kept run. Its bag alone carries
     // the worker's calls of the task store.
@@ -518,7 +550,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
   /** The app a call names and its manifest, or why there is none: a page's
    *  identity (its token, at its version), or for a host the app's name at
    *  its live version (never first-party, never an admin's). */
-  const appOfCall = async (identity: string): Promise<{ app: AppRef; manifest: AppManifest } | { error: string }> => {
+  const appOfCall = async (identity: string): Promise<{ app: AppRef; manifest: AppManifest; package?: string } | { error: string }> => {
     if (deps.host) {
       const live = await deps.apps.manifestOf(identity).catch(() => null);
       if (!live) return { error: `step_run: no app "${identity}" on this strut server — a host names the app by its name, such as strut/staff` };
@@ -534,7 +566,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}),
       ...(deps.admin && !deps.visitor ? { admin: true as const } : {}),
     };
-    return { app, manifest: found.manifest };
+    return { app, manifest: found.manifest, ...(found.package ? { package: found.package } : {}) };
   };
 
   return {
@@ -559,7 +591,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         }
         const { app, manifest } = found;
         const started = Date.now();
-        const call = await dispatch(app, manifest, type, config, input);
+        const call = await dispatch(app, manifest, type, config, input, found.package);
         deps.host?.outcome?.(call.status);
         // A preview is the builder looking: not what the app costs people.
         if (!isPreviewLabel(app.version)) deps.monitor?.record({

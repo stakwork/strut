@@ -49,6 +49,7 @@ import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { servicesPastVisitor } from "../step-lint.js";
 import { treeHash } from "../version.js";
+import { packagePrefixOf } from "../package-lookup.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
@@ -211,6 +212,10 @@ export interface AppVersionManifest {
   manifest: AppManifest;
   /** Strut seeded the version (`source: "seed"`): what makes a `strut/` app's page first-party. */
   seeded: boolean;
+  /** The package the version came from (its `upstream`, a fork's carried
+   *  forward), when the app is under that package's prefix: what makes an
+   *  `admin: true` app the package's own admin app (src/apps/tools.ts). */
+  package?: string;
 }
 
 /** The versions `manifestOf` has read, kept until their app's record is written. */
@@ -660,7 +665,15 @@ export function createApps(deps: AppsDeps): AppsCapability {
     manifestOf: (name, version) =>
       manifests.read(name, version, async () => {
         const rec = await workspace.getApp(name, version);
-        return rec ? { version: rec.version, manifest: rec.manifest, seeded: rec.versions[rec.version]?.source === "seed" } : null;
+        if (!rec) return null;
+        const pkg = rec.upstream?.package;
+        return {
+          version: rec.version,
+          manifest: rec.manifest,
+          seeded: rec.versions[rec.version]?.source === "seed",
+          // An item is its package's only under its prefix (src/packages/installed.ts).
+          ...(pkg && packagePrefixOf(name) === pkg ? { package: pkg } : {}),
+        };
       }),
 
     versionDir,

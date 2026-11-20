@@ -19,6 +19,12 @@
  * or another package's; the `job` seed grants what each installed package
  * names (src/job-seed.ts).
  *
+ * Its `provides.secrets` names the secrets the package's steps MANAGE, each
+ * one they may read (`requires.secrets` or `requires.optional`, else the
+ * package is refused): `ctx.services.secrets.own` and, on an admin's call
+ * from the package's own `admin: true` app, `.deployment` reach those names
+ * and no other (src/packages/fence.ts).
+ *
  * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
  * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
  * named by its file, with a `description` and one `parent`; and the new
@@ -96,6 +102,13 @@ const manifestSchema = z
       .object({ tools: z.array(z.string().min(1)).min(1, "job.tools names at least one step of the package"), approve: names.optional() })
       .strict()
       .optional(),
+    // What the package PROVIDES to the server. `secrets`: the ones its steps
+    // manage (src/packages/fence.ts) — read a person's own value apart from
+    // the deployment's, set and delete it, and on an admin's call from the
+    // package's own `admin: true` app the deployment's too. Each is one its
+    // steps may read (`requires`). Strict like the rest: a strut from before
+    // a key refuses the package instead of installing it without it.
+    provides: z.object({ secrets: names.optional() }).strict().optional(),
   })
   .strict();
 
@@ -263,6 +276,10 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   for (const [app, hasManifest] of apps) if (!hasManifest) problems.push(`apps/${app}/: an app's folder holds its app.yaml`);
   if (!problems.length && !items.length) problems.push("no items — a package holds at least one workflow, step, Concept, app or graph type");
   const job = manifest.job ? jobGrant(pkg, manifest.job, items, problems) : undefined;
+  const readable = readableSecrets(manifest);
+  for (const name of manifest.provides?.secrets ?? []) {
+    if (!readable.includes(name)) problems.push(`${MANIFEST_FILE}: provides.secrets: ${name} is not in requires.secrets or requires.optional — a package's steps manage only secrets they may read`);
+  }
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}) };
 }

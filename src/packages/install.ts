@@ -283,6 +283,7 @@ async function installSet(
     digest: m.info.digest,
     source: m.source,
     secrets: readableSecrets(m.info.manifest),
+    ...(m.info.manifest.provides ? { provides: m.info.manifest.provides } : {}),
     at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
