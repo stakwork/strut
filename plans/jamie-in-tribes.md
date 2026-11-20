@@ -9,8 +9,9 @@
 > first no owner check, then no DM at all. A tribe is linked with one tap
 > in Peel, as with Hive: a **linked place** in strut (§4, §5.4), which the
 > daemon follows. So item 4 changes its linking before it merges, and
-> items 6 (strut's places) and 7 (Peel's row for a box) are new. Item 5
-> (Stadeum) waits for them.**
+> items 6 (strut's places) and 7 (Peel's row for a box) are new. Both are
+> built (#787; stakwork/peel#586, stakwork/peel-android#130), and item 5
+> (Stadeum) on stakwork/stadeum#73: every item is built.**
 >
 > - **Written against:** strut `main` @53364a3d, stakwork/sphinx `master`
 >   @f5baba75, stakwork/hive `master` @64260e485 (what is built today),
@@ -625,6 +626,22 @@ No stadeum-ui change. In stakwork/stadeum:
   and every reply costs at least 1 sat. That comes from the treasury's
   balance, the money paid runs earn (§9 decision 6: no cap).
 
+**Built differently (stakwork/stadeum#73):**
+
+- `scripts/init-env.sh` needed nothing. `STRUT_HOST_KEY` was already there
+  for Support, and with it strut already had `STRUT_HOST_KEYS=sphinx:<it>`,
+  and the treasury `DAEMON_STRUT_URL` and `DAEMON_STRUT_KEY`.
+- `DAEMON_REPLY` is `strut` only with the host key, and `none` without it.
+  The daemon reads an empty value as `echo`, so the treasury's command
+  makes an empty one `none`.
+- No `DAEMON_MENTION`: the mention follows `DAEMON_TRIBE_ALIAS`
+  (`@jamie`). No `DAEMON_TRIBE_PHOTO` yet, so tribe posts carry no photo.
+- `DAEMON_JAMIE_URL` is the box's home, `https://<HOST>/`. Stadeum's home
+  frames the Jamie app and passes `?input=` on to it.
+- Stadeum's `AGENTS.md`, rule 4, adds a risk it accepts: strut's container
+  holds the callback token, so an agent could make Jamie post in a linked
+  tribe. What Jamie posts there is an agent's words already.
+
 ## 9. Decisions (defaults; Evan may overrule)
 
 | # | Question | Default | Why |
@@ -650,9 +667,9 @@ Each is its own PR against its repo's default branch, never stacked.
 | 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | **Built (stakwork/sphinx#439)**: `DAEMON_TRIBE_ALIAS` and `DAEMON_TRIBE_PHOTO` (a link); the mention follows the tribe name (§7) |
 | 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`, which stands in for item 6's `PUT /hosts/me`, `GET` and `DELETE /hosts/places` and the nudge too). It follows its places (§7). Its DM linking is gone, and its budget (ruling 6 overruled, stakwork/sphinx#441). Differences in §2, §6, §6.1, §7 |
-| 5 | stadeum | **Turn it on** (§8) | 1, 3, 4, 6 released; 7 for the tap | — |
+| 5 | stadeum | **Turn it on** (§8) | 1, 3, 4, 6 released; 7 for the tap | **Built (stakwork/stadeum#73)**: the treasury's settings, all from `STRUT_HOST_KEY`, and its docs. Differences in §8. A box gets it with a stadeum release, once the daemon's and strut's `stable` have items 3, 4 and 6 (both promoted 2026-11-20) |
 | 6 | strut | **Linked places** (§5.4): the `places` and `hosts` tables in `people.db`; `GET`, `POST` and `DELETE /people/places` for a person token; `PUT /hosts/me`, `GET /hosts/places` and `DELETE /hosts/places/:key` for a host key; the nudge; a place going with its linker's account; `GET /hosts/links/:key` removed (nothing calls it). `specs/API.md` §13.4 and §13.6, `docs/security.md`, a host-door test | 1 | **Built (#787)**: `src/people.ts` (`linkPlace`, `hostPlaces`, `onPlaces`), the routes in `createStrut.ts`, `src/places.test.ts`. Each place the host reads carries `linkerName` (§5.4) |
-| 7 | peel, peel-android | **The Jamie row for a box** (§4): beside Hive's orgs, each linked box whose strut has a Sphinx host ready; on: `POST /people/places`, then approve the member request by the answered `account`; off: `DELETE` | 6 | — |
+| 7 | peel, peel-android | **The Jamie row for a box** (§4): beside Hive's orgs, each linked box whose strut has a Sphinx host ready; on: `POST /people/places`, then approve the member request by the answered `account`; off: `DELETE` | 6 | **Built (stakwork/peel#586, stakwork/peel-android#130)** |
 
 A stand-in for strut's host routes goes into the daemon's tests, so item 4
 is built before items 1 and 6 merge, as `scripts/fake-sphinx-daemon.ts` did
