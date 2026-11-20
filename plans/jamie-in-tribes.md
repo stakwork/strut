@@ -39,7 +39,7 @@
 | 3 | Bespoke `/tribes/*` routes in strut | **No.** Strut is generic. The daemon uses strut's existing workflow and run APIs |
 | 4 | Who calls whom | **The daemon calls strut** (a webhook, in effect), not strut polling the daemon |
 | 5 | Who the host is | **The daemon.** Not stadeum-ui, not a strut module |
-| 6 | Spending on tribes | **A cap**: a daily budget the daemon spends in tribes (§7, §9 decision 6) |
+| 6 | Spending on tribes | **Overruled (Evan, 2026-11-20): no cap.** "sure, take it out"; "i want to get this working ASAP! we can always make it more robust later". Was: a cap, a daily budget the daemon spends in tribes (§7, §9 decision 6) |
 | 7 | A `run.end` that never reaches the daemon | **The daemon recovers it** from the conversation (§6.2) |
 | 8 | Whether a host's turn is an admin's | **Never.** It proposes nothing only an admin accepts, and its decision accepts none (§5.1) |
 | 9 | Answering a tribe conversation from the Jamie app | **No: read-only there.** Continue here forks it into the person's own conversation (§5.1, "Host sessions") |
@@ -224,8 +224,8 @@ off.
 
 **Who may link.** Any person linked to the box. Strut checks nothing about
 the tribe's owner: a turn as the linker has only the linker's own access,
-never an admin's (ruling 8), the daily budget caps spending (§7), and a
-private tribe's owner approves the join. Peel offers the row to the owner,
+never an admin's (ruling 8), and a private tribe's owner approves the
+join. Peel offers the row to the owner,
 as it does for Hive. A tribe stays its linker's: another person's link is
 `409 place_linked:`.
 
@@ -381,8 +381,7 @@ link the host knows how to join, and the person who linked it.
   `(host, key)`. `account` is the linker's linked account
   (`sphinx:<66 hex>`), the one their person token names (`API.md` §13.6).
   A host deals in accounts, never actors: it launches a turn as the
-  linker with `x-strut-account`, and DMs the linker at that key (§7's
-  budget). A place goes with its account: unlinking the account
+  linker with `x-strut-account`. A place goes with its account: unlinking the account
   (`account/unlink`) deletes the places it linked.
 - `hosts`: `name, account, hook, at`, what each host said of itself.
 
@@ -468,9 +467,8 @@ The callback's `run.end` (`CALLBACKS.md` §2):
 needs the box's address, which the daemon learns from `DAEMON_JAMIE_URL`
 (the Jamie app's page, `https://box/`); it adds `?input=session=<id>` as
 the kit's `shareLink` does. Without it, the line names the files with no
-link. The reply's text and its deliverable lines go as one post, so the
-budget's whole-or-nothing covers them together (§7); each proposal is a
-post of its own. A job's own `run.end` (it carries the turn's callback)
+link. The reply's text and its deliverable lines go as one post; each
+proposal is a post of its own. A job's own `run.end` (it carries the turn's callback)
 posts nothing when its `wake` is `"launched"`, and its words otherwise.
 `metadata.strut` is `{ conversation, run, artifacts? }` on a reply and
 `{ conversation, proposals }` on a proposal's post.
@@ -573,9 +571,6 @@ And:
     - three failed joins in a row;
     - a request the tribe's owner turned down after the daemon asked for
       that place.
-
-    A join over today's budget is not a failure: it is tried again the
-    next day, and the linker is told.
   - "A tribe it joined for a place" includes one it was already in when the
     place appeared: it follows that place, and leaves when it goes.
   - What the daemon keeps is strut's list as last read, and the tribes it
@@ -584,28 +579,6 @@ And:
     name comes from the account's contacts. A linker who isn't a contact
     is "the person who linked this tribe" in lines and in a turn's
     `context.line`.
-  - The budget's DM goes to a linker who is a contact. Otherwise it is
-    logged: a DM never pays to meet someone (`POST /dm`'s rule).
-- **A daily budget for tribes** (ruling 6), `DAEMON_TRIBE_SATS_PER_DAY`
-  (default 1,000): the most the account spends in all tribes together in a
-  UTC day, counting join prices and every part of every post. A tribe's
-  owner sets its prices, may change them at any time, and is paid what its
-  members pay. sphinx-chat pays the price as it is at the send, price plus
-  escrow on every part, with no ceiling (`wasm/chat/src/commands.ts`
-  "the tribe's own price, as it is now", `amounts.ts` `tribeSats`). So
-  without a budget, a linked owner could raise the price and move the
-  treasury to themselves, one reply at a time: a 3 KB reply is 11 parts.
-  The budget is for all tribes together, not one per tribe, because a new
-  tribe costs nothing to make.
-  - Before each join or post, the daemon prices it at the tribe's price as
-    it is then: the join price, or the price per part times the parts. One
-    that would pass the day's budget is not made. A reply is posted whole
-    or not at all.
-  - It takes no mention in a tribe while the budget left cannot pay one
-    part there, so no turn runs whose reply cannot be posted.
-  - Whenever it stops something in a tribe, it tells the linker by DM,
-    once a day per tribe, that Jamie answers there again after midnight
-    UTC.
 - **Bigger files.** Its cap of four files and 3 MB was Vercel's body limit
   for Hive. Strut takes ten, 15 MB together (`API.md`, `attachments`).
 - **One account, two names.** The core already takes the alias and photo on
@@ -629,11 +602,6 @@ And:
 - The callback token is `DAEMON_CALLBACK_TOKEN`, made once and kept in
   the account folder like the treasury's other tokens; it rides in the
   callback URL (`?token=`), since strut sets no header on a callback.
-- The budget prices through a `spend` hook on sphinx-chat's `sendText`,
-  `joinTribe` and `leaveTribe`: the whole price, every part, before
-  anything is published. A leave it can't pay is not sent, but the
-  account marks the tribe left and stops answering there (the tribe server
-  keeps a member that leaves).
 - `DAEMON_LOG=on` with `DAEMON_REPLY=strut` is a config error (§9
   decision 7). What the mode keeps is `strut.json` in the account folder;
   a held launch's files live in memory only.
@@ -655,20 +623,18 @@ No stadeum-ui change. In stakwork/stadeum:
   (strut's callbacks).
 - **Money.** Every tribe charges its join price and its price per message,
   and every reply costs at least 1 sat. That comes from the treasury's
-  balance, the money paid runs earn, up to the daily budget (§7, §9
-  decision 6). The default needs no line in `.env`; a box that wants
-  another sets `DAEMON_TRIBE_SATS_PER_DAY`.
+  balance, the money paid runs earn (§9 decision 6: no cap).
 
 ## 9. Decisions (defaults; Evan may overrule)
 
 | # | Question | Default | Why |
 | --- | --- | --- | --- |
 | 1 | How a person links their Sphinx account | **Overruled (Evan, 2026-11-18):** through Peel, which signs a challenge from the box's Connect panel (`people-and-hosts.md` §2.1, ruling 9). Was: a code sent to the account by DM (§3) | "We dont need to support old Sphinx apps. Peel is the new way forward" |
-| 2 | How a tribe is linked | **Overruled (Evan, 2026-11-20):** one tap in Peel, as with Hive: a linked place in strut, which the daemon follows; no owner check (§4, §5.4). Was: the owner DMs the tribe's link to the account; then, briefly, any linked person's DM | Hive's UX: nobody pastes a link into Support's chat. The daemon has no door a person reaches, and Peel already reaches the box's strut. The owner check guarded nothing a linker's turn could reach (ruling 8, the budget), and the tribe record carries no owner key |
+| 2 | How a tribe is linked | **Overruled (Evan, 2026-11-20):** one tap in Peel, as with Hive: a linked place in strut, which the daemon follows; no owner check (§4, §5.4). Was: the owner DMs the tribe's link to the account; then, briefly, any linked person's DM | Hive's UX: nobody pastes a link into Support's chat. The daemon has no door a person reaches, and Peel already reaches the box's strut. The owner check guarded nothing a linker's turn could reach (ruling 8), and the tribe record carries no owner key |
 | 3 | Whose namespace a tribe conversation is in | The host's, `host/<name>/…` | A thread has several speakers; none of them opened it |
 | 4 | A speaker strut doesn't know | Runs as the linker, the line saying so | As today (hive#5688). A public tribe is public (ruled for Hive 2026-10-30) |
 | 5 | Deliverables in a tribe | Text, links with their own address, one link into the Jamie app | Peel cannot open a box's files yet |
-| 6 | Spending on tribes (ruled: a cap) | One budget for all tribes together, 1,000 sats a UTC day, join prices included (§7). The balance is on Earnings | A tribe's owner sets its prices and is paid them; without a cap a linked owner could drain the treasury. One budget, not one per tribe, because a new tribe costs nothing to make. In a 1-sat tribe, 1,000 sats is 1,000 parts: a short reply is one part, a 3 KB reply 11 |
+| 6 | Spending on tribes | **Overruled (Evan, 2026-11-20): no cap.** Joins, posts and leaves pay the tribe's price, as sphinx-chat does anywhere else. Was: one budget for all tribes together, 1,000 sats a UTC day, join prices included | "sure, take it out"; "i want to get this working ASAP! we can always make it more robust later". A cap is later (§11). Was: a tribe's owner sets its prices and is paid them; without a cap a linked owner could drain the treasury |
 | 7 | The message log (`DAEMON_LOG`) | Off | Hive's log goes to a placeholder workflow; nothing reads it yet |
 | 8 | How strut learns the account's address | **Dropped (2026-11-18).** Only the DM link showed it. Peel's link needs no address, and stakwork/sphinx#438 no longer opens `GET /me` to the message token | — |
 | 9 | Where the host key comes from | `STRUT_HOST_KEYS`, from `.env` | The treasury's tokens are wired this way already |
@@ -683,7 +649,7 @@ Each is its own PR against its repo's default branch, never stacked.
 | 1 | strut | **Host keys and linked accounts** (§5.1, §5.2): `STRUT_HOST_KEYS`, the `host` scope and `x-strut-account`, `host/<name>/` sessions (`conversation_hosted:`, `host` on the list item), a host's turn never an admin's, `linked-accounts.json`, `POST /hosts/link`, `GET /hosts/links/:key`, the `account/*` steps, the Jamie app's Connect panel and its read-only tribe conversations with Continue here. `specs/API.md`, `docs/security.md`, `docs/environment.md` | — | **Built (#737)**, with `people-and-hosts.md` item 2: the accounts in `people.db` (§5.2), `name` and `address` on the link (§3), the `account/*` steps a page's own calls (§5.2). `scripts/fake-sphinx-daemon.ts` answers `GET /me` and hands a DM'd code to `POST /hosts/link`. The DM link is replaced by Peel's (`people-and-hosts.md` item 6) |
 | 2 | strut | **`delivered` on a wake turn's `run.end`** (§5.3). `specs/CALLBACKS.md` | — | **Built (#737)**, as written: `postRunCallback` reads it with the conversation index's own `deliveredBy` (`conversations.delivered`), so a room gets it too; absent when the job runs delivered nothing |
 | 3 | sphinx | **Two names** (§7): alias and photo per kind, `DAEMON_TRIBE_ALIAS` | — | **Built (stakwork/sphinx#439)**: `DAEMON_TRIBE_ALIAS` and `DAEMON_TRIBE_PHOTO` (a link); the mention follows the tribe name (§7) |
-| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`, which stands in for item 6's `PUT /hosts/me`, `GET` and `DELETE /hosts/places` and the nudge too). It follows its places (§7). Its DM linking is gone. Differences in §2, §6, §6.1, §7 |
+| 4 | sphinx | **The strut host mode** (§7): `StrutService`, the callback route, recovering a lost `run.end` (§6.2), the daily budget, following its places (§4), proposals by reply | 1, 6 (a stand-in strut in its tests until they merge) | **Built (stakwork/sphinx#440)**, with a stand-in strut in its tests (`test/strutkit.ts`, which stands in for item 6's `PUT /hosts/me`, `GET` and `DELETE /hosts/places` and the nudge too). It follows its places (§7). Its DM linking is gone, and its budget (ruling 6 overruled, stakwork/sphinx#441). Differences in §2, §6, §6.1, §7 |
 | 5 | stadeum | **Turn it on** (§8) | 1, 3, 4, 6 released; 7 for the tap | — |
 | 6 | strut | **Linked places** (§5.4): the `places` and `hosts` tables in `people.db`; `GET`, `POST` and `DELETE /people/places` for a person token; `PUT /hosts/me`, `GET /hosts/places` and `DELETE /hosts/places/:key` for a host key; the nudge; a place going with its linker's account; `GET /hosts/links/:key` removed (nothing calls it). `specs/API.md` §13.4 and §13.6, `docs/security.md`, a host-door test | 1 | **Built (#787)**: `src/people.ts` (`linkPlace`, `hostPlaces`, `onPlaces`), the routes in `createStrut.ts`, `src/places.test.ts`. Each place the host reads carries `linkerName` (§5.4) |
 | 7 | peel, peel-android | **The Jamie row for a box** (§4): beside Hive's orgs, each linked box whose strut has a Sphinx host ready; on: `POST /people/places`, then approve the member request by the answered `account`; off: `DELETE` | 6 | — |
@@ -694,6 +660,8 @@ for Support.
 
 ## 11. Later
 
+- **A spending cap on tribes**, if a linked tribe's price ever becomes a
+  problem (ruling 6, overruled 2026-11-20).
 - **Peel:** marking the account to see senders from the same Jamie row
   (sphinx-chat's `show-senders` does it today), so each linked speaker's
   turn runs as them; drawing `metadata.strut` cards from a box.
