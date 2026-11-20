@@ -38,7 +38,7 @@ import type { RunResult, RunTrial } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
 import type { EvidenceRow } from "./graph/claims.js";
 import { conceptVersionOf } from "./graph/concept-version.js";
-import { conceptCheckSpec } from "./knowledge.js";
+import { claimOf, conceptCheckSpec, type KnowledgeClaim } from "./knowledge.js";
 import type { Proposal } from "./proposals.js";
 import type { RunStore } from "./store.js";
 
@@ -71,12 +71,10 @@ export interface Sample {
   trial?: true;
 }
 
-/** A claim on the page with its cases, and its verdicts on the page's wording now. */
-export interface CheckView {
-  id: string;
-  text: string;
-  /** Who wrote it: a seeder (`strut`), `ai`, a person. */
-  speaker?: string;
+/** A claim on the page as its keeper reads it (its status, who wrote it:
+ *  a seeder — `strut` — `ai`, a person; the newest evidence), with its
+ *  cases, and its verdicts on the page's wording now. */
+export interface CheckView extends KnowledgeClaim {
   cases: Case[];
   samples: Sample[];
 }
@@ -127,6 +125,10 @@ export interface ChecksView {
   /** Newest first. */
   tests: TestView[];
   running: Batch[];
+  /** The last run here left samples with no verdict (a run that failed, a
+   *  judge that could not be reached): how many, and why, in a line. Gone
+   *  when the next one starts. */
+  problem?: string;
 }
 
 /** A test on disk: the two wordings, in the order they were when it was made. */
@@ -337,6 +339,10 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
 
   /** Who started each batch: whose run each sample is. Never on what a page is shown. */
   const actors = new Map<string, string>();
+  /** Each batch's samples as they ran: the claim and the run, to see which were judged. */
+  const ran = new Map<string, Array<{ claim: string; run: string }>>();
+  /** What the last batch on a page left unjudged, in a line (`ChecksView.problem`). */
+  const problems = new Map<string, string>();
 
   /** One sample: the case run as a trial, then judged. */
   const sampleRun = async (batch: Batch, s: { claim: string; k: number; c: Case; branch?: string }) => {
@@ -346,6 +352,8 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         ...(s.branch ? { branch: s.branch } : {}),
         trial: { claim: s.claim, case: s.k },
       });
+      ran.get(batch.id)?.push({ claim: s.claim, run: res.runId });
+      if (res.status !== "success") batch.errors.push(res.error?.message ?? `the run ended ${res.status}`);
       await deps.verifier.verifyRun(s.c.workflow, res.runId);
     } catch (err) {
       batch.errors.push(errorText(err));
@@ -357,15 +365,33 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
   const start = (batch: Batch, by: string | undefined, samples: Array<{ claim: string; k: number; c: Case; branch?: string }>, after?: () => Promise<void>) => {
     batch.total = samples.length;
     batches.set(batch.id, batch);
+    ran.set(batch.id, []);
+    problems.delete(batch.concept);
     if (by) actors.set(batch.id, by);
     void Promise.all(samples.map((s) => limit(() => sampleRun(batch, s))))
       .then(() => after?.())
+      .then(() => unjudged(batch))
       .catch((err) => console.error(`[trials] ${batch.id}:`, err))
       .finally(() => {
-        if (batch.errors.length) console.warn(`[trials] ${batch.id}: ${batch.errors.length} of ${batch.total} samples failed: ${batch.errors[0]}`);
         batches.delete(batch.id);
         actors.delete(batch.id);
+        ran.delete(batch.id);
       });
+  };
+
+  /** A batch that ended with samples no verdict came of says so on the page, until the next one starts. */
+  const unjudged = async (batch: Batch) => {
+    const runs = ran.get(batch.id) ?? [];
+    const judged = new Set<string>();
+    for (const claim of new Set(runs.map((r) => r.claim))) {
+      for (const e of await reader.evidenceFor(claim, { kind: "concept", name: batch.concept })) if (e.source?.run_id) judged.add(e.source.run_id);
+    }
+    const missing = batch.total - runs.filter((r) => judged.has(r.run)).length;
+    if (!missing) return;
+    const why = batch.errors[0];
+    const line = `${missing} of ${batch.total} samples have no verdict${why ? `: ${why.length > 300 ? `${why.slice(0, 300)}…` : why}` : " (the judge gave none)"}`;
+    problems.set(batch.concept, line);
+    console.warn(`[trials] ${batch.concept}: ${line}`);
   };
 
   const dropBranch = async (name: string) => {
@@ -400,9 +426,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         docs: page.docs,
         ...(source ? { fromGit: { set: source.set, ...(source.checkout ? { checkout: source.checkout } : {}), ...(source.why ? { why: source.why } : {}) } } : {}),
         checks: list.map((c) => ({
-          id: c.id,
-          text: c.text,
-          ...(c.speaker ? { speaker: c.speaker } : {}),
+          ...claimOf(c),
           cases: cases.get(c.id) ?? [],
           samples: verdicts.get(c.id)?.get(page.version) ?? [],
         })),
@@ -411,6 +435,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
           return { id: t.id, at: t.createdAt, ...(t.by ? { by: t.by } : {}), page: side(t.sides[o.page]), change: side(t.sides[o.page === 0 ? 1 : 0]), live: o.live };
         }),
         running: [...batches.values()].filter((b) => b.concept === concept).map((b) => ({ ...b, errors: [...b.errors] })),
+        ...(problems.has(concept) ? { problem: problems.get(concept)! } : {}),
       };
     },
 

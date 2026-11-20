@@ -402,6 +402,8 @@ export default function App() {
                     onSelect={(n) => pick(n)}
                     onClose={() => setCard(false)}
                     changes={proposedFor.get(sel.ref_id)}
+                    // Only an admin's page reads the dream's cycles: what says the viewer is one.
+                    admin={!!cycles.data}
                   />
                 </div>
               </section>
