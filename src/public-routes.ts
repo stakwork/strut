@@ -396,10 +396,10 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
 
   // A worker invite's page (plans/human-steps.md §5.8, src/public-join.ts):
   // static but for the server's name ("Acme invites you") and the worker's
-  // language (`?lang=`, else the browser's), the invite after `#` read by its
+  // language (`?lang=`, else the `join_lang` cookie, else the browser's), the invite after `#` read by its
   // own script and never sent.
   app.get("/public/join", async (c) => {
-    const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"));
+    const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"), c.req.header("cookie"));
     return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
   });
   app.get("/public/join/qrcode.js", async (c) =>
