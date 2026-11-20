@@ -44,7 +44,7 @@ let strutInstance: Strut | null = null;
  *  `automation?: { workflow, approve?, grants? }`, and `graphReaders?`, who
  *  may read which namespaces of the graph (src/graph/scope.ts), and
  *  `memory?: "graph"`, accepted and ignored (the memory is always the
- *  graph), and `concepts?: false | { personal?: boolean }`,
+ *  graph), and `concepts?: false | { personal?: boolean; claims?: boolean }`,
  *  the Concept pages seeded (`StrutOptions.concepts`), and `assistant?: false
  *  | { title? }`, strut's own assistant app (`StrutOptions.assistant`), and
  *  `publicRuns?: { principal? }`, who pays for a stranger's run
@@ -100,8 +100,8 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   const concepts = (raw as Record<string, unknown> | null)?.["concepts"];
   if (
     concepts !== undefined && concepts !== false &&
-    !(concepts && typeof concepts === "object" && !Array.isArray(concepts) && Object.entries(concepts).every(([k, v]) => k === "personal" && typeof v === "boolean"))
-  ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "concepts" must be false or { personal?: boolean }`);
+    !(concepts && typeof concepts === "object" && !Array.isArray(concepts) && Object.entries(concepts).every(([k, v]) => (k === "personal" || k === "claims") && typeof v === "boolean"))
+  ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "concepts" must be false or { personal?: boolean, claims?: boolean }`);
   if (concepts !== undefined) out.concepts = concepts as StrutOptions["concepts"];
   const jamie = (raw as Record<string, unknown> | null)?.["jamie"];
   if (jamie !== undefined && jamie !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "jamie" must be false`);

@@ -210,6 +210,21 @@ grant, a read), drawn by `strut/views`' `ConceptDiff`:
   Concept, first-party included — the same refusal Editing below meets.
   Recorded in `concept-history.md`'s Open section.
 
+## v2.2 (2026-11-20): checks and tests (`claim-trials.md` §4–§5)
+
+A Concept's card lists its CHECKS where it listed its claims: each claim,
+the messages that test it, and a dot per verdict (the newest ten; the
+earlier ones a count). Opened wide, an admin runs a check with the samples
+asked for, adds a message or a check, and opens the page's text to test a
+change against the page as it is. Each TEST stays under the checks: the
+diff, the page's row of dots and the change's, and which did better, with
+Use it when the change did. One read draws it (`knowledge/checks`); six
+admin-only steps do the rest. A member reads the checks and the dots.
+
+Chosen from four mockups on the owner's review: no history of the page's
+versions and no drafts to keep or discard, one test primitive, and the
+diff as the view.
+
 ## Later (not built now)
 
 - **Editing** a concept's name, description and docs from the panel. Built

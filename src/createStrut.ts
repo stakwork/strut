@@ -578,8 +578,10 @@ export interface StrutOptions<TServices = unknown> {
    *  `seedConcepts` once this returned. `false` seeds nothing.
    *  `{ personal: true }` also seeds `Personal`, the root of a person's
    *  own knowledge (`PERSONAL_CONCEPTS`), for a host whose graph is one
-   *  person's. */
-  concepts?: false | { personal?: boolean };
+   *  person's. `{ claims: false }` seeds the pages without the claims and
+   *  cases their files carry (src/trials.ts): the checks of strut's own
+   *  pages are not recorded, so nothing judges work against them. */
+  concepts?: false | { personal?: boolean; claims?: boolean };
   /** The `orchestrator` workflow strut ships (`src/orchestrator-seed.ts`):
    *  one conversation turn that answers with its tools and starts jobs
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
@@ -2386,7 +2388,7 @@ export async function createStrut<TServices = unknown>(
   if (graph && opts.concepts !== false) {
     try {
       const seeded = await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
-      for (const p of seeded) if (p.claims?.length) seededClaims.push({ name: p.name, claims: p.claims });
+      if (opts.concepts?.claims !== false) for (const p of seeded) if (p.claims?.length) seededClaims.push({ name: p.name, claims: p.claims });
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }

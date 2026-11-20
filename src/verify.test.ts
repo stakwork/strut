@@ -209,6 +209,18 @@ describe("subjectsOfRun", () => {
     assert.deepEqual(subjectsOfRun("job", failed).filter((o) => o.subject.kind === "concept").map((o) => [o.subject, (o.check as { error?: unknown }).error]), [[{ kind: "concept", name: "Job" }, { message: "boom" }]]);
     assert.ok(!subjectsOfRun("job", events.slice(0, -1)).some((o) => o.subject.kind === "concept"), "no run.end, nothing observed");
     assert.ok(!subjectsOfRun("step:graph/graph-get", events).some((o) => o.subject.kind === "concept"), "a kept step run is no workflow run");
+
+    // A conversation keeps its first turn's system prompt (agent.ts): when
+    // this turn's is another, the pages rendered into it were never read by
+    // the model, so the run observes only what its agent opened itself.
+    const kept = events.map((e) => (e.path === "job/work" && e.type === "step.end" ? { ...e, output: { result: "done", session: { id: "s", turn: 3, offset: 0, keptSystem: true } } } : e));
+    assert.deepEqual(subjectsOfRun("job", kept).filter((o) => o.subject.kind === "concept").map((o) => o.subject), [{ kind: "concept", name: "Planning" }]);
+    // A page rendered into the prompt AND opened by the agent was read: the agent's read stands.
+    const both = [...kept.slice(0, 4), ev("step.end", "job/work/000-graph_graph_get", { stepType: "tool:graph_graph_get", nodes: [concept("Job", "v-job")] }), ...kept.slice(4)];
+    assert.deepEqual(subjectsOfRun("job", both).filter((o) => o.subject.kind === "concept").map((o) => (o.subject as { name: string }).name).sort(), ["Job", "Planning"]);
+    // The same session on its own first prompt (nothing kept): the rendered page counts as before.
+    const same = events.map((e) => (e.path === "job/work" && e.type === "step.end" ? { ...e, output: { result: "done", session: { id: "s", turn: 3, offset: 0 } } } : e));
+    assert.equal(subjectsOfRun("job", same).filter((o) => o.subject.kind === "concept").length, 2);
   });
 });
 

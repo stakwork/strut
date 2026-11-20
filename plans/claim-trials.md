@@ -1,9 +1,13 @@
 # Trials — how often a rule holds
 
-Status: PROPOSED (2026-11-19). Builds on plans/concept-evals.md (items
-a–e, all built). Revised the same day on the owner's review: a page's
-checks ship in its file (3), the Knowledge app runs them and shows their
-history (4), and a change is tried there as a draft (5).
+Status: BUILT (2026-11-20), except item 2. Builds on
+plans/concept-evals.md (items a–e). As built: the orchestrator's rules are
+the seeded `Orchestrator` page (1); a page's file carries its claims and
+their cases, and a claim's cases run as trials (3); the Knowledge app runs
+a page's checks and shows a dot per verdict (4); a change to a page is
+tested against the page as it is, and the test is kept (5). The reference
+is docs/knowledge.md, "Trials and tests". NOT built: a claim's count with
+a lower bound, and a compare that decides by a significance test (2).
 
 ## The ask
 
@@ -13,17 +17,32 @@ answered "I can't… no shell". Its jobs have one. The prompt was fixed
 times after, "I can't" 4/4 → 0/4.
 
 That check should be strut's own. A rule (a claim on a Concept page), a
-few messages that test it (cases), N replays, and a number on the claim in
-the Knowledge app: "19/20, at least 78% (95% confidence)". The same number
-on a branch says whether a change to the page made the difference.
+few messages that test it (cases), N replays, and the verdicts on the
+claim in the Knowledge app. The same verdicts on a changed wording say
+whether the change made the difference.
 
 Nothing here names a kind of task. The orchestrator is the first use.
 
-The owner's review (2026-11-19) added three things. The checks of a page
-strut ships are shipped with it. The Knowledge app is where a person runs
-one, picks n and reads the evidence: "that's it". And the proof needs no
-PR: a person makes the change in the app as an experiment, tests it
-there, and keeps it or not.
+## The owner's rulings (2026-11-19)
+
+Made on a review of this plan and four mockups of the app.
+
+1. The checks of a page strut ships are shipped with it.
+2. The Knowledge app is where a person runs a check, picks n and reads the
+   evidence: "that's it".
+3. Proving a change needs no PR: a person makes the change in the app,
+   tests it there, and keeps it or not.
+4. It is not about how the page evolved. It is about proving that each
+   part of it is good, led by a person. So nothing that was proved is
+   discarded, and a NEGATIVE EXAMPLE (lines taken out, and the rule
+   breaks) is as valid as an improvement: "they should be the same
+   primitive". That primitive is the TEST (5). An earlier draft of this
+   plan had a history of the page's versions and drafts a person kept or
+   discarded; both are gone.
+5. The diff is the view. The page is not broken into parts: a person makes
+   a diff and tests it.
+6. A row draws at most ten dots; the earlier ones are a count to their
+   left ("+15").
 
 ## What exists
 
@@ -33,57 +52,68 @@ there, and keeps it or not.
 - A Concept branch is a copy of the tree a run can be launched on
   (`branch`, a launch-level field). `knowledge/compare` sets main against a
   branch over the same claims; `knowledge/merge` lands the branch.
-- The Knowledge app shows a Concept's claims with their status.
-- The history (`history/read`) holds every text a page has had, on main
-  and on each branch, and `ConceptDiff` draws two of them as one diff.
+- The history (`history/read`) holds every text a page has had, and
+  `ConceptDiff` draws two of them as one diff.
 
-Three things stop the check above: the orchestrator's rules are YAML, not
-a page; a claim's status is its newest verdict, never a count; and nothing
-replays a message N times without doing the real work N times.
+Three things stopped the check above: the orchestrator's rules were YAML,
+not a page; nothing replayed a message N times without doing the real work
+N times; and the app showed a claim's status, never its verdicts.
 
 ## 1. The orchestrator's rules are a page
 
 `src/concepts/Orchestrator.md`, a root seeded like `Job` and `Dream`,
-holds the judgment of today's `params.system`, moved as it is.
-`orchestrator.yaml` keeps the mechanics (the reply's fields, which tool
-does what) and reads the page with `context/concept` into the system
-prompt, as the dream reads `Dream` (#667). A host's section is still
-appended after. Every turn then opens the page, so a claim on it judges
-turns.
+holds the judgment that was `orchestrator.yaml`'s `params.system`, moved
+as it was. The workflow keeps the mechanics (the reply's fields) in
+`params.system`, where a host's section is still appended, and reads the
+page with `context/concept` at the head of the system prompt. Every turn
+then opens the page at a version, so a claim on it judges turns.
 
-A session keeps the system prompt of its first turn. A later turn on it
-records the page versions that first turn read, not the page's current
-one, or a verdict lands on a version the model never saw. This holds for
-any page read into a system prompt (`Job` and `Workflow Builder` today).
+Two things the move needed:
 
-The page starts long, since it is today's prompt. Splitting it into
-shorter pages comes after trials show which parts matter.
+- **The page as it is.** `context/concept` frames a page as the
+  workspace's notes and cuts its docs at 6,000 characters. A page that IS
+  an agent's rules is read with `frame: false` (its docs alone) and a
+  `max` the step names (20,000 here).
+- **No graph.** A workspace on plain files has no page to read. The seeded
+  workflow carries the same file's text as `params.rulesText`
+  (src/orchestrator-seed.ts), and the system prompt is `{{ rules.text ||
+  params.rulesText }}`. One text, two ways to the prompt.
 
-## 2. A claim counts
+A conversation keeps the system prompt of its first turn. A later turn on
+it must not count as evidence about a wording the model never read. As
+built (open question 4, the second option): when the agent step ran on a
+kept prompt and was handed another, the run does not observe the pages
+`context/concept` rendered into the unused one (`session.keptSystem`,
+`subjectsOfRun`). A page the agent opened itself is still observed. This
+holds for every workflow that renders a page into a prompt.
 
-Every claim read gets a COUNT beside its status, on the subject's current
-version: `{ passed, judged, low }`. `judged` is the verdicts (an
-abstention is none), `low` the one-sided 95% lower bound on the pass rate
-(Clopper–Pearson; with every sample passed it is 0.05^(1/n)). The
-database counts it, as `compare` already counts verdicts. Status keeps its
-meaning.
+The page starts long, since it is the whole prompt. Splitting it into
+shorter pages comes after tests show which parts matter.
 
-`compare` decides from the counts: `better` or `worse` only when a
-one-sided Fisher exact test on the two sides is under 0.05, else `same`,
-with `p` on each claim. A merge's commit carries the compare it landed on,
-so the history keeps the proof beside the diff.
+## 2. A claim counts (not built)
+
+Every claim read would get a COUNT beside its status, on the subject's
+current version: `{ passed, judged, low }`, `low` the one-sided 95% lower
+bound on the pass rate (Clopper–Pearson; with every sample passed it is
+0.05^(1/n)). `compare` would decide from the counts: `better` or `worse`
+only when a one-sided Fisher exact test on the two sides is under 0.05,
+with `p` on each claim.
+
+The app shows dots and counts (4) and decides nothing by them, so this was
+left out. It is what a workflow that decides by a score needs.
 
 ## 3. Trials
 
-A CASE is one input to a workflow, `{ workflow, input }`, saved on a
-claim: claims are the measure and shared across branches, and a case is
-part of the measure. A person writes one in the Knowledge app or lifts one
-from a real run ("make this a case": the run's workflow and input).
+A CASE is one input to a workflow, `{ workflow, input }`, kept on a claim:
+claims are the measure and shared across branches, and a case is part of
+the measure. Kept beside the claim, not on it
+(`<dataDir>/trials/cases/<claim id>.json`): `Claim` is a type strut shares
+with a swarm's graph and does not extend.
 
-A page from git carries its claims and their cases in its file, so they
-go where the page goes. The front matter takes a `claims:` block shaped
-like a workflow's (`readClaimsBlock`). Each claim names the `workflow` its
-cases run and lists the `cases`, each one that workflow's input:
+A page from git carries its claims and their cases in its file, so they go
+where the page goes. The front matter takes a `claims:` block. Each claim
+names the `workflow` its cases run and lists the `cases`, each one that
+workflow's input:
 
     claims:
       - text: Asked whether it can do something its work can do, it says yes and offers to do it.
@@ -92,119 +122,89 @@ cases run and lists the `cases`, each one that workflow's input:
           - prompt: Can you use bash?
           - prompt: What's the best way to give you SSH access to my server?
 
-`seedConcepts` records the block when it writes the page, as
-`reconcileWorkflowClaims` does a workflow's (idempotent; the speaker is
-the set's seeder; the check is the standard one): strut's own pages at
-boot, a package's at install. That is the "claims travelling with a
-package's pages" docs/knowledge.md lists as not built. The block is not an
-attribute and not part of the page's version (the version is what opening
-the page returns), so a new case moves no verdict to stale. A claim or a
-case a person adds in the app is the workspace's own. A seeded one retired
-there comes back at the next boot until the file drops it, as a
-workflow's does.
+`seedConcepts` hands a seeded page's block out, and createStrut records
+strut's own at boot (`trials.seed`): additive, by the sentence, as a
+workflow's `claims:` block is. The block is not an attribute and not part
+of the page's version, so a new case moves no verdict to stale. A claim or
+a case a person adds in the app is the workspace's own. Writing a page's
+docs back to its file keeps the block byte for byte.
 
 A TRIAL runs a claim's cases N times. Each sample is a new run of the
-case's workflow with its input, as a new conversation (a fresh `session`
-where the input has one), on main or on a branch. Each sample's work is
-judged by that claim, whatever its check's policy, as an explicit verify
-is; other claims follow their own policy.
+case's workflow with its input, on main or on a branch, and the claim
+judges it whatever its check's policy; other claims follow their own.
 
-`trial` is a launch-level field shaped like `branch`: recorded on
-`run.start`, inherited by every run it starts, never in `input`, set by
-whoever launches. A trial starts nothing outside itself: the job launcher
-answers that the job was held, with what it would have started, and
-launches nothing; a gated call is not proposed; no wake and no callback; a
-run on another strut is held. A shell or the web an agent has is not held,
-so a trial of a workflow whose agent has them does real work in its own
-folder. A trial's work (concept-evals ruling 9) is what it ran: a turn
-that would have started a job is judged on its own, on the brief it wrote.
+`trial` is a launch-level field shaped like `branch` (`RunTrial { claim,
+case? }`): recorded on `run.start` and the summary, `ctx.trial`, kept by a
+resume, inherited by every run it starts, never in `input`. No request
+sets it: the trials capability alone launches one. A trial starts nothing
+outside itself: job/start and job/continue answer that the job was held
+and launch nothing; a gated call is not proposed; no wake and no callback;
+a run on another strut is held; nothing is scheduled. A shell or the web an
+agent has is not held. A trial's work is what it ran: a turn that would
+have started a job is judged on its own, with the brief it wrote (the
+orchestrator's result carries it as `held`).
 
-Doors: `knowledge/trial { claim, n, branch? }` and `knowledge/cases {
-claim, cases }` (a claim's cases, replaced whole), through the Knowledge
-door (an admin, or an eval workflow), and the Knowledge app (4). Samples
-and their judges spend like any check (`src/check-spend.ts`).
+A sample that ends with no verdict (its run failed, the judge gave none)
+is said on the page, not left as a missing dot.
 
 ## 4. In the Knowledge app
 
-A Concept's card lists its CHECKS where it lists its claims today: each
-claim, and under it the cases that test it. To a person a check is the
-rule and its messages; the judge is always the standard one.
+A Concept's card lists its CHECKS where it listed its claims: each claim,
+and under it the messages that test it. To a person a check is the rule
+and its messages; the judge is always the standard one.
 
-- **Run.** A number (4 by default) and Run: `knowledge/trial`, n samples
-  of each case. Each verdict is a dot, green or red, drawn as it lands. A
-  dot opens its sample: the message, the reply and the judge's sentence
-  (the root run's input and output, the evidence's content).
-- **Add.** A sentence adds a claim (`knowledge/add-claim`) and a message
-  adds a case to it (`knowledge/cases`, which also takes one away). Either
-  is run at once.
-- **History.** One row per TEXT the page has had, newest first, with its
-  dots and its count. Between two rows sits what changed: one line ("+12
-  −2") that opens to the lines removed and added (`ConceptDiff`).
+- **Run.** A number (4 by default) and Run: n samples of each case. Each
+  verdict is a dot, green or red, drawn as it lands, by message. A row
+  draws its newest ten dots and counts the earlier ones. A dot opens its
+  sample: the message, the reply and the judge's sentence.
+- **Add.** A sentence adds a check; a message adds a case to one, and a
+  case is taken away the same way. Either is run at once.
+- **Tests** (5), under the checks.
 
-The history records nothing new. Every verdict on a Concept already
-carries the version of the page its work read, the work's root run and
-when it was observed. One read groups them: `knowledge/history { claim,
-branch? }` → the versions judged, newest first, each `{ version, from,
-to, passed, judged, samples: [{ run, workflow, supports, content, at }]
-}`. The change between two rows is `history/read diff` between a run of
-each: a run's start time names the tree it read, so nothing maps a
-version to a commit. A row's date is its verdicts' own (`from`, `to`).
-Nothing here reads a repository on GitHub: the history is the server's
-own (`<dataDir>/history.git`), and where it is off the rows show without
-the change.
+One read draws all of it, `knowledge/checks { concept }`, taken again
+every 1.5 s while samples are being judged. Six more steps do the rest
+(`knowledge/add-check`, `cases`, `trial`, `test`, `use`, `sample`). They
+answer strut's own page shown to an admin and nobody else: a trial spends,
+and a page's words are an agent's rules. A member reads the checks and the
+dots.
 
-The app shows dots and counts. `low` and `p` (2) stay on the reads, for a
-workflow that decides by them.
+## 5. Tests: a change tested against the page
 
-These are the app's first writes besides a decision on a proposal, and an
-admin's alone, as the dream's changes are. Its grants gain
-`knowledge/trial`, `knowledge/cases`, `knowledge/add-claim`,
-`knowledge/history` and the draft's doors (5).
+A TEST is two wordings of one page run against the same checks: the page
+as it is, and the page with a change. "Try a change" opens the page's
+text; "Test it" runs every check on the page n times on the change, and
+tops the page up to n samples a case, so the two rows are measured alike.
 
-## 5. Drafts: a change tried in the app
+The change is read by its runs on a Concept branch made for them and
+dropped when the last sample is judged. The test is kept: both wordings,
+so the diff and its verdicts stay whatever the page becomes. Nothing on
+the page changes, and nothing is discarded.
 
-A row needs a text that was the page's, and waiting for a release to
-change a page strut ships is no way to find the wording. A DRAFT is a
-change to one page, tried before it lands. It is a Concept branch the app
-makes (`draft-<page key>-<time>`, from main) with that page's docs edited
-on it. On a branch every page is an ordinary copy
-(`graph/_concept-page.ts`), so a page from git is edited there like any
-other.
+The card draws the diff, then two rows of dots, "The page" and "With the
+change", and which did better. That one card is both things a person does:
 
-"Try a change" on a card opens the page's text. Run then runs every check
-on the page n times on the draft, and tops main's current text up to n
-samples a case, so the two rows are measured the same way at the same
-time. The draft's row sits above "This version", with what it changes
-between them (`history/read diff { from: "main", to: <draft> }`). Each
-edit that is run is a row of its own: a person edits, reads the dots, and
-edits again. That loop is the point. The checks are the measure, and the
-page is what is tuned against them.
+- **A negative example.** Take lines out; the rule breaks. The page is
+  better, and the test is the proof that those lines matter.
+- **An improvement.** Change lines; the rule holds more often. The change
+  is better, and the card offers **Use it**: the page takes the wording.
+  From then on the same test reads from the page's new wording, as a
+  negative example of it.
 
-**Keep** is `knowledge/merge`. **Discard** drops the branch (its git
-branch is kept, as with any drop). A row is a text, and its dots are the
-verdicts of every work that read that text, on main or on a draft of that
-page, so a kept draft's row becomes "This version" with its dots. Status
-still reads per side (concept-evals ruling 4).
+Verdicts are counted by TEXT: a page version names one wording, and a
+verdict on it counts from a run on main or from a run on one of that
+page's own tests. So a wording that was tested and then used keeps its
+dots. Status still reads per side (concept-evals ruling 4).
 
-A page from git is kept by the rules it has. In dev mode
-(`STRUT_DEV_CONCEPTS=1`) Keep is a `knowledge/write-pages` proposal that
+A page whose text comes from git is used by the rules it has
+(src/concept-sources.ts). In dev mode (`STRUT_DEV_CONCEPTS=1`) Use it
 writes the file in the checkout, and the person commits it when they
-choose. On a deployed strut it is not kept, since the next boot puts
-git's text back: the card says so, and the draft stays with its rows
-until it is discarded. Trying needs no checkout and no PR. Only landing a
-page strut ships does.
-
-Doors: `knowledge/draft { concept, docs }` makes the draft, or writes its
-page again, and answers its name; `{ draft, discard: true }` drops it.
-`knowledge/trial`, `knowledge/history` and `knowledge/merge` take the
-name as their `branch`.
+choose. On a deployed strut it is not offered, since the next boot puts
+git's text back, and the card says so. Testing needs no checkout and no
+PR. Only landing a page strut ships does.
 
 ## A diff that matters
 
-A branch is main's pages plus one change, and `main..branch` in the
-history is that diff. A draft (5) is that branch, made by the app. Run
-the same cases on both sides at the same time, then compare. A rule that
-flips on every sample needs few:
+A rule that flips on every sample needs few:
 
 | Samples per side, all flipped | p (one-sided) |
 |---|---|
@@ -212,13 +212,9 @@ flips on every sample needs few:
 | 4 | 0.014 |
 | 5 | 0.004 |
 
-Under the 0.05 rule, 4 a side is the fewest that counts. To find which part of a change matters, run one branch per part. A seeded
-page's merge is a `knowledge/write-pages` proposal in dev mode
-(`STRUT_DEV_CONCEPTS=1`), so a winning change to `Orchestrator` becomes a
-strut PR with its counts.
-
-Proving a rate takes more. With every sample passed, the lower bound on
-the pass rate is:
+4 a side is the fewest that would count under a 0.05 rule, and is the
+app's default. Proving a rate takes more. With every sample passed, the
+lower bound on the pass rate is:
 
 | Samples | 95% confidence | 99% confidence |
 |---|---|---|
@@ -233,45 +229,41 @@ is trusted.
 
 ## The first claim
 
-On `Orchestrator`: "Asked whether it can do something its work can do, it
-says yes and offers to do it; it never says it lacks a shell, files or the
-web, and never explains how it is built." Cases: the SSH message, "can
-you run this python script?", "can you check my site every hour?", "can
-you read this PDF?". Cases that differ are what make the count about the
-rule, not one sentence.
+On `Orchestrator`, in its file: "Asked whether it can do something its
+work can do, it says yes and offers to do it; it never says it lacks a
+shell, files or the web, and never explains how it is built." Cases: "Can
+you use bash?", the SSH message, "Can you run this Python script for me?",
+"Can you check my site every hour and tell me if it goes down?". Cases
+that differ are what make the count about the rule, not one sentence.
 
-## Not in this plan
+## Not built
 
-- A case of more than one message.
-- A target rate on a claim.
-- Trials that do the whole work of an agent with a shell (a sandbox).
+- Item 2: the lower bound, and a compare that decides by a test.
+- A package's pages' `claims:` blocks at install. The seeder hands them
+  out; nothing records them yet.
+- A trial launched over HTTP or by an eval workflow. The seven steps
+  answer the admin's page alone.
+- A case of more than one message, or lifted from a real run.
+- A test of more than one page.
+- Retiring a check, or deleting a test, from the app.
+- An agent that writes the change: it reads the failed samples and
+  proposes the wording. The capability in `src/trials.ts` is what it would
+  call.
 - Splitting the `Orchestrator` page.
-- The type list (concept-evals ruling 6).
-- A draft of more than one page. A branch made by hand still holds any
-  number; the app's draft edits one.
-- An agent that writes the draft: it reads the failed samples and
-  proposes the wording. The doors in 3–5 are what it would call.
-- Writing a claim or a case added in the app back into a page's file
-  (`knowledge/write-pages` writes the page's text alone). A person adds it
-  to the front matter.
-- Retiring a claim from the app.
 
 ## Open
 
-1. Cases on the claim (my pick) or on the page?
-2. Should a claim with trials take its status from the count? My pick: no,
-   the count sits beside it.
-3. A trial holds a run on another strut (my pick, as a branch does not
-   cross): a turn that orients with a peer's lookup then sees nothing
-   there. Or let reads on a peer run?
-4. The frozen session's versions: the session keeps them (my pick), or
-   only a session's first turn observes the pages in its prompt?
-5. A kept draft's verdicts count on main's new text (my pick: a row is a
-   text), or main starts unmeasured, as a merge leaves it today, and the
-   checks are run again?
-6. Keep on a page from git on a deployed strut: refused (my pick), or the
+1. Cases on the claim or on the page? Built: on the claim.
+2. Should a claim with trials take its status from the count? Built: no.
+3. A trial holds a run on another strut, so a turn that orients with a
+   peer's lookup sees nothing there. Built that way. Or let reads on a peer
+   run?
+4. The frozen session's versions. Built: a turn on a kept prompt does not
+   observe the pages rendered into the one it was handed (1). The other
+   option was for the session to keep its first turn's versions and report
+   those.
+5. Keep on a page from git on a deployed strut: refused, as built, or the
    server takes the page over (clears its stamp) and stops following git
    for that page?
-7. Run on a draft runs every check on the page (my pick: a change that
-   fixes one rule can break another), or only the one it was opened
-   from?
+6. A real work's verdict and a trial's are drawn as the same dot. Should a
+   person's own conversations be set apart?

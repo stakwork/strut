@@ -208,7 +208,9 @@ describe("agent sessions", () => {
       // Turn 0 appended its prompt, the tool call, the tool result, the answer
       // and its result: that is where turn 1 starts.
       const thread = await store.load("abc");
-      assert.deepEqual(second.session, { id: "abc", turn: 1, offset: thread!.turns[0]!.count });
+      // `keptSystem`: the step was handed another prompt and ran on the thread's first (what a
+      // verify pass reads, so a page rendered into the unused one is not observed).
+      assert.deepEqual(second.session, { id: "abc", turn: 1, offset: thread!.turns[0]!.count, keptSystem: true });
       assert.equal(thread!.messages.length, thread!.turns[0]!.count + thread!.turns[1]!.count);
 
       // On the wire: the frozen system prompt, and turn 0's last request as

@@ -947,8 +947,10 @@ curl -X POST http://localhost:3000/workflows/repo-agent/run -H 'Content-Type: ap
   turn; the step's `system` is ignored after) and every earlier message,
   and is appended when the step succeeds. A failed or cancelled turn
   appends nothing.
-- **The step's output** gains `session: { id, turn, offset }`; its
-  `step.end` records the turn, not the thread.
+- **The step's output** gains `session: { id, turn, offset }` (and
+  `keptSystem: true` when the step was handed another system prompt than
+  the thread's first, which it ran on); its `step.end` records the turn,
+  not the thread.
 - **`workdir`** on `git/checkout` keeps the working copy under a name: the
   next run naming it gets the same path as it was left (`reused: true`).
   Idle ones are removed after `STRUT_WORKDIR_TTL_DAYS` (default 7).
@@ -2666,15 +2668,34 @@ typed — `now` against a branch's name is main against that branch — and
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.
 
-The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with six more
-grants: `knowledge/page`, `knowledge/claims`, `knowledge/cycles`,
-`proposal/list`, `proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
-(`knowledge/page { name }`, shown only when the page it answers is that
-node) — each sentence, its status (supported, refuted, stale, unknown) and
-the latest evidence in a line: what a person said and who, or what a check
-saw. Where the page may not read the namespace the tree is kept in (a
-personal strut, whose pages read `shared`) or the server keeps no claims,
-the step refuses and the panel says why in one line. Above them, where the tree is reviewed (the dream's input `review: true`;
+The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with these
+grants: `knowledge/claims`, `knowledge/checks`, `knowledge/add-check`,
+`knowledge/cases`, `knowledge/trial`, `knowledge/test`, `knowledge/use`,
+`knowledge/sample`, `knowledge/cycles`, `proposal/list`, `proposal/get` and
+`proposal/decide`. A Concept's panel lists its CHECKS (`knowledge/checks {
+concept }`, shown only when the page it answers is that node;
+plans/claim-trials.md): each claim, the cases that test it (`{ workflow,
+input }`) and a dot per verdict on the page's wording now, and the TESTS of
+the page, each two wordings (`page`, `change`) with every claim's verdicts
+on each. The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
+[{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
+at, page: { version, docs, samples }, change: { … }, live }], running: [{
+id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
+workflow?, supports, content?, at?, case?, trial? }`. An ADMIN's page also
+calls `knowledge/trial { claim, n }` (each case `n` times, as trials: the
+jobs, proposals and runs on other servers a trial would start are held; a
+trial's `run.start` and summary carry `trial: { claim, case? }`, and no
+launch body takes the field),
+`knowledge/cases { claim, cases }`, `knowledge/add-check { concept, text }`,
+`knowledge/test { concept, docs, n }` or `{ test, n }` (the page against a
+changed wording; nothing on the page changes), `knowledge/use { test }`
+(the page takes the other wording: `{ ok, landed }`, or `{ ok, proposed }`
+for a page whose text comes from git) and `knowledge/sample { workflow, run
+}` (a trial run's input and output). Trials return at once; the page reads
+`knowledge/checks` again while `running` is not empty. Where the page may
+not read the namespace the tree is kept in (a personal strut, whose pages
+read `shared`) or the server keeps no claims, the step refuses and the
+panel says why in one line. Above them, where the tree is reviewed (the dream's input `review: true`;
 by default its changes land at once), the
 CHANGES to that Concept the dream proposed and waiting on a person
 (`proposal/list { workflow: "dream", status, input: true }`, pending and
@@ -2682,9 +2703,10 @@ failed): a `graph/edit-node`, `move-node` or `delete-node` on its `ref_id`,
 or a `graph/create-triplet` adding a page under it along `PARENT_OF`. Each
 is drawn by `ConceptDiff`'s `proposal` (its title, rationale and what it
 changes on the page as it is now) with Accept and Reject through
-`proposal/decide` — the one write the app makes; an accepted change reads
+`proposal/decide`; an accepted change reads
 everything again. Only an ADMIN sees and decides the dream's changes (they
-are made in no conversation, §12); a member sees the claims. **Waiting**
+are made in no conversation, §12); a member sees the checks and their
+verdicts. **Waiting**
 over the graph lists the Concepts with a change waiting or a claim refuted
 (`knowledge/claims`: every Concept carrying claims, with them), each
 opening its Concept.
