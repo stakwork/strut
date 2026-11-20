@@ -10,6 +10,7 @@ import { createRegistry } from "./steps/registry.js";
 import type { RunEvent, StepRegistry } from "./core.js";
 import { MemoryRunStore } from "./store.js";
 import { MemorySecretStore, secretBlanks } from "./secret-store.js";
+import { actorSecretStore } from "./actor-secrets.js";
 import { WorkspaceManager } from "./workspace.js";
 import { appIdentity } from "./auth.js";
 import { kitForTests } from "./test-util/app-kit.js";
@@ -60,6 +61,20 @@ describe("secretBlanks: fill a blank, never overwrite", () => {
     const results = await Promise.allSettled([blanks.fill("RACE", "a"), blanks.fill("RACE", "b")]);
     assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
     assert.equal(await store.get("RACE"), "a");
+  });
+
+  it("with an actor, fills that person's blank: the server's value does not count, their own does", async () => {
+    const store = new MemorySecretStore();
+    await store.set("SSH_KEY", "the-server's");
+    const actors = actorSecretStore(new MemorySecretStore());
+    const blanks = secretBlanks(store, () => ({}), actors);
+    assert.deepEqual(await blanks.fill("SSH_KEY", "alice's", "alice"), { name: "SSH_KEY" });
+    assert.equal(await actors.get("alice", "SSH_KEY"), "alice's");
+    assert.equal(await store.get("SSH_KEY"), "the-server's");
+    await assert.rejects(blanks.fill("SSH_KEY", "again", "alice"), /^Error: secret_set: SSH_KEY already has a value for this person/);
+    assert.equal(await actors.get("alice", "SSH_KEY"), "alice's");
+    // A server that keeps no per-person secrets says so.
+    await assert.rejects(secretBlanks(store, () => ({})).fill("SSH_KEY", "v", "bob"), /^Error: secret_actor:/);
   });
 });
 

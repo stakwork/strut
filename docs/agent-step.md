@@ -213,6 +213,24 @@ index. A change in this area updates this file, not AGENTS.md.
     and an image rides as `withMedia`. `mcp: false` keeps an agent (a judge,
     a narrow researcher) and everything it launches through its tools off
     them.
+  - **SSH keys the shell uses but never holds** (`sshKeys`, default `[]`;
+    src/ssh-agent.ts). Secret names, each an Ed25519 private key in PKCS#8
+    PEM (what `ssh/keygen` makes, docs/steps.md). With any, the step serves
+    an SSH agent IN ITS OWN PROCESS on a unix socket in a fresh 0700 temp
+    directory, closed by `ctx.onRunEnd`, and `bash` gets `SSH_AUTH_SOCK`:
+    `ssh`, `scp`, `rsync` and `git` over ssh log in through it. Not
+    `secretsEnv`: ssh reads a key only from a file or an agent, so a key in
+    the environment means a key file the shell wrote, and a shell that can
+    read it can send it away. Through the agent the shell can USE a key
+    while the run lasts and never copy it. It lists and signs, nothing else
+    (adding, removing, locking, extensions answer failure). The names are
+    resolved at every request, so a key `ssh/keygen` stores mid-turn signs
+    at once, and the bash tool's note (part of the cached prefix) says the
+    same thing whether a key is stored yet or not. A value that is no key
+    strut can load is skipped. Not on Windows. The `job` workflow sets
+    `sshKeys: [SSH_KEY]`. Verified 2026-11-19 against OpenSSH 10.3 (`ssh`
+    into a local `sshd`) and the image's 9.2 (`ssh-add -L`, `ssh-keygen -Y
+    sign`).
   - **Every tool call emits a nested run event** (`wrapToolsWithEmit`, applied
     to built-ins AND `agentTools` with one shared counter): a
     `step.start`/`step.end` (or `step.error`) at `<agentPath>/NNN-<tool>` with
@@ -261,6 +279,10 @@ What each file and folder in this area is, in the order of the tree.
 ### `src/session-store.ts`
 
 agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit; `turns(id)` reads the lines alone; `list({ limit })` reads the newest sessions' turn lines alone, by turns.jsonl's mtime — `newestWritten`, store.ts — and without `limit` all, for the conversation index's one-time build) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
+
+### `src/ssh-agent.ts`
+
+the SSH agent behind the agent step's `sshKeys` (draft-miller-ssh-agent): `serveSshAgent(keys)` → `{ socket, close }` — REQUEST_IDENTITIES and SIGN_REQUEST over the keys `keys()` gives at each request (Ed25519, `crypto.sign`), FAILURE for every other message, frames over 256 KiB drop the connection; `newSshKey` (Ed25519, PKCS#8 PEM), `loadSshKey` (`ssh_key:` for anything else), `sshPublicKey` (the `authorized_keys` line, comment `strut`, and the `SHA256:` fingerprint), `SSH_KEY_SECRET`. Tests talk to it over the raw protocol and, where OpenSSH is on PATH, through `ssh-add` and `ssh-keygen -Y sign` — async only, since the agent answers on the same event loop
 
 ### `src/steps/lib/acp/`
 

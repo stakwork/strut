@@ -51,9 +51,11 @@ FROM node:${NODE_VERSION}-bookworm-slim
 WORKDIR /usr/src/strut
 
 # System tools. ripgrep + git are what the agent step's built-in tools assume;
-# the rest are the media/document CLIs workflows reach through `exec`.
+# openssh-client is the ssh a job logs in to a server with (the agent's
+# `sshKeys`; git only recommends it, so it is named); the rest are the
+# media/document CLIs workflows reach through `exec`.
 RUN apt-get update && apt-get install -y \
-      git ripgrep curl wget jq zip unzip bzip2 \
+      git openssh-client ripgrep curl wget jq zip unzip bzip2 \
       python3 python3-pip python3-venv \
       ffmpeg poppler-utils pandoc tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
