@@ -259,14 +259,20 @@ function causeChain(err: Error): string {
   return parts.join(" <- ");
 }
 
-/** The run's view of the services bag: `secrets` bound to the principal when
- *  the capability supports it (`forPrincipal`, capabilities.ts), else the
- *  bag itself. */
+/** The run's view of the services bag: `secrets` and `llm` (the grants it
+ *  bills, src/llm.ts) bound to the principal when the capability supports it
+ *  (`forPrincipal`), else the bag itself. */
 function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
   if (!principal || services == null || typeof services !== "object") return services;
-  const secrets = (services as { secrets?: { forPrincipal?: (p: string) => unknown } }).secrets;
-  if (typeof secrets?.forPrincipal !== "function") return services;
-  return { ...(services as object), secrets: secrets.forPrincipal(principal) } as TServices;
+  const view: Record<string, unknown> = { ...(services as object) };
+  let bound = false;
+  for (const name of ["secrets", "llm"]) {
+    const cap = view[name] as { forPrincipal?: (p: string) => unknown } | undefined;
+    if (typeof cap?.forPrincipal !== "function") continue;
+    view[name] = cap.forPrincipal(principal);
+    bound = true;
+  }
+  return bound ? (view as TServices) : services;
 }
 
 /** A PEER's run opens its sessions under `PEER_NAMESPACE` (plans/federation.md
@@ -320,16 +326,18 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
  *  `public/<runId>/`, or a priced run's under `public/<token id>/`
  *  (`publicSessionId`): a name a stranger chooses is never a local thread,
  *  nor another caller's. The twin of `bindPeer`, with no exception: a
- *  stranger owns no thread here. */
+ *  stranger owns no thread here. Nor a grant (`llm`): what a machine outside
+ *  strut spends is outside the run's own cap. */
 function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefined, scope: string): TServices {
   if (origin !== "public" || services == null || typeof services !== "object") return services;
-  const sessions = (services as { sessions?: SessionsCapability }).sessions;
-  if (typeof sessions?.open !== "function") return services;
+  const { llm: _grants, ...bag } = services as Record<string, unknown>;
+  const sessions = (bag as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return bag as TServices;
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(publicSessionId(id, scope), holder),
     holder: (id) => sessions.holder(publicSessionId(id, scope)),
   };
-  return { ...(services as object), sessions: view } as TServices;
+  return { ...bag, sessions: view } as TServices;
 }
 
 /** Did the AI write the version of `workflow` that runs (`which`, else the

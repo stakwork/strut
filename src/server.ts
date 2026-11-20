@@ -198,12 +198,15 @@ async function getDefault(): Promise<Strut> {
     // A folder copied from another host: point it at this one before
     // anything reads it (src/moved.ts).
     await applyMove(dataDir);
+    // With STRUT_MOTHERSHIP_GRANTS_URL, `ctx.services.llm` too: model calls
+    // for a machine outside strut, through a key the host makes for it.
     const mothership =
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
-        ? (await import("./mothership.js")).createMothership({ dataDir })
+        ? (await import("./mothership.js")).createMothership({ dataDir, grantsUrl: bootEnv()["STRUT_MOTHERSHIP_GRANTS_URL"] || undefined })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "graphReaders"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "services" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "graphReaders"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
+      ...(mothership?.grants ? { services: { llm: mothership.grants } } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
       ...(bootEnv()["STRUT_PUBLIC_URL"] ? { publicUrl: bootEnv()["STRUT_PUBLIC_URL"] } : {}),

@@ -664,7 +664,7 @@ the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.i
 
 ### `src/runner.ts`
 
-execution engine: DAG (topological), retry, onError, control flow, journal replay; each run's view of the services bag (`bindPrincipal`, `bindPeer`, `bindHost` — a host's run's sessions under `host/<name>/`, plans/jamie-in-tribes.md §5.1 —, `bindApp`, `bindBranch` from branches.ts, `bindTrial`, and `bindGraph` from graph-writes.ts, flushed at the run's end). A TRIAL (`RunOptions.trial`, `RunTrial` in core.ts; src/trials.ts, docs/knowledge.md "Trials and tests") is a launch-level field shaped like the branch below: on `run.start` and the summary, `ctx.trial`, kept by a resume, inherited by every run the run starts, never in `input`; `bindTrial` makes its automations refuse, and the steps that would start a job, record a proposal or reach another strut hold from `ctx.trial`. A run's Concept BRANCH (`RunOptions.branch`, src/branches.ts): the launch's, else the branch of the bag it was launched with (a step's `ctx.services`, already on one — naming another is `branch_fixed:`); a branch that does not exist (`services.branches`) fails the run at its start (`no_branch:`, like an input that does not parse); recorded on `run.start` and every summary, handed to every step as `ctx.branch`
+execution engine: DAG (topological), retry, onError, control flow, journal replay; each run's view of the services bag (`bindPrincipal` — `secrets` and `llm`, the grants it bills, bound to the run's principal —, `bindPublic` — a stranger's run opens its sessions under `public/` and gets no `llm` —, `bindPeer`, `bindHost` — a host's run's sessions under `host/<name>/`, plans/jamie-in-tribes.md §5.1 —, `bindApp`, `bindBranch` from branches.ts, `bindTrial`, and `bindGraph` from graph-writes.ts, flushed at the run's end). A TRIAL (`RunOptions.trial`, `RunTrial` in core.ts; src/trials.ts, docs/knowledge.md "Trials and tests") is a launch-level field shaped like the branch below: on `run.start` and the summary, `ctx.trial`, kept by a resume, inherited by every run the run starts, never in `input`; `bindTrial` makes its automations refuse, and the steps that would start a job, record a proposal or reach another strut hold from `ctx.trial`. A run's Concept BRANCH (`RunOptions.branch`, src/branches.ts): the launch's, else the branch of the bag it was launched with (a step's `ctx.services`, already on one — naming another is `branch_fixed:`); a branch that does not exist (`services.branches`) fails the run at its start (`no_branch:`, like an input that does not parse); recorded on `run.start` and every summary, handed to every step as `ctx.branch`
 
 ### `src/output-cap.ts`
 
@@ -732,7 +732,7 @@ the storage boundary's spec: one suite per layer, run over every impl
 
 ### `src/capabilities.ts`
 
-the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses), jobs (a job's holds, jobs.ts) — every one recordable by cassette.ts + secret-safe
+the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses), jobs (a job's holds, jobs.ts) — every one recordable by cassette.ts + secret-safe; the `StrutCapabilities` type also names what the server or a host adds, `llm` among them (grants of model calls for a machine outside strut, src/mothership.ts; docs/models.md "Grants")
 
 ### `src/extensions.ts`
 

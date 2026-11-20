@@ -9,7 +9,7 @@ import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { StrutBrowser } from "./browser/service.js";
-import type { ModelCatalog } from "./llm.js";
+import type { LlmGrants, ModelCatalog } from "./llm.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -482,6 +482,12 @@ export interface StrutCapabilities {
    *  the standard server; a bare bag falls back to the catalog with no boot
    *  default. */
   llmModels?: () => Promise<ModelCatalog>;
+  /** Model calls for a machine outside strut (src/llm.ts `LlmGrants`;
+   *  stakwork/pods PLAN.md §3.2): `grant({ name, hours })` → `{ id, env }`,
+   *  billed to the run's principal through the gateway, and `revoke(id)`.
+   *  Present only where the Mothership can grant (`STRUT_MOTHERSHIP_GRANTS_URL`);
+   *  absent, or a `grant` that answers null, means no grant. */
+  llm?: LlmGrants;
   /** The server's wallet, its RECEIVE side (plans/paid-runs.md §9,
    *  src/payments/lightning.ts): make an invoice, look one up, list what
    *  came in, read the balance. Nothing on it pays. Present only while a
