@@ -2,7 +2,7 @@
  *  over the MCP Apps `App` it already runs. `useVisitor` is over it. No
  *  React, no dependency. */
 import {
-  ACCOUNT_PLACEMENT_METHOD, accountCapabilityOf, type AccountPlacement,
+  ACCOUNT_PLACEMENT_METHOD, accountCapabilityOf, type AccountPlacement, type SignInOptions,
   VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD, visitorCapabilityOf, type VisitorMethod,
 } from "./protocol.js";
 
@@ -16,8 +16,9 @@ export interface VisitorClient {
   /** Who is signed in, if anyone. */
   actor(): string | undefined;
   /** The host's sheet: the actor once signed in, undefined when the visitor
-   *  closed it. Rejects when the host cannot sign in at all. */
-  signIn(): Promise<string | undefined>;
+   *  closed it. Rejects when the host cannot sign in at all. `{ silent }`:
+   *  no sheet — undefined unless the host's wallet signs them in as it is. */
+  signIn(opts?: SignInOptions): Promise<string | undefined>;
   signOut(): Promise<void>;
   /** Called when `actor()` changes; returns the unsubscribe. */
   subscribe(listener: () => void): () => void;
@@ -47,9 +48,10 @@ export function createBridgeVisitor(app: VisitorBridgeApp): VisitorClient {
     available: () => !!cap()?.methods.length,
     methods: () => cap()?.methods ?? [],
     actor: () => (changed ? changed.actor : cap()?.actor),
-    async signIn() {
+    async signIn(opts) {
       if (!cap()) throw new Error(NO_HOST);
-      const r = (await app.request({ method: VISITOR_SIGN_IN_METHOD, params: {} }, VISITOR_PASS_THROUGH, { timeout: VISITOR_SIGN_IN_TIMEOUT_MS })) as { actor?: unknown } | undefined;
+      const params = opts?.silent ? { silent: true } : {};
+      const r = (await app.request({ method: VISITOR_SIGN_IN_METHOD, params }, VISITOR_PASS_THROUGH, { timeout: VISITOR_SIGN_IN_TIMEOUT_MS })) as { actor?: unknown } | undefined;
       const actor = typeof r?.actor === "string" && r.actor ? r.actor : undefined;
       if (actor) set(actor);
       return actor;

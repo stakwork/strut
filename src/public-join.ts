@@ -22,6 +22,11 @@
  * - **Anywhere else** it says to open the link on an Android phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
+ * - **In the worker's language** (plans/i18n.md): English or Spanish, the
+ *   link's `?lang=` else the browser's first `Accept-Language` — what
+ *   `navigator.language` says, so the page speaks as the Worker app Peel
+ *   opens next will. The words are the page's HTML alone; the script holds
+ *   none, so one hash pins it in every language.
  *
  * Chrome's `intent://` form (developer.chrome.com, "Android Intents with
  * Chrome"): `intent://<what follows the scheme's ://>#Intent;scheme=<the
@@ -86,7 +91,7 @@ export const JOIN_SCRIPT = `(function () {
       var qr = qrcode(0, "M");
       qr.addData(location.href);
       qr.make();
-      document.getElementById("qr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true, alt: "A QR code of this invite's link" });
+      document.getElementById("qr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
     };
     document.head.appendChild(s);
   }
@@ -108,54 +113,99 @@ section { display: flex; flex-direction: column; gap: 1rem; }
 [hidden] { display: none !important; }
 `;
 
-/** The page: its three faces hidden until the script picks one. */
-export const JOIN_PAGE = `<!doctype html>
-<html lang="en">
+/** The page's words, per language: English the type, so a missing or
+ *  misshaped Spanish message fails tsc. Plain text, put in as it is. */
+const en = {
+  invited: "You're invited",
+  invites: (name: string) => `${name} invites you`,
+  android: "Peel signs you up with this invite, then opens the work.",
+  open: "Open in Peel",
+  noPeel: "No Peel yet? The button downloads it and copies your invite. Install Peel and open it: it finds the invite and signs you up.",
+  again: "Opened Peel without the invite? Tap here",
+  elsewhere: "Open this link on an Android phone: scan the code with its camera.",
+  qr: "A QR code of this invite's link",
+  peelAndroid: "You sign up with Peel, which runs on Android.",
+  bad: "This link has no invite in it. Ask whoever sent it for a new one.",
+};
+type JoinWords = typeof en;
+/** Neutral Latin American Spanish, `tú` (plans/i18n.md). */
+const es: JoinWords = {
+  invited: "Tienes una invitación",
+  invites: (name) => `${name} te invita`,
+  android: "Peel te registra con esta invitación y luego abre el trabajo.",
+  open: "Abrir en Peel",
+  noPeel: "¿Aún no tienes Peel? El botón lo descarga y copia tu invitación. Instala Peel y ábrelo: encuentra la invitación y te registra.",
+  again: "¿Abriste Peel sin la invitación? Toca aquí",
+  elsewhere: "Abre este enlace en un teléfono Android: escanea el código con su cámara.",
+  qr: "Un código QR del enlace de esta invitación",
+  peelAndroid: "Te registras con Peel, que funciona en Android.",
+  bad: "Este enlace no tiene ninguna invitación. Pídele uno nuevo a quien te lo envió.",
+};
+const JOIN_WORDS = { en, es };
+export type JoinLang = keyof typeof JOIN_WORDS;
+
+/** The page's language: the link's `?lang=` when it has one, else the
+ *  browser's first choice in `Accept-Language` (its `navigator.language`);
+ *  English when that is not one the page speaks. `es-MX` → `es`. */
+export function joinLang(lang?: string | null, acceptLanguage?: string | null): JoinLang {
+  const tag = lang?.trim() || acceptLanguage?.split(",")[0]?.split(";")[0] || "";
+  const l = tag.trim().toLowerCase().split(/[-_]/)[0] ?? "";
+  return Object.hasOwn(JOIN_WORDS, l) ? (l as JoinLang) : "en";
+}
+
+const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** The page for a server with a name (its brand's, src/brand.ts): "Acme
+ *  invites you", HTML-escaped, in its title and heading; without one,
+ *  "You're invited". In `lang`'s words, its three faces hidden until the
+ *  script picks one. The script is the same in each, so is its hash. */
+export function joinPage(name?: string, lang: JoinLang = "en"): string {
+  const w = JOIN_WORDS[lang];
+  const n = name?.trim();
+  const heading = n ? w.invites(escape(n)) : w.invited;
+  return `<!doctype html>
+<html lang="${lang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>You're invited</title>
+<title>${heading}</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <main>
-<h1>You're invited</h1>
+<h1>${heading}</h1>
 <section id="android" hidden>
-<p>Peel signs you up with this invite, then opens the work.</p>
-<a id="open" class="button" href="#">Open in Peel</a>
-<p class="muted">No Peel yet? The button downloads it and copies your invite. Install Peel and open it: it finds the invite and signs you up.</p>
-<a id="again" class="button secondary" href="#">Opened Peel without the invite? Tap here</a>
+<p>${w.android}</p>
+<a id="open" class="button" href="#">${w.open}</a>
+<p class="muted">${w.noPeel}</p>
+<a id="again" class="button secondary" href="#">${w.again}</a>
 </section>
 <section id="elsewhere" hidden>
-<p>Open this link on an Android phone: scan the code with its camera.</p>
-<div id="qr"></div>
-<p class="muted">You sign up with Peel, which runs on Android.</p>
+<p>${w.elsewhere}</p>
+<div id="qr" role="img" aria-label="${w.qr}"></div>
+<p class="muted">${w.peelAndroid}</p>
 </section>
 <section id="bad" hidden>
-<p>This link has no invite in it. Ask whoever sent it for a new one.</p>
+<p>${w.bad}</p>
 </section>
 </main>
 <script>${JOIN_SCRIPT}</script>
 </body>
 </html>
 `;
-
-/** The page for a server with a name (its brand's, src/brand.ts): "Acme
- *  invites you", HTML-escaped, in its title and heading; without one,
- *  `JOIN_PAGE` itself. The script is the same, so is its hash. */
-export function joinPage(name?: string): string {
-  const n = name?.trim();
-  if (!n) return JOIN_PAGE;
-  const said = `${n.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")} invites you`;
-  return JOIN_PAGE.replace("<title>You're invited</title>", `<title>${said}</title>`).replace("<h1>You're invited</h1>", `<h1>${said}</h1>`);
 }
 
+/** The page in English, for a server with no name. */
+export const JOIN_PAGE = joinPage();
+
 /** The page's headers: its own inline script alone (by hash) and the QR
- *  library beside it; the one request it makes, GitHub's release lookup. */
+ *  library beside it; the one request it makes, GitHub's release lookup.
+ *  Its language follows `Accept-Language`, so a cache keys on it. */
 export const JOIN_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-cache",
+  vary: "accept-language",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "content-security-policy": [

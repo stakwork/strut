@@ -55,7 +55,7 @@ import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_FILES
 import { parseAttachments, type Attachment } from "./ai/attachments.js";
 import type { PublicTools } from "./public-tools.js";
 import { defaultVisitorAddress } from "./visitor-address.js";
-import { JOIN_HEADERS, joinPage, joinQrScript } from "./public-join.js";
+import { JOIN_HEADERS, joinLang, joinPage, joinQrScript } from "./public-join.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -395,9 +395,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   app.use("/public/*", publicMiddleware);
 
   // A worker invite's page (plans/human-steps.md §5.8, src/public-join.ts):
-  // static but for the server's name ("Acme invites you"), the invite after
-  // `#` read by its own script and never sent.
-  app.get("/public/join", async (c) => c.body(joinPage(await deps.serverName?.().catch(() => undefined)), 200, { ...JOIN_HEADERS }));
+  // static but for the server's name ("Acme invites you") and the worker's
+  // language (`?lang=`, else the browser's), the invite after `#` read by its
+  // own script and never sent.
+  app.get("/public/join", async (c) => {
+    const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"));
+    return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
+  });
   app.get("/public/join/qrcode.js", async (c) =>
     c.body(await joinQrScript(), 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }),
   );

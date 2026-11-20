@@ -74,8 +74,11 @@ export interface AppHostHandlers {
    *  (the sheet), answering the session, or null when they closed it.
    *  `sphinx`, when this page is a native host's main frame whose wallet
    *  signs a visitor in (Peel): ask it first (./native-pay `signInAsk`).
-   *  Absent, no sign-in is offered. */
-  onSignIn?: (methods: SignInMethod[], sphinx?: SignInAsk) => Promise<VisitorSession | null>;
+   *  `silent` (the page's `{ silent: true }`, @strut/kit/visitor): only
+   *  that wallet, and only if it answers without asking the person — no
+   *  sheet, no browser key made; null otherwise. Absent, no sign-in is
+   *  offered. */
+  onSignIn?: (methods: SignInMethod[], sphinx?: SignInAsk, o?: { silent?: boolean }) => Promise<VisitorSession | null>;
   /** The PAGE signed the visitor in or out (`strut/visitor/*`): the account
    *  widget reads who is signed in again. */
   onSession?: () => void;
@@ -343,15 +346,16 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // Sign the visitor in: the page's `strut/visitor/sign-in` and the account
   // widget's button are the one flow.
   const signInFlow = visitorCap
-    ? async () => {
+    ? async (o?: { silent?: boolean }) => {
         // Peel's web view: the person's Sphinx account signs the visitor in.
         const sphinx = signInAsk({ wallet: await hostWallet(window), seller: sellerOf(from), app: opts.visitorApp });
-        return opts.handlers.onSignIn!(visitorCap.methods as SignInMethod[], sphinx);
+        return opts.handlers.onSignIn!(visitorCap.methods as SignInMethod[], sphinx, o?.silent === true ? { silent: true } : undefined);
       }
     : undefined;
   if (signInFlow) {
-    bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
-      const session = await signInFlow();
+    bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async (params: unknown) => {
+      const silent = (params as { silent?: unknown } | undefined)?.silent === true;
+      const session = await signInFlow(silent ? { silent } : undefined);
       opts.handlers.onSession?.();
       return session ? { actor: session.actor } : {};
     }) as never);

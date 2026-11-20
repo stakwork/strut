@@ -68,7 +68,6 @@ import {
   EVIDENCE_TYPE,
   activeTurnOf,
   evidenceId,
-  evidenceOn,
   isExternalCheck,
   newEpistemicId,
   newestFirst,
@@ -675,17 +674,6 @@ export function createVerifier(deps: VerifierDeps) {
   const ours = async (pass: Pass, o: ObservedSubject, branch: string | undefined): Promise<boolean> =>
     o.subject.kind !== "concept" || (!!o.ref && o.ref === (await pageOf(pass, subjectName(o.subject), branch)));
 
-  /** Does a piece of this check's evidence count where the pass observes? A
-   *  Concept's only on the same side — main's on main, a branch's on it
-   *  since it was made — so `on_change` asks about THIS side's page, and a
-   *  branch copy at main's version is still measured. */
-  const sameSide = async (pass: Pass, o: ObservedSubject) => {
-    if (o.subject.kind !== "concept") return () => true;
-    pass.scope ??= await reader.scopeOf(pass.result.branch);
-    const where = pass.scope;
-    return (e: EvidenceRow) => evidenceOn(e, where);
-  };
-
   const claimsOf = async (pass: Pass, s: SubjectRef) => {
     const k = subjectKey(s);
     if (!pass.claims.has(k)) pass.claims.set(k, await reader.claimsFor(s));
@@ -695,11 +683,22 @@ export function createVerifier(deps: VerifierDeps) {
     if (!pass.checks.has(claimId)) pass.checks.set(claimId, await reader.checksFor(claimId));
     return pass.checks.get(claimId)!;
   };
-  const evidenceOf = async (pass: Pass, claimId: string, s: SubjectRef, fresh = false) => {
+  /** What a pass reads of a claim's evidence about a subject: every open
+   *  slot and each check's newest measurement (`statusEvidence`), never the
+   *  history. A Concept's on the pass's side only — main's on main, a
+   *  branch's on it since it was made — so `on_change` asks about THIS
+   *  side's page, and a branch copy at main's version is still measured.
+   *  Once per pass, and again after a write (`wrote`). */
+  const evidenceOf = async (pass: Pass, claimId: string, s: SubjectRef) => {
     const k = `${claimId}|${subjectKey(s)}`;
-    if (fresh || !pass.evidence.has(k)) pass.evidence.set(k, await reader.evidenceFor(claimId, s));
+    if (!pass.evidence.has(k)) {
+      const checks = (await checksOf(pass, claimId)).map((c) => c.id);
+      const side = s.kind === "concept" ? (pass.scope ??= await reader.scopeOf(pass.result.branch)) : undefined;
+      pass.evidence.set(k, await reader.statusEvidence(claimId, s, { checks, activeVersion: null, ...(side ? { side } : {}) }));
+    }
     return pass.evidence.get(k)!;
   };
+  const wrote = (pass: Pass, claimId: string, s: SubjectRef) => pass.evidence.delete(`${claimId}|${subjectKey(s)}`);
 
   /** A subject's verify spend so far today (UTC): what the tallies of the
    *  checks on its claims say it spent today. A pass is not a request: a
@@ -853,7 +852,8 @@ export function createVerifier(deps: VerifierDeps) {
     };
   }
 
-  /** Open (or keep) the ONE planned slot an external check may have per subject. */
+  /** Open (or keep) the ONE planned slot an external check may have per
+   *  subject; `mine` holds the check's open slots (`evidenceOf`). */
   async function openSlot(pass: Pass, o: ObservedSubject, claim: ClaimRow, check: CheckRow, id: string, mine: readonly EvidenceRow[]): Promise<LastVerify> {
     const runRef = await runRefOf(pass);
     if (!runRef) return { skipped: "cannot-launch", reason: "the run could not be projected" };
@@ -886,20 +886,17 @@ export function createVerifier(deps: VerifierDeps) {
     if (!o.version) return { skipped: "unknown-version" };
     const job = o.subject.kind === "job";
     const explicit = job ? pass.explicitJob : pass.explicit;
-    const all = await evidenceOf(pass, claim.id, o.subject);
-    const here = await sameSide(pass, o);
-    const mine = all.filter((e) => e.check_id === check.id);
-    // What this side measured: the policy, a job's count and the slots read it.
-    const seen = mine.filter(here);
     // A job's evidence path is `job:<id>#<n>` (plans/job-claims.md §2): the
     // automatic pass writes #0 and is idempotent as every pass is; an
     // explicit verify of the same turn APPENDS — n counts this check's
     // evidence on the turn — so a pod that answered a 500 mid-restart and is
     // up now can be measured again, and `newestFirst` picks the new one.
-    const path = job ? `${o.path}#${explicit ? seen.filter((e) => e.about?.content_hash === o.version).length : 0}` : o.path;
+    const path = job ? `${o.path}#${explicit ? await reader.evidenceCount(claim.id, o.subject, { check: check.id, version: o.version }) : 0}` : o.path;
     const id = evidenceId(check.id, pass.runId, path);
-    const existing = mine.find((e) => e.id === id);
-    if (existing) return existing.evidence_status === "planned" ? { planned: id } : { ran: true };
+    const existing = await reader.evidenceStatus(claim.id, o.subject, id);
+    if (existing !== null) return existing === "planned" ? { planned: id } : { ran: true };
+    // What this check measured on this side: the policy reads its newest, a slot retires its open ones.
+    const seen = (await evidenceOf(pass, claim.id, o.subject)).filter((e) => e.check_id === check.id);
 
     const config = (() => {
       try {
@@ -922,7 +919,7 @@ export function createVerifier(deps: VerifierDeps) {
     if (!fires) return { skipped: "policy" };
     if (isExternalCheck(check)) {
       const slot = await openSlot(pass, o, claim, check, id, seen);
-      await evidenceOf(pass, claim.id, o.subject, true);
+      wrote(pass, claim.id, o.subject);
       return slot;
     }
 
@@ -949,7 +946,7 @@ export function createVerifier(deps: VerifierDeps) {
     });
     if (written !== "written") return { skipped: "unknown-version" };
     pass.result.evidence++;
-    await evidenceOf(pass, claim.id, o.subject, true);
+    wrote(pass, claim.id, o.subject);
     return { ran: true };
   }
 
@@ -1266,7 +1263,7 @@ export function createVerifier(deps: VerifierDeps) {
         const id = evidenceId(check.id, pass.runId, "publish");
         let lastVerify: LastVerify;
         try {
-          if ((await evidenceOf(pass, claim.id, subject)).some((e) => e.id === id)) lastVerify = { ran: true };
+          if ((await reader.evidenceStatus(claim.id, subject, id)) !== null) lastVerify = { ran: true };
           else if (!versionRef) lastVerify = { skipped: "unknown-version" };
           else {
             input ??= subject.kind === "step"
@@ -1382,11 +1379,8 @@ export function createVerifier(deps: VerifierDeps) {
     const strength = input.supports ? 1 : -1;
     const now = new Date().toISOString();
 
-    const evidence = await reader.evidenceFor(claim.id, o.subject);
-    const slot = input.slot
-      ? evidence.find((e) => e.id === input.slot)
-      : evidence.find((e) => e.evidence_status === "planned" && e.source?.run_id === input.runId);
-    if (input.slot && (!slot || slot.evidence_status !== "planned")) return { error: `"${input.slot}" is not an open slot on this claim` };
+    const slot = await reader.openSlotOf(claim.id, o.subject, input.slot ? { id: input.slot } : { runId: input.runId });
+    if (input.slot && !slot) return { error: `"${input.slot}" is not an open slot on this claim` };
     if (slot) {
       await graph.nodes.update(slot.ref_id, { set: { content: bound(content), evidence_status: "collected", evidence_mode: mode, observed_at: now } });
       await graph.edges.update({ ref_id: slot.edge_ref_id! }, { set: { strength } });

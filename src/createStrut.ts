@@ -29,7 +29,7 @@ import {
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
 import { createDrain, DrainingError, parseDrainBody } from "./drain.js";
-import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
+import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, versionLabelOrder, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -3968,7 +3968,8 @@ export async function createStrut<TServices = unknown>(
         ...(info.source ? { source: info.source } : {}),
         ...(info.actor ? { actor: info.actor } : {}),
       }))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // Newest first; two published in one millisecond, the later label first.
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || versionLabelOrder(b.version, a.version));
     const hashes = new Map<string, string | null>();
     await Promise.all(versions.map(async (v) => hashes.set(v.version, await workspace.getWorkflowHash(name, v.version))));
     const stats = new Map<string, { runs: number; success: number; error: number; lastRunAt?: string }>();
@@ -10573,6 +10574,8 @@ export async function createStrut<TServices = unknown>(
         query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
       });
       const reader = publicSurface.reader();
+      // Its keys (and `signedInBag`'s) are `VISITOR_SERVICES` (step-lint.ts):
+      // an app build warns on a granted custom step that reaches past them.
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),

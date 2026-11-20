@@ -413,18 +413,32 @@ challenge minted for the seller's host and has not ended.
    web view within the last few seconds. strut's UI asks as soon as the page
    calls `signIn()`, which a page does on a press; otherwise strut's own
    sheet shows **Sign in with ⟨wallet⟩**, whose press is a fresh tap, and
-   sends `sign_in` again.
+   sends `sign_in` again. A page may also ask SILENTLY as it loads
+   (`signIn({ silent: true })`, @strut/kit/visitor; strut/worker's Tasks
+   does): strut's UI sends `sign_in` once and takes only a signature — a
+   refusal draws no sheet of strut's and tries no other method
+   (web/src/visitor-signin.ts `signInSilently`). Untapped, only a grant
+   (step 5) signs.
 5. Shows its own sheet, unless the person's connection with this page
-   already grants sign-in for this seller (then a toast):
+   already grants sign-in for this seller (then a toast; no tap needed):
    - the seller by its host;
    - the app's title, "on <seller>";
-   - **Sign in as you**: the person's root Sphinx key (account 0: the key
-     `Sphinxrs.pubkeyFromSeed(idx: 0)` names), the same visitor on every
-     app;
-   - or **as a new identity for this app**: the domain's child key for the
-     challenge's `host` (LUD-05's derivation), unlinkable across apps.
-     When the challenge's `visitorKey` is `domain`, only this one. Which
-     key it is, is the native host's; strut only checks the signature.
+   - the key the challenge's `visitorKey` names, with no choice between
+     keys (Peel Android since 2026-11-19; it offered both for `root`
+     before):
+     - `root`, strut's default: **Sign in as you**, the person's root
+       Sphinx key (account 0: the key `Sphinxrs.pubkeyFromSeed(idx: 0)`
+       names), the same visitor on every app. A worker must sign in so:
+       only the root key carries the payout `address` (below), so a worker
+       signed in as a new identity could never withdraw;
+     - `domain`: **as a new identity for this app**, the domain's child key
+       for the challenge's `host` (LUD-05's derivation), unlinkable across
+       apps.
+   Which key it is, is the native host's; strut only checks the signature.
+   The page Peel Android opens from the invite its account signed up with
+   (a worker invite link's `a=`, docs/tasks.md "Inviting a worker") is
+   granted sign-in as you as it opens, at that page's origin alone, so a
+   new worker's first sign-in — Tasks' silent one — is a toast.
 6. Answers as soon as the person acts: `{ key, sig }`, or `USER_REJECTED`.
 7. Answers before the challenge's `exp`. A sheet still up then is taken
    down and answered `RESTRICTED`: the seller refuses a challenge past its

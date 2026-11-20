@@ -15,7 +15,7 @@ import { CameraSheet } from "./CameraSheet";
 import type { CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { words } from "../words";
-import { signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
+import { signInSilently, signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -250,8 +250,13 @@ export function AppHost(props: {
                   // the native wallet first (Peel: its sheet IS the sign-in),
                   // one tap when this browser's key is all there is, else
                   // the sheet.
-                  onSignIn: async (offered: SignInMethod[], sphinx?: SignInAsk) => {
+                  onSignIn: async (offered: SignInMethod[], sphinx?: SignInAsk, o?: { silent?: boolean }) => {
                     const methods = usableMethods(offered, { sphinx: !!sphinx });
+                    // Asked as the page loads: the native wallet alone, signing
+                    // in only what it already lets this page (Peel's grant);
+                    // with no tap behind it, it asks nobody, so a refusal is
+                    // the page's own button, not a sheet.
+                    if (o?.silent) return signInSilently(methods, sphinx, from);
                     if (!methods.length) throw new Error("no sign-in this browser can do here");
                     let note: string | undefined;
                     if (sphinx && methods.includes("sphinx")) {

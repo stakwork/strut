@@ -366,6 +366,38 @@ describe("the apps capability", () => {
     const rec = (await ws.getApp("ok"))!;
     assert.deepEqual([rec.publisher, rec.owner, rec.versions["v1"]?.source], ["ai", "bot", "agent"]);
   });
+
+  it("a granted custom step that reaches a service a visitor's call never carries (the shell) is a warning on the build, the preview and the publish", async () => {
+    // book-scanner, 2026-11-19: a worker app's page loads its ledger through
+    // its own step, which reads a file with the shell. Tom, a member, sees it;
+    // every worker who signs in through Peel is a visitor, and it fails.
+    const { ws, apps } = setup();
+    const ledger = `import { z } from "zod";
+export default {
+  type: "book/ledger",
+  input: z.object({}),
+  output: z.object({ rows: z.array(z.unknown()) }),
+  async run(_cfg, ctx) {
+    const out = await ctx.services.shell("cat /data/workspace/book-scanning/ledger.jsonl");
+    return { rows: out.stdout.split("\\n").filter(Boolean).map((l) => JSON.parse(l)) };
+  },
+};
+`;
+    await ws.publishStep("book/ledger", ledger);
+    await ws.publishStep("book/price", 'export default { type: "book/price", async run(cfg, ctx) { return (await ctx.services.http(cfg.url)).json(); } };\n');
+    const dir = await writeApp(fresh(), app("title: Book scanner\ngrants:\n  steps: [book/ledger, book/price, graph/graph-get, task/next]\n"));
+    const flagged = (warnings: string[]) => warnings.filter((w) => w.includes("visitor"));
+    const built = await apps.build(dir, { name: "book-scanner" });
+    assert.ok(built.ok, built.ok ? "" : built.errors.join("\n"));
+    assert.deepEqual(flagged(built.warnings).length, 1, built.warnings.join("\n"));
+    assert.match(flagged(built.warnings)[0]!, /grants\.steps: "book\/ledger" uses ctx\.services\.shell, which a visitor's call never carries — .*Peel/);
+    const preview = await apps.preview(dir, "book-scanner", { surface: "ai" });
+    assert.ok(preview.ok);
+    assert.equal(flagged(preview.warnings).length, 1);
+    const published = await apps.publish(dir, "book-scanner", { surface: "ai", actor: "jamie" });
+    assert.ok(published.ok, "a warning: a member's page still runs it");
+    assert.deepEqual(flagged(published.warnings).map((w) => w.split(" uses ")[0]), ['grants.steps: "book/ledger"']);
+  });
 });
 
 describe("what the app door remembers (appManifests)", () => {

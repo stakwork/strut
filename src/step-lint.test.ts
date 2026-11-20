@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { lintStepSource, formatStepLint } from "./step-lint.js";
+import { lintStepSource, formatStepLint, servicesPastVisitor, VISITOR_SERVICES } from "./step-lint.js";
 import { buildRegistry } from "./steps/registry.js";
 
 describe("lintStepSource", () => {
@@ -68,6 +68,26 @@ export default defineStep({ async run(cfg, ctx) {
 
   it("leaves other modules alone", () => {
     assert.deepEqual(lintStepSource('import { z } from "zod";\nimport { join } from "node:path";\nimport { createHash } from "node:crypto";'), []);
+  });
+});
+
+describe("servicesPastVisitor", () => {
+  it("names each ctx.services a visitor's call never carries, however it is reached, once and sorted", () => {
+    const src = `export default { async run(cfg, ctx) {
+  // ctx.services.artifacts in a comment is nothing
+  const out = await ctx.services.shell("cat ledger.jsonl");
+  const db = ctx?.services?.appDb;
+  const { artifacts, http: h, ...rest } = ctx.services;
+  await ctx.services["shell"]("ls");
+  ctx.services!.sessions;
+  return (await ctx.services.http(cfg.url)).json() && ctx.services.secrets.get("K") && ctx.services.graph && ctx.services.runs;
+} };`;
+    assert.deepEqual(servicesPastVisitor(src), ["appDb", "artifacts", "sessions", "shell"]);
+  });
+
+  it("is empty for a step on a visitor's bag alone", () => {
+    assert.deepEqual(servicesPastVisitor("async run(cfg, ctx) { return ctx.services.http(cfg.url, { headers: { a: await ctx.services.secrets.get('K') } }); }"), []);
+    assert.ok(VISITOR_SERVICES.includes("http") && !VISITOR_SERVICES.includes("shell"));
   });
 });
 
