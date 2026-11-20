@@ -15,10 +15,11 @@
  *   install, so each tap also COPIES the invite link (`sphinx.chat://?…`):
  *   a Peel opened with no account and no invite reads it off the clipboard
  *   (peel-android's onboarding), and a new worker goes from install to
- *   signup to the worker app without coming back here. "Opened Peel without
- *   the invite?" fires the same intent again, for a Peel too old to read the
- *   clipboard. Each is a link the person taps: Chrome opens an app from a
- *   page only on a gesture, and writes the clipboard only on one.
+ *   signup to the worker app without coming back here. There is one
+ *   button: a Peel that missed the invite (too old to read the clipboard) is
+ *   sent it by tapping the same button again. It is a link the person taps:
+ *   Chrome opens an app from a page only on a gesture, and writes the
+ *   clipboard only on one.
  * - **Anywhere else** it says to open the link on an Android phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
@@ -32,7 +33,7 @@
  *   it in every language.
  * - **An invitation card**: the employer's initial (the server name's), "Invite",
  *   "‹name› invites you", and on Android a dock pinned to the bottom with
- *   "Open in Peel" and a small "send it again" link; elsewhere the QR code in
+ *   "Open in Peel"; elsewhere the QR code in
  *   the card.
  *
  * Chrome's `intent://` form (developer.chrome.com, "Android Intents with
@@ -82,7 +83,6 @@ export const JOIN_SCRIPT = `(function () {
     var point = function (fallback) {
       var href = "intent://?" + q + "#Intent;scheme=sphinx.chat;package=" + PKG + ";S.browser_fallback_url=" + encodeURIComponent(fallback) + ";end";
       document.getElementById("open").href = href;
-      document.getElementById("again").href = href;
     };
     point(RELEASES);
     // The tap that downloads Peel also hands it the invite, through the clipboard.
@@ -90,7 +90,6 @@ export const JOIN_SCRIPT = `(function () {
       try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
     };
     document.getElementById("open").onclick = copy;
-    document.getElementById("again").onclick = copy;
     show("android");
     // The newest APK itself, so no Peel yet is one tap to download.
     fetch(LATEST, { headers: { accept: "application/vnd.github+json" }, credentials: "omit", referrerPolicy: "no-referrer" })
@@ -140,7 +139,6 @@ p { margin: 0; }
 #bad { text-align: center; }
 #android { position: sticky; bottom: 0; margin-top: auto; padding: 2rem 0 1.25rem; text-align: center; background: linear-gradient(to bottom, transparent, var(--bg) 40%); display: flex; flex-direction: column; gap: 0.6rem; }
 .button { display: block; padding: 17px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; text-decoration: none; }
-#again { color: var(--muted); font-size: 0.8rem; text-decoration: underline; }
 [hidden] { display: none !important; }
 `;
 
@@ -156,7 +154,6 @@ const en = {
   app: "Peel · Android",
   open: "Open in Peel",
   installs: "No Peel yet? This button downloads it and keeps your invite.",
-  retry: "Peel didn't get the invite? Send it again",
   scan: "Scan with an Android phone",
   qr: "A QR code of this invite's link",
   bad: "This link has no invite in it. Ask whoever sent it for a new one.",
@@ -174,7 +171,6 @@ const es: JoinWords = {
   app: "Peel · Android",
   open: "Abrir en Peel",
   installs: "¿Aún no tienes Peel? Este botón lo descarga y guarda tu invitación.",
-  retry: "¿Peel no recibió la invitación? Envíala de nuevo",
   scan: "Escanea el código con un teléfono Android",
   qr: "Un código QR del enlace de esta invitación",
   bad: "Este enlace no tiene ninguna invitación. Pídele uno nuevo a quien te lo envió.",
@@ -238,7 +234,6 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 <div id="android" hidden>
 <a id="open" class="button" href="#">${w.open}</a>
 <p class="muted">${w.installs}</p>
-<a id="again" href="#">${w.retry}</a>
 </div>
 </main>
 <script>${JOIN_SCRIPT}</script>

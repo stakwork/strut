@@ -430,10 +430,11 @@ describe("worker invites on a server (§5.8)", () => {
     }
   });
 
-  it("each language's page has the open, again and qr ids and the switcher marking the current one", () => {
+  it("each language's page has the open and qr ids (no again) and the switcher marking the current one", () => {
     for (const lang of ["en", "es"] as const) {
       const page = joinPage("Acme", lang);
-      for (const id of ["open", "again", "qr", "card", "bad"]) assert.match(page, new RegExp(`id="${id}"`));
+      for (const id of ["open", "qr", "card", "bad"]) assert.match(page, new RegExp(`id="${id}"`));
+      assert.ok(!page.includes('id="again"'), "one button only");
       assert.match(page, new RegExp(`data-lang="${lang}" aria-pressed="true"`));
       assert.match(page, new RegExp(`data-lang="${lang === "en" ? "es" : "en"}" aria-pressed="false"`));
     }
@@ -461,7 +462,7 @@ const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
 /** The join page's script in a stand-in browser: what it shows and links. */
 async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; search?: string }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "again", "qr", "card"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "qr", "card"].map((id) => [id, el(id)]));
   const appended: Array<Record<string, unknown>> = [];
   const fetched: string[] = [];
   const drawn: string[] = [];
@@ -494,17 +495,15 @@ describe("the join page's script (§5.8)", () => {
   const hash = `#action=i&d=${D}&c=BBBB&a=${app}`;
   const intent = (fallback: string) => `intent://?action=i&d=${D}&c=BBBB&a=${app}#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
 
-  it("on Android: both buttons fire Peel's intent, the invite as it came and the fallback encoded — the releases page until the newest APK is known", async () => {
+  it("on Android: the button fires Peel's intent, the invite as it came and the fallback encoded — the releases page until the newest APK is known", async () => {
     const r = await runJoin({ hash, userAgent: ANDROID });
     assert.equal(r.els["android"]!.hidden, false);
     assert.equal(r.els["elsewhere"]!.hidden, true);
     assert.equal(r.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
-    assert.equal(r.els["again"]!.href, intent(PEEL_ANDROID_RELEASES));
     assert.deepEqual(r.fetched, ["https://api.github.com/repos/stakwork/peel-android/releases/latest"]);
     const apk = "https://github.com/stakwork/peel-android/releases/download/v0.1.4/peel-0.1.4.apk";
     const latest = await runJoin({ hash, userAgent: ANDROID, release: { assets: [{ browser_download_url: "https://github.com/stakwork/peel-android/releases/download/v0.1.4/notes.txt" }, { browser_download_url: apk }] } });
     assert.equal(latest.els["open"]!.href, intent(apk));
-    assert.equal(latest.els["again"]!.href, intent(apk));
     // Another host's file is never the fallback.
     const evil = await runJoin({ hash, userAgent: ANDROID, release: { assets: [{ browser_download_url: "https://evil.example/peel.apk" }] } });
     assert.equal(evil.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
@@ -513,13 +512,12 @@ describe("the join page's script (§5.8)", () => {
     assert.equal(whole.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
   });
 
-  it("on Android: a tap on either button copies the invite link, for a Peel installed after it to read; nothing before a tap", async () => {
+  it("on Android: a tap on the button copies the invite link, for a Peel installed after it to read; nothing before a tap", async () => {
     const r = await runJoin({ hash, userAgent: ANDROID });
     assert.deepEqual(r.copied, [], "the clipboard is written only on a gesture");
     const tap = (id: string) => (r.els[id] as unknown as { onclick: () => void }).onclick();
     tap("open");
-    tap("again");
-    assert.deepEqual(r.copied, [`sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`, `sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`]);
+    assert.deepEqual(r.copied, [`sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`]);
     // No clipboard (an old browser, a refusal): the tap still opens Peel.
     const none = await runJoin({ hash, userAgent: ANDROID, noClipboard: true });
     assert.doesNotThrow(() => (none.els["open"] as unknown as { onclick: () => void }).onclick());
