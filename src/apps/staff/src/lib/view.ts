@@ -488,10 +488,10 @@ export function whatsappUrl(link: string): string {
   return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link))}`;
 }
 
-/** An invite's sats as typed: blank is the default; else a whole number 1 to 100,000. */
-export function inviteSatsOf(text: string): { sats?: number } | { problem: string } {
+/** An invite's sats as typed: a whole number 1 to 100,000. Blank is a problem (the box starts filled). */
+export function inviteSatsOf(text: string): { sats: number } | { problem: string } {
   const t = text.trim();
-  if (!t) return {};
+  if (!t) return { problem: "Enter the sats they start with." };
   const n = Number(t);
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }

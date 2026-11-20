@@ -9,7 +9,7 @@
 // Tasks, so Tasks must be in the public view: the panel puts it there on a
 // click (`staff/tasks-online`); any other app goes online through the
 // Public view or an `app/make-public` card, as before.
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Copy, Globe, UserPlus, Users } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStrutClient } from "@strut/kit";
@@ -142,6 +142,11 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string }) {
   const choices = inviteChoices(props.types);
   const [work, setWork] = useState(props.type ?? "");
   const [satsText, setSatsText] = useState("");
+  const [touched, setTouched] = useState(false);
+  // Start the box at the server's default, unless they have typed.
+  useEffect(() => {
+    if (!touched && q.data) setSatsText(String(q.data.sats));
+  }, [q.data?.sats, touched]);
   const [made, setMade] = useState<MadeInvite | null>(null);
   const sats = inviteSatsOf(satsText);
   const choice = choices.find((c) => c.name === work);
@@ -186,7 +191,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string }) {
             <summary className="cursor-pointer text-muted-foreground">More</summary>
             <div className="mt-2">
               <Field label="Sats they start with" htmlFor={`${id}-sats`}>
-                <Input id={`${id}-sats`} className="w-32" inputMode="numeric" placeholder={q.data ? String(q.data.sats) : ""} value={satsText} onChange={(e) => setSatsText(e.target.value)} />
+                <Input id={`${id}-sats`} className="w-32" inputMode="numeric" value={satsText} onChange={(e) => { setTouched(true); setSatsText(e.target.value); }} />
               </Field>
             </div>
           </details>

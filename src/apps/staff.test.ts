@@ -357,7 +357,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
   });
 
   it("Invite (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {
-    assert.deepEqual(inviteSatsOf(""), {}, "blank is the settings' default");
+    assert.deepEqual(inviteSatsOf(" "), { problem: "Enter the sats they start with." }, "blank is a problem: the box starts filled");
     assert.deepEqual(inviteSatsOf(" 250 "), { sats: 250 });
     for (const bad of ["0", "1.5", "-3", "100001", "lots"]) assert.ok("problem" in inviteSatsOf(bad), bad);
     assert.deepEqual((["sending", "ready", "failed", "used", "cancelled"] as const).filter((status) => inviteOpen({ status })), ["sending", "ready"]);
