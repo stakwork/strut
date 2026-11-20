@@ -426,6 +426,9 @@ export interface QueueCounts {
   dueHour: number;
   /** Live leases of the type, an instance's too: a worker holds one at most. */
   holding: number;
+  /** §9.6: its real tasks' answers no verdict was given on, of any age:
+   *  the review queue's size. */
+  unreviewed: number;
   windows: Record<StatsWindow, WindowCounts>;
 }
 
@@ -937,6 +940,7 @@ export class MemoryTaskStore implements TaskStore {
         dueSoon: open.filter((t) => t.due <= o.now + DUE_SOON_MS).length,
         dueHour: open.filter((t) => t.due <= o.now + STATS_WINDOWS.hour).length,
         holding: mine.filter((l) => live(l, o.now)).length,
+        unreviewed: answers.filter((l) => l.status === "submitted" && !this.reviewRows.has(reviewKey(l.task, l.worker))).length,
         windows,
       };
     });

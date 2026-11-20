@@ -664,6 +664,9 @@ export interface TypeStats {
   /** Its ready tests, not retired (§7.1): what a paid open type's K is held
    *  to (ruling 9). */
   readyTests: number;
+  /** §9.6: its real tasks' answers with no verdict yet, of any age: what
+   *  `GET /tasks?review=none` lists, counted by answer. */
+  toReview: number;
   windows: Record<StatsWindow, StatsWindowView>;
   /** What is wrong with its app (`taskAppProblem`): the routes add it. */
   appProblem?: string;
@@ -2152,6 +2155,7 @@ export function createTasks(deps: TasksDeps): TasksService {
           holding: c.holding,
           asking: waiting.filter((w) => w.types.has(c.type)).length,
           readyTests: ready[i] ?? 0,
+          toReview: c.unreviewed,
           windows,
         };
       });

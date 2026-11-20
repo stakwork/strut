@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ChevronLeft, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { errorText } from "../lib/view";
+import { errorText, initialsOf, type Place } from "../lib/view";
 
 export function Section(props: { title: ReactNode; aside?: ReactNode; children: ReactNode; className?: string }) {
   return (
@@ -203,5 +203,88 @@ export function ReasonButton(props: { label: string; placeholder: string; requir
         Cancel
       </Button>
     </span>
+  );
+}
+
+/** A filter as a pill: pressed is the one in force; `count` beside its words. */
+export function Chip(props: { on: boolean; onClick: () => void; children: ReactNode; count?: number | undefined }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={props.on}
+      onClick={props.onClick}
+      className={cn("inline-flex h-8 items-center gap-2 rounded-full border px-3 text-sm font-medium transition-colors", props.on ? "border-foreground bg-foreground text-background" : "hover:bg-muted")}
+    >
+      {props.children}
+      {props.count !== undefined && <span className={cn("font-normal tabular-nums", !props.on && "text-muted-foreground")}>{props.count.toLocaleString("en-US")}</span>}
+    </button>
+  );
+}
+
+/** Two or three views of one thing, one shown at a time. */
+export function Segmented<T extends string>(props: { label: string; value: T; onChange: (v: T) => void; options: ReadonlyArray<{ value: T; label: string }> }) {
+  return (
+    <div role="group" aria-label={props.label} className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+      {props.options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          aria-pressed={o.value === props.value}
+          onClick={() => props.onChange(o.value)}
+          className={cn("h-7 rounded-md px-3 text-sm font-medium transition-colors", o.value === props.value ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** One number a person reads at a glance: the number, what it counts, and a line under it. */
+export function Stat(props: { value: ReactNode; label: string; note?: ReactNode; title?: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5" title={props.title}>
+      <div className="text-2xl leading-tight font-semibold tabular-nums">{props.value}</div>
+      <div className="text-sm font-medium">{props.label}</div>
+      {props.note && <div className="text-xs text-muted-foreground">{props.note}</div>}
+    </div>
+  );
+}
+
+/** A person as two letters in a circle (no pictures of workers here). */
+export function Avatar(props: { name: string; className?: string }) {
+  return (
+    <span aria-hidden className={cn("grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold", props.className)}>
+      {initialsOf(props.name)}
+    </span>
+  );
+}
+
+/** A count beside a tab's or a heading's words. */
+export function Count(props: { n: number; warn?: boolean; label?: string }) {
+  return (
+    <span
+      aria-label={props.label}
+      className={cn("inline-grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums", props.warn ? "bg-amber-500/20 text-amber-700 dark:text-amber-400" : "bg-muted text-foreground")}
+    >
+      {props.n.toLocaleString("en-US")}
+    </span>
+  );
+}
+
+/** Where a page is, each step back a link. */
+export function Crumbs(props: { go: (p: Place) => void; to: Array<[string, Place]>; here: string }) {
+  return (
+    <nav aria-label="Where this is" className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+      {props.to.map(([label, place]) => (
+        <span key={label} className="flex min-w-0 items-center gap-1.5">
+          <button type="button" className="text-left break-words underline underline-offset-2 hover:text-foreground" onClick={() => props.go(place)}>
+            {label}
+          </button>
+          <ChevronRight aria-hidden className="size-3.5 shrink-0" />
+        </span>
+      ))}
+      <span className="break-words text-foreground">{props.here}</span>
+    </nav>
   );
 }

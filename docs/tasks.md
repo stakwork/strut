@@ -67,13 +67,16 @@ index. A change in this area updates this file, not AGENTS.md.
   workers in `strut/staff`, an admin-only first-party app over the `/tasks`
   routes: the page is a face, the routes decide. It reads the QUEUE
   (`GET /tasks/stats`: per type waiting, being worked, the oldest, due
-  soon, granted, holding, asking, and per hour, day and week what was
+  soon, granted, holding, asking, its answers not reviewed (`toReview`),
+  and per hour, day and week what was
   answered, expired, cancelled, disputed, skipped and lost with p50 and p90
   times, computed on read; a lease past its expiry is waiting and lost, a
   task past due expired, before the sweep marks them), the tasks a worker
   answered (`?by=`), one worker's week and newest leases, a task's run as
   it stands, its files without a lease (a picture drawn as it comes into
-  view) and the run's reply beside the answer. Its `staff/*` steps go through
+  view) and the run's reply beside the answer. Its page is six tabs, one a
+  job — Overview, Answers (one by one, or by group), Workers, Task types,
+  Payouts, Support — described in docs/apps.md and specs/API.md §14.15. Its `staff/*` steps go through
   the STAFF DOOR, `/tasks…` alone in the admin's name, which only strut's
   own page shown to an admin reaches; none is kept as a run or hands the
   deployment's `onRunEvent` an event, so a test's expected answer and a
@@ -87,9 +90,11 @@ index. A change in this area updates this file, not AGENTS.md.
   longer moves it) and a QR of `peelLink` drawn server-side (`qrSvg`,
   src/move/link.ts, `qrcode-generator`) — and `tasks`, the same for Tasks
   (`strut/worker`), which every invite opens. ONE panel, "Invite a worker"
-  (`BringWorkersIn` in `components/Share.tsx`), a closed row atop the Queue
-  and the Workers tab (kept mounted while closed, so an invite just made
-  stays) and open on each type's page with that type picked: the invite
+  (`InvitePanel` and `BringWorkersIn` in `components/Share.tsx`), opened by
+  Invite a worker in the page's header on every tab, and by Invite someone
+  on a type's card with that type picked first (kept mounted once opened,
+  so an invite just made stays), and shown on each type's page with that
+  type picked: the invite
   first (Work they'll do — "Anything open" or a type that is on,
   `inviteChoices` — and the starting sats under More), then, folded and only
   while some work is open (`anyOpenWork`), "Anyone with the link": Tasks'
@@ -136,7 +141,11 @@ index. A change in this area updates this file, not AGENTS.md.
   `why` begins `review: `) and `ok` RESTORES that take-back — the ledger's
   `restore`, the take-back it cleared kept in `pay_restores` — never a
   staff or grading take-back; past the hold no money moves.
-  `GET /tasks?review=none` is the review queue.
+  `GET /tasks?review=none` is the review queue, and `GET /tasks/stats`
+  counts it: each type's `toReview` is its real tasks' answers with no
+  verdict, of any age (`QueueCounts.unreviewed`, one count a type in both
+  stores) — what the staff app's Answers tab and its Overview say is left
+  to review.
 - **Groups of tasks** (`task/reply`'s `group`; `group` on the task,
   `tasks.group_key` in the store with its partial index `tasks_group`,
   `groups` and `reviewGroup` on the service, `src/tasks/task-groups.test.ts`).
@@ -150,7 +159,7 @@ index. A change in this area updates this file, not AGENTS.md.
   the newest task first) and `POST /tasks/groups/review { group, type?,
   verdict, why? }`, one `review` for each answer in it with no verdict yet
   (a verdict given stays; `more` past `TASK_LIST_MAX` tasks) — the staff
-  app's Groups tab, shown once a workflow named a group. The worker:
+  app's Answers by group, shown once a workflow named a group. The worker:
   `task/history` items carry `group` and staff's `review { verdict, why?, at
   }` on their answers (never who gave it), `{ group }` reads every answer of
   theirs in one group (past the newest 50), and `{ groups: true }` adds their

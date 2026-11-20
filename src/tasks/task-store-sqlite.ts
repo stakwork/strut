@@ -377,6 +377,12 @@ export class SqliteTaskStore implements TaskStore {
            from tasks t where t.type = ?1 and t.status = 'open' and t.test is null and t.due > ?2`,
       ),
       queueHolding: p("select count(*) n from leases where type = ?1 and status = 'open' and expires > ?2"),
+      // §9.6: the answers of its real tasks with no verdict (the list's `review=none`, counted).
+      queueUnreviewed: p(
+        `select count(*) n from leases l join tasks t on t.id = l.task
+          where l.type = ?1 and l.status = 'submitted' and t.test is null
+            and not exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker)`,
+      ),
       holdingAll: p("select count(*) n from leases where status = 'open' and expires > ?"),
       // Each window as a sum over the week's rows: ?2 the hour's start, ?3
       // the day's, ?4 the week's, ?5 now.
@@ -712,6 +718,7 @@ export class SqliteTaskStore implements TaskStore {
           dueSoon: n(open.due_soon),
           dueHour: n(open.due_hour),
           holding: n((this.s.queueHolding.get(type, now) as Row).n),
+          unreviewed: n((this.s.queueUnreviewed.get(type) as Row).n),
           windows,
         };
       });
