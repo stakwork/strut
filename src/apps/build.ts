@@ -324,12 +324,16 @@ function tailwindOptions(base: string) {
   };
 }
 
+const TOKEN_SPLITS = [/[\s"'`]+/, /[\s"`]+/];
+
 /** Tailwind class candidates in source texts — every whitespace- or
  *  quote-separated token Tailwind itself accepts (`candidatesToCss`) under
  *  the stylesheet being compiled, so an app's own `@theme` tokens count. */
 async function scanCandidates(tw: Tailwind, kit: Kit, css: string, sources: Iterable<string>): Promise<string[]> {
   const tokens = new Set<string>();
-  for (const text of sources) for (const t of text.split(/[\s"'`]+/)) if (t && t.length < 200) tokens.add(t);
+  // Split at quotes, then again keeping `'`: an arbitrary variant may hold one
+  // (the kit Button's `[&_svg:not([class*='size-'])]:size-4`, which sizes its icons).
+  for (const text of sources) for (const re of TOKEN_SPLITS) for (const t of text.split(re)) if (t && t.length < 200) tokens.add(t);
   const design = await tw.__unstable__loadDesignSystem(css, tailwindOptions(dirname(kit.baseCssPath)));
   const list = [...tokens].sort();
   const compiled = design.candidatesToCss(list);
