@@ -16,7 +16,11 @@
 // (Stadeum), whose address bar follows — so a reload, a bookmark or a pasted
 // address lands on the same chat. Whether it opens for someone else is the
 // conversation's Share (./components/Share).
-import { useEffect, useState } from "react";
+//
+// An admin also has Everyone in the list (plans/jamie-app.md §2.3): anyone's
+// conversation, opened as a reader. A link an admin may not read as
+// themselves opens that way too, so their own address to it reloads.
+import { useEffect, useRef, useState } from "react";
 import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { newConversationId } from "./lib/chat";
@@ -46,9 +50,18 @@ export default function App() {
   const input = useToolInput<{ session?: string }>();
   const host = useHost();
   const link = useAppLink();
+  /** The conversation whose link the page last opened itself: when the host
+   *  hands it back as the page's input, it is already open as it was. */
+  const followed = useRef<string | null>(null);
   /** The host's address to this conversation (none: a new one). */
-  const follow = (id: string | null) => void host.openLink(link(id ? { session: id } : undefined)).catch(() => undefined);
+  const follow = (id: string | null) => {
+    followed.current = id;
+    void host.openLink(link(id ? { session: id } : undefined)).catch(() => undefined);
+  };
   const [active, setActive] = useState("");
+  /** The open conversation is an admin's read as a reader (`everyone`):
+   *  opened from Everyone, or a link they may not read as themselves. */
+  const [everyone, setEveryone] = useState(false);
   /** A new conversation's id, before its first turn makes it one. */
   const [draft, setDraft] = useState<string | null>(null);
   const narrow = useNarrow();
@@ -61,11 +74,13 @@ export default function App() {
     if (narrow) setDrawer(false);
   }, [narrow]);
 
-  // A deep link opens its conversation.
+  // A deep link opens its conversation, as the viewer's own read; the page's
+  // own link coming back keeps how it was opened.
   useEffect(() => {
     if (input?.session) {
       setDraft(null);
       setActive(input.session);
+      if (input.session !== followed.current) setEveryone(false);
     }
   }, [input?.session]);
 
@@ -83,9 +98,10 @@ export default function App() {
   /** Connect's waiting link challenge, kept here so it outlives Connect
    *  closing: reopened, Connect shows it again and sees Peel's link. */
   const [linkOffer, setLinkOffer] = useState<Offer>(null);
-  const open = (id: string, job?: string) => {
+  const open = (id: string, job?: string, asReader = false) => {
     setDraft(null);
     setActive(id);
+    setEveryone(asReader);
     follow(id);
     setFocusJob(job ? { job, at: Date.now() } : null);
     setDrawer(false);
@@ -94,6 +110,7 @@ export default function App() {
   const newChat = () => {
     if (!viewer) return;
     setDraft(newConversationId(viewer));
+    setEveryone(false);
     follow(null);
     setDrawer(false);
     setConnect(false);
@@ -134,10 +151,13 @@ export default function App() {
             <Thread
               session={session}
               draft={!!draft}
+              everyone={!draft && everyone}
+              {...(list.data?.admin ? { onReadAsAdmin: () => setEveryone(true) } : {})}
               {...(focusJob ? { focusJob } : {})}
               onStarted={(id) => {
                 setDraft(null);
                 setActive(id);
+                setEveryone(false);
                 follow(id);
               }}
               onOpen={(id) => open(id)}

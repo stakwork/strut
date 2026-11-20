@@ -14,7 +14,10 @@
  * who took a turn in it (the launch's actor, else its principal), for the
  * actor its id is under (`<actor>/…`), and for whoever opened it while it was
  * SHARED — a flag that makes it readable to any actor on this strut. Taking a
- * turn makes you a participant.
+ * turn makes you a participant. An ADMIN reads every one (ruled 2026-11-19,
+ * plans/jamie-app.md §2.3: `everyone` on the viewer): listed from every
+ * person's list, read as it is — never made theirs, nobody's seen, unread or
+ * archived moved. Reading is not a turn: who may continue one is unchanged.
  *
  * Kept as files under `<dataDir>/conversations/`, on every backend:
  *
@@ -207,7 +210,8 @@ export interface ConversationEntry {
   seenAt?: string;
   /** The record's job ids, as it keeps them. */
   jobs?: string[];
-  /** Who took its first turn. */
+  /** Who took its first turn. In an admin's Everyone, for a row from before
+   *  it was kept, the actor its id is under. */
   startedBy?: string;
 }
 
@@ -346,12 +350,20 @@ export interface ConversationViewer {
   /** A person's token (`peer:person`): proposals as it sees them in a list
    *  (`visibleTo`), and a fork's id must be its own. */
   person?: true;
+  /** An ADMIN's read of every conversation on this strut (plans/jamie-app.md
+   *  §2.3; the caller checks the role): `list` lists every one on file,
+   *  whoever's; `get` and `fork` read any. A reader, never a viewer: what
+   *  they read is not made theirs, its row is the record's (never unread),
+   *  and every proposal made in it shows. `update` refuses it. */
+  everyone?: true;
 }
 
 export interface ConversationListQuery {
-  /** Every word in the title. */
+  /** Every word in the title — in an admin's Everyone, in the title, who
+   *  started it or its host. */
   q?: string;
-  /** The archived ones alone (default: the rest). */
+  /** The archived ones alone (default: the rest). A person's own: an
+   *  admin's Everyone lists every one, archived or not. */
   archived?: boolean;
   limit?: number;
   /** The `next` of the page before. */
@@ -671,11 +683,39 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     }));
 
   const canRead = (rec: ConversationRecord, by: ConversationViewer) =>
-    !!by.all || rec.viewers.includes(keyOf(by)) || !!rec.shared || isOwn(rec.id, by.actor);
+    !!by.all || !!by.everyone || rec.viewers.includes(keyOf(by)) || !!rec.shared || isOwn(rec.id, by.actor);
+
+  /** A row as an admin's Everyone shows it: the record's facts, who
+   *  started it (a row from before that was kept: whose id it is under),
+   *  never unread — nobody's seen is theirs to read. */
+  const everyoneItem = (e: Facts): ConversationListItem => {
+    const owner = e.startedBy ?? ownerOf(e.id);
+    return { ...itemOf({ ...e, ...(owner ? { startedBy: owner } : {}) }), unread: false };
+  };
+
+  /** Every conversation on file, once, for an admin's Everyone: the rows of
+   *  every person's list merged (each a copy of its record's facts, written
+   *  at every write), so a list opens one file per person, never the
+   *  records. Their own archived and seen are left out. */
+  const everyRow = async (): Promise<Facts[]> => {
+    const dir = join(root, "viewers");
+    const rows = new Map<string, Facts>();
+    for (const n of await readdir(dir).catch(() => [] as string[])) {
+      if (!n.endsWith(".json")) continue;
+      const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(join(dir, n));
+      for (const { archived: _archived, seenAt: _seen, ...e } of Object.values(idx?.conversations ?? {})) {
+        const had = rows.get(e.id);
+        if (!had || had.updatedAt < e.updatedAt) rows.set(e.id, e);
+      }
+    }
+    return [...rows.values()];
+  };
 
   /** The viewer's row; adds them as a viewer first when they are not one
-   *  (a shared conversation they opened, their own id). */
+   *  (a shared conversation they opened, their own id). An admin's
+   *  Everyone reads it as it is: never added, nothing of theirs on it. */
   const entryOf = async (rec: ConversationRecord, by: ConversationViewer): Promise<ConversationListItem> => {
+    if (by.everyone) return everyoneItem(factsOf(rec));
     const key = keyOf(by);
     if (!rec.viewers.includes(key) && !by.all) {
       rec = (await mutate(rec.id, (r) => (r && !r.viewers.includes(key) ? { ...r, viewers: [...r.viewers, key] } : false))) ?? rec;
@@ -894,23 +934,35 @@ export function createConversations(deps: ConversationsDeps): Conversations {
 
     async list(q, by) {
       await ensureBuilt();
-      const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
       const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
       const cursor = (e: ConversationEntry) => `${e.updatedAt}|${e.id}`;
-      // The shared ones that are not the viewer's yet: listed for everyone.
-      const mine = idx?.conversations ?? {};
-      const team: ConversationEntry[] = q.archived ? [] : Object.values(await readShared()).filter((e) => !mine[e.id]);
-      const isTeam = new Set(team.map((e) => e.id));
-      const rows = [...Object.values(mine), ...team]
-        .filter((e) => (q.archived ? e.archived : !e.archived))
-        .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)))
-        .sort((a, b) => cursor(b).localeCompare(cursor(a)))
-        .filter((e) => !q.before || cursor(e) < q.before);
+      let found: ConversationEntry[];
+      let isTeam = new Set<string>();
+      if (by.everyone) {
+        // An admin's Everyone: each conversation once, whoever's, archived
+        // or not; the words may also name who started it, or its host.
+        found = (await everyRow()).filter((e) => {
+          const text = `${e.title} ${e.startedBy ?? ownerOf(e.id) ?? ""} ${hostOfSession(e.id) ?? ""}`.toLowerCase();
+          return words.every((w) => text.includes(w));
+        });
+      } else {
+        const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
+        // The shared ones that are not the viewer's yet: listed for everyone.
+        const mine = idx?.conversations ?? {};
+        const team: ConversationEntry[] = q.archived ? [] : Object.values(await readShared()).filter((e) => !mine[e.id]);
+        isTeam = new Set(team.map((e) => e.id));
+        found = [...Object.values(mine), ...team]
+          .filter((e) => (q.archived ? e.archived : !e.archived))
+          .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)));
+      }
+      const rows = found.sort((a, b) => cursor(b).localeCompare(cursor(a))).filter((e) => !q.before || cursor(e) < q.before);
       const limit = Math.min(CONVERSATION_LIST_MAX, Math.max(1, q.limit ?? CONVERSATION_LIST_DEFAULT));
       const page = rows.slice(0, limit);
       for (const e of page) if (!e.jobs) backfillJobs(e.id);
       const conversations = await Promise.all(
-        page.map(async (e) => withJobBriefs(isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs)),
+        page.map(async (e) =>
+          withJobBriefs(by.everyone ? everyoneItem(e) : isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs),
+        ),
       );
       return { conversations, ...(rows.length > limit ? { next: cursor(page[page.length - 1]!) } : {}) };
     },
@@ -935,9 +987,10 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const jobs = [...new Set(reads.flatMap((r) => r.jobs.map((j) => j.job)))];
       // This page's runs' proposals, and those of the jobs its turns started
       // (a `builder` job's): only what the reader may see, decided on the
-      // index, so a read never opens another conversation's records.
+      // index, so a read never opens another conversation's records. An
+      // admin's Everyone sees every one, as their session does at /proposals.
       const root = proposalsRoot(deps.dataDir);
-      const viewer = { scope: (by.person ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) };
+      const viewer = { scope: (by.person && !by.everyone ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) };
       const [own, ofJobs] = await Promise.all([
         listProposals(root, { runId: [...runIds], viewer }).catch(() => []),
         jobs.length ? listProposals(root, { job: jobs, viewer }).catch(() => []) : Promise.resolve([]),
@@ -977,6 +1030,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     async update(q, by) {
+      if (by.everyone) throw new Error("an admin's read of every conversation changes none: a title, a share, archived and seen are its people's");
       let rec = await recordOf(q.session);
       if (!rec || !canRead(rec, by)) throw notFound(q.session);
       if (q.title !== undefined || q.shared !== undefined) {
@@ -1048,7 +1102,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         }),
         () => [key],
       );
-      return entryOf(rec!, by);
+      // The copy is the forker's own (an admin's from Everyone too): their row.
+      const { everyone: _everyone, ...own } = by;
+      return entryOf(rec!, own);
     },
   };
 }

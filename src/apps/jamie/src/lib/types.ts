@@ -21,7 +21,7 @@ export interface ConversationListItem {
   moreJobs?: number;
   /** Shared, and not the viewer's yet: opening it makes it theirs. */
   team?: true;
-  /** Who took its first turn. */
+  /** Who took its first turn (in an admin's Everyone: else whose id it is under). */
   startedBy?: string;
   /** A host's conversation (a Sphinx tribe's, `host/sphinx/…`): the host's
    *  name. Read-only here: continued where the host is, or forked. */
@@ -76,6 +76,9 @@ export interface ConversationList {
   next?: string;
   /** The actor the list is for: a new conversation is `<viewer>/<id>`. */
   viewer?: string;
+  /** The viewer is an admin here: they may list and read everyone's
+   *  conversations (`everyone`, plans/jamie-app.md §2.3). */
+  admin?: true;
 }
 
 export interface TurnJob {

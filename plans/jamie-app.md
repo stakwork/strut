@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1, named Jamie with jobs in the list and pull requests — §5.2; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1, an admin reading every one — §2.3; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1, named Jamie with jobs in the list and pull requests — §5.2; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -58,6 +58,7 @@ drifted (§1.1).
 | Canvas, initiatives | Out of scope here. `org-home-swarm.md` makes them apps of their own. |
 | Shared conversations | **Kept** (owner, 2026-11-04; open question 1). A conversation can have several people: it is listed for everyone who took a turn in it (its turns' actor, else principal), and a `shared` flag makes it readable to any actor on this strut before their first turn. Strut cannot check org membership; on a swarm every token holder is an org member. Taking a turn makes you a participant. Calls (one conversation per call, each turn as its speaker), tribe threads and Hive's share links already work this way. |
 | Continuing a conversation | **Ruled** (owner, 2026-11-04). A person's turn — through a person token, or strut's own app — may continue any conversation they took a turn in, or a shared one, under whatever id it has: Hive's bare ids included. Another person's is refused. Reading it while it was shared is not a turn. Built in §2.2. |
+| Admins read every conversation | **Ruled** (owner, 2026-11-19). An admin may read any conversation on the box, an admin's or a member's: to help people new to Jamie and tune how it is used. Reading is not a turn. Built in §2.3. |
 
 ## 1. One wake (proposed)
 
@@ -427,6 +428,58 @@ alone. Now the index decides the rest (`continuesFor`, createStrut;
 - **Unchanged.** The deployment's key (Hive) opens any id as it is; a
   plain peer's ids stay under `peer/`; a model-written page's under
   `app/`.
+
+### 2.3 An admin reads every conversation (ruled and built 2026-11-19, branch `feature/admin-conversations`)
+
+Before, an admin's session read as the person it names: their own, and the
+shared ones. Only the key with no actor read any conversation, and nothing
+listed them all. Now (ruled, "Decided"):
+
+- **Who.** Full scope: an admin's session or the key, on the routes
+  (`GET /conversations?everyone=1`, `GET /conversations/item?…&everyone=1`,
+  `POST /conversations/fork { everyone: true }`). On a page, strut's own app
+  shown to an admin (`AppRef.admin`), in the page's own call, as
+  `knowledge/cycles` reads what the dream learned from them
+  (`conversation/list|get|fork { everyone }`; `adminPageCall`,
+  `src/steps/lib/conversation/_shared.ts`). Everyone else who asks is
+  refused: a person token, a host, a peer with a 403; a member's page, a
+  model-written page, a workflow, an agent's tool and a run the page
+  launched with `conversation/<name> { everyone } is an admin's: …`.
+- **The list.** `ConversationViewer.everyone`: every conversation on file,
+  newest first, with the normal list's `q`, `limit` and `before`. It is
+  every person's list merged (`viewers/*.json`, each row a copy of the
+  record's facts, written at every write), so it opens one file per person
+  and never the records. Archived or not (archived is a person's own); `q`
+  matches the title, who started it (`startedBy`; for a row from before
+  that was kept, the actor its id is under) and a host's name. A host's
+  conversation (`host/<name>/…`) is listed like the rest, with `host` on
+  its row.
+- **Reading is not a turn, and leaves no trace.** The reader is not made a
+  viewer (`entryOf` answers the record's facts as they are), the
+  conversation does not enter their list, and nobody's `seenAt`, unread or
+  archived moves; its rows are never unread. `update` refuses `everyone`:
+  a title, a share, archived and seen stay its people's. Continuing is
+  unchanged (§2.2): a turn in another person's conversation is
+  `conversation_not_yours:`. A fork with `everyone` is the admin's own copy.
+- **What a read shows.** Every proposal made in the conversation (full
+  scope, as `/proposals` shows an admin), and the turns' files and replies:
+  `ownRun` (createStrut) opens a turn of any conversation to strut's own
+  page shown to an admin. That check sees `AppRef.admin`, which a run the
+  admin's page launched carries too; the orchestrator holds no `run/*`
+  tool, and a job's bash reaches the data directory anyway
+  (`member-rights.md`: not a sandbox).
+- **The page** (§5): `conversation/list` answers `admin: true` to an admin's
+  page, which then shows Everyone, folded at the end of the list: each row
+  with whose it is, a tribe's with its `#`, searched with the rest. One
+  that is not the admin's opens read-only, as a host's does: its cards
+  decide nothing, no Share, and Continue here forks it and opens the copy.
+  The page's own link to it (the host's address follows the open chat)
+  reloads the same way: a link an admin may not read as themselves is read
+  again with `everyone`.
+- **Members are told** (proposed, open question 9): every viewer reads
+  "Admins on this server can read conversations with Jamie." under the
+  composer. To drop it, delete `ADMINS_READ` (`src/apps/jamie/src/lib/chat.ts`)
+  and its one line in `Thread.tsx` (`data-testid="admins-read"`).
 
 ## 3. First-party apps (built — §3.1)
 
@@ -836,3 +889,6 @@ their own.
    own way to connect a person's GitHub (`org-home-swarm.md`).
 8. ~~**Where the conversation index lives**~~: files under `dataDir`, on
    every backend (§2.1).
+9. **Telling members that admins read their conversations** (§2.3).
+   Built as one line every viewer reads under Jamie's composer; proposed,
+   not yet ruled by the owner. Dropping it is one deletion.
