@@ -2717,6 +2717,16 @@ export async function createStrut<TServices = unknown>(
     if (!inProcessOf(c)) lastBase = baseOfRequest(c);
     await next();
   });
+  /** When an app door's request reached this server, before the gate: a
+   *  call's `doorMs` in the monitor's log (src/apps/monitor.ts) is the time
+   *  from here to its step — what strut spent before the step began. */
+  const arrivedAt = new WeakMap<Request, number>();
+  for (const path of ["/mcp", "/public/mcp"]) {
+    app.use(path, async (c, next) => {
+      arrivedAt.set(c.req.raw, Date.now());
+      await next();
+    });
+  }
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   //
@@ -10723,6 +10733,7 @@ export async function createStrut<TServices = unknown>(
         ...workerServicesOf(undefined),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
+        arrivedAt: arrivedAt.get(c.req.raw),
       });
       return { appTools, appMeta: APP_TOOL_META };
     };
@@ -10846,6 +10857,7 @@ export async function createStrut<TServices = unknown>(
         ...workerServicesOf(sessionAddress(session), async () => (await publicSurface.get()).apps.map((a) => a.name)),
         runStepDeps: { store, workspace },
         monitor: appMonitor,
+        arrivedAt: arrivedAt.get(c.req.raw),
         visitor: {
           identity: publicAppOfIdentity,
           // The page names a workflow as its package does (package-first,
@@ -10991,6 +11003,7 @@ export async function createStrut<TServices = unknown>(
         host: { ref: { name: call.host, account: accountText(call.account), unlinked: !call.person.linked }, outcome: (s) => void outcomes.push(s) },
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
+        arrivedAt: arrivedAt.get(c.req.raw),
       });
       const instructions = "A host's door to an app's tools: step_run { app, type, config }, as the account x-strut-account names, under the app's hosts:. The answer comes once the step is done; a 2xx means it finished.";
       const res = await createMcpDoor(() => toolsetServer({ tools, instructions }), { maxBodyBytes: HOST_CALL_BODY_MAX_BYTES, json: true }).handle(c.req.raw);
