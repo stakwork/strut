@@ -205,7 +205,13 @@ describe("concept files (pure)", () => {
     // built too deep, a migration nobody needs) is a CASE of the page's one
     // claim, never a rule on the page.
     assert.doesNotMatch(plan.docs!, /auth|token|migrat|backward/i, "no rule per failure");
-    assert.doesNotMatch(plan.docs!, /hive|@<slug>|\bpod\b|pull request/i, "names nothing one deployment has");
+    assert.doesNotMatch(plan.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
+    // A plan need not be about code at all (ruled 2026-11-21): the page
+    // speaks of a repository in one sentence, which applies only to work
+    // that is in one, and an item names repositories only if it has any.
+    assert.equal(plan.docs!.match(/repositor/g)?.length, 2);
+    assert.match(plan.docs!, /Work in\s+a repository goes on one branch there for the whole plan, and ends as\s+one pull request\./);
+    assert.match(plan.docs!, /its repositories if it has any/);
     assert.equal(plan.claims?.length, 1);
     assert.deepEqual(
       plan.claims![0]!.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind]),

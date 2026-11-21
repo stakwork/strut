@@ -14,8 +14,10 @@ wake sentence also tells the turn to point the item's job at the plan.
 
 Changed by the runs (three phrases, no new rule): the questions are the
 plan job's `ask`; the line on what a question is got its three examples
-back; and the wake sentence makes the plan's job the hub. "Validation"
-says what each run showed.
+back; and the wake sentence makes the plan's job the hub. Then two more,
+ruled after the first runs: the branch rule is one sentence on the page,
+and each line to the person names its item. "Validation" says what each
+run showed.
 
 ## The ask
 
@@ -94,7 +96,9 @@ schema or store.
 > - **Overview.** What will exist when the plan is done, in a few lines.
 > - **Work items.** A few, each large: a job's worth of work that one
 >   agent can finish and that can be checked on its own. Each says what it
->   delivers, its kind, its repositories, and what it starts from.
+>   delivers, its kind, where its work goes and what it starts from. Work
+>   in a repository goes on one branch there for the whole plan, and ends
+>   as one pull request.
 > - **Contracts.** The names and shapes that two items both depend on,
 >   written once, here.
 > - **Open questions**, each with a default. A question is anything the
@@ -109,11 +113,11 @@ schema or store.
 > The person reads only your reply: a short overview, and the questions as
 > your `ask`. "Go" takes every default.
 >
-> After go, name ONE item in your reply, the next to do, with its kind and
-> its repositories. It is started as a job of its own, and that job is
-> handed back to you when it ends. Check what it made against the plan
-> before you name the next. Decide what comes up the same way and tell the
-> person at the end; stop only for what cannot be undone.
+> After go, name ONE item in your reply, the next to do, with its kind, and
+> its repositories if it has any. It is started as a job of its own, and
+> that job is handed back to you when it ends. Check what it made against
+> the plan before you name the next. Decide what comes up the same way and
+> tell the person at the end; stop only for what cannot be undone.
 
 The page names what the file holds, because several agents read and write
 it: the plan's job over many turns, each item's job, and the review. It
@@ -138,7 +142,8 @@ One sentence is added to the wake prompt's "continue" choice. A plan the
 person approved is a request not yet met, and its job runs it: the
 person's "go" and every item that ends go to the plan's job, and what its
 reply then names is the one thing the turn starts, as a job of its own
-pointed at the plan.
+pointed at the plan. Each line to the person names an item by what it is,
+never by its number alone ("Item 1, the server's tags, is finished").
 
 Nothing else changes, because today's rules already cover the rest:
 
@@ -147,8 +152,8 @@ Nothing else changes, because today's rules already cover the rest:
   asked.
 - **"Go"** reaches the plan's job with job/continue, as any answer to a
   job's question does.
-- **One line per finished item.** "Continue" already says to say in one
-  line that it did.
+- **One line a step.** "Continue" already says to say in one line that it
+  did.
 - **"Never widen the task on your own"** stays. The plan the person
   approved is the task.
 
@@ -166,11 +171,15 @@ set.
 ### 4. Code: one branch and one pull request per repository
 
 Every item that touches a repository works on the plan's one branch
-there. The first item to push opens the pull request and later items add
-to it. A plan across three repositories ends as three pull requests.
+there, and the repository ends with one pull request. A plan across three
+repositories ends as three pull requests.
 
-This is not on the `Plan` page, which knows nothing of code. It is the
-`Code Change` page's (see "Outside this repo").
+The rule is on the `Plan` page, because the branch is shared across items
+and the plan is what knows it. A plan need not be about code at all, or
+may be about workflows and apps on a strut with no repository. So the page
+says it in one sentence that applies only to work in a repository, and an
+item names repositories only if it has any. How a branch is pushed and a
+pull request opened stays the code kind's, or the deployment's.
 
 ## Rulings (2026-11-21)
 
@@ -187,6 +196,19 @@ This is not on the `Plan` page, which knows nothing of code. It is the
 7. **Simple and generic.** The page above is the whole of the guidance.
    No rule per failure: a failure becomes a case.
 8. **The plan file's parts** stay on the page.
+
+After the runs with a real model:
+
+9. **The branch rule is on the `Plan` page**, and stays generic: a plan
+   need not be about code.
+10. **Each line names the item** by what it is, not its number alone.
+11. **The default on "is it live"** stays "assume it is live". The person
+    sees the question and can say otherwise.
+12. **The review reads the work; it need not run it.** The orchestrator is
+    moving things along.
+13. **An item's job need not open the plan.** Its brief carries what it
+    needs and says where the plan is. A large plan is not every item's
+    reading.
 
 ## Work items
 
@@ -214,6 +236,9 @@ below was checked on disk, not taken from a job's report.
 | 2 | The questions are the plan job's `ask` | The questions arrived as a question, with their defaults. The orchestrator still started every item itself, one at a time, reading "start the item its job names next" as the plan's own list. The plan's job never ran again. |
 | 3 | The wake sentence makes the plan's job the hub | As designed. "Go" went to the plan's job, which recorded the six defaults under Decided and named item 1. Each finished item went back to it; it read the code on the item's branch against Contracts, filled in Progress, and named the next. 10 orchestrator turns (8 wakes), 5 turns of the plan's job, 3 item jobs, about $0.52, 6 minutes. |
 
+| 4 | One branch per repository, on the page | The plan named one branch per repository and each remote ended with exactly that branch, pushed. The plan's job put the command line's two items into one job. The first item went back to it and was checked; the last job did not, and the orchestrator closed out itself. Two plans with no repository (a welcome pack; a workflow and an app) say so in one line and have nothing about branches. |
+| 5 | Each line names the item | Every line named its item ("Item 1, the server's tags, is finished"). Items 1 and 2 went back to the plan's job, which read the diff and ran the tests. The last item again did not go back. One `tags` branch per repository, pushed: cloned fresh, the server's 4 tests and the command line's 6 pass, and the check script agrees. |
+
 In run 3 the built work holds: the server's 5 tests and the command
 line's 6 pass, and the agreement script passes against the real server.
 
@@ -230,34 +255,24 @@ line's 6 pass, and the agreement script passes against the real server.
 
 **What the runs leave open:**
 
-- **The default on "is it live" is still the heavy one.** All three plans
-  that ask it default to "assume it is live, so the migration is
-  required". The person now sees the question, but "go" still builds the
-  migration. Whether the default should lean the other way for something
-  just merged is the person's to rule; the page says only "the simplest
-  option that is safe".
-- **Two lines an item, not one.** The turn that hands an item back says so
-  ("I've sent it back to the plan to check"), and the next says it
-  matched and what started. No wake turn was silent.
-- **The review reads, it does not run.** The plan's job read each item's
-  code against Contracts and took the item's word for its tests.
-- **An item's job did not open the plan.** The brief pointed at `plan.md`
-  in the plan's job; the item's job looked in its own directory, did not
-  find it, and worked from the contracts the brief also carried.
-- **Nothing was pushed, and the command line ended on two branches.**
-  There is no code kind on a bare strut: this is the `Code Change` line
-  below.
-- **A wake count.** Three items took 8 wake turns: two an item, one for
-  the plan and one to close. The cap of 30 covers about fourteen items.
+- **The last item is not handed back.** In runs 4 and 5 the orchestrator
+  closed the plan itself after the last job: that job was not checked by
+  the plan's job and the plan file's progress was left open. Run 3
+  handed every item back. Nothing has been changed for it.
+- **No pull request was opened.** The test repositories are local, and the
+  jobs said so. A run against real repositories has not been done.
+- **A wake count.** Three items took 7 or 8 wake turns: two an item, one
+  for the plan and at most one to close. The cap of 30 covers about
+  fourteen items.
 - **Not run:** a trial with the judge (`knowledge/trial`), any model but
   the one above, and a plan large enough to need compaction.
 
 ## Outside this repo
 
-- `Code Change` (the strut-code package, and the lab's own page) needs one
-  line: as an item of a plan, work on the plan's branch for that
-  repository, creating it if it is not there, and open a pull request only
-  when none is open for it.
+- `Code Change` (the strut-code package, and the lab's own page) says
+  "always a new branch and a pull request" for a job. It needs one line so
+  an item of a plan works on the branch its brief names, and opens a pull
+  request only when none is open for it.
 - The lab retires `Plan Mode` at the bump that brings `Plan`.
 
 ## Left out
