@@ -1,4 +1,4 @@
-import { Children, createElement, Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, createContext, createElement, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, ScanSearch } from "lucide-react";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
+import { fencedSource, type HastNode } from "../lib/fence";
 import type { ProvenanceSubject } from "../lib/provenance";
 import { relPath, useRunFile, type RunFile } from "../lib/run-file";
 
@@ -32,6 +33,11 @@ export interface DocumentViewProps {
   onSpotCheck?: (subject: ProvenanceSubject) => void;
   className?: string;
 }
+
+/** What draws a ```mermaid block of markdown (MermaidDiagrams provides
+ *  MermaidDiagram); with none, the block is code. A context, not an import,
+ *  so an app that never draws a diagram never carries Mermaid. */
+export const DiagramContext = createContext<ComponentType<{ source: string }> | null>(null);
 
 /** The most of a selection a spot check takes: a passage, not a page. */
 const SPOT_MAX_CHARS = 600;
@@ -65,7 +71,8 @@ function marked(text: string, ranges: readonly TextRange[], offset = 0): ReactNo
  * the page, with the terms given highlighted and the first scrolled to. An
  * HTML page is drawn from its safe elements (`sanitizeHtml`: the browser
  * parses it, nothing of it runs, only text and plain elements survive, a
- * link opens through the host), never as HTML.
+ * link opens through the host), never as HTML. Markdown's ```mermaid block
+ * is a diagram inside MermaidDiagrams, and code anywhere else.
  */
 export function DocumentView({ workflow, runId, path, file: givenFile, text: givenText, kind, terms, onSpotCheck, className }: DocumentViewProps) {
   const read = givenText === undefined && !givenFile && !!workflow && !!runId && !!path;
@@ -205,6 +212,7 @@ export function SafeHtml({ html, nodes: given, terms, className }: SafeHtmlProps
 /** Markdown with the terms marked in each text it holds (a passage across two formats is two marks). */
 function MarkdownDoc({ text, terms }: { text: string; terms?: string[] }) {
   const host = useHost();
+  const Diagram = useContext(DiagramContext);
   const components = useMemo((): Components => {
     const hl = (children: ReactNode) =>
       Children.map(children, (c) => (typeof c === "string" && terms?.length ? marked(c, findHighlightRanges(c, terms)) : c));
@@ -215,8 +223,14 @@ function MarkdownDoc({ text, terms }: { text: string; terms?: string[] }) {
     }
     out["a"] = ({ node: _n, children, href, ...rest }: { node?: unknown; children?: ReactNode; href?: string }) =>
       createElement("a", { ...rest, href, rel: "noopener noreferrer", onClick: (e: { preventDefault: () => void }) => { e.preventDefault(); if (href) void host.openLink(href); } }, hl(children));
+    if (Diagram) {
+      out["pre"] = ({ node, children, ...rest }: { node?: HastNode; children?: ReactNode }) => {
+        const source = fencedSource(node, "mermaid");
+        return source === null ? createElement("pre", rest, children) : createElement(Diagram, { source });
+      };
+    }
     return out as Components;
-  }, [(terms ?? []).join("\u0000"), host]);
+  }, [(terms ?? []).join("\u0000"), host, Diagram]);
   return (
     <div className={PROSE}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{text}</ReactMarkdown>

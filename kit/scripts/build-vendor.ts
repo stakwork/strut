@@ -38,7 +38,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kitDir, scanCandidates, sourceFiles, vendorDir } from "../src/node.js";
-import { ALIASES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, SUBPATHS, outName } from "./manifest.js";
+import { ALIASES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, SCRIPT_EXPORTS, SUBPATHS, outName } from "./manifest.js";
 
 export interface VendorEntry {
   /** The specifier an app imports. */
@@ -251,6 +251,11 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
         loader: input.endsWith("x") ? "tsx" : "ts", jsx: "automatic", format: "esm", target: "es2022", sourcefile: input,
       });
       writeFileSync(target, out.code);
+    } else if (SCRIPT_EXPORTS[input]) {
+      const { from: line, to } = SCRIPT_EXPORTS[input];
+      const text = readFileSync(from, "utf8");
+      if (text.split(line).length !== 2) throw new Error(`vendor: ${input} no longer ends its script with ${line}`);
+      writeFileSync(target, text.replace(line, () => to));
     } else {
       copyFileSync(from, target);
     }

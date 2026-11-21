@@ -3,7 +3,7 @@
  *  artifact path, the graph a run walked, a run's agents as a cascade, the
  *  work products a run declares, a graph walk hop by hop, two states of the
  *  Concept tree's pages, a flat form's schema (a question's, a task's
- *  answer) — to what a view draws. One copy: strut's own UI
+ *  answer), the SVG Mermaid drew — to what a view draws. One copy: strut's own UI
  *  (`web/`) imports them as `@strut/kit/folds`, `strut/views` and any app
  *  from `@strut/kit`. No React, no DOM, nothing from the server. */
 export * from "./run-overview.js";
@@ -12,6 +12,7 @@ export * from "./transcript.js";
 export * from "./accessed-nodes.js";
 export * from "./artifact-view.js";
 export * from "./document.js";
+export * from "./diagram.js";
 export * from "./agent-trace.js";
 export * from "./run-graph/index.js";
 export * from "./work-products.js";

@@ -554,6 +554,11 @@
   resolved "https://registry.yarnpkg.com/@mediapipe/tasks-vision/-/tasks-vision-0.10.17.tgz#2c1c73ed81902b21d37336a587b96183bb6882d5"
   integrity sha512-CZWV/q6TTe8ta61cZXjfnnHsfWIdFhms03M9T7Cnd5y2mdpylJM0rF1qRq+wsQVRMLz1OYPVEBU9ph2Bx8cxrg==
 
+"@mermaid-js/tiny@12.3.0":
+  version "12.3.0"
+  resolved "https://registry.yarnpkg.com/@mermaid-js/tiny/-/tiny-12.3.0.tgz#e298b1bf89bb42576bc9ce88dd6f90495e1f0d6e"
+  integrity sha512-90BO2kQvmQWj9YjBX2IsLHCw61rN69dPTn5wFfDu+b9aT7qtzfzTA3wpKWeaRAKK85refSo9How5EOeY39DWfA==
+
 "@modelcontextprotocol/client@2.3.1":
   version "2.3.1"
   resolved "https://registry.yarnpkg.com/@modelcontextprotocol/client/-/client-2.3.1.tgz#3220735690d1f1609f77dfff8b969714c1da9dc7"
