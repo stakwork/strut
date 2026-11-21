@@ -22,15 +22,16 @@ It holds:
 - **Contracts.** The names and shapes that two items both depend on,
   written once, here.
 - **Open questions**, each with a default. A question is anything the
-  person knows and you cannot see, and any choice that changes how much
-  gets built. The default is the simplest option that is safe; say what
-  it leaves for later. Once ruled they move to **Decided**, with who
-  decided: the person, or the default.
+  person knows and you cannot see (what is live, who uses it, what comes
+  next), and any choice that changes how much gets built. The default is
+  the simplest option that is safe; say what it leaves for later. Once
+  ruled they move to **Decided**, with who decided: the person, or the
+  default.
 - **Progress.** For each item: its job, its state, and what it did
   differently from the plan.
 
-The person reads only your reply: a short overview and the questions.
-"Go" takes every default.
+The person reads only your reply: a short overview, and the questions as
+your `ask`. "Go" takes every default.
 
 After go, name ONE item in your reply, the next to do, with its kind and
 its repositories. It is started as a job of its own, and that job is

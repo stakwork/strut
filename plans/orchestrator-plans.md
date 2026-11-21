@@ -1,10 +1,9 @@
 # Plans: the orchestrator carries a plan to its end
 
-Status: BUILT (2026-11-21), not yet run with a real model (see
-"Validation"). Evan ruled the six questions as recommended, with code
-landing as one pull request per repository. He then asked for the simple,
-generic version, which is this one. The first, longer version is in this
-file's history.
+Status: BUILT and run with a real model (2026-11-21, see "Validation").
+Evan ruled the six questions as recommended, with code landing as one pull
+request per repository. He then asked for the simple, generic version,
+which is this one. The first, longer version is in this file's history.
 
 Settled while building: the page's last paragraph says how an item is
 handed out, which the agreed text left open. A plan's job cannot start a
@@ -12,6 +11,11 @@ job, and "hand out" alone could be read as running the item itself. So the
 page says it names the next item in its reply, that the item is started
 as a job of its own, and that the job is handed back when it ends. The
 wake sentence also tells the turn to point the item's job at the plan.
+
+Changed by the runs (three phrases, no new rule): the questions are the
+plan job's `ask`; the line on what a question is got its three examples
+back; and the wake sentence makes the plan's job the hub. "Validation"
+says what each run showed.
 
 ## The ask
 
@@ -94,15 +98,16 @@ schema or store.
 > - **Contracts.** The names and shapes that two items both depend on,
 >   written once, here.
 > - **Open questions**, each with a default. A question is anything the
->   person knows and you cannot see, and any choice that changes how much
->   gets built. The default is the simplest option that is safe; say what
->   it leaves for later. Once ruled they move to **Decided**, with who
->   decided: the person, or the default.
+>   person knows and you cannot see (what is live, who uses it, what comes
+>   next), and any choice that changes how much gets built. The default is
+>   the simplest option that is safe; say what it leaves for later. Once
+>   ruled they move to **Decided**, with who decided: the person, or the
+>   default.
 > - **Progress.** For each item: its job, its state, and what it did
 >   differently from the plan.
 >
-> The person reads only your reply: a short overview and the questions.
-> "Go" takes every default.
+> The person reads only your reply: a short overview, and the questions as
+> your `ask`. "Go" takes every default.
 >
 > After go, name ONE item in your reply, the next to do, with its kind and
 > its repositories. It is started as a job of its own, and that job is
@@ -130,9 +135,10 @@ added.
 ### 2. The orchestrator
 
 One sentence is added to the wake prompt's "continue" choice. A plan the
-person approved is a request not yet met: the turn starts the item the
-plan's job names next, as a job of its own pointed at the plan, and when
-that job ends it hands it back to the plan's job.
+person approved is a request not yet met, and its job runs it: the
+person's "go" and every item that ends go to the plan's job, and what its
+reply then names is the one thing the turn starts, as a job of its own
+pointed at the plan.
 
 Nothing else changes, because today's rules already cover the rest:
 
@@ -195,16 +201,56 @@ One pull request.
 ## Validation
 
 `npm test` cannot show this works: it is a page, a sentence and a number.
-Two things can.
+What did, on 2026-11-21: a scratch strut from this branch (LadybugDB
+workspace, `claude-sonnet-5-5` for every agent) and one conversation,
+played three times. The person asked for a plan across two small local
+repositories (a counting server and its command line: tags on counters,
+and a script that checks the two agree), then said only "go". Every claim
+below was checked on disk, not taken from a job's report.
 
-- **Trials** of the page's claim, on the models in use. Not tried yet: a
-  trial of `job` with `kind: Plan`.
-- **One run with a real model** on a scratch strut: a three-item plan
-  across two repositories, "go" with no rulings, and nothing typed until
-  the end. What to read afterwards: did it reach the end, how many wake
-  turns it took, what the person was sent, whether the questions arrived
-  with their defaults, whether a contract that changed mid-plan reached
-  the next item, and whether each repository has one pull request.
+| Run | What changed before it | What happened |
+| --- | --- | --- |
+| 1 | The page and sentence as first built | Reached the end on "go": 3 items, 6 orchestrator turns, about $0.37. But the plan's job wrote its questions in its reply text, so to the orchestrator it had finished. On "go" the orchestrator started the items itself, two at once. The plan's job never ran again: nothing reviewed, Decided and Progress empty. |
+| 2 | The questions are the plan job's `ask` | The questions arrived as a question, with their defaults. The orchestrator still started every item itself, one at a time, reading "start the item its job names next" as the plan's own list. The plan's job never ran again. |
+| 3 | The wake sentence makes the plan's job the hub | As designed. "Go" went to the plan's job, which recorded the six defaults under Decided and named item 1. Each finished item went back to it; it read the code on the item's branch against Contracts, filled in Progress, and named the next. 10 orchestrator turns (8 wakes), 5 turns of the plan's job, 3 item jobs, about $0.52, 6 minutes. |
+
+In run 3 the built work holds: the server's 5 tests and the command
+line's 6 pass, and the agreement script passes against the real server.
+
+**The page's two cases**, run as plan jobs and read by hand (no judge):
+
+- *Something merged yesterday.* Before the three examples went back into
+  the line on questions, 1 plan of 1 never asked whether the change was
+  live: it planned a migration with a tested down path, a compatibility
+  shim and a cleanup "after the migration has run in production". After,
+  3 plans of 3 ask whether it is deployed with real data.
+- *Sharing a private note.* 4 plans of 4 ask how far access goes and
+  default to the small answer (read-only, existing accounts only), with
+  invites and public links left for later.
+
+**What the runs leave open:**
+
+- **The default on "is it live" is still the heavy one.** All three plans
+  that ask it default to "assume it is live, so the migration is
+  required". The person now sees the question, but "go" still builds the
+  migration. Whether the default should lean the other way for something
+  just merged is the person's to rule; the page says only "the simplest
+  option that is safe".
+- **Two lines an item, not one.** The turn that hands an item back says so
+  ("I've sent it back to the plan to check"), and the next says it
+  matched and what started. No wake turn was silent.
+- **The review reads, it does not run.** The plan's job read each item's
+  code against Contracts and took the item's word for its tests.
+- **An item's job did not open the plan.** The brief pointed at `plan.md`
+  in the plan's job; the item's job looked in its own directory, did not
+  find it, and worked from the contracts the brief also carried.
+- **Nothing was pushed, and the command line ended on two branches.**
+  There is no code kind on a bare strut: this is the `Code Change` line
+  below.
+- **A wake count.** Three items took 8 wake turns: two an item, one for
+  the plan and one to close. The cap of 30 covers about fourteen items.
+- **Not run:** a trial with the judge (`knowledge/trial`), any model but
+  the one above, and a plan large enough to need compaction.
 
 ## Outside this repo
 
