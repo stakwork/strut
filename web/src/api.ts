@@ -2739,14 +2739,29 @@ export interface SubscriptionInfo {
   ref?: string;
   tokenSecret?: string;
   accepted?: { seq: number; digest: string; at: string };
-  /** A catalog's `seq`, or a branch's ref and the commit it was last at. */
-  applied?: { seq?: number; ref?: string; commit?: string; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
+  /** A catalog's `seq`, or a branch's ref and the commit it was last at;
+   *  a bundle's name, version and the refs it lists (`bundle`). */
+  applied?: {
+    seq?: number;
+    ref?: string;
+    commit?: string;
+    digest: string;
+    at: string;
+    packages: Array<{ package: string; version: string; digest: string }>;
+    bundle?: { package: string; version: string; refs: string[] };
+  };
   checkedAt?: string;
   /** What stopped the last sync: this strut stays on the release it applied last. */
   error?: string;
+  /** The secrets a package of it waits for before it goes in. */
+  waiting?: { secrets: string[] };
+  /** Packages another subscription holds, left to it (`by`: `subscription:<id>`). */
+  held?: Array<{ package: string; by: string }>;
   warnings?: string[];
-  /** Each package it installed, and the items edited here since. */
+  /** Each package it installed, and the items edited here since (a bundle's: every part's). */
   packages: Array<{ package: string; version?: string; digest?: string; diverged: string[] }>;
+  /** A bundle's: each package it lists, reported as a subscription to that ref alone. */
+  parts?: SubscriptionInfo[];
 }
 
 export const listSubscriptions = () =>

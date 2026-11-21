@@ -3396,7 +3396,9 @@ secrets?, git? }` — the secrets its steps manage, "Secrets a package
 provides" below, and the hosts a token it holds serves, "Git credentials
 by host" below; `requires.git: true` — its steps read the run's token for a
 repository's host themselves, the same section — `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
-the package strut runs on its own, "Schedules a package ships" below) and
+the package strut runs on its own, "Schedules a package ships" below;
+`bundle?: [<git+ ref>, …]` — a BUNDLE, which lists other packages and holds
+nothing of its own, "Bundles" below) and
 the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
@@ -3431,10 +3433,10 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of the secret that serves its host (`tokenSecret`; absent when none does, "Git credentials by host" below) |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), the packages another subscription holds (`held`, "One package, one subscription" below), and each package it installed with the items edited here (`diverged`). A bundle's has `parts`, each a `SubscriptionInfo` of its own ("Bundles" below); its parts are never listed beside it. Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of the secret that serves its host (`tokenSecret`; absent when none does, "Git credentials by host" below) |
 | PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The request's actor, when it has one, is the subscription's PERSON (`actor` on the record; "Whose a subscription is", below); a later `PUT` records its own. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, any `tokenSecret` (gone: a branch is read with the token for its host), an `actor` in the body |
-| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
-| DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
+| POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "held" \| "error", seq?, from?, to?, error?, waiting?, held?, result?, parts? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `held` (`[{ package, by }]`) when another subscription holds a package and it is left to it, `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in, `parts` a bundle's: each part's outcome, the status then the most pressing of the bundle's and its parts' (`error`, `waiting`, `held`, `applied`, `current`). How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
+| DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`, after a sync under way ends; a bundle's parts stop with it. With `uninstall=1` every package it brought (a bundle's: every part's) goes through the distro's door (forks kept); without, they stay as they are, followed by nothing. 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
 | PUT    | `/packages/indexes/:id` | `{ key, urls, label? }` → the `IndexSubscriptionInfo`, its card read at once (a wrong key or URL shows as `error`). `key` is the index key; `urls` where its card is served (an index strut's `…/index/catalog`). Kept in `<dataDir>/packages/indexes.json`; `STRUT_PACKAGE_INDEXES` and `createStrut({ packageIndexes })` put entries on file at boot. Full scope; 400 `package_index_invalid` |
 | DELETE | `/packages/indexes/:id` | Stop following → `{ ok, id }`; 404 when there is none |
@@ -3750,6 +3752,7 @@ the release requires first:
 | A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
 | Already the release's content, stamped that release's | nothing | `present` |
 | Already the release's content, from another release, its active version the package's | stamped this release's in place, no new version — so a release that changes only its `strut.yaml` (`job:`, `provides`, `schedules:`) is what `GET /packages` reads as installed | `stamped` |
+| Already the release's content, put here by another door or source (a person's install, the boot list, a subscription since deleted) | stamped this release's, `source: "distro"` and this source, in place: the subscription follows it from now on | `stamped` |
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
 | A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
@@ -4386,6 +4389,106 @@ deployment's value, as before.
   "packages": []   // what is left here: an item edited here before it went out
 }
 ```
+
+**Bundles** (stadeum `plans/software.md` §3.3, §5 item 5). A bundle is a
+package whose `strut.yaml` lists other packages by the branch each is
+followed at, with no digest, and holds nothing else:
+
+```yaml
+# strut.yaml of stakwork/strut-software
+package: stadeum/software
+version: 0.1.0
+description: GitHub, the box's repositories, and a pod for every coding job
+bundle:
+  - git+https://github.com/stakwork/strut-github@stable
+  - git+https://github.com/stakwork/strut-pods@stable
+  - git+https://github.com/stakwork/strut-code@stable
+```
+
+Each entry is a `git+<repo>[@<branch>][#<folder>]` ref that names a branch,
+one repository folder once. A bundle has no folders (`workflows/`,
+`steps/`, …) and no `requires`, `job`, `provides` or `schedules`: `400
+bad_package` naming each, as for an entry that is not `git+`, a full commit
+sha, a folder listed twice or an empty list. An older strut refuses the
+`bundle` key. Nothing installs a bundle: `POST /packages/install` (and the
+boot list, serve mode, a `requires.packages` pin) answers `400
+package_is_bundle: … subscribe to its repository`.
+
+A subscription to the bundle's repository follows each package it lists as
+a PART: a subscription to that ref alone in all but its record. It is read
+on its own branch, with its own secrets gate and its own error, installed
+as `subscription:<part id>`, and it belongs to the bundle's person: they
+own what it installs, its schedules run as them, and its repository is read
+with their own token for its host. Every sync of the bundle syncs every
+part, so a part moves when its own branch does, with no release of the
+bundle, and one that waits or fails holds back no other. The bundle's
+`checkedAt` moves once every part is read. A release of the
+bundle that adds a ref starts a part; one that drops a ref stops its part
+as `DELETE ?uninstall=1` stops a subscription (what it installed goes,
+forks kept). A part's id is `<id>/<repo name>-<8 hex>`, the same for that
+repository folder at any branch, so a release that moves a part to another
+branch updates it in place. A listed package that is itself a bundle fails
+its part: `package_is_bundle: … a bundle lists packages, not bundles`.
+
+```jsonc
+// PUT /packages/subscriptions/software — the admin who clicked Software
+// x-strut-actor: <the admin's actor>
+{ "ref": "git+https://github.com/stakwork/strut-software@stable" }
+
+// POST /packages/subscriptions/software/sync, with PODS_URL unset and strut-code's read refused
+{
+  "id": "software", "status": "error", "from": "4be1…", "to": "4be1…",     // the most pressing; the bundle's own commits, no `error`: it was read
+  "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] },                    // its parts', together
+  "parts": [
+    { "id": "software/strut-github-1c9e04aa", "status": "current", "from": "77a0…", "to": "77a0…" },
+    { "id": "software/strut-pods-5d21b0f3", "status": "waiting", "from": "9531…", "to": "9531…", "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] } },
+    { "id": "software/strut-code-e0b7d2c1", "status": "error", "from": "02f4…", "error": "package_repo_denied: …" }
+  ]
+}
+
+// GET /packages/subscriptions → subscriptions[]: the bundle, never its parts beside it
+{
+  "id": "software", "ref": "git+https://github.com/stakwork/strut-software@stable", "tokenSecret": "GITHUB_TOKEN", "actor": "evan",
+  "applied": { "ref": "git+…", "commit": "4be1…", "digest": "sha256:…", "at": "…", "packages": [],   // nothing of the bundle is installed
+               "bundle": { "package": "stadeum/software", "version": "0.1.0", "refs": ["git+…strut-github@stable", "git+…strut-pods@stable", "git+…strut-code@stable"] } },
+  "checkedAt": "…", "warnings": [],
+  "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] },   // its parts' waits and holds, together
+  "packages": [                                          // every part's packages, together
+    { "package": "stadeum/github", "version": "0.1.0", "digest": "sha256:…", "diverged": [] },
+    { "package": "stadeum/code", "version": "0.3.0", "digest": "sha256:…", "diverged": [] }
+  ],
+  "parts": [   // in the bundle's order, each as a subscription to its ref alone reports
+    { "id": "software/strut-github-1c9e04aa", "ref": "git+https://github.com/stakwork/strut-github@stable", "tokenSecret": "GITHUB_TOKEN", "actor": "evan",
+      "applied": { "ref": "git+…", "commit": "77a0…", "digest": "sha256:…", "at": "…", "packages": [{ "package": "stadeum/github", "version": "0.1.0", "digest": "sha256:…" }] },
+      "checkedAt": "…", "warnings": [], "packages": [{ "package": "stadeum/github", "version": "0.1.0", "digest": "sha256:…", "diverged": [] }] },
+    { "id": "software/strut-pods-5d21b0f3", "ref": "git+https://github.com/stakwork/strut-pods@stable", "tokenSecret": "GITHUB_TOKEN", "actor": "evan",
+      "applied": { "ref": "git+…", "commit": "9531…", "digest": "sha256:…", "at": "…", "packages": [] },
+      "waiting": { "secrets": ["PODS_TOKEN", "PODS_URL"] }, "checkedAt": "…", "packages": [] },
+    { "id": "software/strut-code-e0b7d2c1", "ref": "git+https://github.com/stakwork/strut-code@stable", "tokenSecret": "GITHUB_TOKEN", "actor": "evan",
+      "applied": { "…": "…" }, "checkedAt": "…", "error": "package_repo_denied: …",   // its own last error; what it installed stays
+      "packages": [{ "package": "stadeum/code", "version": "0.3.0", "digest": "sha256:…", "diverged": [] }] }
+  ]
+}
+```
+
+Stopping it is `DELETE /packages/subscriptions/software[?uninstall=1]`,
+the rule of every subscription: the parts stop with it; with
+`uninstall=1` everything any part installed goes (forks kept), and
+without it stays as it is, followed by nothing, until a subscription takes
+it (the same `PUT` again gets the same parts back). A package installed
+under `subscription:software/…` names its part; the part is in the
+bundle's `parts` by that id.
+
+**One package, one subscription.** A package another subscription here
+holds — its `source.ref` on `GET /packages` is `subscription:<x>`, `x` a
+subscription on file or a part of one — is left to it: a subscription that
+also lists it (a bundle's part, a channel, a branch) installs and removes
+nothing of it, and says `held: [{ package, by: "subscription:<x>" }]` and
+status `held` until that one lets go (it is deleted, or its release drops
+the package); its next sync then takes it. A package nobody follows — a
+person's install, the boot list, one a subscription since deleted left
+here — a subscription takes, as it always has: from that sync on it is the
+distro's, recorded as that subscription's, and updated by it.
 
 ## 17. The public view — what anyone may read (`plans/public-surface.md`)
 

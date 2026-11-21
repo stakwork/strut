@@ -83,6 +83,24 @@ export function parseGitRef(ref: string): GitPackageRef | string {
   return { ref, repo, ...(rev ? { rev } : {}), ...(path ? { path } : {}) };
 }
 
+/** Why `ref` is not a branch a subscription can follow — a `git+` ref
+ *  (`parseGitRef`) that names no full commit sha, which does not move — or
+ *  nothing. A tag is only told from a branch after a fetch. */
+export function branchRefProblem(ref: unknown): string | undefined {
+  if (typeof ref !== "string") return "ref is git+https://host/org/repo[@<branch>][#<folder>]";
+  const parsed = parseGitRef(ref);
+  if (typeof parsed === "string") return `ref ${parsed}`;
+  if (parsed.rev && /^[0-9a-f]{40}$/i.test(parsed.rev)) return `ref ${ref}: names a commit, which does not move — a subscription follows a branch`;
+  return undefined;
+}
+
+/** The repository folder a `git+` ref reads, whatever its branch:
+ *  `<host>/<owner>/<name>#<folder>`, lowercased. One package's identity
+ *  across branches (a bundle lists one once; its part's id is made of it). */
+export function refSource(parsed: GitPackageRef): string {
+  return `${parsed.repo.host}/${parsed.repo.owner}/${parsed.repo.name}#${parsed.path ?? ""}`.toLowerCase();
+}
+
 /** The host a `git+` ref's token would be sent to (`github.com`);
  *  undefined for a repository no token may go to (`file://`, plain http to
  *  another machine), or a ref that is not one. */

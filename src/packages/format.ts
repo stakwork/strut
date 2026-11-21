@@ -53,6 +53,19 @@
  * every attribute and every parent (`parents`). Two pages with one name are
  * refused.
  *
+ * A package may be a BUNDLE instead (stadeum plans/software.md §3.3):
+ * `bundle:` lists other packages by the `git+` branch each is followed at,
+ * with no digest, and the bundle holds nothing else — no folder, and no
+ * `requires`, `job`, `provides` or `schedules`. A subscription to it follows
+ * each listed package as a part of its own (./subscriptions.ts); nothing
+ * installs a bundle (`package_is_bundle`, ./install.ts). Each entry is a
+ * `git+https://host/org/repo[@<branch>][#<folder>]` ref that names a branch
+ * (a full commit sha is refused, as a subscription's `PUT` refuses one), one
+ * repository folder once. Whether a listed package is itself a bundle is
+ * only known once it is read, so its part says so then: a bundle lists
+ * packages, never bundles. An older strut refuses the key (the manifest is
+ * strict) instead of installing an empty package.
+ *
  * Its DIGEST is the tree hash over every file in it, `strut.yaml` included
  * (`hashTree`, src/version.ts — an app's version hash is the same function
  * over its own directory, so an app's files are hashed alike in both). The
@@ -189,10 +202,16 @@ const manifestSchema = z
           .strict(),
       )
       .optional(),
+    // The packages a bundle lists, each by the `git+` branch it is followed
+    // at (./subscriptions.ts). A bundle holds nothing else (`readPackage`).
+    bundle: z.array(z.string().min(1)).min(1, "a bundle lists at least one package").optional(),
   })
   .strict();
 
 export type PackageManifest = z.infer<typeof manifestSchema>;
+
+/** What a bundle may not carry: what belongs to a package's own items. */
+const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules"] as const;
 
 /** Every secret a package's steps may read: `requires.secrets` and
  *  `requires.optional` — its fence. */
@@ -307,6 +326,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const files = await packageFiles(dir);
   if (!files.includes(MANIFEST_FILE)) throw new Error(`bad_package: no ${MANIFEST_FILE} at the top of the directory`);
   const manifest = parseManifest(await readFile(join(dir, MANIFEST_FILE), "utf-8"));
+  if (manifest.bundle) return readBundle(dir, files, manifest as PackageManifest & { bundle: string[] });
   const pkg = manifest.package;
   if (manifest.requires?.packages?.some((p) => p.package === pkg)) throw new Error(`bad_package: ${pkg} requires itself`);
 
@@ -386,6 +406,32 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}), ...(schedules ? { schedules } : {}) };
+}
+
+/** A bundle: its list, each entry a branch to follow and a repository
+ *  folder named once, and nothing of its own — no folder, no `requires`,
+ *  `job`, `provides` or `schedules` (a file at the top, a README, is fine). */
+async function readBundle(dir: string, files: string[], manifest: PackageManifest & { bundle: string[] }): Promise<PackageInfo> {
+  // Lazily: git-source.ts reads this module, and only a bundle needs it.
+  const { branchRefProblem, parseGitRef, refSource } = await import("./git-source.js");
+  const problems: string[] = [];
+  for (const key of NOT_IN_A_BUNDLE) {
+    if (manifest[key] !== undefined) problems.push(`${MANIFEST_FILE}: ${key}: a bundle lists packages and has no ${key} of its own — it belongs to a package the bundle lists`);
+  }
+  for (const top of new Set(files.filter((f) => f.includes("/")).map((f) => f.slice(0, f.indexOf("/"))))) {
+    problems.push(`${top}/: a bundle lists packages and holds no items of its own — put them in a package the bundle lists`);
+  }
+  const seen = new Map<string, number>();
+  manifest.bundle.forEach((ref, i) => {
+    const problem = branchRefProblem(ref);
+    if (problem) return problems.push(`${MANIFEST_FILE}: bundle[${i}]: ${problem.replace(/^ref /, "")}`);
+    const source = refSource(parseGitRef(ref) as Exclude<ReturnType<typeof parseGitRef>, string>);
+    const at = seen.get(source);
+    if (at !== undefined) problems.push(`${MANIFEST_FILE}: bundle[${i}]: ${ref} reads the folder bundle[${at}] reads — a bundle lists a package once, at one branch`);
+    seen.set(source, i);
+  });
+  if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
+  return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items: [] };
 }
 
 /** The manifest's `schedules:` over the package's own workflows: each names

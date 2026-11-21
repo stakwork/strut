@@ -119,6 +119,10 @@ them.
 
 A `git+` subscription follows one package. Marketplace §12's `distro.yaml`,
 a repo that lists many packages, waits until a box follows many.
+(2026-11-20: a branch may hold a BUNDLE instead, which lists several
+packages by the branch each is followed at, each followed as a part of the
+one subscription: stadeum `plans/software.md` §3.3 and §5 item 5;
+`docs/packages.md` and `specs/API.md` §16, "Bundles".)
 
 ### 1.2 A sync
 

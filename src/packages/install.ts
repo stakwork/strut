@@ -603,6 +603,10 @@ async function resolveSet(
       : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}), ...git, ...tokenFor(ref, asked) });
     const info = cached ?? resolved!;
     const pkg = info.manifest.package;
+    // A bundle is followed, part by part, never installed (./subscriptions.ts).
+    if (info.manifest.bundle) {
+      throw new Error(`package_is_bundle: ${pkg} is a bundle of ${info.manifest.bundle.length} package(s), followed by their branches, not installed — subscribe to its repository (PUT /packages/subscriptions/:id { ref }), or install a package it lists`);
+    }
     if (expected && pkg !== expected.package) {
       throw new Error(`package_name_mismatch: ${expected.by} requires ${expected.package} from ${ref}, which is the package ${pkg}`);
     }
@@ -954,11 +958,14 @@ async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: Ins
     const stamped = active.source === "repo" && active.upstream?.digest === m.info.digest && active.upstream?.commit === m.commit;
     return stamped ? { action: "present" } : { action: "stamp" };
   }
-  // The release's content already, from another release: stamped with this
-  // one in place, so what is installed reads this release — and a release
-  // that changes only its strut.yaml (its `job:`, `provides`, `schedules`)
-  // is followed. A fork stays a fork.
-  if (active.hash === hash) return !at.modified && active.upstream?.digest !== m.info.digest ? { action: "stamp" } : { action: "present" };
+  // The release's content already, from another release — or this one,
+  // put here by another door or source (a person's install, a boot list, a
+  // subscription since stopped), which this one now follows: stamped with
+  // it in place, so what is installed reads this release and this source —
+  // and a release that changes only its strut.yaml (its `job:`, `provides`,
+  // `schedules`) is followed. A fork stays a fork.
+  const theirs = active.upstream?.digest !== m.info.digest || active.source !== door || active.upstream?.source.ref !== m.source.ref;
+  if (active.hash === hash) return !at.modified && theirs ? { action: "stamp" } : { action: "present" };
   return at.modified ? { action: "diverge" } : { action: "update", previous: active.label };
 }
 
