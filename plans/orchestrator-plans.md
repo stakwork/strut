@@ -140,7 +140,8 @@ added.
 
 One sentence is added to the wake prompt's "continue" choice. A plan the
 person approved is a request not yet met, and its job runs it: the
-person's "go" and every item that ends go to the plan's job, and what its
+person's "go" and every item that ends, the last one too, go to the
+plan's job, and what its
 reply then names is the one thing the turn starts, as a job of its own
 pointed at the plan. Each line to the person names an item by what it is,
 never by its number alone ("Item 1, the server's tags, is finished").
@@ -238,6 +239,7 @@ below was checked on disk, not taken from a job's report.
 
 | 4 | One branch per repository, on the page | The plan named one branch per repository and each remote ended with exactly that branch, pushed. The plan's job put the command line's two items into one job. The first item went back to it and was checked; the last job did not, and the orchestrator closed out itself. Two plans with no repository (a welcome pack; a workflow and an app) say so in one line and have nothing about branches. |
 | 5 | Each line names the item | Every line named its item ("Item 1, the server's tags, is finished"). Items 1 and 2 went back to the plan's job, which read the diff and ran the tests. The last item again did not go back. One `tags` branch per repository, pushed: cloned fresh, the server's 4 tests and the command line's 6 pass, and the check script agrees. |
+| 6 | Real repositories on GitHub; "the last one too" in the sentence | Two private repositories, the jobs pushing and opening pull requests through the machine's own git and gh login (`STRUT_GIT_LOCAL=1`). It ended with one `counter-tags` branch and ONE open pull request in each repository: the server's with one commit, the command line's with two (its item and the check script). Every item went back to the plan's job, the last one too, and the plan file was closed. Cloned from GitHub, the server's 4 tests and the command line's 4 pass and the check script passes. 10 orchestrator turns, 7 minutes. |
 
 In run 3 the built work holds: the server's 5 tests and the command
 line's 6 pass, and the agreement script passes against the real server.
@@ -255,12 +257,17 @@ line's 6 pass, and the agreement script passes against the real server.
 
 **What the runs leave open:**
 
-- **The last item is not handed back.** In runs 4 and 5 the orchestrator
-  closed the plan itself after the last job: that job was not checked by
-  the plan's job and the plan file's progress was left open. Run 3
-  handed every item back. Nothing has been changed for it.
-- **No pull request was opened.** The test repositories are local, and the
-  jobs said so. A run against real repositories has not been done.
+- **The last item, once.** In runs 4 and 5 the orchestrator closed the
+  plan itself after the last job, so that job was not checked and the plan
+  file was left open. "The last one too" went into the sentence, and run 6
+  handed every item back. That is one run.
+- **Where the plan file lives** (asked 2026-11-21, not ruled). `plan.md`
+  in the plan job's folder is not in the pull request, and an item's job
+  cannot see it. For work in a repository it could be
+  `plans/<feature>.md` on the plan's branch, as this repo's own plans are.
+- **The test repositories are still on GitHub**, each with its open pull
+  request: `Evanfeenstra/plan-run-tally-server` and
+  `Evanfeenstra/plan-run-tally-cli`, private, to delete when done.
 - **A wake count.** Three items took 7 or 8 wake turns: two an item, one
   for the plan and at most one to close. The cap of 30 covers about
   fourteen items.

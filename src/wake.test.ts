@@ -75,7 +75,7 @@ describe("wakePrompt on the template strut ships", () => {
     // The plan's job is the hub (ruling 1: it reviews each item with the work in front of it). Said the
     // other way round, "start the item its job names next", a real model started every item itself from
     // the plan's first reply and the plan's job never ran again (2026-11-21, two runs).
-    assert.ok(p.includes('A plan the person approved is such a request, and its job runs it: the person\'s "go" and every item that ends go to the plan\'s job (job/continue)'), p);
+    assert.ok(p.includes('A plan the person approved is such a request, and its job runs it: the person\'s "go" and every item that ends, the last one too, go to the plan\'s job (job/continue)'), p);
     assert.ok(p.includes("what its reply then names is the one thing to start, as a job of its own pointed at the plan"));
     // The person reads one line a step and has not read the plan: "Item 1 is finished" says nothing to them.
     assert.ok(p.includes("an item named by what it is, never by its number alone"));
