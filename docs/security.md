@@ -95,7 +95,17 @@ container in the compose (strut and any service that registers steps).
   UI reads a peer's with the header, and its listing fetch carries the
   header and mints the `?t=` token every link carries, so a sandboxed
   artifact page (an opaque origin) cannot reach another run's files
-  through the person's session. `createStrut.test.ts` ("a session") runs
+  through the person's session. And (3) a WebSocket upgrade — no
+  preflight, no custom header, and a same-site page's handshake carries
+  the cookie — spends none of this origin's cookies when it comes from a
+  page of another origin (`foreignUpgrade`: the browser's `Sec-Fetch-Site`
+  is anything but `same-origin`, or, with no fetch metadata, `Origin`
+  names another host than the one asked for — `x-forwarded-host`, else
+  `host`): `upgrade` (`/rooms`, `/channels`) and the dictation socket
+  drop the `cookie` header first, so a neighbour box's page cannot join
+  the person's room, send in an app's channels as them, or dictate into
+  their audio session; a channel ticket, a key or a person token still
+  opens them from anywhere. `createStrut.test.ts` ("a session") runs
   the whole flow; the route sweeps leave out the two open login routes.
   **A host signs one person in** (auth.ts "Sign-in tickets", specs/API.md
   §13.1) — the standalone twin of mcp's `/mint-token` JWT handed to
@@ -117,6 +127,38 @@ container in the compose (strut and any service that registers steps).
   sends the cookie to a framed page only when strut and its framer are
   same-site — `strut.acme.com` in `acme.com`; framed by another site, no
   cookie is stored and the next request is a 401.
+  **Who may frame it** (auth.ts "The host that frames it"). Same-site is
+  not the host's alone: hosted boxes all live under one domain
+  (`<box>.stakwork.ai`), so another customer's box is same-site too, and
+  the cookie reaches a frame it makes. So a strut with a key tells the
+  BROWSER who may frame its UI: every page of it is served with
+  `Content-Security-Policy: frame-ancestors 'self' <host>` (and
+  `cache-control: no-store`), `<host>` the one origin strut has evidence
+  for — the `embed_origin` beside a LIVE ticket on the page's address
+  (`trustedEmbedOrigin`: signed here, in its minute, not yet traded; a
+  ticket is what only a host holding the key can make), else the one the
+  browser's session keeps: the page trades the ticket with that origin
+  (`POST /auth/session { ticket, embed_origin }`, `bareOrigin`: an http(s)
+  origin and nothing more), and the session carries it signed
+  (`Session.embedOrigin`, claim `embed`), so a reload — the cookie, no
+  ticket — is framed by the same host. With neither, `'self'` alone: a
+  page that only NAMES a host (a neighbour framing strut, a crafted link)
+  is refused by the browser, signed in or not. The same origin is written
+  into the page as `<meta name="strut-embed-origin">` (empty for none),
+  the only origin the page posts its location to and takes `embed_page`
+  on, so `strut/page` (specs/API.md §14.3) is a host's own page and an app
+  can take it as it is. Not restricted: a visitor's page of a public app
+  (`?app=…&solo=1&public=1`, a served box's pages, a custom domain's),
+  which an index's store frames from another server and which shows
+  nothing of a signed-in person's (it still gets the meta). A strut with
+  no key (dev mode, or behind a host's gate — mcp's `/lab` for Hive,
+  where strut has no sessions and no tickets) sends no header and no meta,
+  as before: the gate in front decides who loads the page, location
+  reports go to `?embed_origin` as given, and no page gets `strut/page`
+  from a framing host. A session made before this carries no host, so a
+  host's frame reloaded on its own (no new ticket) is refused until the
+  host's page is reloaded; one origin per session, so a person framed by
+  two hosts of one strut keeps the last.
   **Admins run the box, members use apps** (plans/member-rights.md;
   specs/API.md §13.1 "Admins and members"). The session keeps the
   ticket's `role` (`GET /auth/session` says it; the key login has none).

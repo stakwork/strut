@@ -191,6 +191,25 @@ describe("rooms on a standalone strut", () => {
     assert.equal(await refusedWith(`ws://${base}/nope`, { authorization: `Bearer ${tom}` }), 404);
   });
 
+  it("a session cookie joins from strut's own page, never from a page of another origin: a neighbour box on the same site gets the cookie, not the room", async () => {
+    const login = await fetch(`http://${base}/auth/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "deploy-key", actor: "tom-1" }) });
+    const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+    const own = { cookie, origin: `http://${base}` };
+    const neighbour = { cookie, origin: "http://neighbour.localhost" };
+    assert.equal(await refusedWith(rooms(), { ...own, "sec-fetch-site": "same-origin" }), 101);
+    assert.equal(await refusedWith(rooms(), own), 101, "no fetch metadata: Origin is the host it asked for");
+    assert.equal(await refusedWith(rooms(), { ...neighbour, "sec-fetch-site": "same-site" }), 401);
+    assert.equal(await refusedWith(rooms(), neighbour), 401);
+    assert.equal(await refusedWith(rooms(), { ...own, "sec-fetch-site": "same-site" }), 401, "the browser's word wins over an Origin header");
+    // The channels too: the cookie reaches the route from strut's own page
+    // (no such app), and the gate refuses a neighbour's.
+    const channel = `ws://${base}/channels?app=nope@v1`;
+    assert.equal(await refusedWith(channel, { ...own, "sec-fetch-site": "same-origin" }), 404);
+    assert.equal(await refusedWith(channel, { ...neighbour, "sec-fetch-site": "same-site" }), 401);
+    // A credential of its own still joins from anywhere.
+    assert.equal(await refusedWith(rooms(), { authorization: `Bearer ${tom}`, origin: "http://neighbour.localhost", "sec-fetch-site": "cross-site" }), 101);
+  });
+
   it("a launch with a room hears its run and its job: the run's run.end, the job's job.update and run.end", async () => {
     const room = await joinRoom(rooms(), { authorization: `Bearer ${tom}` });
     try {

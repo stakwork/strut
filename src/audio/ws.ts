@@ -24,7 +24,7 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { apiKeyMatches } from "../auth.js";
+import { apiKeyMatches, foreignUpgrade } from "../auth.js";
 import type { SttEvent, SttService, SttStream, SttStreamOptions } from "./stt.js";
 
 export const AUDIO_STREAM_PATH = "/audio/stream";
@@ -60,6 +60,9 @@ export function createAudioUpgradeHandler(stt: SttService, opts: AttachOptions =
     handle(req, socket, head) {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (url.pathname !== path) return false;
+      // A page of another origin (a neighbour on the same site) never
+      // spends this origin's session cookie (auth.ts `foreignUpgrade`).
+      if (foreignUpgrade(req.headers)) delete req.headers.cookie;
       if (!authorize(req, url)) {
         socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
         socket.destroy();

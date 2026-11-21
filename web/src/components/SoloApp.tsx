@@ -44,9 +44,9 @@ import { words } from "../words";
 // has Back. A worker's dashboard (strut/worker) lists every app's task
 // types and opens a type of another app this way.
 //
-// `&embed_page=<the host's page>` (../embed `embedPage`, with
-// `embed_origin`): where a person opens this app on the host that frames
-// it. The app is handed it (`strut/page`), so it can give a link to paste —
+// `&embed_page=<the host's page>` (../embed `embedPage`, on the origin the
+// server vouches for: the host whose ticket signed the person in): where a
+// person opens this app on the host that frames it. The app is handed it (`strut/page`), so it can give a link to paste —
 // the same address the host's bar shows as the page moves. A member's page
 // at strut's own address hands that address; alone in a native host's web
 // view (`solo=1`, Peel's), there is no address to give.

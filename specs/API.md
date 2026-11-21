@@ -1519,8 +1519,8 @@ and rotating that secret ends every session.
 
 | Method | Path            | Description |
 | ------ | --------------- | ----------- |
-| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp, role? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. The key login names no role |
-| GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member` \| `visitor`), none for the key login; a visitor's session (§13.2) as cookie or bearer; `404` for a request the key authenticated |
+| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket, embed_origin? }` → 200 `{ actor?, exp, role?, embedOrigin? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. `embed_origin`: the host origin the ticket arrived beside, which the session keeps as `embedOrigin`, the host that may frame the UI for it (§13.1 "Who may frame it"); a bare http(s) origin, anything else dropped. The key login names no role and no host |
+| GET    | `/auth/session` | `{ actor?, exp, role?, embedOrigin? }` of the session the request carries — `role` the ticket's (`admin` \| `member` \| `visitor`), none for the key login; `embedOrigin` the host it was framed for; a visitor's session (§13.2) as cookie or bearer; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
 | POST   | `/auth/ticket`  | `{ actor, role?, name? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `name`, a string: the person's name as the host knows them, kept as a host's (§13.3); `null` is none, anything else not a string `400`. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"`, `"member"` or `"visitor"` (§13.2), **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
@@ -1570,7 +1570,8 @@ ONCE: a redeemed `jti` is remembered in memory until it expires (a restart
 forgets them). Mint one per page load.
 
 The UI, loaded with `?ticket=`, posts it to `POST /auth/session { ticket }`
-(with `x-strut-ui: 1`) before any other request, takes `ticket` off the
+(with `x-strut-ui: 1`, and `embed_origin`: the host's origin, when the
+server vouched for it — "Who may frame it" below) before any other request, takes `ticket` off the
 address bar with `history.replaceState` — every other param (`app`, `solo`,
 `wf`, `run`, `embed_origin`, `input`) kept as written — and carries on
 signed in as that person. The ticket wins: a key or a session the browser
@@ -1617,6 +1618,38 @@ framed by `acme.com` (or `app.acme.com`). Framed by another site, the
 browser neither stores nor sends the cookie: the trade spends the ticket,
 and the next request is a 401. Serve strut from a subdomain of the host's
 own site.
+
+**Who may frame it.** Same-site is not the host's alone — every hosted box
+is a `<box>.stakwork.ai`, same-site with every other — so the cookie does
+not decide who frames the UI; the browser does. On a strut with a key,
+every page of the UI is served with `Content-Security-Policy:
+frame-ancestors 'self' <host>` and `cache-control: no-store`. `<host>` is
+the origin the host named as `&embed_origin=` beside a ticket that is
+LIVE (signed here, in its minute, not yet traded) — only a host holding
+the key mints one — and the page trades the ticket with it (`POST
+/auth/session { ticket, embed_origin }`), so the session keeps it and a
+reload (the cookie, no ticket) is framed by the same host. With neither,
+`frame-ancestors 'self'`: a page that only names a host, same-site or not,
+signed in or not, is refused a frame by the browser. Nothing changes for
+a host that frames as stadeum does (`?ticket=…&embed_origin=<its own
+origin>`), and nothing for a page opened top-level (Peel's web views, a
+browser tab). A visitor's page of a public app (`?app=…&solo=1&public=1`,
+§14.3; a served box's and a custom domain's pages) is anyone's to frame,
+as an index's store frames it from another server. A strut with no key
+(dev mode, or behind a host's gate as mcp's `/lab`) sends no
+`frame-ancestors`: the gate in front decides. The page is told the same
+origin (`<meta name="strut-embed-origin" content="<host>">`, empty for
+none; no meta with no key), which is where it posts `strut:location` and
+`strut:ready` and the only origin it takes `embed_page` on (§14.3).
+
+**The sockets.** A WebSocket handshake carries no custom header and needs
+no preflight, and a same-site page's carries the cookie. So an upgrade
+from a page of another origin — the browser's `Sec-Fetch-Site` anything
+but `same-origin`, or with no fetch metadata an `Origin` naming another
+host than the one asked for (`x-forwarded-host`, else `host`) — is
+admitted without this origin's cookies: `/rooms`, `/channels` and
+`/audio/stream` open to it only with a credential of its own (a channel
+ticket, the key, a person token).
 
 ### 13.2 Visitors — a public app's players sign in with a key
 
@@ -2200,7 +2233,8 @@ page hands the app, for a host whose own page is light; without it the app
 is shown dark, as strut's UI is. The page behind it matches from its first
 paint, before a `ticket` is traded, and so does the app's loading screen;
 strut's own bar over the side panel and its file viewer stay dark. A host
-that passed `&embed_origin=` is posted `{type: "strut:ready"}` once, when
+that passed `&embed_origin=` (on a strut with a key, beside its ticket:
+§13.1 "Who may frame it") is posted `{type: "strut:ready"}` once, when
 the app's page is on screen (it initialized, or loaded without the apps
 SDK) or the page says why it cannot be (no such app, a refused ticket): a
 host keeps its frame hidden until then and fades it in, so strut's page
@@ -2211,8 +2245,13 @@ other link opens in a new window. A host that frames the page may name its
 OWN page for the app with `&embed_page=<url>` beside `&embed_origin=`
 (Stadeum: `https://<box>/apps/<name>`): where a person opens the app on
 that host, without its `input`. It counts only while the page is framed
-and only on the `embed_origin`; it stays on the address bar and is never
-reported back. The app is handed it as `"strut/page"` in its host context,
+and only on the origin the server vouches for — the `embed_origin` that
+came with the host's ticket, or that the ticket's session keeps (§13.1
+"Who may frame it"), which the browser also holds the frame to — never on
+an `embed_origin` a page merely names, and never on a strut with no key;
+it stays on the address bar and is never reported back. So an app can
+take `strut/page` as it is: a host's own page, never one a neighbour
+chose. The app is handed it as `"strut/page"` in its host context,
 so it can give a link to paste: that page with `?input=<the app's own
 query>` (@strut/kit `useShareLink`), the same address the host's bar shows
 as the page moves. Strut's own UI — the shell, or a member's page of the

@@ -191,7 +191,7 @@ the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[
 
 ### `web/src/embed.ts`
 
-deep links when iframed (Hive, Stadeum): replaceUrl() posts ?wf/run/v/chat/job/app/input to the host named by ?embed_origin; `embedPage()` is the host's own page for the app (`?embed_page=`, on that origin, only while framed), which ./components/SoloApp hands the app as `strut/page` in its host context (specs/API.md §14.3) so it can give a link to paste
+deep links when iframed (Hive, Stadeum): replaceUrl() posts ?wf/run/v/chat/job/app/input to the host's origin; `embedPage()` is the host's own page for the app (`?embed_page=`, on that origin, only while framed), which ./components/SoloApp hands the app as `strut/page` in its host context (specs/API.md §14.3) so it can give a link to paste. On a strut with a key the host's origin is the one the SERVER vouches for, `vouchedEmbedOrigin()` — the page's `<meta name="strut-embed-origin">`, written beside the HTML's `frame-ancestors` from the `embed_origin` that came with a live sign-in ticket or that the session keeps (src/auth.ts "The host that frames it"), empty for none — never the bare param; ./api `tradeTicket` sends it with the ticket so the session keeps it. A strut with no key (mcp's `/lab`, whose gate in front decides who loads the page) writes no meta: location reports go to `?embed_origin` as given, and `embedPage()` gives no host page
 
 ### `web/src/visitor-pay.ts`
 

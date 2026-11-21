@@ -128,8 +128,9 @@ export async function requireApiKey(c: Context, next: Next) {
  * The check behind `carriesApiKey`, for a caller with no Hono context — the
  * dictation WebSocket's upgrade, where the key rides as `?key=` because a
  * browser's WebSocket cannot set headers — or, signed in, as the session
- * cookie (`cookie`): an upgrade is a GET, and a cross-site page's WebSocket
- * never carries a SameSite cookie. A MEMBER's session is not the key's
+ * cookie (`cookie`): an upgrade is a GET, a cross-site page's WebSocket
+ * never carries a SameSite cookie, and the caller drops it from a same-site
+ * one of another origin (`foreignUpgrade`). A MEMBER's session is not the key's
  * equal ("Sessions" below), so it is not counted. Permissive (true) when
  * `STRUT_API_KEY` is unset.
  */
@@ -480,7 +481,14 @@ export function actorFromHeader(c: Context): string | undefined {
 // strut and the page framing it are SAME-SITE (`strut.acme.com` in
 // `acme.com`): a frame of another site is a cross-site context, where the
 // browser neither stores nor sends it. A host that frames the UI serves it
-// from a subdomain of its own site; `Lax` stays.
+// from a subdomain of its own site; `Lax` stays. But the site is not always
+// the host's alone: hosted boxes all live under one domain
+// (`<box>.stakwork.ai`), so every other box's pages are same-site too, and
+// the cookie would reach a frame any of them made. So the cookie is not
+// what decides who may frame the UI — the browser is, told by the page's
+// `frame-ancestors` (`frameAncestors`): strut's own origin, and the ONE
+// host origin this browser's session was made for ("The host that frames
+// it" below). Every other page, same-site or not, is refused a frame.
 //
 // CSRF. The browser attaches the cookie to every request it makes to this
 // origin, so a page on another site must not be able to spend it.
@@ -499,6 +507,11 @@ export function actorFromHeader(c: Context): string | undefined {
 // session: an <img> or a navigation has no header, and a fetch with one is
 // a cross-origin preflight the file route does not grant. The UI's listing
 // fetch carries the header, mints the token, and every link carries that.
+// (3) A WebSocket has no preflight and no custom header, and a same-site
+// page's handshake carries the cookie: an upgrade from a page of another
+// origin spends none of this origin's cookies (`foreignUpgrade`), so the
+// rooms, the channels and dictation open to strut's own page, a ticket or
+// a key — never to a neighbour's page riding the person's session.
 
 const SESSION_COOKIE = "strut_session";
 const SESSION_HOURS_ENV = "STRUT_SESSION_HOURS";
@@ -522,6 +535,10 @@ export interface Session {
    *  a `sphinx` sign-in whose address is the signing key's own (claim
    *  `address`). The door hands it to a worker step; the page never sees it. */
   sphinxAddress?: string;
+  /** The host that frames the UI for this session: the `embed_origin` its
+   *  sign-in ticket arrived with (claim `embed`), a bare origin. The one
+   *  page outside strut that may frame it ("The host that frames it"). */
+  embedOrigin?: string;
 }
 
 /** Is this session the key's equal? The key login's (no role) and an
@@ -583,7 +600,7 @@ function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number
 /** The signed token for a session — `base64url(json).hmac` — or undefined
  *  with no secret to sign it. */
 export function sessionToken(session: Session): string | undefined {
-  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}), ...(session.sphinxAddress ? { address: session.sphinxAddress } : {}) });
+  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}), ...(session.sphinxAddress ? { address: session.sphinxAddress } : {}), ...(session.embedOrigin ? { embed: session.embedOrigin } : {}) });
 }
 
 /** The session a token names, if the signature holds and it has not
@@ -591,11 +608,12 @@ export function sessionToken(session: Session): string | undefined {
 export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
   const claims = readClaims("session", token, now);
   if (!claims) return undefined;
-  const { actor, exp, role, address } = claims;
+  const { actor, exp, role, address, embed } = claims;
   if (actor !== undefined && typeof actor !== "string") return undefined;
   if (role !== undefined && !isRole(role)) return undefined;
   if (address !== undefined && typeof address !== "string") return undefined;
-  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}), ...(address ? { sphinxAddress: address } : {}) };
+  if (embed !== undefined && typeof embed !== "string") return undefined;
+  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}), ...(address ? { sphinxAddress: address } : {}), ...(embed ? { embedOrigin: embed } : {}) };
 }
 
 /**
@@ -611,8 +629,8 @@ export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()
 }
 
 /** A session for `actor` from now, as the cookie value and what it names. */
-function startSession(actor: string | undefined, ttlMs: number, role?: Role, sphinxAddress?: string): { token: string; session: Session } | undefined {
-  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}), ...(sphinxAddress ? { sphinxAddress } : {}) };
+function startSession(actor: string | undefined, ttlMs: number, role?: Role, sphinxAddress?: string, embedOrigin?: string): { token: string; session: Session } | undefined {
+  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}), ...(sphinxAddress ? { sphinxAddress } : {}), ...(embedOrigin ? { embedOrigin } : {}) };
   const token = sessionToken(session);
   return token ? { token, session } : undefined;
 }
@@ -677,14 +695,9 @@ export function signInTicket(actor: string, role: Role = "member", ttlMs = SIGN_
   return signed ? { ticket: `${TICKET_PREFIX}${signed}`, exp } : undefined;
 }
 
-/**
- * Trade a sign-in ticket for a session naming its actor and role, living
- * `ttlMs` (default `sessionTtlMs()`). Undefined — and nothing remembered —
- * for a ticket that is not one, not strut's, or expired; undefined for one
- * already traded. A ticket that redeems is spent. One that names no role
- * (minted before roles) signs a member in.
- */
-export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now = Date.now()): { token: string; session: Session } | undefined {
+/** A ticket's claims, if strut signed it, it has not expired and it has
+ *  not been traded — without spending it. */
+function liveTicket(ticket: string, now: number): { actor: string; role: Role; jti: string; exp: number } | undefined {
   if (!ticket.startsWith(TICKET_PREFIX)) return undefined;
   const claims = readClaims("ticket", ticket.slice(TICKET_PREFIX.length), now);
   const actor = claims?.["actor"];
@@ -692,9 +705,95 @@ export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now =
   const role = claims?.["role"] ?? "member";
   if (!claims || typeof actor !== "string" || !actor || typeof jti !== "string" || !jti || !isRole(role)) return undefined;
   for (const [id, exp] of redeemedTickets) if (exp <= now) redeemedTickets.delete(id);
-  if (redeemedTickets.has(jti)) return undefined;
-  redeemedTickets.set(jti, claims.exp);
-  return startSession(actor, role === "visitor" ? visitorSessionMs() : ttlMs, role);
+  return redeemedTickets.has(jti) ? undefined : { actor, role, jti, exp: claims.exp };
+}
+
+/**
+ * Trade a sign-in ticket for a session naming its actor and role, living
+ * `ttlMs` (default `sessionTtlMs()`). Undefined — and nothing remembered —
+ * for a ticket that is not one, not strut's, or expired; undefined for one
+ * already traded. A ticket that redeems is spent. One that names no role
+ * (minted before roles) signs a member in. `embedOrigin`: the host origin
+ * the ticket arrived beside (`?embed_origin=`), which the session keeps as
+ * the host that frames it — a bare http(s) origin, anything else dropped.
+ */
+export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now = Date.now(), embedOrigin?: unknown): { token: string; session: Session } | undefined {
+  const live = liveTicket(ticket, now);
+  if (!live) return undefined;
+  redeemedTickets.set(live.jti, live.exp);
+  return startSession(live.actor, live.role === "visitor" ? visitorSessionMs() : ttlMs, live.role, undefined, bareOrigin(embedOrigin));
+}
+
+// ── The host that frames it ──────────────────────────────────────────────
+//
+// Who may frame strut's UI, and which page an app is told it is shown on
+// (`strut/page`), is decided on evidence no page can forge: a host proves
+// itself when its SERVER mints a sign-in ticket with the deployment key and
+// builds the frame's address around it, `?ticket=…&embed_origin=<its own
+// origin>`. So the origin named beside a LIVE ticket (signed here, in its
+// minute, not yet traded) is the host's, and the session that ticket buys
+// keeps it (`Session.embedOrigin`), for every later load of the page — a
+// reload, a frame put back — which carries the cookie and no ticket. A
+// page that only names `embed_origin` (a neighbour box framing strut, a
+// crafted link) has no ticket to name it beside, and gets nothing.
+//
+// The UI's HTML then carries, for a strut with a key of its own:
+// `Content-Security-Policy: frame-ancestors 'self' <that origin>` (the
+// browser refuses every other framer — `'self'` alone with none), and
+// `<meta name="strut-embed-origin" content="<that origin>">`, the one
+// origin the page posts its location to and takes `embed_page` on
+// (web/src/embed.ts). A strut with no key (dev mode, or behind a host's
+// gate such as mcp's `/lab`) has no session to ride and no ticket to
+// trust: its HTML is as it was, and the host in front decides.
+
+/** `value` as a bare http(s) origin (`https://box.example`), or undefined:
+ *  never a path, a query, a credential or another scheme, so it can stand
+ *  in a CSP source list and a meta as it is. */
+export function bareOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.origin === value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The host origin strut trusts to frame this request's page: the
+ *  `embed_origin` beside a live sign-in ticket on its address (the ticket
+ *  is about to make the session, so it wins), else the one this browser's
+ *  session keeps. Undefined: none. */
+export function trustedEmbedOrigin(c: Context, now = Date.now()): string | undefined {
+  const ticket = c.req.query("ticket")?.trim();
+  if (ticket && liveTicket(ticket, now)) return bareOrigin(c.req.query("embed_origin"));
+  return sessionFromCookie(c.req.header("cookie"))?.embedOrigin;
+}
+
+/** The `frame-ancestors` directive for a page of the UI framed by `origin`
+ *  (or by strut alone). */
+export function frameAncestors(origin: string | undefined): string {
+  return `frame-ancestors 'self'${origin ? ` ${origin}` : ""}`;
+}
+
+/** Is this WebSocket handshake from a page of another origin? The browser
+ *  says so itself (`Sec-Fetch-Site`, anything but `same-origin`); one that
+ *  sends no fetch metadata is judged by `Origin` against the host it asked
+ *  for (`x-forwarded-host`, else `host`). A client that is no browser sends
+ *  neither, and is not. Its upgrade spends none of this origin's cookies:
+ *  the caller drops them ("CSRF" (3) above). */
+export function foreignUpgrade(headers: Record<string, string | string[] | undefined>): boolean {
+  const site = headers["sec-fetch-site"];
+  if (typeof site === "string") return site !== "same-origin";
+  const origin = headers["origin"];
+  if (typeof origin !== "string") return false;
+  try {
+    const from = new URL(origin).host.toLowerCase();
+    const forwarded = headers["x-forwarded-host"];
+    const asked = (typeof forwarded === "string" ? forwarded.split(",")[0]!.trim() : "") || (typeof headers["host"] === "string" ? headers["host"] : "");
+    return from !== asked.toLowerCase();
+  } catch {
+    return true;
+  }
 }
 
 /** The `Set-Cookie` value that stores a session token, or clears it

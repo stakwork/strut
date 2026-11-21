@@ -7,8 +7,18 @@
 // ?key=), strip it, and post every deep-link change to that origin only.
 // The host does the reverse on load: it copies its own params onto the
 // embed URL, which the app already reads.
+//
+// On a strut with a key of its own, `embed_origin` is only a host's word
+// when it came beside the host's sign-in ticket (src/auth.ts "The host that
+// frames it"): the server says which origin that is, in the page's
+// `<meta name="strut-embed-origin">` (empty: none), and the page posts to
+// that origin and takes `embed_page` on it alone — never on the bare param
+// a neighbour's frame could set. A strut with no key (behind a host's gate,
+// as mcp's `/lab` for Hive) writes no such meta: the param stands, as the
+// gate in front decided who loads the page, but it names no `embed_page`.
 
 const ORIGIN_STORAGE = "strut/embedOrigin";
+const ORIGIN_META = "strut-embed-origin";
 
 /** The params that make up a deep link. Never `key` or `embed_origin`.
  *  `elicit` is the builder's open question (plans/elicitation.md) — the
@@ -57,8 +67,22 @@ function captureEmbedOrigin(): void {
 }
 if (typeof window !== "undefined") captureEmbedOrigin();
 
-/** The host origin that asked for location reports (`embed_origin`), if any. */
+/** The host origin the server vouches for (`<meta name="strut-embed-origin">`):
+ *  its origin, `""` for none, or undefined when the page carries no such
+ *  meta (a strut with no key of its own). */
+export function vouchedEmbedOrigin(): string | undefined {
+  try {
+    return document.querySelector(`meta[name="${ORIGIN_META}"]`)?.getAttribute("content") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The host origin that asked for location reports: the one the server
+ *  vouches for, else — on a strut with no key — `embed_origin` as given. */
 function embedOrigin(): string | null {
+  const vouched = vouchedEmbedOrigin();
+  if (vouched !== undefined) return vouched || null;
   try {
     return sessionStorage.getItem(ORIGIN_STORAGE);
   } catch {
@@ -83,9 +107,12 @@ export const EMBED_PAGE_PARAM = "embed_page";
 /** The host's page this page is shown on (`?embed_page=`): the address a
  *  person pastes to open the app there, which the app is handed as
  *  `strut/page` in its host context (@strut/kit `useShareLink`). Only while
- *  framed by the host that asked for location reports, and on that host's
- *  origin: a host names its own page, never another site's. */
-export function embedPage(search = location.search, framed = window.parent !== window, origin = embedOrigin()): string | undefined {
+ *  framed, and on the origin the server vouches for (`vouchedEmbedOrigin`:
+ *  a host that signed the person in with a ticket, which the browser also
+ *  holds the frame to): a host names its own page, never another site's,
+ *  and a page that only names one gets none. So an app can take it as it
+ *  is. */
+export function embedPage(search = location.search, framed = window.parent !== window, origin = vouchedEmbedOrigin() || null): string | undefined {
   if (!framed) return undefined;
   const page = new URLSearchParams(search).get(EMBED_PAGE_PARAM);
   if (!page) return undefined;

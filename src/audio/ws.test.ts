@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { attachAudioWebSocket } from "./ws.js";
-import { _resetAuthState } from "../auth.js";
+import { _resetAuthState, issueSession } from "../auth.js";
 import type { SttEvent, SttService, SttStream, SttStreamOptions } from "./stt.js";
 
 /** A service whose streams echo frame counts as partials and finalize on end. */
@@ -158,5 +158,25 @@ describe("/audio/stream websocket", () => {
     a.close();
     const b = await connect(`ws://127.0.0.1:${port}/audio/stream`, { authorization: "Bearer sekret" });
     b.close();
+  });
+
+  it("a session cookie opens it from strut's own page, never from a page of another origin (a neighbour on the same site)", async () => {
+    process.env["STRUT_API_KEY"] = "sekret";
+    const cookie = `strut_session=${issueSession("sekret", "evan-1")!.token}`;
+    detach = attachAudioWebSocket(server, fakeService());
+    port = await listen(server);
+    const url = `ws://127.0.0.1:${port}/audio/stream`;
+    /** "open" (closed again at once), or why not. */
+    const opens = (u: string, headers: Record<string, string>) =>
+      connect(u, headers).then(
+        (ws) => (ws.close(), "open"),
+        (err: Error) => err.message,
+      );
+    assert.equal(await opens(url, { cookie, origin: `http://127.0.0.1:${port}`, "sec-fetch-site": "same-origin" }), "open");
+    assert.equal(await opens(url, { cookie, origin: `http://127.0.0.1:${port}` }), "open", "no fetch metadata: Origin is the host it asked for");
+    assert.equal(await opens(url, { cookie, origin: "http://neighbour.localhost", "sec-fetch-site": "same-site" }), "HTTP 401");
+    assert.equal(await opens(url, { cookie, origin: "http://neighbour.localhost" }), "HTTP 401", "judged by Origin when the browser sends no metadata");
+    // A key of its own still opens it from anywhere.
+    assert.equal(await opens(`${url}?key=sekret`, { origin: "http://neighbour.localhost", "sec-fetch-site": "cross-site" }), "open");
   });
 });
