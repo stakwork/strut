@@ -64,6 +64,7 @@ const EXAMPLE = `- id: checkout
  */
 export default defineStep({
   type: "git/checkout",
+  effect: "read",
   description:
     `Check out a git repository into a fresh, isolated working copy for this run and return its path — the cwd for an agent or exec step. ` +
     `Keeps one credential-free cache per repository, fetched every run; the working copy lives inside the run's own directory (the one job/dir returns on a run without a job: <artifacts>/<runId>/<repo>) and is removed when the run ends. ` +

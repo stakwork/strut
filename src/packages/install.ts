@@ -67,14 +67,15 @@ import type { NodeSchema } from "../graph/schema-resolver.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
-import { stepFileType, stepLoadError } from "../steps/registry.js";
+import { stepFileType, stepLoadError, type StepSources } from "../steps/registry.js";
 import { contentHash, treeHash } from "../version.js";
 import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream, type VersionSource } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import { gitHostOfRef } from "./git-source.js";
 import { gitHostProblems, STRUT_GIT_HOSTS, type GitSecretOf } from "../git-hosts.js";
-import { readableSecrets, type PackageItem } from "./format.js";
+import { MANIFEST_FILE, readableSecrets, strutGrants, type PackageItem } from "./format.js";
+import { strutGrantProblem } from "../job-seed.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
@@ -96,6 +97,10 @@ export interface PackageDeps extends InstalledDeps {
   /** A FRESH registry: rebuilt from the workspace, package steps fenced.
    *  The install loads the steps it published through it. */
   getRegistry(): Promise<StepRegistry>;
+  /** Where each step of the registry `getRegistry` last returned came from
+   *  (core, lib, custom): which are strut's own, for a `job:` that names
+   *  strut's steps. Without it the install grants none of strut's. */
+  stepSources?(): StepSources;
   /** The claims layer; without one a package's claims are skipped, said. */
   claims?: ClaimsAuthoring | null;
   /** Fires `run_when: publish` checks, as any publish does. */
@@ -751,6 +756,15 @@ async function checkSet(
 
   // The files: what each workflow names must be here or in the set; claims parse.
   const bad: string[] = [];
+  // Strut's steps a `job:` names: each one a package may grant
+  // (src/job-seed.ts). `approve` is within `tools` (format.ts).
+  const sources = deps.stepSources?.() ?? {};
+  for (const m of members) {
+    for (const t of strutGrants(m.info.manifest.package, m.info.job?.tools ?? [])) {
+      const problem = strutGrantProblem(t, registry, sources, sealed);
+      if (problem) bad.push(`${MANIFEST_FILE}: job.tools: ${problem}`);
+    }
+  }
   const withClaims: Array<Member & { claims: MemberClaims[] }> = [];
   for (const m of members) {
     const claims: MemberClaims[] = [];

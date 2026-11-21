@@ -2930,10 +2930,18 @@ export interface PackageDetail {
   optional?: string[];
   /** The steps the manifest's `job:` gives the job agent, by their names
    *  inside the package, and the ones among them that ask first. */
-  job?: { tools: string[]; approve: string[] };
+  job?: JobDetail;
   can: PackageCan;
   files: number;
   bytes: number;
+}
+/** What a package gives the job agent: `tools` and `approve` by their names
+ *  inside the package — strut's own steps by their type, each also in
+ *  `strut` with what the index's strut says of it. */
+export interface JobDetail {
+  tools: string[];
+  approve: string[];
+  strut?: Array<{ name: string; effect?: "read" | "write"; secrets?: string[]; description?: string }>;
 }
 /** The short form a search hit carries. */
 export interface DetailSummary {
@@ -2942,7 +2950,7 @@ export interface DetailSummary {
   steps: number;
   concepts: number;
   secrets: string[];
-  job?: { tools: string[]; approve: string[] };
+  job?: JobDetail;
   can: PackageCan;
   readme: boolean;
 }

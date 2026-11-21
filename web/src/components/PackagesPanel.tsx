@@ -786,7 +786,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
                 <span>brings {[h.detail.apps.length && `${h.detail.apps.length} app${h.detail.apps.length === 1 ? "" : "s"}`, h.detail.workflows && `${h.detail.workflows} workflow${h.detail.workflows === 1 ? "" : "s"}`, h.detail.steps && `${h.detail.steps} step${h.detail.steps === 1 ? "" : "s"}`, h.detail.concepts && `${h.detail.concepts} concept${h.detail.concepts === 1 ? "" : "s"}`].filter(Boolean).join(", ") || "nothing"}</span>
                 <span>{canWords(h.detail.can).join(" · ")}</span>
                 {h.detail.secrets.length > 0 && <span>needs {h.detail.secrets.join(", ")}</span>}
-                {h.detail.job && h.detail.job.tools.length > 0 && <span title={`The job agent's tools: ${h.detail.job.tools.join(", ")}${h.detail.job.approve.length ? `; asks first: ${h.detail.job.approve.join(", ")}` : ""}`}>gives the job agent {h.detail.job.tools.length} tool{h.detail.job.tools.length === 1 ? "" : "s"}</span>}
+                {h.detail.job && h.detail.job.tools.length > 0 && <span title={`The job agent's tools: ${h.detail.job.tools.join(", ")}${h.detail.job.strut?.length ? `; strut's own: ${h.detail.job.strut.map((s) => s.name).join(", ")}` : ""}${h.detail.job.approve.length ? `; asks first: ${h.detail.job.approve.join(", ")}` : ""}`}>gives the job agent {h.detail.job.tools.length} tool{h.detail.job.tools.length === 1 ? "" : "s"}{h.detail.job.strut?.length ? `, ${h.detail.job.strut.length} of them strut's` : ""}</span>}
               </div>
             )}
             {going?.ref === h.package && progressOf(going)}
