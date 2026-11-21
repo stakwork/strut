@@ -19,7 +19,9 @@ import { defineStep, flow, step, type RunEvent, type Step, type StepContext, typ
 import { boxGitHosts, gitHostProblems, gitSecretOf, STRUT_GIT_HOSTS, strutGitSecret, tokenHost } from "./git-hosts.js";
 import { fenceStep, type Fence } from "./packages/fence.js";
 import { runWorkflow } from "./runner.js";
+import { packageCache, resolvePackage } from "./packages/cache.js";
 import { MemorySecretStore } from "./secret-store.js";
+import { runProcess } from "./shell.js";
 import checkout from "./steps/lib/git/checkout.js";
 import remoteHead from "./steps/lib/git/remote-head.js";
 import { serveGit, type GitServer } from "./test-util/git-remote.js";
@@ -190,6 +192,44 @@ describe("git/remote-head and the token git is handed, against repositories serv
     assert.ok(priv.seen.length > before, "git followed the redirect");
     assert.ok(priv.seen.slice(before).every((r) => r.password === undefined), "the token went to no other host");
     assert.ok(!said.includes(TOKEN));
+  });
+
+  it("uses none of the machine's own credentials — with no token, or for another host — on every git path", async () => {
+    // A machine that holds credentials: a helper as a system gitconfig sets
+    // one (macOS's osxkeychain), a global config's askpass and helper, a
+    // ~/.netrc that git's curl reads on its own.
+    const home = join(root, "machine-home");
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, ".netrc"), "machine 127.0.0.1 login machine password MACHINE_NETRC\n");
+    const askpass = join(root, "machine-askpass.sh");
+    await writeFile(askpass, "#!/bin/sh\necho MACHINE_ASKPASS\n", { mode: 0o755 });
+    const global = join(root, "machine-gitconfig");
+    await writeFile(global, `[credential]\n\thelper = "!f() { echo username=machine; echo password=MACHINE_GLOBAL; }; f"\n[core]\n\taskPass = ${askpass}\n`);
+    const machine: StrutCapabilities["shell"] = (req) =>
+      runProcess(
+        req.cmd !== "git"
+          ? req
+          : {
+              ...req,
+              args: ["-c", 'credential.helper=!f() { echo username=machine; echo password=MACHINE_SYSTEM; }; f', ...(req.args ?? [])],
+              env: { HOME: home, GIT_CONFIG_GLOBAL: global, ...req.env },
+            },
+      );
+    const onMachine = (bag: StrutCapabilities): StrutCapabilities => ({ ...bag, shell: machine });
+    const before = priv.seen.length;
+
+    // No token for the host: strut's git steps, and a git+ read.
+    const asked = await run([ask(repoOf(priv))], onMachine(services({})));
+    assert.match(asked.res.error!.message, /^remote_denied: /);
+    const checked = await run([step("co", "git/checkout", { repo: repoOf(priv) })], onMachine(services({})));
+    assert.equal(checked.res.status, "error");
+    await assert.rejects(resolvePackage(`git+${repoOf(priv)}@trunk`, { cache: packageCache(join(root, "pkgs")), shell: machine, dataDir }), /^Error: package_repo_denied: /);
+    // A token for one host, sent on to another: that one gets no machine's either.
+    const movedOn = await run([ask(repoOf(moved))], onMachine(services({ LAB_TOKEN: TOKEN }, [moved])));
+    assert.equal(movedOn.res.status, "error");
+
+    assert.ok(priv.seen.length > before, "the host was asked");
+    assert.deepEqual(priv.seen.slice(before).filter((r) => r.password !== undefined), [], "and got no credential at all");
   });
 
   describe("a package's step", () => {

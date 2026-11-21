@@ -578,7 +578,17 @@ instead of baked into env at deploy time.
   choosing. Git is held to it too: the inline credential helper
   (src/steps/lib/git/_shared.ts) answers only when git asks for the
   token's own host (`STRUT_GIT_HOST`), so a redirect elsewhere gets
-  nothing. `git/push` asks GitHub who the token is (`GET /user`, the
+  nothing. And git gets no credential but the run's, token or not
+  (`credentialArgs`, `gitEnv`): the helper list is reset on every command
+  (a machine's `osxkeychain`, as Xcode's system gitconfig sets it, a
+  `store`, or one a repository's config names), no askpass program
+  (`GIT_ASKPASS=""`), no system config and a `HOME` with nothing in it
+  (`/dev/null`: no `~/.gitconfig`, `~/.git-credentials` or `~/.netrc`,
+  which git's curl reads on its own), and no ssh
+  (`protocol.ssh.allow=never`: a URL rewrite would log in with the
+  machine's key). Before, a run with no token for a host fell through to
+  all of these and acted as the machine's user; now a private repository
+  with no token fails. `git/push` asks GitHub who the token is (`GET /user`, the
   commit's author) only with GitHub's own token — the one
   `https://github.com` gets — and a token for another host is never sent
   there. A PACKAGE's step holds `secrets.git` only when its package says

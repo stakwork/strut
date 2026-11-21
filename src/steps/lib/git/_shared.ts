@@ -8,10 +8,13 @@
  * the child env (`STRUT_GIT_TOKEN`), read by an inline `credential.helper`
  * that is passed with `-c` and answers only for that host
  * (`STRUT_GIT_HOST`), so a redirect to another host gets nothing. It is
- * never an argument, never in a URL, never in a repository's config, and
- * the helper list is RESET first so no system or global helper (a
- * keychain) ever sees it. A checkout therefore carries no credential: an
- * agent's `bash` in it cannot push, whatever it tries.
+ * never an argument, never in a URL, never in a repository's config. And
+ * git gets no credential but the run's, token or not: the helper list is
+ * RESET on every command, and git reads none of the machine's own — no
+ * keychain, no `~/.gitconfig`, `~/.netrc` or askpass, no ssh key
+ * (`credentialArgs`, `gitEnv`). With no token a private repository fails;
+ * the machine's user never stands in. A checkout carries no credential
+ * either: an agent's `bash` in it cannot push, whatever it tries.
  */
 
 import { createHash } from "node:crypto";
@@ -163,16 +166,29 @@ const HELPER =
   `test "$(printf %s "$h" | tr '[:upper:]' '[:lower:]')" = "$${HOST_ENV}" || return 0; ` +
   `echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`;
 
-/** The inline credential helper: reset the helper list, then one helper that
- *  answers with the token for its host alone. */
+/** Git's own credentials, every time, token or not: the helper list RESET
+ *  (the machine's — macOS's `osxkeychain` in Xcode's system gitconfig, a
+ *  `store` or a manager — and one a repository's config names), and no ssh
+ *  (a URL rewrite to `git@…` would log in with the machine's key). Then,
+ *  with a token, the one helper that answers for its host alone. */
 export function credentialArgs(auth: GitAuth | undefined): string[] {
-  if (!auth) return [];
-  return ["-c", "credential.helper=", "-c", `credential.helper=${HELPER}`];
+  return ["-c", "credential.helper=", "-c", "protocol.ssh.allow=never", ...(auth ? ["-c", `credential.helper=${HELPER}`] : [])];
 }
 
+/** The child env: no credential but the run's. No terminal prompt and no
+ *  askpass program (`core.askPass`, `SSH_ASKPASS`), so a private repository
+ *  with no token fails fast; no system config, and a HOME with nothing in
+ *  it, so no `~/.gitconfig`, `~/.git-credentials` or `~/.netrc` (which git's
+ *  curl reads on its own) — the machine's user never stands in for the
+ *  run's person. */
 export function gitEnv(auth: GitAuth | undefined): Record<string, string> {
-  // Never a prompt: a private repo with no token fails fast instead of hanging.
-  return { GIT_TERMINAL_PROMPT: "0", ...(auth ? { [TOKEN_ENV]: auth.token, [HOST_ENV]: auth.host } : {}) };
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    GIT_CONFIG_NOSYSTEM: "1",
+    HOME: "/dev/null",
+    ...(auth ? { [TOKEN_ENV]: auth.token, [HOST_ENV]: auth.host } : {}),
+  };
 }
 
 export interface GitOpts {
