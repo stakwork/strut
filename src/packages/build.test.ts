@@ -365,7 +365,7 @@ describe("building a package on a filesystem workspace", () => {
     assert.match(built.warnings.join("\n"), /the closure of acme\/linear\/dispatch cannot be read whole .*: the package holds what the request lists/);
   });
 
-  it("reads requires off the closure: secret names in configs and a step def's defaults, literal commands and runtimes", async () => {
+  it("reads requires off the closure: secret names in configs, literal commands and runtimes — a git step names none", async () => {
     await ws.publishWorkflow(
       "acme/linear/tools",
       "v1",
@@ -374,6 +374,7 @@ describe("building a package on a filesystem workspace", () => {
         "type: exec, config: { cmd: ffmpeg, runtime: media }",
         'type: exec, config: { cmd: "{{ input.cmd }}" }',
         "type: exec, config: { cmd: /usr/bin/env }",
+        // Read with the token for its host (src/git-hosts.ts): no secret the package requires.
         "type: git/checkout, config: { repo: https://github.com/acme/x }",
         'type: agent, config: { prompt: hi, secretsEnv: [OPENAI_KEY], agentTools: ["acme/linear/*"] }',
       ),
@@ -381,7 +382,7 @@ describe("building a package on a filesystem workspace", () => {
     const built = await build(src, { workflows: ["acme/linear/tools"] });
     assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml", "workflows/tools.yaml"], "a glob grant over the prefix carries what it matches");
     assert.deepEqual(built.manifest.requires, {
-      secrets: ["GITHUB_TOKEN", "LINEAR_API_KEY", "OPENAI_KEY"],
+      secrets: ["LINEAR_API_KEY", "OPENAI_KEY"],
       binaries: ["ffmpeg"],
       runtimes: [{ name: "media" }],
     });
