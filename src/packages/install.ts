@@ -295,6 +295,7 @@ async function installSet(
     digest: m.info.digest,
     source: m.source,
     secrets: readableSecrets(m.info.manifest),
+    ...(m.info.manifest.requires?.optional?.length ? { optional: m.info.manifest.requires.optional } : {}),
     ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
     ...(m.info.manifest.provides ? { provides: m.info.manifest.provides } : {}),
     at,
