@@ -595,8 +595,11 @@ instead of baked into env at deploy time.
   that machine's git as its person set it up — its helpers, config,
   `~/.netrc`, askpass and ssh, as before this rule (`machine` in
   `credentialArgs` / `gitEnv`, from `gitLocalOf` on strut's own capability,
-  which no step can set). With a token the token wins there too, for its
-  host alone, and nothing of the machine's goes beside it. Never inferred
+  which no step can set). There git may also stop on the machine's own
+  prompts, a keychain dialog on a Mac, and the step waits for its person
+  until its timeout, as `git` in a terminal would; with nothing saved it
+  fails at once. With a token the token wins there too, for its host
+  alone, and nothing of the machine's goes beside it. Never inferred
   from the operating system or a hostname: a server never uses its
   machine's credentials unless someone turned this on. `git/push` asks GitHub who the token is (`GET /user`, the
   commit's author) only with GitHub's own token — the one
