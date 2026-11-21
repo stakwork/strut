@@ -8632,6 +8632,11 @@ export async function createStrut<TServices = unknown>(
         ...(mcp?.length ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });
+      // The WORK (src/work.ts): the job is recorded under the turn that
+      // started it NOW, before this returns and the turn can end — never
+      // only when its detached run reaches `run.start`, which can come after
+      // the turn's end has found a work of one run, done, and judged it.
+      if (verifier && startedBy) await recordCaused(dataDir, flow.name, { runId, startedBy }).catch((err) => console.error(`[work] ${flow.name}/${runId} was not recorded under the turn that started it:`, err));
       return { runId, callback: !!url, workflow };
     };
   }

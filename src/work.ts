@@ -61,8 +61,10 @@ export function causesOf(start: Pick<RunEvent, "parentRunId" | "startedBy" | "wa
 }
 
 /** Record a caused run under each of its causes: one line per cause file.
- *  Called with every `run.start`; a run nothing caused writes nothing. */
-export async function recordCaused(dataDir: string, workflow: string, start: RunEvent): Promise<void> {
+ *  Called with every `run.start`; a run nothing caused writes nothing. A
+ *  launcher that returns before its run starts (a job, launched detached)
+ *  records it first too: the same line twice reads as one (`membersOf`). */
+export async function recordCaused(dataDir: string, workflow: string, start: Pick<RunEvent, "runId" | "parentRunId" | "startedBy" | "wake">): Promise<void> {
   const causes = causesOf(start);
   if (!causes.length) return;
   const line = JSON.stringify({ workflow, runId: start.runId }) + "\n";
