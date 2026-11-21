@@ -889,6 +889,19 @@ describe("the terminal tool's helpers", () => {
     assert.equal(finalAnswerOf(steps), undefined);
   });
 
+  it("finalAnswerOf: a step with a refused call answers nothing, though another final_answer in it ran", () => {
+    const refused = { type: "tool-error", toolCallId: "t1", toolName: "final_answer", error: "Invalid input for tool final_answer" };
+    const mixed = { content: [call("final_answer", {}), refused, call("final_answer", { text: "x" }, "t2"), result("final_answer", { text: "x" }, "t2")] };
+    assert.equal(finalAnswerOf([mixed]), undefined);
+    // Whichever came first.
+    assert.equal(finalAnswerOf([{ content: [...mixed.content].reverse() }]), undefined);
+    // The answer the model gives next is the one.
+    assert.deepEqual(finalAnswerOf([mixed, { content: [call("final_answer", { text: "real" }, "t3"), result("final_answer", { text: "real" }, "t3")] }]), { text: "real" });
+    // Another tool's error refuses no answer.
+    const bashFailed = { type: "tool-error", toolCallId: "t0", toolName: "bash", error: "exit 1" };
+    assert.equal(finalAnswerOf([{ content: [call("bash", {}, "t0"), bashFailed, call("final_answer", { answer: "done" }), result("final_answer", "done")] }]), "done");
+  });
+
   it("missingRequired: the top-level required keys the object leaves out, nothing else", () => {
     const schema = { type: "object", required: ["text", "artifacts"], properties: { text: { type: "string" }, artifacts: { type: "array" }, ask: { type: "object" } } };
     assert.deepEqual(missingRequired(schema, { text: "hi" }), ["artifacts"]);
@@ -1374,6 +1387,107 @@ describe("mid-stream socket death is resumed, not lost", () => {
       assert.equal(s.calls(), 2);
       // The refusal reaches the model as the tool's error, naming the fields.
       assert.ok((s.bodies[1] ?? "").includes("missing required field(s): version, summary"), s.bodies[1]);
+    } finally {
+      s.close();
+    }
+  });
+
+  // One model step with several final_answer calls, each input as the model
+  // wrote it. 2026-11-21, a real orchestrator turn: the real answer, its JSON
+  // malformed (a nested field in tool-parameter syntax), then `{ text: "x" }`,
+  // which ran: the person was sent "x".
+  const answers = (...inputs: string[]) =>
+    inputs
+      .map(
+        (json, index) =>
+          sse({ type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${index + 1}`, name: "final_answer", input: {} } }) +
+          sse({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: json } }) +
+          sse({ type: "content_block_stop", index }),
+      )
+      .join("") +
+    sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
+    sse({ type: "message_stop" });
+  const real = { candidate: "gaia-produce-ai", version: "v7", summary: "the real answer" };
+  const notJson = '{"candidate":"gaia-produce-ai","version":"v7","summary": \n<parameter name="summary">the real answer}';
+  const junk = JSON.stringify({ candidate: "x", version: "x", summary: "x" });
+
+  it("schema mode: a final_answer whose input is not JSON is refused, and the loop goes on", async () => {
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(call === 1 ? answers(notJson) : answered("toolu_2", real));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runSchema();
+      assert.deepEqual(out.object, real);
+      assert.equal(s.calls(), 2);
+      assert.ok((s.bodies[1] ?? "").includes("Invalid input for tool final_answer"), s.bodies[1]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("schema mode: a step with a refused final_answer answers nothing, though another final_answer in it ran: the model is asked again", async () => {
+    const steps: Array<[string, string[]]> = [
+      ["input that is not JSON, then one that ran", [notJson, junk]],
+      ["a required field missing, then one that ran", [JSON.stringify({ candidate: "gaia-produce-ai" }), junk]],
+      ["one that ran, then input that is not JSON", [junk, notJson]],
+    ];
+    for (const [what, inputs] of steps) {
+      const s = await serve((call, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(msgStart());
+        res.write(call === 1 ? answers(...inputs) : answered("toolu_3", real));
+        res.end();
+      });
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      try {
+        const out = await runSchema();
+        assert.deepEqual(out.object, real, `${what}: the answer is the one given after the refusal`);
+        assert.equal(out.steps, 2, what);
+        assert.equal(s.calls(), 2, `${what}: the model is asked again`);
+        // The model reads the refusal, as it does when the refused call is alone.
+        const results = JSON.parse(s.bodies[1] ?? "{}").messages.at(-1).content as Array<{ tool_use_id: string; is_error?: boolean }>;
+        const refusedId = inputs.indexOf(junk) === 0 ? "toolu_2" : "toolu_1";
+        assert.deepEqual(results.filter((r) => r.is_error).map((r) => r.tool_use_id), [refusedId], what);
+      } finally {
+        s.close();
+      }
+    }
+  });
+
+  it("schema mode: a refused final_answer on the last step of the budget: the forced turn answers, never the other call", async () => {
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(call === 1 ? answers(notJson, junk) : textTurn(JSON.stringify(real)));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runSchema(1);
+      assert.deepEqual(out.object, real);
+      assert.equal(s.calls(), 2);
+      assert.ok((s.bodies[1] ?? "").includes("produce the final structured answer NOW"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("finalAnswer mode: a step with a refused final_answer answers nothing either", async () => {
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(call === 1 ? answers('{"answer": \n<parameter name="answer">the real answer}', JSON.stringify({ answer: "x" })) : toolUse("toolu_3", "final_answer", { answer: "the real answer" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await run();
+      assert.equal(out.result, "the real answer");
+      assert.equal(s.calls(), 2);
     } finally {
       s.close();
     }
