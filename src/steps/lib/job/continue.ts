@@ -12,7 +12,8 @@ import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch 
  * (`turnOf`, jobs.ts — a builder job stays a builder job, and one on a peer
  * carries that turn's `input.peer` along), so the caller names only the
  * job. The job's `kind` comes along the same way, unless the caller names
- * another (a plan the person approved, now a Code Change). Refused
+ * another (a plan the person approved, now a Code Change); a builder job
+ * takes none, so code met after a build began is a new job. Refused
  * (`job_busy:`) while a run of the job is in flight, and for a job not on
  * file.
  */
@@ -29,7 +30,7 @@ export default defineStep({
     kind: z
       .string()
       .optional()
-      .describe("Only when the work has become another kind (a plan the person approved, now a code change): its name in the list of the kinds of work a job does here. Left out, the job keeps the kind it has."),
+      .describe("Only when the work has become another kind (a plan the person approved, now a code change): its name in the list of the kinds of work a job does here. Left out, the job keeps the kind it has. Refused on a job that builds a workflow or an app: code in a repository is a new job (job/start)."),
     attachments: attachmentsField,
   }),
   output: launchOutput,

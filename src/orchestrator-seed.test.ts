@@ -108,18 +108,25 @@ describe("the orchestrator workflow strut ships", () => {
     // "builder job", and tells the agent to talk in the person's words.
     const system = promptOf(text).replace(/\s+/g, " ");
     assert.ok(
-      system.includes("To build, change, test or debug a workflow, or an app that lives in a workspace, start the job with `workflow: builder`, in the workspace it belongs to (`peer` when that is not this one)."),
+      system.includes("To build, change, test or debug a workflow, or an app published here or on a peer, start the job with `workflow: builder`, where it is published (`peer` when that is not here)."),
       system,
     );
+    // Code in a repository is a code job's, whatever the person calls it
+    // and whichever peer holds it: "an interface for peel" (a phone app)
+    // once went to a builder on the peer that lists Peel's repositories.
+    assert.ok(system.includes("Code in a repository is a code change, even when the person calls it an app"), system);
+    assert.ok(system.includes("a change to a peer's code is still a job here, with its repositories"), system);
     assert.doesNotMatch(system, /builder job/i, "no internal noun for the person to repeat");
     assert.ok(system.includes("under `Workflow Builder`, the kinds of workflow built here, and the apps over them"), "the second list says what it is");
     assert.ok(system.includes("Talk to the person in their words, not this prompt's"), "a posture for every reply, not a renaming table");
     const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
     assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
     assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
-    // An app that lives in a workspace is a builder's too — on a peer as
-    // here — and an app over a job's own results stays the job's.
-    assert.match(start.properties["workflow"]!.description!, /or an APP that lives in a workspace/);
+    // A published app is a builder's too — on a peer as here — while an
+    // app's code in a repository, and an app over a job's own results,
+    // stay the job's.
+    assert.match(start.properties["workflow"]!.description!, /or an APP published on a strut server/);
+    assert.match(start.properties["workflow"]!.description!, /Code in a repository is `job`, even an app's/);
     assert.match(start.properties["workflow"]!.description!, /`job` \(the default\):[^.]*an app over this job's own results/);
     assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
   });

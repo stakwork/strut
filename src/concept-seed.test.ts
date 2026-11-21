@@ -137,11 +137,11 @@ describe("concept files (pure)", () => {
     // One tree per agent: `Workflow Build` — the builder's entry under Job,
     // there only while the orchestrator read Job alone — is retired, and a
     // job agent's way to the builder is in Job's own docs: a workflow or an
-    // app that lives in a workspace, met on a job, it runs the builder for,
+    // app published here or on a peer, met on a job, it runs the builder for,
     // on a thread of its own, rather than bouncing it back to the person.
     assert.deepEqual(STRUT_CONCEPTS.retired, ["Workflow Build.md", "Job App.md"]);
     assert.ok(job.docs!.includes('meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }'), job.docs);
-    assert.ok(job.docs!.includes("an APP that lives in a workspace") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
+    assert.ok(job.docs!.includes("an APP published here or on a peer") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
     for (const c of [wb, job]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
     // The App page (plans/apps.md §8): the builder's prompt for an app, one
     // of the kinds under Workflow Builder — the layout, the kit's hooks,

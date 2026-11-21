@@ -18,9 +18,11 @@ import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch 
  *
  * `workflow` picks the hands (plans/builder-job.md §2): `job` (the default)
  * for code, research and pages (and an app over the job's own results);
- * `builder` when the thing to make or change is a WORKFLOW, or an APP that
- * lives in a workspace (new, changed, or on a peer) — the authoring twins and app/*,
- * no shell. The rule lives here, on
+ * `builder` when the thing to make or change is a WORKFLOW, or an APP
+ * published on a strut server (new, changed, here or on a peer) — the
+ * authoring twins and app/*, no shell. Code in a repository is `job`'s
+ * even when it is an app: a phone app, called "the app", once went to a
+ * builder on a peer that could not push it. The rule lives here, on
  * the field, where the model reads it beside the call; the kinds under the
  * `Workflow Builder` Concept, in the orchestrator's prompt beside the kinds
  * under `Job`, are what it routes here. `peer` goes with `builder` only: a workflow (or
@@ -51,14 +53,15 @@ export default defineStep({
       .optional()
       .describe(
         "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
-          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or in another workspace) — the authoring tools, no shell. " +
-          "A workflow or a workspace's app belongs to one workspace: it is built in this one unless `peer` names another.",
+          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP published on a strut server (new, changed, here or on a peer) — the authoring tools, no shell. " +
+          "Code in a repository is `job`, even an app's (a phone, desktop or web app). " +
+          "A workflow or a published app belongs to one server: it is built here unless `peer` names another.",
       ),
     peer: z
       .string()
       .optional()
       .describe(
-        "With workflow: builder only — the workspace the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
+        "With workflow: builder only — the server the workflow or app is published on when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job: code is checked out here, whichever peer holds it.",
       ),
     repos: z
       .array(z.string())

@@ -8576,6 +8576,13 @@ export async function createStrut<TServices = unknown>(
       // names its own, so the caller names only the job.
       const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
+      // A kind is a code job's (job/start refuses one on a builder), and a
+      // continue keeps the job's workflow: one naming a kind on a builder
+      // job would hand code to hands that cannot check it out or push it,
+      // so it is refused and the code becomes a new job.
+      if (!wanted && workflow === "builder" && typeof input["kind"] === "string") {
+        throw new Error(`kind: job "${job}" builds a workflow or an app (workflow: builder), and a continue keeps a job's workflow; code in a repository is a new job: job/start with its repos and its kind`);
+      }
       const carried = (["peer", "kind"] as const).filter((k) => input[k] === undefined);
       if (last && carried.length) {
         const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
