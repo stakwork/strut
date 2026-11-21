@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ArrowLeft, ChevronRight, History, Loader2, Moon, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
-import { NodeGraph } from "strut/views";
+import { MermaidDiagrams, NodeGraph } from "strut/views";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useChanges, useClaimed, useConceptTree, useCycles, useOntology, useSearch } from "./lib/read";
@@ -79,7 +79,17 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center text-sm text-muted-foreground">{children}</div>;
 }
 
+// A page's ```mermaid block is a diagram here: the workspace page's map of
+// its systems, a picture for a person and text for a model.
 export default function App() {
+  return (
+    <MermaidDiagrams>
+      <Knowledge />
+    </MermaidDiagrams>
+  );
+}
+
+function Knowledge() {
   const q = useConceptTree();
   const tree = q.data?.tree;
   const ontology = useOntology();

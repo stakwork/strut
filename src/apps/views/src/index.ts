@@ -14,7 +14,10 @@
  * `history/read` (and `proposal/get` + `graph/graph-get-batched` for a proposal); TaskForm only draws a task's answer
  * schema — the page's `useTask().submit` sends it (`task/submit` in grants.steps); WorkerPage, WorkerTask, TaskPhotos and TaskReplyView (a workflow's reply after an answer: `task/history`, `task/file`) are a worker app's pieces
  * (`task/next`, `task/submit`, `task/skip`, and `camera` in `permissions:` for a photo). The folds they draw are
- * `@strut/kit`'s. Its own page is the gallery: every component over fixtures.
+ * `@strut/kit`'s. Its own page is the gallery: every component over fixtures
+ * but MermaidDiagram, which would put Mermaid (2.85 MB) in the gallery's
+ * document — an app that draws diagrams wraps itself in MermaidDiagrams and
+ * carries it; one that does not carries none of it.
  */
 export { RunStatus } from "./components/RunStatus";
 export { RunList, type RunListProps } from "./components/RunList";
@@ -26,6 +29,7 @@ export { workerHeading } from "./lib/heading";
 export { WorkerPage, WorkHome, WorkerTask, TaskPhotos, TaskReplyView, PayPill, taskAsk, shownFields, satsText, typeLabel, type WorkerPageProps, type WorkerTaskProps, type TaskPhotosProps } from "./components/WorkerTask";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
+export { MermaidDiagram, MermaidDiagrams, type MermaidDiagramProps } from "./components/MermaidDiagram";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";
 export { WorkProducts, type WorkProductsProps, type WorkProductRenderer, type WorkProductRendererProps } from "./components/WorkProducts";
 export { NodeCard, type NodeCardProps } from "./components/NodeCard";

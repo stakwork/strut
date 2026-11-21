@@ -204,4 +204,24 @@ describe("strut/views — seeded at boot, imported by apps", () => {
     assert.doesNotMatch(html, /SPRINT-AF/, "the gallery's fixtures stay out");
     assert.ok(built.bytes < 1_200_000, `${built.bytes} bytes`);
   });
+
+  it("Mermaid is in the document of an app that draws DocumentView inside MermaidDiagrams, and of no other", async () => {
+    const strut = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await realpath(await tmp("strut-views-mermaid-"))), store: new MemoryRunStore(), kit });
+    const build = async (name: string, app: string) => {
+      const dir = join(await tmp("strut-views-mermaid-app-"), name);
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "app.yaml"), `title: ${name}\n`);
+      await writeFile(join(dir, "src", "App.tsx"), app);
+      const built = await strut.apps.build(dir, { name: `acme/${name}` });
+      assert.ok(built.ok, built.ok ? "" : built.errors.join("\n"));
+      return { bytes: built.bytes, html: await readFile(join(dir, "dist", "index.html"), "utf8") };
+    };
+    const doc = 'const docs = "# Systems\\n\\n```mermaid\\nflowchart LR\\n  a -->|URL| b\\n```\\n";\n';
+    const plain = await build("plain", `import { DocumentView } from "strut/views";\n${doc}export default function App() {\n  return <DocumentView text={docs} kind="markdown" />;\n}\n`);
+    const diagrams = await build("diagrams", `import { DocumentView, MermaidDiagrams } from "strut/views";\n${doc}export default function App() {\n  return <MermaidDiagrams><DocumentView text={docs} kind="markdown" /></MermaidDiagrams>;\n}\n`);
+    assert.doesNotMatch(plain.html, /flowchart-v2/, "the block stays code, and Mermaid stays out");
+    assert.match(diagrams.html, /flowchart-v2/);
+    const grew = diagrams.bytes - plain.bytes;
+    assert.ok(grew > 2_500_000 && grew < 3_200_000, `Mermaid's tiny build, about 2.85 MB: ${grew} bytes`);
+  });
 });

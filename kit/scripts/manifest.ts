@@ -24,7 +24,7 @@ export const PACKAGES = [
   "@dnd-kit/core", "@dnd-kit/sortable", "@dnd-kit/utilities", "@dnd-kit/modifiers",
   "date-fns", "lodash", "zod", "react-hook-form", "@hookform/resolvers",
   "papaparse", "mathjs", "simple-statistics", "fuse.js",
-  "react-markdown", "remark-gfm",
+  "react-markdown", "remark-gfm", "@mermaid-js/tiny",
   "@modelcontextprotocol/ext-apps",
 ];
 
@@ -44,7 +44,7 @@ export const JS_ENTRIES = [
   "@dnd-kit/core", "@dnd-kit/sortable", "@dnd-kit/utilities", "@dnd-kit/modifiers",
   "date-fns", "lodash", "zod", "react-hook-form", "@hookform/resolvers/zod",
   "papaparse", "mathjs", "simple-statistics", "fuse.js",
-  "react-markdown", "remark-gfm",
+  "react-markdown", "remark-gfm", "@mermaid-js/tiny",
 ];
 
 /** Package folders whose every module an app imports by path: one entry per
@@ -69,6 +69,21 @@ export const CSS_ENTRIES = [
 export const ALIASES: Record<string, string> = {
   "framer-motion": "motion/react",
   "react-router-dom": "react-router",
+};
+
+/** A file a package ships as a CLASSIC SCRIPT (an IIFE that leaves its export
+ *  on `globalThis`), frozen as a CommonJS module: its line `from` is written
+ *  `to`. The copy refuses a file without `from`, so a new version is looked
+ *  at, never frozen broken. */
+export const SCRIPT_EXPORTS: Record<string, { from: string; to: string }> = {
+  // Mermaid's tiny build: every diagram but mindmap and architecture, no
+  // KaTeX, 2.85 MB (the full package bundles to 5.4 MB). It declares its
+  // global with a top-level `var`, which a module wrapper makes local, so
+  // its last line, reading the global back, would throw.
+  "node_modules/@mermaid-js/tiny/dist/mermaid.tiny.js": {
+    from: `globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;`,
+    to: `module.exports = __esbuild_esm_mermaid_nm["mermaid"].default;`,
+  },
 };
 
 /** The kit's own entries: specifier → source file. */

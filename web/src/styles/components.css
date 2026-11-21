@@ -3084,6 +3084,29 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
   color: var(--text);
 }
 
+/* A ```mermaid block drawn (MermaidBlock): the image fits the column; while
+   Mermaid loads, a line; unreadable, the note over the block as code. */
+.md-diagram {
+  margin: 0 0 var(--sp-2) 0;
+  overflow-x: auto;
+}
+.md-diagram img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.md-diagram-loading {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: var(--sp-3) 0;
+}
+.md-diagram-note {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 0 0 var(--sp-1) 0;
+}
+
 .md-view strong { font-weight: 600; color: var(--text); }
 .md-view em { font-style: italic; }
 

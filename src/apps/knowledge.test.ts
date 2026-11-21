@@ -371,7 +371,9 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     const html = await readFile(join(app.dir, "dist", "index.html"), "utf8");
     assert.match(html, /Reading the graph/);
     assert.doesNotMatch(html, /SPRINT-AF/, "the views gallery's fixtures stay out");
-    assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
+    assert.match(html, /flowchart-v2/, "Mermaid, for a page's ```mermaid block (MermaidDiagrams)");
+    // Mermaid's tiny build is 2.85 MB of it; the app itself about 1.1 MB.
+    assert.ok(info.bytes < 4_500_000, `${info.bytes} bytes`);
 
     // What a host's sidebar reads (stadeum's launcher: every app but strut/views, by title).
     const listed = (await (await first.app.request("/apps")).json()) as { apps: Array<{ name: string; title: string; activeVersion: string; publisher?: string }> };
