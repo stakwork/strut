@@ -23,7 +23,9 @@ import { MemoryRunStore } from "../store.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { WorkspaceManager, type WorkspaceStore } from "../workspace.js";
 import { packageCache, resolvePackage } from "./cache.js";
-import { parseGitRef } from "./git-source.js";
+import { parseGitRef, TOKEN_SECRET_GONE } from "./git-source.js";
+import { gitSecretOf, STRUT_GIT_HOSTS } from "../git-hosts.js";
+import { insteadOf } from "../test-util/git-remote.js";
 import type { InstallResult } from "./install.js";
 import type { InstalledPackage } from "./installed.js";
 import type { PingOutcome, ServeStatus } from "./serve.js";
@@ -175,30 +177,38 @@ describe("resolving a git+ ref", () => {
     );
   });
 
-  it("hands the token to git through the child env alone, read from the secret tokenSecret names, and never puts it in an error", async () => {
+  it("hands git the token for the repository's host alone, through the child env, and never puts it in an error", async () => {
     const repo = await landerRepo();
     const calls: ProcessRequest[] = [];
-    const shell = (req: ProcessRequest) => {
-      calls.push(req);
-      return runProcess(req);
-    };
+    // The same repository at three hosts: one a package serves, GitHub, and one no secret serves.
+    const shell = insteadOf({ "https://git.acme.test/acme/lander": repo.url, "https://github.com/acme/lander": repo.url, "https://git.elsewhere.test/acme/lander": repo.url }, calls);
     const read: string[] = [];
-    const secret = async (name: string) => (read.push(name), name === "LANDER_GH" ? "tok-sentinel-123" : undefined);
+    const secret = async (name: string) => (read.push(name), ({ LANDER_GH: "tok-sentinel-123", GITHUB_TOKEN: "tok-github" }) as Record<string, string>)[name];
+    const gitSecret = gitSecretOf([...STRUT_GIT_HOSTS, { host: "git.acme.test", secret: "LANDER_GH" }]);
     const cache = packageCache(join(root, "data"));
-    await resolvePackage(`git+${repo.url}@main`, { cache, shell, secret, tokenSecret: "LANDER_GH" });
-    assert.deepEqual(read, ["LANDER_GH"]);
-    const fetch = calls.find((c) => c.args?.includes("fetch"))!;
-    assert.equal(fetch.env?.["STRUT_GIT_TOKEN"], "tok-sentinel-123");
+    const fetched = () => calls.filter((c) => c.args?.includes("fetch")).map((c) => [c.env?.["STRUT_GIT_TOKEN"], c.env?.["STRUT_GIT_HOST"]]);
+
+    await resolvePackage("git+https://git.acme.test/acme/lander@main", { cache, shell, secret, gitSecret });
+    assert.deepEqual(read, ["LANDER_GH"], "the secret that serves the host, and no other");
+    assert.deepEqual(fetched(), [["tok-sentinel-123", "git.acme.test"]], "the token, and the one host git's helper answers");
     assert.ok(calls.every((c) => !(c.args ?? []).some((a) => a.includes("tok-sentinel-123"))), "never an argument");
 
-    read.length = 0;
-    await resolvePackage(`git+${repo.url}@v1`, { cache, shell, secret });
-    assert.deepEqual(read, ["GITHUB_TOKEN"], "the default secret");
+    // github.com, with no map of the box's: strut's own GITHUB_TOKEN, as before.
+    read.length = calls.length = 0;
+    await resolvePackage("git+https://github.com/acme/lander@v1", { cache, shell, secret });
+    assert.deepEqual([read, fetched()], [["GITHUB_TOKEN"], [["tok-github", "github.com"]]]);
+
+    // A host no secret serves, and a file: repository: nothing read, nothing handed to git.
+    read.length = calls.length = 0;
+    await resolvePackage("git+https://git.elsewhere.test/acme/lander@v1", { cache, shell, secret, gitSecret });
+    await resolvePackage(`git+${repo.url}@v1`, { cache, shell, secret, gitSecret });
+    assert.deepEqual(read, []);
+    assert.ok(calls.every((c) => c.env?.["STRUT_GIT_TOKEN"] === undefined), "no token for a host it does not serve");
 
     // A remote that echoes what it was sent: the error is masked.
     const leaky = async (req: ProcessRequest): Promise<ProcessResult> =>
-      req.args?.includes("fetch") ? { ...(await runProcess({ cmd: "false" })), stderr: "fatal: unable to access: tok-sentinel-123 timed out" } : runProcess(req);
-    const err = await resolvePackage(`git+${pathToFileURL(join(root, "elsewhere", "repo")).href}@main`, { cache, shell: leaky, secret, tokenSecret: "LANDER_GH" }).catch((e: Error) => e);
+      req.args?.includes("fetch") ? { ...(await runProcess({ cmd: "false" })), stderr: "fatal: unable to access: tok-sentinel-123 timed out" } : shell(req);
+    const err = await resolvePackage("git+https://git.acme.test/acme/elsewhere@main", { cache, shell: leaky, secret, gitSecret }).catch((e: Error) => e);
     assert.ok(err instanceof Error);
     assert.match(err.message, /^package_repo_unreachable: /);
     assert.ok(!err.message.includes("tok-sentinel-123"), err.message);
@@ -276,18 +286,18 @@ describe("installing from git+", () => {
     const app = (await s.workspace.listApps()).find((a) => a.name === "acme/lander/game");
     assert.ok(app, "the app is installed");
 
-    // The door's errors, named; a tokenSecret is a NAME, and only for git+.
+    // The door's errors, named; no caller names the secret a ref is read with.
     const missing = await install(s, { ref: `git+${repo.url}@nope` });
     assert.equal(missing.status, 404);
     assert.match(missing.body.error!, /package_ref_not_found: .*"nope"/);
-    assert.equal((await install(s, { ref, tokenSecret: "ghp-abc" })).status, 400);
-    assert.equal((await install(s, { ref: `file:${repo.dir}`, tokenSecret: "GH" })).status, 400);
+    const named = await install(s, { ref, tokenSecret: "GITHUB_TOKEN" });
+    assert.deepEqual([named.status, named.body.error], [400, TOKEN_SECRET_GONE]);
   });
 
   it("installs a #path and a tag, and a requires.packages entry whose source is git+", async () => {
     const site = await siteRepo();
     const s = await fresh("ws-path");
-    const r = await install(s, { ref: `git+${site.url}@main#strut`, tokenSecret: "SITE_GH" });
+    const r = await install(s, { ref: `git+${site.url}@main#strut` });
     assert.equal(r.status, 201, r.body.error);
     assert.equal(r.body.package, "acme/site");
     assert.ok(await s.workspace.getWorkflowMetadata("acme/site/hello"));
@@ -312,23 +322,24 @@ describe("installing from git+", () => {
 
   it("hands the token to the refs a person named, never to a host a package's requirement names", async () => {
     const calls: ProcessRequest[] = [];
-    const shell = (req: ProcessRequest) => (calls.push(req), runProcess(req));
+    const site = await siteRepo();
+    const repo = await landerRepo();
+    // Both on GitHub, whose token is GITHUB_TOKEN (strut's own entry).
+    const shell = insteadOf({ "https://github.com/acme/site": site.url, "https://github.com/acme/lander": repo.url }, calls);
     const s = await fresh("ws-token", { services: { shell } });
     await s.app.request("/secrets/GITHUB_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "tok-person-named" }) });
     const fetched = () => calls.filter((c) => c.args?.includes("fetch")).map((c) => c.env?.["STRUT_GIT_TOKEN"]);
 
-    // Named by the person: the token rides along (on a file:// repo git asks for none).
-    const site = await siteRepo();
-    assert.equal((await install(s, { ref: `git+${site.url}@main#strut` })).status, 201);
+    // Named by the person: the token for its host rides along.
+    assert.equal((await install(s, { ref: "git+https://github.com/acme/site@main#strut" })).status, 201);
     assert.deepEqual(fetched(), ["tok-person-named"]);
 
-    // Named by a package's strut.yaml: read with no token.
+    // Named by a package's strut.yaml, on a host the person named nothing on here: read with no token.
     calls.length = 0;
-    const repo = await landerRepo();
     const v1 = await resolvePackage(`git+${repo.url}@v1`, { cache: packageCache(join(root, "elsewhere")) });
     const bundle = join(root, "bundle");
     await write(bundle, {
-      "strut.yaml": `package: acme/bundle\nversion: 1.0.0\nrequires:\n  packages:\n    - { package: acme/lander, digest: "${v1.digest}", source: "git+${repo.url}@v1" }\n`,
+      "strut.yaml": `package: acme/bundle\nversion: 1.0.0\nrequires:\n  packages:\n    - { package: acme/lander, digest: "${v1.digest}", source: "git+https://github.com/acme/lander@v1" }\n`,
       "workflows/all.yaml": SCORE("acme/bundle/all", "all"),
     });
     assert.equal((await install(s, { ref: `file:${bundle}` })).status, 201);
@@ -339,6 +350,7 @@ describe("installing from git+", () => {
     const repo = await landerRepo();
     const ref = `git+${repo.url}@main`;
     const ws = new WorkspaceManager(join(root, "ws-boot"));
+    // A `tokenSecret` from before 2026-11-20 is left alone: the box boots.
     process.env["STRUT_PACKAGES"] = JSON.stringify([{ ref, tokenSecret: "LANDER_GH" }]);
     try {
       const first = await boot(ws, { kit });
@@ -421,7 +433,7 @@ describe("a served box following a branch", () => {
   const bootServed = async (ref: string) => {
     await mkdir(join(root, "web"), { recursive: true });
     await writeFile(join(root, "web", "index.html"), INDEX_HTML);
-    return boot(new WorkspaceManager(join(root, "ws-served")), { kit, webDist: join(root, "web"), serveUi: true, serve: { ref, tokenSecret: "MOON_GH" }, subscriptionPoll: false, servePoll: false, autoResume: false });
+    return boot(new WorkspaceManager(join(root, "ws-served")), { kit, webDist: join(root, "web"), serveUi: true, serve: { ref }, subscriptionPoll: false, servePoll: false, autoResume: false });
   };
   const status = async (s: Strut) => (await (await s.app.request("/serve", { headers: auth })).json()) as ServeStatus;
   const title = async (s: Strut) => /<title>([^<]*)<\/title>/.exec(await (await s.app.request("/")).text())?.[1];
@@ -448,7 +460,7 @@ describe("a served box following a branch", () => {
     assert.notEqual(boot1.status, "error", boot1.error);
     let st = await status(strut);
     assert.equal(st.error, undefined, st.error);
-    assert.deepEqual([st.ref, st.tokenSecret, st.serving?.commit, st.serving?.package], [ref, "MOON_GH", first, "acme/moon"]);
+    assert.deepEqual([st.ref, st.serving?.commit, st.serving?.package], [ref, first, "acme/moon"]);
     const firstDigest = st.serving?.digest;
     assert.equal(await title(strut), "Moon one");
     const wf = await strut.workspace.getWorkflowMetadata("acme/moon/greet");

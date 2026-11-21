@@ -153,6 +153,7 @@ import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
+import { TOKEN_SECRET_GONE } from "./packages/git-source.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
@@ -173,7 +174,8 @@ import {
   type PackageDoor,
   type UninstallResult,
 } from "./packages/install.js";
-import { listInstalledPackages } from "./packages/installed.js";
+import { holdsItsOwn, listInstalledPackages } from "./packages/installed.js";
+import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitSecretOf } from "./git-hosts.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, SERVE_POLL_MINUTES, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
@@ -397,16 +399,16 @@ export interface StrutOptions<TServices = unknown> {
    *  record of the same id. A bare package name installs through them. */
   packageIndexes?: IndexSubscription[];
   /** Packages installed at FIRST BOOT (src/packages/boot.ts), after
-   *  `STRUT_PACKAGES` — each `{ ref, url?, digest?, tokenSecret? }`, what `POST
-   *  /packages/install` takes. A listed package not installed here is
+   *  `STRUT_PACKAGES` — each `{ ref, url?, digest? }`, what `POST
+   *  /packages/install` takes (a `git+` ref is read with the token for its
+   *  host, src/git-hosts.ts). A listed package not installed here is
    *  installed in the background once the boot is done; one already here,
    *  at any digest, is left alone. A bad entry fails the boot; a failed
    *  install is a warning, tried again next boot. */
   packages?: BootPackage[];
   /** SERVE MODE (src/packages/serve.ts; plans/app-repos.md §4): the
-   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL` +
-   *  `STRUT_SERVE_TOKEN_SECRET` (this wins; `false`: none) — `{ ref, url?,
-   *  tokenSecret? }`, a ref the install takes. At boot it is installed
+   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL`
+   *  (this wins; `false`: none) — `{ ref, url? }`, a ref the install takes. At boot it is installed
    *  through the distro's door, its `serve.yaml` is the public view (`PUT
    *  /public-view` is refused), and `/` is its app alone. A `git+` ref is
    *  fetched every `servePoll` minutes and on `POST /serve/sync`; any other
@@ -907,10 +909,10 @@ export interface Strut<TServices = unknown> {
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
     /** `ref` is `file:`, `pk:` (with `url`), `git+<repo>[@<ref>][#<path>]`
-     *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
-     *  bare name looked up in the indexes this strut follows — the first
-     *  that lists its publisher, or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "adoptPages" | "progress"> & { index?: string }): Promise<InstallResult>;
+     *  (read with the token for its host, src/git-hosts.ts), or a bare name
+     *  looked up in the indexes this strut follows — the first that lists
+     *  its publisher, or the one `index` names. */
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "commit" | "actor" | "door" | "adoptPages" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -1601,8 +1603,15 @@ export async function createStrut<TServices = unknown>(
     const found = await apps.manifestOf(app.name, app.version).catch(() => null);
     return !!found?.seeded && found.manifest.admin === true;
   };
+  // GIT CREDENTIALS BY HOST (src/git-hosts.ts): which secret serves a
+  // repository's host — strut's own entry and each installed package's
+  // `provides.git`, made again after every package write (`syncGitHosts`,
+  // below). What `secrets.git(url)`, strut's git steps and every `git+`
+  // read go through.
+  let boxGitSecret: GitSecretOf = gitSecretOf(STRUT_GIT_HOSTS);
+  const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
   const services = {
-    ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
+    ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir, gitSecret }) as unknown as Record<
       string,
       unknown
     >),
@@ -1684,7 +1693,7 @@ export async function createStrut<TServices = unknown>(
   // Strut's own is built hiding them (capabilities.ts `secretsCapability`).
   if (secretsInjected) {
     const bag = services as Record<string, unknown>;
-    bag["secrets"] = hideSecrets(bag["secrets"] as SecretsCapability);
+    bag["secrets"] = hideSecrets(bag["secrets"] as SecretsCapability, gitSecret);
   }
   // Paid runs: the wallet and the rate (plans/paid-runs.md §9,
   // src/payments/wallet.ts). The wallet's credentials live in an encrypted
@@ -2275,6 +2284,17 @@ export async function createStrut<TServices = unknown>(
     }
   };
   await seedJob();
+  // The box's git hosts: strut's own, and what each installed package
+  // that still holds its own provides (as `job`'s grants are read).
+  const syncGitHosts = async (): Promise<void> => {
+    try {
+      const packages = (await listInstalledPackages({ workspace, cache: packageStore, ...(graph ? { graph } : {}) })).filter(holdsItsOwn);
+      boxGitSecret = gitSecretOf(boxGitHosts(packages));
+    } catch (err) {
+      console.warn(`[git] could not read the installed packages' git hosts:`, err instanceof Error ? err.message : err);
+    }
+  };
+  await syncGitHosts();
   if (opts.orchestrator !== false) {
     try {
       // A host that keeps the person's own pages: the orchestrator follows them.
@@ -5425,6 +5445,7 @@ export async function createStrut<TServices = unknown>(
     claims: claimsAuthoring,
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
     ...(secretsCap ? { secrets: secretsCap } : {}),
+    gitSecret,
     path: bootEnv()["PATH"] ?? "",
     apps,
     dataDir,
@@ -5446,6 +5467,7 @@ export async function createStrut<TServices = unknown>(
         return await fn();
       } finally {
         await seedJob();
+        await syncGitHosts();
         await syncSchedules();
       }
     });
@@ -5576,10 +5598,8 @@ export async function createStrut<TServices = unknown>(
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
     type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
     const body = await c.req.json<Body>().catch(() => ({}) as Body);
+    if (body.tokenSecret !== undefined) return c.json({ error: TOKEN_SECRET_GONE }, 400);
     if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, git+https://host/org/repo@<branch|tag|commit>[#<folder>], or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
-    if (body.tokenSecret !== undefined && (typeof body.tokenSecret !== "string" || !isValidSecretName(body.tokenSecret) || !body.ref.startsWith("git+"))) {
-      return c.json({ error: "tokenSecret is the NAME of the secret holding the token a git+ ref is read with (letters, digits, underscore; default GITHUB_TOKEN) — never the token itself" }, 400);
-    }
     if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
@@ -5592,7 +5612,6 @@ export async function createStrut<TServices = unknown>(
     const started = startInstall(body.ref, {
       ...(body.digest ? { digest: body.digest as string } : {}),
       ...(body.url ? { url: body.url as string } : {}),
-      ...(body.tokenSecret ? { tokenSecret: body.tokenSecret as string } : {}),
       ...(body.index ? { index: body.index as string } : {}),
       ...(actor ? { actor } : {}),
     });
@@ -5692,6 +5711,7 @@ export async function createStrut<TServices = unknown>(
     ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
     ...((services as unknown as StrutCapabilities).http ? { http: (services as unknown as StrutCapabilities).http } : {}),
     ...(secretsCap ? { secrets: secretsCap } : {}),
+    gitSecret,
     install: repoInstall,
     build: async (req) => {
       const built = await buildPackage(buildDeps, req);
@@ -5731,8 +5751,9 @@ export async function createStrut<TServices = unknown>(
   app.post("/packages/repos", async (c) => {
     if (registryWasInjected) return c.json({ error: "Opening a repo is disabled when the registry is provided at construction time" }, 409);
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-    if (typeof body["url"] !== "string" || !body["url"] || !str(body["ref"]) || !str(body["path"]) || !str(body["tokenSecret"])) {
-      return c.json({ error: "url is the repository (https://github.com/acme/moonlander); ref (a branch), path (the folder holding strut.yaml) and tokenSecret (the NAME of the secret its token is in) are strings" }, 400);
+    if (body["tokenSecret"] !== undefined) return c.json({ error: TOKEN_SECRET_GONE }, 400);
+    if (typeof body["url"] !== "string" || !body["url"] || !str(body["ref"]) || !str(body["path"])) {
+      return c.json({ error: "url is the repository (https://github.com/acme/moonlander); ref (a branch) and path (the folder holding strut.yaml) are strings" }, 400);
     }
     const actor = await resolveActor(c);
     try {
@@ -5741,7 +5762,6 @@ export async function createStrut<TServices = unknown>(
           url: body["url"] as string,
           ...(body["ref"] ? { ref: body["ref"] as string } : {}),
           ...(body["path"] ? { path: body["path"] as string } : {}),
-          ...(body["tokenSecret"] ? { tokenSecret: body["tokenSecret"] as string } : {}),
           ...(actor ? { actor } : {}),
         }),
       );
@@ -5753,8 +5773,9 @@ export async function createStrut<TServices = unknown>(
   app.post("/packages/repos/create", async (c) => {
     if (registryWasInjected) return c.json({ error: "Creating a repo is disabled when the registry is provided at construction time" }, 409);
     const { url, branch, path, tokenSecret, ...rest } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-    if (typeof url !== "string" || !url || !str(branch) || !str(path) || !str(tokenSecret)) {
-      return c.json({ error: "url is the EMPTY repository to push to; branch (default main), path (a folder to put the package in) and tokenSecret are strings" }, 400);
+    if (tokenSecret !== undefined) return c.json({ error: TOKEN_SECRET_GONE }, 400);
+    if (typeof url !== "string" || !url || !str(branch) || !str(path)) {
+      return c.json({ error: "url is the EMPTY repository to push to; branch (default main) and path (a folder to put the package in) are strings" }, 400);
     }
     const req = buildRequestOf(rest);
     if (typeof req === "string") return c.json({ error: req }, 400);
@@ -5766,7 +5787,6 @@ export async function createStrut<TServices = unknown>(
           url,
           ...(branch ? { branch: branch as string } : {}),
           ...(path ? { path: path as string } : {}),
-          ...(tokenSecret ? { tokenSecret: tokenSecret as string } : {}),
           ...(actor ? { actor } : {}),
         }),
       );
@@ -6137,8 +6157,10 @@ export async function createStrut<TServices = unknown>(
     ...(secretsCap
       ? { secret: (name: string, actor?: string) => (actor && secretsCap.forPrincipal ? secretsCap.forPrincipal(actor) : secretsCap).get(name) }
       : {}),
-    // A person's subscription reads its branch with their own token alone.
+    // A person's subscription reads its branch with their own token alone,
+    // the one for the branch's host.
     own: (actor: string, name: string) => actorSecrets.get(actor, name),
+    gitSecret,
     ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
   });
 
@@ -6156,6 +6178,7 @@ export async function createStrut<TServices = unknown>(
           resolveName: (name) => indexes.resolveName(name),
           install: (ref, o) => packages.install(ref, { ...o, door: "distro" }),
           ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+          gitSecret,
           ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
           apps,
           workspace,

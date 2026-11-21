@@ -118,11 +118,11 @@ export function withCassette<TServices extends Record<string, unknown>>(
    *  can be scrubbed elsewhere; in replay mode, return the stable token so
    *  downstream args carry tokens that match the recording. */
   const wrapSecretsGet =
-    (realGet: (name: string) => Promise<string | undefined>) =>
-    async (name: string): Promise<string | undefined> => {
-      if (mode === "replay") return SECRET_TOKEN(name);
-      const value = await realGet(name);
-      if (typeof value === "string") secretValues.set(name, value);
+    (realGet: (name: string) => Promise<string | undefined>, label: (arg: string) => string = (name) => name) =>
+    async (arg: string): Promise<string | undefined> => {
+      if (mode === "replay") return SECRET_TOKEN(label(arg));
+      const value = await realGet(arg);
+      if (typeof value === "string") secretValues.set(label(arg), value);
       return value;
     };
 
@@ -140,9 +140,11 @@ export function withCassette<TServices extends Record<string, unknown>>(
           if (typeof member !== "function") return member;
           const method = String(prop);
           const bound = (member as (...a: unknown[]) => unknown).bind(target);
-          if (isSecrets && method === "get") {
+          // `get(name)`, and `git(url)`: a repository host's token.
+          if (isSecrets && (method === "get" || method === "git")) {
             return wrapSecretsGet(
-              bound as (name: string) => Promise<string | undefined>,
+              bound as (arg: string) => Promise<string | undefined>,
+              method === "git" ? (url) => `git ${url}` : undefined,
             );
           }
           return (...args: unknown[]) =>

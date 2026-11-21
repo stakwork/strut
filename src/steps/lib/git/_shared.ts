@@ -3,12 +3,15 @@
  *
  * Every git invocation goes through `ctx.services.shell` — recordable, and
  * the child env is scrubbed by construction. The one credential a step may
- * hold (the token behind `tokenSecret`) reaches git in exactly one way: the
- * child env (`STRUT_GIT_TOKEN`), read by an inline `credential.helper` that
- * is passed with `-c`. It is never an argument, never in a URL, never in a
- * repository's config, and the helper list is RESET first so no system or
- * global helper (a keychain) ever sees it. A checkout therefore carries no
- * credential: an agent's `bash` in it cannot push, whatever it tries.
+ * hold — the run's token for the repository's host (`gitAuth`: the secret
+ * that serves the host, src/git-hosts.ts) — reaches git in exactly one way:
+ * the child env (`STRUT_GIT_TOKEN`), read by an inline `credential.helper`
+ * that is passed with `-c` and answers only for that host
+ * (`STRUT_GIT_HOST`), so a redirect to another host gets nothing. It is
+ * never an argument, never in a URL, never in a repository's config, and
+ * the helper list is RESET first so no system or global helper (a
+ * keychain) ever sees it. A checkout therefore carries no credential: an
+ * agent's `bash` in it cannot push, whatever it tries.
  */
 
 import { createHash } from "node:crypto";
@@ -18,7 +21,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { withLock } from "../../../jobs.js";
-import { shellCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
+import { gitTokens, gitVia, shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
+import { tokenHost } from "../../../git-hosts.js";
 
 // One writer per cache: the same in-process lock the job directory uses
 // (jobs.ts) — two runs of one repository fetch and add worktrees one after
@@ -27,8 +31,39 @@ export { withLock };
 
 export type GitCtx = StepContext<StrutCapabilities>;
 
-/** The child-env variable the inline credential helper reads. */
+/** The child-env variables the inline credential helper reads: the token,
+ *  and the one host it answers for. */
 export const TOKEN_ENV = "STRUT_GIT_TOKEN";
+export const HOST_ENV = "STRUT_GIT_HOST";
+
+/** A token and the host it serves: what git is handed for one remote. */
+export interface GitAuth {
+  token: string;
+  /** As `tokenHost` gives it: lowercase, with `:port` when not the default. */
+  host: string;
+  /** Read through a package step's view: the run's own shell and http, the
+   *  only doors the token goes through — never a shell or http the step put
+   *  in the ctx it called a git step with (src/packages/fence.ts). */
+  shell?: ShellCapability;
+  http?: HttpCapability;
+}
+
+/** The run's credential for the repository at `url`: the token for its
+ *  host (`secrets.git`, src/git-hosts.ts), or undefined — a host no secret
+ *  serves, a URL a token may not go to, or no value. Read through
+ *  `gitTokens`, so it is the run's even when a package's step calls. */
+export async function gitAuth(secrets: SecretsCapability | undefined, url: string): Promise<GitAuth | undefined> {
+  const host = tokenHost(url);
+  if (!host || !secrets) return undefined;
+  const token = await gitTokens(secrets)(url);
+  if (!token) return undefined;
+  const via = gitVia(secrets);
+  return { token, host, ...(via?.shell ? { shell: via.shell } : {}), ...(via?.http ? { http: via.http } : {}) };
+}
+
+/** `gitAuth` from a step's ctx. */
+export const gitAuthOf = (ctx: GitCtx, url: string): Promise<GitAuth | undefined> =>
+  gitAuth((ctx.services as Partial<StrutCapabilities> | undefined)?.secrets, url);
 
 // ── the repository ────────────────────────────────────────────────────────
 
@@ -117,39 +152,46 @@ export function cancelSignal(ctx: GitCtx): { signal: AbortSignal; stop(): void }
 
 // ── running git ───────────────────────────────────────────────────────────
 
+/** The helper git runs for a credential: on `get`, it reads the request's
+ *  `host=` line and answers only when that is the token's host (any case),
+ *  with the token from the child env. `x-access-token` is the username
+ *  GitHub accepts for any token; GitLab and Forgejo take any username with
+ *  a token as its password. */
+const HELPER =
+  '!f() { test "$1" = get || return 0; h=; ' +
+  'while IFS= read -r l; do case "$l" in host=*) h="${l#host=}";; esac; done; ' +
+  `test "$(printf %s "$h" | tr '[:upper:]' '[:lower:]')" = "$${HOST_ENV}" || return 0; ` +
+  `echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`;
+
 /** The inline credential helper: reset the helper list, then one helper that
- *  answers with the token from the child env. `x-access-token` is the
- *  username GitHub accepts for any token. */
-export function credentialArgs(token: string | undefined): string[] {
-  if (!token) return [];
-  return [
-    "-c",
-    "credential.helper=",
-    "-c",
-    `credential.helper=!f() { echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`,
-  ];
+ *  answers with the token for its host alone. */
+export function credentialArgs(auth: GitAuth | undefined): string[] {
+  if (!auth) return [];
+  return ["-c", "credential.helper=", "-c", `credential.helper=${HELPER}`];
 }
 
-export function gitEnv(token: string | undefined): Record<string, string> {
+export function gitEnv(auth: GitAuth | undefined): Record<string, string> {
   // Never a prompt: a private repo with no token fails fast instead of hanging.
-  return { GIT_TERMINAL_PROMPT: "0", ...(token ? { [TOKEN_ENV]: token } : {}) };
+  return { GIT_TERMINAL_PROMPT: "0", ...(auth ? { [TOKEN_ENV]: auth.token, [HOST_ENV]: auth.host } : {}) };
 }
 
 export interface GitOpts {
   cwd: string;
-  token?: string;
+  /** The token for the remote's host and that host (`gitAuth`). */
+  auth?: GitAuth;
   timeoutMs?: number;
   signal?: AbortSignal;
   maxOutputChars?: number;
 }
 
-/** Run one git command. Never throws on a non-zero exit (read `code`). */
+/** Run one git command. Never throws on a non-zero exit (read `code`).
+ *  With a token, through the shell it was handed with, when it has one. */
 export function git(shell: ShellCapability, args: string[], o: GitOpts): Promise<ShellResult> {
-  return shell({
+  return (o.auth?.shell ?? shell)({
     cmd: "git",
-    args: [...credentialArgs(o.token), ...args],
+    args: [...credentialArgs(o.auth), ...args],
     cwd: o.cwd,
-    env: gitEnv(o.token),
+    env: gitEnv(o.auth),
     timeoutMs: o.timeoutMs ?? 600_000,
     ...(o.signal ? { signal: o.signal } : {}),
     ...(o.maxOutputChars ? { maxOutputChars: o.maxOutputChars } : {}),
@@ -230,11 +272,18 @@ export async function fetchCache(shell: ShellCapability, cacheDir: string, url: 
   await gitOk(shell, ["fetch", "--quiet", "--prune", "origin", TRACKING, "+refs/tags/*:refs/tags/*"], { cwd: cacheDir, ...o });
 }
 
+/** What `git ls-remote --symref <remote> HEAD` printed: the branch HEAD
+ *  names and the commit it points at, each when there. */
+export function parseSymref(out: string): { branch?: string; head?: string } {
+  const branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(out)?.[1];
+  const head = /^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/m.exec(out)?.[1];
+  return { ...(branch ? { branch } : {}), ...(head ? { head } : {}) };
+}
+
 /** The remote's default branch — asked of the remote, so a change on
  *  GitHub is seen; the clone-time HEAD is the fallback. */
 export async function remoteDefaultBranch(shell: ShellCapability, cacheDir: string, o: Omit<GitOpts, "cwd">): Promise<string | undefined> {
-  const symref = await gitOk(shell, ["ls-remote", "--symref", "origin", "HEAD"], { cwd: cacheDir, ...o });
-  const branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
+  const { branch } = parseSymref(await gitOk(shell, ["ls-remote", "--symref", "origin", "HEAD"], { cwd: cacheDir, ...o }));
   if (branch) return branch;
   const head = await git(shell, ["symbolic-ref", "--short", "HEAD"], { cwd: cacheDir, ...o });
   return head.code === 0 && head.stdout.trim() ? head.stdout.trim() : undefined;

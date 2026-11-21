@@ -29,13 +29,20 @@
  * (`heldToItsRun`), and what only a person or the server does is not on
  * its bag at all.
  *
+ * Git tokens the same way (stadeum plans/software.md §5, item 9): a
+ * package's step holds `secrets.git(url)`, the run's token for a
+ * repository's host, only when its package says `requires.git: true`, which
+ * an install shows. Without it the step never sees a token, yet strut's own
+ * git steps it calls with its ctx still use the run's: the view answers
+ * them (`keepGitTokens`), and they send the token to its host alone.
+ *
  * Steps only: a bought WORKFLOW is YAML whose `secretsEnv` names a person
  * reads in the install ask; a bought step is code that could ask for any
  * name at run time. Not isolation — the step still has `shell` and `http` —
  * but what the ask said the code may read is then what it can read.
  */
 import type { AnyStepDef, StepContext } from "../core.js";
-import { secretScopesOf, type SecretScope, type SecretsCapability } from "../capabilities.js";
+import { gitTokens, keepGitTokens, secretScopesOf, type HttpCapability, type SecretScope, type SecretsCapability, type ShellCapability } from "../capabilities.js";
 import type { AuthoringCapability } from "../authoring.js";
 import type { JobsCapability } from "../jobs.js";
 import type { PeersCapability } from "../peers.js";
@@ -43,21 +50,29 @@ import type { ProposalsCapability } from "../proposals.js";
 import type { RunsCapability } from "../runs.js";
 import type { Upstream, WorkspaceStore } from "../workspace.js";
 
-export type Fence = Pick<Upstream, "package" | "secrets" | "provides">;
+export type Fence = Pick<Upstream, "package" | "secrets" | "git" | "provides">;
 
 /** The fence of every custom step whose ACTIVE version came from a package,
  *  by type — what `buildRegistry` wraps. */
 export async function workspaceFences(workspace: Pick<WorkspaceStore, "listSteps">): Promise<Record<string, Fence>> {
   const out: Record<string, Fence> = {};
   for (const s of await workspace.listSteps()) {
-    if (s.upstream) out[s.type] = { package: s.upstream.package, secrets: s.upstream.secrets ?? [], ...(s.upstream.provides ? { provides: s.upstream.provides } : {}) };
+    if (s.upstream) {
+      const { package: pkg, secrets, git, provides } = s.upstream;
+      out[s.type] = { package: pkg, secrets: secrets ?? [], ...(git ? { git } : {}), ...(provides ? { provides } : {}) };
+    }
   }
   return out;
 }
 
 /** `secrets` as a step from `fence.package` may read it — and manage what
  *  the package provides. */
-export function fencedSecrets(secrets: SecretsCapability, type: string, fence: Fence): SecretsCapability {
+export function fencedSecrets(
+  secrets: SecretsCapability,
+  type: string,
+  fence: Fence,
+  via: { shell?: ShellCapability; http?: HttpCapability } = {},
+): SecretsCapability {
   const allowed = new Set(fence.secrets);
   const view: SecretsCapability = {
     async get(name: string) {
@@ -68,6 +83,11 @@ export function fencedSecrets(secrets: SecretsCapability, type: string, fence: F
       return secrets.get(name);
     },
   };
+  // The run's token for a repository's host: the step's own only when its
+  // package says so; strut's git steps it calls read it either way, and
+  // hand it only through the run's own shell and http.
+  if (fence.git) view.git = gitTokens(secrets);
+  keepGitTokens(view, secrets, via);
   const provided = fence.provides?.secrets ?? [];
   const scopes = provided.length ? secretScopesOf(secrets) : undefined;
   if (scopes?.own) view.own = fencedScope(scopes.own, type, fence, "the person's own");
@@ -111,7 +131,14 @@ function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: F
     ...ctx,
     services: {
       ...rest,
-      ...(services.secrets ? { secrets: fencedSecrets(services.secrets, type, fence) } : {}),
+      ...(services.secrets
+        ? {
+            secrets: fencedSecrets(services.secrets, type, fence, {
+              ...(services["shell"] ? { shell: services["shell"] as ShellCapability } : {}),
+              ...(services["http"] ? { http: services["http"] as HttpCapability } : {}),
+            }),
+          }
+        : {}),
       ...heldToItsRun(services, ctx, type, fence),
     },
   };

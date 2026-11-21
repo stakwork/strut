@@ -13,19 +13,24 @@
  * throwaway index outside the cache (`read-tree` + `checkout-index`), so the
  * cache gains no worktree and no index, then read and hashed like any
  * package by the cache. The repository's ACL is the access control: a
- * private repo needs a token that can read it, named by `tokenSecret`
- * (default `GITHUB_TOKEN`), never a value in the ref.
+ * private repo needs a token that can read it — the one for its host, in
+ * the secret that serves the host (src/git-hosts.ts: `GITHUB_TOKEN` for
+ * github.com, a package's `provides.git` for another), never a value in
+ * the ref, and never a secret the caller names.
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { shellCapability, type ShellCapability } from "../capabilities.js";
-import { cachePath, commitOf, fetchCache, git, parseRepo, remoteDefaultBranch, SHA_RE, withLock, type RepoRef } from "../steps/lib/git/_shared.js";
+import { strutGitSecret, tokenHost, type GitSecretOf } from "../git-hosts.js";
+import { cachePath, commitOf, fetchCache, git, parseRepo, remoteDefaultBranch, SHA_RE, withLock, type GitAuth, type RepoRef } from "../steps/lib/git/_shared.js";
 import { MANIFEST_FILE } from "./format.js";
 
-/** The secret a `git+` ref's token is read from when none is named. */
-export const DEFAULT_TOKEN_SECRET = "GITHUB_TOKEN";
+/** What a door says to a `tokenSecret` (gone 2026-11-20): no caller names
+ *  the secret a repository is read with any more. */
+export const TOKEN_SECRET_GONE =
+  "tokenSecret is gone: a git+ ref is read with the run's token for its host — the secret that serves the host (GITHUB_TOKEN for github.com; a package's provides.git for another), its person's own first";
 
 export interface GitPackageRef {
   /** The ref as written: what an install records and an update re-resolves. */
@@ -78,24 +83,25 @@ export function parseGitRef(ref: string): GitPackageRef | string {
   return { ref, repo, ...(rev ? { rev } : {}), ...(path ? { path } : {}) };
 }
 
-/** The origin a `git+` ref's token would be sent to (`https://github.com`);
- *  undefined for a `file://` repository, which takes none, or a ref that is
- *  not one. */
-export function gitOrigin(ref: string): string | undefined {
+/** The host a `git+` ref's token would be sent to (`github.com`);
+ *  undefined for a repository no token may go to (`file://`, plain http to
+ *  another machine), or a ref that is not one. */
+export function gitHostOfRef(ref: string): string | undefined {
   const parsed = ref.startsWith("git+") ? parseGitRef(ref) : undefined;
   if (!parsed || typeof parsed === "string") return undefined;
-  const u = new URL(parsed.repo.url);
-  return u.protocol === "file:" ? undefined : u.origin;
+  return tokenHost(parsed.repo.url);
 }
 
 export interface GitSourceOptions {
   /** Where `repos/` (the bare caches git/checkout keeps) lives. */
   dataDir: string;
   shell?: ShellCapability;
-  /** The token, already read from its secret; absent for a public repo. */
-  token?: string;
-  /** The secret's NAME, for the errors. */
-  tokenSecret?: string;
+  /** Which secret serves the repository's host (src/git-hosts.ts): the
+   *  box's map; default strut's own. */
+  gitSecret?: GitSecretOf;
+  /** Reads that secret as the caller may: the installer's view, a
+   *  subscriber's own value, the deployment's. Absent: no token. */
+  secret?(name: string): Promise<string | undefined>;
   /** The ref must name a branch (a subscription follows one): a tag or a
    *  commit is refused. */
   branch?: boolean;
@@ -117,14 +123,19 @@ export async function fetchGitRef<T>(ref: string, opts: GitSourceOptions, then: 
   if (typeof parsed === "string") throw new Error(`package_source_invalid: ${parsed}`);
   const shell = opts.shell ?? shellCapability();
   const cacheDir = cachePath(opts.dataDir, parsed.repo);
-  const o = { ...(opts.token ? { token: opts.token } : {}), timeoutMs: opts.timeoutMs ?? 600_000 };
-  const masked = <E>(fn: () => Promise<E>) => maskToken(fn, opts.token);
+  // The token for the repository's host, from the secret that serves it.
+  const host = tokenHost(parsed.repo.url);
+  const secret = (opts.gitSecret ?? strutGitSecret)(parsed.repo.url);
+  const token = secret ? (await opts.secret?.(secret)) || undefined : undefined;
+  const auth: GitAuth | undefined = token && host ? { token, host } : undefined;
+  const o = { ...(auth ? { auth } : {}), timeoutMs: opts.timeoutMs ?? 600_000 };
+  const masked = <E>(fn: () => Promise<E>) => maskToken(fn, token);
   return masked(() =>
     withLock(cacheDir, async () => {
       try {
         await fetchCache(shell, cacheDir, parsed.repo.url, o);
       } catch (err) {
-        throw fetchError(ref, parsed.repo.url, err, opts);
+        throw fetchError(ref, parsed.repo.url, err, { ...(auth ? { auth } : {}), ...(secret ? { secret } : {}) });
       }
       const rev = parsed.rev ?? (await remoteDefaultBranch(shell, cacheDir, o));
       if (!rev) throw new Error(`package_ref_not_found: ${ref}: ${parsed.repo.url} has no default branch — name a branch, tag or commit after @`);
@@ -175,15 +186,17 @@ export async function exportGitTree(got: GitFetched, into: string, opts: Pick<Gi
 }
 
 /** A failed fetch, named: no such repository, a credential refused, or
- *  one that did not answer. */
-function fetchError(ref: string, url: string, err: unknown, opts: GitSourceOptions): Error {
+ *  one that did not answer. `secret`: the one that serves the host, if any. */
+function fetchError(ref: string, url: string, err: unknown, used: { auth?: GitAuth; secret?: string }): Error {
   const detail = err instanceof Error ? err.message : String(err);
-  const secret = opts.tokenSecret ?? DEFAULT_TOKEN_SECRET;
   if (/could not read Username|Authentication failed|terminal prompts disabled|returned error: 40[13]|Invalid username or (password|token)/i.test(detail)) {
+    const host = tokenHost(url);
     return new Error(
-      opts.token
-        ? `package_repo_denied: ${ref}: ${url} refused the token in ${secret} — it cannot read this repository, or the repository does not exist`
-        : `package_repo_denied: ${ref}: ${url} asked for credentials — the repository is private or does not exist; set the secret ${secret} to a token that can read it`,
+      used.auth
+        ? `package_repo_denied: ${ref}: ${url} refused the token in ${used.secret} — it cannot read this repository, or the repository does not exist`
+        : used.secret
+          ? `package_repo_denied: ${ref}: ${url} asked for credentials — the repository is private or does not exist; set the secret ${used.secret} to a token that can read it`
+          : `package_repo_denied: ${ref}: ${url} asked for credentials — the repository is private or does not exist, and no secret serves ${host ?? "it"} here${host ? ": a package declares the one that does (provides.git in its strut.yaml)" : " (a token goes over https alone)"}`,
     );
   }
   if (/repository .* not found|not found|does not appear to be a git repository|does not exist|Could not read from remote/i.test(detail)) {

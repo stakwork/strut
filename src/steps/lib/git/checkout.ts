@@ -13,6 +13,7 @@ import {
   dataDirOf,
   fetchCache,
   git,
+  gitAuthOf,
   gitOk,
   parseRepo,
   remoteDefaultBranch,
@@ -47,10 +48,12 @@ const EXAMPLE = `- id: checkout
  * bare bag with no `artifacts` capability falls back to
  * `<dataDir>/worktrees/<runId>/`.
  *
- * The token (the `tokenSecret` secret — the run's principal's when the
- * deployment has actor secrets) reaches git through the child env and an
- * inline credential helper only; the checkout stores no credential, so the
- * agent's bash cannot push from it. See `_shared.ts`.
+ * The token is the run's for the repository's host (`secrets.git`,
+ * src/git-hosts.ts: GITHUB_TOKEN for github.com, a package's
+ * `provides.git` for another host — the person's own first). It reaches
+ * git through the child env and an inline credential helper that answers
+ * for that host alone; the checkout stores no credential, so the agent's
+ * bash cannot push from it. See `_shared.ts`.
  *
  * With `workdir` the working copy is KEPT, inside a JOB's directory
  * (plans/jobs.md §2; jobs.ts): `<dataDir>/jobs/<name>/<repo>`, the same
@@ -67,15 +70,11 @@ export default defineStep({
     `In the working copy the remote's branches are origin/<name>, as in any clone; a branch made there is the copy's own. ` +
     `ref: a branch, tag or commit sha (default: the remote's default branch). ` +
     `workdir: the JOB whose directory keeps the working copy (usually "{{ $job }}") — the next run naming it finds the same path with every edit, untracked and ignored file in place (reused: true), which is how the files follow an agent's \`session\`. ` +
-    `Auth: the tokenSecret secret (default GITHUB_TOKEN), needed for private repos — the value only ever reaches git's child env, never the log or the checkout. ` +
+    `Auth: the run's token for the repository's host — the secret that serves it (GITHUB_TOKEN for github.com; a package's provides.git for another host), the person's own first — needed for private repos; it only ever reaches git's child env, for that host alone, never the log or the checkout. ` +
     `Output: { path, sha, ref, branch, repo, host, url, reused? } — branch is the remote's default branch.\n\n${EXAMPLE}`,
   input: z.object({
     repo: z.string().min(1).describe("repository URL, e.g. https://github.com/owner/repo — no credentials in the URL"),
     ref: z.string().min(1).optional().describe("branch, tag or commit sha to check out; omit for the remote's default branch"),
-    tokenSecret: z
-      .string()
-      .default("GITHUB_TOKEN")
-      .describe("NAME of the secret holding the token for clone/fetch (never a value). Private repos need it; public repos work without one"),
     workdir: z
       .string()
       .optional()
@@ -98,8 +97,7 @@ export default defineStep({
     const shell = shellOf(ctx);
     const dataDir = dataDirOf(ctx);
     const r = parseRepo(cfg.repo);
-    const secrets = (ctx.services as Partial<StrutCapabilities> | undefined)?.secrets;
-    const token = await secrets?.get(cfg.tokenSecret);
+    const auth = await gitAuthOf(ctx, r.url);
     const cacheDir = cachePath(dataDir, r);
     const kept = cfg.workdir;
     if (kept !== undefined) {
@@ -139,7 +137,7 @@ export default defineStep({
     const cancel = cancelSignal(ctx);
     try {
       return await withLock(cacheDir, async () => {
-        const o = { token, timeoutMs: cfg.timeoutMs, signal: cancel.signal };
+        const o = { ...(auth ? { auth } : {}), timeoutMs: cfg.timeoutMs, signal: cancel.signal };
         await fetchCache(shell, cacheDir, r.url, o);
         await ctx.control?.checkpoint();
 

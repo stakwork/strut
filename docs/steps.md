@@ -24,9 +24,14 @@ const token = cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
   through `secrets.get()` is scrubbed from recorded fixtures.
 - `github/fetch-pr` / `github/create-pr` (`GITHUB_TOKEN`) and `gdrive/export-file`
   (`GOOGLE_ACCESS_TOKEN` or `GOOGLE_SERVICE_ACCOUNT_JSON`) are the reference
-  examples. The `git/*` steps take it one step further: no `token` config at
-  all, only `tokenSecret` (a NAME, default `GITHUB_TOKEN`) — a step's config
-  is recorded on `step.start`, so only a name may ride in a workflow.
+  examples. The `git/*` steps take it one step further: no token or secret
+  name in their config at all. Each reads the run's token for its
+  repository's HOST (`gitAuthOf(ctx, url)` in `_shared.ts` → `secrets.git`,
+  src/git-hosts.ts): `GITHUB_TOKEN` for github.com, a package's
+  `provides.git` secret for another host, none for a host no secret serves
+  — so a token goes to its own host alone, whoever names the URL (a
+  workflow, an agent's tool call, a package's step). `tokenSecret` is gone
+  (2026-11-20); a config that still passes it is ignored.
 - The `sheets/*` steps read `cfg.serviceAccount ?? secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON")`
   (the gdrive/* secret) and `cfg.driveFolderId ?? secrets.get("GOOGLE_DRIVE_FOLDER_ID")`.
   Their missing- or invalid-credential error is written for the CALLING AGENT:
@@ -48,7 +53,7 @@ http/verify: the ENDPOINT instrument (plans/job-claims.md §4) — one request o
 
 ### `src/steps/lib/git/`
 
-git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos — the remote's branches fetched into `origin/*`, so a branch an agent makes in a working copy is its own and no other run's `fetch --prune` deletes it; a cache from before that, a `clone --bare` mirror, is moved over at its next checkout — + a detached worktree INSIDE THE RUN'S OWN DIRECTORY — <artifacts>/<runId>/<repo>, the dir job/dir hands a run with no job, so `cwd: "{{ dir.path }}"` holds the repositories with or without a job; <dataDir>/worktrees/<runId> only on a bare bag with no artifacts capability — removed by ctx.onRunEnd — or, with `workdir`, a KEPT one inside a job's directory, <dataDir>/jobs/<name>/<repo>, reused by the next run that names it, one run at a time (`job_busy:`), the repository removed when the job is idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
+git/remote-head (one `git ls-remote --symref <url> HEAD`, no clone, nothing written: `{ branch, head }`, the remote's default branch and its full commit; `remote_denied:` / `remote_not_found:` / `remote_unreachable:` / `remote_empty:`; what a list of repositories checks on a schedule, stadeum/code's `check`), git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos — the remote's branches fetched into `origin/*`, so a branch an agent makes in a working copy is its own and no other run's `fetch --prune` deletes it; a cache from before that, a `clone --bare` mirror, is moved over at its next checkout — + a detached worktree INSIDE THE RUN'S OWN DIRECTORY — <artifacts>/<runId>/<repo>, the dir job/dir hands a run with no job, so `cwd: "{{ dir.path }}"` holds the repositories with or without a job; <dataDir>/worktrees/<runId> only on a bare bag with no artifacts capability — removed by ctx.onRunEnd — or, with `workdir`, a KEPT one inside a job's directory, <dataDir>/jobs/<name>/<repo>, reused by the next run that names it, one run at a time (`job_busy:`), the repository removed when the job is idle; the token — the run's for the repository's host — reaches git through the child env + an inline credential helper that answers that host ONLY, so a redirect elsewhere gets nothing), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (the token for origin's host — `git remote get-url --push origin`; commit the index as the token's GitHub identity — GET /user via ctx.services.http, only with GitHub's own token, the one https://github.com gets, else the author is "strut" — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 
 ### `src/steps/lib/ssh/`
 

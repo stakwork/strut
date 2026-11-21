@@ -16,13 +16,17 @@ import gitDiff from "./steps/lib/git/diff.js";
 import gitApply from "./steps/lib/git/apply.js";
 import gitPush from "./steps/lib/git/push.js";
 import createPr, { openPullRequest, parseGithubRepo, type PullData, type PullsApi } from "./steps/lib/github/create-pr.js";
+import { gitSecretOf, STRUT_GIT_HOSTS } from "./git-hosts.js";
+import { serveGit, type GitServer } from "./test-util/git-remote.js";
 import pack from "./steps/core/pack.js";
 
 // ── the landing primitives, offline (plans/code-change.md §6) ──────────────
 //
-// A bare origin in a temp dir stands in for GitHub: checkout → apply → push
-// are the real steps over the real git; the commit lands in the bare repo
-// where the test can read it back. GitHub's REST API (the identity behind
+// A bare origin in a temp dir, served over http on this machine and private
+// (a request without the token is a 401), stands in for GitHub: the box
+// says GitHub's token, GITHUB_TOKEN, serves its host (src/git-hosts.ts).
+// checkout → apply → push are the real steps over the real git; the commit
+// lands in the bare repo where the test can read it back. GitHub's REST API (the identity behind
 // the commit, the pull request) is a fake `fetch` / a fake Octokit slice.
 
 const mk = (name: string, input: z.ZodTypeAny, ...steps: Step[]) => flow(name, { input, steps });
@@ -78,12 +82,15 @@ describe("git/apply + git/push", () => {
   let root: string;
   let bare: string;
   let originUrl: string;
+  /** The same origin as a file: URL, which needs no credential. */
+  let fileUrl: string;
+  let server: GitServer;
   let dataDir: string;
   let diff: string; // a change captured by git/diff against main
 
   before(async () => {
     root = await mkdtemp(join(tmpdir(), "strut-land-"));
-    bare = join(root, "origin.git");
+    bare = join(root, "acme", "origin.git");
     dataDir = join(root, "data");
     const seed = join(root, "seed");
     await mkdir(seed, { recursive: true });
@@ -94,7 +101,9 @@ describe("git/apply + git/push", () => {
     sh(["commit", "-q", "-m", "init"], seed);
     sh(["init", "-q", "--bare", "-b", "main", bare]);
     sh(["push", "-q", bare, "main"], seed);
-    originUrl = `file://${bare}`;
+    server = await serveGit(root, { token: TOKEN });
+    originUrl = `${server.url}/acme/origin.git`;
+    fileUrl = `file://${bare}`;
 
     // The diff a preview run would hand back (git/diff's bytes).
     const propose = mk(
@@ -104,18 +113,25 @@ describe("git/apply + git/push", () => {
       step("edit", "edit", { path: "{{ checkout.path }}", files: { "README.md": "# hello\nchanged\n", "new.txt": "brand new\n" } }),
       step("diff", "git/diff", { path: "{{ checkout.path }}" }),
     );
-    const res = await runWorkflow(propose, { repo: originUrl }, registry, { services: standardServices({ secretsSource: {}, dataDir }) });
+    const res = await runWorkflow(propose, { repo: fileUrl }, registry, { services: standardServices({ secretsSource: {}, dataDir }) });
     assert.equal(res.status, "success", JSON.stringify(res));
     diff = (res.output as { diff: string }).diff;
     assert.match(diff, /\+changed/);
   });
   after(async () => {
+    await server.close();
     await rm(root, { recursive: true, force: true });
   });
 
-  /** The standard bag over a fake GitHub; `token: null` = no secret at all. */
+  /** The standard bag over a fake GitHub, whose git host the box serves
+   *  with GITHUB_TOKEN; `token: null` = no secret at all. */
   const services = (fetchImpl?: FetchLike, token: string | null = TOKEN) =>
-    standardServices({ ...(fetchImpl ? { fetchImpl } : {}), secretsSource: token ? { GITHUB_TOKEN: token } : {}, dataDir });
+    standardServices({
+      ...(fetchImpl ? { fetchImpl } : {}),
+      secretsSource: token ? { GITHUB_TOKEN: token } : {},
+      dataDir,
+      gitSecret: gitSecretOf([...STRUT_GIT_HOSTS, { host: server.host, secret: "GITHUB_TOKEN" }]),
+    });
 
   const landFlow = (apply: Record<string, unknown> = {}, push: Record<string, unknown> = {}) =>
     mk(
@@ -167,8 +183,9 @@ describe("git/apply + git/push", () => {
     assert.equal(sh(["show", `${sha}:new.txt`], bare), "brand new");
     assert.equal(sh(["rev-parse", "main"], bare), sh(["rev-parse", "main"], bare), "main untouched");
 
-    // Identity came from GET /user with the token; the token is nowhere else.
+    // Identity came from GET /user with the token; git sent it to origin's host alone.
     assert.deepEqual(calls, [{ url: "https://api.github.com/user", auth: `Bearer ${TOKEN}` }]);
+    assert.ok(server.seen.some((r) => r.password === TOKEN), "the fetch and the push carried the token");
     assert.ok(!JSON.stringify(events).includes(TOKEN), "events");
     assert.ok(!JSON.stringify(res).includes(TOKEN), "result");
     assert.ok(!JSON.stringify(await store.getSummary("land", res.runId)).includes(TOKEN), "summary");
@@ -244,7 +261,7 @@ describe("git/apply + git/push", () => {
   });
 
   it("push without a token: the fallback author, a remote that needs no credential", async () => {
-    const res = await runWorkflow(landFlow(), { repo: originUrl, diff, branch: "jamie/notoken", title: "t" }, registry, {
+    const res = await runWorkflow(landFlow(), { repo: fileUrl, diff, branch: "jamie/notoken", title: "t" }, registry, {
       services: services(undefined, null),
     });
     assert.equal(res.status, "success", JSON.stringify(res));

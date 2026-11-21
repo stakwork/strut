@@ -121,11 +121,44 @@ describe("provides in strut.yaml", () => {
   });
 
   it("refuses an unknown key under provides, and a provided secret its steps may not read", async () => {
-    await assert.rejects(read(`${MANIFEST}  git:\n    - { host: example.com, secret: HOOK_TOKEN }\n`), /bad_package: strut\.yaml: provides: Unrecognized key/);
+    await assert.rejects(read(`${MANIFEST}  hooks: [events]\n`), /bad_package: strut\.yaml: provides: Unrecognized key/);
     await assert.rejects(
       read("package: acme/hooks\nversion: 0.1.0\nrequires:\n  secrets: [HOOK_TOKEN]\nprovides:\n  secrets: [HOOK_TOKEN, HOOK_SECRET]\n"),
       /bad_package: strut\.yaml: provides\.secrets: HOOK_SECRET is not in requires\.secrets or requires\.optional/,
     );
+  });
+});
+
+describe("provides.git and requires.git in strut.yaml", () => {
+  let root = "";
+  before(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-provides-git-"));
+  });
+  after(() => rm(root, { recursive: true, force: true }));
+  const read = async (manifest: string) => {
+    const dir = await mkdtemp(join(root, "p-"));
+    await mkdir(join(dir, "steps"));
+    await writeFile(join(dir, "strut.yaml"), manifest);
+    await writeFile(join(dir, "steps", "manage.ts"), MANAGE("acme/forge/manage"));
+    return readPackage(dir);
+  };
+  const FORGE = "package: acme/forge\nversion: 0.1.0\nrequires:\n  optional: [FORGE_TOKEN]\n";
+
+  it("names the hosts a token serves, each with a secret its steps may read; and says its steps read the run's token", async () => {
+    const got = await read(`${FORGE}  git: true\nprovides:\n  git:\n    - { host: git.acme.test, secret: FORGE_TOKEN }\n    - { host: "localhost:3000", secret: FORGE_TOKEN }\n`);
+    assert.deepEqual(got.manifest.provides, { git: [{ host: "git.acme.test", secret: "FORGE_TOKEN" }, { host: "localhost:3000", secret: "FORGE_TOKEN" }] });
+    assert.equal(got.manifest.requires?.git, true);
+  });
+
+  it("refuses a host that is not one, a secret its steps may not read, a host twice, and requires.git that is not true", async () => {
+    const provides = (entries: string) => read(`${FORGE}provides:\n  git:\n${entries}`);
+    for (const host of ["https://git.acme.test", "Git.Acme.Test", "git.acme.test/team", "git.acme.test:0", ""]) {
+      await assert.rejects(provides(`    - { host: "${host}", secret: FORGE_TOKEN }\n`), /bad_package: strut\.yaml: provides\.git\[0\]\.host: a host is a lowercase hostname/, host);
+    }
+    await assert.rejects(provides("    - { host: git.acme.test, secret: GITHUB_TOKEN }\n"), /provides\.git: GITHUB_TOKEN \(for git\.acme\.test\) is not in requires\.secrets or requires\.optional/);
+    await assert.rejects(provides("    - { host: git.acme.test, secret: FORGE_TOKEN }\n    - { host: git.acme.test, secret: FORGE_TOKEN }\n"), /provides\.git names git\.acme\.test twice/);
+    await assert.rejects(provides("    - { host: git.acme.test, secret: FORGE_TOKEN, scope: repo }\n"), /Unrecognized key/);
+    await assert.rejects(read(`${FORGE}  git: false\n`), /requires\.git is true or left out/);
   });
 });
 
@@ -140,7 +173,7 @@ describe("the scopes behind strut's own secrets capability", () => {
     const { cap, actors } = stores();
     assert.equal(cap.own, undefined);
     assert.equal(cap.deployment, undefined);
-    assert.deepEqual(Object.keys(cap.forPrincipal!("ada")).sort(), ["forPrincipal", "get"]);
+    assert.deepEqual(Object.keys(cap.forPrincipal!("ada")).sort(), ["forPrincipal", "get", "git"]);
     const base = secretScopesOf(cap)!;
     assert.ok(base.deployment && !base.own && !base.admin, "unbound: the deployment's, for no package");
     const bound = secretScopesOf(cap.forPrincipal!("ada"))!;

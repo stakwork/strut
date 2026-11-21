@@ -59,21 +59,20 @@ import { resolvePackage, type CachedPackage, type PackageCache, type ResolvedPac
 import { PACKAGE_NAME, type PackageInfo } from "./format.js";
 import type { InstallResult } from "./install.js";
 import { parsePkRef } from "./pk.js";
+import type { GitSecretOf } from "../git-hosts.js";
 
 export const SERVE_FILE = "serve.yaml";
 /** Where a served box keeps what it serves, beside `public.json`. */
 export const SERVE_STATE_FILE = "serve.json";
 
-/** What `STRUT_SERVE` (+ `STRUT_SERVE_URL`, `STRUT_SERVE_TOKEN_SECRET`) and `createStrut({ serve })` name. */
+/** What `STRUT_SERVE` (+ `STRUT_SERVE_URL`) and `createStrut({ serve })` name.
+ *  A `git+` ref is read with the token for its host (src/git-hosts.ts). */
 export interface ServeRef {
   /** `publisher/name` (through the followed indexes), `pk:<key>/<publisher>/<name>` with `url`,
    *  `git+https://host/org/repo[@<branch|tag|commit>][#<folder>]`, or `file:/path`. */
   ref: string;
   /** A `pk:` ref's catalog: the publisher's `…/packages/catalog?public=1`. */
   url?: string;
-  /** A `git+` ref's token: the NAME of the secret it is read with
-   *  (default GITHUB_TOKEN; plans/app-repos.md §4.7). A public repo needs none. */
-  tokenSecret?: string;
 }
 
 /** The ref from the options, else the environment; undefined when neither
@@ -87,14 +86,13 @@ export function serveRefOf(opt: ServeRef | false | undefined, env: Record<string
       ? {
           ref: fromEnv("STRUT_SERVE")!,
           ...(fromEnv("STRUT_SERVE_URL") ? { url: fromEnv("STRUT_SERVE_URL")! } : {}),
-          ...(fromEnv("STRUT_SERVE_TOKEN_SECRET") ? { tokenSecret: fromEnv("STRUT_SERVE_TOKEN_SECRET")! } : {}),
         }
       : undefined);
   if (!raw) return undefined;
   const label = opt ? "serve" : "STRUT_SERVE";
-  const problem = bootPackageProblem({ ref: raw.ref, ...(raw.url !== undefined ? { url: raw.url } : {}), ...(raw.tokenSecret !== undefined ? { tokenSecret: raw.tokenSecret } : {}) });
-  if (problem) throw new Error(`${label}: ${opt ? problem : problem.replace(/\burl\b/g, "STRUT_SERVE_URL").replace(/\btokenSecret\b/g, "STRUT_SERVE_TOKEN_SECRET")}`);
-  return { ref: raw.ref, ...(raw.url ? { url: raw.url } : {}), ...(raw.tokenSecret ? { tokenSecret: raw.tokenSecret } : {}) };
+  const problem = bootPackageProblem({ ref: raw.ref, ...(raw.url !== undefined ? { url: raw.url } : {}) });
+  if (problem) throw new Error(`${label}: ${opt ? problem : problem.replace(/\burl\b/g, "STRUT_SERVE_URL")}`);
+  return { ref: raw.ref, ...(raw.url ? { url: raw.url } : {}) };
 }
 
 /** How often a `git+` ref is fetched, in minutes: `STRUT_SERVE_POLL_MINUTES`,
@@ -341,8 +339,6 @@ export interface ServeState {
 export interface ServeStatus extends ServeState {
   ref: string;
   url?: string;
-  /** The secret a `git+` ref is read with (a NAME). */
-  tokenSecret?: string;
   deploying: boolean;
   /** A `POST /serve/sync` waiting for its minute: when it fetches. */
   pingAt?: string;
@@ -369,8 +365,10 @@ export interface ServeDeps {
   resolveName(name: string): Promise<{ ref: string; urls: string[] }>;
   /** One install through the distro's door: `commit` is the one a `git+`
    *  ref's digest was read at, for its versions' `upstream`. */
-  install(ref: string, opts: { url?: string; digest: string; tokenSecret?: string; commit?: string }): Promise<InstallResult>;
-  /** A `git+` ref's token: reads a secret by name. */
+  install(ref: string, opts: { url?: string; digest: string; commit?: string }): Promise<InstallResult>;
+  /** A `git+` ref's token: which secret serves its host (the box's map,
+   *  src/git-hosts.ts; default strut's own), and the read by name. */
+  gitSecret?: GitSecretOf;
   secret?(name: string): Promise<string | undefined>;
   /** What a `git+` ref runs git with (default: a local shell). */
   shell?: ShellCapability;
@@ -434,13 +432,13 @@ export async function createServe(deps: ServeDeps): Promise<ServeService> {
 
   /** The ref into the cache: its directory and what the install takes. */
   const fetchRef = async (): Promise<{ info: ResolvedPackage | CachedPackage; ref: string; url?: string }> => {
-    const { ref, url, tokenSecret } = deps.serve;
+    const { ref, url } = deps.serve;
     const opts = { cache: deps.cache, ...(deps.fetch ? { fetch: deps.fetch } : {}) };
     if (ref.startsWith("git+")) {
       // The commit serving still the branch's: nothing to read out.
       const serving = state.serving;
       const known = serving?.commit && serving.ref === ref ? { known: { commit: serving.commit, digest: serving.digest } } : {};
-      const git = { dataDir: deps.dataDir, ...(tokenSecret ? { tokenSecret } : {}), ...(deps.secret ? { secret: deps.secret } : {}), ...(deps.shell ? { shell: deps.shell } : {}), ...known };
+      const git = { dataDir: deps.dataDir, ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}), ...(deps.secret ? { secret: deps.secret } : {}), ...(deps.shell ? { shell: deps.shell } : {}), ...known };
       return { info: await resolvePackage(ref, { ...opts, ...git }), ref };
     }
     if (!PACKAGE_NAME.test(ref)) return { info: await resolvePackage(ref, { ...opts, ...(url ? { url } : {}) }), ref, ...(url ? { url } : {}) };
@@ -479,8 +477,7 @@ export async function createServe(deps: ServeDeps): Promise<ServeService> {
       }
       // A bad serve.yaml stops here, before anything is written.
       const plan = await readServePlan(info);
-      const { tokenSecret } = deps.serve;
-      const result = await deps.install(ref, { ...(url ? { url } : {}), digest: info.digest, ...(tokenSecret ? { tokenSecret } : {}), ...(commit ? { commit } : {}) });
+      const result = await deps.install(ref, { ...(url ? { url } : {}), digest: info.digest, ...(commit ? { commit } : {}) });
       const report = result.packages.find((p) => p.package === info.manifest.package);
       const written = report?.items.find((i) => i.kind === "app" && i.name === plan.app)?.version;
       const appVersion = written ?? (await deps.workspace.getApp(plan.app))?.active;
@@ -579,7 +576,6 @@ export async function createServe(deps: ServeDeps): Promise<ServeService> {
     status: () => ({
       ref: deps.serve.ref,
       ...(deps.serve.url ? { url: deps.serve.url } : {}),
-      ...(deps.serve.tokenSecret ? { tokenSecret: deps.serve.tokenSecret } : {}),
       ...state,
       deploying,
       ...(pingAt !== undefined ? { pingAt: new Date(pingAt).toISOString() } : {}),

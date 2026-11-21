@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { cancelSignal, git, gitOk, shellOf, withLock, type GitCtx } from "./_shared.js";
+import { cancelSignal, git, gitAuth, gitOk, shellOf, withLock, type GitCtx } from "./_shared.js";
 
 const EXAMPLE = `- id: push
   type: git/push
@@ -21,12 +21,14 @@ const AUTH_FAIL_RE = /\b(401|403)\b|authentication failed|permission .*denied|co
 
 /**
  * Commit the index as the token's GitHub identity and push HEAD to a new
- * branch (plans/code-change.md §6). The token (the `tokenSecret` secret —
- * the run's principal's when the deployment has actor secrets) names the
+ * branch (plans/code-change.md §6). The token is the run's for origin's
+ * host (`secrets.git`, src/git-hosts.ts — the person's own first). When it
+ * is GitHub's own token (the one `https://github.com` gets), it names the
  * author: `GET /user` → `login <id>+<login>@users.noreply.github.com`, so
- * the commit and the PR opened on it are the user's. It reaches git the
- * way `git/checkout` hands it over: the child env and an inline credential
- * helper, never an argument, URL or output.
+ * the commit and the PR opened on it are the user's; a token for another
+ * host is never sent to GitHub, and the author is then "strut". It reaches
+ * git the way `git/checkout` hands it over: the child env and an inline
+ * credential helper for that host alone, never an argument, URL or output.
  *
  * The working copy is a `git/checkout` worktree, removed when the run ends
  * — afterwards the branch exists only on the remote, by design.
@@ -35,7 +37,7 @@ export default defineStep({
   type: "git/push",
   description:
     `Commit everything staged in a working copy (git/apply stages) as the token's GitHub identity and push HEAD to a new branch on origin — never --force. ` +
-    `Auth: the tokenSecret secret (default GITHUB_TOKEN); its owner (GET /user) is the commit author, so the change is the user's. Without a token the author is "strut" and only a remote that needs no credential (a local repository) accepts the push. ` +
+    `Auth: the run's token for origin's host (GITHUB_TOKEN for github.com; a package's provides.git for another host); when it is GitHub's, its owner (GET /user) is the commit author, so the change is the user's. Otherwise the author is "strut", and without a token only a remote that needs no credential (a local repository) accepts the push. ` +
     `Fails with "push_rejected: …" when the remote refuses the push (non-fast-forward, protected branch, remote error) and "no_push_permission: …" on 401/403 from git or GitHub; nothing staged is a plain error. ` +
     `The working copy is removed at run end (git/checkout), so afterwards the branch lives only on the remote. ` +
     `Output: { branch, sha, login }.\n\n${EXAMPLE}`,
@@ -43,10 +45,6 @@ export default defineStep({
     path: z.string().min(1).describe("the working copy — a git/checkout step's `path`, with the change staged (git/apply)"),
     branch: z.string().min(1).describe("the branch to create on origin, e.g. jamie/abc12345-000123"),
     message: z.string().min(1).describe("the commit message (first line = title)"),
-    tokenSecret: z
-      .string()
-      .default("GITHUB_TOKEN")
-      .describe("NAME of the secret holding the token (never a value): the commit author and the push credential"),
     timeoutMs: z.number().int().positive().default(300_000).describe("per git command (default 5 min)"),
   }),
   output: z.object({
@@ -57,7 +55,6 @@ export default defineStep({
   async run(cfg, ctx: GitCtx) {
     const services = ctx.services as Partial<StrutCapabilities> | undefined;
     const shell = shellOf(ctx);
-    const token = await services?.secrets?.get(cfg.tokenSecret);
     const message = cfg.message.trim();
     if (!message) throw new Error("git/push: the commit message is empty");
 
@@ -72,19 +69,25 @@ export default defineStep({
       if (staged.code === 0) throw new Error("git/push: nothing is staged in the working copy — git/apply (or git add) stages the change to commit");
       if (staged.code !== 1) throw new Error(`git diff --cached failed: ${(staged.stderr || staged.stdout).trim().slice(-2000)}`);
 
+      // The token for where the push goes: origin's host, and only there.
+      const origin = (await gitOk(shell, ["remote", "get-url", "--push", "origin"], o)).trim();
+      const auth = await gitAuth(services?.secrets, origin);
+      // GitHub's own token, which alone may ask GitHub who it is.
+      const github = auth && auth.token === (await gitAuth(services?.secrets, "https://github.com"))?.token ? auth.token : undefined;
+
       // The author: the token's GitHub identity. Through the http capability,
       // so the call is cassette-recordable and the token scrubbed from it.
       let login = "strut";
       let email = "strut@users.noreply.github.com";
-      if (token) {
-        const http = services?.http;
+      if (github) {
+        const http = auth?.http ?? services?.http;
         if (!http) throw new Error("git/push: no http capability to resolve the token's identity");
         const res = await http("https://api.github.com/user", {
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "strut" },
+          headers: { authorization: `Bearer ${github}`, accept: "application/vnd.github+json", "user-agent": "strut" },
           timeout: 30_000,
         });
         if (res.status === 401 || res.status === 403) {
-          throw new Error(`no_push_permission: GitHub rejected the ${cfg.tokenSecret} token (HTTP ${res.status})`);
+          throw new Error(`no_push_permission: GitHub rejected the run's token for github.com (HTTP ${res.status})`);
         }
         const user = res.body as Partial<GithubUser> | undefined;
         if (!res.ok || typeof user?.login !== "string" || typeof user.id !== "number") {
@@ -113,7 +116,7 @@ export default defineStep({
       // copy of the branch), so hold the cache's lock like checkout does.
       const common = resolve(cfg.path, (await gitOk(shell, ["rev-parse", "--git-common-dir"], o)).trim());
       await withLock(common, async () => {
-        const push = await git(shell, ["push", "--quiet", "origin", `HEAD:refs/heads/${cfg.branch}`], { ...o, token });
+        const push = await git(shell, ["push", "--quiet", "origin", `HEAD:refs/heads/${cfg.branch}`], { ...o, ...(auth ? { auth } : {}) });
         if (push.code !== 0) {
           const detail = (push.stderr || push.stdout).trim().slice(-2000);
           const why = push.timedOut ? "timed out" : detail || `exit ${push.code ?? push.signal}`;

@@ -373,7 +373,7 @@ describe("public tools", () => {
 
   it("a step whose config names a secret is never callable: refused at the save, and a config naming one is 400", async () => {
     const { strut, call } = await boot([{ kind: "step", name: "tool/free" }]);
-    for (const name of ["tool/named", "http/verify", "git/checkout", "browser/open"]) {
+    for (const name of ["tool/named", "http/verify", "browser/open"]) {
       const put = await strut.app.request("/public-view", { method: "PUT", headers: auth, body: JSON.stringify({ runnable: [{ kind: "step", name }] }) });
       assert.equal(put.status, 400, name);
       assert.match(((await put.json()) as { error: string }).error, /takes a secret's name in its config/, name);

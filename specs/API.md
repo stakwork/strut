@@ -3386,8 +3386,10 @@ enforced — `requires?`, `job?: { tools, approve? }` — steps of the package
 the `job` workflow's agent may call, by their names inside it or globs over
 them, and the ones among them that ask first; a name that matches none of
 its steps refuses the package, `plans/followed-repos.md` §3, `provides?: {
-secrets? }` — the secrets its steps manage, "Secrets a package provides"
-below, `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
+secrets?, git? }` — the secrets its steps manage, "Secrets a package
+provides" below, and the hosts a token it holds serves, "Git credentials
+by host" below; `requires.git: true` — its steps read the run's token for a
+repository's host themselves, the same section — `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
 the package strut runs on its own, "Schedules a package ships" below) and
 the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
@@ -3406,7 +3408,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings, leftToInstaller, suggested }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. Both pack the package as the archive route would and read it back as a fetching strut does: one past what a strut fetches (10,000 files, 256 MB unpacked, 64 MB as `.tar.gz`) is 400 `package_unarchivable: …`, and nothing is kept. A person's act like install: full scope, one at a time with install and uninstall |
-| POST   | `/packages/install` | `{ ref, digest?, url?, tokenSecret?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — `git+https://host/org/repo[@<branch\|tag\|commit>][#<folder>]`, a git repository read with the secret `tokenSecret` names (default `GITHUB_TOKEN`; only with `git+`) — see "Installing from a repository" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
+| POST   | `/packages/install` | `{ ref, digest?, url?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — `git+https://host/org/repo[@<branch\|tag\|commit>][#<folder>]`, a git repository read with the token for its host ("Git credentials by host" below; a `tokenSecret` is 400, `tokenSecret is gone: …`) — see "Installing from a repository" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | GET    | `/packages/installs` | `{ installs: InstallState[] }` (`src/packages/progress.ts`): every install as it goes, whichever door started it — this route with or without `wait`, a `package/install` proposal's apply, the boot list (`STRUT_PACKAGES`), a subscription — newest first, and the last 20 that ended within the hour. In memory: a restart forgets them |
 | GET    | `/packages/installs/:id` | One `InstallState`; 404 for an id this process does not hold |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
@@ -3423,8 +3425,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
-| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The request's actor, when it has one, is the subscription's PERSON (`actor` on the record; "Whose a subscription is", below); a later `PUT` records its own. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name, an `actor` in the body |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of the secret that serves its host (`tokenSecret`; absent when none does, "Git credentials by host" below) |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The request's actor, when it has one, is the subscription's PERSON (`actor` on the record; "Whose a subscription is", below); a later `PUT` records its own. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, any `tokenSecret` (gone: a branch is read with the token for its host), an `actor` in the body |
 | POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
@@ -3458,7 +3460,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 
 **Installed at first boot.** `STRUT_PACKAGES` (and `createStrut({
 packages })`) lists packages a box should come up with: a JSON list of `{
-ref, url?, digest?, tokenSecret? }`, the fields `POST /packages/install` takes. Once the
+ref, url?, digest? }`, the fields `POST /packages/install` takes (a
+`tokenSecret` from before 2026-11-20 is left unread, so the box boots). Once the
 boot is done, each listed package not installed here (by its name, at any
 digest; a `git+` ref's name is known once fetched, so it is here when an
 installed package records that very ref) is installed through the person's door, one at a time, in order,
@@ -3835,12 +3838,64 @@ async run(_cfg, ctx) {
 }
 ```
 
+**Git credentials by host** (`src/git-hosts.ts`; stadeum `plans/software.md`
+§5, item 9). Which secret holds the token for a repository is the box's
+map, by HOST: strut's own entry, `github.com` → `GITHUB_TOKEN`, and each
+installed package's `provides.git`:
+
+```yaml
+# strut.yaml of a forge's package
+requires:
+  optional: [GITLAB_TOKEN]                        # a person's own, written by the connect seam
+provides:
+  git:
+    - { host: gitlab.com, secret: GITLAB_TOKEN }  # a lowercase host, :port when not the default
+```
+
+A host is served by one secret: an install that would serve one with a
+second — github.com's included — is `409 package_conflict: … a host is
+served by one secret`; naming the same secret again is fine. The map is
+made again after every install, update, uninstall and sync, from the
+packages that still hold their own items. A run's token for a repository
+is that secret's value read as the run reads any secret — its person's
+own, then the deployment's — for `https://<host>/…`, or `http://` to this
+machine (`localhost`, `127.0.0.1`, `[::1]`). A host no secret serves, a
+`file:` repository and plain http to another machine get none. Strut's git
+steps (`git/checkout`, `git/push`, `git/remote-head`), `git+` installs,
+subscriptions (a person's: their own value alone), serve mode,
+`STRUT_PACKAGES` and the repo door all read it, and hand git the token for
+that host alone: git's credential helper answers no other host, so a
+redirect elsewhere gets nothing. No caller names the secret any more: a
+`tokenSecret` (gone 2026-11-20) is 400 at a route.
+
+A step reads it as `ctx.services.secrets.git(url)`. A package's step holds
+that only when its package says `requires: { git: true }` — shown on the
+store page and on `GET /packages` (`git: true`) — and then for any host the
+box serves; it still reads by name only what it declares. Without it the
+step never sees a token, and strut's own git steps it calls with its ctx
+still use the run's:
+
+```ts
+// stadeum/code: names no forge, requires no secret — the run's token is used, never seen
+const { branch, head } = await ctx.registry["git/remote-head"]!.run({ repo: url, timeoutMs: 30_000 }, ctx);
+// stadeum/pods (requires.git: true): hands the token to git inside a pod, for that host alone
+const token = await ctx.services.secrets.git?.(url);
+```
+
+`git/remote-head` `{ repo, timeoutMs? }` → `{ branch, head }`: what `git
+ls-remote --symref <repo> HEAD` says — the remote's default branch and the
+full commit it points at — in one request, with no clone and nothing
+written. It fails with `remote_denied:` (a credential wanted, or the token
+refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
+(no commit yet), and never prints or returns the token.
+
 ```jsonc
 // InstalledPackage
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
-  // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one
+  // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
+  // "git": true,                     // requires.git: its steps read the run's token for a repository's host
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
@@ -4029,26 +4084,27 @@ record are other places it comes from, and neither changes a check.
 
 **Installing from a repository** (`plans/marketplace.md` §5,
 `plans/app-repos.md` §2; `src/packages/git-source.ts`). `POST
-/packages/install { ref: "git+https://github.com/acme/linear@main#strut",
-tokenSecret? }` reads a package out of a git repository: any http(s) host
+/packages/install { ref: "git+https://github.com/acme/linear@main#strut" }`
+reads a package out of a git repository: any http(s) host
 or `file://` (no credentials in the URL, no ssh), at a branch, a tag or a
 commit (the remote's default branch with no `@`), at the repository's root
 or in the folder `#<folder>` names. The repository is fetched into the same
 bare cache `git/checkout` keeps (`<dataDir>/repos/`); the ref is the
 remote's branch of that name, then a tag, then a commit; the tree at that
 commit is read out, hashed, and kept by its digest like any package. A
-private repository is read with the token in the secret `tokenSecret`
-names (default `GITHUB_TOKEN`; the installing person's own first where
-actor secrets are kept): it reaches git through its environment alone,
+private repository is read with the token for its host — the secret that
+serves the host ("Git credentials by host" above: `GITHUB_TOKEN` for
+github.com), the installing person's own first where actor secrets are
+kept: it reaches git through its environment alone, for that host alone,
 never a URL, an argument, an error or a record, and the repository's ACL
 decides. The install records on every version it writes the ref as given
 (`upstream.source.ref`, what an update re-resolves: a branch moves, a tag
 does not) and the commit it resolved (`upstream.commit`); `GET /packages`
 and the install report show `commit`. A `requires.packages` entry may name
 a `git+` source; it is taken from the cache when it holds the pinned
-digest, else read — with the token only when it is on the same origin as a
-ref the person named, so a package never sends this strut's token to a
-host of its choosing. Refusals:
+digest, else read — with a token only when it is on the host of a ref the
+person named, so a package never spends a token on a host of its
+choosing. Refusals:
 
 | Code | Status | |
 | --- | --- | --- |
@@ -4070,9 +4126,9 @@ proposal only an admin accepts (below).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, tokenSecret?, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `tokenSecret` the NAME of the secret its token is read from (never a value), `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
-| POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path?, tokenSecret? }` → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
-| POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path?, tokenSecret? }` → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
+| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
+| POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
+| POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
 | GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
 | GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into the working copy and staged → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
 | POST   | `/packages/repos/:publisher/:name/commit` | **Commit**: `{ message, branch?, pr? }` → 201 `CommitResult` `{ package, committed: true, commit, branch, pushed, pr?, prSkipped?, diff, stamped, install }`, or 200 `{ committed: false, … }` when nothing changed here and nothing waits to be pushed. Below. 409 `package_repo_merging` while a pull's merge waits, `push_rejected` when the remote refused the push (a straight push to a branch that moved: Pull, then Commit again); 403 `no_push_permission` |
@@ -4140,9 +4196,10 @@ proposal only an admin accepts (below).
   `acme/moon/score`) are not the package's and stay as they are; a package
   of the same name published from this strut is a catalog's and is not
   read.
-- **The token** is read from the secret `tokenSecret` names (default
-  `GITHUB_TOKEN`), the person's own first where actor secrets are kept, and
-  reaches git only through its environment (`src/steps/lib/git/_shared.ts`);
+- **The token** is the one for the repository's host ("Git credentials by
+  host" above: `GITHUB_TOKEN` for github.com), the person's own first where
+  actor secrets are kept, and reaches git only through its environment, for
+  that host alone (`src/steps/lib/git/_shared.ts`);
   it is masked out of every error and never on file.
 - **`package/commit`** (`src/steps/lib/package/commit.ts`): `{ package,
   message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted
@@ -4228,8 +4285,8 @@ A subscription may follow a **git branch** instead (`plans/followed-repos.md`
 ```jsonc
 // PUT /packages/subscriptions/pods — a host's first boot
 {
-  "ref": "git+https://github.com/stakwork/pods@stable#package",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
-  "tokenSecret": "GITHUB_TOKEN"   // optional: the NAME of the secret the repo is read with; a public repo needs none
+  "ref": "git+https://github.com/stakwork/pods@stable#package"  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
+  // read with the token for its host (GITHUB_TOKEN for github.com); a public repo needs none
 }
 ```
 
@@ -4252,7 +4309,7 @@ subscription follows a branch, not a tag or a commit`.
 ```jsonc
 // GET /packages/subscriptions → subscriptions[]
 {
-  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",   // the secret that serves github.com
   "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…",   // no seq: a branch has no catalog
                "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
   "checkedAt": "…", "error": "…", "warnings": [],
@@ -4284,9 +4341,9 @@ body never names one (400). Every release such a subscription applies goes
 in as that person's own install would: they own each workflow it adds, so
 its package's schedules run as them (`runsAs`, "Automations" above), and a
 workflow already here keeps its owner, an admin's choice included. Its git
-branch is read with that person's OWN secret (`PUT
-/actors/:actor/secrets/:name`, the name `tokenSecret` gives) and nothing
-else: a deployment value of the same name is never sent, and a private
+branch is read with that person's OWN value of the secret that serves its
+host (`PUT /actors/:actor/secrets/:name`, the name the `GET` shows as
+`tokenSecret`) and nothing else: a deployment value of the same name is never sent, and a private
 repository with none fails with `package_repo_denied: … — this subscription
 is <actor>'s, and is read with their own <NAME> alone (never the
 deployment's), which they have not set: …`. To hand a subscription to
@@ -5783,14 +5840,15 @@ payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).
 
 ## 21. Serve mode — one package's app at a domain (`plans/app-repos.md` §4)
 
-A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url?,
-tokenSecret? } })`) is the box one package's app is served from (`src/packages/serve.ts`;
+A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url? }
+})`) is the box one package's app is served from (`src/packages/serve.ts`;
 `deploy/app/` runs one). The ref is one the install takes: a bare
 `publisher/name` through the followed indexes, `pk:<key>/<publisher>/<name>`
 with `STRUT_SERVE_URL` (the publisher's `…/packages/catalog?public=1`),
 `git+https://host/org/repo@<branch|tag|commit>[#<folder>]` (§16,
-"Installing from a repository"; a private one read with the secret
-`STRUT_SERVE_TOKEN_SECRET` names, default `GITHUB_TOKEN`), or `file:/path`.
+"Installing from a repository"; a private one read with the token for its
+host, "Git credentials by host"; `STRUT_SERVE_TOKEN_SECRET` is no longer
+read), or `file:/path`.
 At boot, in the background, the box DEPLOYS the ref:
 
 1. the ref into the package cache;
@@ -5868,7 +5926,6 @@ any strut with a public view.
 {
   "ref": "pk:fesbp7why3…/acme/moonlander",
   "url": "https://publisher.example.com/packages/catalog?public=1",
-  // "tokenSecret": "MOONLANDER_TOKEN", // a git+ ref's secret, by NAME
   "serving": {                          // absent before the first deploy
     "package": "acme/moonlander", "version": "1.2.0", "digest": "sha256:…",
     "ref": "pk:…",                      // what it was deployed from

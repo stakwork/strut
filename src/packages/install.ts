@@ -72,13 +72,15 @@ import { contentHash, treeHash } from "../version.js";
 import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream, type VersionSource } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
-import { gitOrigin } from "./git-source.js";
+import { gitHostOfRef } from "./git-source.js";
+import { gitHostProblems, STRUT_GIT_HOSTS, type GitSecretOf } from "../git-hosts.js";
 import { readableSecrets, type PackageItem } from "./format.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
   conceptHash,
   conceptPrefix,
+  holdsItsOwn,
   listInstalledPackages,
   packageConcepts,
   type InstalledDeps,
@@ -113,6 +115,9 @@ export interface PackageDeps extends InstalledDeps {
   /** Where a `git+` resolve keeps its bare caches (`<dataDir>/repos/`);
    *  default the package cache's parent. */
   dataDir?: string;
+  /** Which secret serves a `git+` ref's host (src/git-hosts.ts): the box's
+   *  map; default strut's own. */
+  gitSecret?: GitSecretOf;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
@@ -145,10 +150,6 @@ export interface InstallOptions {
   digest?: string;
   /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
   url?: string;
-  /** A `git+` ref's token: the NAME of the secret holding it (default
-   *  GITHUB_TOKEN), read as `actor` when one is given. The packages it
-   *  requires are read with the same one. */
-  tokenSecret?: string;
   /** The commit a `git+` ref's `digest` was read at, by a caller that
    *  resolved it already (serve mode): recorded as it is when the cache
    *  holds the digest, so nothing is fetched twice. */
@@ -228,7 +229,7 @@ export async function installPackages(deps: PackageDeps, refs: PackageRef[], opt
   const door = opts.door ?? "install";
   opts.progress?.({ phase: "resolving" });
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, refs, before, door, { ...(opts.tokenSecret ? { tokenSecret: opts.tokenSecret } : {}), ...(opts.actor ? { actor: opts.actor } : {}) });
+  const members = await resolveSet(deps, refs, before, door, opts.actor);
   const registry = await deps.getRegistry();
   // The apps are copied out of the cache to build (a build writes `dist/`),
   // and the steps to a trial directory to load.
@@ -286,6 +287,7 @@ async function installSet(
     digest: m.info.digest,
     source: m.source,
     secrets: readableSecrets(m.info.manifest),
+    ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
     ...(m.info.manifest.provides ? { provides: m.info.manifest.provides } : {}),
     at,
   });
@@ -562,24 +564,25 @@ async function resolveSet(
   refs: PackageRef[],
   installed: Map<string, InstalledPackage>,
   door: PackageDoor,
-  as: { tokenSecret?: string; actor?: string } = {},
+  actor?: string,
 ): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
-  // A `git+` ref's token, read as the actor when the deployment keeps
-  // per-actor secrets (theirs first, then the deployment's).
-  const secrets = as.actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(as.actor) : deps.secrets;
+  // A `git+` ref's token: the one for its host (src/git-hosts.ts), read as
+  // the actor when the deployment keeps per-actor secrets (theirs first,
+  // then the deployment's).
+  const secrets = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
   const git = {
-    ...(as.tokenSecret ? { tokenSecret: as.tokenSecret } : {}),
+    ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}),
     ...(deps.shell ? { shell: deps.shell } : {}),
     ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
   };
   const secret = secrets ? { secret: (name: string) => secrets.get(name) } : {};
-  // The token goes only where a person pointed it: the refs asked for, and a
-  // requirement on the same origin as one of them — never a host a
-  // package's requirement names, so a package cannot send it elsewhere.
-  const tokenOrigins = new Set(refs.map((r) => gitOrigin(r.ref)).filter((o): o is string => !!o));
-  const tokenFor = (ref: string, asked: boolean) => (asked || tokenOrigins.has(gitOrigin(ref) ?? "") ? secret : {});
+  // A token goes only where a person pointed it: the refs asked for, and a
+  // requirement on the same host as one of them — never a host only a
+  // package's requirement names, so a package cannot spend another token.
+  const tokenHosts = new Set(refs.map((r) => gitHostOfRef(r.ref)).filter((h): h is string => !!h));
+  const tokenFor = (ref: string, asked: boolean) => (asked || tokenHosts.has(gitHostOfRef(ref) ?? "") ? secret : {});
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string): Promise<void> => {
     const asked = !expected;
     // A `pk:` ref is always resolved: the catalog is the key's word on the
@@ -730,6 +733,16 @@ async function checkSet(
       }
     }
   }
+  // One secret for each git host on the box (src/git-hosts.ts): strut's
+  // own, the packages here the set does not replace, then the set's.
+  const inSet = new Set(members.map((m) => m.info.manifest.package));
+  problems.push(
+    ...gitHostProblems([
+      { by: "strut", git: STRUT_GIT_HOSTS },
+      ...[...installed.values()].filter((p) => !inSet.has(p.package) && holdsItsOwn(p)).map((p) => ({ by: p.package, ...(p.provides?.git ? { git: p.provides.git } : {}) })),
+      ...members.map((m) => ({ by: m.info.manifest.package, ...(m.info.manifest.provides?.git ? { git: m.info.manifest.provides.git } : {}) })),
+    ]),
+  );
   if (problems.length) throw conflict(problems.join("; "));
 
   // The files: what each workflow names must be here or in the set; claims parse.

@@ -126,6 +126,10 @@ after(() => {
   }
 });
 
+/** Where the fixture's package lives: GitHub, whose token is the
+ *  person's own GITHUB_TOKEN (strut's own entry, src/git-hosts.ts). */
+const REMOTE = "https://github.com/acme/code";
+
 describe("work nobody launched runs as a person", () => {
   let root: string;
   let repo: string;
@@ -136,14 +140,16 @@ describe("work nobody launched runs as a person", () => {
   /** The token each fetch of the repository was sent (undefined: none). */
   let fetched: Array<string | undefined>;
 
-  /** git, with the fixture repository private: a fetch with no token is refused. */
+  /** git, with the fixture repository private on "github.com": a fetch
+   *  with no token is refused, and the URL reads the local repository. */
   const shell = async (req: ProcessRequest): Promise<ProcessResult> => {
-    if (req.cmd === "git" && req.args?.includes("fetch")) {
+    if (req.cmd !== "git") return runProcess(req);
+    if (req.args?.includes("fetch")) {
       const token = req.env?.["STRUT_GIT_TOKEN"];
       fetched.push(token);
       if (!token) return { ...(await runProcess({ cmd: "false" })), code: 128, stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" };
     }
-    return runProcess(req);
+    return runProcess({ ...req, args: ["-c", `url.${pathToFileURL(repo).href}.insteadOf=${REMOTE}`, ...(req.args ?? [])] });
   };
   const release = (version: string, extra?: Record<string, string>) => {
     return (async () => {
@@ -162,7 +168,7 @@ describe("work nobody launched runs as a person", () => {
     await mkdir(repo, { recursive: true });
     git(repo, "-c", "init.defaultBranch=stable", "init", "--quiet");
     await release("0.1.0");
-    ref = `git+${pathToFileURL(repo).href}@stable#pkg`;
+    ref = `git+${REMOTE}@stable#pkg`;
     fetched = [];
     ws = new WorkspaceManager(join(root, "box"));
     store = new MemoryRunStore();

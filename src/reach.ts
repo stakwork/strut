@@ -5,7 +5,9 @@
  * nothing here runs and every workflow and step behaves as before.
  *
  * Any strut code can read any secret by name: a step's `secrets.get`, an
- * `agent` / `exec` step's `secretsEnv`, a `git/*` step's `tokenSecret`. That
+ * `agent` / `exec` step's `secretsEnv`, `browser/open`'s `storageStateSecret`.
+ * (A `git/*` step names none: it reads the run's token for the repository's
+ * host, src/git-hosts.ts, as a `github/*` step reads GITHUB_TOKEN.) That
  * is fine for code a person wrote. For what the meta surface publishes
  * (a version it wrote, `source: agent` — the workflow is then stamped
  * `publisher: ai`) the host names an ALLOW list instead:
@@ -71,9 +73,9 @@ export function reachPolicyOf(services: unknown): ReachPolicy | undefined {
 }
 
 /** The secret NAMES a step's config hands it: `secretsEnv` and `sshKeys`
- *  entries and a `tokenSecret`. With `def`, a `tokenSecret` the config
- *  leaves out is the schema's default (`git/*`: GITHUB_TOKEN); a parsed
- *  config has it already. */
+ *  entries and a `tokenSecret` or `storageStateSecret`. With `def`, a name
+ *  field the config leaves out is the schema's default; a parsed config has
+ *  it already. */
 export function secretNamesIn(cfg: unknown, def?: AnyStepDef): unknown[] {
   const c = (cfg ?? {}) as Record<string, unknown>;
   const out: unknown[] = [];
@@ -108,7 +110,8 @@ export function secretNamesIn(cfg: unknown, def?: AnyStepDef): unknown[] {
  *  step's `secretsEnv`, the `agent` step's `sshKeys`. */
 const SECRET_LIST_FIELDS = ["secretsEnv", "sshKeys"] as const;
 
-/** Config fields that hold ONE secret's name (`git/*`, `browser/open`). With
+/** Config fields that hold ONE secret's name (`browser/open`'s, and
+ *  `tokenSecret`, the name a step of a workspace's own may give one). With
  *  the lists above and `http/verify`'s `secrets`, every way a step's config
  *  names a secret today; a new one is added here. */
 const SECRET_NAME_FIELDS = ["tokenSecret", "storageStateSecret"] as const;

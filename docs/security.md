@@ -530,7 +530,7 @@ instead of baked into env at deploy time.
   a package's work launches nothing and says what to do (docs/automations.md).
   A subscription a person makes is theirs (`actor`, the `PUT`'s; never a
   field of the body): it installs as them, and its git branch is read with
-  their OWN actor secret alone — a deployment value of the same name is
+  their OWN value of the secret that serves its host alone — a deployment value of the same name is
   never sent for a person (src/packages/subscriptions.ts `own`). One nobody
   made reads the deployment's value, as before, and its work has no owner.
   A package's STEP starts work only as its own run's person
@@ -550,6 +550,47 @@ instead of baked into env at deploy time.
   acts for nobody which launches another workflow (a `run/launch` in YAML,
   an app page's call with no viewer) runs it as that workflow's owner, the
   principal rule's fallback (`principalFor`).
+
+- **Git credentials by host** (src/git-hosts.ts; stadeum plans/software.md
+  §5, item 9). Which secret holds the token for a repository is the box's
+  map, by HOST: strut's own entry, `github.com` → `GITHUB_TOKEN` (what its
+  git steps and `git+` sources always read), and each installed package's
+  `provides.git: [{ host, secret }]` (a package that still holds its own
+  items, as `job`'s grants are read; made again after every package write,
+  `syncGitHosts` in createStrut). One host, one secret: an install that
+  would serve a host with another (github.com's included) is
+  `package_conflict:`; the same one again is welcome. The lookup is the
+  URL's — `https://<host>/…`, or `http://` to this machine
+  (`localhost`, `127.0.0.1`, `[::1]`) — and its token is the run's value of
+  that secret, read as `get` reads it: the person's own, then the
+  deployment's (`secrets.git(url)`, on every capability strut builds and on
+  a host's once createStrut wraps it). A host no secret serves, a `file:`
+  repository and plain http to another machine get none. Every git caller
+  uses it: `git/checkout`, `git/push`, `git/remote-head`, `git+` installs,
+  subscriptions (a person's: their OWN value of that secret alone), serve
+  mode, `STRUT_PACKAGES` and the repo door. Nobody names the secret any
+  more: `tokenSecret` is gone (2026-11-20) — a door refuses it, and an old
+  one in `STRUT_PACKAGES` or `STRUT_SERVE_TOKEN_SECRET` is left unread so a
+  box still boots. Before it, every one of them read `tokenSecret`
+  (GITHUB_TOKEN unless named) whatever the URL, and git's helper answered
+  any host: a workflow, an agent's tool call or a package could send the
+  person's GitHub token — or any secret, by naming it — to a host of its
+  choosing. Git is held to it too: the inline credential helper
+  (src/steps/lib/git/_shared.ts) answers only when git asks for the
+  token's own host (`STRUT_GIT_HOST`), so a redirect elsewhere gets
+  nothing. `git/push` asks GitHub who the token is (`GET /user`, the
+  commit's author) only with GitHub's own token — the one
+  `https://github.com` gets — and a token for another host is never sent
+  there. A PACKAGE's step holds `secrets.git` only when its package says
+  `requires.git: true`, which the store page and `GET /packages` show; it
+  then reads the run's token for any host the box serves, and still reads
+  by name only what it declares. Without it the step never sees a token,
+  yet strut's git steps it calls with its own ctx use the run's: the
+  fence keeps a module-private reader on its view (`keepGitTokens`,
+  `gitTokens` in src/capabilities.ts, not exported from strut's index),
+  beside the run's own `shell` and `http` (`gitVia`), and those steps send
+  the token to its host alone, through those alone — a shell or http the
+  step puts in the ctx it calls them with never carries it.
 
 - **A person's SSH key is used, never held** (src/ssh-agent.ts,
   `ssh/keygen`). A job someone lets into a server logs in with ONE key per
@@ -602,7 +643,9 @@ instead of baked into env at deploy time.
   built-in outside `builtins` (an agent must list its built-ins in
   `toolFilter`), or a secret outside `secrets` (`secretsEnv`, a
   `tokenSecret` or `storageStateSecret` — a default too — `http/verify`'s
-  `{NAME}` header templates, or one named by a template); `meta/run-step`
+  `{NAME}` header templates, or one named by a template; a `git/*` step
+  names none, reading the run's token for its repository's host as a
+  `github/*` step reads GITHUB_TOKEN, so `tools` decides it); `meta/run-step`
   refuses a step outside it. The same rule (`stepProblems`) holds at RUN
   time for every step inside a version of a workflow the AI wrote (the
   version that runs, `aiWroteVersion`: a seed put back at boot, or a
@@ -637,6 +680,10 @@ the pieces of createStrut's one gate in front of EVERY route, reads included —
 ### `src/secret-store.ts`
 
 SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+
+### `src/git-hosts.ts`
+
+GIT CREDENTIALS BY HOST (stadeum plans/software.md §5, item 9): `STRUT_GIT_HOSTS` (strut's own `github.com` → `GITHUB_TOKEN`), `tokenHost(url)` (the host a URL's token would serve: https, or http to this machine; else none), `gitSecretOf(hosts)` (the lookup, URL → secret NAME), `boxGitHosts(packages)` (strut's own entry, then each package's `provides.git`), `gitHostProblems` (a host two holders serve with different secrets: what an install refuses). The map reaches steps as `secrets.git(url)` (src/capabilities.ts `hideSecrets`); "Git credentials by host" above
 
 ### `src/actor-secrets.ts`
 

@@ -258,14 +258,13 @@ function OpenRepo(props: { onOpened: () => void }) {
   const [url, setUrl] = useState("");
   const [ref, setRef] = useState("");
   const [path, setPath] = useState("");
-  const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api.openRepo({ url: url.trim(), ...(ref.trim() ? { ref: ref.trim() } : {}), ...(path.trim() ? { path: path.trim() } : {}), ...(secret.trim() ? { tokenSecret: secret.trim() } : {}) });
+      await api.openRepo({ url: url.trim(), ...(ref.trim() ? { ref: ref.trim() } : {}), ...(path.trim() ? { path: path.trim() } : {}) });
       setOpen(false);
       setUrl("");
       props.onOpened();
@@ -296,11 +295,7 @@ function OpenRepo(props: { onOpened: () => void }) {
         Folder
         <input type="text" value={path} placeholder="the root (or the folder holding strut.yaml)" onInput={(e) => setPath((e.target as HTMLInputElement).value)} />
       </label>
-      <label>
-        Token secret
-        <input type="text" value={secret} placeholder="GITHUB_TOKEN" onInput={(e) => setSecret((e.target as HTMLInputElement).value)} />
-      </label>
-      <div class="auto-hint">The token is read from that secret (yours first) to fetch and push; only its name is kept.</div>
+      <div class="auto-hint">Fetched and pushed with your token for the repository's host (GITHUB_TOKEN for github.com), for that host alone.</div>
       <div class="repo-actions">
         <button class="btn btn-primary" disabled={busy || !url.trim()} onClick={() => void submit()}>{busy ? "Opening…" : "Open"}</button>
         <button class="btn" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
@@ -317,7 +312,6 @@ export function CreateRepo(props: { pkg: string; request: () => Omit<api.Publish
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
   const [path, setPath] = useState("");
-  const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<(api.RepoInfo & { originals: api.RepoItem[] }) | null>(null);
@@ -331,7 +325,6 @@ export function CreateRepo(props: { pkg: string; request: () => Omit<api.Publish
           url: url.trim(),
           ...(branch.trim() ? { branch: branch.trim() } : {}),
           ...(path.trim() ? { path: path.trim() } : {}),
-          ...(secret.trim() ? { tokenSecret: secret.trim() } : {}),
         }),
       );
       props.onCreated();
@@ -370,10 +363,6 @@ export function CreateRepo(props: { pkg: string; request: () => Omit<api.Publish
       <label>
         Folder
         <input type="text" value={path} placeholder="the root" onInput={(e) => setPath((e.target as HTMLInputElement).value)} />
-      </label>
-      <label>
-        Token secret
-        <input type="text" value={secret} placeholder="GITHUB_TOKEN" onInput={(e) => setSecret((e.target as HTMLInputElement).value)} />
       </label>
       <div class="auto-hint">The picks are built as {props.pkg}, pushed as the repository's first commit, and opened here: the package's copies are the ones edited from then on.</div>
       <div class="repo-actions">

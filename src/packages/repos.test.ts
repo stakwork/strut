@@ -15,6 +15,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { KitLocation } from "../apps/kit.js";
 import { kitForTests } from "../test-util/app-kit.js";
+import { insteadOf } from "../test-util/git-remote.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
@@ -321,13 +322,19 @@ describe("a repo", () => {
   });
 
   it("never writes, logs or answers with the token", async () => {
+    // The repository is on "github.com", whose token is GITHUB_TOKEN: its
+    // git reads the local remote, and GitHub's GET /user answers for it.
+    const remote = await moonRemote();
+    const url = "https://github.com/acme/moon";
+    await strut.close?.();
+    const http = async () => ({ status: 200, ok: true, headers: {}, body: { login: "octocat", id: 1 } });
+    strut = await boot(join(root, "ws"), { services: { shell: insteadOf({ [url]: remote.url }), http } });
     assert.equal((await req("/secrets/GITHUB_TOKEN", json({ value: TOKEN }, "PUT"))).status, 200);
     const said: string[] = [];
     const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
     for (const k of ["log", "warn", "error", "info"] as const) console[k] = (...args: unknown[]) => void said.push(args.map(String).join(" "));
     try {
-      const remote = await moonRemote();
-      const opened = await req("/packages/repos", json({ url: remote.url }));
+      const opened = await req("/packages/repos", json({ url }));
       assert.equal(opened.status, 201);
       const bodies = [await opened.text()];
       // A remote whose hook prints the environment it was pushed with — the
