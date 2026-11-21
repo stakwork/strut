@@ -1033,6 +1033,15 @@ failing in a loop — each on the version that caused it, with what to do
 instead. The person sees them as a warning dot on the app. Read them when
 an app is slow or the person asks about one; a fixed version starts clean.
 
+When an app is slow or failing for the person you work for, read
+`app/calls { name }` before you guess: what their open page did, in
+whatever host they use. It shows each call with when it started, how long
+the step took (`ms`), strut's time before it (`doorMs`), how it ended, and
+the page's errors where they happened. A console they paste is not the
+record: the MCP client's `GET /mcp` 405 there is expected and costs
+nothing. Fast calls with a long gap between them mean the time went outside
+strut (the host's relay, the document's load, the page's render).
+
 ## What the build refuses
 
 An import outside the kit and the installed apps; a relative import that

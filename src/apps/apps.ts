@@ -61,7 +61,7 @@ import type { AppDatabases } from "./data.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
-import type { AppMonitor, AppUsageBrief } from "./monitor.js";
+import type { AppCallLog, AppMonitor, AppUsageBrief } from "./monitor.js";
 import { lockDrift, lockProblems, takeLock, type LockDrift } from "./releases.js";
 
 /** Strut's starter directories (`app/init { template }`): `src/apps/templates/<name>/`. */
@@ -307,6 +307,10 @@ export interface AppsCapability {
   /** An app's latest client-side errors (§8), newest first, by name. Empty
    *  with no run store. */
   errorsOf(app: string): Promise<AppError[]>;
+  /** One viewer's recent calls on an app, from the monitor's log
+   *  (plans/app-calls.md; `app/calls`); empty without a monitor, null when
+   *  there is no such app. */
+  calls(name: string, viewer: string | undefined, q?: { since?: string; limit?: number }): Promise<AppCallLog | null>;
   /** Build, then record the version and copy the directory into place. */
   publish(dir: string, name: string, opts: AppPublishOptions): Promise<AppPublishResult>;
   /** Build under the publish's checks and HOST the directory as `name` under
@@ -370,7 +374,7 @@ export interface AppsDeps {
   errors?: (app: string, max: number) => Promise<AppError[]>;
   /** The monitor `step_run` counts into (./monitor.ts): `get` carries its
    *  brief, `list` its warning count. Absent, neither. */
-  monitor?: Pick<AppMonitor, "brief" | "warningCount" | "forget">;
+  monitor?: Pick<AppMonitor, "brief" | "warningCount" | "forget" | "calls">;
   /** The graph an app's declared types are checked against and registered
    *  on (./graph-types.ts). Absent: an app that declares any does not build. */
   graph?: GraphBackend;
@@ -707,6 +711,11 @@ export function createApps(deps: AppsDeps): AppsCapability {
     },
 
     errorsOf,
+
+    async calls(name, viewer, q) {
+      if (!(await workspace.getApp(name))) return null;
+      return deps.monitor ? deps.monitor.calls(name, viewer, q) : { app: name, calls: [] };
+    },
 
     async publish(dir, name, opts) {
       validateAppName(name);

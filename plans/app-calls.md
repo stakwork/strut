@@ -1,6 +1,8 @@
 # App calls: what a person's open app did
 
-Status: PROPOSED (2026-11-21). Waiting on the four rulings at the end.
+Status: BUILT (2026-11-21). Evan ruled all four as recommended. One
+detail settled while building: a run with no actor reads the calls made
+with no viewer (an open dev strut's), never everyone's.
 
 ## The ask
 
@@ -58,7 +60,7 @@ later through the kit, the way `report-error` does: when the page started,
 its first render, and each call as the page timed it (the page's ms minus
 strut's ms is the relay). That is not in this change.
 
-## Rulings needed
+## Rulings (all as recommended, 2026-11-21)
 
 1. **What to record.** Recommended: the fields above plus `config`,
    redacted (each step's `redact` fields, as the monitor's examples are)
@@ -72,8 +74,8 @@ strut's ms is the relay). That is not in this change.
    15 MB for one app in the worst case.
 3. **Who may read it.** Recommended: only your own calls. `app/calls`
    returns the calls whose viewer is the run's actor, so Paul's Jamie reads
-   Paul's page and nobody reads anyone else's. A strut with no actors (dev)
-   reads all of them. The alternative is what `app/get`'s errors do today:
+   Paul's page and nobody reads anyone else's. A run with no actor reads the
+   calls made with none (an open dev strut). The alternative is what `app/get`'s errors do today:
    anyone holding `app/*` reads every viewer's calls, with a `viewer`
    filter.
 4. **The counts.** Recommended: the log is the monitor's and counts

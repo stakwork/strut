@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APP_MONITOR_LIMITS as L, USAGE_DIR, createAppMonitor, type AppCall, type AppMonitorOptions } from "./monitor.js";
+import { APP_CALL_LOG, APP_MONITOR_LIMITS as L, USAGE_DIR, createAppMonitor, type AppCall, type AppMonitorOptions } from "./monitor.js";
 
 /**
  * The app monitor (src/apps/monitor.ts): the counts per minute, hour and
@@ -153,6 +153,57 @@ describe("app monitor", () => {
     assert.equal(monitor.report("dash").day.calls, 0);
     // The brief is the report without its series.
     assert.equal("minutes" in monitor.brief("dash"), false);
+  });
+});
+
+describe("app monitor — the call log (plans/app-calls.md)", () => {
+  it("logs each call for its viewer, oldest first by start: its time, strut's time before it, its error and config cut", () => {
+    const { monitor, call, tick } = setup();
+    call({ type: "sqlite/query", config: { sql: "select 1" }, ms: 40, doorMs: 3 });
+    tick(12_000);
+    call({ type: "run/list", config: { workflow: "w", note: "x".repeat(500) }, status: "error", error: "e".repeat(900), ms: 11_800 });
+    call({ viewer: "bob", type: "app/report-error", config: { message: "boom" } });
+    call({ viewer: undefined, config: {} });
+    const ann = monitor.calls("dash", "ann");
+    // Started at T0 - 40 and T0 + 200: a 240 ms gap, then 11.8 s in the step.
+    assert.deepEqual(ann.calls.map((c) => [c.type, c.t, c.ms, c.doorMs]), [["sqlite/query", 0, 40, 3], ["run/list", 240, 11_800, undefined]]);
+    assert.equal(ann.calls[0]!.at, new Date(T0 - 40).toISOString(), "at is when the step started");
+    assert.equal(ann.calls[0]!.config, '{"sql":"select 1"}');
+    assert.equal(ann.calls[1]!.config!.length, 201, "cut to 200 chars and an ellipsis");
+    assert.equal(ann.calls[1]!.error!.length, 501);
+    assert.equal(ann.calls[1]!.status, "error");
+    assert.equal(ann.more, undefined);
+    assert.deepEqual(monitor.calls("dash", "bob").calls.map((c) => [c.type, c.config]), [["app/report-error", '{"message":"boom"}']], "the page's errors are in it, in place");
+    assert.deepEqual(monitor.calls("dash", undefined).calls.map((c) => c.config), [undefined], "no viewer: the calls made with none; an empty config left out");
+    assert.deepEqual(monitor.calls("other", "ann").calls, []);
+  });
+
+  it("since and limit; an hour, 1000 calls a viewer and 50 viewers an app; an anonymous visitor's never; a deleted app's gone; the counts as before", () => {
+    const { monitor, call, tick, at } = setup();
+    for (let i = 0; i < 5; i++) {
+      call({ config: { i } });
+      tick(1000);
+    }
+    const since = new Date(at() - 2500).toISOString();
+    assert.deepEqual(monitor.calls("dash", "ann", { since }).calls.map((c) => c.config), ['{"i":3}', '{"i":4}']);
+    const last2 = monitor.calls("dash", "ann", { limit: 2 });
+    assert.deepEqual([last2.calls.map((c) => c.config), last2.more], [['{"i":3}', '{"i":4}'], 3]);
+    tick(60 * 60_000);
+    assert.deepEqual(monitor.calls("dash", "ann").calls, [], "older than an hour");
+    for (let i = 0; i < APP_CALL_LOG.perViewer + 5; i++) call({ config: { i } });
+    const full = monitor.calls("dash", "ann", { limit: APP_CALL_LOG.perViewer });
+    assert.deepEqual([full.calls.length, full.calls[0]!.config], [APP_CALL_LOG.perViewer, '{"i":5}']);
+    for (let v = 0; v < APP_CALL_LOG.viewers; v++) call({ viewer: `v${v}` });
+    assert.deepEqual(monitor.calls("dash", "ann").calls, [], "the viewer seen least recently went first");
+    assert.equal(monitor.calls("dash", "v0").calls.length, 1);
+    call({ viewer: "slow", ms: 2 * 60 * 60_000 });
+    assert.deepEqual(monitor.calls("dash", "slow").calls, [], "a call that started over an hour ago is past the log, and breaks nothing");
+    call({ viewer: "visitor 1.2.3.4", log: false });
+    assert.deepEqual(monitor.calls("dash", "visitor 1.2.3.4").calls, []);
+    assert.equal(monitor.report("dash").hour.calls, APP_CALL_LOG.perViewer + 5 + APP_CALL_LOG.viewers + 2, "counted as before, the slow call and the visitor too");
+    assert.equal(monitor.calls("dash", "v49").calls.length, 1);
+    monitor.forget("dash");
+    assert.deepEqual(monitor.calls("dash", "v49").calls, []);
   });
 });
 

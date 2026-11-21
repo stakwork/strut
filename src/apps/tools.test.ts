@@ -685,6 +685,25 @@ describe("step_run — the app door", () => {
     assert.equal((await strut.app.request("/apps/ghost/usage", { headers: auth })).status, 404);
   });
 
+  it("every call is logged for its viewer (plans/app-calls.md): app/calls reads the run's own person's calls on an app, with strut's time before each step, and nobody else's", async () => {
+    const since = new Date().toISOString();
+    // Through the door, as the key's actor `viewer`: the door stamps when the request arrived.
+    await rpc("/mcp", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "whoami", config: { from: "door" }, app: identity } });
+    const theirs = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor: "someone-else", runStepDeps: { store, workspace: strut.workspace }, monitor: strut.appMonitor });
+    await (theirs[STEP_RUN_TOOL] as any).execute({ type: "whoami", config: { from: "theirs" }, app: identity }, { toolCallId: "t", messages: [] });
+    const read = async (actor: string, config: Record<string, unknown>) => {
+      const r = await runStep("app/calls", registry, strut.services, { config, actor }, { store });
+      if (r.status !== "success") throw new Error(r.error?.message);
+      return r.output as { app: string; calls: Array<{ type: string; status: string; config?: string; ms: number; doorMs?: number; t: number }> };
+    };
+    const mine = await read("viewer", { name: "bench", since });
+    assert.deepEqual(mine.calls.map((c) => [c.type, c.status, c.config, c.t]), [["whoami", "ok", '{"from":"door"}', 0]]);
+    assert.ok(mine.calls[0]!.doorMs! >= 0 && mine.calls[0]!.ms >= 0, JSON.stringify(mine));
+    assert.deepEqual((await read("someone-else", { name: "bench", since })).calls.map((c) => [c.config, c.doorMs]), [['{"from":"theirs"}', undefined]], "their own alone; a call no door stamped has no doorMs");
+    await assert.rejects(read("viewer", { name: "ghost" }), /App "ghost" not found/);
+    await assert.rejects(read("viewer", { name: "bench", since: "yesterday" }), /not a time/);
+  });
+
   it("a call reads the app's record once and never its files, its workflows or the error reports; a publish, a delete and a write straight to the store are seen by the next call", async () => {
     const dir = join(root, "apps", "probe");
     const WHOAMI = "title: Probe\ngrants:\n  workflows: [score-wf]\n  steps: [whoami]\n";

@@ -41,6 +41,13 @@
  * volume counts rebuilt from it — and files older than `keepDays` (30) are
  * deleted. The write load follows the minutes an app is used, never its
  * calls. Without a root, memory only (a test, a host with no dataDir).
+ *
+ * And a LOG of the calls themselves (plans/app-calls.md): per app and
+ * viewer, each call's start, version, type, status, time, the door's time
+ * before it, size, error and config (redacted and cut), for `app/calls` —
+ * what a person's open page did, in any host, read back by that person's
+ * own runs. In memory only, for an hour, `APP_CALL_LOG`'s caps; it counts
+ * nothing, and an anonymous visitor's calls (`log: false`) are not in it.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -65,11 +72,48 @@ export interface AppCall {
   viewer?: string;
   status: AppCallStatus;
   ms: number;
+  /** How long the request was at strut before the step started: the gate,
+   *  the door building its tools. Absent where the door did not stamp it. */
+  doorMs?: number;
   /** The result's JSON length; 0 for a call that did not succeed. */
   bytes: number;
   /** A refusal's or a failure's message. */
   error?: string;
+  /** false: counted, never logged — an anonymous visitor's, which no run
+   *  could read back. */
+  log?: false;
 }
+
+/** One call as the log keeps it, as `app/calls` reads it. */
+export interface AppLoggedCall {
+  /** When the step started. */
+  at: string;
+  /** ms since the first call in the list started: a gap shows at a glance. */
+  t: number;
+  version: string;
+  type: string;
+  status: AppCallStatus;
+  ms: number;
+  doorMs?: number;
+  bytes: number;
+  error?: string;
+  /** The config, its step's `redact` fields hidden, cut to `configChars`. */
+  config?: string;
+}
+
+/** `app/calls`: one viewer's calls on one app, oldest first. */
+export interface AppCallLog {
+  app: string;
+  calls: AppLoggedCall[];
+  /** Earlier calls in the window that `limit` left out. */
+  more?: number;
+}
+
+/** The log's caps (plans/app-calls.md, ruled 2026-11-21): an hour, 1000
+ *  calls a viewer, 50 viewers an app (the one seen least recently goes
+ *  first) — a page polling three live queries stays readable for ten
+ *  minutes, at most ~15 MB for one app. */
+export const APP_CALL_LOG = { keepMs: 60 * 60_000, perViewer: 1000, viewers: 50, configChars: 200, errorChars: 500, limit: 100 } as const;
 
 export type AppWarningKind = "fanout" | "repeat" | "volume" | "bytes" | "failing";
 
@@ -189,6 +233,8 @@ interface Seen {
   example?: string;
   error?: string;
 }
+/** A call in the log: AppLoggedCall with its start as a number, no `t`. */
+type Logged = Omit<AppLoggedCall, "at" | "t"> & { at: number };
 /** A warning as a line holds it: Seen with ISO times. */
 type SeenLine = Omit<Seen, "firstAt" | "lastAt"> & { firstAt: string; lastAt: string };
 interface AppState {
@@ -284,6 +330,10 @@ export interface AppMonitor {
   brief(app: string): AppUsageBrief;
   /** The last day's warnings on one version: the UI's dot. */
   warningCount(app: string, version: string): number;
+  /** One viewer's logged calls on an app (`viewer` absent: the calls made
+   *  with none, an open strut's), the newest `limit` since `since`, oldest
+   *  first. */
+  calls(app: string, viewer: string | undefined, q?: { since?: string; limit?: number }): AppCallLog;
   /** Drop an app's counts, its files too (the app was deleted). */
   forget(app: string): void;
   /** Write everything counted since the last write, and wait for it. */
@@ -530,6 +580,39 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
     await chain;
   };
 
+  // ── The log (`app/calls`) ──────────────────────────────────────────────
+  // Per app, per viewer ("" for none), each list in the order its calls
+  // ended; the viewers in the order they were last seen, so the one seen
+  // least recently is dropped first.
+  const C = APP_CALL_LOG;
+  const logs = new Map<string, Map<string, Logged[]>>();
+  const logCall = (call: AppCall, at: number) => {
+    if (call.log === false) return;
+    let viewers = logs.get(call.app);
+    if (!viewers) logs.set(call.app, (viewers = new Map()));
+    const who = call.viewer ?? "";
+    const list = viewers.get(who) ?? [];
+    viewers.delete(who);
+    viewers.set(who, list);
+    const config = call.config === undefined ? undefined : cut(configText(call.config), C.configChars);
+    list.push({
+      at: at - call.ms,
+      version: call.version,
+      type: call.type,
+      status: call.status,
+      ms: call.ms,
+      ...(call.doorMs !== undefined ? { doorMs: call.doorMs } : {}),
+      bytes: call.bytes,
+      ...(call.error ? { error: cut(call.error, C.errorChars) } : {}),
+      ...(config && config !== "{}" ? { config } : {}),
+    });
+    while (list.length && (list.length > C.perViewer || list[0]!.at <= at - C.keepMs)) list.shift();
+    // The viewer seen least recently goes past the cap, or once its last
+    // call is an hour old: nothing would read it.
+    const [oldest, theirs] = viewers.entries().next().value!;
+    if (viewers.size > C.viewers || !theirs.length || theirs[theirs.length - 1]!.at <= at - C.keepMs) viewers.delete(oldest);
+  };
+
   const flushEvery = opts.flushEveryMs ?? 15_000;
   const timer = root && flushEvery > 0 ? setInterval(() => void flush(), flushEvery) : undefined;
   timer?.unref?.();
@@ -593,6 +676,7 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
   return {
     record(call) {
       const at = now();
+      logCall(call, at);
       const s = stateOf(call.app, at);
       s.lastCallAt = at;
       const failed = call.status !== "ok" ? 1 : 0;
@@ -687,7 +771,22 @@ export function createAppMonitor(opts: AppMonitorOptions = {}): AppMonitor {
       return n;
     },
 
+    calls(app, viewer, q = {}) {
+      const list = logs.get(app)?.get(viewer ?? "") ?? [];
+      const since = q.since ? Date.parse(q.since) : NaN;
+      const from = Math.max(now() - C.keepMs, Number.isNaN(since) ? -Infinity : since);
+      const window = list.filter((c) => c.at >= from).sort((a, b) => a.at - b.at);
+      const shown = window.slice(-Math.max(1, Math.min(q.limit ?? C.limit, C.perViewer)));
+      const first = shown[0]?.at ?? 0;
+      return {
+        app,
+        calls: shown.map(({ at, ...c }) => ({ at: iso(at), t: at - first, ...c })),
+        ...(window.length > shown.length ? { more: window.length - shown.length } : {}),
+      };
+    },
+
     forget(app) {
+      logs.delete(app);
       apps.delete(app);
       if (root) enqueue(app, () => rm(usageDir(app), { recursive: true, force: true }));
     },

@@ -362,6 +362,9 @@ export interface AppToolDeps {
   runStepDeps: RunStepDeps;
   /** Where every call is counted (./monitor.ts): what an app costs the server. */
   monitor?: Pick<AppMonitor, "record">;
+  /** When the request reached strut (`Date.now()`, before the gate): a
+   *  call's `doorMs` in the monitor's log is the time from here to its step. */
+  arrivedAt?: number;
   /** A HOST's door (`POST /mcp` with a host key, plans/people-and-hosts.md
    *  §3): `app` names the app, every call is checked against its `hosts:`
    *  (`hostRefusal`), the step runs against `services` alone with `ctx.host`
@@ -605,8 +608,12 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
           ...(deps.visitor?.viewer ?? deps.actor ? { viewer: (deps.visitor?.viewer ?? deps.actor)! } : {}),
           status: call.status,
           ms: Date.now() - started,
+          ...(deps.arrivedAt !== undefined ? { doorMs: Math.max(0, started - deps.arrivedAt) } : {}),
           bytes: call.bytes,
           ...("error" in call.out ? { error: call.out.error } : {}),
+          // An anonymous visitor's call: no run is ever that visitor, so
+          // none could read it back from the log.
+          ...(deps.visitor && !deps.actor ? { log: false as const } : {}),
         });
         return call.out;
       },
